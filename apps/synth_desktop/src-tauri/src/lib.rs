@@ -1,0 +1,1085 @@
+mod cloud;
+mod codex;
+pub mod core_runtime;
+mod device_auth;
+mod domain;
+mod instance;
+mod intern_api;
+pub mod inventory;
+mod laguna;
+mod projects;
+mod runtime;
+pub mod storage;
+mod synth_config;
+mod terminal;
+pub mod trace_ingest;
+mod visuals;
+mod visuals_ipc;
+
+use codex::{
+    CodexApprovalDecisionRequest, CodexManager, CodexSessionInfo, CodexSessionRecord,
+    CodexSessionRequest, CodexSessionStartRequest, CodexTurnFailure, CodexTurnSendRequest,
+    CodexTurnStartRequest,
+};
+pub use core_runtime::CoreRuntime;
+use instance::InstanceDiagnostics;
+use intern_api::{
+    InternControlResult, InternSendResult, InternSessionControlRequest, InternSessionCreateRequest,
+    InternSessionSendRequest, InternSessionWire,
+};
+use inventory::{
+    ContainerDeployment, ContainerRegisterRequest, InventoryCounts, ResolvedTraceProjection,
+    TraceRecord, UsageEntry,
+};
+use laguna::{LagunaManager, LagunaModelHit, LagunaStatus};
+use std::sync::Arc;
+use storage::{AppEvent, CoreDiagnostics};
+use synth_config::{
+    BackendSettings, BackendSettingsUpdate, ModelMultiAgentSetting, ModelMultiAgentUpdate,
+    WorkspaceAccessSettings, WorkspaceAccessUpdate,
+};
+use tauri::{Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
+use terminal::{TerminalCreateRequest, TerminalEvent, TerminalInfo, TerminalManager};
+use trace_ingest::{TraceBundleIngestRequest, TraceBundleIngestResult};
+use visuals::{
+    TemplateMeta, VisualCreateRequest, VisualQuery, VisualRecord, VisualRevision,
+    VisualUpdateRequest,
+};
+
+#[tauri::command]
+fn core_diagnostics(state: State<'_, Arc<CoreRuntime>>) -> Result<CoreDiagnostics, String> {
+    state.diagnostics().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn desktop_instance_diagnostics() -> InstanceDiagnostics {
+    instance::diagnostics()
+}
+
+#[tauri::command]
+async fn core_events_after(
+    state: State<'_, Arc<CoreRuntime>>,
+    after_sequence: i64,
+    limit: Option<i64>,
+) -> Result<Vec<AppEvent>, String> {
+    state
+        .journal()
+        .events_after(after_sequence, limit.unwrap_or(500).clamp(1, 2000))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn core_session_events_after(
+    state: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+    after_sequence: i64,
+    limit: Option<i64>,
+) -> Result<Vec<AppEvent>, String> {
+    state
+        .journal()
+        .session_events_after(
+            session_id,
+            after_sequence,
+            limit.unwrap_or(500).clamp(1, 2000),
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn intern_sessions_list(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<Vec<InternSessionWire>, String> {
+    intern_api::list(&state)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn intern_session_create(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: InternSessionCreateRequest,
+) -> Result<InternSessionWire, String> {
+    intern_api::create(&state, request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn intern_session_send(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: InternSessionSendRequest,
+) -> Result<InternSendResult, String> {
+    intern_api::send(&state, request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn intern_session_control(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: InternSessionControlRequest,
+) -> Result<InternControlResult, String> {
+    intern_api::control(&state, request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn intern_session_events_after(
+    state: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+    after_sequence: i64,
+    limit: Option<i64>,
+) -> Result<Vec<AppEvent>, String> {
+    state
+        .journal()
+        .session_events_after(
+            session_id,
+            after_sequence,
+            limit.unwrap_or(500).clamp(1, 2_000),
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn inventory_containers_list(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<Vec<ContainerDeployment>, String> {
+    state
+        .inventory()
+        .list_containers()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn inventory_containers_get(
+    state: State<'_, Arc<CoreRuntime>>,
+    container_id: String,
+) -> Result<ContainerDeployment, String> {
+    state
+        .inventory()
+        .get_container(container_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn hydrate_container(
+    base_url: &str,
+    existing_metadata: serde_json::Value,
+) -> (String, serde_json::Value, serde_json::Value, Option<String>) {
+    let client = reqwest::Client::new();
+    let root = base_url.trim_end_matches('/');
+    // Health is intentionally cheap and may run frequently. Contract/catalog
+    // hydration is cached because task catalogs can contain thousands of rows.
+    let refresh_metadata = existing_metadata
+        .get("hydratedAt")
+        .and_then(|value| value.as_str())
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|hydrated| {
+            chrono::Utc::now()
+                .signed_duration_since(hydrated.with_timezone(&chrono::Utc))
+                .num_seconds()
+                >= 300
+        })
+        .unwrap_or(true);
+    let health_result = client
+        .get(format!("{root}/health"))
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await;
+    let (status, health) = match health_result {
+        Ok(response) => {
+            let code = response.status();
+            let payload = response
+                .json::<serde_json::Value>()
+                .await
+                .unwrap_or_else(|_| serde_json::json!({}));
+            let ok =
+                code.is_success() && payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
+            (
+                if ok { "ready" } else { "unhealthy" }.to_string(),
+                serde_json::json!({"ok": ok, "status": code.as_u16(), "payload": payload}),
+            )
+        }
+        Err(error) => (
+            "unhealthy".into(),
+            serde_json::json!({"ok": false, "error": error.to_string()}),
+        ),
+    };
+    let mut info = existing_metadata.get("info").cloned();
+    if refresh_metadata {
+        info = None;
+        for route in ["info", "metadata"] {
+            if let Ok(response) = client
+                .get(format!("{root}/{route}"))
+                .timeout(std::time::Duration::from_secs(3))
+                .send()
+                .await
+            {
+                if response.status().is_success() {
+                    info = response.json::<serde_json::Value>().await.ok();
+                    if info.is_some() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let task_family = info
+        .as_ref()
+        .and_then(|value| value.get("env_family").or_else(|| value.get("task_family")))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            health
+                .get("payload")
+                .and_then(|value| value.get("env_family"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        });
+    let mut metadata = existing_metadata.as_object().cloned().unwrap_or_default();
+    metadata.insert(
+        "contractHint".into(),
+        serde_json::json!(if info.is_some() {
+            "info"
+        } else {
+            "health-only"
+        }),
+    );
+    metadata.insert(
+        "healthCheckedAt".into(),
+        serde_json::json!(chrono::Utc::now().to_rfc3339()),
+    );
+    if refresh_metadata {
+        metadata.insert(
+            "hydratedAt".into(),
+            serde_json::json!(chrono::Utc::now().to_rfc3339()),
+        );
+    }
+    if let Some(info) = info {
+        metadata.insert("info".into(), info);
+    }
+    if refresh_metadata {
+        for (route, key) in [
+            ("task_catalog", "taskCatalog"),
+            ("task_info", "taskInfo"),
+            ("program", "program"),
+            ("dataset", "dataset"),
+        ] {
+            if let Ok(response) = client
+                .get(format!("{root}/{route}"))
+                .timeout(std::time::Duration::from_secs(3))
+                .send()
+                .await
+            {
+                if response.status().is_success() {
+                    if let Ok(value) = response.json::<serde_json::Value>().await {
+                        metadata.insert(key.into(), value);
+                    }
+                }
+            }
+        }
+    }
+    (
+        status,
+        health,
+        serde_json::Value::Object(metadata),
+        task_family,
+    )
+}
+
+#[tauri::command]
+async fn inventory_containers_register(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ContainerRegisterRequest,
+) -> Result<ContainerDeployment, String> {
+    if !(request.base_url.starts_with("http://") || request.base_url.starts_with("https://")) {
+        return Err("container baseUrl must start with http:// or https://".into());
+    }
+    let (status, health, metadata, hydrated_family) = hydrate_container(
+        &request.base_url,
+        request
+            .metadata
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({})),
+    )
+    .await;
+    let task_family = hydrated_family.or_else(|| request.task_family.clone());
+    state
+        .register_container(request, status, health, metadata, task_family)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn inventory_containers_probe(
+    state: State<'_, Arc<CoreRuntime>>,
+    container_id: String,
+) -> Result<ContainerDeployment, String> {
+    let container = state
+        .inventory()
+        .get_container(container_id.clone())
+        .await
+        .map_err(|error| error.to_string())?;
+    let Some(base_url) = container.base_url.as_ref() else {
+        return Ok(container);
+    };
+    let (status, health, metadata, task_family) =
+        hydrate_container(base_url, container.metadata).await;
+    state
+        .update_container_hydration(container_id, status, health, metadata, task_family)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn inventory_traces_list(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<Vec<TraceRecord>, String> {
+    state
+        .inventory()
+        .list_traces()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn inventory_traces_get(
+    state: State<'_, Arc<CoreRuntime>>,
+    trace_id: String,
+) -> Result<TraceRecord, String> {
+    state
+        .inventory()
+        .get_trace(trace_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn inventory_traces_ingest(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: TraceBundleIngestRequest,
+) -> Result<TraceBundleIngestResult, String> {
+    let (result, event) = state
+        .inventory()
+        .ingest_trace_bundle(request)
+        .await
+        .map_err(|error| error.to_string())?;
+    state.broadcast_committed(event);
+    Ok(result)
+}
+
+#[tauri::command]
+async fn inventory_trace_projection_resolve(
+    state: State<'_, Arc<CoreRuntime>>,
+    trace_digest: String,
+    projection_kind: String,
+) -> Result<ResolvedTraceProjection, String> {
+    state
+        .inventory()
+        .resolve_trace_projection(trace_digest, projection_kind)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn inventory_usage_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    limit: Option<i64>,
+) -> Result<Vec<UsageEntry>, String> {
+    state
+        .inventory()
+        .list_usage(limit.unwrap_or(100))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn inventory_counts(state: State<'_, Arc<CoreRuntime>>) -> Result<InventoryCounts, String> {
+    state
+        .inventory()
+        .counts()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn publish_visual_event(
+    app: &tauri::AppHandle,
+    core: &CoreRuntime,
+    event: serde_json::Value,
+) -> Result<(), String> {
+    let parsed: AppEvent = serde_json::from_value(event).map_err(|error| error.to_string())?;
+    core.publish_event(app, parsed)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn visuals_templates_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    genre: Option<String>,
+) -> Result<Vec<TemplateMeta>, String> {
+    state
+        .visuals()
+        .list_templates(genre.as_deref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn visuals_templates_get(
+    state: State<'_, Arc<CoreRuntime>>,
+    template_id: String,
+) -> Result<TemplateMeta, String> {
+    state
+        .visuals()
+        .get_template(&template_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn visuals_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    query: Option<VisualQuery>,
+) -> Result<Vec<VisualRecord>, String> {
+    state
+        .visuals()
+        .list(query.unwrap_or_default())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn visuals_get(
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+) -> Result<VisualRecord, String> {
+    state
+        .visuals()
+        .get(visual_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn visuals_revisions(
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+) -> Result<Vec<VisualRevision>, String> {
+    state
+        .visuals()
+        .revisions(visual_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn visuals_create(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    request: VisualCreateRequest,
+) -> Result<VisualRecord, String> {
+    let (visual, event) = state
+        .visuals()
+        .create(request)
+        .await
+        .map_err(|error| error.to_string())?;
+    publish_visual_event(&app, &state, event).await?;
+    Ok(visual)
+}
+
+#[tauri::command]
+async fn visuals_update(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+    request: VisualUpdateRequest,
+) -> Result<VisualRecord, String> {
+    let (visual, event) = state
+        .visuals()
+        .update(visual_id, request)
+        .await
+        .map_err(|error| error.to_string())?;
+    publish_visual_event(&app, &state, event).await?;
+    Ok(visual)
+}
+
+#[tauri::command]
+async fn visuals_save(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+    tsx: Option<String>,
+) -> Result<VisualRecord, String> {
+    let (visual, event) = state
+        .visuals()
+        .save(visual_id, tsx)
+        .await
+        .map_err(|error| error.to_string())?;
+    publish_visual_event(&app, &state, event).await?;
+    Ok(visual)
+}
+
+#[tauri::command]
+async fn visuals_fork(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+    title: Option<String>,
+    session_id: Option<String>,
+) -> Result<VisualRecord, String> {
+    let (visual, event) = state
+        .visuals()
+        .fork(visual_id, title, session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    publish_visual_event(&app, &state, event).await?;
+    Ok(visual)
+}
+
+#[tauri::command]
+async fn visuals_archive(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+) -> Result<VisualRecord, String> {
+    let (visual, event) = state
+        .visuals()
+        .archive(visual_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    publish_visual_event(&app, &state, event).await?;
+    Ok(visual)
+}
+
+#[tauri::command]
+async fn visuals_show(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+    session_id: Option<String>,
+) -> Result<VisualRecord, String> {
+    let (visual, event) = state
+        .visuals()
+        .show(visual_id, session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    publish_visual_event(&app, &state, event).await?;
+    Ok(visual)
+}
+
+#[tauri::command]
+fn synth_config_get() -> Result<BackendSettings, String> {
+    synth_config::get().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn synth_config_update(
+    core: State<'_, Arc<CoreRuntime>>,
+    request: BackendSettingsUpdate,
+) -> Result<BackendSettings, String> {
+    let settings = synth_config::update(request).map_err(|error| error.to_string())?;
+    core.reload_intern_config()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(settings)
+}
+
+/// Begin (or resume) browser sign-in via Workshop device pairing and open the
+/// system browser. Returns display-safe state only.
+#[tauri::command]
+async fn account_begin_sign_in(
+    app: tauri::AppHandle,
+    manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
+) -> Result<device_auth::SignInBegin, String> {
+    let origin = device_auth::workshop_origin();
+    let begin = manager
+        .begin(&origin)
+        .await
+        .map_err(|error| error.to_string())?;
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(begin.verification_uri.clone(), None::<String>)
+        .map_err(|error| error.to_string())?;
+    Ok(begin)
+}
+
+/// One poll step of the pending sign-in. On success the key is stored through
+/// synth_config and the Intern runtime reloads; the key never reaches the
+/// renderer.
+#[tauri::command]
+async fn account_poll_sign_in(
+    core: State<'_, Arc<CoreRuntime>>,
+    manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
+) -> Result<device_auth::SignInPoll, String> {
+    let origin = device_auth::workshop_origin();
+    let result = manager
+        .poll(&origin, |key| synth_config::store_api_key(key))
+        .await
+        .map_err(|error| error.to_string())?;
+    if matches!(result, device_auth::SignInPoll::Active) {
+        core.reload_intern_config()
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn account_cancel_sign_in(
+    manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
+) -> Result<(), String> {
+    manager.cancel();
+    Ok(())
+}
+
+#[tauri::command]
+async fn account_sign_out(core: State<'_, Arc<CoreRuntime>>) -> Result<BackendSettings, String> {
+    synth_config::remove_api_key().map_err(|error| error.to_string())?;
+    core.reload_intern_config()
+        .await
+        .map_err(|error| error.to_string())?;
+    synth_config::get().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn model_multi_agent_list() -> Result<Vec<ModelMultiAgentSetting>, String> {
+    synth_config::model_multi_agent_settings().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn model_multi_agent_update(
+    request: ModelMultiAgentUpdate,
+) -> Result<Vec<ModelMultiAgentSetting>, String> {
+    synth_config::update_model_multi_agent(request).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn workspace_access_get() -> Result<WorkspaceAccessSettings, String> {
+    synth_config::workspace_access_settings().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn workspace_access_update(
+    request: WorkspaceAccessUpdate,
+) -> Result<WorkspaceAccessSettings, String> {
+    synth_config::update_workspace_access(request).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn laguna_get_status(state: State<'_, Arc<LagunaManager>>) -> Result<LagunaStatus, String> {
+    if state.status().await.phase == "unknown" {
+        let root = runtime::workshop_root().map_err(|error| error.to_string())?;
+        if let Err(error) = state.ensure(&root).await {
+            state.set_error(error.to_string()).await;
+        }
+        return Ok(state.status().await);
+    }
+    Ok(state.refresh().await)
+}
+
+#[tauri::command]
+async fn laguna_reload(state: State<'_, Arc<LagunaManager>>) -> Result<LagunaStatus, String> {
+    let root = runtime::workshop_root().map_err(|error| error.to_string())?;
+    state.reload(&root).await.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn laguna_models_list(state: State<'_, Arc<LagunaManager>>) -> Result<Vec<LagunaModelHit>, String> {
+    state.discover_models().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn laguna_models_set_directory(
+    state: State<'_, Arc<LagunaManager>>,
+    path: String,
+) -> Result<LagunaModelHit, String> {
+    state
+        .select_model(std::path::Path::new(&path))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn laguna_models_clear_directory(state: State<'_, Arc<LagunaManager>>) -> Result<(), String> {
+    state
+        .clear_selected_model()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn workspace_choose_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Choose a project folder")
+        .pick_folder(move |path| {
+            let _ = sender.send(path.map(|value| value.to_string()));
+        });
+    receiver.await.map_err(|error| error.to_string())
+}
+
+/// Fills in the provider secrets and Laguna base URL that only the Rust side
+/// knows. Shared by the plain attach command and the atomic send command.
+async fn prepare_codex_start(
+    laguna: &LagunaManager,
+    mut request: CodexSessionStartRequest,
+) -> Result<CodexSessionStartRequest, String> {
+    if request.multi_agent_version.is_none() {
+        request.multi_agent_version = Some(
+            synth_config::resolve_model_multi_agent(&request.model)
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    if request.provider_name.as_deref() == Some("local-laguna") {
+        let root = runtime::workshop_root().map_err(|error| error.to_string())?;
+        request.base_url = laguna
+            .ensure(&root)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Laguna Responses server is unavailable".to_string())?;
+        request.api_key = laguna.api_key().unwrap_or_default();
+    } else if request
+        .provider_name
+        .as_deref()
+        .is_some_and(|provider| provider.eq_ignore_ascii_case("openrouter"))
+    {
+        request.api_key = synth_config::openrouter_api_key()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                "OpenRouter API key is not configured. Add it in Synth backend settings."
+                    .to_string()
+            })?;
+        request.provider_env_key = Some("OPENROUTER_API_KEY".into());
+    } else if request
+        .provider_name
+        .as_deref()
+        .is_some_and(|provider| provider.eq_ignore_ascii_case("synth-cloud"))
+    {
+        let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
+        codex::apply_synth_cloud_provider(
+            &mut request,
+            &resolved.backend_url,
+            resolved.api_key.as_deref(),
+        )?;
+    }
+    Ok(request)
+}
+
+/// One renderer round trip that ensures the app-server attachment and starts
+/// the turn. Splitting these into two commands let the child exit in between,
+/// which stranded the UI in `Working` with a live `Stop`.
+#[tauri::command]
+async fn codex_turn_send(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CodexManager>>,
+    laguna: State<'_, Arc<LagunaManager>>,
+    mut request: CodexTurnSendRequest,
+) -> Result<CodexSessionInfo, CodexTurnFailure> {
+    let session_id = request.start.session_id.clone();
+    request.start = prepare_codex_start(&laguna, request.start)
+        .await
+        .map_err(|message| CodexTurnFailure {
+            code: "codex_provider_unavailable".into(),
+            message: message.clone(),
+            session_id,
+            detail: message,
+        })?;
+    state.send_turn(app, request).await
+}
+
+#[tauri::command]
+async fn codex_session_start(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CodexManager>>,
+    laguna: State<'_, Arc<LagunaManager>>,
+    request: CodexSessionStartRequest,
+) -> Result<CodexSessionInfo, String> {
+    let request = prepare_codex_start(&laguna, request).await?;
+    state
+        .start(app, request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn codex_turn_start(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CodexManager>>,
+    request: CodexTurnStartRequest,
+) -> Result<CodexSessionInfo, String> {
+    state
+        .start_turn(app, request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn codex_turn_interrupt(
+    state: State<'_, Arc<CodexManager>>,
+    request: CodexSessionRequest,
+) -> Result<(), String> {
+    state
+        .interrupt(&request.session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn codex_approval_resolve(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CodexManager>>,
+    request: CodexApprovalDecisionRequest,
+) -> Result<(), String> {
+    state
+        .resolve_approval(app, request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn codex_session_close(
+    state: State<'_, Arc<CodexManager>>,
+    request: CodexSessionRequest,
+) -> Result<(), String> {
+    state
+        .close(&request.session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn codex_sessions_list(
+    state: State<'_, Arc<CodexManager>>,
+) -> Result<Vec<CodexSessionRecord>, String> {
+    Ok(state.list().await)
+}
+
+#[tauri::command]
+fn codex_default_workspace() -> Result<String, String> {
+    let configured = synth_config::allowed_workspace_roots()
+        .map_err(|error| format!("Cannot read workspace access settings: {error}"))?;
+    let path = configured
+        .first()
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("SYNTH_DESKTOP_WORKSPACE").map(std::path::PathBuf::from))
+        .unwrap_or_else(|| crate::instance::state_root().join("workspaces/default"));
+    std::fs::create_dir_all(&path)
+        .map_err(|error| format!("Cannot create the default workspace: {error}"))?;
+    let path = path
+        .canonicalize()
+        .map_err(|error| format!("Default workspace is unavailable: {error}"))?;
+    if !path.is_dir() {
+        return Err("Default workspace must be a directory".into());
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn terminal_create(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<TerminalManager>>,
+    request: TerminalCreateRequest,
+) -> Result<TerminalInfo, String> {
+    state
+        .create(app, request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn terminal_list(
+    state: State<'_, Arc<TerminalManager>>,
+    workspace_id: Option<String>,
+) -> Vec<TerminalInfo> {
+    state.list(workspace_id.as_deref())
+}
+
+#[tauri::command]
+fn terminal_snapshot(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+    after_sequence: Option<u64>,
+) -> Result<Vec<TerminalEvent>, String> {
+    state
+        .snapshot(&terminal_id, after_sequence.unwrap_or(0))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn terminal_write(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+    data: String,
+) -> Result<(), String> {
+    state
+        .write(&terminal_id, &data)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn terminal_resize(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    state
+        .resize(&terminal_id, cols, rows)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn terminal_close(
+    state: State<'_, Arc<TerminalManager>>,
+    terminal_id: String,
+) -> Result<(), String> {
+    state.close(&terminal_id).map_err(|error| error.to_string())
+}
+
+pub fn run() {
+    tauri::Builder::default()
+        // This must be the first plugin registered. All app state, IPC, and
+        // SQLite ownership belongs to the original process.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            instance::mark_manifest_running();
+            let core =
+                Arc::new(CoreRuntime::open_default().map_err(|error| {
+                    std::io::Error::other(format!("open CoreRuntime: {error}"))
+                })?);
+            let migration = crate::storage::legacy_migration::MigrationService::new(
+                core.storage().database().clone(),
+                core.storage().content_root().to_path_buf(),
+                crate::storage::app_data_root().join("migration-backups"),
+            );
+            let laguna = Arc::new(LagunaManager::new());
+            let codex = Arc::new(CodexManager::new(Some(core.clone())));
+            app.manage(core.clone());
+            app.manage(migration);
+            app.manage(codex.clone());
+            app.manage(Arc::new(TerminalManager::new()));
+            app.manage(Arc::new(device_auth::DeviceAuthManager::new()));
+            app.manage(laguna.clone());
+
+            // All committed CoreRuntime events reach Tauri through this single
+            // forwarder. Producers only journal and broadcast.
+            core.spawn_forwarder(app.handle().clone());
+
+            let mut status_updates = laguna.subscribe();
+            let status_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while let Ok(status) = status_updates.recv().await {
+                    let _ = status_handle.emit("laguna:status", status);
+                }
+            });
+
+            let bootstrap_handle = app.handle().clone();
+            let bootstrap_core = core.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = bootstrap_core.bootstrap(&bootstrap_handle).await {
+                    eprintln!("CoreRuntime bootstrap failed: {error}");
+                }
+                if let Err(error) = bootstrap_core.resume_intern_providers().await {
+                    eprintln!("Intern restart reconciliation failed: {error}");
+                }
+            });
+
+            let ipc_core = core.clone();
+            let ipc_root = crate::storage::app_data_root();
+            tauri::async_runtime::spawn(async move {
+                match visuals_ipc::spawn(ipc_core, ipc_root).await {
+                    Ok(connection) => {
+                        eprintln!(
+                            "Visuals IPC listening at {} (token written to {})",
+                            connection.url, connection.path
+                        );
+                    }
+                    Err(error) => eprintln!("Visuals IPC failed to start: {error}"),
+                }
+            });
+
+            if let Some(window) = app.get_webview_window("main") {
+                window.show()?;
+            }
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            desktop_instance_diagnostics,
+            core_diagnostics,
+            core_events_after,
+            core_session_events_after,
+            intern_sessions_list,
+            intern_session_create,
+            intern_session_send,
+            intern_session_control,
+            intern_session_events_after,
+            inventory_containers_list,
+            inventory_containers_get,
+            inventory_containers_register,
+            inventory_containers_probe,
+            inventory_traces_list,
+            inventory_traces_get,
+            inventory_traces_ingest,
+            inventory_trace_projection_resolve,
+            inventory_usage_list,
+            inventory_counts,
+            visuals_templates_list,
+            visuals_templates_get,
+            visuals_list,
+            visuals_get,
+            visuals_revisions,
+            visuals_create,
+            visuals_update,
+            visuals_save,
+            visuals_fork,
+            visuals_archive,
+            visuals_show,
+            synth_config_get,
+            synth_config_update,
+            account_begin_sign_in,
+            account_poll_sign_in,
+            account_cancel_sign_in,
+            account_sign_out,
+            model_multi_agent_list,
+            model_multi_agent_update,
+            workspace_access_get,
+            workspace_access_update,
+            crate::storage::legacy_migration::commands::migration_scan,
+            crate::storage::legacy_migration::commands::migration_prepare,
+            crate::storage::legacy_migration::commands::migration_apply,
+            crate::storage::legacy_migration::commands::migration_cancel,
+            laguna_get_status,
+            laguna_reload,
+            laguna_models_list,
+            laguna_models_set_directory,
+            laguna_models_clear_directory,
+            workspace_choose_directory,
+            codex_session_start,
+            codex_turn_start,
+            codex_turn_send,
+            codex_turn_interrupt,
+            codex_approval_resolve,
+            codex_session_close,
+            codex_sessions_list,
+            codex_default_workspace,
+            terminal_create,
+            terminal_list,
+            terminal_snapshot,
+            terminal_write,
+            terminal_resize,
+            terminal_close
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running Synth Desktop");
+}

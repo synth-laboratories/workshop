@@ -1,0 +1,12 @@
+{
+  "bindings": [
+    {
+      "slot": "trajectory",
+      "kind": "fixture",
+      "source": "fixtures/rollout_steps.json"
+    }
+  ],
+  "props": {
+    "title": "Trajectory viewer"
+  }
+}

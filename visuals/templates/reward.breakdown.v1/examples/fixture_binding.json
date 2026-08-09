@@ -1,0 +1,9 @@
+{
+  "bindings": [
+    {
+      "slot": "reward",
+      "kind": "fixture",
+      "source": "fixtures/reward_breakdown.json"
+    }
+  ]
+}

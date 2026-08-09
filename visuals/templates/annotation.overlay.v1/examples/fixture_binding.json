@@ -1,0 +1,17 @@
+{
+  "bindings": [
+    {
+      "slot": "trace",
+      "kind": "fixture",
+      "source": "fixtures/rollout_steps.json"
+    },
+    {
+      "slot": "annotations",
+      "kind": "fixture",
+      "source": "fixtures/annotation_markers.json"
+    }
+  ],
+  "props": {
+    "title": "Trace annotation overlay"
+  }
+}

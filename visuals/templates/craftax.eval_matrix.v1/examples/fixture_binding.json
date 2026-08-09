@@ -1,0 +1,13 @@
+{
+  "bindings": [
+    {
+      "slot": "matrix",
+      "kind": "fixture",
+      "source": "fixtures/craftax_matrix_slice.json"
+    }
+  ],
+  "props": {
+    "title": "Craftax · cost vs performance",
+    "lede": "Open-ended agents — mock matrix slice for Desktop visual pane."
+  }
+}

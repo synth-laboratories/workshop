@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "live.dock_harbor.v1",
+  "title": "Dock / Harbor live",
+  "genre": "live",
+  "version": "1.0.0",
+  "description": "Dock/harbor job status plus rollout stream for containerized evals.",
+  "accent": "#FF5C00",
+  "shell": "shell.tsx",
+  "tags": ["live", "dock", "harbor", "job", "rollout"],
+  "slots": [
+    {
+      "name": "jobs",
+      "description": "Live SSE or fixture with job_status + rollout events",
+      "accepts": ["live_sse", "fixture"],
+      "required": true,
+      "schema": "synth.visual.live_eval_events.v1"
+    }
+  ]
+}

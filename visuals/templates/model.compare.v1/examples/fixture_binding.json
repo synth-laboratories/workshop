@@ -1,0 +1,9 @@
+{
+  "bindings": [
+    {
+      "slot": "comparison",
+      "kind": "fixture",
+      "source": "fixtures/model_compare.json"
+    }
+  ]
+}

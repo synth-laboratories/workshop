@@ -1,0 +1,38 @@
+# Synth Desktop runtime configuration.
+# Copy to ~/.synth-desktop/config.toml. Secrets default to the adjacent .env
+# file (created mode 0600 when saved from Desktop Settings).
+
+[intern]
+profile = "prod" # prod | staging | local
+env_file = "~/.synth-desktop/.env"
+api_key_env = "SYNTH_API_KEY"
+worker_key_env = "SMR_WORKER_API_KEY" # internal Codex activity only
+
+[intern.endpoints]
+prod = "https://api.usesynth.ai"
+staging = "https://api-dev.usesynth.ai"
+local = "http://127.0.0.1:8000"
+
+# The first folder is the default cwd for new Codex conversations. All listed
+# folders are available to Codex sessions using workspace-write.
+# Configure these from Settings → Runtime → Agent workspace access.
+[workspace]
+allowed_roots = ["/Users/you/Documents/GitHub"]
+
+# Optional overrides for the provider-independent model presets shown in
+# Desktop Settings. Omit an entry to use its built-in preset.
+# [models.multi_agent]
+# "gpt-5.6-sol" = "v2"
+# "gpt-5.6-terra" = "v2"
+# "gpt-5.6-luna" = "v1"
+# "laguna-xs-2.1" = "none" # may be forced to "v1" or "v2"
+# "laguna-s-2.1" = "none"
+
+# ~/.synth-desktop/.env
+# SYNTH_API_KEY=...
+
+# Optional local inference / remote model settings:
+# [laguna]
+# base_url = "http://127.0.0.1:7333"
+# [openrouter]
+# api_key_env = "OPENROUTER_API_KEY"

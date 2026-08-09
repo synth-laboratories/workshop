@@ -1,0 +1,30 @@
+{
+  "events": [
+    {
+      "schema_version": "smr.intern-runtime-event.v1",
+      "event_id": "evt_1",
+      "runtime_kind": "sync",
+      "runtime_id": "sync_fixture",
+      "sequence": 1,
+      "previous_state_generation": 0,
+      "state_generation": 1,
+      "event_kind": "operator_message_applied",
+      "command_id": "cmd_1",
+      "payload": {"body": "Inspect the failing test."},
+      "created_at": "2026-08-08T12:00:00Z"
+    },
+    {
+      "schema_version": "smr.intern-runtime-event.v1",
+      "event_id": "evt_2",
+      "runtime_kind": "sync",
+      "runtime_id": "sync_fixture",
+      "sequence": 2,
+      "previous_state_generation": 1,
+      "state_generation": 2,
+      "event_kind": "agent_message",
+      "command_id": "cmd_1",
+      "payload": {"body": "The failure is isolated to the cursor replay path."},
+      "created_at": "2026-08-08T12:00:03Z"
+    }
+  ]
+}

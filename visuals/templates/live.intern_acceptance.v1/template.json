@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "live.intern_acceptance.v1",
+  "title": "Intern acceptance stream",
+  "genre": "live",
+  "version": "1.0.0",
+  "description": "Intern sync/async acceptance cell stream for research factory gates.",
+  "accent": "#FF5C00",
+  "shell": "shell.tsx",
+  "tags": ["live", "intern", "acceptance", "sync", "async"],
+  "slots": [
+    {
+      "name": "acceptance",
+      "description": "Live SSE or fixture with acceptance / cell decisions",
+      "accepts": ["live_sse", "fixture"],
+      "required": true,
+      "schema": "synth.visual.live_eval_events.v1"
+    }
+  ]
+}

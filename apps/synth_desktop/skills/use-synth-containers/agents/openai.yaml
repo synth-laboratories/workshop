@@ -1,0 +1,4 @@
+interface:
+  display_name: "Use Synth Containers"
+  short_description: "Run real policies against registered containers"
+  default_prompt: "Use $use-synth-containers to inspect the registered engine, locate its authoritative LLM policy harness, run a bounded real rollout, and visualize only the emitted evidence."

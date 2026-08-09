@@ -1,0 +1,459 @@
+import { expect, test } from "./browser.fixture";
+
+/**
+ * Design-debt and intended-architecture flags.
+ *
+ * - Plain `test(...)`: must pass — locks product intent.
+ * - `test.fail(...)`: known violations. Assert the *intended* end state so the
+ *   case keeps failing until the stub is replaced. Flip `test.fail` → `test`
+ *   when fixed.
+ *
+ * Static greps for stub strings live in `tests/design_debt.test.mjs`.
+ */
+
+test.describe("design locks (must pass)", () => {
+	test("composer model menu does not advertise deferred LoRA adapters", async ({ page }) => {
+		await page.getByTestId("composer-model").click();
+		const menu = page.getByTestId("composer-model-menu");
+		await expect(menu).toBeVisible();
+		await expect(menu.getByText("Laguna LoRAs")).toHaveCount(0);
+		await expect(menu.getByText("Remote LoRAs")).toHaveCount(0);
+		await expect(menu.getByText("Base (no adapter)")).toHaveCount(0);
+		await expect(menu.getByText("Craftax triage")).toHaveCount(0);
+		await expect(page.getByTestId("open-finetunes-settings")).toHaveCount(0);
+	});
+
+	test("Settings has no Finetunes or adapter-placeholder UI", async ({ page }) => {
+		await page.getByRole("button", { name: "Settings" }).click();
+		await expect(page.getByTestId("settings-page")).toBeVisible();
+		await expect(page.getByRole("button", { name: "Finetunes" })).toHaveCount(0);
+		await expect(page.getByTestId("settings-finetunes")).toHaveCount(0);
+		await expect(page.getByTestId("settings-models")).toBeVisible();
+		await expect(page.getByTestId("settings-models")).not.toContainText("Adapters");
+	});
+
+	test("Runtime settings persist additional Codex workspace roots", async ({ page }) => {
+		await page.addInitScript(() => {
+			const allowedRoots = ["/Users/joshuapurtell/Documents/GitHub"];
+			(window as typeof window & { __savedWorkspaceRoots?: string[] }).__savedWorkspaceRoots = [...allowedRoots];
+			window.synthConfig = {
+				get: async () => ({
+					configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod",
+					backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY",
+					apiKeyConfigured: false, workerKeyConfigured: false, openrouterApiKeyConfigured: false
+				}),
+				update: async () => { throw new Error("unused"); },
+				listModelMultiAgent: async () => [],
+				updateModelMultiAgent: async () => [],
+				getWorkspaceAccess: async () => ({ allowedRoots: [...allowedRoots] }),
+				updateWorkspaceAccess: async (request) => {
+					(window as typeof window & { __savedWorkspaceRoots?: string[] }).__savedWorkspaceRoots = [...request.allowedRoots];
+					return { allowedRoots: [...request.allowedRoots] };
+				}
+			};
+		});
+		await page.reload();
+		await page.getByTestId("runtime-status").waitFor();
+		await page.getByRole("button", { name: "Settings" }).click();
+		await page.getByRole("button", { name: "Runtime", exact: true }).click();
+		await expect(page.getByTestId("workspace-access-settings")).toContainText("/Users/joshuapurtell/Documents/GitHub");
+		await page.getByRole("button", { name: "Remove /Users/joshuapurtell/Documents/GitHub" }).click();
+		await page.getByTestId("save-workspace-roots").click();
+		await expect.poll(() => page.evaluate(() => (window as typeof window & { __savedWorkspaceRoots?: string[] }).__savedWorkspaceRoots)).toEqual([]);
+	});
+
+	test("Inventory exposes Attach container defaulting to Craftax Rust :8098", async ({ page }) => {
+		await page.getByTestId("open-inventory").click();
+		await expect(page.getByTestId("inventory-page")).toBeVisible();
+		await page.getByTestId("attach-container").click();
+		const form = page.locator(".inventory-attach-form");
+		await expect(form).toBeVisible();
+		await expect(form.locator('input[inputmode="url"]')).toHaveValue("http://127.0.0.1:8098");
+		await expect(form.locator("input").first()).toHaveValue("Craftax Rust");
+	});
+
+	test("Inventory Traces exposes Import Trace V5 control", async ({ page }) => {
+		await page.getByTestId("open-inventory").click();
+		await page.getByTestId("inventory-tab-traces").click();
+		await expect(page.getByTestId("import-trace-v5")).toBeVisible();
+		await expect(page.getByTestId("filter-traces")).toBeVisible();
+	});
+
+	test("titlebar Account opens Account settings, not a dead control", async ({ page }) => {
+		await page.getByTestId("open-account-settings").click();
+		await expect(page.getByTestId("settings-page")).toBeVisible();
+		await expect(page.getByTestId("backend-settings")).toBeVisible();
+		await expect(page.getByText("Account — stub", { exact: true })).toHaveCount(0);
+	});
+
+	test("composer permission control selects and persists an approval policy", async ({ page }) => {
+		await page.addInitScript(() => {
+			window.synthLaguna = {
+				getStatus: async () => ({
+					phase: "ready",
+					modelId: "laguna-xs",
+					modelPath: "/tmp/model",
+					detail: "ready",
+					resident: true,
+					idleFreeAt: null,
+					memoryBytes: 1,
+					discovered: []
+				}),
+				onStatus: () => () => undefined
+			};
+		});
+		await page.reload();
+		await page.getByTestId("runtime-status").waitFor();
+		const permission = page.getByTestId("approval-mode-select");
+		await expect(permission).toBeEnabled();
+		await permission.click();
+		const menu = page.getByTestId("approval-mode-menu");
+		await expect(menu).toBeVisible();
+		await menu.getByRole("option", { name: /Plan/ }).click();
+		await expect(permission).toContainText("Plan");
+		await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.approvalMode"))).toBe("plan");
+	});
+});
+
+test.describe("design debt (expected fail until fixed)", () => {
+	test.fail("titlebar Account menu opens an account menu instead of a stub toast", async ({ page }) => {
+		await page.getByRole("button", { name: "Account menu" }).click();
+		await expect(page.getByTestId("account-menu")).toBeVisible();
+		await expect(page.getByText("Account menu — stub", { exact: true })).toHaveCount(0);
+	});
+
+	test.fail("titlebar Downloads opens a downloads surface", async ({ page }) => {
+		await page.getByRole("button", { name: "Downloads" }).click();
+		await expect(page.getByTestId("downloads-page")).toBeVisible();
+	});
+
+	test.fail("titlebar Expand toggles a real chrome state", async ({ page }) => {
+		const before = await page.evaluate(() => document.body.dataset.chromeExpanded ?? "0");
+		await page.getByRole("button", { name: "Expand" }).click();
+		await expect
+			.poll(async () => page.evaluate(() => document.body.dataset.chromeExpanded ?? "0"))
+			.not.toBe(before);
+	});
+
+	test.fail("Landing Set up agent starts a setup flow", async ({ page }) => {
+		await page.getByTestId("quick-setup-agent").click();
+		await expect(
+			page.getByTestId("agent-setup").or(page.getByTestId("settings-page"))
+		).toBeVisible();
+	});
+
+	test("Settings Reload Laguna invokes the bridge and reports completion", async ({ page }) => {
+		await page.addInitScript(() => {
+			(window as typeof window & { __lagunaReloads?: number }).__lagunaReloads = 0;
+			const previous = window.synthLaguna;
+			const ready = {
+				phase: "ready" as const, baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm",
+				loadedModel: "laguna-xs", detail: "Laguna XS reloaded and ready.", memoryBytes: 1,
+				updatedAt: Date.now()
+			};
+			window.synthLaguna = {
+				...(previous as object),
+				getStatus: previous?.getStatus ?? (async () => ready),
+				onStatus: previous?.onStatus ?? (() => () => undefined),
+				reload: async () => {
+					(window as typeof window & { __lagunaReloads: number }).__lagunaReloads += 1;
+					return ready;
+				}
+			} as typeof window.synthLaguna;
+		});
+		await page.reload();
+		await page.getByTestId("runtime-status").waitFor();
+		await page.getByRole("button", { name: "Settings" }).click();
+		await page.getByRole("button", { name: "Reload" }).click();
+		await expect
+			.poll(async () => page.evaluate(() => (window as typeof window & { __lagunaReloads?: number }).__lagunaReloads ?? 0))
+			.toBeGreaterThan(0);
+		await expect(page.getByTestId("laguna-reload-status")).toHaveAttribute("data-state", "ready");
+		await expect(page.getByTestId("laguna-reload-status")).toContainText("reloaded and ready");
+	});
+
+	test("Settings Reload Laguna surfaces a bridge failure", async ({ page }) => {
+		await page.addInitScript(() => {
+			window.synthLaguna = {
+				getStatus: async () => ({
+					phase: "error", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm",
+					loadedModel: null, detail: "Sidecar is unavailable.", memoryBytes: null, updatedAt: Date.now()
+				}),
+				reload: async () => { throw new Error("Sidecar is unavailable."); },
+				onStatus: () => () => undefined,
+				listModels: async () => [], chooseModelDirectory: async () => null,
+				setModelDirectory: async () => { throw new Error("unused"); }, clearModelDirectory: async () => undefined
+			};
+		});
+		await page.reload();
+		await page.getByRole("button", { name: "Settings" }).click();
+		await page.getByRole("button", { name: "Reload" }).click();
+		const status = page.getByTestId("laguna-reload-status");
+		await expect(status).toHaveAttribute("data-state", "error");
+		await expect(status).toHaveAttribute("role", "alert");
+		await expect(status).toContainText("Sidecar is unavailable.");
+	});
+
+	test.fail("async leave-safe banner is projection-driven, not `!isSync`", async ({ page }) => {
+		const source = await page.evaluate(async () => {
+			const response = await fetch("/src/components/CloudDesk.tsx");
+			return response.ok ? response.text() : "";
+		});
+		expect(source.length).toBeGreaterThan(100);
+		expect(source).not.toMatch(/const leaveSafe = !isSync/);
+	});
+
+	test.fail("a needs-input Async Intern opens a real intervention control", async ({ page }) => {
+		const asyncSession = {
+			id: "async-needs-input",
+			title: "Async Intern",
+			target: { kind: "intern", mode: "async" },
+			remoteId: "smr.intern-async-runtime.v1/needs-input",
+			status: "waiting_for_input",
+			latestCursor: 0,
+			createdAt: "2026-08-09T12:00:00.000Z",
+			updatedAt: "2026-08-09T12:00:00.000Z",
+			metadata: { runtime: "rust-intern" }
+		};
+		await page.addInitScript((session) => {
+			window.synthRuntime = {
+				async request(path: string) {
+					if (path === "/v1/health") return {
+						runtimeId: "renderer-test", local: { mode: "unavailable", modelPath: null },
+						intern: { mode: "remote" }, openrouter: { mode: "unconfigured" },
+						inventory: { containers: 0, traces: 0, visuals: 0 }
+					};
+					if (path === "/v1/sessions") return { sessions: [session] };
+					if (path === "/v1/projects") return { projects: [] };
+					if (path.startsWith(`/v1/sessions/${session.id}/events`)) return { events: [], nextSequence: 0, hasMore: false };
+					throw new Error(`Unexpected renderer test request: ${path}`);
+				},
+				async subscribe() { return { close() {} }; }
+			};
+		}, asyncSession);
+		await page.reload();
+		await page.getByTestId("async-intern-pin").click();
+		await page.getByRole("button", { name: "Respond" }).click();
+		await expect(page.getByTestId("intern-intervention-input")).toBeVisible();
+		await expect(page.getByText("Provide input — stub", { exact: true })).toHaveCount(0);
+	});
+
+	test.fail("agent-authored analysis visuals render the persisted type-block payload from CUA", async ({ page }) => {
+		await page.addInitScript(() => {
+			const visual = {
+				schemaVersion: "synth.desktop-visual.v1",
+				id: "laguna-prompt-trim-preinstall",
+				currentRevision: 1,
+				title: "Laguna Prompt Trim Preinstall",
+				templateId: "analysis.visual.v1",
+				status: "draft",
+				rendererKind: "template",
+				bindings: {
+					spec: {
+						title: "Laguna Prompt Trim Preinstall",
+						blocks: [
+							{ type: "metrics", items: [
+								{ label: "Visual schemas before", value: "13" },
+								{ label: "Advertised tools after", value: "1" }
+							] },
+							{ type: "note", text: "Compact visual operations load only when needed." }
+						]
+					}
+				},
+				sessionId: null,
+				messageId: null,
+				runId: null,
+				traceId: null,
+				parentVisualId: null,
+				sourceAgentId: "laguna",
+				sourceModel: "laguna-xs-2.1",
+				contentDigest: null,
+				previewDigest: null,
+				metadata: {},
+				createdAt: "2026-08-09T13:24:48.000Z",
+				updatedAt: "2026-08-09T13:24:48.000Z"
+			};
+			window.synthVisuals = {
+				listTemplates: async () => [{ id: "analysis.visual.v1", title: "Agent-authored analysis", genre: "analysis" }],
+				getTemplate: async () => ({ id: "analysis.visual.v1", title: "Agent-authored analysis" }),
+				list: async () => [visual], get: async () => visual, revisions: async () => [],
+				create: async () => visual, update: async () => visual, save: async () => visual,
+				fork: async () => visual, archive: async () => visual, show: async () => visual,
+				onEvent: () => () => undefined, onShow: () => () => undefined
+			} as typeof window.synthVisuals;
+		});
+		await page.reload();
+		await page.getByTestId("open-visuals").click();
+		const preview = page.getByTestId("visuals-preview");
+		await expect(preview.getByTestId("visual-analysis-spec")).toBeVisible();
+		await expect(preview.getByTestId("visual-invalid")).toHaveCount(0);
+	});
+
+	test("Attaching a container in the browser harness registers via inventory, not a dead POST", async ({ page }) => {
+		await page.addInitScript(() => {
+			const timestamp = "2026-08-09T00:00:00Z";
+			const containers: Array<Record<string, unknown>> = [];
+			window.synthInventory = {
+				async listContainers() { return containers as never; },
+				async getContainer(id: string) {
+					const hit = containers.find((row) => row.id === id);
+					if (!hit) throw new Error("missing");
+					return hit as never;
+				},
+				async registerContainer(request: { name?: string; baseUrl: string }) {
+					const row = {
+						id: "attached-craftax",
+						name: request.name ?? "Craftax Rust",
+						location: "local",
+						status: "ready",
+						baseUrl: request.baseUrl,
+						taskFamily: "craftax-singleplayer",
+						health: { ok: true },
+						metadata: { info: { lane: "rust", env_family: "craftax-singleplayer" }, hydratedAt: timestamp },
+						createdAt: timestamp,
+						updatedAt: timestamp
+					};
+					containers.splice(0, containers.length, row);
+					return row as never;
+				},
+				async probeContainer(id: string) { return this.getContainer(id); },
+				async listTraces() { return []; },
+				async getTrace() { throw new Error("none"); },
+				async chooseTraceInput() { return null; },
+				async ingestTraceBundle() { throw new Error("unused"); },
+				async resolveTraceProjection() { throw new Error("unused"); },
+				async listUsage() { return []; },
+				async counts() { return { containers: containers.length, traces: 0, usage: 0 }; }
+			};
+			window.synthVisuals ??= { async list() { return []; } } as typeof window.synthVisuals;
+		});
+		await page.reload();
+		await page.getByTestId("open-inventory").click();
+		await page.getByTestId("attach-container").click();
+		await page.locator(".inventory-attach-form button[type='submit']").click();
+		await expect(page.getByTestId("inventory-container-attached-craftax")).toBeVisible();
+		await page.getByRole("button", { name: "Inspect Craftax Rust" }).click();
+		await expect(page.getByTestId("container-pane")).toBeVisible();
+		await expect(page.getByTestId("container-pane")).toContainText("craftax-singleplayer");
+		const pane = page.getByTestId("container-pane");
+		const before = await pane.boundingBox();
+		const handle = page.getByRole("separator", { name: "Resize container inspector" });
+		const handleBox = await handle.boundingBox();
+		if (!before || !handleBox) throw new Error("container split geometry unavailable");
+		await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + 80);
+		await page.mouse.down();
+		await page.mouse.move(handleBox.x - 120, handleBox.y + 80, { steps: 4 });
+		await page.mouse.up();
+		const after = await pane.boundingBox();
+		expect(after?.width ?? 0).toBeGreaterThan(before.width + 80);
+	});
+
+	test("Opening a Trace V5 row shows a first-class rollout inspector visual idempotently", async ({ page }) => {
+		await page.addInitScript(() => {
+			const timestamp = "2026-08-09T00:00:00Z";
+			const digest = "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+			let created: Record<string, unknown> | null = null;
+			(window as typeof window & { __traceVisualCreates?: number }).__traceVisualCreates = 0;
+			window.synthInventory = {
+				async listContainers() { return []; },
+				async getContainer() { throw new Error("none"); },
+				async registerContainer() { throw new Error("none"); },
+				async probeContainer() { throw new Error("none"); },
+				async listTraces() {
+					return [{
+						id: "debt-trace",
+						digest,
+						title: "Design-debt Trace V5",
+						source: "local",
+						reward: 1.5,
+						metrics: [],
+						metadata: {},
+						createdAt: timestamp
+					}];
+				},
+				async getTrace() { return (await this.listTraces())[0]; },
+				async chooseTraceInput() { return null; },
+				async ingestTraceBundle() { throw new Error("unused"); },
+				async resolveTraceProjection(traceDigest: string) {
+					return {
+						traceDigest,
+						projectionKind: "rollout-inspector",
+						projectionSchema: "synth.trace-projection.rollout-inspector.v1",
+						payloadDigest: "sha256:projectionabcdef",
+						relativePath: "projections/rollout-inspector/example.json",
+						payload: {
+							schema_version: "synth.trace-projection.rollout-inspector.v1",
+							trace_id: "debt-trace",
+							trace_digest: traceDigest,
+							visual: {
+								lanes: [{ lane_id: "lane-1", title: "agent" }],
+								items: [
+									{ item_id: "command-start", kind: "codex.command_started", title: "Run command", sequence: 1, lane_id: "lane-1", detail: { command: "python solve.py" } },
+									{ item_id: "command-end", kind: "codex.command_finished", title: "Command complete", sequence: 2, lane_id: "lane-1", detail: { exit_code: 0 } },
+									{ item_id: "verifier", kind: "evidence.verifier_result", title: "Verifier passed", sequence: 3, detail: { score: 1 } }
+								]
+							}
+						}
+					};
+				},
+				async listUsage() { return []; },
+				async counts() { return { containers: 0, traces: 1, usage: 0 }; }
+			};
+			window.synthVisuals = {
+				async list() { return created ? [created] : []; },
+				async listTemplates() {
+					return [{ id: "trace.rollout_inspector.v1", title: "Trace rollout inspector", genre: "trace", path: "", exampleBinding: {} }];
+				},
+				async create(input) {
+					(window as typeof window & { __traceVisualCreates: number }).__traceVisualCreates += 1;
+					created = {
+						id: input.id,
+						templateId: input.templateId,
+						title: input.title ?? "Trace visual",
+						traceId: input.traceId,
+						bindings: input.bindings ?? {},
+						status: "open",
+						createdAt: timestamp,
+						updatedAt: timestamp,
+						metadata: input.metadata ?? {}
+					};
+					return created as never;
+				},
+				async get() {
+					if (!created) throw new Error("missing");
+					return created as never;
+				},
+				async update(_visualId, input) {
+					created = { ...created, ...input, updatedAt: timestamp };
+					return created as never;
+				},
+				async show() { return created as never; },
+				async save() { return created as never; },
+				async fork() { return created as never; },
+				async archive() { return created as never; },
+				async revisions() { return []; },
+				onShow() { return () => undefined; }
+			} as typeof window.synthVisuals;
+		});
+		await page.reload();
+		await page.getByTestId("open-inventory").click();
+		await page.getByTestId("inventory-tab-traces").click();
+		await page.getByTestId("open-trace-debt-trace").click();
+		await expect(page.getByTestId("visual-trace-rollout-inspector")).toBeVisible();
+		await expect(page.getByTestId("inventory-traces")).toBeVisible();
+		const inventoryBox = await page.getByTestId("inventory-page").boundingBox();
+		const viewerBox = await page.getByTestId("visual-trace-rollout-inspector").boundingBox();
+		expect(inventoryBox?.width ?? 0).toBeGreaterThan(350);
+		expect(viewerBox?.width ?? 0).toBeGreaterThan(350);
+		await expect(page.getByTestId("visual-trace-rollout-inspector")).toContainText("Tool calls2");
+		await expect(page.getByTestId("visual-trace-rollout-inspector")).toContainText("Evidence1");
+		await page.getByRole("button", { name: "Play playback" }).click();
+		await expect(page.getByRole("button", { name: "Pause playback" })).toBeVisible();
+
+		await page.getByTestId("open-trace-debt-trace").click();
+		await expect(page.getByTestId("visual-trace-rollout-inspector")).toBeVisible();
+		await expect.poll(async () => page.evaluate(() =>
+			(window as typeof window & { __traceVisualCreates?: number }).__traceVisualCreates ?? 0
+		)).toBe(1);
+	});
+});

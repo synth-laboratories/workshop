@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Synth Desktop",
+  "version": "0.1.0",
+  "identifier": "com.synth.desktop",
+  "build": {
+    "beforeDevCommand": "npm run frontend:dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run frontend:build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; script-src 'self'"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Synth Desktop",
+        "width": 1280,
+        "height": 840,
+        "minWidth": 960,
+        "minHeight": 640,
+        "visible": false,
+        "backgroundColor": "#f3f5f8",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 16, "y": 13 }
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["../resources/icon.png", "../resources/icon.icns"],
+    "resources": {
+      "../../../services/laguna-daemon/laguna_daemon": "services/laguna-daemon/laguna_daemon",
+      "../../../visuals": "visuals"
+    }
+  }
+}
