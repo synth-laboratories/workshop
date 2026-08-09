@@ -13,7 +13,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 from openresponses_types import ResponseResource
 
-from laguna_daemon.app import build_app
+from laguna_daemon.app import DisconnectAwareStreamingResponse, build_app
 from laguna_daemon.config import LagunaConfig
 from laguna_daemon.responses_api.backends.mlx import _rehydrate_tool_calls, _split_reasoning
 from laguna_daemon.responses_api.backends.fake import FakeBackend
@@ -112,6 +112,71 @@ class NativeResponsesHttpTests(unittest.TestCase):
         self.assertEqual(event_types[-1], "response.completed")
         streamed = events[-1]["response"]
         self.assertEqual(normalize_generated(streamed), normalize_generated(nonstream))
+
+    def test_stream_disconnect_cancels_the_backend_generation(self) -> None:
+        async def scenario() -> None:
+            backend = FakeBackend()
+            service = ResponsesService(config(Path(self.temp.name) / "disconnect"), backend)
+            await service.start()
+            disconnected = False
+
+            async def is_disconnected() -> bool:
+                return disconnected
+
+            stream = service.stream(
+                {
+                    "input": "keep generating until the client leaves",
+                    "stream": True,
+                    "store": False,
+                    "x_synth": {"fake_delay_ms": 100},
+                },
+                disconnected=is_disconnected,
+            )
+            try:
+                first = await anext(stream)
+                self.assertIn(b"response.created", first)
+                disconnected = True
+                self.assertEqual([chunk async for chunk in stream], [])
+                self.assertEqual(service.coordinator.active, {})
+                self.assertTrue(backend._cancelled)
+            finally:
+                await stream.aclose()
+                await service.close()
+
+        asyncio.run(scenario())
+
+    def test_asgi_disconnect_cancels_stream_during_prefill_gap(self) -> None:
+        async def scenario() -> None:
+            started = asyncio.Event()
+            cancelled = asyncio.Event()
+
+            async def body():
+                try:
+                    started.set()
+                    await asyncio.sleep(60)
+                    yield b"too late"
+                finally:
+                    cancelled.set()
+
+            async def receive() -> dict[str, str]:
+                await started.wait()
+                return {"type": "http.disconnect"}
+
+            async def send(_message: dict[str, Any]) -> None:
+                return None
+
+            response = DisconnectAwareStreamingResponse(body())
+            await response(
+                {
+                    "type": "http",
+                    "asgi": {"version": "3.0", "spec_version": "2.4"},
+                },
+                receive,
+                send,
+            )
+            self.assertTrue(cancelled.is_set())
+
+        asyncio.run(scenario())
 
     def test_custom_tool_identity_and_continuation(self) -> None:
         tool = {

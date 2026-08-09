@@ -7,7 +7,7 @@ import json
 import time
 from collections import deque
 from copy import deepcopy
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from ..config import LagunaConfig
 from .backends import FakeBackend, NativeMlxBackend, RemoteResponsesBackend
@@ -106,7 +106,12 @@ class ResponsesService:
         self.capture_response(response, transport="http")
         return response
 
-    async def stream(self, body: Any) -> AsyncIterator[bytes]:
+    async def stream(
+        self,
+        body: Any,
+        *,
+        disconnected: Callable[[], Awaitable[bool]] | None = None,
+    ) -> AsyncIterator[bytes]:
         request = self.normalize(body)
         request = self._prepare_compacted_request(request)
         request["stream"] = True
@@ -129,9 +134,17 @@ class ResponsesService:
         task = asyncio.create_task(run(), name="responses-sse")
         try:
             while True:
+                if disconnected is not None and await disconnected():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                    break
                 try:
-                    entry = await asyncio.wait_for(queue.get(), timeout=5.0)
+                    entry = await asyncio.wait_for(
+                        queue.get(), timeout=0.25 if disconnected is not None else 5.0
+                    )
                 except TimeoutError:
+                    if disconnected is not None:
+                        continue
                     # Large local prompts can spend tens of seconds in MLX
                     # prefill before the first token. SSE comments keep SDK
                     # and Codex idle timers alive without inventing semantic

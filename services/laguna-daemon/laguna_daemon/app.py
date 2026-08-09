@@ -5,8 +5,10 @@ import json
 import time
 import uuid
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import Any, AsyncIterator, Callable
 
+import anyio
 import httpx
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +29,26 @@ from .responses import (
     translate_chat_sse_to_responses,
     wrap_chat_as_response,
 )
+
+
+class DisconnectAwareStreamingResponse(StreamingResponse):
+    """Cancel the body iterator as soon as ASGI reports a lost HTTP client.
+
+    Starlette's ASGI 2.4 path waits for the next socket write to raise. Native
+    MLX can spend tens of seconds in prefill without yielding a body chunk, so
+    an abandoned generation would keep the single GPU slot during that gap.
+    """
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        async with anyio.create_task_group() as task_group:
+            async def run_and_cancel(call: Callable[[], Any]) -> None:
+                await call()
+                task_group.cancel_scope.cancel()
+
+            task_group.start_soon(run_and_cancel, partial(self.stream_response, send))
+            await run_and_cancel(partial(self.listen_for_disconnect, receive))
+        if self.background is not None:
+            await self.background()
 
 
 def _sse(payload: dict[str, Any]) -> bytes:
@@ -395,8 +417,10 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
                 responses_service.capture(body, transport="http")
                 normalized = responses_service.normalize(body)
                 if normalized["stream"]:
-                    return StreamingResponse(
-                        responses_service.stream(normalized),
+                    return DisconnectAwareStreamingResponse(
+                        responses_service.stream(
+                            normalized, disconnected=request.is_disconnected
+                        ),
                         media_type="text/event-stream",
                         headers={
                             "Cache-Control": "no-cache",

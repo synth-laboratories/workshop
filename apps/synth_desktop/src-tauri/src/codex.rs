@@ -553,27 +553,30 @@ impl CodexManager {
     pub async fn list(&self) -> Vec<CodexSessionRecord> {
         let attached = self.sessions.read().await;
         let mut changed = false;
-        let mut interrupted = Vec::new();
+        let mut detached = Vec::new();
         {
             let mut records = self.records.write().await;
             for record in records.values_mut() {
-                let reconciled = reconcile_detached_status(
-                    &mut record.status,
-                    attached.contains_key(&record.session_id),
-                );
+                let is_attached = attached.contains_key(&record.session_id);
+                let reconciled = reconcile_detached_status(&mut record.status, is_attached);
                 changed |= reconciled;
-                if reconciled {
-                    interrupted.push(record.session_id.clone());
+                if !is_attached {
+                    detached.push(record.session_id.clone());
                 }
             }
         }
         drop(attached);
         if changed {
             let _ = self.persist_records().await;
-            if let Some(core) = &self.core {
-                for session_id in interrupted {
-                    let _ = interrupt_active_core_run(core, &session_id, "desktop_restarted").await;
-                }
+        }
+        // Reconcile the durable run independently of the attachment record.
+        // During a graceful desktop shutdown the stdout task can persist the
+        // JSON record as interrupted and then lose the race with process exit
+        // before it transitions SQLite. On the next launch that record no
+        // longer changes, but its active run still needs to be interrupted.
+        if let Some(core) = &self.core {
+            for session_id in detached {
+                let _ = interrupt_active_core_run(core, &session_id, "desktop_restarted").await;
             }
         }
         let mut records: Vec<_> = self.records.read().await.values().cloned().collect();
@@ -1616,6 +1619,84 @@ mod tests {
         assert_eq!(run.outcome.unwrap()["reason"], "desktop_restarted");
         assert_eq!(
             sessions.get("orphan".into()).await.unwrap().unwrap().status,
+            "interrupted"
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_reconciles_sqlite_when_detached_record_is_already_interrupted() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        fs::create_dir_all(&codex_root).unwrap();
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let sessions = SessionService::new(core.storage().database().clone());
+        sessions
+            .create_or_update(SessionCreate {
+                id: "orphan-after-graceful-exit".into(),
+                title: "Partially reconciled local turn".into(),
+                target: json!({"kind":"codex"}),
+                project_id: None,
+                remote_id: None,
+                codex_thread_id: Some("thread-partial".into()),
+                status: SessionStatus::Ready,
+                state_generation: None,
+                metadata: json!({}),
+                source: EventSource::Codex,
+            })
+            .await
+            .unwrap();
+        RunService::new(core.storage().database().clone())
+            .start(RunCreate {
+                id: "turn-partial".into(),
+                session_id: "orphan-after-graceful-exit".into(),
+                mode: "codex_turn".into(),
+                model: Some("laguna".into()),
+                adapter: None,
+                metadata: json!({}),
+                source: EventSource::Codex,
+            })
+            .await
+            .unwrap();
+        let record = CodexSessionRecord {
+            session_id: "orphan-after-graceful-exit".into(),
+            thread_id: "thread-partial".into(),
+            workspace: temp.path().display().to_string(),
+            model: "laguna".into(),
+            provider_name: "local-laguna".into(),
+            provider_title: "Laguna fixture".into(),
+            base_url: "http://127.0.0.1:7333/v1".into(),
+            status: "interrupted".into(),
+            title: Some("Partially reconciled local turn".into()),
+            title_origin: Some("automatic".into()),
+            approval_policy: "never".into(),
+            sandbox: "workspace-write".into(),
+        };
+        fs::write(
+            codex_root.join("threads.json"),
+            serde_json::to_vec_pretty(&HashMap::from([(
+                "orphan-after-graceful-exit".to_owned(),
+                record,
+            )]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let restarted = CodexManager::with_paths(Some(core.clone()), codex_root, fixture_binary());
+        assert_eq!(restarted.list().await[0].status, "interrupted");
+        let run = RunService::new(core.storage().database().clone())
+            .get("turn-partial".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.status, "interrupted");
+        assert_eq!(run.outcome.unwrap()["reason"], "desktop_restarted");
+        assert_eq!(
+            sessions
+                .get("orphan-after-graceful-exit".into())
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
             "interrupted"
         );
     }
