@@ -54,11 +54,17 @@ class RuntimeService:
             },
             "local": {
                 "model": "laguna-xs-2.1",
-                "mode": "mlx" if self.config.laguna_base_url else "stub",
+                "mode": "codex" if self.config.laguna_base_url else "unconfigured",
+                "agentRuntime": "codex-app-server",
+                "modelTransport": "responses" if self.config.laguna_base_url else None,
                 "modelPath": self.config.laguna_model_path,
             },
             "openrouter": {
                 "mode": self.config.openrouter_mode,
+                "agentRuntime": "codex-app-server",
+                "modelTransport": (
+                    "responses" if self.config.openrouter_api_key else None
+                ),
                 "models": [
                     "moonshotai/kimi-k2.5",
                     "poolside/laguna-s-2.1",
@@ -91,14 +97,6 @@ class RuntimeService:
                 ):
                     return existing
 
-        if target["kind"] == "remote" and not self.config.openrouter_api_key:
-            session = self.store.create_session(
-                target, title=title, project_id=project_id, metadata=metadata
-            )
-            return self.store.update_session(
-                session["id"], status="configuration_required"
-            )
-
         session = self.store.create_session(
             target, title=title, project_id=project_id, metadata=metadata
         )
@@ -108,6 +106,14 @@ class RuntimeService:
             event_kind="session.created",
             payload={"target": target, "title": session["title"]},
         )
+        if target["kind"] == "remote" and not self.config.openrouter_api_key:
+            return self.store.update_session(
+                session["id"], status="configuration_required"
+            )
+        if target["kind"] == "local" and not self.config.laguna_base_url:
+            return self.store.update_session(
+                session["id"], status="configuration_required"
+            )
         if target["kind"] == "intern":
             session = self.intern_adapter.prepare_session(session)
         return session

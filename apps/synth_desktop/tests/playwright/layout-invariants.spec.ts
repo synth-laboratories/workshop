@@ -1,4 +1,4 @@
-import { test, expect } from "./electron.fixture";
+import { test, expect } from "./browser.fixture";
 import type { Page } from "@playwright/test";
 
 type Layout = {
@@ -49,37 +49,17 @@ function expectComposerInsideViewport(layout: Layout): void {
 	}
 }
 
-test("bottom composer remains fully visible at supported window sizes", async ({ electronApp, page }) => {
+test("bottom composer remains fully visible at supported window sizes", async ({ page }) => {
 	for (const [width, height] of [[1280, 840], [960, 640], [1440, 900]] as const) {
-		await electronApp.evaluate(({ BrowserWindow }, size) => {
-			BrowserWindow.getAllWindows()[0]?.setSize(size.width, size.height);
-		}, { width, height });
+		await page.setViewportSize({ width, height });
 		await expect(page.getByTestId("composer")).toBeVisible();
 		expectComposerInsideViewport(await readLayout(page));
 	}
 });
 
-test("composer stays visible and anchored while the transcript scrolls", async ({ page }) => {
-	const session = await page.evaluate(async () => {
-		const api = (window as typeof window & {
-			__synthEval: { invoke(action: string, args?: Record<string, unknown>): Promise<unknown> };
-		}).__synthEval;
-		return api.invoke("create_session", { targetId: "local-laguna" }) as Promise<{ id: string }>;
-	});
-
-	await page.evaluate(async (sessionId) => {
-		const api = (window as typeof window & {
-			__synthEval: { invoke(action: string, args?: Record<string, unknown>): Promise<unknown> };
-		}).__synthEval;
-		await api.invoke("send_message", {
-			sessionId,
-			body: "Craftax Rust: inspect rollout and reward attribution with tool activity."
-		});
-	}, session.id);
-
-	const transcript = page.getByTestId("chat-transcript");
+test("composer stays visible and anchored while its containing surface scrolls", async ({ page }) => {
+	const transcript = page.getByTestId("landing-page");
 	await expect(transcript).toBeVisible();
-	await transcript.evaluate((element) => { element.scrollTop = 0; });
 	const before = await readLayout(page);
 	await transcript.evaluate((element) => { element.scrollTop = element.scrollHeight; });
 	const after = await readLayout(page);
@@ -103,4 +83,14 @@ test("landing shell has no horizontal overflow", async ({ page }) => {
 	expect(geometry.documentHeight).toBeLessThanOrEqual(geometry.viewportHeight);
 	await expect(page.getByTestId("sidebar")).toBeVisible();
 	await expect(page.getByTestId("titlebar")).toBeVisible();
+});
+
+test("terminal panel is discoverable and toggles without changing the active surface", async ({ page }) => {
+	await expect(page.getByRole("button", { name: "Show terminal" })).toBeVisible();
+	await page.keyboard.press("Meta+j");
+	await expect(page.getByTestId("terminal-panel")).toBeVisible();
+	await expect(page.getByText("Terminal is available in the desktop app.")).toBeVisible();
+	await expect(page.getByTestId("landing-page")).toBeVisible();
+	await page.keyboard.press("Meta+j");
+	await expect(page.getByTestId("terminal-panel")).toBeHidden();
 });

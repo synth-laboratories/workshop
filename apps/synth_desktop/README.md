@@ -2,12 +2,21 @@
 
 Real local-first research engineering workbench — **not** the fixture mock.
 
-Electron is the viewer. A Python **local-runtime daemon** owns sessions, runs,
-events, containers, Trace V5, visuals, OpenRouter usage, and Intern adapters.
+Tauri is the secure desktop host. A Python **local-runtime daemon** owns
+sessions, runs, events, containers, Trace V5, visuals, and agent routing.
+
+Every session is either Synth Intern/cloud or Codex app-server. There is no
+direct model-chat path. See [`../../architecture.md`](../../architecture.md).
+
+Local and configured-provider sessions run natively through the Rust Codex
+manager. The embedded terminal is also Rust-owned (`portable-pty`) with an
+xterm view; use `⌘J` to toggle it and `⌘⇧T` to create another terminal.
 
 ## Local Laguna XS 2.1
 
-Desktop already speaks OpenAI-compatible SSE via `SYNTH_LAGUNA_BASE_URL`.
+Codex app-server speaks the Responses protocol to the Laguna daemon at
+`SYNTH_LAGUNA_BASE_URL`. The daemon translates Responses requests to the MLX
+sidecar and returns Responses SSE events.
 
 ```bash
 # one-time: venv + mlx + download NVFP4 (~21.6 GB)
@@ -36,9 +45,8 @@ npm run laguna:serve
 
 | Target | How |
 | --- | --- |
-| **Laguna XS 2.1** (local) | Stub stream by default; set `SYNTH_LAGUNA_BASE_URL` to an OpenAI-compatible MLX server. Weights detected at `~/.cache/huggingface/hub/models--poolside--Laguna-XS-2.1`. |
-| **Luna** | OpenRouter `moonshotai/kimi-k2.5` + local usage ledger |
-| **Laguna S 2.1** | OpenRouter `poolside/laguna-s-2.1` + local usage ledger |
+| **Laguna XS 2.1** (local) | Codex app-server → `/v1/responses` → Laguna daemon → MLX sidecar. |
+| **Configured model API** | Codex app-server → configured Responses-compatible provider. |
 | **Intern · Live / Background** | Demo mailbox, or `SYNTH_API_KEY` + `SYNTH_INTERN_DEMO=0` against a slot / hosted backend |
 
 ## First-class inventory
@@ -64,7 +72,8 @@ Stable `data-testid`s on sidebar, composer, visual pane, inventory, cloud desk.
 ```bash
 npm test                 # runtime + visuals + a11y surface
 npm run test:ui          # Playwright examples + Bombadil properties
-npm run test:playwright  # deterministic Electron viewport invariants
-npm run test:bombadil    # property exploration against Electron over CDP
-npm run dogfood:models   # Laguna stub + OpenRouter + inventory + visuals
+npm run test:playwright  # deterministic renderer viewport invariants
+npm run test:bombadil    # property exploration against the renderer harness
+npm run dogfood:models   # local Codex/Laguna + inventory + visuals
+cargo test --manifest-path apps/synth_desktop/src-tauri/Cargo.toml
 ```

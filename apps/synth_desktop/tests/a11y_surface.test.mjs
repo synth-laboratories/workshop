@@ -48,16 +48,34 @@ test("execution targets include Laguna local + OpenRouter Luna/Laguna + Intern",
   assert.ok(types.includes("intern"));
 });
 
-test("preload exposes synthRuntime bridge", () => {
-  const preload = readFileSync(join(appRoot, "src/preload/index.ts"), "utf8");
-  assert.ok(preload.includes("synthRuntime"));
-  assert.ok(preload.includes("subscribe"));
+test("renderer installs a Tauri runtime bridge with a browser fallback", () => {
+  const bridge = read("runtime/desktopBridge.ts");
+  assert.ok(bridge.includes('invoke<T>("runtime_request"'));
+  assert.ok(bridge.includes('listen<RuntimeEventEnvelope>("runtime:subscription"'));
+  assert.ok(bridge.includes("browserRuntimeBridge"));
+  assert.ok(bridge.includes("window.synthRuntime ??="));
 });
 
-test("main process spawns local runtime daemon", () => {
-  const main = readFileSync(join(appRoot, "src/main/index.ts"), "utf8");
-  assert.ok(main.includes("synth_local_runtime"));
-  assert.ok(main.includes("runtime:request"));
+test("renderer uses Tauri commands for desktop capabilities", () => {
+  const bridge = read("runtime/desktopBridge.ts");
+  assert.ok(bridge.includes('"project_choose_directory"'));
+  assert.ok(bridge.includes('"laguna_get_status"'));
+  assert.ok(bridge.includes('"runtime_subscribe"'));
+  assert.ok(bridge.includes('"runtime_unsubscribe"'));
+  assert.ok(bridge.includes('{ subscriptionId }'));
+  assert.ok(bridge.includes('"codex_sessions_list"'));
+});
+
+test("native Codex sessions use one sequence allocator and restore persisted sessions", () => {
+  const app = read("App.tsx");
+  const nativeCodex = read("runtime/nativeCodex.ts");
+  assert.ok(app.includes("allocateNativeSequence(event.sessionId)"));
+  assert.ok(app.includes("allocateNativeSequence(sessionId)"));
+  assert.ok(app.includes('persisted.filter((session) => session.status !== "closed").map(restoreCodexSession)'));
+  assert.ok(app.includes("await nativeCodex.start({"));
+  assert.ok(app.includes("threadId: typeof session.metadata.threadId"));
+  assert.ok(nativeCodex.includes('eventKind = "run.failed"'));
+  assert.ok(nativeCodex.includes('eventKind = "run.cancelled"'));
 });
 
 test("Intern agent messages are projected into transcript and removed from activity", () => {

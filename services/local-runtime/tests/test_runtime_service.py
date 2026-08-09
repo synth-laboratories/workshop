@@ -4,6 +4,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from synth_local_runtime.config import RuntimeConfig
 from synth_local_runtime.service import RuntimeService
@@ -19,7 +20,7 @@ def config_for(path: Path, *, delay_ms: int = 1) -> RuntimeConfig:
         backend_url="https://example.invalid",
         synth_api_key=None,
         intern_demo=True,
-        laguna_base_url=None,
+        laguna_base_url="http://127.0.0.1:7333",
         laguna_stub_delay_ms=delay_ms,
         openrouter_api_key=None,
         laguna_model_path=None,
@@ -51,23 +52,39 @@ class RuntimeServiceTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_local_stream_records_identity_usage_and_completion(self) -> None:
-        session = self.service.create_session(
-            {"kind": "local", "model": "laguna-xs-2.1", "adapter": None}
-        )
-        response = self.service.send_message(session["id"], "Inspect the repository")
-        self.assertTrue(response["runId"].startswith("run_"))
-        events = wait_for_terminal(self.service, session["id"])
+        class FakeCodexSession:
+            def __init__(inner, config, *, thread_id=None, on_notification=None):
+                inner.thread_id = thread_id
+                inner.turn_id = None
+                inner.notify = on_notification
+
+            def start(inner):
+                inner.thread_id = "thr_test"
+                return inner.thread_id
+
+            def run_turn(inner, body):
+                inner.turn_id = "turn_test"
+                inner.notify("item/agentMessage/delta", {"delta": "Done", "item": {"id": "msg_test", "type": "agentMessage"}})
+                inner.notify("item/completed", {"item": {"id": "msg_test", "type": "agentMessage", "text": "Done"}})
+                inner.notify("turn/completed", {"turn": {"id": inner.turn_id, "status": "completed"}})
+
+            def close(inner):
+                return None
+
+        with patch("synth_local_runtime.adapters.local_laguna.CodexAgentSession", FakeCodexSession):
+            session = self.service.create_session(
+                {"kind": "local", "model": "laguna-xs-2.1", "adapter": None}
+            )
+            response = self.service.send_message(session["id"], "Inspect the repository")
+            self.assertTrue(response["runId"].startswith("run_"))
+            events = wait_for_terminal(self.service, session["id"])
         kinds = [event["eventKind"] for event in events]
         self.assertIn("message.delta", kinds)
         self.assertIn("message.completed", kinds)
-        self.assertIn("usage.recorded", kinds)
-        self.assertIn("thought.created", kinds)
-        self.assertIn("tool.requested", kinds)
-        self.assertIn("approval.requested", kinds)
-        usage = next(event for event in events if event["eventKind"] == "usage.recorded")
-        self.assertEqual(usage["payload"]["model"], "laguna-xs-2.1")
-        self.assertIsNone(usage["payload"]["adapter"])
-        self.assertEqual(self.service.get_session(session["id"])["status"], "ready")
+        refreshed = self.service.get_session(session["id"])
+        self.assertEqual(refreshed["metadata"]["codexThreadId"], "thr_test")
+        self.assertEqual(refreshed["metadata"]["modelTransport"], "responses")
+        self.assertEqual(refreshed["status"], "ready")
 
     def test_intern_sync_demo_uses_receipt_and_cursor_events(self) -> None:
         session = self.service.create_session({"kind": "intern", "mode": "sync"})

@@ -20,6 +20,7 @@ import { LandingPage } from "./components/LandingPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
 import { SynthLogo } from "./components/SynthLogo";
+import { TerminalPanel } from "./components/TerminalPanel";
 import { VisualPane } from "./components/VisualPane";
 import {
 	buildLandingState,
@@ -29,6 +30,7 @@ import {
 	targetIdToExecutionTarget,
 	visualRecordToArtifact
 } from "./runtime/sessionView";
+import { codexEventToRuntime, codexStartRequest, createCodexSession, restoreCodexSession } from "./runtime/nativeCodex";
 
 type MainView =
 	| { kind: "landing" }
@@ -106,6 +108,7 @@ function IconChevron() {
 }
 
 export default function App() {
+	const nativeCodex = window.synthCodex;
 	const [health, setHealth] = useState<RuntimeHealth | null>(null);
 	const [laguna, setLaguna] = useState<{
 		phase: string;
@@ -127,8 +130,17 @@ export default function App() {
 	const [busy, setBusy] = useState(false);
 	const [demoBusy, setDemoBusy] = useState(false);
 	const [bootError, setBootError] = useState<string | null>(null);
+	const [terminalOpen, setTerminalOpen] = useState(false);
+	const [defaultWorkspace, setDefaultWorkspace] = useState<string | null>(null);
 	const eventsBySessionRef = useRef(eventsBySession);
+	const nativeSequencesRef = useRef(new Map<string, number>());
 	eventsBySessionRef.current = eventsBySession;
+	const allocateNativeSequence = useCallback((sessionId: string) => {
+		const rendered = eventsBySessionRef.current[sessionId]?.at(-1)?.sequence ?? 0;
+		const next = Math.max(nativeSequencesRef.current.get(sessionId) ?? 0, rendered) + 1;
+		nativeSequencesRef.current.set(sessionId, next);
+		return next;
+	}, []);
 
 	const showToast = useCallback((message: string) => {
 		setToast(message);
@@ -154,8 +166,35 @@ export default function App() {
 	}, []);
 
 	useEffect(() => {
+		void window.synthCodex?.defaultWorkspace().then(setDefaultWorkspace).catch(() => undefined);
+	}, []);
+
+	useEffect(() => {
+		const onKey = (event: KeyboardEvent) => {
+			if (!(event.metaKey || event.ctrlKey)) return;
+			if (event.key.toLowerCase() === "j" && !event.shiftKey) {
+				event.preventDefault(); setTerminalOpen((current) => !current);
+			}
+			if (event.key.toLowerCase() === "t" && event.shiftKey) {
+				event.preventDefault();
+				setTerminalOpen((current) => {
+					if (current) window.setTimeout(() => window.dispatchEvent(new CustomEvent("synth:new-terminal")), 0);
+					return true;
+				});
+			}
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, []);
+
+	useEffect(() => {
 		let disposed = false;
-		Promise.all([refreshHealth(), refreshSessions(), refreshProjects()])
+		const boot = nativeCodex
+			? nativeCodex.list().then((persisted) => setSessions(
+				persisted.filter((session) => session.status !== "closed").map(restoreCodexSession)
+			))
+			: Promise.all([refreshHealth(), refreshSessions(), refreshProjects()]);
+		boot
 			.then(() => {
 				if (!disposed) setBootError(null);
 			})
@@ -167,7 +206,26 @@ export default function App() {
 		return () => {
 			disposed = true;
 		};
-	}, [refreshHealth, refreshProjects, refreshSessions]);
+	}, [nativeCodex, refreshHealth, refreshProjects, refreshSessions]);
+
+	useEffect(() => {
+		if (!nativeCodex) return;
+		return nativeCodex.onEvent((event) => {
+			const sequence = allocateNativeSequence(event.sessionId);
+			const runtimeEvent = codexEventToRuntime(event, sequence);
+			setEventsBySession((current) => ({
+				...current,
+				[event.sessionId]: appendEvent(current[event.sessionId] ?? [], runtimeEvent)
+			}));
+			setSessions((current) => current.map((session) => session.id === event.sessionId
+				? { ...session, updatedAt: runtimeEvent.createdAt, latestCursor: sequence,
+					status: runtimeEvent.eventKind === "run.completed" ? "ready"
+						: runtimeEvent.eventKind === "run.failed" ? "failed"
+						: runtimeEvent.eventKind === "run.cancelled" ? "cancelled"
+						: session.status }
+				: session));
+		});
+	}, [allocateNativeSequence, nativeCodex]);
 
 	useEffect(() => {
 		const bridge = window.synthLaguna;
@@ -187,13 +245,14 @@ export default function App() {
 
 	useEffect(() => {
 		const interval = window.setInterval(() => {
+			if (nativeCodex && view.kind !== "inventory" && !sessions.some((s) => s.target.kind === "intern")) return;
 			void refreshSessions().catch(() => undefined);
 			void refreshProjects().catch(() => undefined);
 			void refreshHealth().catch(() => undefined);
 			void window.synthLaguna?.getStatus().then(setLaguna).catch(() => undefined);
 		}, 2_500);
 		return () => window.clearInterval(interval);
-	}, [refreshHealth, refreshProjects, refreshSessions]);
+	}, [nativeCodex, refreshHealth, refreshProjects, refreshSessions, sessions, view.kind]);
 
 	const activeSessionId = useMemo(() => {
 		if (view.kind === "chat") return view.chatId;
@@ -201,12 +260,17 @@ export default function App() {
 		if (view.kind === "async") return view.sessionId;
 		return null;
 	}, [view]);
+	const terminalProject = projects.find((project) => project.id === selectedProjectId) ?? null;
+	const terminalWorkspaceRoot = terminalProject?.path ?? defaultWorkspace;
+	const terminalWorkspaceId = activeSessionId ?? terminalProject?.id ?? "default";
 
 	useEffect(() => {
 		let disposed = false;
 		let subscription: { close(): void } | null = null;
 		if (!activeSessionId) return () => undefined;
 		const sessionId = activeSessionId;
+		const selected = sessions.find((session) => session.id === sessionId);
+		if (selected?.metadata.runtime === "codex-app-server") return () => undefined;
 
 		async function connect() {
 			try {
@@ -246,7 +310,7 @@ export default function App() {
 			disposed = true;
 			subscription?.close();
 		};
-	}, [activeSessionId, refreshSessions, showToast]);
+	}, [activeSessionId, refreshSessions, sessions, showToast]);
 
 	const state = useMemo(() => {
 		const base = buildLandingState({
@@ -340,6 +404,16 @@ export default function App() {
 			setBusy(true);
 			try {
 				const target = targetIdToExecutionTarget(targetId, selectedLoraId);
+				if (nativeCodex && target.kind !== "intern") {
+					const id = crypto.randomUUID();
+					const project = projects.find((candidate) => candidate.id === selectedProjectId);
+					const workspace = project?.path ?? await nativeCodex.defaultWorkspace();
+					await nativeCodex.start(codexStartRequest(id, workspace, target));
+					const session = createCodexSession(id, target, selectedProjectId, title);
+					setSessions((current) => [session, ...current]);
+					setView({ kind: "chat", chatId: session.id });
+					return session;
+				}
 				const session = await runtimeClient.createSession(target, title, selectedProjectId);
 				await refreshSessions();
 				if (sessionIsLocalChat(session)) {
@@ -357,13 +431,22 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[refreshSessions, selectedLoraId, selectedProjectId, selectedTargetId, showToast]
+		[nativeCodex, projects, refreshSessions, selectedLoraId, selectedProjectId, selectedTargetId, showToast]
 	);
 
 	const onAddProject = useCallback(async () => {
 		try {
-			const path = await window.synthDesktop?.chooseProjectDirectory();
+			const path = await window.synthDesktop.chooseProjectDirectory();
 			if (!path) return;
+			if (nativeCodex) {
+				const now = new Date().toISOString();
+				const project = { id: crypto.randomUUID(), name: path.split("/").filter(Boolean).at(-1) ?? path,
+					path, vcs: null, metadata: {}, createdAt: now, updatedAt: now };
+				setProjects((current) => [...current, project]);
+				setSelectedProjectId(project.id);
+				showToast(`Project ready · ${project.name}`);
+				return;
+			}
 			const project = await runtimeClient.createProject({ path });
 			setSelectedProjectId(project.id);
 			await refreshProjects();
@@ -371,7 +454,7 @@ export default function App() {
 		} catch (reason) {
 			showToast(reason instanceof Error ? reason.message : String(reason));
 		}
-	}, [refreshProjects, showToast]);
+	}, [nativeCodex, refreshProjects, showToast]);
 
 	const ensureActiveSession = useCallback(async (): Promise<string | null> => {
 		if (activeSessionId) return activeSessionId;
@@ -384,6 +467,28 @@ export default function App() {
 		async (sessionId: string, text: string) => {
 			setBusy(true);
 			try {
+				const session = sessions.find((candidate) => candidate.id === sessionId);
+				if (nativeCodex && session?.metadata.runtime === "codex-app-server") {
+					const project = projects.find((candidate) => candidate.id === session.projectId);
+					const workspace = typeof session.metadata.workspace === "string"
+						? session.metadata.workspace
+						: project?.path;
+					if (!workspace) throw new Error("Choose a project before starting this Codex session");
+					await nativeCodex.start({
+						...codexStartRequest(sessionId, workspace, session.target),
+						threadId: typeof session.metadata.threadId === "string" ? session.metadata.threadId : undefined
+					});
+					const sequence = allocateNativeSequence(sessionId);
+					const now = new Date().toISOString();
+					setEventsBySession((current) => ({ ...current, [sessionId]: appendEvent(current[sessionId] ?? [], {
+						schemaVersion: "synth.desktop-runtime-event.v1", sessionId, sequence,
+						eventKind: "message.created", payload: { messageId: `user-${sequence}`, role: "user", content: text },
+						createdAt: now, source: "local"
+					}) }));
+					setSessions((current) => current.map((item) => item.id === sessionId ? { ...item, status: "running", updatedAt: now } : item));
+					await nativeCodex.startTurn(sessionId, text);
+					return;
+				}
 				await runtimeClient.sendMessage(sessionId, text);
 				await refreshSessions();
 			} catch (reason) {
@@ -392,7 +497,7 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[refreshSessions, showToast]
+		[allocateNativeSequence, nativeCodex, projects, refreshSessions, sessions, showToast]
 	);
 
 	const onComposerSend = useCallback(
@@ -416,6 +521,16 @@ export default function App() {
 			if (!activeSessionId) return;
 			setBusy(true);
 			try {
+				const session = sessions.find((candidate) => candidate.id === activeSessionId);
+				if (nativeCodex && session?.metadata.runtime === "codex-app-server") {
+					if (kind === "close") await nativeCodex.close(activeSessionId);
+					else if (kind === "cancel" || kind === "pause") await nativeCodex.interrupt(activeSessionId);
+					else throw new Error(`${kind} is not supported for a Codex session`);
+					setSessions((current) => current.map((item) => item.id === activeSessionId
+						? { ...item, status: kind === "close" ? "completed" : "ready", updatedAt: new Date().toISOString() }
+						: item));
+					return;
+				}
 				await runtimeClient.control(activeSessionId, kind);
 				await refreshSessions();
 			} catch (reason) {
@@ -424,7 +539,7 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[activeSessionId, refreshSessions, showToast]
+		[activeSessionId, nativeCodex, refreshSessions, sessions, showToast]
 	);
 
 	const onCloudAction = useCallback(
@@ -725,8 +840,9 @@ export default function App() {
 							<button
 								type="button"
 								className="titlebar-icon-btn"
-								aria-label="Layout"
-								onClick={() => showToast("Layout — stub")}
+								aria-label={terminalOpen ? "Hide terminal" : "Show terminal"}
+								title="Toggle terminal (⌘J)"
+								onClick={() => setTerminalOpen((current) => !current)}
 							>
 								<IconLayout />
 							</button>
@@ -836,6 +952,12 @@ export default function App() {
 							onOpenFinetunes={() => setView({ kind: "settings" })}
 						/>
 					) : null}
+					<TerminalPanel
+						open={terminalOpen}
+						workspaceId={terminalWorkspaceId}
+						workspaceRoot={terminalWorkspaceRoot}
+						onOpenChange={setTerminalOpen}
+					/>
 				</main>
 			</div>
 

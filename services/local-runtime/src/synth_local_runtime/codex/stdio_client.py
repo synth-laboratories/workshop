@@ -185,21 +185,40 @@ class CodexAppServerClient:
     def _handle_server_request(self, message: dict[str, Any]) -> None:
         method = str(message.get("method") or "")
         request_id = message.get("id")
-        # Auto-approve local coding agent requests for ASAP dogfood.
+        if self._on_notification:
+            self._on_notification(method, message.get("params"))
+        # The generated Codex home uses approval_policy=never. If a provider or
+        # tool still requests approval, keep the request visible and answer with
+        # one of the protocol-advertised decisions rather than a made-up shape.
         if method in {
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
             "commandExecution/requestApproval",
             "applyPatch/requestApproval",
             "fileChange/requestApproval",
             "permissions/request",
             "execCommandApproval",
         }:
-            self.respond(
-                request_id,
-                result={"decision": "approved", "approved": True, "accept": True},
-            )
+            params = message.get("params")
+            available = params.get("availableDecisions") if isinstance(params, dict) else None
+            decision: Any = "accept"
+            if isinstance(available, list):
+                decision = next(
+                    (value for value in ("accept", "acceptForSession") if value in available),
+                    None,
+                )
+                if decision is None:
+                    self.respond(
+                        request_id,
+                        error={"code": -32602, "message": "No supported approval decision"},
+                    )
+                    return
+            self.respond(request_id, result={"decision": decision})
             return
-        # Default accept empty result for unknown server requests
-        self.respond(request_id, result={})
+        self.respond(
+            request_id,
+            error={"code": -32601, "message": f"Unsupported server request: {method}"},
+        )
 
     def _drain_stderr(self) -> None:
         process = self._process

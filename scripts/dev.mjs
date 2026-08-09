@@ -26,7 +26,7 @@ function stop(exitCode = 0) {
 process.on("SIGINT", () => stop(130));
 process.on("SIGTERM", () => stop(143));
 
-// Real app entry — Electron spawns the local-runtime daemon itself.
+// Real app entry — the Tauri host supervises/probes the local runtime.
 const desktop = start("npm", [
   "run",
   "dev",

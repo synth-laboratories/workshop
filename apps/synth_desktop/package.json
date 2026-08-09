@@ -3,32 +3,39 @@
   "version": "0.1.0",
   "private": true,
   "description": "Synth Desktop — local-first research engineering workbench",
-  "main": "./out/main/index.js",
   "type": "module",
   "scripts": {
-    "dev": "electron-vite dev",
-		"build": "electron-vite build",
-		"preview": "electron-vite preview",
-		"typecheck": "tsc --noEmit -p tsconfig.json",
-		"test:playwright": "playwright test --config playwright.config.ts",
-		"test:bombadil": "node tests/bombadil/run.mjs"
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "frontend:dev": "vite --host 127.0.0.1",
+    "frontend:build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:playwright": "playwright test --config playwright.config.ts",
+    "test:bombadil": "node tests/bombadil/run.mjs"
   },
   "dependencies": {
     "@synth/runtime-client": "*",
     "@synth/runtime-protocol": "*",
     "@synth/visuals": "*",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "@tauri-apps/plugin-opener": "^2.5.4",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
-	"devDependencies": {
-		"@antithesishq/bombadil": "^0.6.1",
-		"@playwright/test": "^1.62.1",
+  "devDependencies": {
+    "@antithesishq/bombadil": "^0.6.1",
+    "@playwright/test": "^1.62.1",
+    "@tauri-apps/cli": "^2.11.4",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
-    "@vitejs/plugin-react": "^4.4.1",
-    "electron": "^35.1.2",
-    "electron-vite": "^3.1.0",
+    "@vitejs/plugin-react": "^4.7.0",
     "typescript": "^5.8.3",
-    "vite": "^6.3.2"
+    "vite": "^7.3.6"
   }
 }

@@ -7,7 +7,7 @@ Synth Desktop is an agent workbench, not a chat client. Every interactive sessio
 1. **Synth Intern / cloud agent**, in sync or async mode.
 2. **Codex app-server**, for local or configured-provider coding-agent sessions.
 
-The renderer, Tauri host, and local runtime MUST NOT expose a direct model-chat path. In particular, the desktop MUST NOT send conversation turns directly to `/v1/chat/completions`, a model SDK, MLX, or a configured inference provider.
+The renderer and Tauri host MUST NOT expose a direct model-chat path. In particular, the desktop MUST NOT send conversation turns directly to `/v1/chat/completions`, a model SDK, MLX, or a configured inference provider.
 
 Local Laguna XS is a model used by Codex app-server. It is not an independent chat-session implementation.
 
@@ -23,7 +23,7 @@ Desktop ───────────────► configured model API
 Required
 ────────
 
-Desktop ─► local-runtime ─┬─► Synth Intern / cloud agent
+Desktop ─► Tauri/Rust ────┬─► Synth Intern / cloud agent
                           │
                           └─► Codex app-server
                                   │
@@ -54,11 +54,6 @@ Desktop ─► local-runtime ─┬─► Synth Intern / cloud agent
 │                         TAURI / RUST HOST LAYER                              │
 │                                                                              │
 │  workspace/files/git     terminal/PTY manager       sidecar supervisor       │
-└────────────────────────────────────┬─────────────────────────────────────────┘
-                                     │
-                                     ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                    SYNTH LOCAL RUNTIME — PYTHON :8765                        │
 │                                                                              │
 │  session routing · persistence · normalized events · traces · inventory      │
 │                                                                              │
@@ -66,7 +61,7 @@ Desktop ─► local-runtime ─┬─► Synth Intern / cloud agent
 │           │                                               │                  │
 │           ▼                                               ▼                  │
 │  ┌──────────────────────┐                      ┌──────────────────────────┐  │
-│  │ Codex session adapter│                      │ Intern/cloud adapter     │  │
+│  │ Rust Codex manager   │                      │ Rust Intern/cloud client│  │
 │  └──────────┬───────────┘                      │ sync or async agents     │  │
 │             │ NDJSON JSON-RPC / stdio          └─────────────┬────────────┘  │
 └─────────────┼────────────────────────────────────────────────┼───────────────┘
@@ -129,7 +124,7 @@ User turn
 Synth Desktop
    │
    ▼
-local-runtime
+Tauri/Rust session manager
    │ thread/start or turn/start
    ▼
 Codex app-server
@@ -147,7 +142,7 @@ Responses SSE events
 Codex item/* events
    │
    ▼
-local-runtime normalized and persisted events
+Rust-normalized and persisted events
    │
    ▼
 Synth Desktop
@@ -164,12 +159,18 @@ If an upstream model service only supports chat completions, compatibility trans
 ## Component ownership
 
 ```text
-Tauri/Rust host    windows, permissions, filesystem access, PTYs, sidecars
-local-runtime      session routing, persistence, normalized events, inventory
+Tauri/Rust host    windows, permissions, PTYs, sidecars, sessions, persistence,
+                   normalized events, inventory, Codex and Intern routing
+TypeScript/React   presentation and typed desktop command/event consumption
 Codex app-server   coding-agent turns, tool use, patches, shell, approvals
 Intern/cloud       managed cloud-agent execution in sync or async mode
 Responses servers model-provider compatibility and streaming translation
-MLX sidecar        local model loading and inference
+Python MLX sidecar local model loading, inference, and Responses translation
 ```
+
+Python is not part of the desktop orchestration or session-routing plane. Its
+supported desktop role is the optional Laguna/MLX Responses sidecar. A legacy
+Python local-runtime may exist temporarily during migration, but new features
+MUST target the Rust host and it must not become a permanent dependency.
 
 User terminal sessions and Codex shell-tool executions are distinct processes. The UI may project both into a common activity surface, but it must preserve their ownership and clearly label whether a command was initiated by the user or by an agent.

@@ -89,7 +89,8 @@ def main() -> int:
                 "pid": os.getpid(),
                 "protocolVersion": service.protocol_version,
                 "internMode": config.intern_mode,
-                "lagunaMode": "mlx" if config.laguna_base_url else "stub",
+                "lagunaMode": "codex" if config.laguna_base_url else "unconfigured",
+                "modelTransport": "responses" if config.laguna_base_url else None,
             }
         ),
         flush=True,

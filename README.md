@@ -8,11 +8,12 @@ Synth Desktop / Local Agent Workbench — a local-first agent research and devel
 
 | Surface | Path | Role |
 | --- | --- | --- |
-| **Real app** | [`apps/synth_desktop`](./apps/synth_desktop) | Electron + local-runtime daemon |
+| **Real app** | [`apps/synth_desktop`](./apps/synth_desktop) | Tauri 2 + local-runtime daemon |
 | **Visuals infra** | [`visuals/`](./visuals) | 9 genre templates, registry, MCP tools, TSX save |
 | **Mock (UX pin-down)** | [`apps/mock`](./apps/mock) | Fixture-only; do not confuse with product |
 | Runtime | `services/local-runtime` | Sessions / runs / events / inventory |
-| Inference | `services/local-inference` | OpenAI-compatible Laguna boundary |
+| Agent runtime | `codex app-server` | Local/configured-provider coding-agent sessions |
+| Inference | `services/laguna-daemon` | Responses-compatible Laguna → MLX boundary |
 
 ### Local Laguna XS 2.1
 
@@ -28,8 +29,8 @@ Desktop probes `http://127.0.0.1:7333` automatically. Details: [`services/laguna
 
 ### Dogfood gates (verified)
 
-- Local Laguna XS 2.1 streaming path (stub; MLX via `SYNTH_LAGUNA_BASE_URL`)
-- OpenRouter **Luna** (`moonshotai/kimi-k2.5`) + **Laguna S 2.1** (`poolside/laguna-s-2.1`) with local usage ledger
+- Local Laguna XS 2.1 agent path through Codex app-server and the Responses-compatible MLX sidecar
+- Configured Responses-compatible model APIs through Codex app-server
 - Inventory: local + cloud containers, Trace V5 ingest, 9 visual templates, save-as-TSX
 - Live dock/eval visual simulation
 - Intern sync demo mailbox

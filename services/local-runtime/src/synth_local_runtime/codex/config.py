@@ -20,6 +20,9 @@ class CodexLaunchConfig:
     approval_policy: str = "never"
     sandbox_mode: str = "workspace-write"
     enable_visuals_mcp: bool = True
+    provider_name: str = "custom"
+    provider_title: str = "Synth Laguna XS"
+    provider_env_key: str = "SYNTH_LAGUNA_API_KEY"
 
 
 def resolve_codex_bin() -> str:
@@ -66,15 +69,15 @@ def ensure_codex_home(config: CodexLaunchConfig) -> Path:
     model = config.model
     lines = [
         f'model = "{model}"',
-        'model_provider = "custom"',
+        f'model_provider = "{config.provider_name}"',
         f'approval_policy = "{config.approval_policy}"',
         f'sandbox_mode = "{config.sandbox_mode}"',
         'service_tier = "default"',
         "",
-        "[model_providers.custom]",
-        'name = "Synth Laguna XS"',
+        f"[model_providers.{config.provider_name}]",
+        f'name = "{config.provider_title}"',
         f'base_url = "{base}"',
-        'env_key = "SYNTH_LAGUNA_API_KEY"',
+        f'env_key = "{config.provider_env_key}"',
         'wire_api = "responses"',
         'requires_openai_auth = false',
         "",

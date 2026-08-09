@@ -20,12 +20,12 @@
     }
   },
   "include": [
-    "src/**/*.ts",
-    "src/**/*.tsx"
+    "src/renderer/**/*.ts",
+    "src/renderer/**/*.tsx",
+    "vite.config.ts"
   ],
   "exclude": [
     "node_modules",
-    "out",
     "dist"
   ]
 }

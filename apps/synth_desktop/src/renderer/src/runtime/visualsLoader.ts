@@ -22,7 +22,7 @@ type VisualsRegistry = {
 
 /**
  * Loads a genre shell by template id.
- * The registry import stays in Vite's module graph so Electron can resolve
+ * The registry import stays in Vite's module graph so the desktop renderer can resolve
  * workspace-local TSX shells in dev and in the packaged renderer.
  */
 export async function loadVisualShell(

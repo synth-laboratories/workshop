@@ -63,24 +63,14 @@ class InventoryServiceTests(unittest.TestCase):
         )
         self.assertEqual(session["status"], "configuration_required")
 
-    def test_local_stream_completes(self) -> None:
+    def test_local_target_requires_responses_server(self) -> None:
+        object.__setattr__(self.config, "laguna_base_url", None)
         session = self.service.create_session(
             {"kind": "local", "model": "laguna-xs-2.1", "adapter": None}
         )
-        result = self.service.send_message(session["id"], "hello inventory")
-        self.assertIn("runId", result)
-        # Poll briefly for completion
-        import time
-
-        deadline = time.time() + 5
-        completed = False
-        while time.time() < deadline:
-            page = self.service.events(session["id"], after_sequence=0, limit=200)
-            if any(e["eventKind"] == "run.completed" for e in page["events"]):
-                completed = True
-                break
-            time.sleep(0.05)
-        self.assertTrue(completed)
+        self.assertEqual(session["status"], "configuration_required")
+        with self.assertRaisesRegex(RuntimeError, "not configured"):
+            self.service.send_message(session["id"], "hello inventory")
 
 
 if __name__ == "__main__":

@@ -1,311 +1,159 @@
+"""Codex coding-agent adapter using Laguna through the Responses protocol."""
+
 from __future__ import annotations
 
-import json
-import re
 import threading
-import time
-import urllib.error
-import urllib.request
-from typing import Any, Iterator
+from typing import Any
 
 from .base import RuntimeAdapter
-from ..models import new_id, utc_now
+from ..codex import CodexAgentSession, CodexLaunchConfig, resolve_workspace
+from ..models import new_id
+
+
+def _item(params: Any) -> dict[str, Any]:
+    if not isinstance(params, dict):
+        return {}
+    candidate = params.get("item")
+    return candidate if isinstance(candidate, dict) else params
+
+
+def _item_type(value: dict[str, Any]) -> str:
+    return str(value.get("type") or value.get("kind") or "").replace("-", "_").lower()
 
 
 class LocalLagunaAdapter(RuntimeAdapter):
-    """Laguna boundary with a deterministic stream until the MLX service lands."""
+    """Every local turn is a Codex app-server turn; there is no chat fallback."""
 
-    def __init__(self, service: "Any") -> None:
+    def __init__(self, service: Any) -> None:
         super().__init__(service)
-        self._cancel_events: dict[str, threading.Event] = {}
-        self._lock = threading.Lock()
+        self._sessions: dict[str, CodexAgentSession] = {}
+        self._active_runs: dict[str, dict[str, Any]] = {}
+        self._lock = threading.RLock()
 
     def send_message(self, session: dict[str, Any], run: dict[str, Any], body: str) -> None:
-        cancel_event = threading.Event()
-        with self._lock:
-            self._cancel_events[run["id"]] = cancel_event
         thread = threading.Thread(
             target=self._run,
-            name=f"laguna-{run['id']}",
-            args=(session, run, body, cancel_event),
+            name=f"codex-laguna-{run['id']}",
+            args=(session, run, body),
             daemon=True,
         )
         thread.start()
 
-    def control(
-        self,
-        session: dict[str, Any],
-        kind: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
+    def control(self, session: dict[str, Any], kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         if kind != "cancel":
-            raise ValueError("local Laguna currently supports only cancel")
-        run_id = session.get("activeRunId")
-        if not run_id:
-            return {"accepted": False, "reason": "no_active_run"}
+            raise ValueError("Codex sessions currently support only cancel")
         with self._lock:
-            cancel_event = self._cancel_events.get(run_id)
-        if cancel_event is None:
+            agent = self._sessions.get(session["id"])
+        if not agent or not agent.turn_id:
             return {"accepted": False, "reason": "run_not_active"}
-        cancel_event.set()
+        agent.interrupt()
         return {"accepted": True}
 
-    def _run(
-        self,
-        session: dict[str, Any],
-        run: dict[str, Any],
-        body: str,
-        cancel_event: threading.Event,
-    ) -> None:
-        started = time.monotonic()
-        message_id = new_id("msg")
+    def _config(self, session: dict[str, Any]) -> CodexLaunchConfig:
+        if not self.service.config.laguna_base_url:
+            raise RuntimeError(
+                "Laguna Responses server is not configured; set SYNTH_LAGUNA_BASE_URL"
+            )
+        workspace = resolve_workspace(
+            session_metadata=session.get("metadata"),
+            workshop_root=self.service.config.workshop_root,
+        )
+        return CodexLaunchConfig(
+            codex_home=self.service.config.data_dir / "codex" / session["id"],
+            laguna_base_url=self.service.config.laguna_base_url,
+            laguna_api_key="synth-desktop-laguna",
+            model="poolside/Laguna-XS-2.1-NVFP4-mlx",
+            workspace=workspace,
+            workshop_root=self.service.config.workshop_root,
+        )
+
+    @staticmethod
+    def _source(session: dict[str, Any]) -> str:
+        return "remote" if session["target"]["kind"] == "remote" else "local"
+
+    def _agent(self, session: dict[str, Any], run: dict[str, Any]) -> CodexAgentSession:
+        with self._lock:
+            existing = self._sessions.get(session["id"])
+            if existing:
+                self._active_runs[session["id"]] = run
+                return existing
+            metadata = session.get("metadata") or {}
+            thread_id = metadata.get("codexThreadId")
+            agent = CodexAgentSession(
+                self._config(session),
+                thread_id=thread_id if isinstance(thread_id, str) else None,
+                on_notification=lambda method, params: self._event(session["id"], method, params),
+            )
+            self._sessions[session["id"]] = agent
+            self._active_runs[session["id"]] = run
+            return agent
+
+    def _run(self, session: dict[str, Any], run: dict[str, Any], body: str) -> None:
         self.service.mark_run_started(run["id"])
         self.service.emit(
-            session_id=session["id"],
-            run_id=run["id"],
-            source="local",
+            session_id=session["id"], run_id=run["id"], source=self._source(session),
             event_kind="run.started",
-            payload={
-                "model": "laguna-xs-2.1",
-                "adapter": session["target"].get("adapter"),
-                "transport": "mlx" if self.service.config.laguna_base_url else "stub",
-            },
+            payload={"model": session["target"].get("model"), "agent": "codex-app-server", "transport": "responses"},
         )
-        self._emit_tool_activity(session, run, body, message_id)
-
-        output_parts: list[str] = []
-        completion_tokens = 0
         try:
-            for delta in self._stream_completion(
-                body, cancel_event, session["target"].get("adapter")
-            ):
-                if cancel_event.is_set():
-                    self._cancel(session, run, output_parts)
-                    return
-                # Some upstreams emit cumulative snapshots instead of token deltas.
-                joined = "".join(output_parts)
-                emit_delta = delta
-                if delta and joined and delta.startswith(joined):
-                    emit_delta = delta[len(joined) :]
-                    output_parts = [delta]
-                    if not emit_delta:
-                        continue
-                elif delta and joined and joined.startswith(delta) and delta != joined:
-                    continue
-                else:
-                    output_parts.append(delta)
-                completion_tokens += 1
-                self.service.emit(
-                    session_id=session["id"],
-                    run_id=run["id"],
-                    source="local",
-                    event_kind="message.delta",
-                    payload={
-                        "messageId": message_id,
-                        "role": "assistant",
-                        "delta": emit_delta,
-                    },
-                )
-
-            if cancel_event.is_set():
-                self._cancel(session, run, output_parts)
-                return
-
-            content = "".join(output_parts).strip()
-            elapsed_ms = round((time.monotonic() - started) * 1_000, 1)
-            prompt_tokens = max(1, len(body.split()))
-            tokens_per_second = round(
-                completion_tokens / max((elapsed_ms / 1_000), 0.001), 2
-            )
-            self.service.emit(
-                session_id=session["id"],
-                run_id=run["id"],
-                source="local",
-                event_kind="message.completed",
-                payload={
-                    "messageId": message_id,
-                    "role": "assistant",
-                    "content": content,
-                },
-            )
-            self.service.emit(
-                session_id=session["id"],
-                run_id=run["id"],
-                source="local",
-                event_kind="usage.recorded",
-                payload={
-                    "promptTokens": prompt_tokens,
-                    "completionTokens": completion_tokens,
-                    "elapsedMs": elapsed_ms,
-                    "tokensPerSecond": tokens_per_second,
-                    "model": "laguna-xs-2.1",
-                    "adapter": session["target"].get("adapter"),
-                },
-            )
+            agent = self._agent(session, run)
+            thread_id = agent.start()
+            self.service.merge_session_metadata(session["id"], {
+                "agentRuntime": "codex-app-server", "codexThreadId": thread_id,
+                "modelTransport": "responses",
+            })
+            agent.run_turn(body)
             self.service.complete_run(
-                run["id"],
-                session["id"],
-                outcome={"kind": "completed", "summary": content[:240]},
+                run["id"], session["id"],
+                outcome={"kind": "completed", "codexThreadId": agent.thread_id, "codexTurnId": agent.turn_id},
             )
-        except Exception as exc:  # boundary: surface model/process failures as events
+        except InterruptedError:
+            self.service.mark_run_terminal(
+                run["id"], session["id"], status="cancelled",
+                outcome={"kind": "cancelled"}, session_status="ready",
+            )
+            self.service.emit(
+                session_id=session["id"], run_id=run["id"], source=self._source(session),
+                event_kind="run.cancelled", payload={"codexTurnId": agent.turn_id},
+            )
+        except Exception as exc:
+            with self._lock:
+                failed = self._sessions.pop(session["id"], None)
+            if failed:
+                failed.close()
             self.service.fail_run(run["id"], session["id"], exc)
         finally:
             with self._lock:
-                self._cancel_events.pop(run["id"], None)
+                self._active_runs.pop(session["id"], None)
 
-    def _stream_completion(
-        self,
-        prompt: str,
-        cancel_event: threading.Event,
-        adapter: str | None = None,
-    ) -> Iterator[str]:
-        if self.service.config.laguna_base_url:
-            yield from self._stream_openai_compatible(prompt, cancel_event, adapter)
+    def _event(self, session_id: str, method: str, params: Any) -> None:
+        with self._lock:
+            run = self._active_runs.get(session_id)
+        if not run:
             return
-
-        response = self._stub_response(prompt, adapter)
-        delay = self.service.config.laguna_stub_delay_ms / 1_000
-        for token in re.findall(r"\S+\s*", response):
-            if cancel_event.is_set():
-                break
-            if delay:
-                time.sleep(delay)
-            yield token
-
-    def _stream_openai_compatible(
-        self,
-        prompt: str,
-        cancel_event: threading.Event,
-        adapter: str | None = None,
-    ) -> Iterator[str]:
-        url = f"{self.service.config.laguna_base_url}/v1/chat/completions"
-        body = json.dumps(
-            {
-                "model": "laguna-xs-2.1",
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are Laguna XS 2.1 running locally inside Synth Desktop. "
-                            "Be concise and concrete for research engineering work."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                "stream": True,
-                **({"adapter": adapter} if adapter else {}),
-            }
-        ).encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        }
-        # Optional bearer if a local proxy requires it
-        import os
-
-        token = os.getenv("SYNTH_LAGUNA_API_KEY")
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        request = urllib.request.Request(
-            url,
-            data=body,
-            method="POST",
-            headers=headers,
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=120) as response:
-                for raw_line in response:
-                    if cancel_event.is_set():
-                        return
-                    line = raw_line.decode("utf-8", errors="replace").strip()
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if not data or data == "[DONE]":
-                        continue
-                    frame = json.loads(data)
-                    choices = frame.get("choices") or []
-                    if not choices:
-                        continue
-                    delta = (choices[0].get("delta") or {}).get("content")
-                    if isinstance(delta, str) and delta:
-                        yield delta
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"Laguna inference service unavailable: {exc}") from exc
-
-    @staticmethod
-    def _stub_response(prompt: str, adapter: str | None = None) -> str:
-        clean = " ".join(prompt.strip().split())
-        if len(clean) > 180:
-            clean = clean[:177] + "..."
-        adapter_note = f" Active adapter: {adapter}." if adapter else ""
-        return (
-            "I’m running through the Laguna XS 2.1 local streaming boundary. "
-            f"I received: “{clean}”\n\n{adapter_note}"
-            "This first pass records model identity, ordered deltas, timing, usage, "
-            "and cancellation in the same event log used by Intern. Replace the "
-            "stub transport with the MLX OpenAI-compatible endpoint without changing "
-            "the desktop protocol."
-        )
-
-    def _emit_tool_activity(
-        self,
-        session: dict[str, Any],
-        run: dict[str, Any],
-        prompt: str,
-        message_id: str,
-    ) -> None:
-        """Emit inspectable, non-mutating workbench activity for code tasks."""
-        lower = prompt.lower()
-        if not any(token in lower for token in ("craftax", "rust", "repo", "file", "code", "eval")):
-            return
-        root = str((session.get("metadata") or {}).get("projectPath") or "workshop")
+        payload = params if isinstance(params, dict) else {"value": params}
+        item = _item(payload)
+        kind = _item_type(item)
+        event_kind = method
+        normalized = {"codexMethod": method, "raw": payload}
+        if method == "item/agentMessage/delta":
+            event_kind = "message.delta"
+            normalized.update({"messageId": item.get("id") or new_id("msg"), "role": "assistant", "delta": payload.get("delta") or item.get("delta") or ""})
+        elif method == "item/completed" and kind in {"agentmessage", "agent_message", "message"}:
+            event_kind = "message.completed"
+            normalized.update({"messageId": item.get("id") or new_id("msg"), "role": "assistant", "content": item.get("text") or item.get("content") or ""})
+        elif kind in {"reasoning", "analysis"}:
+            event_kind = "thought.created"
+            normalized.update({"summary": item.get("summary") or item.get("text") or "Codex reasoning"})
+        elif kind in {"commandexecution", "command_execution"}:
+            event_kind = "tool.completed" if method.endswith("/completed") else "tool.requested"
+            normalized.update({"name": "shell", "summary": item.get("command") or "command execution", "output": item.get("aggregatedOutput") or item.get("output")})
+        elif kind in {"filechange", "file_change"}:
+            event_kind = "file.changed"
+            normalized.update({"path": item.get("path"), "summary": item.get("status") or "Codex file change"})
+        elif "requestApproval" in method:
+            event_kind = "approval.requested"
         self.service.emit(
-            session_id=session["id"], run_id=run["id"], source="local",
-            event_kind="thought.created",
-            payload={"messageId": message_id, "summary": "Planning the smallest inspectable change", "detail": "Map the task to the repository, inspect the relevant Rust/eval files, then report evidence before changing anything."},
-        )
-        self.service.emit(
-            session_id=session["id"], run_id=run["id"], source="local",
-            event_kind="tool.requested",
-            payload={"messageId": message_id, "name": "rg", "summary": "search repository", "detail": f"rg --files {root} | rg 'craftax|trace|rollout|reward|\\.rs$'"},
-        )
-        self.service.emit(
-            session_id=session["id"], run_id=run["id"], source="local",
-            event_kind="tool.completed",
-            payload={"messageId": message_id, "name": "rg", "summary": "search repository", "output": "12 candidate Rust/eval files · 0 secrets surfaced"},
-        )
-        for path, summary in (
-            ("src/craftax/rollout.rs", "inspect rollout schema"),
-            ("src/craftax/reward.rs", "inspect reward attribution"),
-        ):
-            self.service.emit(
-                session_id=session["id"], run_id=run["id"], source="local",
-                event_kind="file.read",
-                payload={"messageId": message_id, "path": path, "summary": summary, "detail": f"Read {path}; preserving Trace V5 fields and existing harness contracts."},
-            )
-        self.service.emit(
-            session_id=session["id"], run_id=run["id"], source="local",
-            event_kind="approval.requested",
-            payload={"messageId": message_id, "summary": "review proposed change", "detail": "The next step would be a bounded Rust edit. No files were mutated in this local proof run."},
-        )
-        self.service.emit(
-            session_id=session["id"], run_id=run["id"], source="local",
-            event_kind="approval.granted",
-            payload={"messageId": message_id, "summary": "read-only plan accepted", "detail": "Synth kept this run read-only; explicit edit approval remains visible to the operator."},
-        )
-
-    def _cancel(
-        self,
-        session: dict[str, Any],
-        run: dict[str, Any],
-        output_parts: list[str],
-    ) -> None:
-        self.service.mark_run_terminal(run["id"], session["id"], status="cancelled")
-        self.service.emit(
-            session_id=session["id"],
-            run_id=run["id"],
-            source="local",
-            event_kind="run.cancelled",
-            payload={"partialContent": "".join(output_parts).strip()},
+            session_id=session_id, run_id=run["id"], source=self._source(self.service.get_session(session_id)),
+            event_kind=event_kind, payload=normalized,
         )
