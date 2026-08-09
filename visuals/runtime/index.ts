@@ -1,6 +1,7 @@
 export type {
   VisualBinding,
   VisualBindingKind,
+  VisualBindings,
   VisualInstance,
   VisualTemplate,
   VisualTemplateMeta,
@@ -20,7 +21,9 @@ export {
   asRolloutSteps,
   asLiveEvents,
   asAnnotationMarkers,
-  createJsonFixtureLoader
+  createJsonFixtureLoader,
+  isVisualBindings,
+  propsFromBindings
 } from "./bind.ts";
 export {
   saveVisualInstanceTsx,

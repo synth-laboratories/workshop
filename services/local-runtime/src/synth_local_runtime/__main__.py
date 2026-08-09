@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -12,6 +13,15 @@ from pathlib import Path
 from .api import RuntimeHTTPServer, write_connection_file
 from .config import RuntimeConfig
 from .service import RuntimeService
+
+
+def _request_shutdown(server: RuntimeHTTPServer) -> None:
+    """Request socketserver shutdown off the serving/main thread.
+
+    ``BaseServer.shutdown`` waits for ``serve_forever`` to return, so calling it
+    directly from a POSIX signal handler on that same thread deadlocks.
+    """
+    threading.Thread(target=server.shutdown, daemon=True).start()
 
 
 def _default_connection_file() -> Path:
@@ -97,7 +107,7 @@ def main() -> int:
     )
 
     def request_shutdown(_signum: int, _frame: object) -> None:
-        server.shutdown()
+        _request_shutdown(server)
 
     signal.signal(signal.SIGTERM, request_shutdown)
     signal.signal(signal.SIGINT, request_shutdown)

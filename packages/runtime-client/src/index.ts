@@ -1,5 +1,6 @@
 import type {
   ContainerDeployment,
+  CodexActivityEvent,
   EventPage,
   ExecutionTarget,
   RuntimeControlKind,
@@ -28,6 +29,7 @@ type RuntimeBridge = {
     afterSequence: number,
     onEvent: (event: RuntimeEvent) => void,
     onStatus?: (status: { state: string; detail?: string }) => void,
+    onActivity?: (event: CodexActivityEvent) => void,
   ): Promise<EventSubscription>;
 };
 
@@ -132,8 +134,9 @@ export const runtimeClient = {
     afterSequence: number,
     onEvent: (event: RuntimeEvent) => void,
     onStatus?: (status: { state: string; detail?: string }) => void,
+    onActivity?: (event: CodexActivityEvent) => void,
   ): Promise<EventSubscription> {
-    return bridge().subscribe(sessionId, afterSequence, onEvent, onStatus);
+    return bridge().subscribe(sessionId, afterSequence, onEvent, onStatus, onActivity);
   },
 
   async listContainers(): Promise<ContainerDeployment[]> {

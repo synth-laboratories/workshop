@@ -40,6 +40,31 @@ function asRollout(raw: unknown): RolloutPayload {
 }
 
 function FrameCanvas({ step }: { step: RolloutStep }) {
+  const ascii = typeof step.meta?.ascii === "string" ? step.meta.ascii : null;
+  if (ascii) {
+    return (
+      <pre
+        role="img"
+        aria-label={`Craftax symbolic frame at turn ${step.turn ?? step.index}`}
+        style={{
+          margin: 0,
+          padding: 12,
+          minHeight: 280,
+          overflow: "auto",
+          border: "1px solid var(--sv-border)",
+          borderRadius: 10,
+          background: "#18211a",
+          color: "#dbe9d5",
+          fontSize: 15,
+          lineHeight: 1.2,
+          letterSpacing: 2,
+          fontFamily: "var(--sv-mono)",
+        }}
+      >
+        {ascii}
+      </pre>
+    );
+  }
   const seed = step.index * 7;
   return (
     <div

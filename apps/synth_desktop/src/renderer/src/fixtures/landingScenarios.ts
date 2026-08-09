@@ -451,7 +451,6 @@ export const LANDING_SCENARIOS: Record<LandingScenarioId, LandingState> = {
 		projects: [],
 		model: { status: "not_installed", name: "Laguna XS 2.1" },
 		selectedTargetId: "local-laguna",
-		selectedLoraId: "base",
 		composerEnabled: false,
 		composerPlaceholder: "No model available"
 	},
@@ -469,7 +468,6 @@ export const LANDING_SCENARIOS: Record<LandingScenarioId, LandingState> = {
 			downloadPaused: false
 		},
 		selectedTargetId: "local-laguna",
-		selectedLoraId: "base",
 		composerEnabled: false,
 		composerPlaceholder: "No model available"
 	},
@@ -482,7 +480,6 @@ export const LANDING_SCENARIOS: Record<LandingScenarioId, LandingState> = {
 		projects: [],
 		model: { status: "ready", name: "Laguna XS 2.1" },
 		selectedTargetId: "local-laguna",
-		selectedLoraId: "base",
 		composerEnabled: true,
 		composerPlaceholder: "Ask Laguna anything about your project…"
 	},
@@ -541,7 +538,6 @@ export const LANDING_SCENARIOS: Record<LandingScenarioId, LandingState> = {
 		projects: [],
 		model: { status: "ready", name: "Laguna XS 2.1" },
 		selectedTargetId: "local-laguna",
-		selectedLoraId: "base",
 		composerEnabled: true,
 		composerPlaceholder: "Ask Laguna anything about your project…"
 	},
@@ -635,7 +631,6 @@ export const LANDING_SCENARIOS: Record<LandingScenarioId, LandingState> = {
 		projects: [{ id: "proj-1", name: "craftax-research" }],
 		model: { status: "ready", name: "Laguna XS 2.1" },
 		selectedTargetId: "intern-sync",
-		selectedLoraId: "base",
 		composerEnabled: true,
 		composerPlaceholder: "Ask Intern to improve this agent…"
 	}

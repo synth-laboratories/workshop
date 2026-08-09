@@ -16,7 +16,7 @@
     },
     {
       "name": "visual_create_from_template",
-      "description": "Create a VisualInstance from a template id with optional title and initial props. Does not bind data yet.",
+      "description": "Create a visual. Prefer analysis.visual.v1 for ad-hoc evidence-driven blocks; use blank.canvas.v1 for bespoke sandboxed HTML/SVG/CSS compositions. Choose the visual grammar from the data and never imply a trend without an ordered or temporal x-axis.",
       "inputSchema": {
         "type": "object",
         "properties": {

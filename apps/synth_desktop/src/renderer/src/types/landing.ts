@@ -54,85 +54,6 @@ export type ExecutionTargetOption = {
 	group: "local" | "remote" | "cloud";
 };
 
-/**
- * First-class adapter identity (base + LoRA), not an opaque merged model name.
- * Local Metal first; remote OpenRouter / cloud inference next.
- */
-export type LoraAdapter = {
-	id: string;
-	/** File-ish name, e.g. craftax-triage.lora */
-	name: string;
-	displayName: string;
-	/** Base execution target this adapter attaches to. */
-	baseTargetId: string;
-	revision: string;
-	digest: string;
-	status: "ready" | "downloading" | "training";
-	scope: "local" | "remote";
-	summary: string;
-};
-
-/** Base = no adapter. */
-export const LORA_NONE = "base";
-
-export const AVAILABLE_LORAS: LoraAdapter[] = [
-	{
-		id: "lora-craftax-triage",
-		name: "craftax-triage.lora",
-		displayName: "Craftax triage",
-		baseTargetId: "local-laguna",
-		revision: "r12",
-		digest: "sha256:a1c4…9f2",
-		status: "ready",
-		scope: "local",
-		summary: "Failure clustering + harness diffs for Craftax rollouts"
-	},
-	{
-		id: "lora-company-code",
-		name: "company-code.lora",
-		displayName: "Company code",
-		baseTargetId: "local-laguna",
-		revision: "r7",
-		digest: "sha256:b82e…11d",
-		status: "ready",
-		scope: "local",
-		summary: "Internal repo conventions, review tone, and tooling"
-	},
-	{
-		id: "lora-data-agent",
-		name: "data-agent.lora",
-		displayName: "Data agent",
-		baseTargetId: "local-laguna",
-		revision: "r4",
-		digest: "sha256:c0ff…ee1",
-		status: "ready",
-		scope: "local",
-		summary: "SQL / dataframe / eval metrics workflows"
-	},
-	{
-		id: "lora-user-custom",
-		name: "user-custom-r17.lora",
-		displayName: "User custom",
-		baseTargetId: "local-laguna",
-		revision: "r17",
-		digest: "sha256:d441…77a",
-		status: "training",
-		scope: "local",
-		summary: "Personal finetune in progress — not hot-swappable yet"
-	},
-	{
-		id: "lora-poolside-craftax",
-		name: "craftax-remote.lora",
-		displayName: "Craftax (remote)",
-		baseTargetId: "openrouter-laguna-s",
-		revision: "r3",
-		digest: "sha256:e991…02b",
-		status: "ready",
-		scope: "remote",
-		summary: "Same adapter identity on OpenRouter Laguna S 2.1 — usage tracked"
-	}
-];
-
 /** First-class visual / artifact (Claude Artifacts analogue, Synth-shaped). */
 export type ArtifactKind =
 	| "html"
@@ -160,21 +81,30 @@ export type ArtifactRef = {
 	templateId?: string;
 	/** Runtime visual instance id from `/v1/visuals`. */
 	visualId?: string;
-	bindings?: Record<string, unknown>;
+	bindings?: import("@synth/runtime-protocol").VisualBindings | Record<string, unknown>;
 };
 
 /** Inline activity line in a local Laguna transcript (Poolside-style). */
 export type LocalActivityLine = {
 	id: string;
 	label: string;
+	/** Correlates a pending approval with its durable grant/rejection event. */
+	approvalId?: string;
+	alwaysAllowSupported?: boolean;
 	/** Expanded raw detail (tool output / thought) when the line is opened. */
 	detail?: string;
+	/** Opens the first-class runtime artifact associated with this activity. */
+	artifactId?: string;
+	/** Opens the first-class container inspector associated with this MCP activity. */
+	containerId?: string;
 	/**
 	 * Optional file path for read/write lines — drives Poolside-style file-type icons
 	 * (.md, .rs, .ts, .toml, …).
 	 */
 	path?: string;
-	kind?: "thought" | "search" | "command" | "file_read" | "file_write" | "visual" | "working";
+	/** Sanitized lifecycle status for an allowlisted tool call. */
+	toolStatus?: "running" | "completed" | "failed";
+	kind?: "thought" | "search" | "command" | "file_read" | "file_write" | "visual" | "subagent" | "run_summary" | "approval" | "working";
 };
 
 export type LocalChat = {
@@ -225,14 +155,12 @@ export type LandingState = {
 	};
 	selectedTargetId: string;
 	internMode?: "remote" | "demo" | "unconfigured";
-	/** Active LoRA adapter id, or `base` for none. */
-	selectedLoraId: string;
 	composerEnabled: boolean;
 	composerPlaceholder: string;
 };
 
 /** OpenRouter model ids used by the remote ACP adapter. */
-export const OPENROUTER_LUNA_MODEL = "moonshotai/kimi-k2.5";
+export const OPENROUTER_LUNA_MODEL = "openai/gpt-5.6-luna";
 export const OPENROUTER_LAGUNA_S_MODEL = "poolside/laguna-s-2.1";
 
 export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
@@ -244,7 +172,7 @@ export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 	},
 	{
 		id: "openrouter-luna",
-		label: "Luna",
+		label: "GPT 5.6 Luna",
 		description: `OpenRouter · ${OPENROUTER_LUNA_MODEL} · usage tracked`,
 		group: "remote"
 	},

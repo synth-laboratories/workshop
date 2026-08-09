@@ -1,3 +1,10 @@
+use crate::core_runtime::CoreRuntime;
+use crate::domain::{
+    RunCreate, RunService, RunStatus, SessionCreate, SessionService, SessionStatus,
+    SessionTitleOrigin,
+};
+use crate::storage::{EventAppend, EventSource};
+use crate::synth_config::MultiAgentVersion;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,6 +42,7 @@ pub struct CodexSessionStartRequest {
     pub approval_policy: Option<String>,
     pub sandbox: Option<String>,
     pub thread_id: Option<String>,
+    pub multi_agent_version: Option<MultiAgentVersion>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -42,12 +50,21 @@ pub struct CodexSessionStartRequest {
 pub struct CodexTurnStartRequest {
     pub session_id: String,
     pub prompt: String,
+    pub effort: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionRequest {
     pub session_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexApprovalDecisionRequest {
+    pub session_id: String,
+    pub approval_id: String,
+    pub decision: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -69,6 +86,14 @@ pub struct CodexSessionRecord {
     pub provider_title: String,
     pub base_url: String,
     pub status: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub title_origin: Option<String>,
+    #[serde(default = "default_approval_policy")]
+    pub approval_policy: String,
+    #[serde(default = "default_sandbox")]
+    pub sandbox: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -81,11 +106,28 @@ struct CodexEvent {
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
 
+#[derive(Clone, Debug)]
+struct PendingApproval {
+    rpc_id: Value,
+    available_decisions: Vec<String>,
+}
+
+type PendingApprovals = Arc<Mutex<HashMap<String, PendingApproval>>>;
+
 struct AppServer {
     child: Mutex<Child>,
     stdin: Arc<Mutex<tokio::process::ChildStdin>>,
     pending: Pending,
+    approvals: PendingApprovals,
     next_id: AtomicU64,
+}
+
+impl Drop for AppServer {
+    fn drop(&mut self) {
+        if let Ok(mut child) = self.child.try_lock() {
+            let _ = child.start_kill();
+        }
+    }
 }
 
 impl AppServer {
@@ -125,9 +167,50 @@ impl AppServer {
             .await
             .context("stop app-server")
     }
+
+    async fn resolve_approval(&self, approval_id: &str, requested: &str) -> Result<String> {
+        let pending = self
+            .approvals
+            .lock()
+            .await
+            .get(approval_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("approval is no longer pending: {approval_id}"))?;
+        let decision = select_approval_decision(&pending.available_decisions, requested)?;
+        write_message(
+            &self.stdin,
+            &json!({"jsonrpc":"2.0","id":pending.rpc_id,"result":{"decision":decision}}),
+        )
+        .await?;
+        self.approvals.lock().await.remove(approval_id);
+        Ok(decision)
+    }
+}
+
+fn select_approval_decision(available: &[String], requested: &str) -> Result<String> {
+    let candidates: &[&str] = match requested {
+        "once" => &["accept", "approve", "allow", "yes"],
+        "always" => &["acceptForSession", "allowForSession", "always"],
+        "reject" => &["decline", "reject", "deny", "cancel", "no"],
+        _ => return Err(anyhow!("unsupported approval decision: {requested}")),
+    };
+    candidates
+        .iter()
+        .find(|candidate| available.iter().any(|value| value == **candidate))
+        .copied()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("the app-server does not support {requested} for this request"))
+}
+
+fn default_approval_policy() -> String {
+    "untrusted".into()
+}
+fn default_sandbox() -> String {
+    "workspace-write".into()
 }
 
 struct Session {
+    attachment_id: uuid::Uuid,
     server: Arc<AppServer>,
     thread_id: String,
     turn_id: RwLock<Option<String>>,
@@ -136,22 +219,24 @@ struct Session {
 }
 
 pub struct CodexManager {
-    sessions: RwLock<HashMap<String, Arc<Session>>>,
+    sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     records: Arc<RwLock<HashMap<String, CodexSessionRecord>>>,
     state_path: PathBuf,
+    core: Option<Arc<CoreRuntime>>,
 }
 
 impl CodexManager {
-    pub fn new() -> Self {
+    pub fn new(core: Option<Arc<CoreRuntime>>) -> Self {
         let state_path = codex_root().join("threads.json");
         let records = fs::read_to_string(&state_path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default();
         Self {
-            sessions: RwLock::new(HashMap::new()),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::new(RwLock::new(records)),
             state_path,
+            core,
         }
     }
 
@@ -168,29 +253,44 @@ impl CodexManager {
             .join("homes")
             .join(safe_component(&request.session_id));
         ensure_home(&home, &request)?;
+        let attachment_id = uuid::Uuid::new_v4();
         let server = spawn_server(
-            app,
+            app.clone(),
             &request.session_id,
             &home,
             &request,
             self.records.clone(),
             self.state_path.clone(),
+            self.core.clone(),
+            self.sessions.clone(),
+            attachment_id,
         )
         .await?;
-        server
-            .request(
-                "initialize",
-                json!({"clientInfo":{"name":"synth-desktop","title":"Synth Desktop","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}),
-            )
-            .await?;
+        let initialize_params = json!({"clientInfo":{"name":"synth-desktop","title":crate::instance::display_name(),"version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}});
+        let mut initialize_attempts = 0;
+        loop {
+            match server
+                .request("initialize", initialize_params.clone())
+                .await
+            {
+                Ok(_) => break,
+                Err(error)
+                    if error.to_string().contains("database is locked")
+                        && initialize_attempts < 5 =>
+                {
+                    initialize_attempts += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(200 * initialize_attempts))
+                        .await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
         server.notify("initialized").await?;
-        let remembered = self
-            .records
-            .read()
-            .await
-            .get(&request.session_id)
-            .map(|record| record.thread_id.clone());
-        let requested_thread = request.thread_id.clone().or(remembered);
+        let remembered = self.records.read().await.get(&request.session_id).cloned();
+        let requested_thread = request
+            .thread_id
+            .clone()
+            .or_else(|| remembered.as_ref().map(|record| record.thread_id.clone()));
         let method = if requested_thread.is_some() {
             "thread/resume"
         } else {
@@ -199,77 +299,190 @@ impl CodexManager {
         let mut params = json!({
             "model": request.model,
             "cwd": request.workspace,
-            "approvalPolicy": request.approval_policy.as_deref().unwrap_or("never"),
+            "approvalPolicy": request.approval_policy.as_deref().unwrap_or("untrusted"),
             "sandbox": request.sandbox.as_deref().unwrap_or("workspace-write")
         });
         if let Some(thread_id) = requested_thread {
             params["threadId"] = Value::String(thread_id);
         }
-        let result = server.request(method, params).await?;
+        let mut attempts = 0;
+        let result = loop {
+            match server.request(method, params.clone()).await {
+                Ok(result) => break result,
+                Err(error) if error.to_string().contains("database is locked") && attempts < 5 => {
+                    attempts += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(200 * attempts)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        };
         let thread_id = nested_id(&result, "threadId")
             .ok_or_else(|| anyhow!("Codex {method} response missing thread id: {result}"))?;
         let session = Arc::new(Session {
+            attachment_id,
             server,
             thread_id: thread_id.clone(),
             turn_id: RwLock::new(None),
-            model: request.model,
-            approval_policy: request.approval_policy.unwrap_or_else(|| "never".into()),
+            model: request.model.clone(),
+            approval_policy: request
+                .approval_policy
+                .clone()
+                .unwrap_or_else(default_approval_policy),
         });
         self.sessions
             .write()
             .await
             .insert(request.session_id.clone(), session.clone());
+        let default_title = if request.provider_name.as_deref() == Some("local-laguna") {
+            "Laguna XS".to_owned()
+        } else {
+            request.model.clone()
+        };
+        let title = remembered
+            .as_ref()
+            .and_then(|record| record.title.clone())
+            .unwrap_or(default_title);
+        let title_origin = remembered
+            .as_ref()
+            .and_then(|record| record.title_origin.clone())
+            .unwrap_or_else(|| "default".into());
         self.records.write().await.insert(
             request.session_id.clone(),
             CodexSessionRecord {
                 session_id: request.session_id.clone(),
-                thread_id,
-                workspace: request.workspace,
+                thread_id: thread_id.clone(),
+                workspace: request.workspace.clone(),
                 model: session.model.clone(),
                 provider_name: request.provider_name.unwrap_or_else(|| "custom".into()),
                 provider_title: request
                     .provider_title
                     .unwrap_or_else(|| "Synth Responses Provider".into()),
-                base_url: request.base_url.trim_end_matches('/').to_owned(),
+                base_url: responses_base_url(&request.base_url),
                 status: "ready".into(),
+                title: Some(title.clone()),
+                title_origin: Some(title_origin.clone()),
+                approval_policy: request
+                    .approval_policy
+                    .clone()
+                    .unwrap_or_else(default_approval_policy),
+                sandbox: request.sandbox.clone().unwrap_or_else(default_sandbox),
             },
         );
         self.persist_records().await?;
+        if let Some(core) = &self.core {
+            let service = SessionService::new(core.storage().database().clone());
+            let persistence = service.create_or_update(SessionCreate {
+                id: request.session_id.clone(),
+                title,
+                target: json!({
+                    "kind": "codex",
+                    "model": session.model,
+                    "workspace": request.workspace,
+                    "threadId": thread_id,
+                }),
+                project_id: None,
+                remote_id: None,
+                codex_thread_id: Some(thread_id.clone()),
+                status: SessionStatus::Ready,
+                state_generation: None,
+                metadata: json!({
+                    "workspace": request.workspace,
+                    "model": session.model,
+                    "approvalPolicy": request.approval_policy.clone().unwrap_or_else(default_approval_policy),
+                    "sandbox": request.sandbox.clone().unwrap_or_else(default_sandbox),
+                    "titleOrigin": title_origin,
+                }),
+                source: EventSource::Codex,
+            });
+            if let Ok(Ok(mutation)) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), persistence).await
+            {
+                if let Some(event) = mutation.event {
+                    let _ = core.publish_event(&app, event).await;
+                }
+            }
+        }
         Ok(session_info(&request.session_id, &session).await)
     }
 
-    pub async fn start_turn(&self, request: CodexTurnStartRequest) -> Result<CodexSessionInfo> {
+    pub async fn start_turn(
+        &self,
+        app: AppHandle,
+        request: CodexTurnStartRequest,
+    ) -> Result<CodexSessionInfo> {
         if request.prompt.trim().is_empty() {
             return Err(anyhow!("prompt must not be empty"));
         }
+        let effort = request
+            .effort
+            .as_deref()
+            .map(validate_reasoning_effort)
+            .transpose()?;
         let session = self.session(&request.session_id).await?;
-        let result = session
-            .server
-            .request(
-                "turn/start",
-                json!({
-                    "threadId": session.thread_id,
-                    "model": session.model,
-                    "input":[{"type":"text","text":request.prompt,"textElements":[]}],
-                    "approvalPolicy": session.approval_policy
-                }),
-            )
-            .await?;
+        if let Some(core) = &self.core {
+            let persistence = core.append_and_emit(
+                &app,
+                EventAppend::codex(
+                    request.session_id.clone(),
+                    "message.created",
+                    json!({
+                        "messageId": format!("user-{}", uuid::Uuid::new_v4()),
+                        "role": "user",
+                        "content": request.prompt.clone(),
+                    }),
+                ),
+            );
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), persistence).await;
+        }
+        let mut turn_params = json!({
+            "threadId": session.thread_id,
+            "model": session.model,
+            "input":[{"type":"text","text":request.prompt,"textElements":[]}],
+            "approvalPolicy": session.approval_policy
+        });
+        if let Some(effort) = effort {
+            turn_params["effort"] = Value::String(effort.to_owned());
+        }
+        let result = session.server.request("turn/start", turn_params).await?;
         let turn_id = nested_id(&result, "turnId")
             .ok_or_else(|| anyhow!("Codex turn/start response missing turn id: {result}"))?;
-        *session.turn_id.write().await = Some(turn_id);
+        *session.turn_id.write().await = Some(turn_id.clone());
+        self.set_automatic_title(&app, &request.session_id, &request.prompt, &session)
+            .await;
+        if let Some(core) = &self.core {
+            let service = RunService::new(core.storage().database().clone());
+            let persistence = service.start(RunCreate {
+                id: turn_id,
+                session_id: request.session_id.clone(),
+                mode: "codex_turn".into(),
+                model: Some(session.model.clone()),
+                adapter: None,
+                metadata: json!({"threadId": session.thread_id, "effort": effort}),
+                source: EventSource::Codex,
+            });
+            if let Ok(Ok(mutation)) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), persistence).await
+            {
+                if let Some(event) = mutation.event {
+                    let _ = core.publish_event(&app, event).await;
+                }
+            }
+        }
         self.set_status(&request.session_id, "running").await?;
         Ok(session_info(&request.session_id, &session).await)
     }
 
     pub async fn interrupt(&self, session_id: &str) -> Result<()> {
-        let session = self.session(session_id).await?;
-        let turn_id = session
-            .turn_id
-            .read()
-            .await
-            .clone()
-            .ok_or_else(|| anyhow!("session has no active turn"))?;
+        let Some(session) = self.sessions.read().await.get(session_id).cloned() else {
+            // Stop is idempotent. A persisted running record can outlive its
+            // in-memory app-server after a desktop restart or process crash.
+            self.mark_detached_turn_interrupted(session_id).await?;
+            return Ok(());
+        };
+        let Some(turn_id) = session.turn_id.read().await.clone() else {
+            self.mark_detached_turn_interrupted(session_id).await?;
+            return Ok(());
+        };
         session
             .server
             .request(
@@ -289,7 +502,68 @@ impl CodexManager {
         Ok(())
     }
 
+    pub async fn resolve_approval(
+        &self,
+        app: AppHandle,
+        request: CodexApprovalDecisionRequest,
+    ) -> Result<()> {
+        let session = self.session(&request.session_id).await?;
+        let decision = session
+            .server
+            .resolve_approval(&request.approval_id, &request.decision)
+            .await?;
+        let kind = if request.decision == "reject" {
+            "approval.rejected"
+        } else {
+            "approval.granted"
+        };
+        let payload = json!({
+            "approvalId": request.approval_id,
+            "decision": request.decision,
+            "appServerDecision": decision,
+        });
+        let _ = app.emit(
+            EVENT_NAME,
+            CodexEvent {
+                session_id: request.session_id.clone(),
+                method: kind.into(),
+                params: payload.clone(),
+            },
+        );
+        if let Some(core) = &self.core {
+            let _ = core
+                .append_and_emit(&app, EventAppend::codex(request.session_id, kind, payload))
+                .await;
+        }
+        Ok(())
+    }
+
     pub async fn list(&self) -> Vec<CodexSessionRecord> {
+        let attached = self.sessions.read().await;
+        let mut changed = false;
+        let mut interrupted = Vec::new();
+        {
+            let mut records = self.records.write().await;
+            for record in records.values_mut() {
+                let reconciled = reconcile_detached_status(
+                    &mut record.status,
+                    attached.contains_key(&record.session_id),
+                );
+                changed |= reconciled;
+                if reconciled {
+                    interrupted.push(record.session_id.clone());
+                }
+            }
+        }
+        drop(attached);
+        if changed {
+            let _ = self.persist_records().await;
+            if let Some(core) = &self.core {
+                for session_id in interrupted {
+                    let _ = interrupt_active_core_run(core, &session_id, "desktop_restarted").await;
+                }
+            }
+        }
         let mut records: Vec<_> = self.records.read().await.values().cloned().collect();
         records.sort_by(|left, right| left.session_id.cmp(&right.session_id));
         records
@@ -311,9 +585,122 @@ impl CodexManager {
         self.persist_records().await
     }
 
+    async fn mark_detached_turn_interrupted(&self, session_id: &str) -> Result<()> {
+        let should_change = self
+            .records
+            .read()
+            .await
+            .get(session_id)
+            .is_some_and(|record| record.status == "running");
+        if should_change {
+            self.set_status(session_id, "interrupted").await?;
+            if let Some(core) = &self.core {
+                let _ = interrupt_active_core_run(core, session_id, "runtime_detached").await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn set_automatic_title(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+        prompt: &str,
+        session: &Session,
+    ) {
+        let should_set = self
+            .records
+            .read()
+            .await
+            .get(session_id)
+            .and_then(|record| record.title_origin.as_deref())
+            == Some("default");
+        if !should_set {
+            return;
+        }
+        let Some(title) = automatic_thread_title(prompt) else {
+            return;
+        };
+        let previous_title = {
+            let mut records = self.records.write().await;
+            let Some(record) = records.get_mut(session_id) else {
+                return;
+            };
+            let previous = record.title.clone();
+            record.title = Some(title.clone());
+            record.title_origin = Some("automatic".into());
+            previous
+        };
+        let _ = self.persist_records().await;
+        if session
+            .server
+            .request(
+                "thread/name/set",
+                json!({"threadId": session.thread_id, "name": title}),
+            )
+            .await
+            .is_err()
+        {
+            if let Some(record) = self.records.write().await.get_mut(session_id) {
+                record.title = previous_title;
+                record.title_origin = Some("default".into());
+            }
+            let _ = self.persist_records().await;
+            return;
+        }
+        if let Some(core) = &self.core {
+            let service = SessionService::new(core.storage().database().clone());
+            if let Ok(mutation) = service
+                .set_title(
+                    session_id.to_owned(),
+                    title.clone(),
+                    SessionTitleOrigin::Automatic,
+                )
+                .await
+            {
+                if let Some(event) = mutation.event {
+                    let _ = core.publish_event(app, event).await;
+                }
+            }
+        }
+    }
+
     async fn persist_records(&self) -> Result<()> {
         persist_records(&self.records, &self.state_path).await
     }
+}
+
+fn reconcile_detached_status(status: &mut String, attached: bool) -> bool {
+    if status == "running" && !attached {
+        *status = "interrupted".into();
+        true
+    } else {
+        false
+    }
+}
+
+async fn interrupt_active_core_run(
+    core: &CoreRuntime,
+    session_id: &str,
+    reason: &str,
+) -> Result<Option<crate::storage::AppEvent>> {
+    let sessions = SessionService::new(core.storage().database().clone());
+    let Some(session) = sessions.get(session_id.to_owned()).await? else {
+        return Ok(None);
+    };
+    let Some(run_id) = session.active_run_id else {
+        return Ok(None);
+    };
+    let runs = RunService::new(core.storage().database().clone());
+    let mutation = runs
+        .transition(
+            run_id,
+            RunStatus::Interrupted,
+            Some(json!({ "reason": reason })),
+            EventSource::Codex,
+        )
+        .await?;
+    Ok(mutation.event)
 }
 
 async fn spawn_server(
@@ -323,6 +710,9 @@ async fn spawn_server(
     request: &CodexSessionStartRequest,
     records: Arc<RwLock<HashMap<String, CodexSessionRecord>>>,
     state_path: PathBuf,
+    core: Option<Arc<CoreRuntime>>,
+    sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
+    attachment_id: uuid::Uuid,
 ) -> Result<Arc<AppServer>> {
     let binary = env::var("SYNTH_CODEX_BIN").unwrap_or_else(|_| "codex".into());
     let env_key = request
@@ -348,10 +738,12 @@ async fn spawn_server(
     let stdout = child.stdout.take().context("capture app-server stdout")?;
     let stderr = child.stderr.take().context("capture app-server stderr")?;
     let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+    let approvals: PendingApprovals = Arc::new(Mutex::new(HashMap::new()));
     let server = Arc::new(AppServer {
         child: Mutex::new(child),
         stdin: stdin.clone(),
         pending: pending.clone(),
+        approvals: approvals.clone(),
         next_id: AtomicU64::new(1),
     });
     let sid = session_id.to_owned();
@@ -361,13 +753,17 @@ async fn spawn_server(
         stdout,
         stdin,
         pending,
+        approvals,
         request
             .approval_policy
             .clone()
-            .unwrap_or_else(|| "never".into()),
+            .unwrap_or_else(default_approval_policy),
         PersistenceContext {
             records,
             state_path,
+            core,
+            sessions,
+            attachment_id,
         },
     ));
     tauri::async_runtime::spawn(async move {
@@ -389,6 +785,9 @@ async fn spawn_server(
 struct PersistenceContext {
     records: Arc<RwLock<HashMap<String, CodexSessionRecord>>>,
     state_path: PathBuf,
+    core: Option<Arc<CoreRuntime>>,
+    sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
+    attachment_id: uuid::Uuid,
 }
 
 async fn read_stdout(
@@ -397,6 +796,7 @@ async fn read_stdout(
     stdout: tokio::process::ChildStdout,
     stdin: Arc<Mutex<tokio::process::ChildStdin>>,
     pending: Pending,
+    approvals: PendingApprovals,
     approval_policy: String,
     persistence: PersistenceContext,
 ) {
@@ -419,6 +819,59 @@ async fn read_stdout(
         }
         let method = message["method"].as_str().unwrap_or_default().to_owned();
         let params = message.get("params").cloned().unwrap_or(Value::Null);
+        if let Some(rpc_id) = message.get("id").cloned() {
+            if is_approval_method(&method) {
+                let available_decisions = params
+                    .get("availableDecisions")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if approval_policy == "never" {
+                    let response = rejection_response(&available_decisions, rpc_id);
+                    let _ = write_message(&stdin, &response).await;
+                    continue;
+                }
+                let approval_id = format!("approval-{}", uuid::Uuid::new_v4().simple());
+                approvals.lock().await.insert(
+                    approval_id.clone(),
+                    PendingApproval {
+                        rpc_id,
+                        available_decisions: available_decisions.clone(),
+                    },
+                );
+                let safe =
+                    safe_approval_payload(&approval_id, &method, &params, &available_decisions);
+                let _ = app.emit(
+                    EVENT_NAME,
+                    CodexEvent {
+                        session_id: session_id.clone(),
+                        method: "approval.requested".into(),
+                        params: safe.clone(),
+                    },
+                );
+                if let Some(core) = &persistence.core {
+                    let _ = core
+                        .append_and_emit(
+                            &app,
+                            EventAppend::codex(session_id.clone(), "approval.requested", safe),
+                        )
+                        .await;
+                }
+                continue;
+            }
+            // Unknown server requests are never approved implicitly.
+            let _ = write_message(&stdin, &json!({
+                "jsonrpc":"2.0","id":rpc_id,
+                "error":{"code":-32601,"message":format!("Unsupported server request: {method}")}
+            })).await;
+            continue;
+        }
         let _ = app.emit(
             EVENT_NAME,
             CodexEvent {
@@ -427,6 +880,56 @@ async fn read_stdout(
                 params: params.clone(),
             },
         );
+        if let Some(core) = &persistence.core {
+            let _ = core
+                .append_and_emit(
+                    &app,
+                    EventAppend::codex(session_id.clone(), method.clone(), params.clone()),
+                )
+                .await;
+        }
+        if method == "thread/name/updated" {
+            if let Some(title) = params
+                .get("threadName")
+                .or_else(|| params.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+            {
+                let changed_elsewhere = {
+                    let mut records = persistence.records.write().await;
+                    if let Some(record) = records.get_mut(&session_id) {
+                        if record.title.as_deref() == Some(title) {
+                            false
+                        } else {
+                            record.title = Some(title.to_owned());
+                            record.title_origin = Some("manual".into());
+                            true
+                        }
+                    } else {
+                        false
+                    }
+                };
+                if changed_elsewhere {
+                    let _ = persist_records(&persistence.records, &persistence.state_path).await;
+                    if let Some(core) = &persistence.core {
+                        let sessions = SessionService::new(core.storage().database().clone());
+                        if let Ok(mutation) = sessions
+                            .set_title(
+                                session_id.clone(),
+                                title.to_owned(),
+                                SessionTitleOrigin::Manual,
+                            )
+                            .await
+                        {
+                            if let Some(event) = mutation.event {
+                                let _ = core.publish_event(&app, event).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if matches!(
             method.as_str(),
             "turn/completed" | "turn/failed" | "turn/interrupted"
@@ -440,44 +943,140 @@ async fn read_stdout(
                 record.status = status.into();
             }
             let _ = persist_records(&persistence.records, &persistence.state_path).await;
-        }
-        if let Some(id) = message.get("id").cloned() {
-            if is_approval_method(&method) && approval_policy != "never" {
-                let _ = app.emit(
-                    EVENT_NAME,
-                    CodexEvent {
-                        session_id: session_id.clone(),
-                        method: "approval/pending".into(),
-                        params: json!({"requestMethod":method,"request":params}),
-                    },
-                );
+            if let Some(core) = &persistence.core {
+                let runs = RunService::new(core.storage().database().clone());
+                let sessions = SessionService::new(core.storage().database().clone());
+                if let Ok(Some(session)) = sessions.get(session_id.clone()).await {
+                    if let Some(run_id) = session.active_run_id {
+                        let run_status = match method.as_str() {
+                            "turn/completed" => RunStatus::Completed,
+                            "turn/failed" => RunStatus::Failed,
+                            _ => RunStatus::Interrupted,
+                        };
+                        if let Ok(mutation) = runs
+                            .transition(
+                                run_id,
+                                run_status,
+                                Some(params.clone()),
+                                EventSource::Codex,
+                            )
+                            .await
+                        {
+                            if let Some(event) = mutation.event {
+                                let _ = core.publish_event(&app, event).await;
+                            }
+                        }
+                    }
+                }
             }
-            let response = approval_response(&method, &params, id);
-            let _ = write_message(&stdin, &response).await;
         }
     }
     let mut pending = pending.lock().await;
     for (_, sender) in pending.drain() {
         let _ = sender.send(Err("codex app-server stdout closed".into()));
     }
+    drop(pending);
+    let owned_attachment = {
+        let mut sessions = persistence.sessions.write().await;
+        let owns_current = sessions
+            .get(&session_id)
+            .is_some_and(|session| session.attachment_id == persistence.attachment_id);
+        if owns_current {
+            sessions.remove(&session_id);
+        }
+        owns_current
+    };
+    if !owned_attachment {
+        return;
+    }
+    let was_running = {
+        let mut records = persistence.records.write().await;
+        records.get_mut(&session_id).is_some_and(|record| {
+            if record.status != "running" {
+                return false;
+            }
+            record.status = "interrupted".into();
+            true
+        })
+    };
+    if was_running {
+        let _ = persist_records(&persistence.records, &persistence.state_path).await;
+        let _ = app.emit(
+            EVENT_NAME,
+            CodexEvent {
+                session_id: session_id.clone(),
+                method: "session/unhealthy".into(),
+                params: json!({
+                    "reason": "app_server_exited",
+                    "message": "The local agent process exited before the turn completed."
+                }),
+            },
+        );
+        if let Some(core) = &persistence.core {
+            if let Ok(Some(event)) =
+                interrupt_active_core_run(core, &session_id, "app_server_exited").await
+            {
+                let _ = core.publish_event(&app, event).await;
+            }
+        }
+    }
 }
 
-fn approval_response(method: &str, params: &Value, id: Value) -> Value {
-    if is_approval_method(method) {
-        let available = params.get("availableDecisions").and_then(Value::as_array);
-        let decision = available
-            .and_then(|values| {
-                ["decline", "reject", "deny", "cancel"]
-                    .iter()
-                    .find(|candidate| values.iter().any(|value| value.as_str() == Some(candidate)))
-            })
-            .copied();
-        if decision.is_none() {
-            return json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":"No supported approval decision"}});
+fn rejection_response(available: &[String], id: Value) -> Value {
+    let decision = ["decline", "reject", "deny", "cancel", "no"]
+        .iter()
+        .find(|candidate| available.iter().any(|value| value == **candidate));
+    match decision {
+        Some(decision) => json!({"jsonrpc":"2.0","id":id,"result":{"decision":decision}}),
+        None => {
+            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":"No supported rejection decision"}})
         }
-        return json!({"jsonrpc":"2.0","id":id,"result":{"decision":decision}});
     }
-    json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":format!("Unsupported server request: {method}")}})
+}
+
+fn safe_approval_payload(
+    approval_id: &str,
+    method: &str,
+    params: &Value,
+    available: &[String],
+) -> Value {
+    let command = params
+        .get("command")
+        .and_then(Value::as_str)
+        .or_else(|| params.pointer("/item/command").and_then(Value::as_str));
+    let cwd = params
+        .get("cwd")
+        .and_then(Value::as_str)
+        .or_else(|| params.pointer("/item/cwd").and_then(Value::as_str));
+    let path = params
+        .get("path")
+        .and_then(Value::as_str)
+        .or_else(|| params.pointer("/item/path").and_then(Value::as_str));
+    let kind = if method.to_ascii_lowercase().contains("file") {
+        "file_change"
+    } else if method.to_ascii_lowercase().contains("command") || command.is_some() {
+        "shell_command"
+    } else {
+        "permission"
+    };
+    let detail = match (kind, cwd, path) {
+        ("shell_command", Some(cwd), _) => format!("Run a shell command in {cwd}"),
+        ("shell_command", None, _) => "Run a shell command".into(),
+        ("file_change", _, Some(path)) => format!("Modify {path}"),
+        ("file_change", _, None) => "Modify workspace files".into(),
+        _ => "Use a protected capability".into(),
+    };
+    let always_supported = ["acceptForSession", "allowForSession", "always"]
+        .iter()
+        .any(|candidate| available.iter().any(|value| value == candidate));
+    json!({
+        "approvalId": approval_id,
+        "requestMethod": method,
+        "kind": kind,
+        "detail": detail,
+        "scope": cwd.or(path),
+        "alwaysSupported": always_supported,
+    })
 }
 
 fn is_approval_method(method: &str) -> bool {
@@ -507,6 +1106,22 @@ async fn write_message(
 
 fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Result<()> {
     fs::create_dir_all(home.join("sessions"))?;
+    let container_skill = home.join("skills/use-synth-containers");
+    fs::create_dir_all(&container_skill)?;
+    fs::write(
+        container_skill.join("SKILL.md"),
+        include_str!("../../skills/use-synth-containers/SKILL.md"),
+    )?;
+    let visuals_skill = home.join("skills/use-synth-visuals");
+    fs::create_dir_all(visuals_skill.join("references"))?;
+    fs::write(
+        visuals_skill.join("SKILL.md"),
+        include_str!("../../skills/use-synth-visuals/SKILL.md"),
+    )?;
+    fs::write(
+        visuals_skill.join("references/visual-recipes.md"),
+        include_str!("../../skills/use-synth-visuals/references/visual-recipes.md"),
+    )?;
     let provider = request.provider_name.as_deref().unwrap_or("custom");
     let title = request
         .provider_title
@@ -516,9 +1131,15 @@ fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Result<()> {
         .provider_env_key
         .as_deref()
         .unwrap_or("SYNTH_LAGUNA_API_KEY");
+    let multi_agent_version = request
+        .multi_agent_version
+        .unwrap_or(MultiAgentVersion::None);
+    let (agents_enabled, multi_agent_v1, multi_agent_v2) = multi_agent_flags(multi_agent_version);
+    let allowed_workspace_roots = crate::synth_config::allowed_workspace_roots()?;
+    let workspace_write_config = workspace_write_config(&allowed_workspace_roots);
     let config = format!(
-        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"default\"\n\n[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\nenv_key = \"{}\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n\n[features]\ntool_call_mcp_elicitation = true\nshell_tool = true\nunified_exec = true\n",
-        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("never")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), toml_key(provider), toml_string(title), toml_string(request.base_url.trim_end_matches('/')), toml_string(env_key)
+        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"default\"\n\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\nenv_key = \"{}\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
+        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), workspace_write_config, toml_key(provider), toml_string(title), toml_string(&responses_base_url(&request.base_url)), toml_string(env_key), agents_enabled, multi_agent_v1, multi_agent_v2
     );
     fs::write(home.join("config.toml"), config)?;
     let auth = home.join("auth.json");
@@ -528,7 +1149,44 @@ fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Result<()> {
             "{\n  \"OPENAI_API_KEY\": \"synth-desktop-provider\"\n}\n",
         )?;
     }
+    // Point Codex at the Rust container and visuals MCP adapters (both forward to CoreRuntime IPC).
+    if let Ok(exe) = env::current_exe() {
+        let ipc = crate::storage::app_data_root().join("visuals-ipc.json");
+        let mut existing = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+        for (server, binary) in [
+            ("synth_containers", "synth-containers-mcp"),
+            ("synth_visuals", "synth-visuals-mcp"),
+        ] {
+            let bin = exe
+                .parent()
+                .map(|dir| dir.join(binary))
+                .filter(|path| path.exists())
+                .or_else(|| {
+                    let candidate = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join(format!("target/debug/{binary}"));
+                    candidate.exists().then_some(candidate)
+                });
+            let Some(bin) = bin else { continue };
+            let heading = format!("[mcp_servers.{server}]");
+            if existing.contains(&heading) {
+                continue;
+            }
+            existing.push_str(&format!(
+                "\n{heading}\ncommand = \"{}\"\nargs = []\n{}default_tools_approval_mode = \"approve\"\nenv = {{ SYNTH_DESKTOP_IPC_FILE = \"{}\", SYNTH_SESSION_ID = \"{}\" }}\n",
+                toml_string(&bin.display().to_string()), mcp_enabled_tools(server), toml_string(&ipc.display().to_string()), toml_string(&request.session_id),
+            ));
+        }
+        fs::write(home.join("config.toml"), existing)?;
+    }
     Ok(())
+}
+
+fn multi_agent_flags(version: MultiAgentVersion) -> (bool, bool, bool) {
+    match version {
+        MultiAgentVersion::None => (false, false, false),
+        MultiAgentVersion::V1 => (true, true, false),
+        MultiAgentVersion::V2 => (true, true, true),
+    }
 }
 
 fn validate_start(request: &CodexSessionStartRequest) -> Result<()> {
@@ -545,6 +1203,13 @@ fn validate_start(request: &CodexSessionStartRequest) -> Result<()> {
         return Err(anyhow!("baseUrl must be local HTTP or HTTPS"));
     }
     Ok(())
+}
+
+fn validate_reasoning_effort(value: &str) -> Result<&str> {
+    match value {
+        "none" | "low" | "medium" | "high" | "xhigh" | "max" => Ok(value),
+        _ => Err(anyhow!("unsupported reasoning effort: {value}")),
+    }
 }
 
 fn nested_id(payload: &Value, key: &str) -> Option<String> {
@@ -572,11 +1237,7 @@ async fn session_info(id: &str, session: &Session) -> CodexSessionInfo {
 fn codex_root() -> PathBuf {
     env::var_os("SYNTH_CODEX_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs::home_dir()
-                .unwrap_or_default()
-                .join(".synth-desktop/codex")
-        })
+        .unwrap_or_else(|| crate::instance::state_root().join("codex"))
 }
 
 async fn persist_records(
@@ -614,6 +1275,106 @@ fn toml_key(value: &str) -> String {
     format!("\"{}\"", toml_string(value))
 }
 
+fn workspace_write_config(allowed_roots: &[String]) -> String {
+    if allowed_roots.is_empty() {
+        return String::new();
+    }
+    let roots = allowed_roots
+        .iter()
+        .map(|root| format!("\"{}\"", toml_string(root)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[sandbox_workspace_write]\nwritable_roots = [{roots}]\n\n")
+}
+
+fn mcp_enabled_tools(server: &str) -> &'static str {
+    match server {
+        // Codex sees one compact namespace member. The adapter keeps legacy
+        // tools callable for other MCP clients, while visual_manage routes the
+        // same operations after the visual skill is loaded.
+        "synth_visuals" => "enabled_tools = [\"visual_manage\"]\n",
+        _ => "",
+    }
+}
+
+/// Codex appends `/responses` to the provider base URL. Laguna and standard
+/// OpenAI-compatible providers expose that endpoint below `/v1`.
+fn responses_base_url(value: &str) -> String {
+    let trimmed = value.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        trimmed.to_owned()
+    } else {
+        format!("{trimmed}/v1")
+    }
+}
+
+fn automatic_thread_title(prompt: &str) -> Option<String> {
+    let mut value = prompt
+        .lines()
+        .find(|line| !line.trim().is_empty())?
+        .trim()
+        .trim_start_matches(|c: char| matches!(c, '-' | '*' | '#' | '>' | ' '))
+        .to_owned();
+    for prefix in [
+        "please ",
+        "can you ",
+        "could you ",
+        "would you ",
+        "i want you to ",
+        "i need you to ",
+    ] {
+        if value.to_ascii_lowercase().starts_with(prefix) {
+            value = value[prefix.len()..].trim_start().to_owned();
+            break;
+        }
+    }
+    let words = value.split_whitespace().collect::<Vec<_>>();
+    let skip_skill_preamble = words
+        .first()
+        .is_some_and(|word| word.eq_ignore_ascii_case("use"))
+        && words.get(1).is_some_and(|word| word.starts_with('$'));
+    value = words
+        .into_iter()
+        .enumerate()
+        .filter(|(index, word)| {
+            !word.starts_with('$')
+                && !(skip_skill_preamble && *index == 0)
+                && !(skip_skill_preamble && *index == 2 && word.eq_ignore_ascii_case("to"))
+        })
+        .map(|(_, word)| word)
+        .collect::<Vec<_>>()
+        .join(" ");
+    if let Some(index) = value.find(['\n', '.', '?', '!']) {
+        value.truncate(index);
+    }
+    value = value
+        .trim_matches(|c: char| c.is_whitespace() || matches!(c, ',' | ':' | ';' | '-' | '—'))
+        .to_owned();
+    if value.is_empty() {
+        return None;
+    }
+    const MAX_CHARS: usize = 56;
+    if value.chars().count() > MAX_CHARS {
+        let mut shortened = String::new();
+        for word in value.split_whitespace() {
+            let next_len = shortened.chars().count()
+                + usize::from(!shortened.is_empty())
+                + word.chars().count();
+            if next_len > MAX_CHARS {
+                break;
+            }
+            if !shortened.is_empty() {
+                shortened.push(' ');
+            }
+            shortened.push_str(word);
+        }
+        value = shortened;
+    }
+    let mut chars = value.chars();
+    let first = chars.next()?;
+    Some(first.to_uppercase().collect::<String>() + chars.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -630,24 +1391,52 @@ mod tests {
     }
     #[test]
     fn approvals_always_fail_closed() {
-        let denied = approval_response(
-            "permissions/request",
-            &json!({"availableDecisions":["decline","acceptForSession"]}),
-            json!(7),
-        );
+        let denied = rejection_response(&["decline".into(), "acceptForSession".into()], json!(7));
         assert_eq!(
             denied.pointer("/result/decision").and_then(Value::as_str),
             Some("decline")
         );
-        let rejected = approval_response(
-            "permissions/request",
-            &json!({"availableDecisions":["accept","acceptForSession"]}),
-            json!(8),
-        );
+        let rejected = rejection_response(&["accept".into(), "acceptForSession".into()], json!(8));
         assert_eq!(
             rejected.pointer("/error/code").and_then(Value::as_i64),
             Some(-32602)
         );
+    }
+    #[test]
+    fn approval_decisions_only_use_server_supported_values() {
+        let available = vec!["decline".into(), "accept".into(), "acceptForSession".into()];
+        assert_eq!(
+            select_approval_decision(&available, "once").unwrap(),
+            "accept"
+        );
+        assert_eq!(
+            select_approval_decision(&available, "always").unwrap(),
+            "acceptForSession"
+        );
+        assert_eq!(
+            select_approval_decision(&available, "reject").unwrap(),
+            "decline"
+        );
+        assert!(select_approval_decision(&available, "unknown").is_err());
+        assert!(select_approval_decision(&["accept".into()], "reject").is_err());
+    }
+    #[test]
+    fn approval_payload_does_not_expose_command_or_arbitrary_reason() {
+        let payload = safe_approval_payload(
+            "approval-1",
+            "item/commandExecution/requestApproval",
+            &json!({
+                "command":"OPENROUTER_API_KEY=secret curl example.test",
+                "cwd":"/workspace",
+                "reason":"raw model-supplied detail"
+            }),
+            &["decline".into(), "accept".into(), "acceptForSession".into()],
+        );
+        assert_eq!(payload["detail"], "Run a shell command in /workspace");
+        assert_eq!(payload["alwaysSupported"], true);
+        let encoded = payload.to_string();
+        assert!(!encoded.contains("secret"));
+        assert!(!encoded.contains("raw model"));
     }
     #[test]
     fn sanitizes_session_home_component() {
@@ -656,5 +1445,85 @@ mod tests {
     #[test]
     fn escapes_toml_values() {
         assert_eq!(toml_string("a\"b\\c\n"), "a\\\"b\\\\c\\n");
+    }
+    #[test]
+    fn renders_additional_workspace_roots_for_codex() {
+        assert_eq!(workspace_write_config(&[]), "");
+        let config =
+            workspace_write_config(&["/Users/example/Documents/GitHub".into(), "/tmp/a\"b".into()]);
+        assert!(config.contains("[sandbox_workspace_write]"));
+        assert!(config
+            .contains("writable_roots = [\"/Users/example/Documents/GitHub\", \"/tmp/a\\\"b\"]"));
+    }
+    #[test]
+    fn advertises_only_the_compact_visual_tool_to_codex() {
+        assert_eq!(
+            mcp_enabled_tools("synth_visuals"),
+            "enabled_tools = [\"visual_manage\"]\n"
+        );
+        assert_eq!(mcp_enabled_tools("synth_containers"), "");
+    }
+    #[test]
+    fn normalizes_responses_provider_base_url() {
+        assert_eq!(
+            responses_base_url("http://127.0.0.1:7333"),
+            "http://127.0.0.1:7333/v1"
+        );
+        assert_eq!(
+            responses_base_url("https://provider.test/v1/"),
+            "https://provider.test/v1"
+        );
+    }
+
+    #[test]
+    fn maps_model_capability_to_app_server_feature_flags() {
+        assert_eq!(
+            multi_agent_flags(MultiAgentVersion::None),
+            (false, false, false)
+        );
+        assert_eq!(
+            multi_agent_flags(MultiAgentVersion::V1),
+            (true, true, false)
+        );
+        assert_eq!(multi_agent_flags(MultiAgentVersion::V2), (true, true, true));
+    }
+
+    #[test]
+    fn validates_reasoning_effort_values() {
+        for value in ["none", "low", "medium", "high", "xhigh", "max"] {
+            assert_eq!(validate_reasoning_effort(value).unwrap(), value);
+        }
+        assert!(validate_reasoning_effort("ultra").is_err());
+    }
+
+    #[test]
+    fn derives_a_short_title_from_the_first_prompt() {
+        assert_eq!(
+            automatic_thread_title(
+                "please add session descriptions to the Rust core. Then test it"
+            ),
+            Some("Add session descriptions to the Rust core".into())
+        );
+        assert_eq!(
+            automatic_thread_title(
+                "Use $use-synth-containers to inspect Craftax and locate its real policy harness"
+            ),
+            Some("Inspect Craftax and locate its real policy harness".into())
+        );
+    }
+
+    #[test]
+    fn detached_running_sessions_are_reconciled_as_interrupted() {
+        let mut running = "running".to_owned();
+        assert!(reconcile_detached_status(&mut running, false));
+        assert_eq!(running, "interrupted");
+
+        let mut attached = "running".to_owned();
+        assert!(!reconcile_detached_status(&mut attached, true));
+        assert_eq!(attached, "running");
+
+        let mut ready = "ready".to_owned();
+        assert!(!reconcile_detached_status(&mut ready, false));
+        assert_eq!(ready, "ready");
     }
 }

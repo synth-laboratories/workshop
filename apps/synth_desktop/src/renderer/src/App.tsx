@@ -1,44 +1,66 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { runtimeClient } from "@synth/runtime-client";
+import type { CSSProperties } from "react";
+import { appEventToRuntimeEvent } from "@synth/runtime-protocol";
 import type {
+	CodexActivityEvent,
+	ContainerDeployment,
+	EventPage,
+	ExecutionTarget,
 	RuntimeControlKind,
 	RuntimeEvent,
 	RuntimeHealth,
 	Project,
 	SemanticUiSnapshot,
 	Session,
-	VisualInstanceRecord
+	VisualInstanceRecord,
+	VisualRecord
 } from "@synth/runtime-protocol";
-import { AVAILABLE_LORAS, EXECUTION_TARGETS, LORA_NONE } from "./types/landing";
+import { EXECUTION_TARGETS } from "./types/landing";
 import type { ArtifactRef } from "./types/landing";
 import { ChatTranscript } from "./components/ChatTranscript";
+import { ContainerPane } from "./components/ContainerPane";
 import { CloudDesk } from "./components/CloudDesk";
 import { Composer } from "./components/Composer";
+import { ConnectorsPage } from "./components/ConnectorsPage";
+import { ConversationSearch } from "./components/ConversationSearch";
 import { DemoFixturesBar } from "./components/DemoFixturesBar";
 import { InventoryPage } from "./components/InventoryPage";
 import { LandingPage } from "./components/LandingPage";
+import { PaneResizeHandle } from "./components/PaneResizeHandle";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
 import { SynthLogo } from "./components/SynthLogo";
 import { TerminalPanel } from "./components/TerminalPanel";
-import { VisualPane } from "./components/VisualPane";
+import { artifactFromVisualRecord, VisualPane } from "./components/VisualHost";
+import { VisualsPage } from "./components/VisualsPage";
 import {
 	buildLandingState,
+	executionTargetToUiId,
 	sessionIsAsync,
 	sessionIsLocalChat,
 	sessionIsSync,
 	targetIdToExecutionTarget,
 	visualRecordToArtifact
 } from "./runtime/sessionView";
-import { codexEventToRuntime, codexStartRequest, createCodexSession, restoreCodexSession } from "./runtime/nativeCodex";
+import { codexEventToRuntime, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode } from "./runtime/nativeCodex";
+import {
+	loadModelKnobValues,
+	modelKnobForTarget,
+	modelKnobKey,
+	turnStartEffortForExecutionTarget,
+	type ModelKnobValue
+} from "./runtime/modelCapabilities";
+import type { LagunaStatus } from "./env";
 
 type MainView =
 	| { kind: "landing" }
 	| { kind: "chat"; chatId: string }
 	| { kind: "sync"; sessionId: string }
 	| { kind: "async"; sessionId: string }
-	| { kind: "settings" }
-	| { kind: "inventory" };
+	| { kind: "settings"; section?: "models" | "runtime" | "account" }
+	| { kind: "connectors" }
+	| { kind: "inventory" }
+	| { kind: "visuals" };
 
 type SemanticEvalApi = {
 	schemaVersion: "synth.desktop-eval-api.v1";
@@ -52,10 +74,75 @@ function truncate(label: string, max = 22) {
 	return `${label.slice(0, max - 1)}…`;
 }
 
+function localRuntimePresentation(health: RuntimeHealth | null, laguna: LagunaStatus | null) {
+	if (laguna?.phase === "ready" || health?.local.mode === "mlx") {
+		return { label: "Local ready", visibleLabel: "Local", tone: "is-ready" } as const;
+	}
+	if (laguna?.phase === "loading" || laguna?.phase === "starting") {
+		return { label: "Local starting", visibleLabel: "Local", tone: "is-starting" } as const;
+	}
+	if (!health && !laguna) return { label: "Connecting to local runtime", visibleLabel: "Local", tone: "is-connecting" } as const;
+	return { label: "Local offline", visibleLabel: "Local", tone: "is-offline" } as const;
+}
+
 function appendEvent(events: RuntimeEvent[], event: RuntimeEvent): RuntimeEvent[] {
 	if (events.some((candidate) => candidate.sequence === event.sequence)) return events;
 	return [...events, event].sort((left, right) => left.sequence - right.sequence);
 }
+
+function appendCodexActivity(
+	events: CodexActivityEvent[],
+	event: CodexActivityEvent
+): CodexActivityEvent[] {
+	if (events.some((candidate) =>
+		candidate.executionId === event.executionId && candidate.streamId === event.streamId
+	)) return events;
+	return [...events, event];
+}
+
+function desktopBootError(reason: unknown): string {
+	const message = reason instanceof Error ? reason.message : String(reason);
+	if (/command\s+.+not found|unknown command/i.test(message)) {
+		return "Desktop backend was updated; fully quit and reopen Synth Desktop.";
+	}
+	return message;
+}
+
+// Vite browser fixtures retain the old HTTP contract. The packaged Tauri app
+// never installs this bridge and therefore cannot call the Python runtime.
+const browserRuntimeClient = {
+	bridge() {
+		if (!window.synthRuntime) throw new Error("Browser runtime fixture is unavailable");
+		return window.synthRuntime;
+	},
+	async listSessions() {
+		return (await this.bridge().request<{ sessions: Session[] }>("/v1/sessions")).sessions;
+	},
+	health() { return this.bridge().request<RuntimeHealth>("/v1/health"); },
+	async listProjects() {
+		return (await this.bridge().request<{ projects: Project[] }>("/v1/projects")).projects;
+	},
+	createProject(body: { path: string }) {
+		return this.bridge().request<Project>("/v1/projects", { method: "POST", body });
+	},
+	createSession(target: ExecutionTarget, title?: string, projectId?: string | null, objective?: string) {
+		return this.bridge().request<Session>("/v1/sessions", { method: "POST", body: { target, title, projectId, objective } });
+	},
+	sendMessage(sessionId: string, body: string) {
+		return this.bridge().request<{ runId: string }>(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`, { method: "POST", body: { body } });
+	},
+	control(sessionId: string, kind: RuntimeControlKind, payload: Record<string, unknown>) {
+		return this.bridge().request<{ accepted: boolean }>(`/v1/sessions/${encodeURIComponent(sessionId)}/commands`, { method: "POST", body: { kind, payload } });
+	},
+	events(sessionId: string, afterSequence: number, limit: number) {
+		return this.bridge().request<EventPage>(`/v1/sessions/${encodeURIComponent(sessionId)}/events?after_sequence=${afterSequence}&limit=${limit}`);
+	},
+	subscribe: (...args: Parameters<NonNullable<typeof window.synthRuntime>["subscribe"]>) =>
+		browserRuntimeClient.bridge().subscribe(...args),
+	simulateLive(kind: string) {
+		return this.bridge().request<{ visual: VisualInstanceRecord; eventCount: number }>("/v1/visuals/simulate-live", { method: "POST", body: { kind } });
+	}
+};
 
 function IconCloud() {
 	return (
@@ -108,25 +195,62 @@ function IconChevron() {
 }
 
 export default function App() {
+	const isDesktop = window.location.protocol === "tauri:" || "__TAURI_INTERNALS__" in window;
 	const nativeCodex = window.synthCodex;
+	// synthIntern is installed in browsers too as a demo adapter. Codex presence is
+	// the stable packaged-Tauri signal used here to select the Rust-owned path.
+	const nativeIntern = nativeCodex ? window.synthIntern : undefined;
+	const nativeProjects = isDesktop ? window.synthProjects : undefined;
 	const [health, setHealth] = useState<RuntimeHealth | null>(null);
-	const [laguna, setLaguna] = useState<{
-		phase: string;
-		detail?: string | null;
-		loadedModel?: string | null;
-		backend?: string | null;
-	} | null>(null);
+	const [laguna, setLaguna] = useState<LagunaStatus | null>(null);
 	const [sessions, setSessions] = useState<Session[]>([]);
+	const sessionsRef = useRef<Session[]>([]);
 	const [projects, setProjects] = useState<Project[]>([]);
 	const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 	const [eventsBySession, setEventsBySession] = useState<Record<string, RuntimeEvent[]>>({});
+	const [codexActivityBySession, setCodexActivityBySession] = useState<Record<string, CodexActivityEvent[]>>({});
 	const [selectedTargetId, setSelectedTargetId] = useState("local-laguna");
-	const [selectedLoraId, setSelectedLoraId] = useState(LORA_NONE);
+	const [approvalMode, setApprovalMode] = useState<ApprovalMode>(() => {
+		const saved = window.localStorage.getItem("synth.approvalMode");
+		return saved === "accept-edits" || saved === "plan" || saved === "allow-all" ? saved : "ask";
+	});
+	const selectApprovalMode = useCallback((mode: ApprovalMode) => {
+		setApprovalMode(mode);
+		window.localStorage.setItem("synth.approvalMode", mode);
+	}, []);
+	const [modelKnobValues, setModelKnobValues] = useState(() => loadModelKnobValues(window.localStorage));
+	const selectModelKnob = useCallback((targetId: string, knobId: string, value: ModelKnobValue) => {
+		const knob = modelKnobForTarget(targetId, knobId);
+		if (!knob || !knob.options.some((option) => option.id === value)) return;
+		setModelKnobValues((current) => ({
+			...current,
+			[modelKnobKey(targetId, knobId)]: value
+		}));
+		window.localStorage.setItem(knob.storageKey, value);
+	}, []);
+
+	useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
 	const [downloadPaused, setDownloadPaused] = useState(false);
 	const [toast, setToast] = useState<string | null>(null);
 	const [view, setView] = useState<MainView>({ kind: "landing" });
+	const [searchOpen, setSearchOpen] = useState(false);
+	const [unreadChatIds, setUnreadChatIds] = useState<Set<string>>(() => {
+		try {
+			const saved = JSON.parse(window.localStorage.getItem("synth.unreadCompletedChats") ?? "[]");
+			return new Set(Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : []);
+		} catch {
+			return new Set();
+		}
+	});
+	const previousSessionStatusesRef = useRef(new Map<string, Session["status"]>());
 	const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
 	const [standaloneVisual, setStandaloneVisual] = useState<ArtifactRef | null>(null);
+	const [openContainer, setOpenContainer] = useState<ContainerDeployment | null>(null);
+	const [containerPaneExpanded, setContainerPaneExpanded] = useState(false);
+	const [inventoryContainerWidth, setInventoryContainerWidth] = useState(() => {
+		const saved = Number(window.localStorage.getItem("synth.inventoryContainerPaneWidth"));
+		return Number.isFinite(saved) && saved >= 340 ? saved : 420;
+	});
 	const [busy, setBusy] = useState(false);
 	const [demoBusy, setDemoBusy] = useState(false);
 	const [bootError, setBootError] = useState<string | null>(null);
@@ -134,6 +258,7 @@ export default function App() {
 	const [defaultWorkspace, setDefaultWorkspace] = useState<string | null>(null);
 	const eventsBySessionRef = useRef(eventsBySession);
 	const nativeSequencesRef = useRef(new Map<string, number>());
+	const autoOpenedSubagentsRef = useRef(new Set<string>());
 	eventsBySessionRef.current = eventsBySession;
 	const allocateNativeSequence = useCallback((sessionId: string) => {
 		const rendered = eventsBySessionRef.current[sessionId]?.at(-1)?.sequence ?? 0;
@@ -148,22 +273,65 @@ export default function App() {
 	}, []);
 
 	const refreshSessions = useCallback(async () => {
-		const next = await runtimeClient.listSessions();
+		if (nativeIntern) {
+			const next = await nativeIntern.listSessions();
+			setSessions((current) => [
+				...current.filter((session) => session.target.kind !== "intern"),
+				...next
+			]);
+			return next;
+		}
+		const next = await browserRuntimeClient.listSessions();
 		setSessions(next);
 		return next;
-	}, []);
+	}, [nativeIntern]);
 
 	const refreshHealth = useCallback(async () => {
-		const next = await runtimeClient.health();
+		if (isDesktop && window.synthCore && window.synthConfig && window.synthInventory) {
+			const [core, config, counts, currentProjects, currentLaguna] = await Promise.all([
+				window.synthCore.diagnostics(),
+				window.synthConfig.get(),
+				window.synthInventory.counts(),
+				nativeProjects?.list() ?? Promise.resolve([]),
+				window.synthLaguna?.getStatus() ?? Promise.resolve(null)
+			]);
+			const next: RuntimeHealth = {
+				status: "ok",
+				protocolVersion: "synth.desktop-runtime.v1",
+				runtimeId: "core-runtime",
+				startedAt: new Date().toISOString(),
+				intern: { mode: config.apiKeyConfigured ? "remote" : "unconfigured", backendUrl: config.backendUrl },
+				local: {
+					model: "laguna-xs-2.1",
+					mode: currentLaguna?.phase === "ready" ? "mlx" : "stub",
+					modelPath: currentLaguna?.loadedModel ?? null
+				},
+				openrouter: { mode: config.openrouterApiKeyConfigured ? "ready" : "unconfigured", models: [] },
+				inventory: { containers: counts.containers, traces: counts.traces, visuals: core.visualCount },
+				dataStore: {
+					path: core.databasePath,
+					projects: currentProjects.length,
+					sessions: core.sessionCount,
+					runs: core.runCount,
+					events: core.journalHead,
+					usage: counts.usage
+				}
+			};
+			setHealth(next);
+			return next;
+		}
+		const next = await browserRuntimeClient.health();
 		setHealth(next);
 		return next;
-	}, []);
+	}, [isDesktop, nativeProjects]);
 
 	const refreshProjects = useCallback(async () => {
-		const next = await runtimeClient.listProjects();
+		const next = nativeProjects
+			? await nativeProjects.list()
+			: await browserRuntimeClient.listProjects();
 		setProjects(next);
 		return next;
-	}, []);
+	}, [nativeProjects]);
 
 	useEffect(() => {
 		void window.synthCodex?.defaultWorkspace().then(setDefaultWorkspace).catch(() => undefined);
@@ -190,9 +358,24 @@ export default function App() {
 	useEffect(() => {
 		let disposed = false;
 		const boot = nativeCodex
-			? nativeCodex.list().then((persisted) => setSessions(
-				persisted.filter((session) => session.status !== "closed").map(restoreCodexSession)
-			))
+			? Promise.all([nativeCodex.list(), nativeIntern?.listSessions() ?? Promise.resolve([]), refreshProjects(), refreshHealth()]).then(async ([persisted, internSessions]) => {
+				const restored = persisted.filter((session) => session.status !== "closed").map(restoreCodexSession);
+				const combined = [...restored, ...internSessions];
+				sessionsRef.current = combined;
+				setSessions(combined);
+				const core = window.synthCore;
+				if (!core) return;
+				const replay = await Promise.all(combined.map(async (session) => {
+					const rows = await core.sessionEventsAfter(session.id, 0, 2000);
+					return [session.id, rows.map(session.target.kind === "intern" ? appEventToRuntimeEvent : coreEventToRuntime).filter((event): event is RuntimeEvent => event !== null)] as const;
+				}));
+				if (disposed) return;
+				setEventsBySession(Object.fromEntries(replay));
+				for (const [sessionId, events] of replay) {
+					const head = events.at(-1)?.sequence ?? 0;
+					nativeSequencesRef.current.set(sessionId, head);
+				}
+			})
 			: Promise.all([refreshHealth(), refreshSessions(), refreshProjects()]);
 		boot
 			.then(() => {
@@ -200,28 +383,35 @@ export default function App() {
 			})
 			.catch((reason: unknown) => {
 				if (!disposed) {
-					setBootError(reason instanceof Error ? reason.message : String(reason));
+					setBootError(desktopBootError(reason));
 				}
 			});
 		return () => {
 			disposed = true;
 		};
-	}, [nativeCodex, refreshHealth, refreshProjects, refreshSessions]);
+	}, [nativeCodex, nativeIntern, refreshHealth, refreshProjects, refreshSessions]);
 
 	useEffect(() => {
 		if (!nativeCodex) return;
 		return nativeCodex.onEvent((event) => {
 			const sequence = allocateNativeSequence(event.sessionId);
 			const runtimeEvent = codexEventToRuntime(event, sequence);
+			const updatedThreadName = event.method === "thread/name/updated"
+				&& typeof event.params.threadName === "string"
+				? event.params.threadName.trim()
+				: null;
 			setEventsBySession((current) => ({
 				...current,
 				[event.sessionId]: appendEvent(current[event.sessionId] ?? [], runtimeEvent)
 			}));
 			setSessions((current) => current.map((session) => session.id === event.sessionId
-				? { ...session, updatedAt: runtimeEvent.createdAt, latestCursor: sequence,
-					status: runtimeEvent.eventKind === "run.completed" ? "ready"
+					? { ...session, ...(updatedThreadName ? { title: updatedThreadName } : {}),
+						updatedAt: runtimeEvent.createdAt, latestCursor: sequence,
+						status: runtimeEvent.eventKind === "run.started" ? "running"
+							: runtimeEvent.eventKind === "run.completed" ? "ready"
 						: runtimeEvent.eventKind === "run.failed" ? "failed"
 						: runtimeEvent.eventKind === "run.cancelled" ? "cancelled"
+						: runtimeEvent.eventKind === "session/unhealthy" ? "interrupted"
 						: session.status }
 				: session));
 		});
@@ -245,14 +435,17 @@ export default function App() {
 
 	useEffect(() => {
 		const interval = window.setInterval(() => {
-			if (nativeCodex && view.kind !== "inventory" && !sessions.some((s) => s.target.kind === "intern")) return;
+			void window.synthLaguna?.getStatus().then(setLaguna).catch(() => undefined);
+			// Tauri owns local/configured-provider sessions in Codex app-server and
+			// Inventory in CoreRuntime.  The legacy compatibility poll returns a
+			// different session universe and must never replace native state.
+			if (nativeCodex) return;
 			void refreshSessions().catch(() => undefined);
 			void refreshProjects().catch(() => undefined);
 			void refreshHealth().catch(() => undefined);
-			void window.synthLaguna?.getStatus().then(setLaguna).catch(() => undefined);
 		}, 2_500);
 		return () => window.clearInterval(interval);
-	}, [nativeCodex, refreshHealth, refreshProjects, refreshSessions, sessions, view.kind]);
+	}, [nativeCodex, refreshHealth, refreshProjects, refreshSessions]);
 
 	const activeSessionId = useMemo(() => {
 		if (view.kind === "chat") return view.chatId;
@@ -274,13 +467,41 @@ export default function App() {
 
 		async function connect() {
 			try {
-				const page = await runtimeClient.events(sessionId, 0, 500);
+				if (selected?.target.kind === "intern" && nativeIntern) {
+					const rows = await nativeIntern.eventsAfter(sessionId, 0, 500);
+					if (disposed) return;
+					setEventsBySession((current) => ({
+						...current,
+						[sessionId]: rows.map(appEventToRuntimeEvent).filter((event): event is RuntimeEvent => event !== null)
+					}));
+					const unlisten = nativeIntern.onEvent((appEvent) => {
+						if (disposed || appEvent.sessionId !== sessionId) return;
+						const event = appEventToRuntimeEvent(appEvent);
+						if (!event) return;
+						setEventsBySession((current) => ({
+							...current,
+							[sessionId]: appendEvent(current[sessionId] ?? [], event)
+						}));
+						if (
+							event.eventKind.startsWith("run.") ||
+							event.eventKind === "command.receipt" ||
+							event.eventKind === "command.resolved" ||
+							event.eventKind === "session.updated" ||
+							event.eventKind === "intern.projection_updated"
+						) {
+							void refreshSessions().catch(() => undefined);
+						}
+					});
+					subscription = { close: unlisten };
+					return;
+				}
+				const page = await browserRuntimeClient.events(sessionId, 0, 500);
 				if (disposed) return;
 				setEventsBySession((current) => ({
 					...current,
 					[sessionId]: page.events
 				}));
-				subscription = await runtimeClient.subscribe(
+				subscription = await browserRuntimeClient.subscribe(
 					sessionId,
 					page.nextSequence,
 					(event) => {
@@ -292,10 +513,21 @@ export default function App() {
 						if (
 							event.eventKind.startsWith("run.") ||
 							event.eventKind === "usage.recorded" ||
-							event.eventKind === "command.receipt"
+							event.eventKind === "command.receipt" ||
+							event.eventKind === "command.resolved" ||
+							event.eventKind === "session.updated" ||
+							event.eventKind === "intern.projection_updated"
 						) {
 							void refreshSessions().catch(() => undefined);
 						}
+					},
+					undefined,
+					(event) => {
+						if (disposed) return;
+						setCodexActivityBySession((current) => ({
+							...current,
+							[sessionId]: appendCodexActivity(current[sessionId] ?? [], event)
+						}));
 					}
 				);
 			} catch (reason) {
@@ -310,15 +542,15 @@ export default function App() {
 			disposed = true;
 			subscription?.close();
 		};
-	}, [activeSessionId, refreshSessions, sessions, showToast]);
+	}, [activeSessionId, nativeIntern, refreshSessions, sessions, showToast]);
 
 	const state = useMemo(() => {
 		const base = buildLandingState({
 			health,
 			sessions,
 			eventsBySession,
+			codexActivityBySession,
 			selectedTargetId,
-			selectedLoraId,
 			laguna,
 			projects: projects.map((project) => ({ id: project.id, name: project.name }))
 		});
@@ -330,16 +562,62 @@ export default function App() {
 	}, [
 		downloadPaused,
 		eventsBySession,
+		codexActivityBySession,
 		health,
 		laguna,
-		selectedLoraId,
 		selectedTargetId,
 		sessions,
 		projects
 	]);
 
+	const workingChatIds = useMemo(() => new Set(sessions
+		.filter((session) => session.target.kind !== "intern" && session.status === "running")
+		.map((session) => session.id)), [sessions]);
+
+	useEffect(() => {
+		const previous = previousSessionStatusesRef.current;
+		const completedOffscreen: string[] = [];
+		for (const session of sessions) {
+			const oldStatus = previous.get(session.id);
+			const finished = session.status === "ready" || session.status === "interrupted" || session.status === "completed" || session.status === "failed";
+			const visible = view.kind === "chat" && view.chatId === session.id;
+			if (oldStatus === "running" && finished && session.target.kind !== "intern" && !visible) {
+				completedOffscreen.push(session.id);
+			}
+			previous.set(session.id, session.status);
+		}
+		if (completedOffscreen.length === 0) return;
+		setUnreadChatIds((current) => {
+			const next = new Set(current);
+			completedOffscreen.forEach((id) => next.add(id));
+			window.localStorage.setItem("synth.unreadCompletedChats", JSON.stringify([...next]));
+			return next;
+		});
+	}, [sessions, view]);
+
+	useEffect(() => {
+		if (view.kind !== "chat" || !unreadChatIds.has(view.chatId)) return;
+		setUnreadChatIds((current) => {
+			const next = new Set(current);
+			next.delete(view.chatId);
+			window.localStorage.setItem("synth.unreadCompletedChats", JSON.stringify([...next]));
+			return next;
+		});
+	}, [unreadChatIds, view]);
+
 	const activeChat =
 		view.kind === "chat" ? (state.chats.find((c) => c.id === view.chatId) ?? null) : null;
+	const activeChatRunning = activeChat ? (() => {
+		const session = sessions.find((candidate) => candidate.id === activeChat.id);
+		// A restored session record is authoritative. In particular, a stale
+		// run.started event must not resurrect Working after the app-server that
+		// owned that turn has exited or the desktop app has restarted.
+		if (session) return session.status === "running";
+		const latestRunEvent = [...(eventsBySession[activeChat.id] ?? [])]
+			.reverse()
+			.find((event) => event.eventKind.startsWith("run."));
+		return latestRunEvent?.eventKind === "run.started";
+	})() : false;
 	const activeSync =
 		view.kind === "sync"
 			? (state.syncSessions.find((s) => s.id === view.sessionId) ?? null)
@@ -368,19 +646,33 @@ export default function App() {
 	useEffect(() => {
 		setOpenArtifactId(null);
 		setStandaloneVisual(null);
+		setOpenContainer(null);
+		setContainerPaneExpanded(false);
 	}, [viewKey]);
 
 	useEffect(() => {
-		if (!openArtifactId) return;
+		if (openArtifactId || openContainer) return;
+		const surface = activeChat ?? activeSync;
+		const subagents = surface?.artifacts?.find((artifact) => artifact.templateId === "synth.subagents.v1");
+		if (!surface || !subagents || autoOpenedSubagentsRef.current.has(surface.id)) return;
+		autoOpenedSubagentsRef.current.add(surface.id);
+		setStandaloneVisual(null);
+		setOpenArtifactId(subagents.id);
+	}, [activeChat, activeSync, openArtifactId, openContainer]);
+
+	useEffect(() => {
+		if (!openArtifactId && !openContainer) return;
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key === "Escape") {
 				setOpenArtifactId(null);
 				setStandaloneVisual(null);
+				setOpenContainer(null);
+				setContainerPaneExpanded(false);
 			}
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	}, [openArtifactId]);
+	}, [openArtifactId, openContainer]);
 
 	const toggleArtifact = useCallback((id: string | null) => {
 		if (id == null) {
@@ -389,32 +681,92 @@ export default function App() {
 			return;
 		}
 		setStandaloneVisual(null);
+		setOpenContainer(null);
 		setOpenArtifactId((current) => (current === id ? null : id));
 	}, []);
 
-	const openVisualRecord = useCallback((visual: VisualInstanceRecord) => {
-		const artifact = visualRecordToArtifact(visual);
+	const toggleContainer = useCallback(async (id: string | null) => {
+		if (!id || openContainer?.id === id) {
+			setOpenContainer(null);
+			setContainerPaneExpanded(false);
+			return;
+		}
+		if (!window.synthInventory) {
+			showToast("Container inventory requires Synth Desktop");
+			return;
+		}
+		try {
+			const container = await window.synthInventory.getContainer(id);
+			setOpenArtifactId(null);
+			setStandaloneVisual(null);
+			setOpenContainer(container);
+		} catch (reason) {
+			showToast(reason instanceof Error ? reason.message : String(reason));
+		}
+	}, [openContainer?.id, showToast]);
+
+	const probeOpenContainer = useCallback(async () => {
+		if (!openContainer || !window.synthInventory) return;
+		try {
+			const container = await window.synthInventory.probeContainer(openContainer.id);
+			setOpenContainer(container);
+			showToast(`${container.name} · ${container.status}`);
+		} catch (reason) {
+			showToast(reason instanceof Error ? reason.message : String(reason));
+		}
+	}, [openContainer, showToast]);
+
+	const openVisualRecord = useCallback((visual: VisualInstanceRecord | VisualRecord) => {
+		const artifact =
+			"schemaVersion" in visual && visual.schemaVersion === "synth.desktop-visual.v1"
+				? artifactFromVisualRecord(visual as VisualRecord)
+				: visualRecordToArtifact(visual as VisualInstanceRecord);
 		setStandaloneVisual(artifact);
 		setOpenArtifactId(artifact.id);
-		setView({ kind: "inventory" });
+		// Opening an artifact is a side-pane action. Navigation remains explicit so
+		// traces stay beside their catalog and chat-created visuals stay beside chat.
 	}, []);
 
+	useEffect(() => {
+		const unlisten = window.synthVisuals?.onShow?.(async (event) => {
+			const visualId =
+				typeof event.payload?.visualId === "string" ? event.payload.visualId : null;
+			if (!visualId || !window.synthVisuals) return;
+			try {
+				const visual = await window.synthVisuals.get(visualId);
+				openVisualRecord(visual);
+				showToast(`Opened visual · ${visual.title}`);
+			} catch (reason) {
+				showToast(`Visual show failed · ${String(reason)}`);
+			}
+		});
+		return () => unlisten?.();
+	}, [openVisualRecord, showToast]);
+
 	const createConversation = useCallback(
-		async (targetId: string = selectedTargetId, title?: string) => {
+		async (targetId: string = selectedTargetId, title?: string, objective?: string) => {
 			setBusy(true);
 			try {
-				const target = targetIdToExecutionTarget(targetId, selectedLoraId);
+				const target = targetIdToExecutionTarget(targetId);
+				const internObjective = objective?.trim();
+				if (target.kind === "intern" && !internObjective) {
+					throw new Error("Enter an objective to start an Intern session");
+				}
 				if (nativeCodex && target.kind !== "intern") {
 					const id = crypto.randomUUID();
-					const project = projects.find((candidate) => candidate.id === selectedProjectId);
-					const workspace = project?.path ?? await nativeCodex.defaultWorkspace();
-					await nativeCodex.start(codexStartRequest(id, workspace, target));
-					const session = createCodexSession(id, target, selectedProjectId, title);
-					setSessions((current) => [session, ...current]);
+					// Projects organize cloud work. Local/configured-provider Codex tasks
+					// always have their own safe workspace and never require a project.
+					const workspace = await nativeCodex.defaultWorkspace();
+					await nativeCodex.start(codexStartRequest(id, workspace, target, approvalMode));
+					const session = createCodexSession(id, target, null, workspace, title, approvalMode);
+					sessionsRef.current = [session, ...sessionsRef.current.filter((item) => item.id !== session.id)];
+					setSessions(sessionsRef.current);
 					setView({ kind: "chat", chatId: session.id });
 					return session;
 				}
-				const session = await runtimeClient.createSession(target, title, selectedProjectId);
+				const session = target.kind === "intern" && nativeIntern
+					? await nativeIntern.createSession({ target, objective: internObjective!, title, projectId: selectedProjectId })
+					: await browserRuntimeClient.createSession(target, title, selectedProjectId, internObjective);
 				await refreshSessions();
 				if (sessionIsLocalChat(session)) {
 					setView({ kind: "chat", chatId: session.id });
@@ -431,51 +783,55 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[nativeCodex, projects, refreshSessions, selectedLoraId, selectedProjectId, selectedTargetId, showToast]
+		[approvalMode, nativeCodex, nativeIntern, refreshSessions, selectedProjectId, selectedTargetId, showToast]
 	);
 
 	const onAddProject = useCallback(async () => {
 		try {
 			const path = await window.synthDesktop.chooseProjectDirectory();
 			if (!path) return;
-			if (nativeCodex) {
-				const now = new Date().toISOString();
-				const project = { id: crypto.randomUUID(), name: path.split("/").filter(Boolean).at(-1) ?? path,
-					path, vcs: null, metadata: {}, createdAt: now, updatedAt: now };
-				setProjects((current) => [...current, project]);
+			if (nativeProjects) {
+				const project = await nativeProjects.create({ path });
 				setSelectedProjectId(project.id);
+				await refreshProjects();
 				showToast(`Project ready · ${project.name}`);
 				return;
 			}
-			const project = await runtimeClient.createProject({ path });
+			const project = await browserRuntimeClient.createProject({ path });
 			setSelectedProjectId(project.id);
 			await refreshProjects();
 			showToast(`Project ready · ${project.name}`);
 		} catch (reason) {
 			showToast(reason instanceof Error ? reason.message : String(reason));
 		}
-	}, [nativeCodex, refreshProjects, showToast]);
+	}, [nativeProjects, refreshProjects, showToast]);
 
-	const ensureActiveSession = useCallback(async (): Promise<string | null> => {
-		if (activeSessionId) return activeSessionId;
+	const ensureActiveSession = useCallback(async (objective: string): Promise<{ sessionId: string; objectiveConsumed: boolean } | null> => {
+		if (activeSessionId) return { sessionId: activeSessionId, objectiveConsumed: false };
 		if (view.kind !== "landing") return null;
-		const session = await createConversation(selectedTargetId);
-		return session.id;
+		const target = targetIdToExecutionTarget(selectedTargetId);
+		const objectiveConsumed = target.kind === "intern";
+		const session = await createConversation(selectedTargetId, undefined, objectiveConsumed ? objective : undefined);
+		return { sessionId: session.id, objectiveConsumed };
 	}, [activeSessionId, createConversation, selectedTargetId, view.kind]);
 
 	const sendToSession = useCallback(
 		async (sessionId: string, text: string) => {
 			setBusy(true);
 			try {
-				const session = sessions.find((candidate) => candidate.id === sessionId);
-				if (nativeCodex && session?.metadata.runtime === "codex-app-server") {
-					const project = projects.find((candidate) => candidate.id === session.projectId);
+				const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
+				if (nativeCodex && (!session || session.target.kind !== "intern")) {
+					if (!session) throw new Error(`Native Codex session is not registered: ${sessionId}`);
+					if (session.metadata.runtime !== "codex-app-server") {
+						throw new Error(`Session ${sessionId} is not owned by Codex app-server`);
+					}
 					const workspace = typeof session.metadata.workspace === "string"
 						? session.metadata.workspace
-						: project?.path;
-					if (!workspace) throw new Error("Choose a project before starting this Codex session");
+						: await nativeCodex.defaultWorkspace();
 					await nativeCodex.start({
 						...codexStartRequest(sessionId, workspace, session.target),
+						approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : undefined,
+						sandbox: typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : undefined,
 						threadId: typeof session.metadata.threadId === "string" ? session.metadata.threadId : undefined
 					});
 					const sequence = allocateNativeSequence(sessionId);
@@ -486,10 +842,15 @@ export default function App() {
 						createdAt: now, source: "local"
 					}) }));
 					setSessions((current) => current.map((item) => item.id === sessionId ? { ...item, status: "running", updatedAt: now } : item));
-					await nativeCodex.startTurn(sessionId, text);
+					const effort = turnStartEffortForExecutionTarget(session.target, modelKnobValues);
+					await nativeCodex.startTurn(sessionId, text, effort);
 					return;
 				}
-				await runtimeClient.sendMessage(sessionId, text);
+				if (session?.target.kind === "intern" && nativeIntern) {
+					await nativeIntern.send({ sessionId, body: text });
+				} else {
+					await browserRuntimeClient.sendMessage(sessionId, text);
+				}
 				await refreshSessions();
 			} catch (reason) {
 				showToast(reason instanceof Error ? reason.message : String(reason));
@@ -497,18 +858,22 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[allocateNativeSequence, nativeCodex, projects, refreshSessions, sessions, showToast]
+		[allocateNativeSequence, modelKnobValues, nativeCodex, nativeIntern, refreshSessions, showToast]
 	);
 
 	const onComposerSend = useCallback(
 		async (text: string) => {
 			try {
-				const sessionId = await ensureActiveSession();
-				if (!sessionId) {
+				const ensured = await ensureActiveSession(text);
+				if (!ensured) {
 					showToast("No active session");
 					return;
 				}
-				await sendToSession(sessionId, text);
+				// Intern creation itself starts the objective. Sending the same text
+				// again would issue a duplicate operator command.
+				if (!ensured.objectiveConsumed) {
+					await sendToSession(ensured.sessionId, text);
+				}
 			} catch {
 				/* toast already shown */
 			}
@@ -517,7 +882,7 @@ export default function App() {
 	);
 
 	const controlActive = useCallback(
-		async (kind: RuntimeControlKind) => {
+		async (kind: RuntimeControlKind, payload: Record<string, unknown> = {}) => {
 			if (!activeSessionId) return;
 			setBusy(true);
 			try {
@@ -525,13 +890,23 @@ export default function App() {
 				if (nativeCodex && session?.metadata.runtime === "codex-app-server") {
 					if (kind === "close") await nativeCodex.close(activeSessionId);
 					else if (kind === "cancel" || kind === "pause") await nativeCodex.interrupt(activeSessionId);
+					else if (kind === "approve" || kind === "reject") {
+						const approvalId = typeof payload.approvalId === "string" ? payload.approvalId : null;
+						if (!approvalId) throw new Error("Approval id is missing");
+						const decision = kind === "reject" ? "reject" : payload.decision === "always" ? "always" : "once";
+						await nativeCodex.resolveApproval(activeSessionId, approvalId, decision);
+					}
 					else throw new Error(`${kind} is not supported for a Codex session`);
-					setSessions((current) => current.map((item) => item.id === activeSessionId
-						? { ...item, status: kind === "close" ? "completed" : "ready", updatedAt: new Date().toISOString() }
+					if (kind === "close" || kind === "cancel" || kind === "pause") setSessions((current) => current.map((item) => item.id === activeSessionId
+						? { ...item, status: kind === "close" ? "completed" : "interrupted", updatedAt: new Date().toISOString() }
 						: item));
 					return;
 				}
-				await runtimeClient.control(activeSessionId, kind);
+				if (session?.target.kind === "intern" && nativeIntern) {
+					await nativeIntern.control({ sessionId: activeSessionId, kind, payload });
+				} else {
+					await browserRuntimeClient.control(activeSessionId, kind, payload);
+				}
 				await refreshSessions();
 			} catch (reason) {
 				showToast(reason instanceof Error ? reason.message : String(reason));
@@ -539,7 +914,7 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[activeSessionId, nativeCodex, refreshSessions, sessions, showToast]
+		[activeSessionId, nativeCodex, nativeIntern, refreshSessions, sessions, showToast]
 	);
 
 	const onCloudAction = useCallback(
@@ -558,9 +933,24 @@ export default function App() {
 	const onSimulateLive = useCallback(async () => {
 		setDemoBusy(true);
 		try {
-			const result = await runtimeClient.simulateLive("eval");
-			showToast(`Created visual · ${result.visual.title}`);
-			openVisualRecord(result.visual);
+			if (window.synthVisuals) {
+				const templates = await window.synthVisuals.listTemplates("compare");
+				const template = templates.find((candidate) => candidate.id === "model.compare.v1") ?? templates[0];
+				if (!template) throw new Error("No Rust visual template is available for the demo");
+				const visual = await window.synthVisuals.create({
+					templateId: template.id,
+					title: "Live eval comparison",
+					bindings: template.exampleBinding ?? {},
+					status: "live",
+					metadata: { source: "desktop-demo", fixture: true }
+				});
+				showToast(`Created visual · ${visual.title}`);
+				openVisualRecord(visual);
+			} else {
+				const result = await browserRuntimeClient.simulateLive("eval");
+				showToast(`Created visual · ${result.visual.title}`);
+				openVisualRecord(result.visual);
+			}
 			await refreshHealth();
 		} catch (reason) {
 			showToast(reason instanceof Error ? reason.message : String(reason));
@@ -569,12 +959,18 @@ export default function App() {
 		}
 	}, [openVisualRecord, refreshHealth, showToast]);
 
-	const onSelectLora = useCallback((id: string) => {
-		setSelectedLoraId(id);
-		const lora = AVAILABLE_LORAS.find((l) => l.id === id);
-		if (lora) setSelectedTargetId(lora.baseTargetId);
-		else if (id === LORA_NONE) setSelectedTargetId("local-laguna");
-	}, []);
+	const onSelectTarget = useCallback((id: string) => {
+		setSelectedTargetId(id);
+		if (view.kind !== "chat") return;
+		const current = sessionsRef.current.find((session) => session.id === view.chatId);
+		if (!current || executionTargetToUiId(current.target) === id) return;
+		// A Codex app-server thread is bound to its provider/model at creation.
+		// Switching the composer target therefore starts a new task instead of
+		// relabeling the existing thread and silently sending to the old model.
+		setView({ kind: "landing" });
+		setOpenArtifactId(null);
+		setStandaloneVisual(null);
+	}, [view]);
 
 	const onNewConversation = useCallback(() => {
 		setView({ kind: "landing" });
@@ -582,13 +978,46 @@ export default function App() {
 		setStandaloneVisual(null);
 	}, []);
 
+	const onReloadLaguna = useCallback(async () => {
+		const bridge = window.synthLaguna;
+		if (!bridge) throw new Error("Laguna controls are unavailable in this build");
+		await bridge.reload();
+		const status = await bridge.getStatus();
+		setLaguna(status);
+		await refreshHealth();
+		if (status.phase !== "ready") {
+			throw new Error(status.detail ?? `Laguna reload ended in ${status.phase}`);
+		}
+		return status;
+	}, [refreshHealth]);
+
 	const onNewSyncSession = useCallback(() => {
-		void createConversation("intern-sync", "Live Intern");
-	}, [createConversation]);
+		setSelectedTargetId("intern-sync");
+		setView({ kind: "landing" });
+		setOpenArtifactId(null);
+		setStandaloneVisual(null);
+		showToast("Enter an objective to start Live Intern");
+	}, [showToast]);
+
+	useEffect(() => {
+		const onKeyDown = (event: KeyboardEvent) => {
+			if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+				event.preventDefault();
+				setSearchOpen(true);
+			}
+			if (event.key === "Escape") setSearchOpen(false);
+		};
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, []);
 
 	const tabLabel =
 		view.kind === "settings"
 			? "Settings"
+			: view.kind === "connectors"
+				? "Connectors"
+			: view.kind === "visuals"
+				? "Visuals"
 			: view.kind === "inventory"
 				? "Inventory"
 				: view.kind === "async"
@@ -658,7 +1087,8 @@ export default function App() {
 							: typeof args.target === "string"
 								? args.target
 								: selectedTargetId;
-					return createConversation(target);
+					const objective = typeof args.objective === "string" ? args.objective : undefined;
+					return createConversation(target, undefined, objective);
 				}
 				if (action === "send_message") {
 					if (typeof args.body !== "string") throw new Error("send_message requires body");
@@ -671,15 +1101,19 @@ export default function App() {
 				if (action === "open_visual") {
 					const visualId = args.visualId;
 					if (typeof visualId !== "string") throw new Error("open_visual requires visualId");
-					const visual = await runtimeClient.getVisual(visualId);
+					if (!window.synthVisuals) throw new Error("Rust visual registry is unavailable");
+					const visual = await window.synthVisuals.get(visualId);
 					openVisualRecord(visual);
 					return visual;
 				}
 				if (action === "list_inventory") {
+					if (!window.synthInventory || !window.synthVisuals) {
+						throw new Error("Rust inventory is unavailable");
+					}
 					const [containers, traces, visuals] = await Promise.all([
-						runtimeClient.listContainers(),
-						runtimeClient.listTraces(),
-						runtimeClient.listVisuals()
+						window.synthInventory.listContainers(),
+						window.synthInventory.listTraces(),
+						window.synthVisuals.list({ limit: 500 })
 					]);
 					return { containers, traces, visuals };
 				}
@@ -723,25 +1157,40 @@ export default function App() {
 			) : null}
 
 			<div className="body-row">
-				<Sidebar
-					state={state}
+					<Sidebar
+						state={state}
+						lagunaStatus={laguna}
 					activeChatId={view.kind === "chat" ? view.chatId : null}
 					activeSyncId={view.kind === "sync" ? view.sessionId : null}
 					asyncActive={view.kind === "async"}
 					inventoryActive={view.kind === "inventory"}
+					visualsActive={view.kind === "visuals"}
+					connectorsActive={view.kind === "connectors"}
+					workingChatIds={workingChatIds}
+					unreadChatIds={unreadChatIds}
 					onNewConversation={onNewConversation}
 					onNewSyncSession={onNewSyncSession}
 					onOpenChat={(id) => setView({ kind: "chat", chatId: id })}
 					onOpenSyncSession={(id) => setView({ kind: "sync", sessionId: id })}
 					onOpenAsync={() => {
-						const pinned = sessions.find(sessionIsAsync);
+						const pinned = sessions.find((session) =>
+							sessionIsAsync(session) &&
+							(!nativeIntern || session.metadata.runtime === "rust-intern")
+						);
 						if (!pinned || !state.asyncIntern) {
-							void createConversation("intern-async", "Background Intern");
+							setSelectedTargetId("intern-async");
+							setView({ kind: "landing" });
+							setOpenArtifactId(null);
+							setStandaloneVisual(null);
+							showToast("Enter an objective to start Background Intern");
 							return;
 						}
 						setView({ kind: "async", sessionId: pinned.id });
 					}}
 					onOpenInventory={() => setView({ kind: "inventory" })}
+					onOpenVisuals={() => setView({ kind: "visuals" })}
+					onOpenConnectors={() => setView({ kind: "connectors" })}
+					onSearch={() => setSearchOpen(true)}
 					onSettings={() => setView({ kind: "settings" })}
 					 onPauseToggle={() => setDownloadPaused((v) => !v)}
 					onAddProject={onAddProject}
@@ -750,9 +1199,9 @@ export default function App() {
 				/>
 
 				<main className="main-pane">
-					<header className="titlebar" data-testid="titlebar">
-						<div className="titlebar-tabs">
-							<div className="tab tab-active" role="tab" aria-selected>
+					<header className="titlebar" data-testid="titlebar" data-tauri-drag-region="">
+						<div className="titlebar-tabs" data-tauri-drag-region="">
+							<div className="tab tab-active" role="tab" aria-selected data-tauri-drag-region="">
 								<SynthLogo className="tab-logo" compact />
 								<span>{truncate(tabLabel, 28)}</span>
 								<button
@@ -777,47 +1226,40 @@ export default function App() {
 							</button>
 						</div>
 						<div className="titlebar-actions">
-							{health ? (
-								<span
-									className="runtime-pill"
-									data-testid="runtime-status"
-									title={[
+							{(() => {
+								const runtime = localRuntimePresentation(health, laguna);
+								const diagnostic = health
+									? [
 										health.runtimeId,
 										`Laguna ${health.local.mode}`,
 										laguna?.phase ? `sidecar ${laguna.phase}` : null,
 										laguna?.backend ? `backend ${laguna.backend}` : null,
 										health.local.modelPath || "weights not detected",
 										`Intern ${health.intern.mode}`,
-										`OpenRouter ${health.openrouter.mode}`
-									]
-										.filter(Boolean)
-										.join(" · ")}
-								>
-									{laguna?.phase === "ready" || health.local.mode === "mlx"
-										? "Laguna·MLX"
-										: laguna?.phase === "loading" || laguna?.phase === "starting"
-											? "Laguna·starting"
-											: "Laguna·offline"}
-									{health.openrouter.mode === "ready" ? " · OR" : ""}
-									{health.intern.mode === "remote"
-										? " · Intern"
-										: health.intern.mode === "demo"
-											? " · Intern·demo"
-											: " · Intern·setup"}
-									{health.inventory
-										? ` · ${health.inventory.containers}/${health.inventory.traces}/${health.inventory.visuals}`
-										: ""}
-								</span>
-							) : (
-								<span className="runtime-pill is-connecting" data-testid="runtime-status">
-									connecting…
-								</span>
-							)}
+										`OpenRouter ${health.openrouter.mode}`,
+										health.inventory
+											? `Inventory ${health.inventory.containers} containers, ${health.inventory.traces} traces, ${health.inventory.visuals} visuals`
+											: null
+									].filter(Boolean).join(" · ")
+									: laguna?.detail || runtime.label;
+								return (
+									<span
+										className={`runtime-pill ${runtime.tone}`}
+										data-testid="runtime-status"
+										aria-label={runtime.label}
+										title={diagnostic}
+									>
+										<span className="runtime-pill-dot" aria-hidden />
+										<span className="runtime-pill-label">{runtime.visibleLabel}</span>
+									</span>
+								);
+							})()}
 							<button
 								type="button"
 								className="avatar-btn"
 								aria-label="Account"
-								onClick={() => showToast("Account — stub")}
+								data-testid="open-account-settings"
+								onClick={() => setView({ kind: "settings", section: "account" })}
 							>
 								S
 							</button>
@@ -865,26 +1307,74 @@ export default function App() {
 
 					{view.kind === "settings" ? (
 						<SettingsPage
-							selectedLoraId={selectedLoraId}
-							onSelectLora={(id) => {
-								onSelectLora(id);
-								const name =
-									id === LORA_NONE
-										? "Base Laguna"
-										: (AVAILABLE_LORAS.find((l) => l.id === id)?.displayName ?? id);
-								showToast(`Active adapter · ${name}`);
-							}}
+							key={view.section ?? "models"}
 							onBack={() => setView({ kind: "landing" })}
-							onAction={(label) => showToast(`${label} — stub`)}
+							onReloadLaguna={onReloadLaguna}
 							health={health}
 							lagunaPhase={laguna?.phase}
+							initialSection={view.section}
 						/>
 					) : null}
 
-					{view.kind === "inventory" ? (
+					{view.kind === "connectors" ? (
+						<ConnectorsPage
+							onBack={() => setView({ kind: "landing" })}
+							onConfigure={(name) => showToast(name === "Synth Containers" || name === "Synth Visuals"
+								? `${name} is provisioned automatically for every agent`
+								: `${name} setup is not installed in this build`)}
+						/>
+					) : null}
+
+					{view.kind === "visuals" ? (
 						<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`}>
+							<VisualsPage
+								onOpenVisual={openVisualRecord}
+								onGoToChat={(sessionId) => {
+									const session = sessions.find((item) => item.id === sessionId);
+									if (!session) return;
+									if (sessionIsLocalChat(session)) setView({ kind: "chat", chatId: sessionId });
+									else if (sessionIsSync(session)) setView({ kind: "sync", sessionId });
+									else setView({ kind: "async", sessionId });
+								}}
+								onBack={() => setView({ kind: "landing" })}
+								onCreate={() => {
+									void (async () => {
+										if (!window.synthVisuals) {
+											showToast("Visual registry requires Synth Desktop");
+											return;
+										}
+										try {
+											const templates = await window.synthVisuals.listTemplates();
+											const templateId = templates[0]?.id ?? "reward.breakdown.v1";
+											const visual = await window.synthVisuals.create({
+												templateId,
+												title: "New visual",
+												bindings: {},
+												sessionId: activeSessionId ?? undefined
+											});
+											openVisualRecord(visual);
+											showToast(`Created visual · ${visual.title}`);
+										} catch (reason) {
+											showToast(String(reason));
+										}
+									})();
+								}}
+							/>
+							{openArtifact ? (
+								<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
+							) : null}
+						</div>
+					) : null}
+
+					{view.kind === "inventory" ? (
+						<div
+							className={`inventory-workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}`}
+							style={{ "--container-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}
+						>
 							<InventoryPage
 								onOpenVisual={openVisualRecord}
+								onOpenContainer={(id) => void toggleContainer(id)}
+								openContainerId={openContainer?.id ?? null}
 								onBack={() => setView({ kind: "landing" })}
 							/>
 							{openArtifact ? (
@@ -893,6 +1383,21 @@ export default function App() {
 									onClose={() => toggleArtifact(null)}
 								/>
 							) : null}
+							{openContainer ? (
+								<>
+									<PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => {
+										setInventoryContainerWidth(width);
+										window.localStorage.setItem("synth.inventoryContainerPaneWidth", String(width));
+									}} />
+									<ContainerPane
+										container={openContainer}
+										expanded={containerPaneExpanded}
+										onExpandedChange={setContainerPaneExpanded}
+										onProbe={() => void probeOpenContainer()}
+										onClose={() => void toggleContainer(null)}
+									/>
+								</>
+							) : null}
 						</div>
 					) : null}
 
@@ -900,23 +1405,37 @@ export default function App() {
 						<LandingPage
 							state={state}
 							selectedTargetId={selectedTargetId}
-							onSelectTarget={setSelectedTargetId}
+							onSelectTarget={onSelectTarget}
 							onAddProject={() => void onAddProject()}
 							onSetupAgent={() => showToast("Set up agent — stub")}
 						/>
 					) : null}
 
 					{view.kind === "chat" && activeChat ? (
-						<div className={`workbench${openArtifact ? " with-visual" : ""}`}>
+						<div className={`workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}`}>
 								<ChatTranscript
 									chat={activeChat}
 									openArtifactId={openArtifactId}
 									onOpenArtifact={toggleArtifact}
-									onApprove={() => void controlActive("approve")}
-									onReject={() => void controlActive("reject")}
-								/>
+									openContainerId={openContainer?.id ?? null}
+									onOpenContainer={(id) => void toggleContainer(id)}
+									onApprove={(approvalId) => void controlActive("approve", { approvalId })}
+									onAlwaysAllow={(approvalId) => void controlActive("approve", { approvalId, decision: "always" })}
+										onReject={(approvalId) => void controlActive("reject", { approvalId })}
+										running={activeChatRunning}
+										onStop={() => void controlActive("cancel")}
+									/>
 							{openArtifact ? (
 								<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
+							) : null}
+							{openContainer ? (
+								<ContainerPane
+									container={openContainer}
+									expanded={containerPaneExpanded}
+									onExpandedChange={setContainerPaneExpanded}
+									onProbe={() => void probeOpenContainer()}
+									onClose={() => void toggleContainer(null)}
+								/>
 							) : null}
 						</div>
 					) : null}
@@ -947,19 +1466,34 @@ export default function App() {
 						<Composer
 							state={state}
 							onSend={(text) => void onComposerSend(text)}
-							onSelectTarget={setSelectedTargetId}
-							onSelectLora={onSelectLora}
-							onOpenFinetunes={() => setView({ kind: "settings" })}
+							onSelectTarget={onSelectTarget}
+							approvalMode={approvalMode}
+							onSelectApprovalMode={selectApprovalMode}
+							modelKnobValues={modelKnobValues}
+							onSelectModelKnob={selectModelKnob}
 						/>
 					) : null}
-					<TerminalPanel
+			<TerminalPanel
 						open={terminalOpen}
 						workspaceId={terminalWorkspaceId}
 						workspaceRoot={terminalWorkspaceRoot}
 						onOpenChange={setTerminalOpen}
-					/>
-				</main>
-			</div>
+			/>
+		</main>
+	</div>
+
+	{searchOpen ? (
+		<ConversationSearch
+			state={state}
+			onClose={() => setSearchOpen(false)}
+			onOpenChat={(id) => setView({ kind: "chat", chatId: id })}
+			onOpenSync={(id) => setView({ kind: "sync", sessionId: id })}
+			onOpenAsync={() => {
+				const pinned = sessions.find((session) => sessionIsAsync(session));
+				if (pinned) setView({ kind: "async", sessionId: pinned.id });
+			}}
+		/>
+	) : null}
 
 			{toast ? (
 				<div className="toast" role="status" key={toast}>

@@ -23,6 +23,7 @@
   },
   "files": [
     "chrome",
+    "catalog",
     "fixtures",
     "mcp",
     "registry",

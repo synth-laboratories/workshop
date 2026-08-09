@@ -8,6 +8,7 @@ import type {
   RolloutStep,
   TraceAnnotationMarker,
   VisualBinding,
+  VisualBindings,
   VisualBindingKind,
   VisualTemplateMeta
 } from "./types.ts";
@@ -43,6 +44,7 @@ export type BindContext = {
   loadFixture?: FixtureLoader;
   loadTraceV5?: TraceV5Loader;
   loadLocalCas?: LocalCasLoader;
+  loadRun?: (runId: string) => Promise<unknown> | unknown;
   /** When true, missing optional slots are ignored. */
   skipOptional?: boolean;
 };
@@ -63,23 +65,29 @@ async function resolveBinding(
   ctx: BindContext
 ): Promise<unknown> {
   switch (binding.kind) {
+    case "inline":
+      return dig(binding.data, binding.path);
     case "fixture": {
       if (!ctx.loadFixture) {
         throw new Error(`No fixture loader for slot "${binding.slot}"`);
       }
-      return dig(await ctx.loadFixture(binding.source), binding.path);
+      return dig(await ctx.loadFixture(binding.source!), binding.path);
     }
     case "trace_v5": {
       if (!ctx.loadTraceV5) {
         throw new Error(`No Trace V5 loader for slot "${binding.slot}"`);
       }
-      return dig(await ctx.loadTraceV5(binding.source), binding.path);
+      return dig(await ctx.loadTraceV5(binding.source!), binding.path);
     }
     case "local_cas": {
       if (!ctx.loadLocalCas) {
         throw new Error(`No local CAS loader for slot "${binding.slot}"`);
       }
-      return dig(await ctx.loadLocalCas(binding.source), binding.path);
+      return dig(await ctx.loadLocalCas(binding.source!), binding.path);
+    }
+    case "run_ref": {
+      if (!ctx.loadRun) throw new Error(`No run loader for slot "${binding.slot}"`);
+      return dig(await ctx.loadRun(binding.source!), binding.path);
     }
     case "live_sse": {
       // Live slots bind the URL; consumers subscribe via subscribeLiveSlot.
@@ -98,10 +106,11 @@ async function resolveBinding(
  */
 export async function bindTemplateSlots(
   template: VisualTemplateMeta,
-  bindings: VisualBinding[],
+  bindings: VisualBinding[] | VisualBindings,
   ctx: BindContext = {}
 ): Promise<BindResult> {
-  const bySlot = new Map(bindings.map((b) => [b.slot, b]));
+  const bindingSlots = Array.isArray(bindings) ? bindings : bindings.slots;
+  const bySlot = new Map(bindingSlots.map((b) => [b.slot, b]));
   const slots: Record<string, BoundSlotPayload> = {};
   const errors: string[] = [];
 
@@ -125,7 +134,7 @@ export async function bindTemplateSlots(
       slots[slot.name] = {
         slot: slot.name,
         kind: binding.kind,
-        source: binding.source,
+        source: binding.source ?? "inline",
         data
       };
     } catch (err) {
@@ -134,6 +143,40 @@ export async function bindTemplateSlots(
   }
 
   return { templateId: template.id, slots, errors };
+}
+
+export function isVisualBindings(value: unknown): value is VisualBindings {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<VisualBindings>;
+  return candidate.schemaVersion === "synth.visual-bindings.v1" && Array.isArray(candidate.slots);
+}
+
+export function propsFromBindings(value: unknown): { props: Record<string, unknown>; errors: string[] } {
+  if (!isVisualBindings(value)) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return { props: value as Record<string, unknown>, errors: [] };
+    }
+    return { props: {}, errors: ["Visual bindings are not an object"] };
+  }
+  const props: Record<string, unknown> = {};
+  const errors: string[] = [];
+  for (const binding of value.slots) {
+    if (!binding.slot || typeof binding.slot !== "string") errors.push("A visual binding is missing its slot name");
+    else if (binding.kind === "inline") {
+      if (!("data" in binding)) errors.push(`Inline slot "${binding.slot}" has no data`);
+      else props[binding.slot] = binding.data;
+    } else if (binding.kind === "live_sse" && binding.source) {
+      // Live bindings are intentionally unresolved: the browser owns the
+      // EventSource lifecycle. Preserve the endpoint as a slot payload so a
+      // saved visual can reconnect when its pane is reopened.
+      props[binding.slot] = {
+        sse_url: binding.source,
+        schema: binding.schema ?? "evals.event-stream.v1"
+      };
+    } else if ("data" in binding) props[binding.slot] = binding.data;
+    else errors.push(`Slot "${binding.slot}" (${binding.kind}) has not been resolved by the Rust runtime`);
+  }
+  return { props, errors };
 }
 
 /**
@@ -148,6 +191,7 @@ export function subscribeLiveSlot(
   if (binding.kind !== "live_sse") {
     throw new Error(`subscribeLiveSlot expects live_sse, got ${binding.kind}`);
   }
+  if (!binding.source) throw new Error("live_sse binding requires a source");
   return subscribe(binding.source, onEvent, onError);
 }
 

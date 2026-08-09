@@ -28,11 +28,24 @@ export function useLiveEvalStream(options: {
         try {
           const parsed = JSON.parse(msg.data) as LiveEvalEvent;
           setEvents((prev) => [...prev, parsed]);
+          if (
+            parsed.kind === "run_finished" ||
+            parsed.kind === "eval.stream.terminal"
+          ) {
+            setLive(false);
+            es.close();
+          }
         } catch (e) {
           setError(e instanceof Error ? e.message : "SSE parse error");
         }
       };
-      es.onerror = () => setError("SSE connection error");
+      es.onerror = () => {
+        // EventSource reports an error after a server cleanly closes. Preserve
+        // the completed visual instead of replacing it with a false failure.
+        if (es.readyState !== EventSource.CLOSED) {
+          setError("SSE connection error");
+        }
+      };
       return () => {
         es.close();
         setLive(false);

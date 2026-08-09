@@ -5,19 +5,29 @@ import {
 	type LandingState
 } from "../types/landing";
 import { ModelDownloadBar } from "./ModelDownloadBar";
+import { LocalModelResidency } from "./LocalModelResidency";
+import type { LagunaStatus } from "../env";
 
 type Props = {
 	state: LandingState;
+	lagunaStatus?: LagunaStatus | null;
 	activeChatId?: string | null;
 	activeSyncId?: string | null;
 	asyncActive?: boolean;
 	inventoryActive?: boolean;
+	visualsActive?: boolean;
+	connectorsActive?: boolean;
+	workingChatIds?: ReadonlySet<string>;
+	unreadChatIds?: ReadonlySet<string>;
 	onNewConversation: () => void;
 	onNewSyncSession: () => void;
 	onOpenChat: (id: string) => void;
 	onOpenSyncSession: (id: string) => void;
 	onOpenAsync: () => void;
 	onOpenInventory: () => void;
+	onOpenVisuals: () => void;
+	onOpenConnectors: () => void;
+	onSearch: () => void;
 	onSettings: () => void;
 	onPauseToggle: () => void;
 	onAddProject: () => void;
@@ -152,16 +162,24 @@ function IconInventory() {
 
 export function Sidebar({
 	state,
+	lagunaStatus = null,
 	activeChatId = null,
 	activeSyncId = null,
 	asyncActive = false,
 	inventoryActive = false,
+	visualsActive = false,
+	connectorsActive = false,
+	workingChatIds = new Set<string>(),
+	unreadChatIds = new Set<string>(),
 	onNewConversation,
 	onNewSyncSession,
 	onOpenChat,
 	onOpenSyncSession,
 	onOpenAsync,
 	onOpenInventory,
+	onOpenVisuals,
+	onOpenConnectors,
+	onSearch,
 	onSettings,
 	onPauseToggle,
 	onAddProject,
@@ -171,10 +189,11 @@ export function Sidebar({
 	const [chatsOpen, setChatsOpen] = useState(true);
 	const [cloudOpen, setCloudOpen] = useState(true);
 	const [inventoryOpen, setInventoryOpen] = useState(true);
+	const [researchOpen, setResearchOpen] = useState(true);
 
 	return (
 		<aside className="sidebar" data-testid="sidebar">
-			<div className="sidebar-drag-strip" aria-hidden />
+			<div className="sidebar-drag-strip" data-tauri-drag-region="" aria-hidden />
 
 			<nav className="sidebar-nav" aria-label="Primary">
 				<button
@@ -186,11 +205,11 @@ export function Sidebar({
 					<IconPlusSquare />
 					New conversation
 				</button>
-				<button type="button" className="nav-item" onClick={() => undefined}>
+				<button type="button" className={`nav-item${connectorsActive ? " active" : ""}`} onClick={onOpenConnectors} data-testid="open-connectors">
 					<IconConnectors />
 					Connectors
 				</button>
-				<button type="button" className="nav-item" onClick={() => undefined}>
+				<button type="button" className="nav-item" onClick={onSearch} data-testid="open-search" title="Search conversations (⌘K)">
 					<IconSearch />
 					Search
 				</button>
@@ -233,6 +252,11 @@ export function Sidebar({
 									>
 										<IconGlobe />
 										<span className="item-label">{chat.title}</span>
+										{workingChatIds.has(chat.id) ? (
+											<span className="chat-working-indicator" aria-label="Working" title="Working" data-testid={`chat-working-${chat.id}`} />
+										) : unreadChatIds.has(chat.id) ? (
+											<span className="chat-unread-indicator" aria-label="Finished, unviewed" title="Finished, unviewed" data-testid={`chat-unread-${chat.id}`} />
+										) : null}
 									</button>
 								))
 							)}
@@ -345,7 +369,35 @@ export function Sidebar({
 					) : null}
 				</div>
 
-				{/* ── Inventory = containers / traces / visuals ── */}
+				{/* ── Research = Visuals + Inventory ── */}
+				<div className="sidebar-section">
+					<div className="section-header">
+						<button
+							type="button"
+							className="section-header-label"
+							onClick={() => setResearchOpen((v) => !v)}
+							aria-expanded={researchOpen}
+						>
+							Research
+							<SectionChevron open={researchOpen} />
+						</button>
+					</div>
+					{researchOpen ? (
+						<div className="section-list" data-testid="research-nav">
+							<button
+								type="button"
+								className={`chat-item${visualsActive ? " active" : ""}`}
+								onClick={onOpenVisuals}
+								data-testid="open-visuals"
+							>
+								<IconSearch />
+								<span className="item-label">Visuals</span>
+							</button>
+						</div>
+					) : null}
+				</div>
+
+				{/* ── Inventory = containers / traces / usage ── */}
 				<div className="sidebar-section">
 					<div className="section-header">
 						<button
@@ -367,7 +419,7 @@ export function Sidebar({
 								data-testid="open-inventory"
 							>
 								<IconInventory />
-								<span className="item-label">Containers · Traces · Visuals</span>
+								<span className="item-label">Containers · Traces · Usage</span>
 							</button>
 						</div>
 					) : null}
@@ -375,6 +427,7 @@ export function Sidebar({
 			</div>
 
 			<div className="sidebar-footer">
+				<LocalModelResidency status={lagunaStatus} />
 				<ModelDownloadBar state={state} onPauseToggle={onPauseToggle} />
 				<button
 					type="button"

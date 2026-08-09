@@ -1,0 +1,76 @@
+{
+  "schemaVersion": "synth.desktop-app-event.v1",
+  "events": [
+    {
+      "schemaVersion": "synth.desktop-app-event.v1",
+      "sequence": 1,
+      "eventId": "evt_codex_session_started",
+      "sessionId": "sess_local_1",
+      "sessionSequence": 1,
+      "runId": null,
+      "source": "codex",
+      "kind": "session.started",
+      "payload": {
+        "threadId": "thread_abc",
+        "model": "laguna-xs-2.1",
+        "workspace": "/tmp/synth-workspace"
+      },
+      "remoteSequence": null,
+      "commandId": null,
+      "createdAt": "2026-08-08T20:00:00Z"
+    },
+    {
+      "schemaVersion": "synth.desktop-app-event.v1",
+      "sequence": 2,
+      "eventId": "evt_codex_item_agent_message",
+      "sessionId": "sess_local_1",
+      "sessionSequence": 2,
+      "runId": "run_1",
+      "source": "codex",
+      "kind": "item/agentMessage/delta",
+      "payload": {
+        "threadId": "thread_abc",
+        "itemId": "item_1",
+        "delta": "Migration boundary is safe."
+      },
+      "remoteSequence": null,
+      "commandId": null,
+      "createdAt": "2026-08-08T20:00:01Z"
+    },
+    {
+      "schemaVersion": "synth.desktop-app-event.v1",
+      "sequence": 3,
+      "eventId": "evt_visual_created",
+      "sessionId": "sess_local_1",
+      "sessionSequence": 3,
+      "runId": "run_1",
+      "source": "visual",
+      "kind": "visual.created",
+      "payload": {
+        "visualId": "vis_reward_1",
+        "revision": 1,
+        "title": "Reward breakdown"
+      },
+      "remoteSequence": null,
+      "commandId": "mcp_visual_create_1",
+      "createdAt": "2026-08-08T20:00:02Z"
+    },
+    {
+      "schemaVersion": "synth.desktop-app-event.v1",
+      "sequence": 4,
+      "eventId": "evt_system_runtime_ready",
+      "sessionId": null,
+      "sessionSequence": null,
+      "runId": null,
+      "source": "system",
+      "kind": "runtime.ready",
+      "payload": {
+        "schemaVersion": 1
+      },
+      "remoteSequence": null,
+      "commandId": null,
+      "createdAt": "2026-08-08T20:00:03Z"
+    }
+  ],
+  "nextSequence": 4
+}

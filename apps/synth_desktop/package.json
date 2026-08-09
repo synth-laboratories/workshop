@@ -5,7 +5,11 @@
   "description": "Synth Desktop — local-first research engineering workbench",
   "type": "module",
   "scripts": {
-    "dev": "tauri dev",
+		"dev": "../../scripts/desktop-instance.sh dev codex",
+    "dev:instance": "../../scripts/desktop-instance.sh dev",
+    "dev:verify": "../../scripts/desktop.sh verify",
+    "dev:install": "../../scripts/desktop.sh install",
+    "dev:restart": "../../scripts/desktop.sh restart",
     "build": "tauri build",
     "frontend:dev": "vite --host 127.0.0.1",
     "frontend:build": "vite build",
@@ -14,10 +18,10 @@
     "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml",
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:playwright": "playwright test --config playwright.config.ts",
-    "test:bombadil": "node tests/bombadil/run.mjs"
+    "test:bombadil": "node tests/bombadil/run.mjs",
+    "test:bombadil:launch-debt": "BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/launch-debt.spec.ts node tests/bombadil/run.mjs"
   },
   "dependencies": {
-    "@synth/runtime-client": "*",
     "@synth/runtime-protocol": "*",
     "@synth/visuals": "*",
     "@tauri-apps/api": "^2.11.1",

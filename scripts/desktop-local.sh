@@ -28,15 +28,6 @@ if ! curl -sf -H "Authorization: Bearer ${SYNTH_LAGUNA_API_KEY}" \
   exit 1
 fi
 
-# Prefer an already-running compose/host runtime if healthy; else Tauri starts one.
-if [[ -n "${SYNTH_RUNTIME_URL:-}" ]]; then
-  :
-elif curl -sf -H "Authorization: Bearer ${SYNTH_RUNTIME_TOKEN:-dev-runtime-token}" \
-  "http://127.0.0.1:8765/v1/health" >/dev/null 2>&1; then
-  export SYNTH_RUNTIME_URL="http://127.0.0.1:8765"
-  export SYNTH_RUNTIME_TOKEN="${SYNTH_RUNTIME_TOKEN:-dev-runtime-token}"
-fi
-
-echo "[desktop-local] laguna=$SYNTH_LAGUNA_BASE_URL runtime=${SYNTH_RUNTIME_URL:-spawn}"
+echo "[desktop-local] laguna=$SYNTH_LAGUNA_BASE_URL runtime=rust-core"
 cd "$ROOT"
 exec npm run dev --workspace @synth/synth-desktop

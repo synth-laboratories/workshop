@@ -1,21 +1,100 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-	AVAILABLE_LORAS,
 	EXECUTION_TARGETS,
-	LORA_NONE,
 	TARGET_GROUP_LABEL,
 	type ExecutionTargetOption,
 	type LandingState
 } from "../types/landing";
 import { SynthLogo } from "./SynthLogo";
+import type { ApprovalMode } from "../runtime/nativeCodex";
+import {
+	modelCapabilitiesForTarget,
+	modelKnobValue,
+	type ModelKnobSpec,
+	type ModelKnobValue,
+	type ModelKnobValues
+} from "../runtime/modelCapabilities";
 
 type Props = {
 	state: LandingState;
 	onSend: (text: string) => void;
 	onSelectTarget: (id: string) => void;
-	onSelectLora: (id: string) => void;
-	onOpenFinetunes?: () => void;
+	approvalMode: ApprovalMode;
+	onSelectApprovalMode: (mode: ApprovalMode) => void;
+	modelKnobValues: ModelKnobValues;
+	onSelectModelKnob: (targetId: string, knobId: string, value: ModelKnobValue) => void;
 };
+
+const APPROVAL_OPTIONS: Array<{ id: ApprovalMode; label: string; description: string }> = [
+	{ id: "ask", label: "Always ask", description: "Ask before commands or protected actions." },
+	{ id: "accept-edits", label: "Accept edits", description: "Allow workspace edits; ask for risky commands." },
+	{ id: "plan", label: "Plan", description: "Read-only exploration; no file changes." },
+	{ id: "allow-all", label: "Allow all", description: "Full system access without prompts." }
+];
+
+function PermissionMenu({ mode, onSelect, disabled }: { mode: ApprovalMode; onSelect: (mode: ApprovalMode) => void; disabled: boolean }) {
+	const [open, setOpen] = useState(false);
+	const ref = useRef<HTMLDivElement>(null);
+	const selected = APPROVAL_OPTIONS.find((option) => option.id === mode)!;
+	useEffect(() => {
+		if (!open) return;
+		const close = (event: MouseEvent) => { if (!ref.current?.contains(event.target as Node)) setOpen(false); };
+		document.addEventListener("mousedown", close);
+		return () => document.removeEventListener("mousedown", close);
+	}, [open]);
+	return <div className="permission-wrap" ref={ref}>
+		<button type="button" className="permission-select" disabled={disabled} onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-haspopup="listbox" data-testid="approval-mode-select">
+			<IconAsk />{selected.label}<IconChevron />
+		</button>
+		{open ? <div className="permission-menu" role="listbox" aria-label="Approval mode" data-testid="approval-mode-menu">
+			{APPROVAL_OPTIONS.map((option) => <button key={option.id} type="button" role="option" aria-selected={option.id === mode} className={`permission-option${option.id === mode ? " selected" : ""}`} onClick={() => { onSelect(option.id); setOpen(false); }}>
+				<span><strong>{option.label}</strong><small>{option.description}</small></span>{option.id === mode ? <b aria-hidden>✓</b> : null}
+			</button>)}
+		</div> : null}
+	</div>;
+}
+
+function ModelKnobMenu({ value, onSelect, knob }: {
+	value: ModelKnobValue;
+	onSelect: (value: ModelKnobValue) => void;
+	knob: ModelKnobSpec;
+}) {
+	const [open, setOpen] = useState(false);
+	const ref = useRef<HTMLDivElement>(null);
+	const selected = knob.options.find((option) => option.id === value) ?? knob.options[0];
+	useEffect(() => {
+		if (!open) return;
+		const close = (event: MouseEvent) => { if (!ref.current?.contains(event.target as Node)) setOpen(false); };
+		document.addEventListener("mousedown", close);
+		return () => document.removeEventListener("mousedown", close);
+	}, [open]);
+	if (!selected) return null;
+	return <div className="reasoning-effort-wrap" ref={ref}>
+		<button
+			type="button"
+			className={`reasoning-effort-chip${open ? " open" : ""}`}
+			onClick={() => setOpen((value) => !value)}
+			aria-label={`${knob.label}: ${selected.label}`}
+			aria-expanded={open}
+			aria-haspopup="listbox"
+			data-testid={`${knob.testId}-select`}
+		>
+			<span>{selected.label}</span><IconChevron />
+		</button>
+		{open ? <div className="reasoning-effort-menu" role="listbox" aria-label={knob.label} data-testid={`${knob.testId}-menu`}>
+			{knob.options.map((option) => <button
+				key={option.id}
+				type="button"
+				role="option"
+				aria-selected={option.id === value}
+				className={option.id === value ? "selected" : ""}
+				onClick={() => { onSelect(option.id); setOpen(false); }}
+			>
+				<span>{option.label}</span>{option.id === value ? <b aria-hidden>✓</b> : null}
+			</button>)}
+		</div> : null}
+	</div>;
+}
 
 function IconEdit() {
 	return (
@@ -92,18 +171,7 @@ function modelChipLabel(state: LandingState): string {
 		if (state.model.status === "starting" || state.model.status === "loading") {
 			return "Laguna starting…";
 		}
-		const base = "Laguna XS 2.1";
-		if (state.selectedLoraId && state.selectedLoraId !== LORA_NONE) {
-			const lora = AVAILABLE_LORAS.find((l) => l.id === state.selectedLoraId);
-			if (lora) return `${base} · ${lora.displayName}`;
-		}
 		return target?.label ?? `synth/${state.model.name}`;
-	}
-	if (state.selectedLoraId && state.selectedLoraId !== LORA_NONE) {
-		const lora = AVAILABLE_LORAS.find((l) => l.id === state.selectedLoraId);
-		if (lora && lora.baseTargetId === state.selectedTargetId) {
-			return `${target?.label ?? "model"} · ${lora.displayName}`;
-		}
 	}
 	return target?.label ?? "Select model";
 }
@@ -119,7 +187,7 @@ function composerPlaceholder(state: LandingState): string {
 		(state.selectedTargetId === "intern-sync" || state.selectedTargetId === "intern-async") &&
 		state.internMode === "unconfigured"
 	) {
-		return "Configure SYNTH_API_KEY or start with SYNTH_INTERN_DEMO=1";
+		return "Configure Synth Cloud in Settings → Account";
 	}
 	if (state.selectedTargetId === "intern-sync") return "Message live Intern…";
 	if (state.selectedTargetId === "intern-async") return "Message background Intern…";
@@ -138,14 +206,10 @@ const GROUP_ORDER: ExecutionTargetOption["group"][] = ["local", "remote", "cloud
 
 function ModelMenu({
 	state,
-	onSelectTarget,
-	onSelectLora,
-	onOpenFinetunes
+	onSelectTarget
 }: {
 	state: LandingState;
 	onSelectTarget: (id: string) => void;
-	onSelectLora: (id: string) => void;
-	onOpenFinetunes?: () => void;
 }) {
 	const [open, setOpen] = useState(false);
 	const ref = useRef<HTMLDivElement>(null);
@@ -154,12 +218,6 @@ function ModelMenu({
 		state.selectedTargetId === "local-laguna" && state.model.status === "not_installed"
 	);
 	const selected = EXECUTION_TARGETS.find((t) => t.id === state.selectedTargetId);
-	const localLoras = AVAILABLE_LORAS.filter(
-		(l) => l.baseTargetId === "local-laguna" && l.status === "ready"
-	);
-	const remoteLoras = AVAILABLE_LORAS.filter(
-		(l) => l.scope === "remote" && l.baseTargetId === state.selectedTargetId && l.status === "ready"
-	);
 
 	useEffect(() => {
 		if (!open) return;
@@ -179,22 +237,6 @@ function ModelMenu({
 
 	const pickTarget = (targetId: string) => {
 		onSelectTarget(targetId);
-		if (targetId === "local-laguna") {
-			/* keep current LoRA if still local; else base */
-			const current = AVAILABLE_LORAS.find((l) => l.id === state.selectedLoraId);
-			if (!current || current.baseTargetId !== "local-laguna") onSelectLora(LORA_NONE);
-		} else {
-			const match = AVAILABLE_LORAS.find((l) => l.baseTargetId === targetId && l.status === "ready");
-			onSelectLora(match && state.selectedLoraId === match.id ? match.id : LORA_NONE);
-		}
-		setOpen(false);
-	};
-
-	const pickLora = (loraId: string) => {
-		onSelectLora(loraId);
-		const lora = AVAILABLE_LORAS.find((l) => l.id === loraId);
-		if (lora) onSelectTarget(lora.baseTargetId);
-		else onSelectTarget("local-laguna");
 		setOpen(false);
 	};
 
@@ -228,23 +270,23 @@ function ModelMenu({
 											state.model.status === "error" ||
 											state.model.status === "starting" ||
 											state.model.status === "loading");
-									const downloading =
-										target.id === "local-laguna" &&
-										(state.model.status === "downloading" ||
-											state.model.status === "starting" ||
-											state.model.status === "loading");
-									const selectedHere =
-										target.id === state.selectedTargetId &&
-										(target.id !== "local-laguna" ||
-											state.selectedLoraId === LORA_NONE ||
-											!AVAILABLE_LORAS.some(
-												(l) => l.id === state.selectedLoraId && l.baseTargetId === "local-laguna"
-											));
+									const localProgress =
+										target.id === "local-laguna"
+											? state.model.status === "downloading"
+												? `Downloading… ${state.model.downloadProgress ?? 0}%`
+												: state.model.status === "loading"
+													? "Loading local weights…"
+													: state.model.status === "starting"
+														? "Connecting to local runtime…"
+														: null
+											: null;
+									const selectedHere = target.id === state.selectedTargetId;
 									return (
 										<button
 											key={target.id}
 											type="button"
 											role="option"
+											data-testid={`composer-model-option-${target.id}`}
 											aria-selected={selectedHere}
 											disabled={localBlocked}
 											className={`composer-model-option${selectedHere ? " selected" : ""}`}
@@ -253,9 +295,7 @@ function ModelMenu({
 											<span className="composer-model-option-main">
 												<span className="composer-model-option-label">{target.label}</span>
 												<span className="composer-model-option-desc">
-													{downloading
-														? `Downloading… ${state.model.downloadProgress ?? 0}%`
-														: target.description}
+													{localProgress ?? target.description}
 												</span>
 											</span>
 											{selectedHere ? (
@@ -266,129 +306,63 @@ function ModelMenu({
 										</button>
 									);
 								})}
-
-								{group === "local" && localLoras.length > 0 ? (
-									<>
-										<div className="composer-model-subgroup-label">Laguna LoRAs</div>
-										<button
-											type="button"
-											role="option"
-											aria-selected={
-												state.selectedTargetId === "local-laguna" &&
-												state.selectedLoraId === LORA_NONE
-											}
-											className={`composer-model-option is-lora${
-												state.selectedTargetId === "local-laguna" &&
-												state.selectedLoraId === LORA_NONE
-													? " selected"
-													: ""
-											}`}
-											onClick={() => pickLora(LORA_NONE)}
-										>
-											<span className="composer-model-option-main">
-												<span className="composer-model-option-label">Base (no adapter)</span>
-												<span className="composer-model-option-desc">Stock Laguna XS</span>
-											</span>
-											{state.selectedTargetId === "local-laguna" &&
-											state.selectedLoraId === LORA_NONE ? (
-												<span className="composer-model-check" aria-hidden>
-													✓
-												</span>
-											) : null}
-										</button>
-										{localLoras.map((lora) => (
-											<button
-												key={lora.id}
-												type="button"
-												role="option"
-												aria-selected={state.selectedLoraId === lora.id}
-												className={`composer-model-option is-lora${
-													state.selectedLoraId === lora.id ? " selected" : ""
-												}`}
-												onClick={() => pickLora(lora.id)}
-											>
-												<span className="composer-model-option-main">
-													<span className="composer-model-option-label">{lora.displayName}</span>
-													<span className="composer-model-option-desc">
-														{lora.name} · {lora.revision}
-													</span>
-												</span>
-												{state.selectedLoraId === lora.id ? (
-													<span className="composer-model-check" aria-hidden>
-														✓
-													</span>
-												) : null}
-											</button>
-										))}
-									</>
-								) : null}
-
-								{group === "remote" && remoteLoras.length > 0 ? (
-									<>
-										<div className="composer-model-subgroup-label">Remote LoRAs</div>
-										{remoteLoras.map((lora) => (
-											<button
-												key={lora.id}
-												type="button"
-												role="option"
-												aria-selected={state.selectedLoraId === lora.id}
-												className={`composer-model-option is-lora${
-													state.selectedLoraId === lora.id ? " selected" : ""
-												}`}
-												onClick={() => pickLora(lora.id)}
-											>
-												<span className="composer-model-option-main">
-													<span className="composer-model-option-label">{lora.displayName}</span>
-													<span className="composer-model-option-desc">
-														{lora.name} · {lora.revision}
-													</span>
-												</span>
-												{state.selectedLoraId === lora.id ? (
-													<span className="composer-model-check" aria-hidden>
-														✓
-													</span>
-												) : null}
-											</button>
-										))}
-									</>
-								) : null}
 							</div>
 						);
 					})}
 					<p className="composer-model-footnote">
 						{selected?.group === "local"
-							? "Local · base + LoRA · usage on daemon ledger"
+							? "Local Laguna XS · usage on daemon ledger"
 							: selected?.group === "remote"
 								? "Remote via Codex/ACP · usage tracked locally"
 								: "Cloud Intern · mailbox authority"}
 					</p>
-					{onOpenFinetunes ? (
-						<button
-							type="button"
-							className="composer-model-finetunes-link"
-							onClick={() => {
-								setOpen(false);
-								onOpenFinetunes();
-							}}
-							data-testid="open-finetunes-settings"
-						>
-							Manage finetunes in Settings…
-						</button>
-					) : null}
 				</div>
 			) : null}
 		</div>
 	);
 }
 
-export function Composer({ state, onSend, onSelectTarget, onSelectLora, onOpenFinetunes }: Props) {
+export function Composer({ state, onSend, onSelectTarget, approvalMode, onSelectApprovalMode, modelKnobValues, onSelectModelKnob }: Props) {
 	const [value, setValue] = useState("");
+	const dockRef = useRef<HTMLDivElement>(null);
 	const enabled = composerEnabled(state);
 	const placeholder = composerPlaceholder(state);
+	const modelCapabilities = modelCapabilitiesForTarget(state.selectedTargetId);
 
 	useEffect(() => {
 		setValue("");
 	}, [state.id]);
+
+	useLayoutEffect(() => {
+		const dock = dockRef.current;
+		const mainPane = dock?.closest<HTMLElement>(".main-pane");
+		if (!dock || !mainPane) return;
+
+		let frame = 0;
+		const updateClearance = () => {
+			frame = 0;
+			const clearance = Math.ceil(window.innerHeight - dock.getBoundingClientRect().top + 16);
+			mainPane.style.setProperty("--composer-clearance", `${clearance}px`);
+		};
+		const scheduleClearanceUpdate = () => {
+			if (frame) cancelAnimationFrame(frame);
+			frame = requestAnimationFrame(updateClearance);
+		};
+		const resizeObserver = new ResizeObserver(scheduleClearanceUpdate);
+		resizeObserver.observe(dock);
+		const mutationObserver = new MutationObserver(scheduleClearanceUpdate);
+		mutationObserver.observe(mainPane, { childList: true, subtree: true });
+		window.addEventListener("resize", scheduleClearanceUpdate);
+		updateClearance();
+
+		return () => {
+			if (frame) cancelAnimationFrame(frame);
+			resizeObserver.disconnect();
+			mutationObserver.disconnect();
+			window.removeEventListener("resize", scheduleClearanceUpdate);
+			mainPane.style.removeProperty("--composer-clearance");
+		};
+	}, []);
 
 	const submit = () => {
 		if (!enabled || !value.trim()) return;
@@ -397,7 +371,7 @@ export function Composer({ state, onSend, onSelectTarget, onSelectLora, onOpenFi
 	};
 
 	return (
-		<div className="composer-dock" data-testid="composer-dock">
+		<div className="composer-dock" data-testid="composer-dock" ref={dockRef}>
 			<div className={`composer${enabled ? "" : " is-disabled"}`} data-testid="composer">
 				<textarea
 					className="composer-input"
@@ -420,19 +394,18 @@ export function Composer({ state, onSend, onSelectTarget, onSelectLora, onOpenFi
 						<button type="button" className="composer-icon-btn" disabled={!enabled} aria-label="Edit context">
 							<IconEdit />
 						</button>
-						<button type="button" className="permission-select" disabled={!enabled}>
-							<IconAsk />
-							Always ask
-							<IconChevron />
-						</button>
+						<PermissionMenu mode={approvalMode} onSelect={onSelectApprovalMode} disabled={!enabled} />
 					</div>
 					<div className="composer-right">
-						<ModelMenu
-							state={state}
-							onSelectTarget={onSelectTarget}
-							onSelectLora={onSelectLora}
-							onOpenFinetunes={onOpenFinetunes}
-						/>
+						<ModelMenu state={state} onSelectTarget={onSelectTarget} />
+						{modelCapabilities?.knobs.map((knob) => (
+							<ModelKnobMenu
+								key={knob.id}
+								knob={knob}
+								value={modelKnobValue(modelKnobValues, state.selectedTargetId, knob)}
+								onSelect={(value) => onSelectModelKnob(state.selectedTargetId, knob.id, value)}
+							/>
+						))}
 						<button type="button" className="composer-icon-btn" disabled={!enabled} aria-label="Voice input">
 							<IconMic />
 						</button>

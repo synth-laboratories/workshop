@@ -18,6 +18,8 @@ test("stable accessibility testids remain on core surfaces", () => {
     "components/Composer.tsx",
     "components/LandingPage.tsx",
     "components/VisualPane.tsx",
+    "components/VisualHost.tsx",
+    "components/VisualsPage.tsx",
     "components/InventoryPage.tsx",
     "components/CloudDesk.tsx",
   ];
@@ -35,34 +37,67 @@ test("stable accessibility testids remain on core surfaces", () => {
     "visual-pane",
     "inventory-page",
     "cloud-desk",
+    "visuals-page",
+    "open-visuals",
   ]) {
     assert.ok(blob.includes(`data-testid="${id}"`) || blob.includes(`'${id}'`), id);
   }
 });
 
-test("execution targets include Laguna local + OpenRouter Luna/Laguna + Intern", () => {
-  const types = read("types/landing.ts");
-  assert.ok(types.includes("local-laguna") || types.includes("Laguna XS"));
-  assert.ok(types.includes("openrouter") || types.includes("kimi-k2.5") || types.includes("Luna"));
-  assert.ok(types.includes("laguna-s-2.1") || types.includes("Laguna S"));
-  assert.ok(types.includes("intern"));
+test("installed desktop authorizes its declared window drag regions", () => {
+  const app = read("App.tsx");
+  const sidebar = read("components/Sidebar.tsx");
+  const permissions = readFileSync(join(appRoot, "src-tauri/capabilities/default.json"), "utf8");
+  assert.match(`${app}\n${sidebar}`, /data-tauri-drag-region/);
+  assert.match(permissions, /core:window:allow-start-dragging/);
 });
 
-test("renderer installs a Tauri runtime bridge with a browser fallback", () => {
+test("execution targets include Laguna local + OpenRouter Luna/Laguna + Intern", () => {
+  const types = read("types/landing.ts");
+  const composer = read("components/Composer.tsx");
   const bridge = read("runtime/desktopBridge.ts");
-  assert.ok(bridge.includes('invoke<T>("runtime_request"'));
-  assert.ok(bridge.includes('listen<RuntimeEventEnvelope>("runtime:subscription"'));
+  const capabilities = read("runtime/modelCapabilities.ts");
+  assert.ok(types.includes("local-laguna") || types.includes("Laguna XS"));
+  assert.ok(types.includes('label: "GPT 5.6 Luna"'));
+  assert.ok(types.includes("laguna-s-2.1") || types.includes("Laguna S"));
+  assert.ok(types.includes("intern"));
+  assert.ok(composer.includes('data-testid={`${knob.testId}-select`}'));
+  assert.ok(composer.includes('data-testid={`${knob.testId}-menu`}'));
+  assert.ok(capabilities.includes('testId: "reasoning-effort"'));
+  assert.ok(bridge.includes("request: { sessionId, prompt, effort }"));
+});
+
+test("model knobs are registered once and consumed without model-specific UI or transport branches", () => {
+  const registry = read("runtime/modelCapabilities.ts");
+  const composer = read("components/Composer.tsx");
+  const app = read("App.tsx");
+  for (const target of ["local-laguna", "openrouter-luna", "openrouter-laguna-s"]) {
+    assert.ok(registry.includes(`targetId: "${target}"`), target);
+  }
+  assert.ok(composer.includes("modelCapabilitiesForTarget(state.selectedTargetId)"));
+  assert.ok(composer.includes("modelCapabilities?.knobs.map"));
+  assert.ok(!composer.includes('state.selectedTargetId === "openrouter-luna"'));
+  assert.ok(!composer.includes('state.selectedTargetId === "openrouter-laguna-s"'));
+  assert.ok(app.includes("turnStartEffortForExecutionTarget(session.target, modelKnobValues)"));
+  assert.ok(!app.includes('session.target.model === "openai/gpt-5.6-luna"'));
+  assert.ok(!app.includes('session.target.model === "poolside/laguna-s-2.1"'));
+});
+
+test("renderer keeps the HTTP runtime bridge browser-only", () => {
+  const bridge = read("runtime/desktopBridge.ts");
   assert.ok(bridge.includes("browserRuntimeBridge"));
-  assert.ok(bridge.includes("window.synthRuntime ??="));
+  assert.ok(bridge.includes("if (!isTauri) window.synthRuntime ??="));
+  assert.ok(!bridge.includes('invoke<T>("runtime_request"'));
+  assert.ok(!bridge.includes('"runtime_subscribe"'));
 });
 
 test("renderer uses Tauri commands for desktop capabilities", () => {
   const bridge = read("runtime/desktopBridge.ts");
   assert.ok(bridge.includes('"project_choose_directory"'));
   assert.ok(bridge.includes('"laguna_get_status"'));
-  assert.ok(bridge.includes('"runtime_subscribe"'));
-  assert.ok(bridge.includes('"runtime_unsubscribe"'));
-  assert.ok(bridge.includes('{ subscriptionId }'));
+  assert.ok(bridge.includes('"core_projects_list"'));
+  assert.ok(bridge.includes('"intern_session_events_after"'));
+  assert.ok(bridge.includes('listen<AppEvent>("runtime:event"'));
   assert.ok(bridge.includes('"codex_sessions_list"'));
 });
 
@@ -78,6 +113,16 @@ test("native Codex sessions use one sequence allocator and restore persisted ses
   assert.ok(nativeCodex.includes('eventKind = "run.cancelled"'));
 });
 
+test("container skill keeps registry discovery separate from policy execution", () => {
+  const skill = readFileSync(join(appRoot, "skills/use-synth-containers/SKILL.md"), "utf8");
+  assert.ok(skill.includes("custom tool `mcp__synth_containers`"));
+  assert.ok(skill.includes('"method":"container_list"'));
+  assert.ok(skill.includes("engine is not a policy"));
+  assert.ok(skill.includes("Reject fixed action lists"));
+  assert.ok(!skill.includes("container_run_rollouts"));
+  assert.ok(!skill.includes("container_run_and_visualize"));
+});
+
 test("Intern agent messages are projected into transcript and removed from activity", () => {
   const sessionView = read("runtime/sessionView.ts");
   assert.ok(sessionView.includes('event.eventKind === "agent_message"'));
@@ -88,8 +133,83 @@ test("Intern agent messages are projected into transcript and removed from activ
 test("unconfigured Intern has explicit boot guidance and a disabled composer", () => {
   const composer = read("components/Composer.tsx");
   const settings = read("components/SettingsPage.tsx");
-  assert.ok(composer.includes("Configure SYNTH_API_KEY or start with SYNTH_INTERN_DEMO=1"));
+  assert.ok(composer.includes("Configure Synth Cloud in Settings → Account"));
   assert.ok(composer.includes('state.internMode !== "unconfigured"'));
-  assert.ok(settings.includes("SYNTH_API_KEY=… npm run dev:desktop"));
+  assert.ok(settings.includes("Settings → Account → Synth backend"));
   assert.ok(settings.includes("SYNTH_INTERN_DEMO=1 npm run dev:desktop"));
+});
+
+test("Synth API settings keep routing in TOML and secrets in an env file", () => {
+  const settings = read("components/BackendSettings.tsx");
+  assert.ok(settings.includes('data-testid="backend-settings"'));
+  assert.ok(settings.includes("Backend API"));
+  assert.ok(settings.includes("Secrets env file"));
+  assert.ok(settings.includes('type="password"'));
+  assert.ok(settings.includes("Save and reconnect"));
+  assert.ok(settings.includes('staging: "https://api-dev.usesynth.ai"'));
+  assert.ok(settings.includes("Preserve explicitly customized endpoints"));
+});
+
+test("native Intern defers creation until a nonempty objective is submitted", () => {
+  const app = read("App.tsx");
+  assert.ok(app.includes('throw new Error("Enter an objective to start an Intern session")'));
+  assert.ok(app.includes("objective: internObjective!"));
+  assert.ok(app.includes("objectiveConsumed"));
+  assert.ok(app.includes("if (!ensured.objectiveConsumed)"));
+  assert.ok(app.includes('setSelectedTargetId("intern-sync")'));
+  assert.ok(app.includes('setSelectedTargetId("intern-async")'));
+});
+
+test("native Intern projection changes refresh the renderer session cache", () => {
+  const app = read("App.tsx");
+  assert.ok(app.includes('event.eventKind === "intern.projection_updated"'));
+  assert.ok(app.includes('event.eventKind === "session.updated"'));
+  assert.ok(app.includes('event.eventKind === "command.resolved"'));
+});
+
+test("migrated demo async pins cannot mask the Rust singleton", () => {
+  const app = read("App.tsx");
+  const sessionView = read("runtime/sessionView.ts");
+  assert.ok(app.includes('session.metadata.runtime === "rust-intern"'));
+  assert.ok(sessionView.includes('const isRustIntern = session.metadata.runtime === "rust-intern"'));
+  assert.ok(sessionView.includes("if (asyncIntern && !isRustIntern) continue"));
+});
+
+test("renderer exposes CoreRuntime visual registry bridge commands", () => {
+  const bridge = read("runtime/desktopBridge.ts");
+  assert.ok(bridge.includes('"visuals_list"'));
+  assert.ok(bridge.includes('"visuals_create"'));
+  assert.ok(bridge.includes('"visuals_show"'));
+  assert.ok(bridge.includes("window.synthVisuals ??="));
+  assert.ok(bridge.includes('"visual:show"'));
+});
+
+test("Runtime Settings projects the persisted Rust run count", () => {
+  const app = read("App.tsx");
+  const settings = read("components/SettingsPage.tsx");
+  assert.ok(app.includes("runs: core.runCount"));
+  assert.ok(settings.includes("health?.dataStore?.runs"));
+  assert.ok(!app.includes("runs: 0"));
+});
+
+test("desktop Intern uses the typed Rust session bridge with journal replay", () => {
+  const bridge = read("runtime/desktopBridge.ts");
+  const app = read("App.tsx");
+  for (const command of [
+    "intern_sessions_list",
+    "intern_session_create",
+    "intern_session_send",
+    "intern_session_control",
+    "intern_session_events_after",
+  ]) assert.ok(bridge.includes(`"${command}"`), command);
+  assert.ok(bridge.includes('listen<AppEvent>("runtime:event"'));
+  assert.ok(app.includes("nativeIntern.createSession"));
+  assert.ok(app.includes("nativeIntern.eventsAfter"));
+  assert.ok(app.includes("appEventToRuntimeEvent"));
+});
+
+test("stale Tauri binaries produce an actionable restart message", () => {
+  const app = read("App.tsx");
+  assert.ok(app.includes("Desktop backend was updated; fully quit and reopen Synth Desktop."));
+  assert.ok(app.includes("unknown command"));
 });

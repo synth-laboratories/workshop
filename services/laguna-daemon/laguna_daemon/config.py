@@ -39,6 +39,7 @@ class LagunaConfig:
     idle_unload_after_seconds: int
     context_length: int
     started_at: float
+    responses_engine: str = "native"
 
     @property
     def upstream_url(self) -> str:
@@ -158,10 +159,15 @@ class LagunaConfig:
             data_dir=data_dir,
             auto_load=_truthy(os.getenv("SYNTH_LAGUNA_AUTO_LOAD"), default=True),
             idle_unload_after_seconds=int(
-                os.getenv("SYNTH_LAGUNA_IDLE_UNLOAD_SECONDS", "900")
+                # Keep the local-development memory cycle observable. Release
+                # builds should set this explicitly (for example, 900).
+                os.getenv("SYNTH_LAGUNA_IDLE_UNLOAD_SECONDS", "30")
             ),
             context_length=int(
                 os.getenv("SYNTH_LAGUNA_CONTEXT_LENGTH", str(DEFAULT_CONTEXT_LENGTH))
             ),
             started_at=time.time(),
+            responses_engine=(
+                os.getenv("SYNTH_LAGUNA_RESPONSES_ENGINE") or "native"
+            ).strip().lower(),
         )

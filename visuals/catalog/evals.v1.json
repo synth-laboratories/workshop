@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "synth.visual-template-catalog.v1",
+  "id": "evals.v1",
+  "templates": [
+    { "id": "eval.overview.v1", "status": "planned", "description": "Run-level metrics, status, and headline regressions." },
+    { "id": "eval.case_table.v1", "status": "planned", "description": "Filterable per-case results and drill-down entrypoint." },
+    { "id": "eval.model_compare.v1", "status": "available", "implementation": "model.compare.v1" },
+    { "id": "eval.failure_analysis.v1", "status": "planned", "description": "Failure clusters, exemplars, and contributing dimensions." },
+    { "id": "eval.rollout_inspector.v1", "status": "available", "implementation": "posttrain.rollout_viewer.v1" },
+    { "id": "eval.live_run.v1", "status": "available", "implementation": "live.eval_stream.v1" },
+    { "id": "eval.regression.v1", "status": "planned", "description": "Baseline/candidate deltas with regression triage." }
+  ]
+}

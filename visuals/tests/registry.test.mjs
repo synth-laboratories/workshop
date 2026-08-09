@@ -6,12 +6,12 @@ import test from "node:test";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-test("visuals package exposes nine templates", () => {
+test("visuals package exposes the registered templates", () => {
   const templatesDir = join(root, "templates");
   const ids = readdirSync(templatesDir).filter((name) =>
     existsSync(join(templatesDir, name, "template.json")),
   );
-  assert.equal(ids.length, 9);
+  assert.ok(ids.length >= 10);
   for (const id of [
     "craftax.eval_matrix.v1",
     "craftax.rollout_scrub.v1",
@@ -22,13 +22,29 @@ test("visuals package exposes nine templates", () => {
     "live.eval_stream.v1",
     "live.dock_harbor.v1",
     "live.intern_acceptance.v1",
+    "trace.rollout_inspector.v1",
+    "live.container_rollouts.v1",
   ]) {
     assert.ok(ids.includes(id), `missing ${id}`);
     const meta = JSON.parse(
       readFileSync(join(templatesDir, id, "template.json"), "utf8"),
     );
     assert.equal(meta.id, id);
+    assert.equal(meta.schemaVersion, "synth.visual-template.v1");
     assert.ok(existsSync(join(templatesDir, id, "shell.tsx")));
+  }
+});
+
+test("eval catalog declares the initial versioned family", () => {
+  const catalog = JSON.parse(readFileSync(join(root, "catalog", "evals.v1.json"), "utf8"));
+  assert.equal(catalog.schemaVersion, "synth.visual-template-catalog.v1");
+  assert.deepEqual(catalog.templates.map((template) => template.id), [
+    "eval.overview.v1", "eval.case_table.v1", "eval.model_compare.v1",
+    "eval.failure_analysis.v1", "eval.rollout_inspector.v1", "eval.live_run.v1",
+    "eval.regression.v1"
+  ]);
+  for (const template of catalog.templates.filter((template) => template.status === "available")) {
+    assert.ok(existsSync(join(root, "templates", template.implementation, "template.json")), template.id);
   }
 });
 

@@ -19,6 +19,12 @@ function asSlice(raw: unknown): MatrixSlice {
   return matrixFixture as MatrixSlice;
 }
 
+function formatCostUsd(cost: number): string {
+  if (cost === 0) return "$0.00";
+  if (cost < 0.01) return `$${cost.toFixed(5).replace(/0+$/, "")}`;
+  return `$${cost.toFixed(2)}`;
+}
+
 function ParetoChart({ points }: { points: EvalMatrixPoint[] }) {
   const maxAch = Math.max(...points.map((p) => p.achievements), 1);
   const maxCost = Math.max(...points.map((p) => p.cost_usd), 0.01);
@@ -180,7 +186,7 @@ export function Shell(props: ShellProps) {
             },
             {
               label: "$ / rollout",
-              value: accent ? `$${accent.cost_usd.toFixed(2)}` : "—"
+              value: accent ? formatCostUsd(accent.cost_usd) : "—"
             },
             {
               label: "Models",

@@ -1,4 +1,5 @@
 {
+  "schemaVersion": "synth.visual-template.v1",
   "id": "posttrain.rollout_viewer.v1",
   "title": "PostTrain rollout viewer",
   "genre": "posttrain",

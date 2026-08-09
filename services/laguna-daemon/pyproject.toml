@@ -4,17 +4,21 @@ version = "0.1.0"
 description = "OpenAI-compatible Laguna XS 2.1 loopback for Synth Desktop"
 requires-python = ">=3.11"
 dependencies = [
+  "cryptography==45.0.6",
   "fastapi>=0.115",
   "httpx>=0.27",
   "huggingface-hub>=0.26",
+  "openresponses-types==2.3.0.post1",
   "pydantic>=2.9",
   "uvicorn>=0.32",
+  "websockets==16.0",
 ]
 
 [project.optional-dependencies]
 mlx = [
-  "mlx>=0.26; platform_system == 'Darwin' and platform_machine == 'arm64'",
-  "mlx-lm>=0.26; platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "mlx==0.32.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "mlx-lm==0.31.3; platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "mlx-vlm==0.6.6; platform_system == 'Darwin' and platform_machine == 'arm64'",
 ]
 
 [project.scripts]

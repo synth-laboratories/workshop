@@ -35,7 +35,6 @@
     "icon": ["../resources/icon.png", "../resources/icon.icns"],
     "resources": {
       "../../../services/laguna-daemon/laguna_daemon": "services/laguna-daemon/laguna_daemon",
-      "../../../services/local-runtime/src": "services/local-runtime/src",
       "../../../visuals": "visuals"
     }
   }

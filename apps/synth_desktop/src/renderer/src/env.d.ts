@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { RuntimeEvent } from "@synth/runtime-protocol";
+import type { AppEvent, CodexActivityEvent, ContainerDeployment, CoreDiagnostics, InternSessionControlRequest, InternSessionControlResult, InternSessionCreateRequest, InternSessionSendRequest, InternSessionSendResult, Project, ResolvedTraceProjection, RuntimeEvent, Session, TraceBundleIngestRequest, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry } from "@synth/runtime-protocol";
 
 export {};
 
@@ -13,13 +13,29 @@ export type EventSubscription = {
 	close(): void;
 };
 
+export type DesktopInstanceDiagnostics = {
+	mode: "development" | "canonical";
+	name?: string | null;
+	displayName: string;
+	appVersion: string;
+	sourceRevision: string;
+	buildRevision: string;
+	buildTimestamp: string;
+	processId: number;
+	executable: string;
+	dataRoot: string;
+	viteUrl?: string | null;
+	manifest?: string | null;
+};
+
 export type RuntimeBridge = {
 	request<T = unknown>(path: string, options?: RequestOptions): Promise<T>;
 	subscribe(
 		sessionId: string,
 		afterSequence: number,
 		onEvent: (event: RuntimeEvent) => void,
-		onStatus?: (status: { state: string; detail?: string }) => void
+		onStatus?: (status: { state: string; detail?: string }) => void,
+		onActivity?: (event: CodexActivityEvent) => void
 	): Promise<EventSubscription>;
 };
 
@@ -28,6 +44,7 @@ export type LagunaPhase =
 	| "starting"
 	| "loading"
 	| "ready"
+	| "unloaded"
 	| "error"
 	| "unavailable";
 
@@ -38,12 +55,77 @@ export type LagunaStatus = {
 	loadedModel: string | null;
 	detail: string | null;
 	memoryBytes: number | null;
+	idleSeconds?: number | null;
+	idleUnloadAfterSeconds?: number | null;
+	lastUsedAt?: number | null;
+	freeAt?: number | null;
 	updatedAt: number;
+};
+
+export type LagunaModelHit = {
+	path: string;
+	modelsRoot: string;
+	modelId: string;
+	shardCount: number;
+	totalBytes: number;
+	selected: boolean;
 };
 
 export type LagunaBridge = {
 	getStatus(): Promise<LagunaStatus>;
+	reload(): Promise<LagunaStatus>;
 	onStatus(listener: (status: LagunaStatus) => void): () => void;
+	listModels(): Promise<LagunaModelHit[]>;
+	chooseModelDirectory(): Promise<string | null>;
+	setModelDirectory(path: string): Promise<LagunaModelHit>;
+	clearModelDirectory(): Promise<void>;
+};
+
+export type SynthBackendSettings = {
+	configPath: string;
+	envFile: string;
+	profile: string;
+	backendUrl: string;
+	apiKeyEnv: string;
+	apiKeyConfigured: boolean;
+	apiKeyFingerprint?: string | null;
+	apiKeySource?: string | null;
+	workerKeyConfigured: boolean;
+	openrouterApiKeyConfigured: boolean;
+	openrouterApiKeyFingerprint?: string | null;
+	openrouterApiKeySource?: string | null;
+};
+
+export type MultiAgentVersion = "none" | "v1" | "v2";
+export type ModelMultiAgentSetting = {
+	modelId: string;
+	displayName: string;
+	preset: MultiAgentVersion;
+	effective: MultiAgentVersion;
+	overridden: boolean;
+};
+
+export type WorkspaceAccessSettings = {
+	allowedRoots: string[];
+};
+
+export type SynthConfigBridge = {
+	get(): Promise<SynthBackendSettings>;
+	update(request: {
+		profile: string;
+		backendUrl: string;
+		envFile: string;
+		apiKeyEnv: string;
+		apiKey?: string;
+		openrouterApiKey?: string;
+	}): Promise<SynthBackendSettings>;
+	listModelMultiAgent(): Promise<ModelMultiAgentSetting[]>;
+	updateModelMultiAgent(request: {
+		modelId: string;
+		version?: MultiAgentVersion | null;
+	}): Promise<ModelMultiAgentSetting[]>;
+	getWorkspaceAccess(): Promise<WorkspaceAccessSettings>;
+	updateWorkspaceAccess(request: { allowedRoots: string[] }): Promise<WorkspaceAccessSettings>;
 };
 
 export type CodexSessionStart = {
@@ -58,6 +140,7 @@ export type CodexSessionStart = {
 	approvalPolicy?: string;
 	sandbox?: string;
 	threadId?: string;
+	multiAgentVersion?: MultiAgentVersion;
 };
 
 export type CodexSessionInfo = { sessionId: string; threadId: string; turnId?: string | null };
@@ -70,16 +153,101 @@ export type PersistedCodexSession = {
 	providerTitle: string;
 	baseUrl: string;
 	status: string;
+	title?: string | null;
+	titleOrigin?: "default" | "automatic" | "manual" | null;
+	approvalPolicy: string;
+	sandbox: string;
 };
 export type CodexEvent = { sessionId: string; method: string; params: Record<string, unknown> };
 export type CodexBridge = {
 	defaultWorkspace(): Promise<string>;
 	list(): Promise<PersistedCodexSession[]>;
 	start(request: CodexSessionStart): Promise<CodexSessionInfo>;
-	startTurn(sessionId: string, prompt: string): Promise<CodexSessionInfo>;
+	startTurn(sessionId: string, prompt: string, effort?: string): Promise<CodexSessionInfo>;
 	interrupt(sessionId: string): Promise<void>;
+	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject"): Promise<void>;
 	close(sessionId: string): Promise<void>;
 	onEvent(listener: (event: CodexEvent) => void): () => void;
+};
+
+export type CoreBridge = {
+	diagnostics(): Promise<CoreDiagnostics>;
+	eventsAfter(afterSequence?: number, limit?: number): Promise<AppEvent[]>;
+	sessionEventsAfter(sessionId: string, afterSequence?: number, limit?: number): Promise<AppEvent[]>;
+	onEvent(listener: (event: AppEvent) => void): () => void;
+};
+
+export type InternBridge = {
+	listSessions(): Promise<Session[]>;
+	createSession(request: InternSessionCreateRequest): Promise<Session>;
+	send(request: InternSessionSendRequest): Promise<InternSessionSendResult>;
+	control(request: InternSessionControlRequest): Promise<InternSessionControlResult>;
+	eventsAfter(sessionId: string, afterSequence?: number, limit?: number): Promise<AppEvent[]>;
+	onEvent(listener: (event: AppEvent) => void): () => void;
+};
+
+export type InventoryCounts = { containers: number; traces: number; usage: number };
+export type ProjectsBridge = {
+	list(): Promise<Project[]>;
+	get(projectId: string): Promise<Project>;
+	create(request: { path: string; name?: string; vcs?: string; metadata?: Record<string, unknown> }): Promise<Project>;
+	delete(projectId: string): Promise<{ deleted: boolean }>;
+};
+export type InventoryBridge = {
+	listContainers(): Promise<ContainerDeployment[]>;
+	getContainer(containerId: string): Promise<ContainerDeployment>;
+	registerContainer(request: { name?: string; baseUrl: string; location?: "local" | string; taskFamily?: string; metadata?: Record<string, unknown> }): Promise<ContainerDeployment>;
+	probeContainer(containerId: string): Promise<ContainerDeployment>;
+	listTraces(): Promise<TraceV5Record[]>;
+	getTrace(traceId: string): Promise<TraceV5Record>;
+	chooseTraceInput(): Promise<string | null>;
+	ingestTraceBundle(request: TraceBundleIngestRequest): Promise<TraceBundleIngestResult>;
+	resolveTraceProjection(traceDigest: string, projectionKind?: string): Promise<ResolvedTraceProjection>;
+	listUsage(limit?: number): Promise<UsageLedgerEntry[]>;
+	counts(): Promise<InventoryCounts>;
+};
+
+export type VisualTemplateMeta = {
+	id: string;
+	title: string;
+	genre?: string | null;
+	version?: string | null;
+	description?: string | null;
+	path?: string | null;
+	shellPath?: string | null;
+	exampleBinding?: Record<string, unknown> | null;
+};
+
+export type VisualsBridge = {
+	listTemplates(genre?: string | null): Promise<VisualTemplateMeta[]>;
+	getTemplate(templateId: string): Promise<VisualTemplateMeta>;
+	list(query?: {
+		status?: string;
+		sessionId?: string;
+		templateId?: string;
+		search?: string;
+		limit?: number;
+		offset?: number;
+	}): Promise<import("@synth/runtime-protocol").VisualRecord[]>;
+	get(visualId: string): Promise<import("@synth/runtime-protocol").VisualRecord>;
+	revisions(visualId: string): Promise<import("@synth/runtime-protocol").VisualRevision[]>;
+	create(request: {
+		templateId: string;
+		title?: string;
+		bindings?: Record<string, unknown>;
+		id?: string;
+		sessionId?: string;
+		status?: string;
+		traceId?: string;
+		metadata?: Record<string, unknown>;
+	}): Promise<import("@synth/runtime-protocol").VisualRecord>;
+	update(visualId: string, request: Record<string, unknown>): Promise<import("@synth/runtime-protocol").VisualRecord>;
+	save(visualId: string, tsx?: string | null): Promise<import("@synth/runtime-protocol").VisualRecord>;
+	fork(visualId: string, title?: string | null, sessionId?: string | null): Promise<import("@synth/runtime-protocol").VisualRecord>;
+	archive(visualId: string): Promise<import("@synth/runtime-protocol").VisualRecord>;
+	show(visualId: string, sessionId?: string | null): Promise<import("@synth/runtime-protocol").VisualRecord>;
+	onEvent(listener: (event: AppEvent) => void): () => void;
+	onShow(listener: (event: AppEvent) => void): () => void;
 };
 
 export type TerminalInfo = { id: string; workspaceId: string; cwd: string; shell: string; title: string; status: "running" | "exited" | "failed"; createdAt: number; exitCode?: number | null };
@@ -108,10 +276,18 @@ declare global {
 		synthDesktop: {
 			platform: string;
 			chooseProjectDirectory(): Promise<string | null>;
+			getInstanceDiagnostics(): Promise<DesktopInstanceDiagnostics>;
 		};
-		synthRuntime: RuntimeBridge;
+		/** Browser fixture/explicit compatibility bridge; not installed by Tauri. */
+		synthRuntime?: RuntimeBridge;
 		synthLaguna?: LagunaBridge;
+		synthConfig?: SynthConfigBridge;
 		synthCodex?: CodexBridge;
+		synthCore?: CoreBridge;
+		synthIntern?: InternBridge;
+		synthInventory?: InventoryBridge;
+		synthProjects?: ProjectsBridge;
+		synthVisuals?: VisualsBridge;
 		synthTerminal: TerminalBridge;
 		__synthEval?: SemanticEvalApi;
 	}

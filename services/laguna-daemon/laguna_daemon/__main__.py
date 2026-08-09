@@ -64,22 +64,17 @@ def main() -> None:
 
     config = LagunaConfig.from_env()
     app = build_app(config)
-    key_hint = (config.api_key[:12] + "…") if config.api_key else "(auth disabled)"
+    key_hint = "configured" if config.api_key else "(auth disabled)"
     print(
         f"[synth-laguna-sidecar] backend={config.backend} "
         f"listen={config.public_url} models_dir={config.models_dir} "
         f"default_model={config.default_model} api_key={key_hint}",
         flush=True,
     )
-    if config.api_key:
-        print(
-            f"[synth-laguna-sidecar] export SYNTH_LAGUNA_BASE_URL={config.public_url}",
-            flush=True,
-        )
-        print(
-            f"[synth-laguna-sidecar] export SYNTH_LAGUNA_API_KEY={config.api_key}",
-            flush=True,
-        )
+    print(
+        f"[synth-laguna-sidecar] export SYNTH_LAGUNA_BASE_URL={config.public_url}",
+        flush=True,
+    )
     uvicorn.run(app, host=config.host, port=config.port, log_level="info")
 
 

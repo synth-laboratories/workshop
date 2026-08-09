@@ -10,7 +10,27 @@ const appRoot = resolve(here, "../..");
 const workshopRoot = resolve(appRoot, "../..");
 const runtimeHome = await mkdtemp(resolve(tmpdir(), "synth-bombadil-"));
 const connectionPath = resolve(runtimeHome, "connection.json");
-const rendererRoot = resolve(appRoot, "out/renderer");
+const rendererRootCandidates = [
+	resolve(appRoot, "dist"),
+	resolve(appRoot, "out/renderer")
+];
+const rendererRoot = (
+	await Promise.all(
+		rendererRootCandidates.map(async (candidate) => {
+			try {
+				await stat(resolve(candidate, "index.html"));
+				return candidate;
+			} catch {
+				return null;
+			}
+		})
+	)
+).find(Boolean);
+if (!rendererRoot) {
+	throw new Error(
+		"No renderer build found. Run: npm run frontend:build --workspace @synth/synth-desktop"
+	);
+}
 const bombadil = resolve(workshopRoot, "node_modules/.bin/bombadil");
 const outputPath = resolve(appRoot, "test-results/bombadil");
 const specificationPath = process.env.BOMBADIL_SPEC
@@ -48,10 +68,42 @@ async function waitForConnection() {
 
 function browserBridgeScript() {
 	return `<script>
-window.synthDesktop = { platform: "test", chooseProjectDirectory: async () => null };
+window.synthDesktop = {
+  platform: "test",
+  chooseProjectDirectory: async () => null,
+  getInstanceDiagnostics: async () => ({
+    mode: "development", name: "bombadil", displayName: "Synth Desktop · bombadil",
+    appVersion: "0.1.0", sourceRevision: "bombadil", buildRevision: "bombadil",
+    buildTimestamp: "0", processId: 0, executable: "bombadil",
+    dataRoot: "bombadil-memory://", viteUrl: window.location.origin, manifest: null
+  })
+};
 window.synthLaguna = {
   getStatus: async () => ({ phase: "unavailable", baseUrl: null, backend: "stub", loadedModel: null, detail: "Bombadil fixture", memoryBytes: null, updatedAt: Date.now() }),
   onStatus: () => () => {}
+};
+// This is the exact payload shape produced by the CUA-observed Laguna prompt
+// trim visual.  The normal layout spec never opens Visuals; the directed
+// launch-debt spec does, so it can keep the renderer from silently accepting
+// a registry visual that crashes its preview.
+const cuaAnalysisVisual = {
+  schemaVersion: "synth.desktop-visual.v1", id: "laguna-prompt-trim-preinstall", currentRevision: 1,
+  title: "Laguna Prompt Trim Preinstall", templateId: "analysis.visual.v1", status: "draft", rendererKind: "template",
+  bindings: { spec: { title: "Laguna Prompt Trim Preinstall", blocks: [
+    { type: "metrics", items: [{ label: "Visual schemas before", value: "13" }, { label: "Advertised tools after", value: "1" }] },
+    { type: "note", text: "Compact visual operations load only when needed." }
+  ] } },
+  sessionId: null, messageId: null, runId: null, traceId: null, parentVisualId: null,
+  sourceAgentId: "laguna", sourceModel: "laguna-xs-2.1", contentDigest: null, previewDigest: null,
+  metadata: {}, createdAt: "2026-08-09T13:24:48.000Z", updatedAt: "2026-08-09T13:24:48.000Z"
+};
+window.synthVisuals = {
+  listTemplates: async () => [{ id: "analysis.visual.v1", title: "Agent-authored analysis", genre: "analysis" }],
+  getTemplate: async () => ({ id: "analysis.visual.v1", title: "Agent-authored analysis" }),
+  list: async () => [cuaAnalysisVisual], get: async () => cuaAnalysisVisual, revisions: async () => [],
+  create: async () => cuaAnalysisVisual, update: async () => cuaAnalysisVisual, save: async () => cuaAnalysisVisual,
+  fork: async () => cuaAnalysisVisual, archive: async () => cuaAnalysisVisual, show: async () => cuaAnalysisVisual,
+  onEvent: () => () => {}, onShow: () => () => {}
 };
 window.synthRuntime = {
   async request(path, options = {}) {

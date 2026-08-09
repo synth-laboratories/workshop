@@ -1,4 +1,5 @@
 {
+  "schemaVersion": "synth.visual-template.v1",
   "id": "live.eval_stream.v1",
   "title": "Live eval stream",
   "genre": "live",

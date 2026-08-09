@@ -4,7 +4,8 @@
  */
 
 /** How a template slot is fed at runtime. */
-export type VisualBindingKind = "trace_v5" | "local_cas" | "live_sse" | "fixture";
+export const VISUAL_BINDINGS_SCHEMA_VERSION = "synth.visual-bindings.v1" as const;
+export type VisualBindingKind = "inline" | "trace_v5" | "local_cas" | "run_ref" | "live_sse" | "fixture";
 
 export type VisualBinding = {
   /** Slot name declared in template.json `slots`. */
@@ -17,11 +18,18 @@ export type VisualBinding = {
    * - live_sse → absolute SSE URL
    * - fixture → relative path under visuals/fixtures/ or template examples/
    */
-  source: string;
+  source?: string;
+  /** Resolved payload. Required for inline bindings. */
+  data?: unknown;
   /** Optional JSON-pointer / dotted path into the resolved payload. */
   path?: string;
   /** Optional MIME / schema hint for validators. */
   schema?: string;
+};
+
+export type VisualBindings = {
+  schemaVersion: typeof VISUAL_BINDINGS_SCHEMA_VERSION;
+  slots: VisualBinding[];
 };
 
 export type VisualTemplateSlot = {
@@ -34,6 +42,7 @@ export type VisualTemplateSlot = {
 };
 
 export type VisualTemplateMeta = {
+  schemaVersion?: "synth.visual-template.v1";
   id: string;
   title: string;
   genre: string;
@@ -64,7 +73,7 @@ export type VisualInstance = {
   createdAt: string;
   updatedAt: string;
   status: VisualInstanceStatus;
-  bindings: VisualBinding[];
+  bindings: VisualBindings;
   /** Optional props passed into the shell (title overrides, selected model, etc.). */
   props?: Record<string, unknown>;
   /** Path relative to visuals/ when status is saved. */
@@ -96,7 +105,8 @@ export const DEFAULT_CHROME: VisualChromeTheme = {
 
 /** Live SSE event envelope used by live.* templates. */
 export type LiveEvalEvent = {
-  ts: string;
+  ts?: string;
+  occurred_at?: string;
   run_id: string;
   kind:
     | "run_started"
@@ -107,7 +117,20 @@ export type LiveEvalEvent = {
     | "job_status"
     | "rollout"
     | "error"
-    | "run_finished";
+    | "run_finished"
+    // Native evals.event-stream.v1 kinds. Transcript sub-kinds remain in
+    // payload.kind so the visual can show the engine event verbatim.
+    | "eval.phase"
+    | "snapshot"
+    | "transcript"
+    | "eval.run.terminal"
+    | "eval.stream.terminal"
+    | "eval.usage.sampled"
+    | "eval.ops.warning";
+  lane?: string | null;
+  source?: string;
+  sequence?: string | null;
+  schema_version?: string;
   payload: Record<string, unknown>;
 };
 

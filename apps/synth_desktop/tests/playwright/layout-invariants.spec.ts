@@ -85,6 +85,35 @@ test("landing shell has no horizontal overflow", async ({ page }) => {
 	await expect(page.getByTestId("titlebar")).toBeVisible();
 });
 
+test("titlebar runtime status stays compact and leaves diagnostics out of visible chrome", async ({ page }) => {
+	for (const [width, height] of [[960, 640], [1280, 840], [1440, 900]] as const) {
+		await page.setViewportSize({ width, height });
+		const status = page.getByTestId("runtime-status");
+		await expect(status).toBeVisible();
+		await expect(status).not.toContainText(/Laguna·|\bOR\b|Intern|\d+\/\d+/);
+		const box = await status.boundingBox();
+		expect(box?.width ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(90);
+	}
+});
+
+test("the window has generous drag surfaces without swallowing titlebar controls", async ({ page }) => {
+	const dragRegions = page.locator("[data-tauri-drag-region]");
+	await expect(dragRegions).toHaveCount(4);
+	await expect(page.getByTestId("titlebar")).toHaveAttribute("data-tauri-drag-region", "");
+	await expect(page.getByRole("tab")).toHaveAttribute("data-tauri-drag-region", "");
+
+	const regions = await page.evaluate(() => ({
+		titlebar: getComputedStyle(document.querySelector<HTMLElement>('[data-testid="titlebar"]')!).getPropertyValue("-webkit-app-region"),
+		tab: getComputedStyle(document.querySelector<HTMLElement>('[role="tab"]')!).getPropertyValue("-webkit-app-region"),
+		close: getComputedStyle(document.querySelector<HTMLElement>('.tab-close')!).getPropertyValue("-webkit-app-region"),
+		account: getComputedStyle(document.querySelector<HTMLElement>('[data-testid="open-account-settings"]')!).getPropertyValue("-webkit-app-region")
+	}));
+	expect(regions.titlebar).toBe("drag");
+	expect(regions.tab).toBe("drag");
+	expect(regions.close).toBe("no-drag");
+	expect(regions.account).toBe("no-drag");
+});
+
 test("terminal panel is discoverable and toggles without changing the active surface", async ({ page }) => {
 	await expect(page.getByRole("button", { name: "Show terminal" })).toBeVisible();
 	await page.keyboard.press("Meta+j");

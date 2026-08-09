@@ -2,7 +2,7 @@
  * Serialize a VisualInstance shell to a .tsx file under visuals/instances/.
  */
 
-import type { VisualBinding, VisualInstance } from "./types.ts";
+import type { VisualBindings, VisualInstance } from "./types.ts";
 
 export type SaveTsxOptions = {
   /** Absolute path to visuals/ root. */
@@ -26,7 +26,7 @@ function sanitizeId(id: string): string {
   return id.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120);
 }
 
-function bindingsLiteral(bindings: VisualBinding[]): string {
+function bindingsLiteral(bindings: VisualBindings): string {
   return JSON.stringify(bindings, null, 2);
 }
 
@@ -53,13 +53,13 @@ export function renderInstanceTsx(instance: VisualInstance): string {
  */
 import { useMemo } from "react";
 import { Shell } from "../templates/${instance.templateId}/shell.tsx";
-import type { VisualBinding } from "../runtime/types.ts";
+import type { VisualBindings } from "../runtime/types.ts";
 
 export const instanceId = ${JSON.stringify(instance.id)};
 export const templateId = ${JSON.stringify(instance.templateId)};
 export const title = ${JSON.stringify(instance.title)};
 
-export const bindings: VisualBinding[] = ${bindingsLiteral(instance.bindings)};
+export const bindings: VisualBindings = ${bindingsLiteral(instance.bindings)};
 
 export const instanceProps = ${propsLiteral(instance.props)} as Record<string, unknown>;
 

@@ -32,7 +32,11 @@ class RuntimeConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             with patch.dict(
                 os.environ,
-                {"SYNTH_BACKEND_URL": "http://127.0.0.1:9999", "SYNTH_INTERN_DEMO": "0"},
+                {
+                    "SYNTH_BACKEND_URL": "http://127.0.0.1:9999",
+                    "SYNTH_INTERN_DEMO": "0",
+                    "SYNTH_INTERN_PROFILE": "prod",
+                },
                 clear=False,
             ):
                 config = RuntimeConfig.from_env(data_dir=Path(temp) / "data")

@@ -169,8 +169,39 @@ Python MLX sidecar local model loading, inference, and Responses translation
 ```
 
 Python is not part of the desktop orchestration or session-routing plane. Its
-supported desktop role is the optional Laguna/MLX Responses sidecar. A legacy
-Python local-runtime may exist temporarily during migration, but new features
-MUST target the Rust host and it must not become a permanent dependency.
+supported desktop role is the optional Laguna/MLX Responses sidecar. The
+legacy Python local-runtime remains in the repository only for migration and
+contract-reference testing; Desktop neither starts nor packages it.
 
 User terminal sessions and Codex shell-tool executions are distinct processes. The UI may project both into a common activity surface, but it must preserve their ownership and clearly label whether a command was initiated by the user or by an agent.
+
+## Approval policy and panels
+
+Approval policy is selected in the composer and captured when a new Codex
+app-server session starts. It is not a renderer-only preference and does not
+retroactively change an already-running session:
+
+```text
+Always ask   -> approvalPolicy=untrusted  + sandbox=workspace-write
+Accept edits -> approvalPolicy=on-request + sandbox=workspace-write
+Plan         -> approvalPolicy=never      + sandbox=read-only
+Allow all    -> approvalPolicy=never      + sandbox=danger-full-access
+```
+
+When Codex app-server requests approval, Rust owns the pending JSON-RPC request
+and emits a sanitized `approval.requested` event. The transcript renders that
+event as an inline card next to the activity that caused it. The card may offer
+**Approve once**, **Always allow for this session**, and **Reject**, but only
+when the server advertises the corresponding decision. Rust maps the UI choice
+to an advertised app-server value, resolves the original request, and emits the
+terminal approval event. Unknown request types and unsupported decisions fail
+closed. Raw command bodies, arbitrary server reasons, credentials, and tool
+results are not copied into the approval event.
+
+The bundled Synth container and visual MCP adapters may opt into their own
+narrow tool-level default approvals. That exception does not widen shell,
+filesystem, network, or third-party MCP permissions.
+
+Projects are cloud organization/context and MUST NOT gate local or configured-provider
+Codex sessions. Those sessions always receive a safe local workspace (the Synth default
+workspace unless a dedicated local folder/workspace affordance is explicitly used).

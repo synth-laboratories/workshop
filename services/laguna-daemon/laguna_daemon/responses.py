@@ -1,8 +1,9 @@
-"""Minimal OpenAI Responses API shim over chat/completions.
+"""Minimal OpenAI Responses API compatibility adapter over chat/completions.
 
 Codex (0.145+) requires ``wire_api = "responses"``. Laguna engines speak
 chat/completions; this module translates enough of Responses for a Codex
-agent loop (text + function/tool calls, streaming SSE).
+agent loop (text + function/custom tool calls, streaming SSE). Tool kinds from
+the original Responses request must survive the lossy chat representation.
 """
 
 from __future__ import annotations
@@ -54,7 +55,11 @@ def responses_input_to_messages(body: dict[str, Any]) -> list[dict[str, Any]]:
         if item_type in {"function_call", "custom_tool_call"}:
             name = str(item.get("name") or item.get("tool_name") or "tool")
             call_id = str(item.get("call_id") or item.get("id") or _new_id("call"))
-            arguments = item.get("arguments")
+            arguments = (
+                item.get("input")
+                if item_type == "custom_tool_call"
+                else item.get("arguments")
+            )
             if not isinstance(arguments, str):
                 arguments = json.dumps(arguments or {})
             messages.append(
@@ -154,6 +159,49 @@ def responses_tools_to_chat(tools: Any) -> list[dict[str, Any]] | None:
     return out or None
 
 
+def response_tool_types(tools: Any) -> dict[str, str]:
+    """Remember Responses tool kinds before lowering them to chat functions."""
+    if not isinstance(tools, list):
+        return {}
+    kinds: dict[str, str] = {}
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        nested = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+        name = str(tool.get("name") or nested.get("name") or "")
+        if not name:
+            continue
+        kinds[name] = "custom" if tool.get("type") == "custom" else "function"
+    return kinds
+
+
+def _response_tool_call(
+    *,
+    name: str,
+    call_id: str,
+    arguments: str,
+    tool_types: dict[str, str] | None,
+    status: str,
+) -> dict[str, Any]:
+    if (tool_types or {}).get(name) == "custom":
+        return {
+            "type": "custom_tool_call",
+            "id": _new_id("ctc"),
+            "call_id": call_id,
+            "name": name,
+            "input": arguments,
+            "status": status,
+        }
+    return {
+        "type": "function_call",
+        "id": _new_id("fc"),
+        "call_id": call_id,
+        "name": name,
+        "arguments": arguments,
+        "status": status,
+    }
+
+
 def build_chat_body_from_responses(body: dict[str, Any], *, default_model: str) -> dict[str, Any]:
     model = body.get("model") or default_model
     aliases = {
@@ -168,6 +216,14 @@ def build_chat_body_from_responses(body: dict[str, Any], *, default_model: str) 
         "messages": responses_input_to_messages(body),
         "stream": bool(body.get("stream")),
     }
+    reasoning = body.get("reasoning")
+    if isinstance(reasoning, dict):
+        enabled = reasoning.get("enabled")
+        if not isinstance(enabled, bool):
+            effort = reasoning.get("effort")
+            enabled = effort != "none" if isinstance(effort, str) else None
+        if isinstance(enabled, bool):
+            chat["chat_template_kwargs"] = {"enable_thinking": enabled}
     tools = responses_tools_to_chat(body.get("tools"))
     if tools:
         chat["tools"] = tools
@@ -186,6 +242,7 @@ def chat_message_to_response_output(
     message: dict[str, Any],
     *,
     response_id: str,
+    tool_types: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     tool_calls = message.get("tool_calls") or []
@@ -196,14 +253,13 @@ def chat_message_to_response_output(
             fn = call.get("function") if isinstance(call.get("function"), dict) else {}
             call_id = str(call.get("id") or _new_id("call"))
             output.append(
-                {
-                    "type": "function_call",
-                    "id": call_id,
-                    "call_id": call_id,
-                    "name": str(fn.get("name") or "tool"),
-                    "arguments": str(fn.get("arguments") or "{}"),
-                    "status": "completed",
-                }
+                _response_tool_call(
+                    name=str(fn.get("name") or "tool"),
+                    call_id=call_id,
+                    arguments=str(fn.get("arguments") or "{}"),
+                    tool_types=tool_types,
+                    status="completed",
+                )
             )
     content = message.get("content")
     if isinstance(content, str) and content:
@@ -233,6 +289,7 @@ def wrap_chat_as_response(
     chat_json: dict[str, Any],
     *,
     model: str,
+    tool_types: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     response_id = _new_id("resp")
     created = int(time.time())
@@ -247,7 +304,9 @@ def wrap_chat_as_response(
         "created_at": created,
         "status": "completed",
         "model": model,
-        "output": chat_message_to_response_output(message, response_id=response_id),
+        "output": chat_message_to_response_output(
+            message, response_id=response_id, tool_types=tool_types
+        ),
         "usage": {
             "input_tokens": usage.get("prompt_tokens") or 0,
             "output_tokens": usage.get("completion_tokens") or 0,
@@ -380,6 +439,7 @@ async def translate_chat_sse_to_responses(
     lines: AsyncIterator[bytes],
     *,
     model: str,
+    tool_types: dict[str, str] | None = None,
 ) -> AsyncIterator[bytes]:
     """Convert chat.completion.chunk SSE bytes into Responses SSE events."""
     rid = _new_id("resp")
@@ -487,22 +547,58 @@ async def translate_chat_sse_to_responses(
 
     if tool_calls:
         for idx, slot in sorted(tool_calls.items()):
-            item = {
-                "type": "function_call",
-                "id": slot["id"],
-                "call_id": slot["id"],
-                "name": slot["name"] or "tool",
-                "arguments": slot["arguments"] or "{}",
-                "status": "completed",
-            }
+            name = slot["name"] or "tool"
+            arguments = slot["arguments"] or "{}"
+            item = _response_tool_call(
+                name=name,
+                call_id=slot["id"],
+                arguments=arguments,
+                tool_types=tool_types,
+                status="completed",
+            )
             output_items.append(item)
+            added_item = {**item, "status": "in_progress"}
+            if item["type"] == "custom_tool_call":
+                added_item["input"] = ""
+            else:
+                added_item["arguments"] = ""
             yield sse_event(
                 {
                     "type": "response.output_item.added",
                     "output_index": len(output_items) - 1,
-                    "item": {**item, "status": "in_progress"},
+                    "item": added_item,
                 }
             )
+            if item["type"] == "custom_tool_call":
+                yield sse_event(
+                    {
+                        "type": "response.custom_tool_call_input.delta",
+                        "output_index": len(output_items) - 1,
+                        "delta": arguments,
+                    }
+                )
+                yield sse_event(
+                    {
+                        "type": "response.custom_tool_call_input.done",
+                        "output_index": len(output_items) - 1,
+                        "input": arguments,
+                    }
+                )
+            else:
+                yield sse_event(
+                    {
+                        "type": "response.function_call_arguments.delta",
+                        "output_index": len(output_items) - 1,
+                        "delta": arguments,
+                    }
+                )
+                yield sse_event(
+                    {
+                        "type": "response.function_call_arguments.done",
+                        "output_index": len(output_items) - 1,
+                        "arguments": arguments,
+                    }
+                )
             yield sse_event(
                 {
                     "type": "response.output_item.done",
