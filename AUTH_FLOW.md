@@ -55,8 +55,8 @@ from measurements that still require a live CUA run.
 | Metric | Poolside free path | Synth requirement | Current evidence |
 |---|---:|---:|---|
 | Manual credential copy/paste | 1 | 0 | V0 transfers the key host-to-host; renderer never sees it |
-| Existing-account actions, install → authenticated | Live count pending | ≤ 4 | Button → browser auth → Approve → return |
-| Brand-new user | Signup + key creation + paste | Signup + verify; no credential handling | Live count pending |
+| Existing-account actions, install → authenticated | Live count pending | ≤ 4 | Synth path is button → browser auth → Approve; no credential handling |
+| Brand-new user | Signup + key creation + paste | Signup + verify; no credential handling | Production new-user approval and single-use token issuance passed 2026-08-09 |
 | Time to first cloud action | Live timing pending | < 90 s existing; < 3 min new | Live timing pending |
 | Failure recovery | Repeat login/key flow | One visible action | Reopen browser / Sign in again / Try again |
 | Local-only use without account | Yes | Yes | First run offers **Continue locally** equally with sign-in |
@@ -86,7 +86,27 @@ unit suite is not a substitute for the live artifact pass.
 
 ## Production closeout record
 
-As of 2026-08-09, production `POST /api/auth/device/init` returns `307` and the
-live artifact pass is blocked until the public-route fix is deployed. Existing,
-new-user, expiry, and `ORG_MISSING` results must remain unchecked until that
-deployment and the dated live pass are recorded here.
+2026-08-09 production deployment `dpl_3Azvch6Qys99vpzeRBtGqCvApdG2`:
+
+- `POST /api/auth/device/init` returned `200 application/json` while signed out,
+  with a 600-second code and a verification URL carrying the code to `/device`.
+- Signed-out token polling reached the handler and returned typed JSON rather
+  than an auth redirect.
+- `/device` remained protected and preserved the full target through sign-in.
+- A disposable brand-new user encountered Clerk's required organization task,
+  approved the device, and reached the explicit return-to-app success state.
+- Token polling returned one non-empty `synth_api_key`; a second poll returned
+  `409 DEVICE_CODE_USED`, proving single consumption.
+- The test key was revoked and the disposable Clerk organization and user were
+  deleted after the pass.
+
+The live run exposed that Clerk's organization task could drop the pending
+device destination. Frontend PR #210 now keeps only a shape-validated `/device`
+target in same-tab session storage for at most 10 minutes, restores it after the
+task, and clears it on arrival. Until that follow-up deployment is promoted,
+**Reopen browser** remains the tested one-action recovery.
+
+Still required for a release artifact record: install the exact candidate,
+assert its native Authenticated badge and one metered Intern action, then attach
+the gate timestamp and artifact digest here. Route and browser success alone do
+not satisfy the artifact-within-24-hours rule.
