@@ -65,7 +65,8 @@ Artifacts land under `apps/synth_desktop/test-results/{playwright,bombadil}/`.
 | Intern sync / async live paths | — | — | Python runtime tests (partial) | **gap for UI** |
 | Traces / containers / usage inventory | — | — | Python inventory tests | **gap for UI** |
 | Legacy Python → Rust DB migration | — | — | — | **gap** |
-| Real Tauri + Codex app-server E2E | — | — | manual dogfood | **gap** |
+| Codex process crash/restart lifecycle | — | — | Rust real-subprocess fixture + SQLite | covered |
+| Full installed Tauri + real Codex/provider E2E | — | — | manual dogfood | **gap** |
 
 ---
 
@@ -87,6 +88,15 @@ Tauri or a real MLX/Codex process.
 
 **Strength:** fast regression for renderer behavior.  
 **Weakness:** fixtures can pass while Rust CoreRuntime / real Codex is broken.
+
+### Codex process-boundary lifecycle
+
+`cargo test --manifest-path apps/synth_desktop/src-tauri/Cargo.toml --lib codex::tests`
+spawns `tests/fixtures/fake_codex_app_server.py` through the production stdio
+JSON-RPC process path. Unlike renderer stubs, these tests kill a real child and
+assert the temporary SQLite session/run records, durable interruption reason,
+thread resume request, idempotent Stop behavior, and attachment-generation
+fence. They do not load a real model or exercise an installed WebView bundle.
 
 Static companion: `tests/design_debt.test.mjs` (picked up by `npm run test:a11y`) greps for stub toast strings, leave-safe hard-wire, Craftax VisualHost heuristics, and asserts deferred adapter fixtures, UI, and styling stay absent.
 

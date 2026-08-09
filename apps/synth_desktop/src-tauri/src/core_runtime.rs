@@ -306,12 +306,20 @@ impl CoreRuntime {
         Ok(event)
     }
 
-    pub async fn append_and_emit(&self, app: &AppHandle, input: EventAppend) -> Result<AppEvent> {
+    pub async fn append_and_emit<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        input: EventAppend,
+    ) -> Result<AppEvent> {
         let _ = app;
         self.append_and_broadcast(input).await
     }
 
-    pub async fn publish_event(&self, app: &AppHandle, event: AppEvent) -> Result<()> {
+    pub async fn publish_event<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        event: AppEvent,
+    ) -> Result<()> {
         let _ = app;
         let _ = self.events_tx.send(event);
         Ok(())

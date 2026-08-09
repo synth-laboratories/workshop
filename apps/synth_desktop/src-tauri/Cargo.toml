@@ -43,4 +43,5 @@ name = "synth-containers-mcp"
 path = "src/bin/synth_containers_mcp.rs"
 
 [dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 tempfile = "3"

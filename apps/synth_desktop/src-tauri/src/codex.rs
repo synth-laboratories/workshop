@@ -221,13 +221,21 @@ struct Session {
 pub struct CodexManager {
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     records: Arc<RwLock<HashMap<String, CodexSessionRecord>>>,
+    root: PathBuf,
     state_path: PathBuf,
+    binary: PathBuf,
     core: Option<Arc<CoreRuntime>>,
 }
 
 impl CodexManager {
     pub fn new(core: Option<Arc<CoreRuntime>>) -> Self {
-        let state_path = codex_root().join("threads.json");
+        let root = codex_root();
+        let binary = PathBuf::from(env::var("SYNTH_CODEX_BIN").unwrap_or_else(|_| "codex".into()));
+        Self::with_paths(core, root, binary)
+    }
+
+    fn with_paths(core: Option<Arc<CoreRuntime>>, root: PathBuf, binary: PathBuf) -> Self {
+        let state_path = root.join("threads.json");
         let records = fs::read_to_string(&state_path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
@@ -235,27 +243,31 @@ impl CodexManager {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::new(RwLock::new(records)),
+            root,
             state_path,
+            binary,
             core,
         }
     }
 
-    pub async fn start(
+    pub async fn start<R: tauri::Runtime>(
         &self,
-        app: AppHandle,
+        app: AppHandle<R>,
         request: CodexSessionStartRequest,
     ) -> Result<CodexSessionInfo> {
         validate_start(&request)?;
         if let Some(existing) = self.sessions.read().await.get(&request.session_id) {
             return Ok(session_info(&request.session_id, existing).await);
         }
-        let home = codex_root()
+        let home = self
+            .root
             .join("homes")
             .join(safe_component(&request.session_id));
         ensure_home(&home, &request)?;
         let attachment_id = uuid::Uuid::new_v4();
         let server = spawn_server(
             app.clone(),
+            &self.binary,
             &request.session_id,
             &home,
             &request,
@@ -405,9 +417,9 @@ impl CodexManager {
         Ok(session_info(&request.session_id, &session).await)
     }
 
-    pub async fn start_turn(
+    pub async fn start_turn<R: tauri::Runtime>(
         &self,
-        app: AppHandle,
+        app: AppHandle<R>,
         request: CodexTurnStartRequest,
     ) -> Result<CodexSessionInfo> {
         if request.prompt.trim().is_empty() {
@@ -502,9 +514,9 @@ impl CodexManager {
         Ok(())
     }
 
-    pub async fn resolve_approval(
+    pub async fn resolve_approval<R: tauri::Runtime>(
         &self,
-        app: AppHandle,
+        app: AppHandle<R>,
         request: CodexApprovalDecisionRequest,
     ) -> Result<()> {
         let session = self.session(&request.session_id).await?;
@@ -601,9 +613,9 @@ impl CodexManager {
         Ok(())
     }
 
-    async fn set_automatic_title(
+    async fn set_automatic_title<R: tauri::Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         session_id: &str,
         prompt: &str,
         session: &Session,
@@ -703,8 +715,9 @@ async fn interrupt_active_core_run(
     Ok(mutation.event)
 }
 
-async fn spawn_server(
-    app: AppHandle,
+async fn spawn_server<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    binary: &Path,
     session_id: &str,
     home: &Path,
     request: &CodexSessionStartRequest,
@@ -714,7 +727,6 @@ async fn spawn_server(
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     attachment_id: uuid::Uuid,
 ) -> Result<Arc<AppServer>> {
-    let binary = env::var("SYNTH_CODEX_BIN").unwrap_or_else(|_| "codex".into());
     let env_key = request
         .provider_env_key
         .as_deref()
@@ -790,8 +802,8 @@ struct PersistenceContext {
     attachment_id: uuid::Uuid,
 }
 
-async fn read_stdout(
-    app: AppHandle,
+async fn read_stdout<R: tauri::Runtime>(
+    app: AppHandle<R>,
     session_id: String,
     stdout: tokio::process::ChildStdout,
     stdin: Arc<Mutex<tokio::process::ChildStdin>>,
@@ -1378,6 +1390,281 @@ fn automatic_thread_title(prompt: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{RunCreate, RunService, SessionCreate, SessionService};
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    fn fixture_binary() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_codex_app_server.py")
+    }
+
+    fn test_request(workspace: &Path, session_id: &str) -> CodexSessionStartRequest {
+        CodexSessionStartRequest {
+            session_id: session_id.into(),
+            workspace: workspace.display().to_string(),
+            base_url: "http://127.0.0.1:7333".into(),
+            api_key: String::new(),
+            model: "poolside/Laguna-XS-2.1-NVFP4-mlx".into(),
+            provider_name: Some("local-laguna".into()),
+            provider_title: Some("Laguna fixture".into()),
+            provider_env_key: Some("SYNTH_LAGUNA_API_KEY".into()),
+            approval_policy: Some("never".into()),
+            sandbox: Some("workspace-write".into()),
+            thread_id: None,
+            multi_agent_version: Some(MultiAgentVersion::None),
+        }
+    }
+
+    async fn wait_for_record_status(manager: &CodexManager, session_id: &str, expected: &str) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let actual = manager
+                    .records
+                    .read()
+                    .await
+                    .get(session_id)
+                    .map(|record| record.status.clone());
+                if actual.as_deref() == Some(expected) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("session {session_id} did not become {expected}"));
+    }
+
+    async fn wait_for_run_status(core: &CoreRuntime, run_id: &str, expected: &str) {
+        let runs = RunService::new(core.storage().database().clone());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let actual = runs
+                    .get(run_id.to_owned())
+                    .await
+                    .unwrap()
+                    .map(|run| run.status);
+                if actual.as_deref() == Some(expected) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("run {run_id} did not become {expected}"));
+    }
+
+    fn fixture_requests(root: &Path, session_id: &str) -> Vec<Value> {
+        let path = root
+            .join("homes")
+            .join(safe_component(session_id))
+            .join("fake-app-server-requests.jsonl");
+        fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let manager =
+            CodexManager::with_paths(Some(core.clone()), codex_root.clone(), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let request = test_request(temp.path(), "crash-resume");
+
+        let started = manager
+            .start(app_handle.clone(), request.clone())
+            .await
+            .unwrap();
+        assert_eq!(started.thread_id, "thread-fixture");
+        let first_turn = manager
+            .start_turn(
+                app_handle.clone(),
+                CodexTurnStartRequest {
+                    session_id: request.session_id.clone(),
+                    prompt: "keep working until the process is killed".into(),
+                    effort: Some("none".into()),
+                },
+            )
+            .await
+            .unwrap()
+            .turn_id
+            .unwrap();
+        let first_attachment = manager
+            .sessions
+            .read()
+            .await
+            .get(&request.session_id)
+            .unwrap()
+            .clone();
+
+        first_attachment.server.stop().await.unwrap();
+        wait_for_record_status(&manager, &request.session_id, "interrupted").await;
+        wait_for_run_status(&core, &first_turn, "interrupted").await;
+        assert!(!manager
+            .sessions
+            .read()
+            .await
+            .contains_key(&request.session_id));
+        let persisted_run = RunService::new(core.storage().database().clone())
+            .get(first_turn.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted_run.status, "interrupted");
+        assert_eq!(
+            persisted_run.outcome.unwrap()["reason"],
+            "app_server_exited"
+        );
+
+        // Stop remains safe after the process and active attachment are gone.
+        manager.interrupt(&request.session_id).await.unwrap();
+
+        let resumed = manager
+            .start(app_handle.clone(), request.clone())
+            .await
+            .unwrap();
+        assert_eq!(resumed.thread_id, started.thread_id);
+        let second_turn = manager
+            .start_turn(
+                app_handle,
+                CodexTurnStartRequest {
+                    session_id: request.session_id.clone(),
+                    prompt: "continue after reconnect".into(),
+                    effort: Some("none".into()),
+                },
+            )
+            .await
+            .unwrap()
+            .turn_id
+            .unwrap();
+        assert_ne!(first_turn, second_turn);
+        let requests = fixture_requests(&codex_root, &request.session_id);
+        assert!(requests.iter().any(|message| {
+            message["method"] == "thread/resume"
+                && message["params"]["threadId"] == "thread-fixture"
+        }));
+        manager.close(&request.session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_reconciles_an_orphaned_running_turn_in_sqlite() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        fs::create_dir_all(&codex_root).unwrap();
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let sessions = SessionService::new(core.storage().database().clone());
+        sessions
+            .create_or_update(SessionCreate {
+                id: "orphan".into(),
+                title: "Orphaned local turn".into(),
+                target: json!({"kind":"codex"}),
+                project_id: None,
+                remote_id: None,
+                codex_thread_id: Some("thread-orphan".into()),
+                status: SessionStatus::Ready,
+                state_generation: None,
+                metadata: json!({}),
+                source: EventSource::Codex,
+            })
+            .await
+            .unwrap();
+        RunService::new(core.storage().database().clone())
+            .start(RunCreate {
+                id: "turn-orphan".into(),
+                session_id: "orphan".into(),
+                mode: "codex_turn".into(),
+                model: Some("laguna".into()),
+                adapter: None,
+                metadata: json!({}),
+                source: EventSource::Codex,
+            })
+            .await
+            .unwrap();
+        let record = CodexSessionRecord {
+            session_id: "orphan".into(),
+            thread_id: "thread-orphan".into(),
+            workspace: temp.path().display().to_string(),
+            model: "laguna".into(),
+            provider_name: "local-laguna".into(),
+            provider_title: "Laguna fixture".into(),
+            base_url: "http://127.0.0.1:7333/v1".into(),
+            status: "running".into(),
+            title: Some("Orphaned local turn".into()),
+            title_origin: Some("automatic".into()),
+            approval_policy: "never".into(),
+            sandbox: "workspace-write".into(),
+        };
+        fs::write(
+            codex_root.join("threads.json"),
+            serde_json::to_vec_pretty(&HashMap::from([("orphan".to_owned(), record)])).unwrap(),
+        )
+        .unwrap();
+
+        let restarted = CodexManager::with_paths(Some(core.clone()), codex_root, fixture_binary());
+        assert_eq!(restarted.list().await[0].status, "interrupted");
+        let run = RunService::new(core.storage().database().clone())
+            .get("turn-orphan".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.status, "interrupted");
+        assert_eq!(run.outcome.unwrap()["reason"], "desktop_restarted");
+        assert_eq!(
+            sessions.get("orphan".into()).await.unwrap().unwrap().status,
+            "interrupted"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_attachment_exit_cannot_detach_its_replacement() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        let manager = CodexManager::with_paths(None, codex_root, fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let request = test_request(temp.path(), "generation-fence");
+        manager
+            .start(app_handle.clone(), request.clone())
+            .await
+            .unwrap();
+        let stale = manager
+            .sessions
+            .write()
+            .await
+            .remove(&request.session_id)
+            .unwrap();
+        manager.start(app_handle, request.clone()).await.unwrap();
+        let replacement_id = manager
+            .sessions
+            .read()
+            .await
+            .get(&request.session_id)
+            .unwrap()
+            .attachment_id;
+        assert_ne!(stale.attachment_id, replacement_id);
+
+        stale.server.stop().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let current = manager
+            .sessions
+            .read()
+            .await
+            .get(&request.session_id)
+            .unwrap()
+            .attachment_id;
+        assert_eq!(current, replacement_id);
+        assert_eq!(
+            manager.records.read().await[&request.session_id].status,
+            "ready"
+        );
+        manager.close(&request.session_id).await.unwrap();
+    }
+
     #[test]
     fn extracts_flat_and_nested_ids() {
         assert_eq!(

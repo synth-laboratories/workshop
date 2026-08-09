@@ -72,3 +72,23 @@ provider context, resume/unsubscribe threads on demand, query
 `thread/loaded/list` after reconnect, and restart with bounded backoff. Moving
 to that pool requires an explicit migration from per-session Codex homes; it
 must not be approximated by silently sharing homes or credentials.
+
+## Process-boundary coverage
+
+`cargo test --lib codex::tests` launches the executable fixture at
+`src-tauri/tests/fixtures/fake_codex_app_server.py` through the production
+`tokio::process::Command` path. The tests use an isolated Codex root and an
+isolated SQLite store and cover:
+
+- child-process death during a running turn, including the persisted
+  `app_server_exited` interruption reason;
+- idempotent Stop after the child and attachment are already gone;
+- a replacement process using `thread/resume` with the original durable thread
+  id and accepting a new turn;
+- startup reconciliation of an orphaned running turn in SQLite; and
+- attachment-generation fencing when an old process reports EOF after its
+  replacement is attached.
+
+Renderer Playwright coverage remains responsible for the visible Working,
+Stop, sidebar-status, and reconnect-message projection. It complements rather
+than substitutes for the subprocess suite.
