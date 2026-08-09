@@ -53,6 +53,72 @@ pub struct CodexTurnStartRequest {
     pub effort: Option<String>,
 }
 
+/// One atomic renderer intent: make sure the app-server is attached for this
+/// session and start the turn. The renderer never observes the intermediate
+/// state where an attachment exists but the turn has not started.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexTurnSendRequest {
+    pub start: CodexSessionStartRequest,
+    pub prompt: String,
+    pub effort: Option<String>,
+}
+
+/// Typed failure so the renderer can react to a lost app-server without
+/// parsing free-form text or leaking raw ids into a toast.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexTurnFailure {
+    pub code: String,
+    pub message: String,
+    pub session_id: String,
+    /// Developer-facing text. The renderer keeps this out of user surfaces.
+    pub detail: String,
+}
+
+pub const CODEX_SESSION_DETACHED: &str = "codex_session_detached";
+pub const CODEX_TURN_START_FAILED: &str = "codex_turn_start_failed";
+const DETACHED_MESSAGE: &str =
+    "The local agent process disconnected before the turn started. Retry to reconnect.";
+const STDOUT_CLOSED: &str = "codex app-server stdout closed";
+
+impl CodexTurnFailure {
+    fn detached(session_id: &str, detail: String) -> Self {
+        Self {
+            code: CODEX_SESSION_DETACHED.into(),
+            message: DETACHED_MESSAGE.into(),
+            session_id: session_id.to_owned(),
+            detail,
+        }
+    }
+
+    fn rejected(session_id: &str, error: &anyhow::Error) -> Self {
+        Self {
+            code: CODEX_TURN_START_FAILED.into(),
+            message: error.to_string(),
+            session_id: session_id.to_owned(),
+            detail: format!("{error:?}"),
+        }
+    }
+}
+
+/// Marker cause for "the app-server owning this session is gone". It travels
+/// inside the anyhow chain so callers never string-match transport text.
+#[derive(Debug)]
+struct SessionDetached;
+
+impl std::fmt::Display for SessionDetached {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the local codex app-server is not attached")
+    }
+}
+
+impl std::error::Error for SessionDetached {}
+
+fn is_detached_failure(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<SessionDetached>())
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionRequest {
@@ -142,12 +208,16 @@ impl AppServer {
         .await
         {
             self.pending.lock().await.remove(&id);
-            return Err(error);
+            // A write failure on the child's stdin means the process is gone.
+            return Err(error.context(SessionDetached));
         }
         match tokio::time::timeout(Duration::from_secs(30), rx).await {
             Ok(Ok(Ok(value))) => Ok(value),
+            Ok(Ok(Err(error))) if error.contains(STDOUT_CLOSED) => Err(anyhow!(SessionDetached)
+                .context(format!("codex app-server {method} lost its process"))),
             Ok(Ok(Err(error))) => Err(anyhow!("codex app-server {method} error: {error}")),
-            Ok(Err(_)) => Err(anyhow!("codex app-server stopped while handling {method}")),
+            Ok(Err(_)) => Err(anyhow!(SessionDetached)
+                .context(format!("codex app-server stopped while handling {method}"))),
             Err(_) => {
                 self.pending.lock().await.remove(&id);
                 Err(anyhow!("codex app-server timed out waiting for {method}"))
@@ -221,6 +291,9 @@ struct Session {
 pub struct CodexManager {
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     records: Arc<RwLock<HashMap<String, CodexSessionRecord>>>,
+    /// Serializes attach + turn/start per session so no caller can observe the
+    /// window between "the attachment exists" and "the turn is running".
+    turn_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     root: PathBuf,
     state_path: PathBuf,
     binary: PathBuf,
@@ -243,6 +316,7 @@ impl CodexManager {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::new(RwLock::new(records)),
+            turn_locks: Mutex::new(HashMap::new()),
             root,
             state_path,
             binary,
@@ -422,6 +496,122 @@ impl CodexManager {
         app: AppHandle<R>,
         request: CodexTurnStartRequest,
     ) -> Result<CodexSessionInfo> {
+        self.start_turn_inner(app, request, true).await
+    }
+
+    /// Atomic attach-or-resume plus turn start.
+    ///
+    /// A single per-session lock covers both halves, and one silent retry
+    /// covers the remaining live race: the app-server can exit after `start`
+    /// observes the attachment and before `turn/start` reaches it. When the
+    /// process is really gone the durable JSON record and the SQLite run are
+    /// reconciled *before* the typed error reaches the renderer, so the UI can
+    /// never be left showing `Working` with `Stop`.
+    pub async fn send_turn<R: tauri::Runtime>(
+        &self,
+        app: AppHandle<R>,
+        request: CodexTurnSendRequest,
+    ) -> std::result::Result<CodexSessionInfo, CodexTurnFailure> {
+        let session_id = request.start.session_id.clone();
+        if request.prompt.trim().is_empty() {
+            return Err(CodexTurnFailure::rejected(
+                &session_id,
+                &anyhow!("prompt must not be empty"),
+            ));
+        }
+        if let Some(effort) = request.effort.as_deref() {
+            if let Err(error) = validate_reasoning_effort(effort) {
+                return Err(CodexTurnFailure::rejected(&session_id, &error));
+            }
+        }
+        let lock = self.turn_lock(&session_id).await;
+        let _guard = lock.lock().await;
+
+        // The user prompt is journalled once, up front, so a rejected turn
+        // still preserves the text the operator typed.
+        self.record_user_prompt(&app, &session_id, &request.prompt)
+            .await;
+
+        let mut failure: Option<anyhow::Error> = None;
+        for attempt in 0..2u8 {
+            let attachment = match self.start(app.clone(), request.start.clone()).await {
+                Ok(_) => self
+                    .sessions
+                    .read()
+                    .await
+                    .get(&session_id)
+                    .map(|session| session.attachment_id),
+                Err(error) => {
+                    let detached = is_detached_failure(&error);
+                    failure = Some(error);
+                    if detached && attempt == 0 {
+                        self.discard_attachment(&session_id, None).await;
+                        continue;
+                    }
+                    break;
+                }
+            };
+            let turn = self
+                .start_turn_inner(
+                    app.clone(),
+                    CodexTurnStartRequest {
+                        session_id: session_id.clone(),
+                        prompt: request.prompt.clone(),
+                        effort: request.effort.clone(),
+                    },
+                    false,
+                )
+                .await;
+            match turn {
+                Ok(info) => return Ok(info),
+                Err(error) => {
+                    let detached = is_detached_failure(&error);
+                    failure = Some(error);
+                    if !detached {
+                        break;
+                    }
+                    // Drop only the attachment we used. A replacement created
+                    // by another caller keeps its generation fence.
+                    self.discard_attachment(&session_id, attachment).await;
+                    if attempt == 0 {
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+
+        let error = failure.unwrap_or_else(|| anyhow!("the turn could not be started"));
+        if !is_detached_failure(&error) {
+            let _ = self.reconcile_failed_turn_start(&session_id, "turn_start_failed").await;
+            return Err(CodexTurnFailure::rejected(&session_id, &error));
+        }
+        let _ = self
+            .reconcile_failed_turn_start(&session_id, "turn_start_detached")
+            .await;
+        let _ = app.emit(
+            EVENT_NAME,
+            CodexEvent {
+                session_id: session_id.clone(),
+                method: "session/unhealthy".into(),
+                params: json!({
+                    "reason": "turn_start_detached",
+                    "message": DETACHED_MESSAGE
+                }),
+            },
+        );
+        Err(CodexTurnFailure::detached(
+            &session_id,
+            format!("{error:?}"),
+        ))
+    }
+
+    async fn start_turn_inner<R: tauri::Runtime>(
+        &self,
+        app: AppHandle<R>,
+        request: CodexTurnStartRequest,
+        record_prompt: bool,
+    ) -> Result<CodexSessionInfo> {
         if request.prompt.trim().is_empty() {
             return Err(anyhow!("prompt must not be empty"));
         }
@@ -431,20 +621,9 @@ impl CodexManager {
             .map(validate_reasoning_effort)
             .transpose()?;
         let session = self.session(&request.session_id).await?;
-        if let Some(core) = &self.core {
-            let persistence = core.append_and_emit(
-                &app,
-                EventAppend::codex(
-                    request.session_id.clone(),
-                    "message.created",
-                    json!({
-                        "messageId": format!("user-{}", uuid::Uuid::new_v4()),
-                        "role": "user",
-                        "content": request.prompt.clone(),
-                    }),
-                ),
-            );
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), persistence).await;
+        if record_prompt {
+            self.record_user_prompt(&app, &request.session_id, &request.prompt)
+                .await;
         }
         let mut turn_params = json!({
             "threadId": session.thread_id,
@@ -590,7 +769,69 @@ impl CodexManager {
             .await
             .get(id)
             .cloned()
-            .ok_or_else(|| anyhow!("Codex session not started: {id}"))
+            .ok_or_else(|| anyhow!(SessionDetached).context(format!("Codex session {id}")))
+    }
+
+    async fn turn_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
+        self.turn_locks
+            .lock()
+            .await
+            .entry(session_id.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    async fn record_user_prompt<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: &str,
+        prompt: &str,
+    ) {
+        let Some(core) = &self.core else { return };
+        let persistence = core.append_and_emit(
+            app,
+            EventAppend::codex(
+                session_id.to_owned(),
+                "message.created",
+                json!({
+                    "messageId": format!("user-{}", uuid::Uuid::new_v4()),
+                    "role": "user",
+                    "content": prompt,
+                }),
+            ),
+        );
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), persistence).await;
+    }
+
+    /// Removes a dead attachment, but only when it is still the current one.
+    /// `expected` is `None` when no attachment was resolved at all.
+    async fn discard_attachment(&self, session_id: &str, expected: Option<uuid::Uuid>) {
+        let mut sessions = self.sessions.write().await;
+        let matches = sessions.get(session_id).is_some_and(|session| {
+            expected.is_none_or(|attachment_id| session.attachment_id == attachment_id)
+        });
+        if matches {
+            sessions.remove(session_id);
+        }
+    }
+
+    /// Brings durable state back in line after a turn could not be started.
+    /// The JSON record must never stay `running`, and any active SQLite run for
+    /// this session belongs to a turn nobody can finish.
+    async fn reconcile_failed_turn_start(&self, session_id: &str, reason: &str) -> Result<()> {
+        let was_running = self
+            .records
+            .read()
+            .await
+            .get(session_id)
+            .is_some_and(|record| record.status == "running");
+        if was_running {
+            self.set_status(session_id, "interrupted").await?;
+        }
+        if let Some(core) = &self.core {
+            let _ = interrupt_active_core_run(core, session_id, reason).await;
+        }
+        Ok(())
     }
 
     async fn set_status(&self, session_id: &str, status: &str) -> Result<()> {
@@ -988,7 +1229,7 @@ async fn read_stdout<R: tauri::Runtime>(
     }
     let mut pending = pending.lock().await;
     for (_, sender) in pending.drain() {
-        let _ = sender.send(Err("codex app-server stdout closed".into()));
+        let _ = sender.send(Err(STDOUT_CLOSED.into()));
     }
     drop(pending);
     let owned_attachment = {
@@ -1116,6 +1357,30 @@ async fn write_message(
     let mut stdin = stdin.lock().await;
     stdin.write_all(&encoded).await?;
     stdin.flush().await?;
+    Ok(())
+}
+
+/// Inject Synth Cloud billing fields into a session start request.
+///
+/// Fail-closed when the Synth API key is missing. Always overwrites any
+/// renderer-supplied `api_key` / `base_url` / env key — credentials never
+/// originate from the renderer.
+pub fn apply_synth_cloud_provider(
+    request: &mut CodexSessionStartRequest,
+    backend_url: &str,
+    api_key: Option<&str>,
+) -> Result<(), String> {
+    let key = api_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "Synth API key not configured — Settings → Account".to_string()
+        })?;
+    request.api_key = key.to_owned();
+    request.base_url = format!("{}/api/v1", backend_url.trim_end_matches('/'));
+    request.provider_name = Some("synth-cloud".into());
+    request.provider_title = Some("Synth Cloud Responses".into());
+    request.provider_env_key = Some("SYNTH_API_KEY".into());
     Ok(())
 }
 
@@ -1701,6 +1966,352 @@ mod tests {
         );
     }
 
+    fn session_home(root: &Path, session_id: &str) -> PathBuf {
+        root.join("homes").join(safe_component(session_id))
+    }
+
+    /// Makes the fixture app-server exit the moment `turn/start` arrives.
+    /// `once` clears the marker first so a retry can succeed.
+    fn arm_turn_start_exit(root: &Path, session_id: &str, mode: &str) {
+        let home = session_home(root, session_id);
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join("exit-on-turn-start"), mode).unwrap();
+    }
+
+    fn disarm_turn_start_exit(root: &Path, session_id: &str) {
+        let marker = session_home(root, session_id).join("exit-on-turn-start");
+        if marker.exists() {
+            fs::remove_file(marker).unwrap();
+        }
+    }
+
+    fn send_request(start: CodexSessionStartRequest, prompt: &str) -> CodexTurnSendRequest {
+        CodexTurnSendRequest {
+            start,
+            prompt: prompt.into(),
+            effort: Some("none".into()),
+        }
+    }
+
+    /// The screenshot bug: the app-server exits between attach and turn/start.
+    /// The renderer must get a typed detachment, and durable state must already
+    /// be reconciled when it does. A later retry resumes the same thread.
+    #[tokio::test]
+    async fn turn_send_reports_detachment_and_reconciles_before_returning() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let manager =
+            CodexManager::with_paths(Some(core.clone()), codex_root.clone(), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let request = test_request(temp.path(), "turn-send-detached");
+
+        // A healthy first turn establishes the thread and an active SQLite run.
+        let first = manager
+            .send_turn(
+                app_handle.clone(),
+                send_request(request.clone(), "start the acceptance turn"),
+            )
+            .await
+            .unwrap();
+        let first_turn = first.turn_id.clone().unwrap();
+        assert_eq!(first.thread_id, "thread-fixture");
+        assert_eq!(
+            manager.records.read().await[&request.session_id].status,
+            "running"
+        );
+
+        arm_turn_start_exit(&codex_root, &request.session_id, "always");
+        let failure = manager
+            .send_turn(
+                app_handle.clone(),
+                send_request(request.clone(), "this turn can never start"),
+            )
+            .await
+            .expect_err("a dead app-server must reject the turn");
+        assert_eq!(failure.code, CODEX_SESSION_DETACHED);
+        assert_eq!(failure.message, DETACHED_MESSAGE);
+        assert_eq!(failure.session_id, request.session_id);
+        // The raw session id belongs in debug detail, never in the message.
+        assert!(!failure.message.contains(&request.session_id));
+
+        // Reconciliation already happened, so the UI can never show Working.
+        let status = manager.records.read().await[&request.session_id]
+            .status
+            .clone();
+        assert_ne!(status, "running");
+        assert!(
+            status == "interrupted" || status == "ready",
+            "unexpected reconciled status: {status}"
+        );
+        assert!(!manager
+            .sessions
+            .read()
+            .await
+            .contains_key(&request.session_id));
+        let run = RunService::new(core.storage().database().clone())
+            .get(first_turn.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.status, "interrupted");
+        // Whichever of the exiting stdout task and this command wins the race,
+        // the run is closed with a lost-process reason and stops being active.
+        let reason = run.outcome.unwrap()["reason"].as_str().unwrap().to_owned();
+        assert!(
+            reason == "turn_start_detached" || reason == "app_server_exited",
+            "unexpected interruption reason: {reason}"
+        );
+        assert_eq!(
+            SessionService::new(core.storage().database().clone())
+                .get(request.session_id.clone())
+                .await
+                .unwrap()
+                .unwrap()
+                .active_run_id,
+            None
+        );
+        // Stop stays idempotent while nothing is attached.
+        manager.interrupt(&request.session_id).await.unwrap();
+
+        // Retry reattaches, resumes the same Codex thread and succeeds.
+        disarm_turn_start_exit(&codex_root, &request.session_id);
+        let retried = manager
+            .send_turn(
+                app_handle,
+                send_request(request.clone(), "this turn can never start"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(retried.thread_id, "thread-fixture");
+        assert_ne!(retried.turn_id.clone().unwrap(), first_turn);
+        assert_eq!(
+            manager.records.read().await[&request.session_id].status,
+            "running"
+        );
+        let requests = fixture_requests(&codex_root, &request.session_id);
+        assert!(requests.iter().any(|message| {
+            message["method"] == "thread/resume"
+                && message["params"]["threadId"] == "thread-fixture"
+        }));
+        manager.close(&request.session_id).await.unwrap();
+    }
+
+    /// A single exit is absorbed inside the command: the renderer sees one
+    /// successful send, never a transient error it has to model.
+    #[tokio::test]
+    async fn turn_send_retries_once_through_a_dying_app_server() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        let manager = CodexManager::with_paths(None, codex_root.clone(), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let request = test_request(temp.path(), "turn-send-retry");
+
+        arm_turn_start_exit(&codex_root, &request.session_id, "once");
+        let info = manager
+            .send_turn(
+                app_handle,
+                send_request(request.clone(), "survive one process exit"),
+            )
+            .await
+            .unwrap();
+        assert!(info.turn_id.is_some());
+        assert_eq!(
+            manager.records.read().await[&request.session_id].status,
+            "running"
+        );
+        manager.close(&request.session_id).await.unwrap();
+    }
+
+    /// Restored state after a crash or relaunch: the JSON record claims
+    /// `running` but nothing is attached. Sending must reattach and resume.
+    #[tokio::test]
+    async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        fs::create_dir_all(&codex_root).unwrap();
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let record = CodexSessionRecord {
+            session_id: "restored-running".into(),
+            thread_id: "thread-restored".into(),
+            workspace: temp.path().display().to_string(),
+            model: "laguna".into(),
+            provider_name: "local-laguna".into(),
+            provider_title: "Laguna fixture".into(),
+            base_url: "http://127.0.0.1:7333/v1".into(),
+            status: "running".into(),
+            title: Some("Restored local turn".into()),
+            title_origin: Some("automatic".into()),
+            approval_policy: "never".into(),
+            sandbox: "workspace-write".into(),
+        };
+        fs::write(
+            codex_root.join("threads.json"),
+            serde_json::to_vec_pretty(&HashMap::from([("restored-running".to_owned(), record)]))
+                .unwrap(),
+        )
+        .unwrap();
+
+        let manager =
+            CodexManager::with_paths(Some(core.clone()), codex_root.clone(), fixture_binary());
+        assert!(!manager.sessions.read().await.contains_key("restored-running"));
+        let app = tauri::test::mock_app();
+        let request = test_request(temp.path(), "restored-running");
+        let info = manager
+            .send_turn(
+                app.handle().clone(),
+                send_request(request.clone(), "reconnect and continue"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(info.thread_id, "thread-restored");
+        assert!(info.turn_id.is_some());
+        let requests = fixture_requests(&codex_root, "restored-running");
+        assert!(requests.iter().any(|message| {
+            message["method"] == "thread/resume"
+                && message["params"]["threadId"] == "thread-restored"
+        }));
+        manager.close("restored-running").await.unwrap();
+    }
+
+    /// The partially reconciled shape: JSON already says `interrupted` while
+    /// SQLite still holds an active run. A rejected send must close that run.
+    #[tokio::test]
+    async fn turn_send_interrupts_an_active_run_when_the_record_is_already_interrupted() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        fs::create_dir_all(&codex_root).unwrap();
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let sessions = SessionService::new(core.storage().database().clone());
+        sessions
+            .create_or_update(SessionCreate {
+                id: "half-reconciled".into(),
+                title: "Half reconciled".into(),
+                target: json!({"kind":"codex"}),
+                project_id: None,
+                remote_id: None,
+                codex_thread_id: Some("thread-half".into()),
+                status: SessionStatus::Ready,
+                state_generation: None,
+                metadata: json!({}),
+                source: EventSource::Codex,
+            })
+            .await
+            .unwrap();
+        RunService::new(core.storage().database().clone())
+            .start(RunCreate {
+                id: "turn-half".into(),
+                session_id: "half-reconciled".into(),
+                mode: "codex_turn".into(),
+                model: Some("laguna".into()),
+                adapter: None,
+                metadata: json!({}),
+                source: EventSource::Codex,
+            })
+            .await
+            .unwrap();
+        let record = CodexSessionRecord {
+            session_id: "half-reconciled".into(),
+            thread_id: "thread-half".into(),
+            workspace: temp.path().display().to_string(),
+            model: "laguna".into(),
+            provider_name: "local-laguna".into(),
+            provider_title: "Laguna fixture".into(),
+            base_url: "http://127.0.0.1:7333/v1".into(),
+            status: "interrupted".into(),
+            title: Some("Half reconciled".into()),
+            title_origin: Some("automatic".into()),
+            approval_policy: "never".into(),
+            sandbox: "workspace-write".into(),
+        };
+        fs::write(
+            codex_root.join("threads.json"),
+            serde_json::to_vec_pretty(&HashMap::from([("half-reconciled".to_owned(), record)]))
+                .unwrap(),
+        )
+        .unwrap();
+
+        let manager =
+            CodexManager::with_paths(Some(core.clone()), codex_root.clone(), fixture_binary());
+        arm_turn_start_exit(&codex_root, "half-reconciled", "always");
+        let app = tauri::test::mock_app();
+        let request = test_request(temp.path(), "half-reconciled");
+        let failure = manager
+            .send_turn(
+                app.handle().clone(),
+                send_request(request, "try to continue"),
+            )
+            .await
+            .expect_err("the fixture never answers turn/start");
+        assert_eq!(failure.code, CODEX_SESSION_DETACHED);
+        assert_ne!(
+            manager.records.read().await["half-reconciled"].status,
+            "running"
+        );
+        let run = RunService::new(core.storage().database().clone())
+            .get("turn-half".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.status, "interrupted");
+        assert_eq!(run.outcome.unwrap()["reason"], "turn_start_detached");
+        assert_eq!(
+            sessions
+                .get("half-reconciled".into())
+                .await
+                .unwrap()
+                .unwrap()
+                .active_run_id,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_turn_send_arguments_never_mark_the_session_running() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        let manager = CodexManager::with_paths(None, codex_root, fixture_binary());
+        let app = tauri::test::mock_app();
+        let request = test_request(temp.path(), "invalid-turn");
+        let blank = manager
+            .send_turn(app.handle().clone(), send_request(request.clone(), "   "))
+            .await
+            .expect_err("a blank prompt is rejected");
+        assert_eq!(blank.code, CODEX_TURN_START_FAILED);
+        let bad_effort = manager
+            .send_turn(
+                app.handle().clone(),
+                CodexTurnSendRequest {
+                    start: request.clone(),
+                    prompt: "hello".into(),
+                    effort: Some("ultra".into()),
+                },
+            )
+            .await
+            .expect_err("an unsupported effort is rejected");
+        assert_eq!(bad_effort.code, CODEX_TURN_START_FAILED);
+        // Neither rejection may spawn an app-server or claim the session runs.
+        assert!(manager.sessions.read().await.is_empty());
+        assert!(manager
+            .records
+            .read()
+            .await
+            .get(&request.session_id)
+            .is_none());
+    }
+
+    #[test]
+    fn only_lost_process_failures_are_treated_as_detachment() {
+        assert!(is_detached_failure(
+            &anyhow!(SessionDetached).context("Codex session abc")
+        ));
+        assert!(!is_detached_failure(&anyhow!(
+            "codex app-server turn/start error: model unavailable"
+        )));
+    }
+
     #[tokio::test]
     async fn stale_attachment_exit_cannot_detach_its_replacement() {
         let temp = tempdir().unwrap();
@@ -1841,6 +2452,84 @@ mod tests {
             responses_base_url("https://provider.test/v1/"),
             "https://provider.test/v1"
         );
+        assert_eq!(
+            responses_base_url("http://127.0.0.1:41209/api/v1"),
+            "http://127.0.0.1:41209/api/v1"
+        );
+    }
+
+    #[test]
+    fn synth_cloud_provider_writes_expected_config() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("home");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let mut request = test_request(&workspace, "synth-cloud-config");
+        apply_synth_cloud_provider(
+            &mut request,
+            "http://127.0.0.1:41209",
+            Some("sk_dev_00000000000000000000000000000001"),
+        )
+        .unwrap();
+        request.model = "openrouter/poolside/laguna-s-2.1".into();
+        ensure_home(&home, &request).unwrap();
+        let config = fs::read_to_string(home.join("config.toml")).unwrap();
+        assert!(config.contains("model = \"openrouter/poolside/laguna-s-2.1\""));
+        assert!(config.contains("model_provider = \"synth-cloud\""));
+        assert!(config.contains("[model_providers.\"synth-cloud\"]"));
+        assert!(config.contains("base_url = \"http://127.0.0.1:41209/api/v1\""));
+        assert!(config.contains("wire_api = \"responses\""));
+        assert!(config.contains("env_key = \"SYNTH_API_KEY\""));
+    }
+
+    #[test]
+    fn synth_cloud_provider_fails_closed_without_api_key() {
+        let temp = tempdir().unwrap();
+        let mut request = test_request(temp.path(), "synth-cloud-missing-key");
+        request.api_key = "renderer-supplied-should-not-matter".into();
+        request.provider_name = Some("synth-cloud".into());
+        let error = apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", None)
+            .expect_err("missing Synth API key must fail closed");
+        assert!(error.contains("Synth API key not configured"));
+        assert!(error.contains("Settings → Account"));
+        assert_eq!(request.api_key, "renderer-supplied-should-not-matter");
+    }
+
+    #[test]
+    fn synth_cloud_provider_overwrites_renderer_api_key() {
+        let temp = tempdir().unwrap();
+        let mut request = test_request(temp.path(), "synth-cloud-overwrite");
+        request.api_key = "renderer-leaked-key".into();
+        request.base_url = "https://evil.example/v1".into();
+        apply_synth_cloud_provider(
+            &mut request,
+            "http://127.0.0.1:41209/",
+            Some("sk_dev_real_key"),
+        )
+        .unwrap();
+        assert_eq!(request.api_key, "sk_dev_real_key");
+        assert_eq!(request.base_url, "http://127.0.0.1:41209/api/v1");
+        assert_eq!(request.provider_name.as_deref(), Some("synth-cloud"));
+        assert_eq!(request.provider_env_key.as_deref(), Some("SYNTH_API_KEY"));
+    }
+
+    #[test]
+    fn synth_cloud_home_redacts_api_key_from_generated_files() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("home");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let secret = "sk_dev_SYNTH_CLOUD_SECRET_VALUE_DO_NOT_LEAK";
+        let mut request = test_request(&workspace, "synth-cloud-redact");
+        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some(secret)).unwrap();
+        request.model = "openrouter/poolside/laguna-s-2.1".into();
+        ensure_home(&home, &request).unwrap();
+        let config = fs::read_to_string(home.join("config.toml")).unwrap();
+        let auth = fs::read_to_string(home.join("auth.json")).unwrap();
+        assert!(!config.contains(secret));
+        assert!(!auth.contains(secret));
+        assert!(config.contains("env_key = \"SYNTH_API_KEY\""));
+        assert!(auth.contains("synth-desktop-provider"));
     }
 
     #[test]

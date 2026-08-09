@@ -1,5 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SynthBackendSettings } from "../env";
+
+type PairState =
+	| { kind: "idle" }
+	| { kind: "pairing"; verificationUri: string }
+	| { kind: "error"; message: string };
 
 export function BackendSettings() {
 	const PROFILE_ENDPOINTS: Record<string, string> = {
@@ -38,6 +43,47 @@ export function BackendSettings() {
 		void window.synthConfig?.get().then(apply).catch((error) => setStatus(String(error)));
 	}, []);
 
+	const [pair, setPair] = useState<PairState>({ kind: "idle" });
+	const pollTimer = useRef<number | null>(null);
+	const stopPolling = () => {
+		if (pollTimer.current !== null) {
+			window.clearInterval(pollTimer.current);
+			pollTimer.current = null;
+		}
+	};
+	useEffect(() => stopPolling, []);
+	const beginSignIn = async () => {
+		if (!window.synthAccount) return;
+		try {
+			const begin = await window.synthAccount.beginSignIn();
+			setPair({ kind: "pairing", verificationUri: begin.verificationUri });
+			stopPolling();
+			pollTimer.current = window.setInterval(() => {
+				void window.synthAccount?.pollSignIn().then((result) => {
+					if (result.status === "active") {
+						stopPolling();
+						setPair({ kind: "idle" });
+						setStatus("Signed in · runtime reconnected");
+						void window.synthConfig?.get().then(apply);
+					} else if (result.status === "expired") {
+						stopPolling();
+						setPair({ kind: "error", message: result.reason });
+					}
+				}).catch((error) => {
+					stopPolling();
+					setPair({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+				});
+			}, 4000);
+		} catch (error) {
+			setPair({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+		}
+	};
+	const cancelSignIn = () => {
+		stopPolling();
+		setPair({ kind: "idle" });
+		void window.synthAccount?.cancelSignIn();
+	};
+
 	const save = async () => {
 		if (!window.synthConfig) return;
 		setSaving(true);
@@ -67,6 +113,30 @@ export function BackendSettings() {
 				<div><h2>Synth API</h2><p>Routing is stored in TOML. Credentials stay in a private env file read only by the native host.</p></div>
 				<span className="finetune-badge">{settings?.apiKeyConfigured ? "Authenticated" : "API key required"}</span>
 			</header>
+			<div className="backend-signin" data-testid="account-sign-in">
+				{pair.kind === "pairing" ? (
+					<>
+						<span role="status" className="finetune-meta" data-testid="sign-in-status">
+							Finish sign-in in your browser — this page updates automatically.
+						</span>
+						<button type="button" className="settings-secondary-btn" onClick={() => void beginSignIn()}>Reopen browser</button>
+						<button type="button" className="settings-secondary-btn" data-testid="sign-in-cancel" onClick={cancelSignIn}>Cancel</button>
+					</>
+				) : (
+					<>
+						<span role="status" className="finetune-meta" data-testid="sign-in-status">
+							{pair.kind === "error"
+								? pair.message
+								: settings?.apiKeyConfigured
+									? "Connected to Synth. Sign in again to switch accounts."
+									: "New here? Browser sign-in creates your Synth account and connects this device."}
+						</span>
+						<button type="button" className="settings-secondary-btn" data-testid="sign-in-begin" onClick={() => void beginSignIn()}>
+							{settings?.apiKeyConfigured ? "Sign in again" : "Sign in with browser"}
+						</button>
+					</>
+				)}
+			</div>
 			<div className="backend-settings-grid">
 				<label><span>Profile</span><select value={profile} onChange={(event) => selectProfile(event.target.value)}>
 					<option value="prod">Production</option><option value="staging">Staging</option><option value="local">Local</option>

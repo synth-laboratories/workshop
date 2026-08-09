@@ -1,12 +1,13 @@
 mod cloud;
 mod codex;
+mod device_auth;
 pub mod core_runtime;
 mod domain;
 mod instance;
 mod intern_api;
 pub mod inventory;
 mod laguna;
-mod projects;
+mod optimizers;
 mod runtime;
 pub mod storage;
 mod synth_config;
@@ -14,10 +15,12 @@ mod terminal;
 pub mod trace_ingest;
 mod visuals;
 mod visuals_ipc;
+mod eval_driver;
 
 use codex::{
     CodexApprovalDecisionRequest, CodexManager, CodexSessionInfo, CodexSessionRecord,
-    CodexSessionRequest, CodexSessionStartRequest, CodexTurnStartRequest,
+    CodexSessionRequest, CodexSessionStartRequest, CodexTurnFailure, CodexTurnSendRequest,
+    CodexTurnStartRequest,
 };
 pub use core_runtime::CoreRuntime;
 use instance::InstanceDiagnostics;
@@ -30,7 +33,11 @@ use inventory::{
     TraceRecord, UsageEntry,
 };
 use laguna::{LagunaManager, LagunaModelHit, LagunaStatus};
-use projects::{ProjectCreateRequest, ProjectRecord};
+use optimizers::{
+    OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerImportLocalRequest, OptimizerQuery,
+    OptimizerReconcileRequest, OptimizerRelationship, OptimizerRunRecord, OptimizerStateSlice,
+};
+use serde_json::Value;
 use std::sync::Arc;
 use storage::{AppEvent, CoreDiagnostics};
 use synth_config::{
@@ -145,62 +152,6 @@ async fn intern_session_events_after(
 }
 
 #[tauri::command]
-async fn core_projects_list(
-    state: State<'_, Arc<CoreRuntime>>,
-) -> Result<Vec<ProjectRecord>, String> {
-    state
-        .projects()
-        .list()
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn core_projects_get(
-    state: State<'_, Arc<CoreRuntime>>,
-    project_id: String,
-) -> Result<ProjectRecord, String> {
-    state
-        .projects()
-        .get(project_id)
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn core_projects_create(
-    state: State<'_, Arc<CoreRuntime>>,
-    request: ProjectCreateRequest,
-) -> Result<ProjectRecord, String> {
-    let (project, event) = state
-        .projects()
-        .create(request)
-        .await
-        .map_err(|error| error.to_string())?;
-    state.broadcast_committed(Some(event));
-    Ok(project)
-}
-
-#[derive(serde::Serialize)]
-struct ProjectDeleteResult {
-    deleted: bool,
-}
-
-#[tauri::command]
-async fn core_projects_delete(
-    state: State<'_, Arc<CoreRuntime>>,
-    project_id: String,
-) -> Result<ProjectDeleteResult, String> {
-    let (deleted, event) = state
-        .projects()
-        .delete(project_id)
-        .await
-        .map_err(|error| error.to_string())?;
-    state.broadcast_committed(Some(event));
-    Ok(ProjectDeleteResult { deleted })
-}
-
-#[tauri::command]
 async fn inventory_containers_list(
     state: State<'_, Arc<CoreRuntime>>,
 ) -> Result<Vec<ContainerDeployment>, String> {
@@ -229,6 +180,19 @@ async fn hydrate_container(
 ) -> (String, serde_json::Value, serde_json::Value, Option<String>) {
     let client = reqwest::Client::new();
     let root = base_url.trim_end_matches('/');
+    // Health is intentionally cheap and may run frequently. Contract/catalog
+    // hydration is cached because task catalogs can contain thousands of rows.
+    let refresh_metadata = existing_metadata
+        .get("hydratedAt")
+        .and_then(|value| value.as_str())
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|hydrated| {
+            chrono::Utc::now()
+                .signed_duration_since(hydrated.with_timezone(&chrono::Utc))
+                .num_seconds()
+                >= 300
+        })
+        .unwrap_or(true);
     let health_result = client
         .get(format!("{root}/health"))
         .timeout(std::time::Duration::from_secs(3))
@@ -253,18 +217,21 @@ async fn hydrate_container(
             serde_json::json!({"ok": false, "error": error.to_string()}),
         ),
     };
-    let mut info = None;
-    for route in ["info", "metadata"] {
-        if let Ok(response) = client
-            .get(format!("{root}/{route}"))
-            .timeout(std::time::Duration::from_secs(3))
-            .send()
-            .await
-        {
-            if response.status().is_success() {
-                info = response.json::<serde_json::Value>().await.ok();
-                if info.is_some() {
-                    break;
+    let mut info = existing_metadata.get("info").cloned();
+    if refresh_metadata {
+        info = None;
+        for route in ["info", "metadata"] {
+            if let Ok(response) = client
+                .get(format!("{root}/{route}"))
+                .timeout(std::time::Duration::from_secs(3))
+                .send()
+                .await
+            {
+                if response.status().is_success() {
+                    info = response.json::<serde_json::Value>().await.ok();
+                    if info.is_some() {
+                        break;
+                    }
                 }
             }
         }
@@ -291,27 +258,35 @@ async fn hydrate_container(
         }),
     );
     metadata.insert(
-        "hydratedAt".into(),
+        "healthCheckedAt".into(),
         serde_json::json!(chrono::Utc::now().to_rfc3339()),
     );
+    if refresh_metadata {
+        metadata.insert(
+            "hydratedAt".into(),
+            serde_json::json!(chrono::Utc::now().to_rfc3339()),
+        );
+    }
     if let Some(info) = info {
         metadata.insert("info".into(), info);
     }
-    for (route, key) in [
-        ("task_catalog", "taskCatalog"),
-        ("task_info", "taskInfo"),
-        ("program", "program"),
-        ("dataset", "dataset"),
-    ] {
-        if let Ok(response) = client
-            .get(format!("{root}/{route}"))
-            .timeout(std::time::Duration::from_secs(3))
-            .send()
-            .await
-        {
-            if response.status().is_success() {
-                if let Ok(value) = response.json::<serde_json::Value>().await {
-                    metadata.insert(key.into(), value);
+    if refresh_metadata {
+        for (route, key) in [
+            ("task_catalog", "taskCatalog"),
+            ("task_info", "taskInfo"),
+            ("program", "program"),
+            ("dataset", "dataset"),
+        ] {
+            if let Ok(response) = client
+                .get(format!("{root}/{route}"))
+                .timeout(std::time::Duration::from_secs(3))
+                .send()
+                .await
+            {
+                if response.status().is_success() {
+                    if let Ok(value) = response.json::<serde_json::Value>().await {
+                        metadata.insert(key.into(), value);
+                    }
                 }
             }
         }
@@ -435,6 +410,250 @@ async fn inventory_counts(state: State<'_, Arc<CoreRuntime>>) -> Result<Inventor
     state
         .inventory()
         .counts()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn publish_optimizer_event(
+    app: &tauri::AppHandle,
+    state: &CoreRuntime,
+    event: Option<AppEvent>,
+) -> Result<(), String> {
+    if let Some(event) = event {
+        state
+            .publish_event(app, event)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn optimizers_algorithms_list(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<Vec<Value>, String> {
+    Ok(state.optimizers().list_algorithms())
+}
+
+#[tauri::command]
+async fn optimizers_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    query: Option<OptimizerQuery>,
+) -> Result<Vec<OptimizerRunRecord>, String> {
+    state
+        .optimizers()
+        .list(query.unwrap_or_default())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn optimizers_get(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+) -> Result<OptimizerRunRecord, String> {
+    state
+        .optimizers()
+        .get(optimizer_run_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn optimizers_create(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    request: OptimizerCreateRequest,
+) -> Result<OptimizerRunRecord, String> {
+    let (run, event) = state
+        .optimizers()
+        .create(request)
+        .await
+        .map_err(|error| error.to_string())?;
+    publish_optimizer_event(&app, &state, event).await?;
+    Ok(run)
+}
+
+#[tauri::command]
+async fn optimizers_refresh(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+) -> Result<OptimizerRunRecord, String> {
+    state
+        .optimizers()
+        .refresh(optimizer_run_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn optimizers_events_after(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    after_seq: Option<u64>,
+    limit: Option<i64>,
+) -> Result<Vec<OptimizerEventEnvelope>, String> {
+    state
+        .optimizers()
+        .events_after(optimizer_run_id, after_seq.unwrap_or(0), limit)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn optimizers_get_state(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    slice_id: String,
+    at_seq: Option<u64>,
+) -> Result<OptimizerStateSlice, String> {
+    state
+        .optimizers()
+        .get_state(optimizer_run_id, slice_id, at_seq)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn optimizers_get_state_batch(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    slices: Option<Vec<String>>,
+    at_seq: Option<u64>,
+) -> Result<Vec<OptimizerStateSlice>, String> {
+    state
+        .optimizers()
+        .get_state_batch(optimizer_run_id, slices, at_seq)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn optimizers_relationships(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+) -> Result<Vec<OptimizerRelationship>, String> {
+    state
+        .optimizers()
+        .relationships(optimizer_run_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn optimizers_cancel(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+) -> Result<OptimizerRunRecord, String> {
+    let (run, event) = state
+        .optimizers()
+        .cancel(optimizer_run_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    publish_optimizer_event(&app, &state, event).await?;
+    Ok(run)
+}
+
+#[tauri::command]
+async fn optimizers_pause(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+) -> Result<OptimizerRunRecord, String> {
+    let (run, event) = state
+        .optimizers()
+        .pause(optimizer_run_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    publish_optimizer_event(&app, &state, event).await?;
+    Ok(run)
+}
+
+#[tauri::command]
+async fn optimizers_resume(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+) -> Result<OptimizerRunRecord, String> {
+    let (run, event) = state
+        .optimizers()
+        .resume(optimizer_run_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    publish_optimizer_event(&app, &state, event).await?;
+    Ok(run)
+}
+
+#[tauri::command]
+async fn optimizers_open_visual(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+) -> Result<OptimizerRunRecord, String> {
+    let (run, event) = state
+        .optimizers()
+        .open_visual(optimizer_run_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    publish_optimizer_event(&app, &state, event).await?;
+    if let Some(visual_id) = run
+        .visual_refs
+        .iter()
+        .find(|r| r.kind == "visual")
+        .map(|r| r.id.clone())
+    {
+        let _ = app.emit(
+            crate::core_runtime::VISUAL_SHOW_CHANNEL,
+            serde_json::json!({
+                "kind": "visual.show",
+                "payload": { "visualId": visual_id }
+            }),
+        );
+    }
+    Ok(run)
+}
+
+#[tauri::command]
+async fn optimizers_import_local(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    request: OptimizerImportLocalRequest,
+) -> Result<OptimizerRunRecord, String> {
+    let (run, event) = state
+        .optimizers()
+        .import_local(request)
+        .await
+        .map_err(|error| error.to_string())?;
+    publish_optimizer_event(&app, &state, event).await?;
+    Ok(run)
+}
+
+#[tauri::command]
+async fn optimizers_reconcile_cloud(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    request: OptimizerReconcileRequest,
+) -> Result<OptimizerRunRecord, String> {
+    let (run, event) = state
+        .optimizers()
+        .reconcile_cloud(request)
+        .await
+        .map_err(|error| error.to_string())?;
+    publish_optimizer_event(&app, &state, event).await?;
+    Ok(run)
+}
+
+#[tauri::command]
+async fn optimizers_list_cloud(
+    state: State<'_, Arc<CoreRuntime>>,
+    algorithm: Option<String>,
+    status: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<Value>, String> {
+    state
+        .optimizers()
+        .list_cloud(algorithm, status, limit)
         .await
         .map_err(|error| error.to_string())
 }
@@ -620,6 +839,54 @@ async fn synth_config_update(
     Ok(settings)
 }
 
+/// Begin (or resume) browser sign-in via Workshop device pairing and open the
+/// system browser. Returns display-safe state only.
+#[tauri::command]
+async fn account_begin_sign_in(
+    app: tauri::AppHandle,
+    manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
+) -> Result<device_auth::SignInBegin, String> {
+    let origin = device_auth::workshop_origin();
+    let begin = manager
+        .begin(&origin)
+        .await
+        .map_err(|error| error.to_string())?;
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(begin.verification_uri.clone(), None::<String>)
+        .map_err(|error| error.to_string())?;
+    Ok(begin)
+}
+
+/// One poll step of the pending sign-in. On success the key is stored through
+/// synth_config and the Intern runtime reloads; the key never reaches the
+/// renderer.
+#[tauri::command]
+async fn account_poll_sign_in(
+    core: State<'_, Arc<CoreRuntime>>,
+    manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
+) -> Result<device_auth::SignInPoll, String> {
+    let origin = device_auth::workshop_origin();
+    let result = manager
+        .poll(&origin, |key| synth_config::store_api_key(key))
+        .await
+        .map_err(|error| error.to_string())?;
+    if matches!(result, device_auth::SignInPoll::Active) {
+        core.reload_intern_config()
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn account_cancel_sign_in(
+    manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
+) -> Result<(), String> {
+    manager.cancel();
+    Ok(())
+}
+
 #[tauri::command]
 fn model_multi_agent_list() -> Result<Vec<ModelMultiAgentSetting>, String> {
     synth_config::model_multi_agent_settings().map_err(|error| error.to_string())
@@ -685,7 +952,7 @@ fn laguna_models_clear_directory(state: State<'_, Arc<LagunaManager>>) -> Result
 }
 
 #[tauri::command]
-async fn project_choose_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
+async fn workspace_choose_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -696,13 +963,12 @@ async fn project_choose_directory(app: tauri::AppHandle) -> Result<Option<String
     receiver.await.map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-async fn codex_session_start(
-    app: tauri::AppHandle,
-    state: State<'_, Arc<CodexManager>>,
-    laguna: State<'_, Arc<LagunaManager>>,
+/// Fills in the provider secrets and Laguna base URL that only the Rust side
+/// knows. Shared by the plain attach command and the atomic send command.
+async fn prepare_codex_start(
+    laguna: &LagunaManager,
     mut request: CodexSessionStartRequest,
-) -> Result<CodexSessionInfo, String> {
+) -> Result<CodexSessionStartRequest, String> {
     if request.multi_agent_version.is_none() {
         request.multi_agent_version = Some(
             synth_config::resolve_model_multi_agent(&request.model)
@@ -729,7 +995,51 @@ async fn codex_session_start(
                     .to_string()
             })?;
         request.provider_env_key = Some("OPENROUTER_API_KEY".into());
+    } else if request
+        .provider_name
+        .as_deref()
+        .is_some_and(|provider| provider.eq_ignore_ascii_case("synth-cloud"))
+    {
+        let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
+        codex::apply_synth_cloud_provider(
+            &mut request,
+            &resolved.backend_url,
+            resolved.api_key.as_deref(),
+        )?;
     }
+    Ok(request)
+}
+
+/// One renderer round trip that ensures the app-server attachment and starts
+/// the turn. Splitting these into two commands let the child exit in between,
+/// which stranded the UI in `Working` with a live `Stop`.
+#[tauri::command]
+async fn codex_turn_send(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CodexManager>>,
+    laguna: State<'_, Arc<LagunaManager>>,
+    mut request: CodexTurnSendRequest,
+) -> Result<CodexSessionInfo, CodexTurnFailure> {
+    let session_id = request.start.session_id.clone();
+    request.start = prepare_codex_start(&laguna, request.start)
+        .await
+        .map_err(|message| CodexTurnFailure {
+            code: "codex_provider_unavailable".into(),
+            message: message.clone(),
+            session_id,
+            detail: message,
+        })?;
+    state.send_turn(app, request).await
+}
+
+#[tauri::command]
+async fn codex_session_start(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CodexManager>>,
+    laguna: State<'_, Arc<LagunaManager>>,
+    request: CodexSessionStartRequest,
+) -> Result<CodexSessionInfo, String> {
+    let request = prepare_codex_start(&laguna, request).await?;
     state
         .start(app, request)
         .await
@@ -894,10 +1204,12 @@ pub fn run() {
                 crate::storage::app_data_root().join("migration-backups"),
             );
             let laguna = Arc::new(LagunaManager::new());
+            let codex = Arc::new(CodexManager::new(Some(core.clone())));
             app.manage(core.clone());
             app.manage(migration);
-            app.manage(Arc::new(CodexManager::new(Some(core.clone()))));
+            app.manage(codex.clone());
             app.manage(Arc::new(TerminalManager::new()));
+            app.manage(Arc::new(device_auth::DeviceAuthManager::new()));
             app.manage(laguna.clone());
 
             // All committed CoreRuntime events reach Tauri through this single
@@ -937,6 +1249,37 @@ pub fn run() {
                 }
             });
 
+            if eval_driver::should_spawn() {
+                let eval_core = core.clone();
+                let eval_codex = codex.clone();
+                let eval_laguna = laguna.clone();
+                let eval_app = app.handle().clone();
+                let eval_root = crate::storage::app_data_root();
+                tauri::async_runtime::spawn(async move {
+                    match eval_driver::spawn(
+                        eval_driver::EvalDriverDeps {
+                            core: eval_core,
+                            codex: eval_codex,
+                            laguna: eval_laguna,
+                            app: eval_app,
+                        },
+                        eval_root,
+                    )
+                    .await
+                    {
+                        Ok(connection) => {
+                            eprintln!(
+                                "Eval driver ({}) listening at {} (descriptor {})",
+                                eval_driver::PROTOCOL_VERSION,
+                                connection.url,
+                                connection.path
+                            );
+                        }
+                        Err(error) => eprintln!("Eval driver failed to start: {error}"),
+                    }
+                });
+            }
+
             if let Some(window) = app.get_webview_window("main") {
                 window.show()?;
             }
@@ -953,10 +1296,6 @@ pub fn run() {
             intern_session_send,
             intern_session_control,
             intern_session_events_after,
-            core_projects_list,
-            core_projects_get,
-            core_projects_create,
-            core_projects_delete,
             inventory_containers_list,
             inventory_containers_get,
             inventory_containers_register,
@@ -967,6 +1306,22 @@ pub fn run() {
             inventory_trace_projection_resolve,
             inventory_usage_list,
             inventory_counts,
+            optimizers_algorithms_list,
+            optimizers_list,
+            optimizers_get,
+            optimizers_create,
+            optimizers_refresh,
+            optimizers_events_after,
+            optimizers_get_state,
+            optimizers_get_state_batch,
+            optimizers_relationships,
+            optimizers_cancel,
+            optimizers_pause,
+            optimizers_resume,
+            optimizers_open_visual,
+            optimizers_import_local,
+            optimizers_reconcile_cloud,
+            optimizers_list_cloud,
             visuals_templates_list,
             visuals_templates_get,
             visuals_list,
@@ -980,6 +1335,9 @@ pub fn run() {
             visuals_show,
             synth_config_get,
             synth_config_update,
+            account_begin_sign_in,
+            account_poll_sign_in,
+            account_cancel_sign_in,
             model_multi_agent_list,
             model_multi_agent_update,
             workspace_access_get,
@@ -993,9 +1351,14 @@ pub fn run() {
             laguna_models_list,
             laguna_models_set_directory,
             laguna_models_clear_directory,
-            project_choose_directory,
+            laguna::laguna_inference_snapshot,
+            laguna::laguna_inference_stream_start,
+            laguna::laguna_inference_stream_stop,
+            laguna::laguna_model_unload,
+			workspace_choose_directory,
             codex_session_start,
             codex_turn_start,
+            codex_turn_send,
             codex_turn_interrupt,
             codex_approval_resolve,
             codex_session_close,

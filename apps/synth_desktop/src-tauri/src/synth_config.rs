@@ -187,6 +187,28 @@ pub fn update(request: BackendSettingsUpdate) -> Result<BackendSettings> {
     get()
 }
 
+/// Persist a Synth API key obtained by device pairing into the configured
+/// 0600 env file, without touching routing config. Renderer never calls this.
+pub fn store_api_key(secret: &str) -> Result<()> {
+    let secret = secret.trim();
+    if secret.is_empty() {
+        return Err(anyhow!("pairing returned an empty API key"));
+    }
+    if secret.contains(['\r', '\n']) {
+        return Err(anyhow!("API key cannot contain a newline"));
+    }
+    let resolved = resolve()?;
+    let document = read_toml(&resolved.config_path)?;
+    let api_key_env = document
+        .get("intern")
+        .and_then(toml::Value::as_table)
+        .and_then(|v| v.get("api_key_env"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or(DEFAULT_API_KEY_ENV)
+        .to_owned();
+    write_env_secret(&resolved.env_file, &api_key_env, secret)
+}
+
 pub fn openrouter_api_key() -> Result<Option<String>> {
     let resolved = resolve()?;
     Ok(resolve_secret(OPENROUTER_API_KEY_ENV, &resolved.env_file).0)

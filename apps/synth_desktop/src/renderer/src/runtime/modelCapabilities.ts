@@ -1,5 +1,5 @@
 import type { ExecutionTarget } from "@synth/runtime-protocol";
-import { OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL } from "../types/landing";
+import { OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL, SYNTH_CLOUD_LAGUNA_S_MODEL } from "../types/landing";
 
 /**
  * Declarative registry for model-specific composer controls.
@@ -80,6 +80,20 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 			label: "Thinking",
 			testId: "reasoning-effort",
 			storageKey: "synth.models.openrouter-laguna-s.reasoning",
+			legacyStorageKeys: ["synth.lagunaThinking"],
+			defaultValue: "max",
+			options: BINARY_THINKING_OPTIONS,
+			turnStartField: "effort"
+		}]
+	},
+	{
+		targetId: "synth-cloud-laguna-s",
+		target: { kind: "remote", models: [SYNTH_CLOUD_LAGUNA_S_MODEL] },
+		knobs: [{
+			id: "reasoning",
+			label: "Thinking",
+			testId: "reasoning-effort",
+			storageKey: "synth.models.synth-cloud-laguna-s.reasoning",
 			legacyStorageKeys: ["synth.lagunaThinking"],
 			defaultValue: "max",
 			options: BINARY_THINKING_OPTIONS,

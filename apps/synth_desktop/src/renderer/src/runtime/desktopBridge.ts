@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, Project, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexSessionInfo, DesktopInstanceDiagnostics, InventoryCounts, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, PersistedCodexSession, RequestOptions, RuntimeBridge, SynthBackendSettings, TerminalEvent, TerminalInfo, VisualTemplateMeta, WorkspaceAccessSettings } from "../env";
+import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
+import type { CodexEvent, CodexSessionInfo, DesktopInstanceDiagnostics, InventoryCounts, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, PersistedCodexSession, RequestOptions, RuntimeBridge, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TerminalEvent, TerminalInfo, VisualTemplateMeta, WorkspaceAccessSettings } from "../env";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry } from "@synth/runtime-protocol";
 
@@ -139,9 +139,9 @@ export function installDesktopBridge(): void {
 				buildTimestamp: "0", processId: 0, executable: "browser",
 				dataRoot: "browser-memory://", viteUrl: window.location.origin, manifest: null
 			}),
-		chooseProjectDirectory: async () => {
+		chooseWorkspaceDirectory: async () => {
 			if (!isTauri) return null;
-			const selection = await invoke<string | null>("project_choose_directory").catch(() =>
+			const selection = await invoke<string | null>("workspace_choose_directory").catch(() =>
 				open({ directory: true, multiple: false })
 			);
 			return typeof selection === "string" ? selection : null;
@@ -219,20 +219,16 @@ export function installDesktopBridge(): void {
 			}
 		}
 		: browserInternBridge();
-	window.synthProjects ??= isTauri
+	window.synthAccount ??= isTauri
 		? {
-			list: () => invoke<Project[]>("core_projects_list"),
-			get: (projectId) => invoke<Project>("core_projects_get", { projectId }),
-			create: (request) => invoke<Project>("core_projects_create", { request }),
-			delete: (projectId) => invoke<{ deleted: boolean }>("core_projects_delete", { projectId })
+			beginSignIn: () => invoke<SynthSignInBegin>("account_begin_sign_in"),
+			pollSignIn: () => invoke<SynthSignInPoll>("account_poll_sign_in"),
+			cancelSignIn: () => invoke<void>("account_cancel_sign_in")
 		}
 		: {
-			async list() {
-				return (await window.synthRuntime!.request<{ projects: Project[] }>("/v1/projects")).projects;
-			},
-			get: (projectId) => window.synthRuntime!.request(`/v1/projects/${encodeURIComponent(projectId)}`),
-			create: (request) => window.synthRuntime!.request("/v1/projects", { method: "POST", body: request }),
-			delete: (projectId) => window.synthRuntime!.request(`/v1/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" })
+			beginSignIn: async () => { throw new Error("Browser sign-in requires Synth Desktop"); },
+			pollSignIn: async () => ({ status: "expired", reason: "Browser sign-in requires Synth Desktop" }),
+			cancelSignIn: async () => undefined
 		};
 	window.synthConfig ??= isTauri
 		? {
@@ -344,6 +340,8 @@ export function installDesktopBridge(): void {
 			start: (request) => invoke<CodexSessionInfo>("codex_session_start", { request }),
 			startTurn: (sessionId, prompt, effort) =>
 				invoke<CodexSessionInfo>("codex_turn_start", { request: { sessionId, prompt, effort } }),
+			sendTurn: (start, prompt, effort) =>
+				invoke<CodexSessionInfo>("codex_turn_send", { request: { start, prompt, effort } }),
 			interrupt: (sessionId) => invoke<void>("codex_turn_interrupt", { request: { sessionId } }),
 			resolveApproval: (sessionId, approvalId, decision) => invoke<void>("codex_approval_resolve", { request: { sessionId, approvalId, decision } }),
 			close: (sessionId) => invoke<void>("codex_session_close", { request: { sessionId } }),
@@ -386,6 +384,42 @@ export function installDesktopBridge(): void {
 				let disposed = false;
 				let unlisten: (() => void) | undefined;
 				void listen<AppEvent>("visual:show", ({ payload }) => listener(payload)).then((next) => {
+					if (disposed) next();
+					else unlisten = next;
+				});
+				return () => { disposed = true; unlisten?.(); };
+			}
+		};
+		window.synthOptimizers ??= {
+			listAlgorithms: () => invoke("optimizers_algorithms_list"),
+			list: (query) => invoke("optimizers_list", { query: query ?? null }),
+			get: (optimizerRunId) => invoke("optimizers_get", { optimizerRunId }),
+			create: (request) => invoke("optimizers_create", { request }),
+			refresh: (optimizerRunId) => invoke("optimizers_refresh", { optimizerRunId }),
+			eventsAfter: (optimizerRunId, afterSeq = 0, limit) =>
+				invoke("optimizers_events_after", { optimizerRunId, afterSeq, limit: limit ?? null }),
+			getState: (optimizerRunId, sliceId, atSeq) =>
+				invoke("optimizers_get_state", { optimizerRunId, sliceId, atSeq: atSeq ?? null }),
+			getStateBatch: (optimizerRunId, slices, atSeq) =>
+				invoke("optimizers_get_state_batch", { optimizerRunId, slices: slices ?? null, atSeq: atSeq ?? null }),
+			cancel: (optimizerRunId) => invoke("optimizers_cancel", { optimizerRunId }),
+			pause: (optimizerRunId) => invoke("optimizers_pause", { optimizerRunId }),
+			resume: (optimizerRunId) => invoke("optimizers_resume", { optimizerRunId }),
+			openVisual: (optimizerRunId) => invoke("optimizers_open_visual", { optimizerRunId }),
+			importLocal: (request) => invoke("optimizers_import_local", { request }),
+			reconcileCloud: (request) => invoke("optimizers_reconcile_cloud", { request }),
+			listCloud: (query) =>
+				invoke("optimizers_list_cloud", {
+					algorithm: query?.algorithm ?? null,
+					status: query?.status ?? null,
+					limit: query?.limit ?? null
+				}),
+			onEvent(listener) {
+				let disposed = false;
+				let unlisten: (() => void) | undefined;
+				void listen<AppEvent>("runtime:event", ({ payload }) => {
+					if (payload.kind.startsWith("optimizer.")) listener(payload);
+				}).then((next) => {
 					if (disposed) next();
 					else unlisten = next;
 				});

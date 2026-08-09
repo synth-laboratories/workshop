@@ -145,7 +145,6 @@ export type LandingState = {
 	chats: LocalChat[];
 	syncSessions: SyncSession[];
 	asyncIntern: AsyncInternPin | null;
-	projects: { id: string; name: string }[];
 	model: {
 		status: ModelStatus;
 		name: string;
@@ -155,6 +154,8 @@ export type LandingState = {
 	};
 	selectedTargetId: string;
 	internMode?: "remote" | "demo" | "unconfigured";
+	/** Synth org API key present — gates Synth Cloud billed models. Boolean only; never the secret. */
+	apiKeyConfigured?: boolean;
 	composerEnabled: boolean;
 	composerPlaceholder: string;
 };
@@ -162,6 +163,8 @@ export type LandingState = {
 /** OpenRouter model ids used by the remote ACP adapter. */
 export const OPENROUTER_LUNA_MODEL = "openai/gpt-5.6-luna";
 export const OPENROUTER_LAGUNA_S_MODEL = "poolside/laguna-s-2.1";
+/** Fully qualified — bare `laguna-s-2.1` resolves to a different catalog entry server-side. */
+export const SYNTH_CLOUD_LAGUNA_S_MODEL = "openrouter/poolside/laguna-s-2.1";
 
 export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 	{
@@ -181,6 +184,12 @@ export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 		label: "Laguna S 2.1",
 		description: `OpenRouter · ${OPENROUTER_LAGUNA_S_MODEL} · usage tracked`,
 		group: "remote"
+	},
+	{
+		id: "synth-cloud-laguna-s",
+		label: "Laguna S 2.1",
+		description: "Synth Cloud · usage tracked",
+		group: "cloud"
 	},
 	{
 		id: "intern-sync",

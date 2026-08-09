@@ -7,22 +7,9 @@ type Props = {
 	state: LandingState;
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
-	onAddProject: () => void;
+	onConfigureAccount?: () => void;
 	onSetupAgent: () => void;
 };
-
-function IconFolder() {
-	return (
-		<svg className="quick-card-icon" viewBox="0 0 24 24" fill="none" aria-hidden>
-			<path
-				d="M3.5 8.5A2 2 0 015.5 6.5h4.2l1.6 1.8h7.2a2 2 0 012 2v7.2a2 2 0 01-2 2h-13a2 2 0 01-2-2V8.5z"
-				stroke="currentColor"
-				strokeWidth="1.4"
-				strokeLinejoin="round"
-			/>
-		</svg>
-	);
-}
 
 function IconAgents() {
 	return (
@@ -48,10 +35,14 @@ function IconAgents() {
 
 export function ModelPicker({
 	selectedTargetId,
-	onSelectTarget
+	apiKeyConfigured,
+	onSelectTarget,
+	onConfigureAccount
 }: {
 	selectedTargetId: string;
+	apiKeyConfigured?: boolean;
 	onSelectTarget: (id: string) => void;
+	onConfigureAccount?: () => void;
 }) {
 	const [open, setOpen] = useState(false);
 	const ref = useRef<HTMLDivElement>(null);
@@ -75,6 +66,7 @@ export function ModelPicker({
 				data-testid="model-picker"
 				aria-label="Select execution target"
 				aria-expanded={open}
+				aria-controls="model-dropdown"
 				aria-haspopup="listbox"
 			>
 				<SynthLogo className="model-pill-logo" compact />
@@ -84,29 +76,64 @@ export function ModelPicker({
 				</svg>
 			</button>
 			{open ? (
-				<div className="model-dropdown" role="listbox" data-testid="model-dropdown">
+				<div id="model-dropdown" className="model-dropdown" role="listbox" data-testid="model-dropdown">
 					{(["local", "remote", "cloud"] as const).map((group) => {
 						const items = EXECUTION_TARGETS.filter((t) => t.group === group);
 						if (!items.length) return null;
 						return (
 							<div key={group} className="model-dropdown-group">
 								<div className="model-dropdown-group-label">{TARGET_GROUP_LABEL[group]}</div>
-								{items.map((target: ExecutionTargetOption) => (
-									<button
-										key={target.id}
-										type="button"
-										role="option"
-										aria-selected={target.id === selectedTargetId}
-										className={`model-option${target.id === selectedTargetId ? " selected" : ""}`}
-										onClick={() => {
-											onSelectTarget(target.id);
-											setOpen(false);
-										}}
-									>
-										<span className="model-option-label">{target.label}</span>
-										<span className="model-option-desc">{target.description}</span>
-									</button>
-								))}
+								{items.map((target: ExecutionTargetOption) => {
+									const needsSynthKey =
+										target.id === "synth-cloud-laguna-s" && apiKeyConfigured !== true;
+									if (needsSynthKey) {
+										return (
+											<div
+												key={target.id}
+												className="model-option is-disabled"
+												data-testid={`model-option-${target.id}`}
+											>
+												<span
+													className="model-option-copy"
+													role="option"
+													aria-selected={false}
+													aria-disabled="true"
+												>
+													<span className="model-option-label">{target.label}</span>
+													<span className="model-option-desc">Synth API key required</span>
+												</span>
+												<button
+													type="button"
+													className="model-option-configure"
+													data-testid="model-configure-synth-api-key"
+													onClick={() => {
+														onConfigureAccount?.();
+														setOpen(false);
+													}}
+												>
+													Configure Synth API key
+												</button>
+											</div>
+										);
+									}
+									return (
+										<button
+											key={target.id}
+											type="button"
+											role="option"
+											aria-selected={target.id === selectedTargetId}
+											data-testid={`model-option-${target.id}`}
+											className={`model-option${target.id === selectedTargetId ? " selected" : ""}`}
+											onClick={() => {
+												onSelectTarget(target.id);
+												setOpen(false);
+											}}
+										>
+											<span className="model-option-label">{target.label}</span>
+											<span className="model-option-desc">{target.description}</span>
+										</button>
+									);
+								})}
 							</div>
 						);
 					})}
@@ -117,10 +144,10 @@ export function ModelPicker({
 }
 
 export function LandingPage({
-	state: _state,
+	state,
 	selectedTargetId,
 	onSelectTarget,
-	onAddProject,
+	onConfigureAccount,
 	onSetupAgent
 }: Props) {
 	return (
@@ -131,26 +158,23 @@ export function LandingPage({
 				</div>
 				<div className="landing-title-row">
 					<p className="landing-title">Start a new conversation using</p>
-					<ModelPicker selectedTargetId={selectedTargetId} onSelectTarget={onSelectTarget} />
+					<ModelPicker
+						selectedTargetId={selectedTargetId}
+						apiKeyConfigured={state.apiKeyConfigured}
+						onSelectTarget={onSelectTarget}
+						onConfigureAccount={onConfigureAccount}
+					/>
 				</div>
 				<div className="quick-actions">
-					<button
-						type="button"
-						className="quick-card"
-						onClick={onAddProject}
-						data-testid="quick-add-project"
-					>
-						<IconFolder />
-						add a new project to work with files
-					</button>
 					<button
 						type="button"
 						className="quick-card"
 						onClick={onSetupAgent}
 						data-testid="quick-setup-agent"
 					>
-						<IconAgents />
-						set up another agent
+						<span className="quick-card-icon-wrap"><IconAgents /></span>
+						<span><strong>Set up an agent</strong><small>Schedule recurring work</small></span>
+						<span className="quick-card-arrow" aria-hidden>→</span>
 					</button>
 				</div>
 			</div>

@@ -19,10 +19,26 @@ type Props = {
 	state: LandingState;
 	onSend: (text: string) => void;
 	onSelectTarget: (id: string) => void;
+	onConfigureAccount?: () => void;
 	approvalMode: ApprovalMode;
 	onSelectApprovalMode: (mode: ApprovalMode) => void;
 	modelKnobValues: ModelKnobValues;
 	onSelectModelKnob: (targetId: string, knobId: string, value: ModelKnobValue) => void;
+	/** True while the active conversation has a non-terminal run. */
+	agentWorking?: boolean;
+	/** Preferred Enter action while working. */
+	activeEnterAction?: "steer" | "enqueue";
+	onSteer?: (text: string) => void | Promise<void>;
+	onEnqueue?: (text: string) => void;
+	queuedPrompts?: Array<{ id: string; text: string }>;
+	onEditQueuedPrompt?: (id: string, text: string) => void;
+	onRemoveQueuedPrompt?: (id: string) => void;
+	/** After stop, offer send-next / keep / remove for leftover queue items. */
+	queueAfterStop?: boolean;
+	onSendNextQueued?: () => void;
+	onKeepQueued?: () => void;
+	steerSupported?: boolean;
+	steerError?: string | null;
 };
 
 const APPROVAL_OPTIONS: Array<{ id: ApprovalMode; label: string; description: string }> = [
@@ -43,10 +59,10 @@ function PermissionMenu({ mode, onSelect, disabled }: { mode: ApprovalMode; onSe
 		return () => document.removeEventListener("mousedown", close);
 	}, [open]);
 	return <div className="permission-wrap" ref={ref}>
-		<button type="button" className="permission-select" disabled={disabled} onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-haspopup="listbox" data-testid="approval-mode-select">
+		<button type="button" className="permission-select" disabled={disabled} onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-controls="approval-mode-menu" aria-haspopup="listbox" data-testid="approval-mode-select">
 			<IconAsk />{selected.label}<IconChevron />
 		</button>
-		{open ? <div className="permission-menu" role="listbox" aria-label="Approval mode" data-testid="approval-mode-menu">
+		{open ? <div id="approval-mode-menu" className="permission-menu" role="listbox" aria-label="Approval mode" data-testid="approval-mode-menu">
 			{APPROVAL_OPTIONS.map((option) => <button key={option.id} type="button" role="option" aria-selected={option.id === mode} className={`permission-option${option.id === mode ? " selected" : ""}`} onClick={() => { onSelect(option.id); setOpen(false); }}>
 				<span><strong>{option.label}</strong><small>{option.description}</small></span>{option.id === mode ? <b aria-hidden>✓</b> : null}
 			</button>)}
@@ -76,12 +92,13 @@ function ModelKnobMenu({ value, onSelect, knob }: {
 			onClick={() => setOpen((value) => !value)}
 			aria-label={`${knob.label}: ${selected.label}`}
 			aria-expanded={open}
+			aria-controls={`${knob.testId}-menu`}
 			aria-haspopup="listbox"
 			data-testid={`${knob.testId}-select`}
 		>
 			<span>{selected.label}</span><IconChevron />
 		</button>
-		{open ? <div className="reasoning-effort-menu" role="listbox" aria-label={knob.label} data-testid={`${knob.testId}-menu`}>
+		{open ? <div id={`${knob.testId}-menu`} className="reasoning-effort-menu" role="listbox" aria-label={knob.label} data-testid={`${knob.testId}-menu`}>
 			{knob.options.map((option) => <button
 				key={option.id}
 				type="button"
@@ -180,6 +197,11 @@ function composerPlaceholder(state: LandingState): string {
 	if (state.selectedTargetId === "local-laguna") {
 		return state.composerPlaceholder;
 	}
+	if (state.selectedTargetId === "synth-cloud-laguna-s") {
+		return state.apiKeyConfigured
+			? "Ask via Synth Cloud (usage tracked)…"
+			: "Configure Synth API key in Settings → Account";
+	}
 	if (state.selectedTargetId.startsWith("openrouter-")) {
 		return "Ask via OpenRouter (usage tracked)…";
 	}
@@ -195,6 +217,9 @@ function composerPlaceholder(state: LandingState): string {
 }
 
 function composerEnabled(state: LandingState): boolean {
+	if (state.selectedTargetId === "synth-cloud-laguna-s") {
+		return state.apiKeyConfigured === true;
+	}
 	if (state.selectedTargetId.startsWith("openrouter-")) return true;
 	if (state.selectedTargetId === "intern-sync" || state.selectedTargetId === "intern-async") {
 		return state.internMode !== "unconfigured";
@@ -206,10 +231,12 @@ const GROUP_ORDER: ExecutionTargetOption["group"][] = ["local", "remote", "cloud
 
 function ModelMenu({
 	state,
-	onSelectTarget
+	onSelectTarget,
+	onConfigureAccount
 }: {
 	state: LandingState;
 	onSelectTarget: (id: string) => void;
+	onConfigureAccount?: () => void;
 }) {
 	const [open, setOpen] = useState(false);
 	const ref = useRef<HTMLDivElement>(null);
@@ -248,6 +275,7 @@ function ModelMenu({
 				onClick={() => setOpen((v) => !v)}
 				aria-label={`Model: ${modelLabel}`}
 				aria-expanded={open}
+				aria-controls="composer-model-menu"
 				aria-haspopup="listbox"
 				data-testid="composer-model"
 			>
@@ -256,7 +284,7 @@ function ModelMenu({
 				<IconChevron />
 			</button>
 			{open ? (
-				<div className="composer-model-menu" role="listbox" data-testid="composer-model-menu">
+				<div id="composer-model-menu" className="composer-model-menu" role="listbox" data-testid="composer-model-menu">
 					{GROUP_ORDER.map((group) => {
 						const items = EXECUTION_TARGETS.filter((t) => t.group === group);
 						if (!items.length) return null;
@@ -270,6 +298,8 @@ function ModelMenu({
 											state.model.status === "error" ||
 											state.model.status === "starting" ||
 											state.model.status === "loading");
+									const needsSynthKey =
+										target.id === "synth-cloud-laguna-s" && state.apiKeyConfigured !== true;
 									const localProgress =
 										target.id === "local-laguna"
 											? state.model.status === "downloading"
@@ -281,6 +311,36 @@ function ModelMenu({
 														: null
 											: null;
 									const selectedHere = target.id === state.selectedTargetId;
+									if (needsSynthKey) {
+										return (
+											<div
+												key={target.id}
+												className="composer-model-option is-disabled"
+												data-testid={`composer-model-option-${target.id}`}
+											>
+												<span
+													className="composer-model-option-main"
+													role="option"
+													aria-selected={false}
+													aria-disabled="true"
+												>
+													<span className="composer-model-option-label">{target.label}</span>
+													<span className="composer-model-option-desc">Synth API key required</span>
+												</span>
+												<button
+													type="button"
+													className="composer-model-configure"
+													data-testid="composer-model-configure-synth-api-key"
+													onClick={() => {
+														onConfigureAccount?.();
+														setOpen(false);
+													}}
+												>
+													Configure Synth API key
+												</button>
+											</div>
+										);
+									}
 									return (
 										<button
 											key={target.id}
@@ -314,7 +374,9 @@ function ModelMenu({
 							? "Local Laguna XS · usage on daemon ledger"
 							: selected?.group === "remote"
 								? "Remote via Codex/ACP · usage tracked locally"
-								: "Cloud Intern · mailbox authority"}
+								: selected?.id === "synth-cloud-laguna-s"
+									? "Synth Cloud · usage tracked"
+									: "Cloud Intern · mailbox authority"}
 					</p>
 				</div>
 			) : null}
@@ -322,12 +384,38 @@ function ModelMenu({
 	);
 }
 
-export function Composer({ state, onSend, onSelectTarget, approvalMode, onSelectApprovalMode, modelKnobValues, onSelectModelKnob }: Props) {
+export function Composer({
+	state,
+	onSend,
+	onSelectTarget,
+	onConfigureAccount,
+	approvalMode,
+	onSelectApprovalMode,
+	modelKnobValues,
+	onSelectModelKnob,
+	agentWorking = false,
+	activeEnterAction = "enqueue",
+	onSteer,
+	onEnqueue,
+	queuedPrompts = [],
+	onEditQueuedPrompt,
+	onRemoveQueuedPrompt,
+	queueAfterStop = false,
+	onSendNextQueued,
+	onKeepQueued,
+	steerSupported = false,
+	steerError = null
+}: Props) {
 	const [value, setValue] = useState("");
+	const [submitting, setSubmitting] = useState(false);
 	const dockRef = useRef<HTMLDivElement>(null);
 	const enabled = composerEnabled(state);
 	const placeholder = composerPlaceholder(state);
 	const modelCapabilities = modelCapabilitiesForTarget(state.selectedTargetId);
+	const enterAction = agentWorking ? activeEnterAction : "submit";
+	const alternateAction = agentWorking
+		? (activeEnterAction === "enqueue" ? "steer" : "enqueue")
+		: null;
 
 	useEffect(() => {
 		setValue("");
@@ -364,27 +452,111 @@ export function Composer({ state, onSend, onSelectTarget, approvalMode, onSelect
 		};
 	}, []);
 
-	const submit = () => {
-		if (!enabled || !value.trim()) return;
-		onSend(value.trim());
-		setValue("");
+	const perform = async (intent: "submit" | "steer" | "enqueue") => {
+		if (!enabled || !value.trim() || submitting) return;
+		const text = value.trim();
+		setSubmitting(true);
+		try {
+			if (intent === "enqueue") {
+				onEnqueue?.(text);
+				setValue("");
+				return;
+			}
+			if (intent === "steer") {
+				if (!steerSupported) {
+					// Honest failure: keep the text and surface the contract gap.
+					await onSteer?.(text);
+					return;
+				}
+				await onSteer?.(text);
+				setValue("");
+				return;
+			}
+			onSend(text);
+			setValue("");
+		} finally {
+			setSubmitting(false);
+		}
 	};
+
+	const submit = () => {
+		void perform(agentWorking ? activeEnterAction : "submit");
+	};
+
+	const submitAlternate = () => {
+		if (!alternateAction) return;
+		void perform(alternateAction);
+	};
+
+	const sendLabel = !agentWorking
+		? "Send message"
+		: activeEnterAction === "enqueue"
+			? "Enqueue message"
+			: steerSupported
+				? "Steer active turn"
+				: "Steer unavailable";
 
 	return (
 		<div className="composer-dock" data-testid="composer-dock" ref={dockRef}>
-			<div className={`composer${enabled ? "" : " is-disabled"}`} data-testid="composer">
+			{queuedPrompts.length > 0 ? (
+				<div className="prompt-queue" data-testid="prompt-queue" aria-label="Queued prompts">
+					<div className="prompt-queue-head">
+						<div><strong>Next turns</strong><span>{queuedPrompts.length} {queuedPrompts.length === 1 ? "prompt" : "prompts"}</span></div>
+						<span>Sent in order</span>
+					</div>
+					{queuedPrompts.map((item, index) => (
+						<div key={item.id} className="prompt-queue-item" data-testid={`queued-prompt-${item.id}`}>
+							<span className="prompt-queue-index" aria-hidden>{index + 1}</span>
+							<input
+								className="prompt-queue-text"
+								aria-label={`Queued prompt ${index + 1}`}
+								value={item.text}
+								onChange={(event) => onEditQueuedPrompt?.(item.id, event.target.value)}
+							/>
+							<button
+								type="button"
+								className="prompt-queue-remove"
+								aria-label={`Remove queued prompt ${index + 1}`}
+								data-testid={`remove-queued-${item.id}`}
+								onClick={() => onRemoveQueuedPrompt?.(item.id)}
+							>
+								<span aria-hidden>×</span>
+							</button>
+						</div>
+					))}
+				</div>
+			) : null}
+			{queueAfterStop && queuedPrompts.length > 0 ? (
+				<div className="prompt-queue-after-stop" role="region" aria-label="Queued prompts after stop" data-testid="prompt-queue-after-stop">
+					<p>Queued prompts were kept after stop.</p>
+					<button type="button" data-testid="send-next-queued" onClick={onSendNextQueued}>Send next</button>
+					<button type="button" data-testid="keep-queued" onClick={onKeepQueued}>Keep</button>
+				</div>
+			) : null}
+			{steerError ? (
+				<p className="composer-steer-error" role="alert" data-testid="steer-error">{steerError}</p>
+			) : null}
+			<div className={`composer${enabled ? "" : " is-disabled"}`} data-testid="composer" data-enter-action={enterAction}>
+				{agentWorking ? (
+					<p className="composer-intent-hint" data-testid="composer-intent-hint">
+						{activeEnterAction === "enqueue"
+							? "Enter enqueues · ⌘Enter steers"
+							: "Enter steers · ⌘Enter enqueues"}
+						{!steerSupported ? " · Steer needs a runtime primitive" : ""}
+					</p>
+				) : null}
 				<textarea
 					className="composer-input"
 					rows={2}
-					disabled={!enabled}
+					disabled={!enabled || submitting}
 					placeholder={placeholder}
 					value={value}
 					onChange={(e) => setValue(e.target.value)}
 					onKeyDown={(e) => {
-						if (e.key === "Enter" && !e.shiftKey) {
-							e.preventDefault();
-							submit();
-						}
+						if (e.key !== "Enter" || e.shiftKey) return;
+						e.preventDefault();
+						if (e.metaKey || e.ctrlKey) submitAlternate();
+						else submit();
 					}}
 					aria-label="Message composer"
 					data-testid="composer-input"
@@ -397,7 +569,7 @@ export function Composer({ state, onSend, onSelectTarget, approvalMode, onSelect
 						<PermissionMenu mode={approvalMode} onSelect={onSelectApprovalMode} disabled={!enabled} />
 					</div>
 					<div className="composer-right">
-						<ModelMenu state={state} onSelectTarget={onSelectTarget} />
+						<ModelMenu state={state} onSelectTarget={onSelectTarget} onConfigureAccount={onConfigureAccount} />
 						{modelCapabilities?.knobs.map((knob) => (
 							<ModelKnobMenu
 								key={knob.id}
@@ -412,10 +584,11 @@ export function Composer({ state, onSend, onSelectTarget, approvalMode, onSelect
 						<button
 							type="button"
 							className="send-btn"
-							disabled={!enabled || !value.trim()}
+							disabled={!enabled || !value.trim() || submitting}
 							onClick={submit}
-							aria-label="Send message"
+							aria-label={sendLabel}
 							data-testid="composer-send"
+							data-intent={enterAction}
 						>
 							<IconSend />
 						</button>

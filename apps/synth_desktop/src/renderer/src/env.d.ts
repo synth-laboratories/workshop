@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { AppEvent, CodexActivityEvent, ContainerDeployment, CoreDiagnostics, InternSessionControlRequest, InternSessionControlResult, InternSessionCreateRequest, InternSessionSendRequest, InternSessionSendResult, Project, ResolvedTraceProjection, RuntimeEvent, Session, TraceBundleIngestRequest, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry } from "@synth/runtime-protocol";
+import type { AppEvent, CodexActivityEvent, ContainerDeployment, CoreDiagnostics, InternSessionControlRequest, InternSessionControlResult, InternSessionCreateRequest, InternSessionSendRequest, InternSessionSendResult, ResolvedTraceProjection, RuntimeEvent, Session, TraceBundleIngestRequest, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry } from "@synth/runtime-protocol";
 
 export {};
 
@@ -159,11 +159,24 @@ export type PersistedCodexSession = {
 	sandbox: string;
 };
 export type CodexEvent = { sessionId: string; method: string; params: Record<string, unknown> };
+/** Typed rejection payload of `codex_turn_send`. */
+export type CodexTurnFailure = {
+	code: "codex_session_detached" | "codex_turn_start_failed" | "codex_provider_unavailable" | string;
+	message: string;
+	sessionId: string;
+	/** Developer detail. Debug logs only — never a user-facing surface. */
+	detail: string;
+};
 export type CodexBridge = {
 	defaultWorkspace(): Promise<string>;
 	list(): Promise<PersistedCodexSession[]>;
 	start(request: CodexSessionStart): Promise<CodexSessionInfo>;
 	startTurn(sessionId: string, prompt: string, effort?: string): Promise<CodexSessionInfo>;
+	/**
+	 * Atomic attach-or-resume plus turn start. Optional because browser demo
+	 * adapters and older test fixtures only implement start + startTurn.
+	 */
+	sendTurn?(request: CodexSessionStart, prompt: string, effort?: string): Promise<CodexSessionInfo>;
 	interrupt(sessionId: string): Promise<void>;
 	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject"): Promise<void>;
 	close(sessionId: string): Promise<void>;
@@ -187,12 +200,6 @@ export type InternBridge = {
 };
 
 export type InventoryCounts = { containers: number; traces: number; usage: number };
-export type ProjectsBridge = {
-	list(): Promise<Project[]>;
-	get(projectId: string): Promise<Project>;
-	create(request: { path: string; name?: string; vcs?: string; metadata?: Record<string, unknown> }): Promise<Project>;
-	delete(projectId: string): Promise<{ deleted: boolean }>;
-};
 export type InventoryBridge = {
 	listContainers(): Promise<ContainerDeployment[]>;
 	getContainer(containerId: string): Promise<ContainerDeployment>;
@@ -250,6 +257,45 @@ export type VisualsBridge = {
 	onShow(listener: (event: AppEvent) => void): () => void;
 };
 
+export type OptimizersBridge = {
+	listAlgorithms(): Promise<import("@synth/runtime-protocol").OptimizerAlgorithmInfo[]>;
+	list(query?: {
+		status?: string;
+		algorithmId?: string;
+		source?: string;
+		search?: string;
+		sessionRef?: string;
+		limit?: number;
+		offset?: number;
+	}): Promise<import("@synth/runtime-protocol").OptimizerRunRecord[]>;
+	get(optimizerRunId: string): Promise<import("@synth/runtime-protocol").OptimizerRunRecord>;
+	create(request: {
+		algorithmId: string;
+		algorithmVersion?: string;
+		objective?: string;
+		source?: string;
+		projectRef?: string;
+		sessionRef?: string;
+		id?: string;
+		openVisual?: boolean;
+		seedFixture?: string;
+		cloudConfig?: Record<string, unknown>;
+		localPath?: string;
+	}): Promise<import("@synth/runtime-protocol").OptimizerRunRecord>;
+	refresh(optimizerRunId: string): Promise<import("@synth/runtime-protocol").OptimizerRunRecord>;
+	eventsAfter(optimizerRunId: string, afterSeq?: number, limit?: number): Promise<unknown[]>;
+	getState(optimizerRunId: string, sliceId: string, atSeq?: number): Promise<unknown>;
+	getStateBatch(optimizerRunId: string, slices?: string[], atSeq?: number): Promise<unknown[]>;
+	cancel(optimizerRunId: string): Promise<import("@synth/runtime-protocol").OptimizerRunRecord>;
+	pause(optimizerRunId: string): Promise<import("@synth/runtime-protocol").OptimizerRunRecord>;
+	resume(optimizerRunId: string): Promise<import("@synth/runtime-protocol").OptimizerRunRecord>;
+	openVisual(optimizerRunId: string): Promise<import("@synth/runtime-protocol").OptimizerRunRecord>;
+	importLocal(request: { path: string; sessionRef?: string; openVisual?: boolean }): Promise<import("@synth/runtime-protocol").OptimizerRunRecord>;
+	reconcileCloud(request: { optimizerRunId: string; afterSeq?: number; openVisual?: boolean }): Promise<import("@synth/runtime-protocol").OptimizerRunRecord>;
+	listCloud(query?: { algorithm?: string; status?: string; limit?: number }): Promise<unknown[]>;
+	onEvent(listener: (event: AppEvent) => void): () => void;
+};
+
 export type TerminalInfo = { id: string; workspaceId: string; cwd: string; shell: string; title: string; status: "running" | "exited" | "failed"; createdAt: number; exitCode?: number | null };
 export type TerminalEvent = { terminalId: string; sequence: number; kind: "output" | "exit" | "error"; dataBase64?: string | null; exitCode?: number | null; message?: string | null };
 export type TerminalCreateRequest = { workspaceId: string; workspaceRoot: string; cwd?: string; cols?: number; rows?: number };
@@ -271,24 +317,47 @@ type SemanticEvalApi = {
 	invoke(action: string, argumentsValue?: Record<string, unknown>): Promise<unknown>;
 };
 
+export type SynthSignInBegin = {
+	verificationUri: string;
+	expiresAtEpochS: number;
+};
+
+export type SynthSignInPoll =
+	| { status: "pending" }
+	| { status: "active" }
+	| { status: "expired"; reason: string };
+
+export type SynthAccountBridge = {
+	beginSignIn(): Promise<SynthSignInBegin>;
+	pollSignIn(): Promise<SynthSignInPoll>;
+	cancelSignIn(): Promise<void>;
+};
+
 declare global {
 	interface Window {
 		synthDesktop: {
 			platform: string;
-			chooseProjectDirectory(): Promise<string | null>;
+			chooseWorkspaceDirectory(): Promise<string | null>;
 			getInstanceDiagnostics(): Promise<DesktopInstanceDiagnostics>;
 		};
 		/** Browser fixture/explicit compatibility bridge; not installed by Tauri. */
 		synthRuntime?: RuntimeBridge;
 		synthLaguna?: LagunaBridge;
 		synthConfig?: SynthConfigBridge;
+		synthAccount?: SynthAccountBridge;
 		synthCodex?: CodexBridge;
 		synthCore?: CoreBridge;
 		synthIntern?: InternBridge;
 		synthInventory?: InventoryBridge;
-		synthProjects?: ProjectsBridge;
 		synthVisuals?: VisualsBridge;
+		synthOptimizers?: OptimizersBridge;
 		synthTerminal: TerminalBridge;
 		__synthEval?: SemanticEvalApi;
+		__synthPreferences?: {
+			get(): unknown;
+			set(raw: unknown): unknown;
+			reset(): unknown;
+			storageKey: string;
+		};
 	}
 }

@@ -9,6 +9,7 @@ import type {
 import {
 	OPENROUTER_LAGUNA_S_MODEL,
 	OPENROUTER_LUNA_MODEL,
+	SYNTH_CLOUD_LAGUNA_S_MODEL,
 	type ActivityEvent,
 	type ArtifactRef,
 	type AsyncInternPin,
@@ -41,6 +42,13 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 				model: OPENROUTER_LAGUNA_S_MODEL,
 				adapter
 			};
+		case "synth-cloud-laguna-s":
+			return {
+				kind: "remote",
+				provider: "synth-cloud",
+				model: SYNTH_CLOUD_LAGUNA_S_MODEL,
+				adapter
+			};
 		case "intern-sync":
 			return { kind: "intern", mode: "sync" };
 		case "intern-async":
@@ -59,6 +67,9 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 	if (target.kind === "local") return "local-laguna";
 	if (target.kind === "intern") {
 		return target.mode === "async" ? "intern-async" : "intern-sync";
+	}
+	if (target.provider === "synth-cloud") {
+		return "synth-cloud-laguna-s";
 	}
 	if (target.model === OPENROUTER_LUNA_MODEL || target.model.includes("kimi")) {
 		return "openrouter-luna";
@@ -1074,12 +1085,12 @@ export function buildLandingState(args: {
 	eventsBySession: Record<string, RuntimeEvent[]>;
 	codexActivityBySession?: Record<string, CodexActivityEvent[]>;
 	selectedTargetId: string;
-	projects?: { id: string; name: string }[];
 	laguna?: {
 		phase: string;
 		detail?: string | null;
 		loadedModel?: string | null;
 	} | null;
+	apiKeyConfigured?: boolean;
 }): LandingState {
 	const model = healthToModelStatus(args.health, args.laguna);
 	const chats: LocalChat[] = [];
@@ -1160,7 +1171,6 @@ export function buildLandingState(args: {
 		chats,
 		syncSessions,
 		asyncIntern,
-		projects: args.projects ?? [],
 		model: {
 			status: model.status,
 			name: model.name,
@@ -1168,6 +1178,7 @@ export function buildLandingState(args: {
 		},
 		selectedTargetId: args.selectedTargetId,
 		internMode: args.health?.intern.mode,
+		apiKeyConfigured: args.apiKeyConfigured,
 		composerEnabled: model.composerEnabled,
 		composerPlaceholder: model.composerPlaceholder
 	};
