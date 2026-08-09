@@ -1,38 +1,20 @@
-# OS / editor
-.DS_Store
-.idea/
-.vscode/
-*.swp
-*~
-
-# Node / Electron
+# Synth Desktop / workshop
 node_modules/
-dist/
-out/
-*.log
+apps/*/node_modules/
+apps/*/out/
+apps/*/dist/
+apps/*/test-results/
+test-results/
+**/__pycache__/
+**/*.pyc
+**/*.egg-info/
+.pytest_cache/
+.venv/
+*.sqlite3
+.DS_Store
+visuals/instances/*.tsx
+!visuals/instances/.gitkeep
+apps/_ref_first_pass/
+work/bombadil-src/
 .env
 .env.*
-!.env.example
-
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# Rust
-target/
-
-# Local runtime / models
-.data/
-.models/
-*.gguf
-*.mlx/
-*.safetensors
-
-# Eval / screenshots
-.eval/
-screenshots/

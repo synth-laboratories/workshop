@@ -1,0 +1,19 @@
+{
+  "id": "live.eval_stream.v1",
+  "title": "Live eval stream",
+  "genre": "live",
+  "version": "1.0.0",
+  "description": "Live streaming eval / acceptance run results into a dedicated pane.",
+  "accent": "#FF5C00",
+  "shell": "shell.tsx",
+  "tags": ["live", "sse", "eval", "acceptance"],
+  "slots": [
+    {
+      "name": "stream",
+      "description": "Live SSE endpoint or fixture event list",
+      "accepts": ["live_sse", "fixture"],
+      "required": true,
+      "schema": "synth.visual.live_eval_events.v1"
+    }
+  ]
+}

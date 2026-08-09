@@ -1,0 +1,12 @@
+{
+  "bindings": [
+    {
+      "slot": "stream",
+      "kind": "fixture",
+      "source": "fixtures/live_eval_events.json"
+    }
+  ],
+  "props": {
+    "title": "Eval run stream"
+  }
+}

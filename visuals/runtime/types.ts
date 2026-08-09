@@ -1,0 +1,146 @@
+/**
+ * Core contracts for Synth Desktop deep visuals.
+ * Templates bind data through VisualBinding; Desktop renders VisualInstance shells.
+ */
+
+/** How a template slot is fed at runtime. */
+export type VisualBindingKind = "trace_v5" | "local_cas" | "live_sse" | "fixture";
+
+export type VisualBinding = {
+  /** Slot name declared in template.json `slots`. */
+  slot: string;
+  kind: VisualBindingKind;
+  /**
+   * Kind-specific locator:
+   * - trace_v5 → digest or catalog id
+   * - local_cas → content-addressed blob digest / path
+   * - live_sse → absolute SSE URL
+   * - fixture → relative path under visuals/fixtures/ or template examples/
+   */
+  source: string;
+  /** Optional JSON-pointer / dotted path into the resolved payload. */
+  path?: string;
+  /** Optional MIME / schema hint for validators. */
+  schema?: string;
+};
+
+export type VisualTemplateSlot = {
+  name: string;
+  description: string;
+  /** Accepted binding kinds for this slot. */
+  accepts: VisualBindingKind[];
+  required?: boolean;
+  schema?: string;
+};
+
+export type VisualTemplateMeta = {
+  id: string;
+  title: string;
+  genre: string;
+  version: string;
+  description: string;
+  accent?: string;
+  slots: VisualTemplateSlot[];
+  /** Relative path to the React shell from the template root. */
+  shell: string;
+  tags?: string[];
+};
+
+export type VisualTemplate = VisualTemplateMeta & {
+  /** Absolute or package-relative directory containing template.json. */
+  root: string;
+};
+
+export type VisualInstanceStatus = "draft" | "bound" | "saved" | "open";
+
+/**
+ * A concrete visual the agent or Desktop has created from a template.
+ * Saved shells land under visuals/instances/<id>.tsx.
+ */
+export type VisualInstance = {
+  id: string;
+  templateId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  status: VisualInstanceStatus;
+  bindings: VisualBinding[];
+  /** Optional props passed into the shell (title overrides, selected model, etc.). */
+  props?: Record<string, unknown>;
+  /** Path relative to visuals/ when status is saved. */
+  tsxPath?: string;
+  /** Desktop pane open state. */
+  paneOpen?: boolean;
+};
+
+/** Shared chrome / theme tokens for light Poolside-compatible panes. */
+export type VisualChromeTheme = {
+  accent: string;
+  accentHot: string;
+  surface: string;
+  surfaceMuted: string;
+  border: string;
+  text: string;
+  textMuted: string;
+};
+
+export const DEFAULT_CHROME: VisualChromeTheme = {
+  accent: "#F05F22",
+  accentHot: "#FF5C00",
+  surface: "#ffffff",
+  surfaceMuted: "#f6f7f9",
+  border: "#e8eaee",
+  text: "#1a1d23",
+  textMuted: "#5c6573"
+};
+
+/** Live SSE event envelope used by live.* templates. */
+export type LiveEvalEvent = {
+  ts: string;
+  run_id: string;
+  kind:
+    | "run_started"
+    | "step"
+    | "metric"
+    | "reward"
+    | "acceptance"
+    | "job_status"
+    | "rollout"
+    | "error"
+    | "run_finished";
+  payload: Record<string, unknown>;
+};
+
+/** Minimal Trace V5 overlay annotation (never mutates sealed trace). */
+export type TraceAnnotationMarker = {
+  id: string;
+  turn?: number;
+  step_index?: number;
+  label: string;
+  kind: "note" | "bug" | "highlight" | "reward" | "acceptance";
+  span?: { start: number; end: number };
+  meta?: Record<string, unknown>;
+};
+
+/** Standard PostTrain / trajectory step used by rollout viewers. */
+export type RolloutStep = {
+  index: number;
+  turn?: number;
+  action?: string;
+  reward?: number;
+  observation_text?: string;
+  metrics?: Record<string, number>;
+  achievements?: string[];
+  meta?: Record<string, unknown>;
+};
+
+/** Craftax-style cohort point for pareto plots. */
+export type EvalMatrixPoint = {
+  model: string;
+  effort?: string;
+  achievements: number;
+  cost_usd: number;
+  n?: number;
+  accent?: boolean;
+  achievement_rates?: Record<string, number>;
+};

@@ -1,0 +1,12 @@
+{
+  "bindings": [
+    {
+      "slot": "rollout",
+      "kind": "fixture",
+      "source": "fixtures/rollout_steps.json"
+    }
+  ],
+  "props": {
+    "title": "Craftax frame scrub"
+  }
+}

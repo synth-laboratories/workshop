@@ -4,42 +4,55 @@
 
 Synth Desktop / Local Agent Workbench — a local-first agent research and development workbench where agents can run locally (Laguna XS 2.1) or in Synth Cloud (Intern sync/async), and where every run produces inspectable, replayable, quantitative, version-linked artifacts.
 
-## Status
+## Status — v0 ready for review
 
-Greenfield. Product and architecture context lives in [`HANDOFF.md`](./HANDOFF.md). That document is the seed for a first-pass implementation plan against the broader Synth codebase.
+| Surface | Path | Role |
+| --- | --- | --- |
+| **Real app** | [`apps/synth_desktop`](./apps/synth_desktop) | Electron + local-runtime daemon |
+| **Visuals infra** | [`visuals/`](./visuals) | 9 genre templates, registry, MCP tools, TSX save |
+| **Mock (UX pin-down)** | [`apps/mock`](./apps/mock) | Fixture-only; do not confuse with product |
+| Runtime | `services/local-runtime` | Sessions / runs / events / inventory |
+| Inference | `services/local-inference` | OpenAI-compatible Laguna boundary |
+
+### Local Laguna XS 2.1
+
+```bash
+npm run laguna:setup    # once: mlx venv + NVFP4 weights (~21.6 GB)
+npm run laguna:serve    # :7333 OpenAI-compatible daemon
+source ~/.synth-desktop/laguna/env.sh
+npm run dev --workspace @synth/synth-desktop
+```
+
+Desktop probes `http://127.0.0.1:7333` automatically. Details: [`services/laguna-daemon/README.md`](./services/laguna-daemon/README.md).
+
+
+### Dogfood gates (verified)
+
+- Local Laguna XS 2.1 streaming path (stub; MLX via `SYNTH_LAGUNA_BASE_URL`)
+- OpenRouter **Luna** (`moonshotai/kimi-k2.5`) + **Laguna S 2.1** (`poolside/laguna-s-2.1`) with local usage ledger
+- Inventory: local + cloud containers, Trace V5 ingest, 9 visual templates, save-as-TSX
+- Live dock/eval visual simulation
+- Intern sync demo mailbox
+- Accessibility surface testids + semantic eval hook
+- Intern endpoint profiles (`prod`, `staging`, `local`) via `~/.synth-desktop/config.toml`
+
+The runtime selects the production Intern endpoint by default. For local
+dogfood, set `SYNTH_INTERN_DEMO=1`; the checked-in [`config.toml.example`](./config.toml.example)
+shows the profile and endpoint shape.
 
 ## Product framing
 
-Synth Desktop is **not** primarily another coding IDE.
-
 > Synth Desktop is a local-first agent research and development workbench where agents can run locally or in Synth Cloud, and where every run produces inspectable, replayable, quantitative, version-linked artifacts.
 
-Core loop:
+Core loop: **observe → understand → modify → evaluate → fine-tune → deploy**
 
-**observe → understand → modify → evaluate → fine-tune → deploy**
+## Docs
 
-## V1 wedge (narrowed)
-
-Two execution targets only:
-
-1. **Local Laguna XS 2.1** (MLX / Metal)
-2. **Synth Intern**, with **sync** and **async** as first-class modes of the same abstraction
-
-```text
-                    Synth Desktop
-                         │
-                  Synth Runtime API
-                         │
-             ┌───────────┴───────────┐
-             │                       │
-           LOCAL                   INTERN
-             │                       │
-      Laguna XS 2.1          Synth Intern agent
-       MLX / Metal             │          │
-             │                 │          │
-          synchronous        sync       async
-          session             run        job
-```
+- [`HANDOFF.md`](./HANDOFF.md) — full product + architecture
+- [`synth_desktop_research_eng.md`](./synth_desktop_research_eng.md) — Trace V5 / visuals / containers
+- [`apps/synth_desktop/README.md`](./apps/synth_desktop/README.md) — runbook
+- [`visuals/README.md`](./visuals/README.md) — template + MCP agent flow
+- [`handoff-package/`](./handoff-package/) — eng reuse bundle
 
 ## License / ownership
 

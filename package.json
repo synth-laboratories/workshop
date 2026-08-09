@@ -1,0 +1,43 @@
+{
+  "name": "synth-workshop",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "visuals"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:desktop": "npm run dev --workspace @synth/synth-desktop",
+    "dev:mock": "npm run dev --workspace synth-workshop-mock",
+    "dev:inference": "PYTHONPATH=services/local-inference python3 -m synth_inference --host 127.0.0.1 --port 7332",
+    "build": "npm run build --workspace @synth/synth-desktop",
+    "typecheck": "npm run typecheck --workspace @synth/synth-desktop",
+    "test": "npm run test:runtime && npm run test:visuals && npm run test:a11y && npm run test:ui",
+    "test:runtime": "PYTHONPATH=services/local-runtime/src python3 -m unittest discover -s services/local-runtime/tests -v",
+    "test:visuals": "node --test visuals/tests/*.test.mjs",
+    "test:a11y": "node --test apps/synth_desktop/tests/*.test.mjs",
+    "test:ui": "npm run build --workspace @synth/synth-desktop && playwright test --config apps/synth_desktop/playwright.config.ts && node apps/synth_desktop/tests/bombadil/run.mjs",
+    "test:playwright": "npm run build --workspace @synth/synth-desktop && playwright test --config apps/synth_desktop/playwright.config.ts",
+    "test:bombadil": "npm run build --workspace @synth/synth-desktop && node apps/synth_desktop/tests/bombadil/run.mjs",
+    "runtime:dev": "PYTHONPATH=services/local-runtime/src python3 -m synth_local_runtime --port 8765",
+    "runtime:stop": "PYTHONPATH=services/local-runtime/src python3 -m synth_local_runtime --stop",
+    "dogfood:models": "PYTHONPATH=services/local-runtime/src python3 scripts/dogfood_models.py",
+    "mcp:visuals": "PYTHONPATH=services/local-runtime/src python3 -m synth_local_runtime.mcp_visuals",
+    "laguna:setup": "./scripts/laguna/setup.sh",
+    "laguna:serve": "./scripts/laguna/serve.sh",
+    "laguna:mock": "SYNTH_LAGUNA_BACKEND=mock ./scripts/laguna/serve.sh",
+    "compose:up": "docker compose --env-file .env.compose.example up --build -d",
+    "compose:down": "docker compose down",
+    "laguna:test": "./scripts/laguna/test.sh"
+  },
+  "engines": {
+    "node": ">=20",
+    "npm": ">=10"
+  },
+  "allowScripts": {
+    "electron@37.10.3": true,
+    "electron@35.7.5": true
+  }
+}

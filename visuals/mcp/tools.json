@@ -1,0 +1,132 @@
+{
+  "tools": [
+    {
+      "name": "visual_list_templates",
+      "description": "List all Synth Desktop visual templates (id, title, genre, slots).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "genre": {
+            "type": "string",
+            "description": "Optional genre filter (craftax, posttrain, reward, annotation, compare, live)"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "visual_create_from_template",
+      "description": "Create a VisualInstance from a template id with optional title and initial props. Does not bind data yet.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "template_id": {
+            "type": "string",
+            "description": "Template id, e.g. craftax.eval_matrix.v1"
+          },
+          "title": { "type": "string" },
+          "props": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "instance_id": {
+            "type": "string",
+            "description": "Optional stable instance id; auto-generated if omitted"
+          }
+        },
+        "required": ["template_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "visual_bind_data_source",
+      "description": "Bind a data source to a template slot on an existing VisualInstance (trace_v5 | local_cas | live_sse | fixture).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "instance_id": { "type": "string" },
+          "slot": { "type": "string" },
+          "kind": {
+            "type": "string",
+            "enum": ["trace_v5", "local_cas", "live_sse", "fixture"]
+          },
+          "source": {
+            "type": "string",
+            "description": "Digest, CAS path, SSE URL, or fixture relative path"
+          },
+          "path": {
+            "type": "string",
+            "description": "Optional JSON pointer / dotted path into the payload"
+          },
+          "schema": { "type": "string" }
+        },
+        "required": ["instance_id", "slot", "kind", "source"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "visual_save_tsx",
+      "description": "Serialize a VisualInstance shell to visuals/instances/<id>.tsx and mark status=saved.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "instance_id": { "type": "string" },
+          "overwrite": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": ["instance_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "visual_open_in_pane",
+      "description": "Open (or focus) a VisualInstance in the Desktop visual pane.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "instance_id": { "type": "string" },
+          "tsx_path": {
+            "type": "string",
+            "description": "Optional path under visuals/ if opening a saved shell directly"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "visual_stream_live_eval",
+      "description": "Attach a live SSE (or fixture replay) stream to a live.* visual instance and open it in the pane.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "template_id": {
+            "type": "string",
+            "enum": [
+              "live.eval_stream.v1",
+              "live.dock_harbor.v1",
+              "live.intern_acceptance.v1"
+            ],
+            "description": "Which live template to use; creates instance if instance_id omitted"
+          },
+          "instance_id": { "type": "string" },
+          "sse_url": {
+            "type": "string",
+            "description": "Live SSE URL for eval/dock/intern events"
+          },
+          "fixture": {
+            "type": "string",
+            "description": "Fixture path for offline replay (mutually exclusive with sse_url in demos)"
+          },
+          "title": { "type": "string" },
+          "open_pane": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

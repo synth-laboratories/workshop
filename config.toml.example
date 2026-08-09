@@ -1,0 +1,17 @@
+# Synth Desktop runtime configuration.
+# Copy to ~/.synth-desktop/config.toml and set SYNTH_API_KEY in the shell that
+# launches the runtime. The selected profile defaults to prod.
+
+[intern]
+profile = "prod" # prod | staging | local
+
+[intern.endpoints]
+prod = "https://api.usesynth.ai"
+staging = "https://api-dev.usesynth.ai"
+local = "http://127.0.0.1:8000"
+
+# Optional local inference / remote model settings:
+# [laguna]
+# base_url = "http://127.0.0.1:7333"
+# [openrouter]
+# api_key_env = "OPENROUTER_API_KEY"
