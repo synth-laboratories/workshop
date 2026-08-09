@@ -20,7 +20,11 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 				}
 				return { status: "pending" as const };
 			},
-			cancelSignIn: async () => undefined
+			cancelSignIn: async () => undefined,
+			signOut: async () => {
+				paired = false;
+				return { ...base, apiKeyConfigured: false };
+			}
 		};
 		const base = {
 			configPath: "/tmp/config.toml",
@@ -58,6 +62,20 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 	// Two 4s poll ticks flip the stub to paired.
 	await expect(page.getByTestId("backend-settings")).toContainText("Authenticated", { timeout: 15_000 });
 	await expect(signIn.getByTestId("sign-in-status")).toContainText("Connected to Synth");
+
+	await signIn.getByTestId("account-sign-out").click();
+	await expect(page.getByTestId("backend-settings")).toContainText("API key required");
+	await expect(signIn.getByTestId("sign-in-status")).toContainText("creates your Synth account");
+});
+
+test("first run offers local use and Synth sign-in as equal choices", async ({ page }) => {
+	await page.addInitScript(() => window.localStorage.removeItem("synth.accountChoiceMade"));
+	await page.reload();
+	const choices = page.getByTestId("first-run-account-choice");
+	await expect(choices.getByRole("button", { name: /Continue locally/ })).toBeVisible();
+	await expect(choices.getByRole("button", { name: /Sign in to Synth/ })).toBeVisible();
+	await choices.getByRole("button", { name: /Continue locally/ }).click();
+	await expect(choices).not.toBeVisible();
 });
 
 test("cancel during pairing returns to the idle sign-in affordance", async ({ page }) => {
@@ -68,7 +86,8 @@ test("cancel during pairing returns to the idle sign-in affordance", async ({ pa
 				expiresAtEpochS: Math.floor(Date.now() / 1000) + 600
 			}),
 			pollSignIn: async () => ({ status: "pending" as const }),
-			cancelSignIn: async () => undefined
+			cancelSignIn: async () => undefined,
+			signOut: async () => { throw new Error("unused"); }
 		};
 	});
 	await page.reload();

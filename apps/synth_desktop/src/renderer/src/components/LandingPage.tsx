@@ -150,9 +150,25 @@ export function LandingPage({
 	onConfigureAccount,
 	onSetupAgent
 }: Props) {
+	const [accountChoiceMade, setAccountChoiceMade] = useState(
+		() => window.localStorage.getItem("synth.accountChoiceMade") === "1"
+	);
 	return (
 		<div className="landing" data-testid="landing-page">
 			<div className="landing-hero">
+				{!state.apiKeyConfigured && !accountChoiceMade ? (
+					<div className="quick-actions" data-testid="first-run-account-choice">
+						<button type="button" className="quick-card" onClick={() => {
+							window.localStorage.setItem("synth.accountChoiceMade", "1");
+							setAccountChoiceMade(true);
+						}}>
+							<span><strong>Continue locally</strong><small>No account required</small></span>
+						</button>
+						<button type="button" className="quick-card" onClick={onConfigureAccount}>
+							<span><strong>Sign in to Synth</strong><small>Connect cloud models and Intern</small></span>
+						</button>
+					</div>
+				) : null}
 				<div className="synth-logo-wrap">
 					<SynthLogo className="synth-logo" />
 				</div>

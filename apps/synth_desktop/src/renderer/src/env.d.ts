@@ -331,6 +331,7 @@ export type SynthAccountBridge = {
 	beginSignIn(): Promise<SynthSignInBegin>;
 	pollSignIn(): Promise<SynthSignInPoll>;
 	cancelSignIn(): Promise<void>;
+	signOut(): Promise<SynthBackendSettings>;
 };
 
 declare global {

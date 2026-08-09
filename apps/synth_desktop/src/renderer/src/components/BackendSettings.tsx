@@ -83,6 +83,19 @@ export function BackendSettings() {
 		setPair({ kind: "idle" });
 		void window.synthAccount?.cancelSignIn();
 	};
+	const signOut = async () => {
+		if (!window.synthAccount) return;
+		setSaving(true);
+		setStatus(null);
+		try {
+			apply(await window.synthAccount.signOut());
+			setStatus("Signed out · cloud credentials removed");
+		} catch (error) {
+			setStatus(error instanceof Error ? error.message : String(error));
+		} finally {
+			setSaving(false);
+		}
+	};
 
 	const save = async () => {
 		if (!window.synthConfig) return;
@@ -134,6 +147,11 @@ export function BackendSettings() {
 						<button type="button" className="settings-secondary-btn" data-testid="sign-in-begin" onClick={() => void beginSignIn()}>
 							{settings?.apiKeyConfigured ? "Sign in again" : "Sign in with browser"}
 						</button>
+						{settings?.apiKeyConfigured ? (
+							<button type="button" className="settings-secondary-btn" data-testid="account-sign-out" disabled={saving} onClick={() => void signOut()}>
+								Sign out
+							</button>
+						) : null}
 					</>
 				)}
 			</div>

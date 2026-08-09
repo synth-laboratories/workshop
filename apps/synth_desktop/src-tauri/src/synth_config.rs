@@ -209,6 +209,29 @@ pub fn store_api_key(secret: &str) -> Result<()> {
     write_env_secret(&resolved.env_file, &api_key_env, secret)
 }
 
+/// Removes the desktop-managed Synth API key from the private env file.
+/// A process-environment override cannot be erased by the app and remains
+/// visible through the redacted settings snapshot.
+pub fn remove_api_key() -> Result<()> {
+    let resolved = resolve()?;
+    let document = read_toml(&resolved.config_path)?;
+    let api_key_env = document
+        .get("intern")
+        .and_then(toml::Value::as_table)
+        .and_then(|value| value.get("api_key_env"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or(DEFAULT_API_KEY_ENV);
+    if env::var(api_key_env)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err(anyhow!(
+            "the API key comes from the process environment; remove {api_key_env} from the launching environment to sign out"
+        ));
+    }
+    remove_env_secret(&resolved.env_file, api_key_env)
+}
+
 pub fn openrouter_api_key() -> Result<Option<String>> {
     let resolved = resolve()?;
     Ok(resolve_secret(OPENROUTER_API_KEY_ENV, &resolved.env_file).0)
@@ -513,6 +536,36 @@ fn write_env_secret(path: &Path, key: &str, secret: &str) -> Result<()> {
     Ok(())
 }
 
+fn remove_env_secret(path: &Path, key: &str) -> Result<()> {
+    let Ok(contents) = fs::read_to_string(path) else {
+        return Ok(());
+    };
+    let lines: Vec<&str> = contents
+        .lines()
+        .filter(|line| {
+            line.trim()
+                .strip_prefix("export ")
+                .unwrap_or(line.trim())
+                .split_once('=')
+                .map(|(name, _)| name.trim() != key)
+                .unwrap_or(true)
+        })
+        .collect();
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(path)?;
+    if !lines.is_empty() {
+        writeln!(file, "{}", lines.join("\n"))?;
+    }
+    #[cfg(unix)]
+    fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    Ok(())
+}
+
 fn validate_url(value: &str) -> Result<String> {
     let value = value.trim().trim_end_matches('/');
     if !(value.starts_with("http://") || value.starts_with("https://"))
@@ -636,6 +689,22 @@ mod tests {
             0o600
         );
         assert!(fs::read_to_string(&path).unwrap().contains("KEEP=yes"));
+        let _ = fs::remove_file(path);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn removes_only_the_requested_secret_and_keeps_file_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = env::temp_dir().join(format!("synth-env-{}", uuid::Uuid::new_v4()));
+        fs::write(&path, "SYNTH_API_KEY=remove-me\nKEEP=yes\n").unwrap();
+        remove_env_secret(&path, DEFAULT_API_KEY_ENV).unwrap();
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(!contents.contains("remove-me"));
+        assert!(contents.contains("KEEP=yes"));
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         let _ = fs::remove_file(path);
     }
     #[test]

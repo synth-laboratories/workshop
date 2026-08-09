@@ -888,6 +888,15 @@ fn account_cancel_sign_in(
 }
 
 #[tauri::command]
+async fn account_sign_out(core: State<'_, Arc<CoreRuntime>>) -> Result<BackendSettings, String> {
+    synth_config::remove_api_key().map_err(|error| error.to_string())?;
+    core.reload_intern_config()
+        .await
+        .map_err(|error| error.to_string())?;
+    synth_config::get().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn model_multi_agent_list() -> Result<Vec<ModelMultiAgentSetting>, String> {
     synth_config::model_multi_agent_settings().map_err(|error| error.to_string())
 }
@@ -1338,6 +1347,7 @@ pub fn run() {
             account_begin_sign_in,
             account_poll_sign_in,
             account_cancel_sign_in,
+            account_sign_out,
             model_multi_agent_list,
             model_multi_agent_update,
             workspace_access_get,
