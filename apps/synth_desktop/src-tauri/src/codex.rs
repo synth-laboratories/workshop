@@ -583,7 +583,9 @@ impl CodexManager {
 
         let error = failure.unwrap_or_else(|| anyhow!("the turn could not be started"));
         if !is_detached_failure(&error) {
-            let _ = self.reconcile_failed_turn_start(&session_id, "turn_start_failed").await;
+            let _ = self
+                .reconcile_failed_turn_start(&session_id, "turn_start_failed")
+                .await;
             return Err(CodexTurnFailure::rejected(&session_id, &error));
         }
         let _ = self
@@ -1373,9 +1375,7 @@ pub fn apply_synth_cloud_provider(
     let key = api_key
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            "Synth API key not configured — Settings → Account".to_string()
-        })?;
+        .ok_or_else(|| "Synth API key not configured — Settings → Account".to_string())?;
     request.api_key = key.to_owned();
     request.base_url = format!("{}/api/v1", backend_url.trim_end_matches('/'));
     request.provider_name = Some("synth-cloud".into());
@@ -2156,7 +2156,11 @@ mod tests {
 
         let manager =
             CodexManager::with_paths(Some(core.clone()), codex_root.clone(), fixture_binary());
-        assert!(!manager.sessions.read().await.contains_key("restored-running"));
+        assert!(!manager
+            .sessions
+            .read()
+            .await
+            .contains_key("restored-running"));
         let app = tauri::test::mock_app();
         let request = test_request(temp.path(), "restored-running");
         let info = manager
