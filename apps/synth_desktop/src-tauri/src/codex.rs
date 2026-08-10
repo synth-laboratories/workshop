@@ -379,6 +379,12 @@ struct Session {
     /// of leaving it bound to the old provider.
     upstream_endpoint: String,
     upstream_credential: String,
+    /// The provider identity the child was spawned under. This is the sole
+    /// input to `provider_class`, which gates the settled-receipt drain at
+    /// finalize — so a name change must respawn (and thereby revoke, which
+    /// discards queued receipts) even if endpoint, credential and model all
+    /// coincide across the two providers.
+    provider_name: String,
 }
 
 pub struct CodexManager {
@@ -437,6 +443,10 @@ impl CodexManager {
             .clone()
             .unwrap_or_else(default_approval_policy);
         let requested_sandbox = request.sandbox.clone().unwrap_or_else(default_sandbox);
+        let requested_provider = request
+            .provider_name
+            .clone()
+            .unwrap_or_else(|| "custom".into());
         let existing = self.sessions.read().await.get(&request.session_id).cloned();
         if let Some(existing) = existing {
             if existing.model == request.model
@@ -445,6 +455,7 @@ impl CodexManager {
                 && existing.workspace == request.workspace
                 && existing.upstream_endpoint == request.base_url
                 && existing.upstream_credential == request.api_key
+                && existing.provider_name == requested_provider
             {
                 return Ok(session_info(&request.session_id, &existing).await);
             }
@@ -558,6 +569,7 @@ impl CodexManager {
             workspace: request.workspace.clone(),
             upstream_endpoint,
             upstream_credential,
+            provider_name: requested_provider.clone(),
         });
         self.sessions
             .write()
@@ -3890,6 +3902,41 @@ mod tests {
         let after = broker
             .token_for("lease-rebind")
             .expect("the respawned child must hold a lease that survived close()");
+        assert_ne!(before, after);
+        assert!(!broker.resolves(&before));
+        assert!(broker.resolves(&after));
+    }
+
+    /// Provider identity is part of the reuse comparison in its own right.
+    /// `provider_name` is the sole input to `provider_class`, which gates the
+    /// settled-receipt drain — two providers sharing endpoint, credential and
+    /// model must still respawn (revoking, and discarding queued receipts)
+    /// when the name changes, or a finalize under the new name could drain
+    /// receipts born under the old one.
+    #[tokio::test]
+    async fn a_provider_name_change_alone_respawns_the_child() {
+        let temp = tempdir().unwrap();
+        let manager = CodexManager::with_paths(None, temp.path().join("codex"), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut request = test_request(temp.path(), "lease-provider-identity");
+        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some("sk_dev_shared"))
+            .unwrap();
+        manager
+            .start(app_handle.clone(), request.clone())
+            .await
+            .unwrap();
+        let broker = credential_broker::shared().unwrap();
+        let before = broker.token_for("lease-provider-identity").unwrap();
+
+        // Same endpoint, credential, model, workspace, approval and sandbox —
+        // only the provider name differs.
+        let mut renamed = request.clone();
+        renamed.provider_name = Some("openrouter".into());
+        manager.start(app_handle, renamed).await.unwrap();
+        let after = broker
+            .token_for("lease-provider-identity")
+            .expect("the respawned child must hold a fresh lease");
         assert_ne!(before, after);
         assert!(!broker.resolves(&before));
         assert!(broker.resolves(&after));
