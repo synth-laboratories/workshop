@@ -740,9 +740,14 @@ export function ChatTranscript({
 						})}
 						{renderPresented(presentedActive, [], false, running)}
 						{running ? (
-							<div className="model-working" role="status" aria-live="polite" data-testid="model-working">
-								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>
-								<span>{workingLabel ?? (warmingUp ? "Warming up…" : "Working…")}</span>
+							<div className={`model-working${warmingUp ? " is-warming" : ""}`} role="status" aria-live="polite" data-testid="model-working">
+								{warmingUp ? (
+									<svg className="model-working-icon" viewBox="0 0 20 20" fill="none" aria-hidden>
+										<path d="M6.2 4.5h8.3v10.2H6.2z" stroke="currentColor" strokeWidth="1.35" strokeLinejoin="round" />
+										<path d="M3.2 6.5H6m-2.8 3H6m-2.8 3H6M9 2v2.5m3 0V2m-3 12.7V18m3-3.3V18" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" />
+									</svg>
+								) : <span className="model-working-dots" aria-hidden><i /><i /><i /></span>}
+								<span>{workingLabel ?? (warmingUp ? "Loading model…" : "Working…")}</span>
 								<button type="button" onClick={onStop} aria-label="Stop generating">Stop</button>
 							</div>
 						) : null}

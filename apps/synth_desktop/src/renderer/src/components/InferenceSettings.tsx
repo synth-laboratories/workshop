@@ -504,7 +504,7 @@ export function InferenceSettings({ transport, controller }: InferenceSettingsPr
 			</section>
 
 			<p className="settings-runtime-copy" data-testid="inference-settings-footer">
-				Live throughput, residency, and queue depth stay on the MLX sidecar inference panel.
+				Live throughput, residency, and queue depth stay on the local inference panel.
 			</p>
 		</div>
 	);

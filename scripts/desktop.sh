@@ -15,6 +15,7 @@ DEBUG_EXE="$ROOT/apps/synth_desktop/src-tauri/target/debug/synth-desktop"
 BACKUP_ROOT="${SYNTH_DESKTOP_BACKUP_ROOT:-$HOME/.synth-desktop/backups/app-builds}"
 INSTALL_STAGE=""
 LAGUNA_PID_FILE="$HOME/.synth-desktop/laguna/sidecar.pid"
+MUSE_PID_FILE="$HOME/.synth-desktop/laguna/muse-llama.pid"
 
 enable_rust_cache() {
 	if command -v sccache >/dev/null 2>&1; then
@@ -113,6 +114,40 @@ stop_managed_laguna() {
     kill -KILL "$pid" 2>/dev/null || true
   fi
   /bin/rm -f "$LAGUNA_PID_FILE"
+}
+
+stop_managed_muse() {
+  local pid command
+  [[ -f "$MUSE_PID_FILE" ]] || return 0
+  pid="$(tr -d '[:space:]' < "$MUSE_PID_FILE")"
+  if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[desktop] ignoring invalid Muse pid file: $MUSE_PID_FILE" >&2
+    return
+  fi
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  if [[ "$command" != *"/.synth-desktop/muse/"* || "$command" != *"llama-server"* || "$command" != *"Muse-Glimmer-30B-GGUF"* ]]; then
+    echo "[desktop] stale Muse pid $pid is not our managed engine"
+    /bin/rm -f "$MUSE_PID_FILE"
+    return
+  fi
+  echo "[desktop] stopping managed Muse engine $pid"
+  kill -TERM "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.25
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "[desktop] force stopping managed Muse engine $pid"
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  /bin/rm -f "$MUSE_PID_FILE"
+}
+
+stop_managed_local_runtime() {
+  # The engine owns most of the memory. Stop it before the Python manager so
+  # a rebuild/restart can never leave an orphaned 20+ GB allocation behind.
+  stop_managed_muse
+  stop_managed_laguna
 }
 
 status_desktop() {
@@ -220,7 +255,7 @@ install_desktop() {
   }
 
   stop_desktop
-  stop_managed_laguna
+  stop_managed_local_runtime
   timestamp="$(date '+%Y%m%d-%H%M%S')"
   stage="/Applications/.Synth Desktop.stage-$timestamp.app"
   INSTALL_STAGE="$stage"
@@ -284,10 +319,12 @@ case "$command" in
     ;;
   restart)
     stop_desktop
+    stop_managed_local_runtime
     launch_installed
     ;;
   stop)
     stop_desktop
+    stop_managed_local_runtime
     ;;
   status)
     status_desktop

@@ -11,8 +11,9 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{hash_map::DefaultHasher, HashMap},
     env, fs,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -32,12 +33,13 @@ const EVENT_NAME: &str = "codex:event";
 const MIN_AUTO_COMPACT_TOKEN_LIMIT: u64 = 16_000;
 const COMPACT_PROMPT: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION for a coding agent.\nWrite a handoff for another LLM that will continue the same workspace task.\nInclude:\n- Goal and acceptance criteria\n- Files read/changed (paths + one-line why)\n- Commands/tests run and outcomes\n- Decisions and constraints\n- Open bugs / next concrete steps\n- Any secrets-safe identifiers (branch names, ticket ids) needed to continue\nOmit raw file dumps, full command logs, and superseded plans.\nBe concise and structured (bullets).";
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionStartRequest {
     pub session_id: String,
     pub workspace: String,
     pub base_url: String,
+    #[serde(default, skip_deserializing)]
     pub api_key: String,
     pub model: String,
     pub provider_name: Option<String>,
@@ -46,6 +48,8 @@ pub struct CodexSessionStartRequest {
     pub approval_policy: Option<String>,
     pub sandbox: Option<String>,
     pub thread_id: Option<String>,
+    #[serde(default)]
+    pub force_new_thread: bool,
     pub multi_agent_version: Option<MultiAgentVersion>,
     #[serde(default)]
     pub auto_compact_token_limit: Option<u64>,
@@ -66,7 +70,7 @@ pub struct CodexTurnStartRequest {
 /// One atomic renderer intent: make sure the app-server is attached for this
 /// session and start the turn. The renderer never observes the intermediate
 /// state where an attachment exists but the turn has not started.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexTurnSendRequest {
     pub start: CodexSessionStartRequest,
@@ -334,6 +338,16 @@ struct Session {
     approval_policy: String,
     sandbox: String,
     workspace: String,
+    provider_connection_identity: u64,
+}
+
+fn provider_connection_identity(request: &CodexSessionStartRequest) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    request.provider_name.hash(&mut hasher);
+    request.base_url.hash(&mut hasher);
+    request.provider_env_key.hash(&mut hasher);
+    request.api_key.hash(&mut hasher);
+    hasher.finish()
 }
 
 pub struct CodexManager {
@@ -392,12 +406,15 @@ impl CodexManager {
             .clone()
             .unwrap_or_else(default_approval_policy);
         let requested_sandbox = request.sandbox.clone().unwrap_or_else(default_sandbox);
+        let requested_provider_connection = provider_connection_identity(&request);
         let existing = self.sessions.read().await.get(&request.session_id).cloned();
         if let Some(existing) = existing {
-            if existing.model == request.model
+            if !request.force_new_thread
+                && existing.model == request.model
                 && existing.approval_policy == requested_approval
                 && existing.sandbox == requested_sandbox
                 && existing.workspace == request.workspace
+                && existing.provider_connection_identity == requested_provider_connection
             {
                 return Ok(session_info(&request.session_id, &existing).await);
             }
@@ -450,10 +467,14 @@ impl CodexManager {
         }
         server.notify("initialized").await?;
         let remembered = self.records.read().await.get(&request.session_id).cloned();
-        let requested_thread = request
-            .thread_id
-            .clone()
-            .or_else(|| remembered.as_ref().map(|record| record.thread_id.clone()));
+        let requested_thread = if request.force_new_thread {
+            None
+        } else {
+            request
+                .thread_id
+                .clone()
+                .or_else(|| remembered.as_ref().map(|record| record.thread_id.clone()))
+        };
         let method = if requested_thread.is_some() {
             "thread/resume"
         } else {
@@ -493,6 +514,7 @@ impl CodexManager {
                 .unwrap_or_else(default_approval_policy),
             sandbox: request.sandbox.clone().unwrap_or_else(default_sandbox),
             workspace: request.workspace.clone(),
+            provider_connection_identity: requested_provider_connection,
         });
         self.sessions
             .write()
@@ -2372,10 +2394,73 @@ mod tests {
             approval_policy: Some("never".into()),
             sandbox: Some("workspace-write".into()),
             thread_id: None,
+            force_new_thread: false,
             multi_agent_version: Some(MultiAgentVersion::None),
             auto_compact_token_limit: None,
             writable_roots: Vec::new(),
         }
+    }
+
+    #[test]
+    fn renderer_supplied_api_key_is_ignored() {
+        let request: CodexSessionStartRequest = serde_json::from_value(serde_json::json!({
+            "sessionId": "renderer-key-test",
+            "workspace": "/tmp",
+            "baseUrl": "https://example.test",
+            "apiKey": "renderer-secret",
+            "model": "test-model"
+        }))
+        .unwrap();
+
+        assert!(request.api_key.is_empty());
+    }
+
+    #[test]
+    fn provider_connection_identity_changes_with_local_credentials_and_endpoint() {
+        let temp = tempdir().unwrap();
+        let mut request = test_request(temp.path(), "provider-identity");
+        request.api_key = "private-loopback-token-a".into();
+        let original = provider_connection_identity(&request);
+
+        request.api_key = "private-loopback-token-b".into();
+        assert_ne!(provider_connection_identity(&request), original);
+
+        request.api_key = "private-loopback-token-a".into();
+        request.base_url = "http://127.0.0.1:7444".into();
+        assert_ne!(provider_connection_identity(&request), original);
+    }
+
+    #[tokio::test]
+    async fn force_new_thread_replaces_an_empty_cold_attachment_without_resuming_it() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        let manager = CodexManager::with_paths(None, codex_root.clone(), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let request = test_request(temp.path(), "cold-local-rebind");
+
+        manager
+            .start(app_handle.clone(), request.clone())
+            .await
+            .unwrap();
+
+        let mut warmed = request.clone();
+        warmed.api_key = "private-loopback-token".into();
+        warmed.force_new_thread = true;
+        manager.start(app_handle, warmed).await.unwrap();
+
+        let requests = fixture_requests(&codex_root, &request.session_id);
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|message| message["method"] == "thread/start")
+                .count(),
+            2
+        );
+        assert!(!requests
+            .iter()
+            .any(|message| message["method"] == "thread/resume"));
+        manager.close(&request.session_id).await.unwrap();
     }
 
     async fn wait_for_record_status(manager: &CodexManager, session_id: &str, expected: &str) {
@@ -3277,6 +3362,31 @@ mod tests {
         assert_eq!(
             manager.records.read().await[&request.session_id].status,
             "ready"
+        );
+        manager.close(&request.session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn changed_provider_connection_restarts_an_existing_attachment() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        let manager = CodexManager::with_paths(None, codex_root, fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut request = test_request(temp.path(), "provider-rebind");
+        request.api_key = "private-loopback-token-a".into();
+
+        manager.start(app_handle.clone(), request.clone()).await.unwrap();
+        let first_id = manager.sessions.read().await[&request.session_id].attachment_id;
+
+        request.api_key = "private-loopback-token-b".into();
+        manager.start(app_handle, request.clone()).await.unwrap();
+        let replacement_id = manager.sessions.read().await[&request.session_id].attachment_id;
+
+        assert_ne!(first_id, replacement_id);
+        assert_eq!(
+            manager.sessions.read().await[&request.session_id].provider_connection_identity,
+            provider_connection_identity(&request)
         );
         manager.close(&request.session_id).await.unwrap();
     }

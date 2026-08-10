@@ -140,7 +140,7 @@ export function compactModelName(model: string | null): string {
 	if (!model) return "Local model";
 	const leaf = model.split("/").at(-1) ?? model;
 	return leaf
-		.replace(/-mlx$/i, "")
+		.replace(/-(?:mlx|gguf)$/i, "")
 		.replace(/-(nvfp4|fp8|int4|q4|4bit|8bit)$/i, "")
 		.replace(/-/g, " ")
 		.trim();
@@ -652,8 +652,10 @@ export function InferencePanel({
 				>
 					{snapshot.resident ? (
 						<>
-							RESIDENT <span aria-hidden>·</span>{" "}
-							<Metric label="Resident memory" value={formatBytes(snapshot.residentBytes)} />
+							LOADED
+							{snapshot.residentBytes ? (
+								<><span aria-hidden> · </span><Metric label="Resident memory" value={formatBytes(snapshot.residentBytes)} /></>
+							) : null}
 						</>
 					) : (
 						"UNLOADED"

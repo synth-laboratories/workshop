@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use fs2::FileExt;
 use rand::RngCore;
 use reqwest::Client;
@@ -112,9 +112,7 @@ fn acquire_local_runtime_lease(model_id: &str) -> Result<()> {
     if lease.is_some() {
         return Ok(());
     }
-    let root = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".synth-desktop");
+    let root = dirs::home_dir().unwrap_or_default().join(".synth-desktop");
     fs::create_dir_all(&root)?;
     let path = root.join("local-model-runtime.lock");
     let mut file = OpenOptions::new()
@@ -185,9 +183,10 @@ fn mac_available_memory_bytes(total: u64) -> Option<u64> {
         .arg("-Q")
         .output()
         .ok()?;
-    let percent = output.status.success().then(|| {
-        parse_memory_pressure_free_percent(&String::from_utf8_lossy(&output.stdout))
-    })??;
+    let percent = output
+        .status
+        .success()
+        .then(|| parse_memory_pressure_free_percent(&String::from_utf8_lossy(&output.stdout)))??;
     Some(total.saturating_mul(percent) / 100)
 }
 
@@ -488,8 +487,7 @@ impl LagunaManager {
                 "Muse Glimmer is installed. Its weights will load with the first Muse prompt."
                     .into()
             } else {
-                "Laguna XS is installed. Its weights will load with the first local prompt."
-                    .into()
+                "Laguna XS is installed. Its weights will load with the first local prompt.".into()
             }),
             memory_bytes: Some(0),
             idle_seconds: None,
@@ -523,8 +521,7 @@ impl LagunaManager {
                     "Muse Glimmer selected. Its weights will load with the first Muse prompt."
                         .into()
                 } else {
-                    "Laguna XS selected. Its weights will load with the first local prompt."
-                        .into()
+                    "Laguna XS selected. Its weights will load with the first local prompt.".into()
                 }),
                 memory_bytes: Some(0),
                 idle_seconds: None,
@@ -575,6 +572,21 @@ impl LagunaManager {
 
     pub fn discover_models(&self) -> Result<Vec<LagunaModelHit>> {
         discover_models()
+    }
+
+    /// Make the runtime selection agree with the provider attached to the
+    /// conversation before any weights are admitted. A restored Muse thread
+    /// must not inherit a later global Laguna selection (or vice versa).
+    pub async fn select_model_id_cold(&self, model_id: &str) -> Result<()> {
+        if selected_model_id()? == model_id {
+            return Ok(());
+        }
+        let hit = discover_models()?
+            .into_iter()
+            .find(|hit| hit.model_id == model_id)
+            .ok_or_else(|| anyhow!("Local model {model_id} is not installed"))?;
+        self.select_model_cold(Path::new(&hit.path)).await?;
+        Ok(())
     }
 
     pub fn select_model(&self, path: &Path) -> Result<LagunaModelHit> {
@@ -1403,10 +1415,7 @@ pub async fn laguna_model_unload(
 pub async fn laguna_free_memory(
     state: State<'_, Arc<LagunaManager>>,
 ) -> std::result::Result<LagunaUnloadOutcome, String> {
-    state
-        .free_memory()
-        .await
-        .map_err(|error| error.to_string())
+    state.free_memory().await.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1959,7 +1968,10 @@ fn spawn_muse_engine(api_key: &str) -> std::result::Result<(), MuseEngineFailure
     let mut command = Command::new(&llama_server);
     command
         .args(["--model", &model_dir.join(MUSE_MAIN_GGUF).to_string_lossy()])
-        .args(["--mmproj", &model_dir.join(MUSE_MMPROJ_GGUF).to_string_lossy()])
+        .args([
+            "--mmproj",
+            &model_dir.join(MUSE_MMPROJ_GGUF).to_string_lossy(),
+        ])
         .args([
             "--model-draft",
             &model_dir.join(MUSE_DFLASH_GGUF).to_string_lossy(),
@@ -1999,9 +2011,8 @@ fn spawn_muse_engine(api_key: &str) -> std::result::Result<(), MuseEngineFailure
             ),
         )
     })?;
-    fs::write(pid_path, child.id().to_string()).map_err(|error| {
-        MuseEngineFailure::new("pid_unwritable", error.to_string())
-    })?;
+    fs::write(pid_path, child.id().to_string())
+        .map_err(|error| MuseEngineFailure::new("pid_unwritable", error.to_string()))?;
     Ok(())
 }
 
@@ -2024,8 +2035,7 @@ fn stop_muse_engine() -> Result<bool> {
             .output()
             .context("inspect managed Muse engine")?;
         let observed = String::from_utf8_lossy(&command.stdout).into_owned();
-        if !observed.contains("Muse-Glimmer")
-            || !observed.contains(&muse_engine_port().to_string())
+        if !observed.contains("Muse-Glimmer") || !observed.contains(&muse_engine_port().to_string())
         {
             let _ = fs::remove_file(path);
             return Ok(false);
@@ -2238,7 +2248,11 @@ where
     run_managed_command(
         "/usr/bin/curl",
         &[
-            "--fail", "--location", "--retry", "3", "--output",
+            "--fail",
+            "--location",
+            "--retry",
+            "3",
+            "--output",
             &source_archive.to_string_lossy(),
             &format!("https://github.com/ggml-org/llama.cpp/archive/{LLAMA_CPP_COMMIT}.tar.gz"),
         ],
@@ -2246,7 +2260,14 @@ where
     )?;
     run_managed_command(
         "/usr/bin/tar",
-        &["-xzf", &source_archive.to_string_lossy(), "--strip-components", "1", "-C", &source.to_string_lossy()],
+        &[
+            "-xzf",
+            &source_archive.to_string_lossy(),
+            "--strip-components",
+            "1",
+            "-C",
+            &source.to_string_lossy(),
+        ],
         &muse_home.join("install.log"),
     )?;
     run_managed_command(
@@ -2260,22 +2281,43 @@ where
     )?;
     run_managed_command(
         "/usr/bin/tar",
-        &["-xzf", &cmake_archive.to_string_lossy(), "-C", &muse_home.join("tools").to_string_lossy()],
+        &[
+            "-xzf",
+            &cmake_archive.to_string_lossy(),
+            "-C",
+            &muse_home.join("tools").to_string_lossy(),
+        ],
         &muse_home.join("install.log"),
     )?;
     progress("Building the pinned Muse-compatible Metal runtime…");
     run_managed_command(
         &cmake.to_string_lossy(),
         &[
-            "-S", &source.to_string_lossy(), "-B", &build.to_string_lossy(),
-            "-DLLAMA_CURL=OFF", "-DGGML_METAL=ON", "-DLLAMA_BUILD_TESTS=OFF",
-            "-DLLAMA_BUILD_EXAMPLES=OFF", "-DLLAMA_BUILD_TOOLS=ON", "-DCMAKE_BUILD_TYPE=Release",
+            "-S",
+            &source.to_string_lossy(),
+            "-B",
+            &build.to_string_lossy(),
+            "-DLLAMA_CURL=OFF",
+            "-DGGML_METAL=ON",
+            "-DLLAMA_BUILD_TESTS=OFF",
+            "-DLLAMA_BUILD_EXAMPLES=OFF",
+            "-DLLAMA_BUILD_TOOLS=ON",
+            "-DCMAKE_BUILD_TYPE=Release",
         ],
         &muse_home.join("install.log"),
     )?;
     run_managed_command(
         &cmake.to_string_lossy(),
-        &["--build", &build.to_string_lossy(), "--config", "Release", "-j", "8", "--target", "llama-server"],
+        &[
+            "--build",
+            &build.to_string_lossy(),
+            "--config",
+            "Release",
+            "-j",
+            "8",
+            "--target",
+            "llama-server",
+        ],
         &muse_home.join("install.log"),
     )?;
     fs::create_dir_all(&runtime)?;
@@ -2366,22 +2408,17 @@ mod tests {
 
     #[test]
     fn refuses_a_second_oss_model_before_it_can_exhaust_unified_memory() {
-        let error = validate_local_model_memory_capacity(
-            MUSE_GLIMMER_MODEL,
-            64 * GIB,
-            Some(28 * GIB),
-        )
-        .unwrap_err()
-        .to_string();
+        let error =
+            validate_local_model_memory_capacity(MUSE_GLIMMER_MODEL, 64 * GIB, Some(28 * GIB))
+                .unwrap_err()
+                .to_string();
         assert!(error.contains("28 GiB is available"));
         assert!(error.contains("44 GiB"));
         assert!(error.contains("was not loaded"));
-        assert!(validate_local_model_memory_capacity(
-            MUSE_GLIMMER_MODEL,
-            64 * GIB,
-            Some(50 * GIB)
-        )
-        .is_ok());
+        assert!(
+            validate_local_model_memory_capacity(MUSE_GLIMMER_MODEL, 64 * GIB, Some(50 * GIB))
+                .is_ok()
+        );
     }
     fn fixture() -> PathBuf {
         let root =
@@ -2400,10 +2437,7 @@ mod tests {
     }
 
     fn muse_sparse_fixture() -> PathBuf {
-        let root = env::temp_dir().join(format!(
-            "synth-muse-model-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root = env::temp_dir().join(format!("synth-muse-model-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         for (name, size) in MUSE_FILE_SIZES {
             std::fs::File::create(root.join(name))
@@ -2726,13 +2760,20 @@ mod tests {
     #[test]
     fn daemon_env_pins_7333_and_clears_every_upstream_variable() {
         let envs = daemon_env_for("mlx_lm", DEFAULT_MODEL);
-        assert_eq!(lookup(&envs, "SYNTH_LAGUNA_PORT"), Some(Some("7333".into())));
+        assert_eq!(
+            lookup(&envs, "SYNTH_LAGUNA_PORT"),
+            Some(Some("7333".into()))
+        );
         assert_eq!(
             lookup(&envs, "SYNTH_LAGUNA_BACKEND"),
             Some(Some("mlx_lm".into()))
         );
         for legacy in UPSTREAM_ENV_VARS {
-            assert_eq!(lookup(&envs, legacy), Some(None), "{legacy} must be cleared");
+            assert_eq!(
+                lookup(&envs, legacy),
+                Some(None),
+                "{legacy} must be cleared"
+            );
         }
         // An MLX selection owns its weights in-process and has no engine.
         assert_eq!(lookup(&envs, "SYNTH_LAGUNA_ENGINE_URL"), Some(None));
@@ -2783,7 +2824,11 @@ mod tests {
         // The engine is a model backend, not a request destination: the
         // passthrough variable that used to carry this address stays cleared.
         for legacy in UPSTREAM_ENV_VARS {
-            assert_eq!(lookup(&envs, legacy), Some(None), "{legacy} must be cleared");
+            assert_eq!(
+                lookup(&envs, legacy),
+                Some(None),
+                "{legacy} must be cleared"
+            );
         }
         assert_eq!(
             lookup(&envs, "SYNTH_LAGUNA_ENGINE_URL"),
@@ -2805,7 +2850,8 @@ mod tests {
     fn a_missing_runtime_or_weights_names_the_problem_not_the_step() {
         // Both failures resolve paths under a home directory that does not
         // exist, so this exercises the real preflight without an engine.
-        let failure = MuseEngineFailure::new("runtime_missing", "Repair it from Settings → Models.");
+        let failure =
+            MuseEngineFailure::new("runtime_missing", "Repair it from Settings → Models.");
         assert_eq!(failure.phase, "runtime_missing");
         // The old path surfaced the spawn call's own context. A user-facing
         // detail must never be that string again.

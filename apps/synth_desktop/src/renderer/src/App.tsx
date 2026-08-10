@@ -96,6 +96,7 @@ const AGENT_DISCONNECTED_MESSAGE =
 
 /** Legacy untyped rejections from the pre-`codex_turn_send` bridge path. */
 const DETACHED_ERROR_TEXT = /codex session not started|is not attached|app-server (stopped|stdout closed)/i;
+const EMPTY_THREAD_RESUME_ERROR = /no rollout found|thread\/resume/i;
 
 /** Normalizes both the typed Tauri rejection and any thrown Error. */
 function codexTurnFailure(sessionId: string, reason: unknown): CodexTurnFailure {
@@ -118,7 +119,11 @@ function codexTurnFailure(sessionId: string, reason: unknown): CodexTurnFailure 
 }
 
 function turnFailureMessage(failure: CodexTurnFailure): string {
-	if (failure.code === "codex_session_detached" || DETACHED_ERROR_TEXT.test(failure.message)) {
+	if (
+		failure.code === "codex_session_detached"
+		|| DETACHED_ERROR_TEXT.test(failure.message)
+		|| EMPTY_THREAD_RESUME_ERROR.test(`${failure.message} ${failure.detail}`)
+	) {
 		return AGENT_DISCONNECTED_MESSAGE;
 	}
 	return failure.message;
@@ -406,7 +411,6 @@ export default function App() {
 		}
 	);
 	const selectedTargetIsLocal = selectedTargetId === "local-laguna" || selectedTargetId === "local-muse-glimmer";
-	const inferenceRailIsMuse = selectedTargetId === "local-muse-glimmer";
 	const inferenceMonitor = useInferenceMonitor({
 		visible: selectedTargetIsLocal && !["unloaded", "error", "unavailable"].includes(laguna?.phase ?? "")
 	});
@@ -485,6 +489,7 @@ export default function App() {
 	const queuedCompactionRef = useRef(new Set<string>());
 	const sendToSessionRef = useRef<(sessionId: string, text: string, options?: { messageId?: string }) => Promise<boolean>>(async () => false);
 	const queueDrainStatusesRef = useRef(new Map<string, Session["status"]>());
+	const queueDrainEligibleRef = useRef(new Set<string>());
 	const queueDrainingRef = useRef(new Set<string>());
 	eventsBySessionRef.current = eventsBySession;
 	const allocateNativeSequence = useCallback((sessionId: string) => {
@@ -667,7 +672,7 @@ export default function App() {
 		const onAccountChanged = (event: Event) => {
 			const configured = (event as CustomEvent<{ apiKeyConfigured?: boolean }>).detail?.apiKeyConfigured;
 			if (typeof configured === "boolean") setApiKeyConfigured(configured);
-			else void refreshHealth().catch(() => undefined);
+			void refreshHealth().catch(() => undefined);
 			refreshAccountSummary();
 		};
 		window.addEventListener("synth:account-changed", onAccountChanged);
@@ -1085,6 +1090,10 @@ export default function App() {
 			const previous = queueDrainStatusesRef.current.get(session.id);
 			const finished = session.status === "ready" || session.status === "interrupted" || session.status === "completed" || session.status === "failed";
 			if (previous === "running" && finished) {
+				if (!queueDrainEligibleRef.current.delete(session.id)) {
+					queueDrainStatusesRef.current.set(session.id, session.status);
+					continue;
+				}
 				const next = nextQueuedPrompt(session.id);
 				if (next && !queueDrainingRef.current.has(session.id)) {
 					queueDrainingRef.current.add(session.id);
@@ -1129,9 +1138,7 @@ export default function App() {
 	);
 	const activeInferencePhase = inferenceMonitor.snapshot?.active?.phase ?? null;
 	const activeChatProgressLabel = activeChatWarmingUp
-		? activeChatSession?.target.kind === "local" && activeChatSession.target.model.includes("Muse")
-			? "Warming up Muse…"
-			: "Warming up Laguna…"
+		? "Loading model…"
 		: activeInferencePhase === "queued"
 			? "Queued for local inference…"
 			: activeInferencePhase === "loading"
@@ -1342,10 +1349,11 @@ export default function App() {
 					}
 					const sessionTargetId = executionTargetToUiId(session.target);
 					const pendingTargetId = isInternTargetId(selectedTargetId) ? sessionTargetId : selectedTargetId;
+					const threadHasHistory = threadHasHistoryFromEvents(eventsBySessionRef.current[sessionId] ?? []);
 					const sendPlan = planComposerSend({
 						pendingTargetId,
 						sessionTargetId,
-						threadHasHistory: threadHasHistoryFromEvents(eventsBySessionRef.current[sessionId] ?? []),
+						threadHasHistory,
 						turnRunning: session.status === "running",
 						hasPendingImages: Boolean(options?.images?.length),
 						destinationSupportsImages: false
@@ -1373,7 +1381,11 @@ export default function App() {
 						// turn that into an undefined request which Rust then treats as Ask.
 						approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : storedApproval.approvalPolicy,
 						sandbox: typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : storedApproval.sandbox,
-						threadId: typeof session.metadata.threadId === "string" ? session.metadata.threadId : undefined
+						threadId: typeof session.metadata.threadId === "string" ? session.metadata.threadId : undefined,
+						// A cold local conversation has a provisioned Codex thread but no
+						// rollout yet. Starting a fresh thread after the provider is warmed
+						// avoids trying to resume an empty pre-warm attachment.
+						forceNewThread: executionTarget.kind === "local" && !threadHasHistory
 					};
 					const sequence = allocateNativeSequence(sessionId);
 					const now = new Date().toISOString();
@@ -1381,11 +1393,23 @@ export default function App() {
 					// A retry reuses the same message id so the bubble is
 					// updated in place instead of duplicated.
 					const messageId = options?.messageId ?? `user-${sequence}`;
+					// Only turns initiated by this renderer launch may drain their queued
+					// successor. Startup reconciliation of a stale persisted `running`
+					// record must never send a prompt and warm a local model on its own.
+					queueDrainEligibleRef.current.add(sessionId);
 					setEventsBySession((current) => ({ ...current, [sessionId]: appendEvent(current[sessionId] ?? [], {
 						schemaVersion: "synth.desktop-runtime-event.v1", sessionId, sequence,
 						eventKind: "message.created", payload: { messageId, role: "user", content: text },
 						createdAt: now, source: "local"
 					}) }));
+					if (executionTarget.kind === "local") {
+						// The prompt is already visible. Mark the local turn as active before
+						// provider preparation so ChatTranscript renders the agent's
+						// `Loading model…` state while admission and warm-up are in flight.
+						setSessions((current) => current.map((item) => item.id === sessionId
+							? { ...item, target: executionTarget, status: "running", updatedAt: now }
+							: item));
+					}
 					const effort = turnStartEffortForExecutionTarget(executionTarget, modelKnobValues);
 					let started: CodexSessionInfo;
 					try {
@@ -1405,6 +1429,7 @@ export default function App() {
 								return nativeCodex.startTurn(sessionId, text, effort);
 							})();
 					} catch (reason) {
+						queueDrainEligibleRef.current.delete(sessionId);
 						failTurnStart(sessionId, text, messageId, reason);
 						return false;
 					}
@@ -1975,7 +2000,7 @@ export default function App() {
 								className={`titlebar-icon-btn${inferenceRailOpen ? " active" : ""}`}
 								aria-label={inferenceRailOpen ? "Hide inference panel" : "Show inference panel"}
 								aria-pressed={inferenceRailOpen}
-								title="MLX sidecar inference panel"
+								title="Local inference panel"
 								data-testid="toggle-inference-rail"
 								onClick={() => {
 									setInferenceRailOpen((current) => {
@@ -2157,6 +2182,7 @@ export default function App() {
 
 					{view.kind === "chat" && activeChat ? (
 						<div className={`workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}${showInferenceRail ? " with-inference" : ""}`}>
+							<div className="conversation-column">
 								<ChatTranscript
 									chat={activeChat}
 									openArtifactId={openArtifactId}
@@ -2176,15 +2202,11 @@ export default function App() {
 										activityMode={preferences.toolActivity.mode}
 										onActivityModeChange={(mode) => setPreferences(setToolActivityMode(mode))}
 								/>
-							{failedSend && failedSend.sessionId === activeChat.id ? (
+								{failedSend && failedSend.sessionId === activeChat.id ? (
 								<div
 									role="status"
 									data-testid="send-retry"
-									style={{
-										display: "flex", alignItems: "center", justifyContent: "space-between",
-										gap: 12, margin: "0 16px 8px", padding: "8px 12px", borderRadius: 10,
-										border: "1px solid currentColor", opacity: 0.9, fontSize: 13
-									}}
+									className="send-retry"
 								>
 									<span>{failedSend.message}</span>
 									<button type="button" data-testid="send-retry-button" onClick={retryFailedSend}>
@@ -2192,6 +2214,7 @@ export default function App() {
 									</button>
 								</div>
 							) : null}
+							</div>
 							{openArtifact ? (
 								<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
 							) : null}
@@ -2207,10 +2230,8 @@ export default function App() {
 							{showInferenceRail ? (
 								<aside className="inference-rail" data-testid="inference-rail" aria-label="Local inference monitor">
 									<div className="inference-rail-label">
-										<span>{inferenceRailIsMuse ? "Local GGUF engine" : "MLX sidecar"}</span>
-										<small>{inferenceRailIsMuse
-											? "llama.cpp · Metal · DFlash; owns model memory, KV caches, and the GPU queue."
-											: "Owns local model memory, prompt caches, and the single-GPU queue."}</small>
+										<span>Local inference</span>
+										<small>On-device runtime · manages model memory, caches, and the local queue.</small>
 									</div>
 									{/* `visible` drives subscribe/teardown, so a closed rail
 									    costs nothing. */}
