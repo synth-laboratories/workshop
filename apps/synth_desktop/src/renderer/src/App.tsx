@@ -9,13 +9,12 @@ import type {
 	RuntimeControlKind,
 	RuntimeEvent,
 	RuntimeHealth,
-	Project,
 	SemanticUiSnapshot,
 	Session,
 	VisualInstanceRecord,
 	VisualRecord
 } from "@synth/runtime-protocol";
-import { EXECUTION_TARGETS } from "./types/landing";
+import { EXECUTION_TARGETS, isInternTargetId } from "./types/landing";
 import type { ArtifactRef } from "./types/landing";
 import { ChatTranscript } from "./components/ChatTranscript";
 import { ContainerPane } from "./components/ContainerPane";
@@ -23,9 +22,10 @@ import { CloudDesk } from "./components/CloudDesk";
 import { Composer } from "./components/Composer";
 import { ConnectorsPage } from "./components/ConnectorsPage";
 import { ConversationSearch } from "./components/ConversationSearch";
-import { DemoFixturesBar } from "./components/DemoFixturesBar";
+import { InferencePanel } from "./components/InferencePanel";
 import { InventoryPage } from "./components/InventoryPage";
 import { LandingPage } from "./components/LandingPage";
+import { OptimizersPage } from "./components/OptimizersPage";
 import { PaneResizeHandle } from "./components/PaneResizeHandle";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
@@ -42,7 +42,7 @@ import {
 	targetIdToExecutionTarget,
 	visualRecordToArtifact
 } from "./runtime/sessionView";
-import { codexEventToRuntime, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode } from "./runtime/nativeCodex";
+import { approvalModeConfig, approvalModeFromConfig, codexEventToRuntime, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode } from "./runtime/nativeCodex";
 import {
 	loadModelKnobValues,
 	modelKnobForTarget,
@@ -50,17 +50,79 @@ import {
 	turnStartEffortForExecutionTarget,
 	type ModelKnobValue
 } from "./runtime/modelCapabilities";
-import type { LagunaStatus } from "./env";
+import type { CodexSessionInfo, CodexTurnFailure, ConversationWorkspaceScope, LagunaStatus } from "./env";
+import {
+	applyPreferencesToDocument,
+	archiveConversation,
+	enqueuePrompt,
+	getPreferences,
+	loadPreferences,
+	nextQueuedPrompt,
+	normalizeLayoutSnapshot,
+	pinConversation,
+	preferencesAdapter,
+	promptsForConversation,
+	removeQueuedPrompt,
+	renameConversation,
+	saveLayout,
+	setApprovalModePreference,
+	setToolActivityMode,
+	setUnreadCompletedChats,
+	subscribePreferences,
+	updateQueuedPrompt,
+	type DesktopPreferences
+} from "./preferences";
+
+/**
+ * User-facing copy for a lost app-server. The typed code and the session id
+ * stay in debug logs; a raw UUID in a toast tells an operator nothing.
+ */
+const AGENT_DISCONNECTED_MESSAGE =
+	"The local agent process disconnected before the turn started. Retry to reconnect.";
+
+/** Legacy untyped rejections from the pre-`codex_turn_send` bridge path. */
+const DETACHED_ERROR_TEXT = /codex session not started|is not attached|app-server (stopped|stdout closed)/i;
+
+/** Normalizes both the typed Tauri rejection and any thrown Error. */
+function codexTurnFailure(sessionId: string, reason: unknown): CodexTurnFailure {
+	if (reason && typeof reason === "object" && !(reason instanceof Error) && "code" in reason) {
+		const value = reason as Partial<CodexTurnFailure>;
+		return {
+			code: typeof value.code === "string" ? value.code : "codex_turn_start_failed",
+			message: typeof value.message === "string" ? value.message : "The turn could not be started.",
+			sessionId: typeof value.sessionId === "string" ? value.sessionId : sessionId,
+			detail: typeof value.detail === "string" ? value.detail : String(reason)
+		};
+	}
+	const message = reason instanceof Error ? reason.message : String(reason);
+	return {
+		code: DETACHED_ERROR_TEXT.test(message) ? "codex_session_detached" : "codex_turn_start_failed",
+		message,
+		sessionId,
+		detail: message
+	};
+}
+
+function turnFailureMessage(failure: CodexTurnFailure): string {
+	if (failure.code === "codex_session_detached" || DETACHED_ERROR_TEXT.test(failure.message)) {
+		return AGENT_DISCONNECTED_MESSAGE;
+	}
+	return failure.message;
+}
+
+/** A user message that reached no app-server, kept so it can be retried. */
+type FailedSend = { sessionId: string; text: string; messageId: string; message: string };
 
 type MainView =
 	| { kind: "landing" }
 	| { kind: "chat"; chatId: string }
 	| { kind: "sync"; sessionId: string }
 	| { kind: "async"; sessionId: string }
-	| { kind: "settings"; section?: "models" | "runtime" | "account" }
+	| { kind: "settings"; section?: "general" | "models" | "voice" | "runtime" | "account" | "about" }
 	| { kind: "connectors" }
 	| { kind: "inventory" }
-	| { kind: "visuals" };
+	| { kind: "visuals" }
+	| { kind: "optimizers" };
 
 type SemanticEvalApi = {
 	schemaVersion: "synth.desktop-eval-api.v1";
@@ -86,8 +148,23 @@ function localRuntimePresentation(health: RuntimeHealth | null, laguna: LagunaSt
 }
 
 function appendEvent(events: RuntimeEvent[], event: RuntimeEvent): RuntimeEvent[] {
-	if (events.some((candidate) => candidate.sequence === event.sequence)) return events;
+	const payloadId = (value: RuntimeEvent) => {
+		const payload = value.payload ?? {};
+		return typeof payload.messageId === "string" ? payload.messageId
+			: typeof payload.eventId === "string" ? payload.eventId
+				: typeof payload.id === "string" ? payload.id : "";
+	};
+	if (events.some((candidate) =>
+		candidate.sequence === event.sequence &&
+		candidate.eventKind === event.eventKind &&
+		candidate.source === event.source &&
+		payloadId(candidate) === payloadId(event)
+	)) return events;
 	return [...events, event].sort((left, right) => left.sequence - right.sequence);
+}
+
+function mergeReplayedEvents(current: RuntimeEvent[], replayed: RuntimeEvent[]): RuntimeEvent[] {
+	return [...replayed, ...current].reduce<RuntimeEvent[]>((events, event) => appendEvent(events, event), []);
 }
 
 function appendCodexActivity(
@@ -119,14 +196,8 @@ const browserRuntimeClient = {
 		return (await this.bridge().request<{ sessions: Session[] }>("/v1/sessions")).sessions;
 	},
 	health() { return this.bridge().request<RuntimeHealth>("/v1/health"); },
-	async listProjects() {
-		return (await this.bridge().request<{ projects: Project[] }>("/v1/projects")).projects;
-	},
-	createProject(body: { path: string }) {
-		return this.bridge().request<Project>("/v1/projects", { method: "POST", body });
-	},
-	createSession(target: ExecutionTarget, title?: string, projectId?: string | null, objective?: string) {
-		return this.bridge().request<Session>("/v1/sessions", { method: "POST", body: { target, title, projectId, objective } });
+	createSession(target: ExecutionTarget, title?: string, objective?: string) {
+		return this.bridge().request<Session>("/v1/sessions", { method: "POST", body: { target, title, projectId: null, objective } });
 	},
 	sendMessage(sessionId: string, body: string) {
 		return this.bridge().request<{ runId: string }>(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`, { method: "POST", body: { body } });
@@ -166,27 +237,13 @@ function IconLayout() {
 	);
 }
 
-function IconExpand() {
+function IconPulse() {
 	return (
-		<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
 			<path
-				d="M3 6V3h3M13 6V3h-3M3 10v3h3M13 10v3h-3"
+				d="M1.5 8h2.6l1.6-4.3 2.4 8.6 1.7-4.3h2.7"
 				stroke="currentColor"
 				strokeWidth="1.3"
-				strokeLinecap="round"
-				strokeLinejoin="round"
-			/>
-		</svg>
-	);
-}
-
-function IconChevron() {
-	return (
-		<svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden>
-			<path
-				d="M3 4.5L6 7.5L9 4.5"
-				stroke="currentColor"
-				strokeWidth="1.4"
 				strokeLinecap="round"
 				strokeLinejoin="round"
 			/>
@@ -200,23 +257,23 @@ export default function App() {
 	// synthIntern is installed in browsers too as a demo adapter. Codex presence is
 	// the stable packaged-Tauri signal used here to select the Rust-owned path.
 	const nativeIntern = nativeCodex ? window.synthIntern : undefined;
-	const nativeProjects = isDesktop ? window.synthProjects : undefined;
 	const [health, setHealth] = useState<RuntimeHealth | null>(null);
 	const [laguna, setLaguna] = useState<LagunaStatus | null>(null);
 	const [sessions, setSessions] = useState<Session[]>([]);
 	const sessionsRef = useRef<Session[]>([]);
-	const [projects, setProjects] = useState<Project[]>([]);
-	const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 	const [eventsBySession, setEventsBySession] = useState<Record<string, RuntimeEvent[]>>({});
 	const [codexActivityBySession, setCodexActivityBySession] = useState<Record<string, CodexActivityEvent[]>>({});
 	const [selectedTargetId, setSelectedTargetId] = useState("local-laguna");
-	const [approvalMode, setApprovalMode] = useState<ApprovalMode>(() => {
-		const saved = window.localStorage.getItem("synth.approvalMode");
-		return saved === "accept-edits" || saved === "plan" || saved === "allow-all" ? saved : "ask";
-	});
+	useEffect(() => {
+		// v0.1 pickers hide Intern; never leave a hidden target selected.
+		if (isInternTargetId(selectedTargetId)) setSelectedTargetId("local-laguna");
+	}, [selectedTargetId]);
+	const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+	const [preferences, setPreferences] = useState<DesktopPreferences>(() => loadPreferences());
+	const [approvalMode, setApprovalMode] = useState<ApprovalMode>(() => loadPreferences().approvalMode);
 	const selectApprovalMode = useCallback((mode: ApprovalMode) => {
 		setApprovalMode(mode);
-		window.localStorage.setItem("synth.approvalMode", mode);
+		setPreferences(setApprovalModePreference(mode));
 	}, []);
 	const [modelKnobValues, setModelKnobValues] = useState(() => loadModelKnobValues(window.localStorage));
 	const selectModelKnob = useCallback((targetId: string, knobId: string, value: ModelKnobValue) => {
@@ -232,33 +289,52 @@ export default function App() {
 	useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
 	const [downloadPaused, setDownloadPaused] = useState(false);
 	const [toast, setToast] = useState<string | null>(null);
-	const [view, setView] = useState<MainView>({ kind: "landing" });
-	const [searchOpen, setSearchOpen] = useState(false);
-	const [unreadChatIds, setUnreadChatIds] = useState<Set<string>>(() => {
-		try {
-			const saved = JSON.parse(window.localStorage.getItem("synth.unreadCompletedChats") ?? "[]");
-			return new Set(Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : []);
-		} catch {
-			return new Set();
-		}
+	const [view, setView] = useState<MainView>(() => {
+		const selected = loadPreferences().layout.last.selectedConversationId;
+		return selected ? { kind: "chat", chatId: selected } : { kind: "landing" };
 	});
+	const [searchOpen, setSearchOpen] = useState(false);
+	const searchRestoreFocusRef = useRef<HTMLElement | null>(null);
+	const [unreadChatIds, setUnreadChatIds] = useState<Set<string>>(() => new Set(loadPreferences().unreadCompletedChats));
 	const previousSessionStatusesRef = useRef(new Map<string, Session["status"]>());
 	const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
 	const [standaloneVisual, setStandaloneVisual] = useState<ArtifactRef | null>(null);
 	const [openContainer, setOpenContainer] = useState<ContainerDeployment | null>(null);
 	const [containerPaneExpanded, setContainerPaneExpanded] = useState(false);
-	const [inventoryContainerWidth, setInventoryContainerWidth] = useState(() => {
-		const saved = Number(window.localStorage.getItem("synth.inventoryContainerPaneWidth"));
-		return Number.isFinite(saved) && saved >= 340 ? saved : 420;
-	});
+	// Local inference is a first-class part of the workbench. Default the MLX
+	// sidecar rail open once for existing installs, while preserving explicit
+	// show/hide choices after that migration.
+	const [inferenceRailOpen, setInferenceRailOpen] = useState(
+		() => {
+			if (window.localStorage.getItem("synth.inferenceRailDefaultV2") !== "1") {
+				window.localStorage.setItem("synth.inferenceRailDefaultV2", "1");
+				window.localStorage.setItem("synth.inferenceRailOpen", "1");
+				return true;
+			}
+			return window.localStorage.getItem("synth.inferenceRailOpen") !== "0";
+		}
+	);
+	const [inventoryContainerWidth, setInventoryContainerWidth] = useState(() => loadPreferences().layout.last.outputPaneWidth);
 	const [busy, setBusy] = useState(false);
-	const [demoBusy, setDemoBusy] = useState(false);
 	const [bootError, setBootError] = useState<string | null>(null);
-	const [terminalOpen, setTerminalOpen] = useState(false);
+	const [terminalOpen, setTerminalOpen] = useState(() => loadPreferences().layout.last.bottomPanelVisible);
+	const [sidebarVisible, setSidebarVisible] = useState(() => loadPreferences().layout.last.sidebarVisible);
+	const [sidebarWidth, setSidebarWidth] = useState(() => loadPreferences().layout.last.sidebarWidth);
+	const [steerError, setSteerError] = useState<string | null>(null);
+	const [composerSkills, setComposerSkills] = useState<Array<{ id: string; name: string; description: string }>>([]);
+	const [queueAfterStop, setQueueAfterStop] = useState(false);
 	const [defaultWorkspace, setDefaultWorkspace] = useState<string | null>(null);
+	const [workspaceScope, setWorkspaceScope] = useState<ConversationWorkspaceScope | null>(null);
 	const eventsBySessionRef = useRef(eventsBySession);
 	const nativeSequencesRef = useRef(new Map<string, number>());
 	const autoOpenedSubagentsRef = useRef(new Set<string>());
+	const [failedSend, setFailedSend] = useState<FailedSend | null>(null);
+	// Sessions whose last turn start was rejected. A late `run.started` from the
+	// process that just died must not resurrect Working for them.
+	const staleRunFenceRef = useRef(new Set<string>());
+	const sendToSessionRef = useRef<(sessionId: string, text: string, options?: { messageId?: string }) => Promise<boolean>>(async () => false);
+	const queueDrainStatusesRef = useRef(new Map<string, Session["status"]>());
+	const queueDrainingRef = useRef(new Set<string>());
 	eventsBySessionRef.current = eventsBySession;
 	const allocateNativeSequence = useCallback((sessionId: string) => {
 		const rendered = eventsBySessionRef.current[sessionId]?.at(-1)?.sequence ?? 0;
@@ -271,6 +347,80 @@ export default function App() {
 		setToast(message);
 		window.setTimeout(() => setToast(null), 2200);
 	}, []);
+
+	useEffect(() => subscribePreferences((next) => {
+		setPreferences(next);
+		setApprovalMode(next.approvalMode);
+		setUnreadChatIds(new Set(next.unreadCompletedChats));
+		applyPreferencesToDocument(next);
+	}), []);
+
+	useEffect(() => {
+		applyPreferencesToDocument(preferences);
+	}, [preferences]);
+
+	useEffect(() => {
+		const onResize = () => {
+			const clamped = normalizeLayoutSnapshot(preferences.layout.last);
+			if (
+				clamped.sidebarWidth !== preferences.layout.last.sidebarWidth ||
+				clamped.outputPaneWidth !== preferences.layout.last.outputPaneWidth ||
+				clamped.bottomPanelHeight !== preferences.layout.last.bottomPanelHeight
+			) {
+				setSidebarWidth(clamped.sidebarWidth);
+				setInventoryContainerWidth(clamped.outputPaneWidth);
+				setPreferences(saveLayout(clamped));
+			}
+		};
+		window.addEventListener("resize", onResize);
+		return () => window.removeEventListener("resize", onResize);
+	}, [preferences.layout.last]);
+
+	const persistLayoutSnapshot = useCallback((patch: Partial<DesktopPreferences["layout"]["last"]>) => {
+		const current = getPreferences().layout.last;
+		const next = normalizeLayoutSnapshot({ ...current, ...patch });
+		const unchanged =
+			next.sidebarVisible === current.sidebarVisible &&
+			next.sidebarWidth === current.sidebarWidth &&
+			next.outputPaneVisible === current.outputPaneVisible &&
+			next.outputPaneWidth === current.outputPaneWidth &&
+			next.bottomPanelVisible === current.bottomPanelVisible &&
+			next.bottomPanelHeight === current.bottomPanelHeight &&
+			next.selectedConversationId === current.selectedConversationId &&
+			next.selectedOutputTab === current.selectedOutputTab;
+		if ("sidebarVisible" in patch) setSidebarVisible(next.sidebarVisible);
+		if ("sidebarWidth" in patch) setSidebarWidth(next.sidebarWidth);
+		if ("outputPaneWidth" in patch) setInventoryContainerWidth(next.outputPaneWidth);
+		if ("bottomPanelVisible" in patch) setTerminalOpen(next.bottomPanelVisible);
+		if (!unchanged) setPreferences(saveLayout(next));
+	}, []);
+
+	/**
+	 * A turn that never started must leave no trace of Working: no `running`
+	 * status, no Stop, an enabled composer, and the typed text kept for Retry.
+	 * The Rust command has already reconciled the durable record and the run.
+	 */
+	const failTurnStart = useCallback((sessionId: string, text: string, messageId: string, reason: unknown) => {
+		const failure = codexTurnFailure(sessionId, reason);
+		console.debug("[codex] turn start rejected", {
+			code: failure.code,
+			sessionId: failure.sessionId,
+			detail: failure.detail
+		});
+		staleRunFenceRef.current.add(sessionId);
+		setSessions((current) => current.map((item) => item.id === sessionId && item.status === "running"
+			? { ...item, status: "interrupted", updatedAt: new Date().toISOString() }
+			: item));
+		const sequence = allocateNativeSequence(sessionId);
+		setEventsBySession((current) => ({ ...current, [sessionId]: appendEvent(current[sessionId] ?? [], {
+			schemaVersion: "synth.desktop-runtime-event.v1", sessionId, sequence,
+			eventKind: "session/unhealthy",
+			payload: { reason: failure.code, message: turnFailureMessage(failure) },
+			createdAt: new Date().toISOString(), source: "local"
+		}) }));
+		setFailedSend({ sessionId, text, messageId, message: turnFailureMessage(failure) });
+		showToast(turnFailureMessage(failure));
+	}, [allocateNativeSequence, showToast]);
 
 	const refreshSessions = useCallback(async () => {
 		if (nativeIntern) {
@@ -288,11 +438,10 @@ export default function App() {
 
 	const refreshHealth = useCallback(async () => {
 		if (isDesktop && window.synthCore && window.synthConfig && window.synthInventory) {
-			const [core, config, counts, currentProjects, currentLaguna] = await Promise.all([
+			const [core, config, counts, currentLaguna] = await Promise.all([
 				window.synthCore.diagnostics(),
 				window.synthConfig.get(),
 				window.synthInventory.counts(),
-				nativeProjects?.list() ?? Promise.resolve([]),
 				window.synthLaguna?.getStatus() ?? Promise.resolve(null)
 			]);
 			const next: RuntimeHealth = {
@@ -300,38 +449,38 @@ export default function App() {
 				protocolVersion: "synth.desktop-runtime.v1",
 				runtimeId: "core-runtime",
 				startedAt: new Date().toISOString(),
-				intern: { mode: config.apiKeyConfigured ? "remote" : "unconfigured", backendUrl: config.backendUrl },
+				// Intern Sync/Async cloud mailbox is [alpha] / v0.2. Do not infer
+				// "remote" from an API key alone — that falsely labels internal hosts
+				// like backend-api as a live cloud mailbox.
+				intern: { mode: "unconfigured", backendUrl: config.backendUrl },
 				local: {
 					model: "laguna-xs-2.1",
-					mode: currentLaguna?.phase === "ready" ? "mlx" : "stub",
+					mode: currentLaguna?.phase === "ready" ? "mlx" : "absent",
 					modelPath: currentLaguna?.loadedModel ?? null
 				},
 				openrouter: { mode: config.openrouterApiKeyConfigured ? "ready" : "unconfigured", models: [] },
 				inventory: { containers: counts.containers, traces: counts.traces, visuals: core.visualCount },
 				dataStore: {
 					path: core.databasePath,
-					projects: currentProjects.length,
+					projects: 0,
 					sessions: core.sessionCount,
 					runs: core.runCount,
 					events: core.journalHead,
 					usage: counts.usage
 				}
 			};
+			setApiKeyConfigured(config.apiKeyConfigured);
 			setHealth(next);
 			return next;
 		}
-		const next = await browserRuntimeClient.health();
+		const [next, config] = await Promise.all([
+			browserRuntimeClient.health(),
+			window.synthConfig?.get().catch(() => null) ?? Promise.resolve(null)
+		]);
+		if (config) setApiKeyConfigured(config.apiKeyConfigured);
 		setHealth(next);
 		return next;
-	}, [isDesktop, nativeProjects]);
-
-	const refreshProjects = useCallback(async () => {
-		const next = nativeProjects
-			? await nativeProjects.list()
-			: await browserRuntimeClient.listProjects();
-		setProjects(next);
-		return next;
-	}, [nativeProjects]);
+	}, [isDesktop]);
 
 	useEffect(() => {
 		void window.synthCodex?.defaultWorkspace().then(setDefaultWorkspace).catch(() => undefined);
@@ -341,7 +490,12 @@ export default function App() {
 		const onKey = (event: KeyboardEvent) => {
 			if (!(event.metaKey || event.ctrlKey)) return;
 			if (event.key.toLowerCase() === "j" && !event.shiftKey) {
-				event.preventDefault(); setTerminalOpen((current) => !current);
+				event.preventDefault();
+				setTerminalOpen((current) => {
+					const next = !current;
+					persistLayoutSnapshot({ bottomPanelVisible: next });
+					return next;
+				});
 			}
 			if (event.key.toLowerCase() === "t" && event.shiftKey) {
 				event.preventDefault();
@@ -358,7 +512,7 @@ export default function App() {
 	useEffect(() => {
 		let disposed = false;
 		const boot = nativeCodex
-			? Promise.all([nativeCodex.list(), nativeIntern?.listSessions() ?? Promise.resolve([]), refreshProjects(), refreshHealth()]).then(async ([persisted, internSessions]) => {
+			? Promise.all([nativeCodex.list(), nativeIntern?.listSessions() ?? Promise.resolve([]), refreshHealth()]).then(async ([persisted, internSessions]) => {
 				const restored = persisted.filter((session) => session.status !== "closed").map(restoreCodexSession);
 				const combined = [...restored, ...internSessions];
 				sessionsRef.current = combined;
@@ -370,13 +524,16 @@ export default function App() {
 					return [session.id, rows.map(session.target.kind === "intern" ? appEventToRuntimeEvent : coreEventToRuntime).filter((event): event is RuntimeEvent => event !== null)] as const;
 				}));
 				if (disposed) return;
-				setEventsBySession(Object.fromEntries(replay));
+				setEventsBySession((current) => Object.fromEntries(replay.map(([sessionId, events]) => [
+					sessionId,
+					mergeReplayedEvents(current[sessionId] ?? [], events)
+				])));
 				for (const [sessionId, events] of replay) {
 					const head = events.at(-1)?.sequence ?? 0;
 					nativeSequencesRef.current.set(sessionId, head);
 				}
 			})
-			: Promise.all([refreshHealth(), refreshSessions(), refreshProjects()]);
+			: Promise.all([refreshHealth(), refreshSessions()]);
 		boot
 			.then(() => {
 				if (!disposed) setBootError(null);
@@ -389,7 +546,7 @@ export default function App() {
 		return () => {
 			disposed = true;
 		};
-	}, [nativeCodex, nativeIntern, refreshHealth, refreshProjects, refreshSessions]);
+	}, [nativeCodex, nativeIntern, refreshHealth, refreshSessions]);
 
 	useEffect(() => {
 		if (!nativeCodex) return;
@@ -400,6 +557,10 @@ export default function App() {
 				&& typeof event.params.threadName === "string"
 				? event.params.threadName.trim()
 				: null;
+			// A turn start that was already rejected fences its own replay: the
+			// process that emitted this run.started is the one that just died.
+			const fenced = runtimeEvent.eventKind === "run.started"
+				&& staleRunFenceRef.current.has(event.sessionId);
 			setEventsBySession((current) => ({
 				...current,
 				[event.sessionId]: appendEvent(current[event.sessionId] ?? [], runtimeEvent)
@@ -407,7 +568,8 @@ export default function App() {
 			setSessions((current) => current.map((session) => session.id === event.sessionId
 					? { ...session, ...(updatedThreadName ? { title: updatedThreadName } : {}),
 						updatedAt: runtimeEvent.createdAt, latestCursor: sequence,
-						status: runtimeEvent.eventKind === "run.started" ? "running"
+						status: fenced ? session.status
+							: runtimeEvent.eventKind === "run.started" ? "running"
 							: runtimeEvent.eventKind === "run.completed" ? "ready"
 						: runtimeEvent.eventKind === "run.failed" ? "failed"
 						: runtimeEvent.eventKind === "run.cancelled" ? "cancelled"
@@ -441,11 +603,10 @@ export default function App() {
 			// different session universe and must never replace native state.
 			if (nativeCodex) return;
 			void refreshSessions().catch(() => undefined);
-			void refreshProjects().catch(() => undefined);
 			void refreshHealth().catch(() => undefined);
 		}, 2_500);
 		return () => window.clearInterval(interval);
-	}, [nativeCodex, refreshHealth, refreshProjects, refreshSessions]);
+	}, [nativeCodex, refreshHealth, refreshSessions]);
 
 	const activeSessionId = useMemo(() => {
 		if (view.kind === "chat") return view.chatId;
@@ -453,9 +614,55 @@ export default function App() {
 		if (view.kind === "async") return view.sessionId;
 		return null;
 	}, [view]);
-	const terminalProject = projects.find((project) => project.id === selectedProjectId) ?? null;
-	const terminalWorkspaceRoot = terminalProject?.path ?? defaultWorkspace;
-	const terminalWorkspaceId = activeSessionId ?? terminalProject?.id ?? "default";
+	const terminalWorkspaceRoot = defaultWorkspace;
+	const terminalWorkspaceId = activeSessionId ?? "default";
+	const selectActiveApprovalMode = useCallback((mode: ApprovalMode) => {
+		if (!activeSessionId) {
+			selectApprovalMode(mode);
+			return;
+		}
+		const activeSession = sessionsRef.current.find((session) => session.id === activeSessionId);
+		if (activeSession?.status === "running") {
+			// An app-server attaches the approval policy when its turn starts. Do
+			// not relabel an in-flight Ask turn as Allow all: preserve an honest
+			// current label and save the requested mode as the default for the
+			// next turn instead.
+			setPreferences(setApprovalModePreference(mode));
+			showToast("Approval mode will apply after the current turn finishes.");
+			return;
+		}
+		selectApprovalMode(mode);
+		const config = approvalModeConfig(mode);
+		setSessions((current) => current.map((session) => session.id === activeSessionId ? {
+			...session,
+			metadata: { ...session.metadata, approvalMode: mode, ...config }
+		} : session));
+		void nativeCodex?.close(activeSessionId).catch((reason) => showToast(reason instanceof Error ? reason.message : String(reason)));
+	}, [activeSessionId, nativeCodex, selectApprovalMode, showToast]);
+
+	// The composer describes the active conversation, not merely the global
+	// default. Keep its label synchronized with the policy that will actually be
+	// sent when a persisted Codex conversation is resumed.
+	useEffect(() => {
+		if (!activeSessionId) return;
+		const session = sessions.find((candidate) => candidate.id === activeSessionId);
+		if (!session || session.metadata.runtime !== "codex-app-server") return;
+		const mode = typeof session.metadata.approvalMode === "string"
+			? session.metadata.approvalMode as ApprovalMode
+			: approvalModeFromConfig(
+				typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : undefined,
+				typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : undefined
+			);
+		setApprovalMode(mode);
+	}, [activeSessionId, sessions]);
+
+	useEffect(() => {
+		let disposed = false;
+		setWorkspaceScope(null);
+		if (!activeSessionId || !window.synthWorkspaceScope) return () => { disposed = true; };
+		void window.synthWorkspaceScope.get(activeSessionId).then((scope) => { if (!disposed) setWorkspaceScope(scope); }).catch(() => undefined);
+		return () => { disposed = true; };
+	}, [activeSessionId]);
 
 	useEffect(() => {
 		let disposed = false;
@@ -552,27 +759,58 @@ export default function App() {
 			codexActivityBySession,
 			selectedTargetId,
 			laguna,
-			projects: projects.map((project) => ({ id: project.id, name: project.name }))
+			apiKeyConfigured
 		});
-		if (base.model.status !== "downloading") return base;
+		const archived = new Set(
+			Object.entries(preferences.conversations)
+				.filter(([, meta]) => meta.archived)
+				.map(([id]) => id)
+		);
+		const chats = base.chats
+			.filter((chat) => !archived.has(chat.id))
+			.map((chat) => {
+				const override = preferences.conversations[chat.id]?.titleOverride;
+				return override ? { ...chat, title: override } : chat;
+			});
+		const withTitles = { ...base, chats };
+		if (withTitles.model.status !== "downloading") return withTitles;
 		return {
-			...base,
-			model: { ...base.model, downloadPaused }
+			...withTitles,
+			model: { ...withTitles.model, downloadPaused }
 		};
 	}, [
+		apiKeyConfigured,
 		downloadPaused,
 		eventsBySession,
 		codexActivityBySession,
 		health,
 		laguna,
+		preferences.conversations,
 		selectedTargetId,
-		sessions,
-		projects
+		sessions
 	]);
 
 	const workingChatIds = useMemo(() => new Set(sessions
 		.filter((session) => session.target.kind !== "intern" && session.status === "running")
 		.map((session) => session.id)), [sessions]);
+
+	const pinnedChatIds = useMemo(() => new Set(
+		Object.entries(preferences.conversations)
+			.filter(([, meta]) => meta.pinned)
+			.sort((a, b) => (a[1].pinOrder ?? 0) - (b[1].pinOrder ?? 0))
+			.map(([id]) => id)
+	), [preferences.conversations]);
+
+	const conversationTitles = useMemo(() => {
+		const titles: Record<string, string> = {};
+		for (const [id, meta] of Object.entries(preferences.conversations)) {
+			if (meta.titleOverride) titles[id] = meta.titleOverride;
+		}
+		for (const session of sessions) {
+			if (!titles[session.id]) titles[session.id] = session.title;
+		}
+		return titles;
+	}, [preferences.conversations, sessions]);
 
 	useEffect(() => {
 		const previous = previousSessionStatusesRef.current;
@@ -590,34 +828,60 @@ export default function App() {
 		setUnreadChatIds((current) => {
 			const next = new Set(current);
 			completedOffscreen.forEach((id) => next.add(id));
-			window.localStorage.setItem("synth.unreadCompletedChats", JSON.stringify([...next]));
+			setPreferences(setUnreadCompletedChats(next));
 			return next;
 		});
 	}, [sessions, view]);
+
+	useEffect(() => {
+		for (const session of sessions) {
+			const previous = queueDrainStatusesRef.current.get(session.id);
+			const finished = session.status === "ready" || session.status === "interrupted" || session.status === "completed" || session.status === "failed";
+			if (previous === "running" && finished) {
+				const next = nextQueuedPrompt(session.id);
+				if (next && !queueDrainingRef.current.has(session.id)) {
+					queueDrainingRef.current.add(session.id);
+					void sendToSessionRef.current(session.id, next.text).then((accepted) => {
+						if (accepted) setPreferences(removeQueuedPrompt(next.id));
+					}).finally(() => queueDrainingRef.current.delete(session.id));
+				}
+			}
+			queueDrainStatusesRef.current.set(session.id, session.status);
+		}
+	}, [sessions]);
 
 	useEffect(() => {
 		if (view.kind !== "chat" || !unreadChatIds.has(view.chatId)) return;
 		setUnreadChatIds((current) => {
 			const next = new Set(current);
 			next.delete(view.chatId);
-			window.localStorage.setItem("synth.unreadCompletedChats", JSON.stringify([...next]));
+			setPreferences(setUnreadCompletedChats(next));
 			return next;
 		});
 	}, [unreadChatIds, view]);
 
 	const activeChat =
 		view.kind === "chat" ? (state.chats.find((c) => c.id === view.chatId) ?? null) : null;
+	const activeChatSession = activeChat
+		? sessions.find((candidate) => candidate.id === activeChat.id)
+		: undefined;
 	const activeChatRunning = activeChat ? (() => {
-		const session = sessions.find((candidate) => candidate.id === activeChat.id);
 		// A restored session record is authoritative. In particular, a stale
 		// run.started event must not resurrect Working after the app-server that
 		// owned that turn has exited or the desktop app has restarted.
-		if (session) return session.status === "running";
+		if (activeChatSession) return activeChatSession.status === "running";
 		const latestRunEvent = [...(eventsBySession[activeChat.id] ?? [])]
 			.reverse()
 			.find((event) => event.eventKind.startsWith("run."));
 		return latestRunEvent?.eventKind === "run.started";
 	})() : false;
+	const activeChatWarmingUp = Boolean(
+		activeChatRunning &&
+		activeChatSession?.target.kind === "local" &&
+		(laguna?.phase === "loading" || !laguna?.loadedModel)
+	);
+	const activeLocalModel = activeChatSession?.target.kind === "local";
+	const showInferenceRail = activeLocalModel && inferenceRailOpen;
 	const activeSync =
 		view.kind === "sync"
 			? (state.syncSessions.find((s) => s.id === view.sessionId) ?? null)
@@ -754,8 +1018,7 @@ export default function App() {
 				}
 				if (nativeCodex && target.kind !== "intern") {
 					const id = crypto.randomUUID();
-					// Projects organize cloud work. Local/configured-provider Codex tasks
-					// always have their own safe workspace and never require a project.
+					// Every local/configured-provider task starts in the configured safe workspace.
 					const workspace = await nativeCodex.defaultWorkspace();
 					await nativeCodex.start(codexStartRequest(id, workspace, target, approvalMode));
 					const session = createCodexSession(id, target, null, workspace, title, approvalMode);
@@ -765,8 +1028,8 @@ export default function App() {
 					return session;
 				}
 				const session = target.kind === "intern" && nativeIntern
-					? await nativeIntern.createSession({ target, objective: internObjective!, title, projectId: selectedProjectId })
-					: await browserRuntimeClient.createSession(target, title, selectedProjectId, internObjective);
+					? await nativeIntern.createSession({ target, objective: internObjective!, title, projectId: null })
+					: await browserRuntimeClient.createSession(target, title, internObjective);
 				await refreshSessions();
 				if (sessionIsLocalChat(session)) {
 					setView({ kind: "chat", chatId: session.id });
@@ -783,28 +1046,8 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[approvalMode, nativeCodex, nativeIntern, refreshSessions, selectedProjectId, selectedTargetId, showToast]
+		[approvalMode, nativeCodex, nativeIntern, refreshSessions, selectedTargetId, showToast]
 	);
-
-	const onAddProject = useCallback(async () => {
-		try {
-			const path = await window.synthDesktop.chooseProjectDirectory();
-			if (!path) return;
-			if (nativeProjects) {
-				const project = await nativeProjects.create({ path });
-				setSelectedProjectId(project.id);
-				await refreshProjects();
-				showToast(`Project ready · ${project.name}`);
-				return;
-			}
-			const project = await browserRuntimeClient.createProject({ path });
-			setSelectedProjectId(project.id);
-			await refreshProjects();
-			showToast(`Project ready · ${project.name}`);
-		} catch (reason) {
-			showToast(reason instanceof Error ? reason.message : String(reason));
-		}
-	}, [nativeProjects, refreshProjects, showToast]);
 
 	const ensureActiveSession = useCallback(async (objective: string): Promise<{ sessionId: string; objectiveConsumed: boolean } | null> => {
 		if (activeSessionId) return { sessionId: activeSessionId, objectiveConsumed: false };
@@ -816,7 +1059,7 @@ export default function App() {
 	}, [activeSessionId, createConversation, selectedTargetId, view.kind]);
 
 	const sendToSession = useCallback(
-		async (sessionId: string, text: string) => {
+		async (sessionId: string, text: string, options?: { messageId?: string }) => {
 			setBusy(true);
 			try {
 				const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
@@ -828,23 +1071,57 @@ export default function App() {
 					const workspace = typeof session.metadata.workspace === "string"
 						? session.metadata.workspace
 						: await nativeCodex.defaultWorkspace();
-					await nativeCodex.start({
+					const storedApprovalMode = typeof session.metadata.approvalMode === "string"
+						? session.metadata.approvalMode as ApprovalMode
+						: approvalModeFromConfig(
+							typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : undefined,
+							typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : undefined
+						);
+					const storedApproval = approvalModeConfig(storedApprovalMode);
+					const startRequest = {
 						...codexStartRequest(sessionId, workspace, session.target),
-						approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : undefined,
-						sandbox: typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : undefined,
+						// Restored pre-policy sessions can carry only the human mode. Never
+						// turn that into an undefined request which Rust then treats as Ask.
+						approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : storedApproval.approvalPolicy,
+						sandbox: typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : storedApproval.sandbox,
 						threadId: typeof session.metadata.threadId === "string" ? session.metadata.threadId : undefined
-					});
+					};
 					const sequence = allocateNativeSequence(sessionId);
 					const now = new Date().toISOString();
+					// The typed text is shown immediately and is never removed.
+					// A retry reuses the same message id so the bubble is
+					// updated in place instead of duplicated.
+					const messageId = options?.messageId ?? `user-${sequence}`;
 					setEventsBySession((current) => ({ ...current, [sessionId]: appendEvent(current[sessionId] ?? [], {
 						schemaVersion: "synth.desktop-runtime-event.v1", sessionId, sequence,
-						eventKind: "message.created", payload: { messageId: `user-${sequence}`, role: "user", content: text },
+						eventKind: "message.created", payload: { messageId, role: "user", content: text },
 						createdAt: now, source: "local"
 					}) }));
-					setSessions((current) => current.map((item) => item.id === sessionId ? { ...item, status: "running", updatedAt: now } : item));
 					const effort = turnStartEffortForExecutionTarget(session.target, modelKnobValues);
-					await nativeCodex.startTurn(sessionId, text, effort);
-					return;
+					let started: CodexSessionInfo;
+					try {
+						// One round trip owns attach/resume and turn/start, so the
+						// app-server cannot exit in a gap the renderer can see.
+						started = nativeCodex.sendTurn
+							? await nativeCodex.sendTurn(startRequest, text, effort)
+							: await (async () => {
+								await nativeCodex.start(startRequest);
+								return nativeCodex.startTurn(sessionId, text, effort);
+							})();
+					} catch (reason) {
+						failTurnStart(sessionId, text, messageId, reason);
+						return false;
+					}
+					staleRunFenceRef.current.delete(sessionId);
+					setFailedSend((current) => (current?.sessionId === sessionId ? null : current));
+					// Working only appears once a real turn exists. Without a
+					// turn id the run.started event promotes the status instead.
+					if (started?.turnId) {
+						setSessions((current) => current.map((item) => item.id === sessionId
+							? { ...item, status: "running", updatedAt: new Date().toISOString() }
+							: item));
+					}
+					return true;
 				}
 				if (session?.target.kind === "intern" && nativeIntern) {
 					await nativeIntern.send({ sessionId, body: text });
@@ -852,14 +1129,24 @@ export default function App() {
 					await browserRuntimeClient.sendMessage(sessionId, text);
 				}
 				await refreshSessions();
+				return true;
 			} catch (reason) {
 				showToast(reason instanceof Error ? reason.message : String(reason));
+				return false;
 			} finally {
 				setBusy(false);
 			}
 		},
-		[allocateNativeSequence, modelKnobValues, nativeCodex, nativeIntern, refreshSessions, showToast]
+		[allocateNativeSequence, failTurnStart, modelKnobValues, nativeCodex, nativeIntern, refreshSessions, showToast]
 	);
+	sendToSessionRef.current = sendToSession;
+
+	const retryFailedSend = useCallback(() => {
+		const pending = failedSend;
+		if (!pending) return;
+		setFailedSend(null);
+		void sendToSession(pending.sessionId, pending.text, { messageId: pending.messageId });
+	}, [failedSend, sendToSession]);
 
 	const onComposerSend = useCallback(
 		async (text: string) => {
@@ -925,41 +1212,13 @@ export default function App() {
 			else if (lower === "close") void controlActive("close");
 			else if (lower === "cancel") void controlActive("cancel");
 			else if (lower === "checkpoint") void controlActive("request_checkpoint");
-			else showToast(`${label} — stub`);
+			else showToast(`${label} is not available`);
 		},
 		[controlActive, showToast]
 	);
 
-	const onSimulateLive = useCallback(async () => {
-		setDemoBusy(true);
-		try {
-			if (window.synthVisuals) {
-				const templates = await window.synthVisuals.listTemplates("compare");
-				const template = templates.find((candidate) => candidate.id === "model.compare.v1") ?? templates[0];
-				if (!template) throw new Error("No Rust visual template is available for the demo");
-				const visual = await window.synthVisuals.create({
-					templateId: template.id,
-					title: "Live eval comparison",
-					bindings: template.exampleBinding ?? {},
-					status: "live",
-					metadata: { source: "desktop-demo", fixture: true }
-				});
-				showToast(`Created visual · ${visual.title}`);
-				openVisualRecord(visual);
-			} else {
-				const result = await browserRuntimeClient.simulateLive("eval");
-				showToast(`Created visual · ${result.visual.title}`);
-				openVisualRecord(result.visual);
-			}
-			await refreshHealth();
-		} catch (reason) {
-			showToast(reason instanceof Error ? reason.message : String(reason));
-		} finally {
-			setDemoBusy(false);
-		}
-	}, [openVisualRecord, refreshHealth, showToast]);
-
 	const onSelectTarget = useCallback((id: string) => {
+		if (isInternTargetId(id)) return;
 		setSelectedTargetId(id);
 		if (view.kind !== "chat") return;
 		const current = sessionsRef.current.find((session) => session.id === view.chatId);
@@ -977,6 +1236,32 @@ export default function App() {
 		setOpenArtifactId(null);
 		setStandaloneVisual(null);
 	}, []);
+
+	useEffect(() => {
+		void window.synthSkills?.list()
+			.then((hits) => setComposerSkills(hits.map((hit) => ({
+				id: hit.id,
+				name: hit.name,
+				description: hit.description
+			}))))
+			.catch(() => undefined);
+	}, []);
+
+	const onSlashRename = useCallback(() => {
+		if (!activeSessionId) {
+			showToast("No active conversation to rename");
+			return;
+		}
+		const current = sessionsRef.current.find((session) => session.id === activeSessionId);
+		const next = window.prompt("Rename conversation", current?.title ?? "");
+		if (next == null) return;
+		const trimmed = next.trim();
+		if (!trimmed) {
+			showToast("Title cannot be empty");
+			return;
+		}
+		setPreferences(renameConversation(activeSessionId, trimmed));
+	}, [activeSessionId, showToast]);
 
 	const onReloadLaguna = useCallback(async () => {
 		const bridge = window.synthLaguna;
@@ -999,17 +1284,38 @@ export default function App() {
 		showToast("Enter an objective to start Live Intern");
 	}, [showToast]);
 
+	const openSearch = useCallback(() => {
+		if (!searchOpen && document.activeElement instanceof HTMLElement) {
+			searchRestoreFocusRef.current = document.activeElement;
+		}
+		setSearchOpen(true);
+	}, [searchOpen]);
+
+	const closeSearch = useCallback((options?: { restoreFocus?: boolean }) => {
+		if (!searchOpen) return;
+		setSearchOpen(false);
+		if (options?.restoreFocus === false) return;
+		requestAnimationFrame(() => {
+			if (searchRestoreFocusRef.current?.isConnected) searchRestoreFocusRef.current.focus();
+		});
+	}, [searchOpen]);
+
 	useEffect(() => {
 		const onKeyDown = (event: KeyboardEvent) => {
 			if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
 				event.preventDefault();
-				setSearchOpen(true);
+				if (searchOpen) closeSearch();
+				else openSearch();
+				return;
 			}
-			if (event.key === "Escape") setSearchOpen(false);
+			if (event.key === "Escape" && searchOpen) {
+				event.preventDefault();
+				closeSearch();
+			}
 		};
 		window.addEventListener("keydown", onKeyDown);
 		return () => window.removeEventListener("keydown", onKeyDown);
-	}, []);
+	}, [closeSearch, openSearch, searchOpen]);
 
 	const tabLabel =
 		view.kind === "settings"
@@ -1018,6 +1324,8 @@ export default function App() {
 				? "Connectors"
 			: view.kind === "visuals"
 				? "Visuals"
+			: view.kind === "optimizers"
+				? "Optimizers"
 			: view.kind === "inventory"
 				? "Inventory"
 				: view.kind === "async"
@@ -1077,7 +1385,9 @@ export default function App() {
 				"send_message",
 				"open_visual",
 				"list_inventory",
-				"select_session"
+				"select_session",
+				"wait_for_terminal",
+				"export_session"
 			],
 			invoke: async (action, args = {}) => {
 				if (action === "create_session") {
@@ -1129,13 +1439,69 @@ export default function App() {
 					else setView({ kind: "async", sessionId });
 					return { selectedSessionId: sessionId };
 				}
+				if (action === "wait_for_terminal") {
+					const sessionId =
+						typeof args.sessionId === "string" ? args.sessionId : activeSessionId;
+					if (!sessionId) throw new Error("wait_for_terminal requires sessionId");
+					if (!window.synthCore) throw new Error("Rust journal is unavailable");
+					const timeoutMs =
+						typeof args.timeoutMs === "number" ? args.timeoutMs : 600_000;
+					const pollMs = typeof args.pollMs === "number" ? args.pollMs : 500;
+					const deadline = Date.now() + timeoutMs;
+					let after = 0;
+					while (Date.now() < deadline) {
+						const page = await window.synthCore.sessionEventsAfter(sessionId, after, 500);
+						for (const event of page) {
+							after = Math.max(after, event.sessionSequence ?? event.sequence);
+							const kind = event.kind;
+							if (
+								kind === "run.completed" ||
+								kind === "run.failed" ||
+								kind === "run.cancelled" ||
+								kind === "session.run.completed" ||
+								kind === "session.run.failed"
+							) {
+								return { terminal: true, kind, event, sessionId };
+							}
+						}
+						await new Promise((resolve) => setTimeout(resolve, pollMs));
+					}
+					return { terminal: false, timedOut: true, sessionId, afterSequence: after };
+				}
+				if (action === "export_session") {
+					const sessionId =
+						typeof args.sessionId === "string" ? args.sessionId : activeSessionId;
+					if (!sessionId) throw new Error("export_session requires sessionId");
+					if (!window.synthCore) throw new Error("Rust journal is unavailable");
+					const events = [];
+					let after = 0;
+					for (;;) {
+						const page = await window.synthCore.sessionEventsAfter(sessionId, after, 500);
+						if (!page.length) break;
+						for (const event of page) {
+							after = Math.max(after, event.sessionSequence ?? event.sequence);
+						}
+						events.push(...page);
+						if (events.length > 50_000) break;
+					}
+					const session = sessions.find((s) => s.id === sessionId) ?? null;
+					return {
+						schemaVersion: "synth.eval-session-export.v1",
+						sessionId,
+						session,
+						events,
+						eventCount: events.length
+					};
+				}
 				throw new Error(`Unknown semantic action: ${action}`);
 			}
 		};
 		window.__synthEval = api;
+		window.__synthPreferences = preferencesAdapter();
 		window.dispatchEvent(new CustomEvent("synth-eval-ready"));
 		return () => {
 			if (window.__synthEval === api) delete window.__synthEval;
+			delete window.__synthPreferences;
 		};
 	}, [
 		activeSessionId,
@@ -1152,10 +1518,6 @@ export default function App() {
 
 	return (
 		<div className="app-shell">
-			{import.meta.env.DEV ? (
-				<DemoFixturesBar onSimulateLive={() => void onSimulateLive()} busy={demoBusy} />
-			) : null}
-
 			<div className="body-row">
 					<Sidebar
 						state={state}
@@ -1165,13 +1527,43 @@ export default function App() {
 					asyncActive={view.kind === "async"}
 					inventoryActive={view.kind === "inventory"}
 					visualsActive={view.kind === "visuals"}
+					optimizersActive={view.kind === "optimizers"}
 					connectorsActive={view.kind === "connectors"}
 					workingChatIds={workingChatIds}
 					unreadChatIds={unreadChatIds}
+					pinnedChatIds={pinnedChatIds}
+					conversationTitles={conversationTitles}
+					sidebarWidth={sidebarWidth}
+					sidebarVisible={sidebarVisible}
+					onSidebarWidthChange={(width) => {
+						setSidebarWidth(width);
+						persistLayoutSnapshot({ sidebarWidth: width });
+					}}
 					onNewConversation={onNewConversation}
 					onNewSyncSession={onNewSyncSession}
-					onOpenChat={(id) => setView({ kind: "chat", chatId: id })}
+					onOpenChat={(id) => {
+						setView({ kind: "chat", chatId: id });
+						persistLayoutSnapshot({ selectedConversationId: id });
+					}}
 					onOpenSyncSession={(id) => setView({ kind: "sync", sessionId: id })}
+					onRenameChat={(id, title) => {
+						try {
+							setPreferences(renameConversation(id, title));
+						} catch (reason) {
+							showToast(reason instanceof Error ? reason.message : String(reason));
+						}
+					}}
+					onPinChat={(id, pinned) => setPreferences(pinConversation(id, pinned))}
+					onArchiveChat={(id, archived) => {
+						if (archived && workingChatIds.has(id)) {
+							showToast("Stop the run before archiving");
+							return;
+						}
+						setPreferences(archiveConversation(id, archived));
+						if (archived && view.kind === "chat" && view.chatId === id) {
+							setView({ kind: "landing" });
+						}
+					}}
 					onOpenAsync={() => {
 						const pinned = sessions.find((session) =>
 							sessionIsAsync(session) &&
@@ -1189,13 +1581,11 @@ export default function App() {
 					}}
 					onOpenInventory={() => setView({ kind: "inventory" })}
 					onOpenVisuals={() => setView({ kind: "visuals" })}
+					onOpenOptimizers={() => setView({ kind: "optimizers" })}
 					onOpenConnectors={() => setView({ kind: "connectors" })}
-					onSearch={() => setSearchOpen(true)}
+					onSearch={openSearch}
 					onSettings={() => setView({ kind: "settings" })}
-					 onPauseToggle={() => setDownloadPaused((v) => !v)}
-					onAddProject={onAddProject}
-					onSelectProject={setSelectedProjectId}
-					selectedProjectId={selectedProjectId}
+					onPauseToggle={() => setDownloadPaused((v) => !v)}
 				/>
 
 				<main className="main-pane">
@@ -1216,14 +1606,14 @@ export default function App() {
 									×
 								</button>
 							</div>
-							<button
+							{activeLocalModel ? <button
 								type="button"
 								className="tab-new"
 								aria-label="New tab"
 								onClick={onNewConversation}
 							>
 								+
-							</button>
+							</button> : null}
 						</div>
 						<div className="titlebar-actions">
 							{(() => {
@@ -1234,7 +1624,8 @@ export default function App() {
 										`Laguna ${health.local.mode}`,
 										laguna?.phase ? `sidecar ${laguna.phase}` : null,
 										laguna?.backend ? `backend ${laguna.backend}` : null,
-										health.local.modelPath || "weights not detected",
+										laguna?.loadedModel || health.local.modelPath ||
+											(laguna?.phase === "ready" ? "weights currently unloaded" : "weights not detected"),
 										`Intern ${health.intern.mode}`,
 										`OpenRouter ${health.openrouter.mode}`,
 										health.inventory
@@ -1254,6 +1645,23 @@ export default function App() {
 									</span>
 								);
 							})()}
+							{activeLocalModel ? <button
+								type="button"
+								className={`titlebar-icon-btn${inferenceRailOpen ? " active" : ""}`}
+								aria-label={inferenceRailOpen ? "Hide inference monitor" : "Show inference monitor"}
+								aria-pressed={inferenceRailOpen}
+								title="MLX sidecar inference stats"
+								data-testid="toggle-inference-rail"
+								onClick={() => {
+									setInferenceRailOpen((current) => {
+										const next = !current;
+										window.localStorage.setItem("synth.inferenceRailOpen", next ? "1" : "0");
+										return next;
+									});
+								}}
+							>
+								<IconPulse />
+							</button> : null}
 							<button
 								type="button"
 								className="avatar-btn"
@@ -1265,17 +1673,11 @@ export default function App() {
 							</button>
 							<button
 								type="button"
-								className="titlebar-icon-btn titlebar-chevron"
-								aria-label="Account menu"
-								onClick={() => showToast("Account menu — stub")}
-							>
-								<IconChevron />
-							</button>
-							<button
-								type="button"
 								className="titlebar-icon-btn"
-								aria-label="Downloads"
-								onClick={() => showToast("Downloads — stub")}
+								aria-label="Models"
+								title="Models"
+								data-testid="open-models-settings"
+								onClick={() => setView({ kind: "settings", section: "models" })}
 							>
 								<IconCloud />
 							</button>
@@ -1284,17 +1686,15 @@ export default function App() {
 								className="titlebar-icon-btn"
 								aria-label={terminalOpen ? "Hide terminal" : "Show terminal"}
 								title="Toggle terminal (⌘J)"
-								onClick={() => setTerminalOpen((current) => !current)}
+								onClick={() => {
+									setTerminalOpen((current) => {
+										const next = !current;
+										persistLayoutSnapshot({ bottomPanelVisible: next });
+										return next;
+									});
+								}}
 							>
 								<IconLayout />
-							</button>
-							<button
-								type="button"
-								className="titlebar-icon-btn"
-								aria-label="Expand"
-								onClick={() => showToast("Expand — stub")}
-							>
-								<IconExpand />
 							</button>
 						</div>
 					</header>
@@ -1307,12 +1707,28 @@ export default function App() {
 
 					{view.kind === "settings" ? (
 						<SettingsPage
-							key={view.section ?? "models"}
+							key={view.section ?? "general"}
 							onBack={() => setView({ kind: "landing" })}
 							onReloadLaguna={onReloadLaguna}
 							health={health}
 							lagunaPhase={laguna?.phase}
 							initialSection={view.section}
+							preferences={preferences}
+							onPreferencesChange={(next) => {
+								setPreferences(next);
+								applyPreferencesToDocument(next);
+								setSidebarVisible(next.layout.last.sidebarVisible);
+								setSidebarWidth(next.layout.last.sidebarWidth);
+								setInventoryContainerWidth(next.layout.last.outputPaneWidth);
+								setTerminalOpen(next.layout.last.bottomPanelVisible);
+								setApprovalMode(next.approvalMode);
+							}}
+							conversationTitles={conversationTitles}
+							onUnarchiveConversation={(id) => setPreferences(archiveConversation(id, false))}
+							onOpenConversation={(id) => {
+								setPreferences(archiveConversation(id, false));
+								setView({ kind: "chat", chatId: id });
+							}}
 						/>
 					) : null}
 
@@ -1366,6 +1782,31 @@ export default function App() {
 						</div>
 					) : null}
 
+					{view.kind === "optimizers" ? (
+						<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`}>
+							<OptimizersPage
+								onOpenVisual={(visualId) => {
+									void (async () => {
+										if (!window.synthVisuals) {
+											showToast("Visual registry requires Synth Desktop");
+											return;
+										}
+										try {
+											const visual = await window.synthVisuals.get(visualId);
+											openVisualRecord(visual);
+										} catch (reason) {
+											showToast(String(reason));
+										}
+									})();
+								}}
+								onBack={() => setView({ kind: "landing" })}
+							/>
+							{openArtifact ? (
+								<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
+							) : null}
+						</div>
+					) : null}
+
 					{view.kind === "inventory" ? (
 						<div
 							className={`inventory-workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}`}
@@ -1387,7 +1828,7 @@ export default function App() {
 								<>
 									<PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => {
 										setInventoryContainerWidth(width);
-										window.localStorage.setItem("synth.inventoryContainerPaneWidth", String(width));
+										persistLayoutSnapshot({ outputPaneWidth: width });
 									}} />
 									<ContainerPane
 										container={openContainer}
@@ -1406,13 +1847,12 @@ export default function App() {
 							state={state}
 							selectedTargetId={selectedTargetId}
 							onSelectTarget={onSelectTarget}
-							onAddProject={() => void onAddProject()}
-							onSetupAgent={() => showToast("Set up agent — stub")}
+							onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
 						/>
 					) : null}
 
 					{view.kind === "chat" && activeChat ? (
-						<div className={`workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}`}>
+						<div className={`workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}${showInferenceRail ? " with-inference" : ""}`}>
 								<ChatTranscript
 									chat={activeChat}
 									openArtifactId={openArtifactId}
@@ -1423,8 +1863,30 @@ export default function App() {
 									onAlwaysAllow={(approvalId) => void controlActive("approve", { approvalId, decision: "always" })}
 										onReject={(approvalId) => void controlActive("reject", { approvalId })}
 										running={activeChatRunning}
-										onStop={() => void controlActive("cancel")}
-									/>
+										warmingUp={activeChatWarmingUp}
+										onStop={() => {
+											setQueueAfterStop(promptsForConversation(activeChat.id).length > 0);
+											void controlActive("cancel");
+										}}
+										activityMode={preferences.toolActivity.mode}
+										onActivityModeChange={(mode) => setPreferences(setToolActivityMode(mode))}
+								/>
+							{failedSend && failedSend.sessionId === activeChat.id ? (
+								<div
+									role="status"
+									data-testid="send-retry"
+									style={{
+										display: "flex", alignItems: "center", justifyContent: "space-between",
+										gap: 12, margin: "0 16px 8px", padding: "8px 12px", borderRadius: 10,
+										border: "1px solid currentColor", opacity: 0.9, fontSize: 13
+									}}
+								>
+									<span>{failedSend.message}</span>
+									<button type="button" data-testid="send-retry-button" onClick={retryFailedSend}>
+										Retry
+									</button>
+								</div>
+							) : null}
 							{openArtifact ? (
 								<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
 							) : null}
@@ -1436,6 +1898,20 @@ export default function App() {
 									onProbe={() => void probeOpenContainer()}
 									onClose={() => void toggleContainer(null)}
 								/>
+							) : null}
+							{showInferenceRail ? (
+								<aside className="inference-rail" data-testid="inference-rail" aria-label="Local inference monitor">
+									<div className="inference-rail-label"><span>MLX sidecar</span><small>btop-style live inference stats</small></div>
+									{/* `visible` drives subscribe/teardown, so a closed rail
+									    costs nothing. */}
+									<InferencePanel
+										visible
+										turnRunning={Boolean(
+											activeChatRunning && activeChatSession?.target.kind === "local"
+										)}
+										warmingUp={activeChatWarmingUp}
+									/>
+								</aside>
 							) : null}
 						</div>
 					) : null}
@@ -1465,19 +1941,83 @@ export default function App() {
 					{showComposer ? (
 						<Composer
 							state={state}
+							workspaceSessionId={activeSessionId}
+							onEnsureWorkspaceSession={async () => {
+								if (activeSessionId) return activeSessionId;
+								if (view.kind !== "landing") return null;
+								const session = await createConversation(selectedTargetId);
+								return session.id;
+							}}
+							workspaceFallback={activeSessionId ? (sessions.find((item) => item.id === activeSessionId)?.metadata.workspace as string | undefined) ?? defaultWorkspace : defaultWorkspace}
+							workspaceScope={workspaceScope}
+							onWorkspaceScopeChange={setWorkspaceScope}
+							onWorkspaceError={showToast}
 							onSend={(text) => void onComposerSend(text)}
 							onSelectTarget={onSelectTarget}
+							onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
+							onOpenVoiceSettings={() => setView({ kind: "settings", section: "voice" })}
+							skills={composerSkills}
+							onSlashNew={onNewConversation}
+							onSlashMcp={() => setView({ kind: "connectors" })}
+							onSlashRename={onSlashRename}
 							approvalMode={approvalMode}
-							onSelectApprovalMode={selectApprovalMode}
+							onSelectApprovalMode={selectActiveApprovalMode}
 							modelKnobValues={modelKnobValues}
 							onSelectModelKnob={selectModelKnob}
+							agentWorking={Boolean(activeChatRunning)}
+							activeEnterAction={preferences.submission.activeEnterAction}
+							steerSupported={Boolean(nativeCodex?.steerTurn)}
+							steerError={steerError}
+							onSteer={async (text) => {
+								if (!activeSessionId || !nativeCodex?.steerTurn) {
+									setSteerError("Steer is not supported by the current runtime. Queue the prompt or wait for the turn to finish.");
+									return;
+								}
+								try {
+									await nativeCodex.steerTurn(activeSessionId, text);
+									setSteerError(null);
+								} catch (reason) {
+									setSteerError(reason instanceof Error ? reason.message : String(reason));
+								}
+							}}
+							onEnqueue={(text) => {
+								const conversationId = activeSessionId;
+								if (!conversationId) {
+									showToast("No active conversation to queue into");
+									return;
+								}
+								setSteerError(null);
+								setPreferences(enqueuePrompt(conversationId, text));
+							}}
+							queuedPrompts={activeSessionId ? promptsForConversation(activeSessionId, preferences) : []}
+							onEditQueuedPrompt={(id, text) => {
+								try {
+									setPreferences(updateQueuedPrompt(id, text));
+								} catch (reason) {
+									showToast(reason instanceof Error ? reason.message : String(reason));
+								}
+							}}
+							onRemoveQueuedPrompt={(id) => setPreferences(removeQueuedPrompt(id))}
+							queueAfterStop={queueAfterStop}
+							onKeepQueued={() => setQueueAfterStop(false)}
+							onSendNextQueued={() => {
+								if (!activeSessionId) return;
+								const next = nextQueuedPrompt(activeSessionId);
+								setQueueAfterStop(false);
+								if (next) void sendToSession(activeSessionId, next.text).then((accepted) => {
+									if (accepted) setPreferences(removeQueuedPrompt(next.id));
+								});
+							}}
 						/>
 					) : null}
 			<TerminalPanel
 						open={terminalOpen}
 						workspaceId={terminalWorkspaceId}
 						workspaceRoot={terminalWorkspaceRoot}
-						onOpenChange={setTerminalOpen}
+						onOpenChange={(open) => {
+							setTerminalOpen(open);
+							persistLayoutSnapshot({ bottomPanelVisible: open });
+						}}
 			/>
 		</main>
 	</div>
@@ -1485,7 +2025,7 @@ export default function App() {
 	{searchOpen ? (
 		<ConversationSearch
 			state={state}
-			onClose={() => setSearchOpen(false)}
+			onClose={closeSearch}
 			onOpenChat={(id) => setView({ kind: "chat", chatId: id })}
 			onOpenSync={(id) => setView({ kind: "sync", sessionId: id })}
 			onOpenAsync={() => {

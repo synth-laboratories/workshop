@@ -5,7 +5,7 @@ use crate::cloud::intern::{
 };
 use crate::domain::{RunService, RunStatus, SessionService};
 use crate::inventory::{ContainerDeployment, ContainerRegisterRequest, InventoryStore};
-use crate::projects::ProjectStore;
+use crate::optimizers::OptimizerService;
 use crate::storage::{
     AppEvent, ContentStore, CoreDiagnostics, EventAppend, EventJournal, EventSource, SessionRecord,
     Storage,
@@ -27,7 +27,7 @@ pub struct CoreRuntime {
     content: ContentStore,
     visuals: VisualRegistry,
     inventory: InventoryStore,
-    projects: ProjectStore,
+    optimizers: OptimizerService,
     intern: Arc<InternRuntime>,
     intern_provider: Arc<InternProviderManager>,
     sessions: SessionService,
@@ -55,7 +55,8 @@ impl CoreRuntime {
         let visuals =
             VisualRegistry::new(storage.database().clone(), journal.clone(), content.clone());
         let inventory = InventoryStore::new(storage.database().clone(), content.clone());
-        let projects = ProjectStore::new(storage.database().clone());
+        let optimizers =
+            OptimizerService::new(storage.database().clone(), journal.clone(), visuals.clone());
         let intern_provider = Arc::new(InternProviderManager::new(
             intern.clone(),
             storage.database().clone(),
@@ -69,7 +70,7 @@ impl CoreRuntime {
             content,
             visuals,
             inventory,
-            projects,
+            optimizers,
             intern,
             intern_provider,
             sessions,
@@ -110,8 +111,8 @@ impl CoreRuntime {
         &self.inventory
     }
 
-    pub fn projects(&self) -> &ProjectStore {
-        &self.projects
+    pub fn optimizers(&self) -> &OptimizerService {
+        &self.optimizers
     }
 
     pub fn intern(&self) -> &Arc<InternRuntime> {

@@ -4,8 +4,8 @@ import { expect, test } from "./browser.fixture";
  * Design-debt and intended-architecture flags.
  *
  * - Plain `test(...)`: must pass — locks product intent.
- * - `test.fail(...)`: known violations. Assert the *intended* end state so the
- *   case keeps failing until the stub is replaced. Flip `test.fail` → `test`
+ * - Expected-failing cases: known violations. Assert the *intended* end state so the
+ *   case keeps failing until the stub is replaced. Flip to a plain `test`
  *   when fixed.
  *
  * Static greps for stub strings live in `tests/design_debt.test.mjs`.
@@ -28,6 +28,7 @@ test.describe("design locks (must pass)", () => {
 		await expect(page.getByTestId("settings-page")).toBeVisible();
 		await expect(page.getByRole("button", { name: "Finetunes" })).toHaveCount(0);
 		await expect(page.getByTestId("settings-finetunes")).toHaveCount(0);
+		await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
 		await expect(page.getByTestId("settings-models")).toBeVisible();
 		await expect(page.getByTestId("settings-models")).not.toContainText("Adapters");
 	});
@@ -109,37 +110,46 @@ test.describe("design locks (must pass)", () => {
 		await permission.click();
 		const menu = page.getByTestId("approval-mode-menu");
 		await expect(menu).toBeVisible();
-		await menu.getByRole("option", { name: /Plan/ }).click();
-		await expect(permission).toContainText("Plan");
-		await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.approvalMode"))).toBe("plan");
+		await expect(menu.getByRole("option")).toHaveCount(3);
+		await expect(menu.getByRole("option", { name: /Always ask/ })).toBeVisible();
+		await expect(menu.getByRole("option", { name: /Allow all/ })).toBeVisible();
+		await menu.getByRole("option", { name: /Accept edits/ }).click();
+		await expect(permission).toContainText("Accept edits");
+		await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.approvalMode"))).toBe("accept-edits");
 	});
 });
 
 test.describe("design debt (expected fail until fixed)", () => {
-	test.fail("titlebar Account menu opens an account menu instead of a stub toast", async ({ page }) => {
-		await page.getByRole("button", { name: "Account menu" }).click();
-		await expect(page.getByTestId("account-menu")).toBeVisible();
+	test("titlebar has no Account menu or Expand stub chrome", async ({ page }) => {
+		await expect(page.getByRole("button", { name: "Account menu" })).toHaveCount(0);
+		await expect(page.getByRole("button", { name: "Expand" })).toHaveCount(0);
 		await expect(page.getByText("Account menu — stub", { exact: true })).toHaveCount(0);
+		await expect(page.getByText("Expand — stub", { exact: true })).toHaveCount(0);
+		await expect(page.getByTestId("open-account-settings")).toBeVisible();
 	});
 
-	test.fail("titlebar Downloads opens a downloads surface", async ({ page }) => {
-		await page.getByRole("button", { name: "Downloads" }).click();
-		await expect(page.getByTestId("downloads-page")).toBeVisible();
+	test("titlebar Models opens the models settings section", async ({ page }) => {
+		await page.getByTestId("open-models-settings").click();
+		await expect(page.getByTestId("settings-page")).toBeVisible();
+		await expect(page.getByTestId("settings-models")).toBeVisible();
+		await expect(page.getByTestId("on-device-laguna-xs")).toBeVisible();
+		await expect(page.getByText("Downloads — stub", { exact: true })).toHaveCount(0);
 	});
 
-	test.fail("titlebar Expand toggles a real chrome state", async ({ page }) => {
-		const before = await page.evaluate(() => document.body.dataset.chromeExpanded ?? "0");
-		await page.getByRole("button", { name: "Expand" }).click();
-		await expect
-			.poll(async () => page.evaluate(() => document.body.dataset.chromeExpanded ?? "0"))
-			.not.toBe(before);
+	test("Runtime settings has no legacy Python migration surface", async ({ page }) => {
+		await page.getByRole("button", { name: "Settings" }).click();
+		await page.getByTestId("settings-page").getByRole("button", { name: "Runtime" }).click();
+		await expect(page.getByTestId("settings-runtime")).toBeVisible();
+		await expect(page.getByText("Legacy Python Runtime Data")).toHaveCount(0);
+		await expect(page.getByText("Legacy runtime.sqlite3 path")).toHaveCount(0);
+		await expect(page.getByRole("button", { name: "Inspect migration" })).toHaveCount(0);
 	});
 
-	test.fail("Landing Set up agent starts a setup flow", async ({ page }) => {
-		await page.getByTestId("quick-setup-agent").click();
-		await expect(
-			page.getByTestId("agent-setup").or(page.getByTestId("settings-page"))
-		).toBeVisible();
+	test("Landing has no Set up an agent stub card", async ({ page }) => {
+		await expect(page.getByTestId("quick-setup-agent")).toHaveCount(0);
+		await expect(page.getByText("Set up an agent", { exact: true })).toHaveCount(0);
+		await expect(page.getByText("Set up agent — stub", { exact: true })).toHaveCount(0);
+		await expect(page.getByTestId("landing-page")).toBeVisible();
 	});
 
 	test("Settings Reload Laguna invokes the bridge and reports completion", async ({ page }) => {
@@ -164,6 +174,7 @@ test.describe("design debt (expected fail until fixed)", () => {
 		await page.reload();
 		await page.getByTestId("runtime-status").waitFor();
 		await page.getByRole("button", { name: "Settings" }).click();
+		await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
 		await page.getByRole("button", { name: "Reload" }).click();
 		await expect
 			.poll(async () => page.evaluate(() => (window as typeof window & { __lagunaReloads?: number }).__lagunaReloads ?? 0))
@@ -187,6 +198,7 @@ test.describe("design debt (expected fail until fixed)", () => {
 		});
 		await page.reload();
 		await page.getByRole("button", { name: "Settings" }).click();
+		await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
 		await page.getByRole("button", { name: "Reload" }).click();
 		const status = page.getByTestId("laguna-reload-status");
 		await expect(status).toHaveAttribute("data-state", "error");
@@ -194,16 +206,17 @@ test.describe("design debt (expected fail until fixed)", () => {
 		await expect(status).toContainText("Sidecar is unavailable.");
 	});
 
-	test.fail("async leave-safe banner is projection-driven, not `!isSync`", async ({ page }) => {
+	test("async leave-safe banner is projection-driven, not `!isSync`", async ({ page }) => {
 		const source = await page.evaluate(async () => {
 			const response = await fetch("/src/components/CloudDesk.tsx");
 			return response.ok ? response.text() : "";
 		});
 		expect(source.length).toBeGreaterThan(100);
 		expect(source).not.toMatch(/const leaveSafe = !isSync/);
+		expect(source).toMatch(/props\.intern\.leaveSafe === true/);
 	});
 
-	test.fail("a needs-input Async Intern opens a real intervention control", async ({ page }) => {
+	test("a needs-input Async Intern opens a real intervention control", async ({ page }) => {
 		const asyncSession = {
 			id: "async-needs-input",
 			title: "Async Intern",
@@ -238,7 +251,7 @@ test.describe("design debt (expected fail until fixed)", () => {
 		await expect(page.getByText("Provide input — stub", { exact: true })).toHaveCount(0);
 	});
 
-	test.fail("agent-authored analysis visuals render the persisted type-block payload from CUA", async ({ page }) => {
+	test("agent-authored analysis visuals render the persisted type-block payload from CUA", async ({ page }) => {
 		await page.addInitScript(() => {
 			const visual = {
 				schemaVersion: "synth.desktop-visual.v1",

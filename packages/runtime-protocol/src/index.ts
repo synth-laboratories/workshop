@@ -11,7 +11,7 @@ export type LocalExecutionTarget = {
 
 export type RemoteExecutionTarget = {
   kind: "remote";
-  provider: "openrouter";
+  provider: "openrouter" | "synth-cloud";
   model: string;
   adapter: string | null;
 };
@@ -156,7 +156,7 @@ export type AppEventPage = {
 
 export type VisualStatus = "draft" | "live" | "saved" | "failed" | "archived";
 export type RendererKind = "template" | "tsx" | "html";
-export type VisualBindingKind = "inline" | "trace_v5" | "local_cas" | "run_ref" | "live_sse" | "fixture";
+export type VisualBindingKind = "inline" | "trace_v5" | "local_cas" | "run_ref" | "live_sse" | "fixture" | "optimizer_run";
 export type VisualBinding = {
   slot: string;
   kind: VisualBindingKind;
@@ -309,6 +309,76 @@ export type UsageLedgerEntry = {
   createdAt: string;
 };
 
+export type OptimizerCapabilities = {
+  cancel?: boolean;
+  pause?: boolean;
+  resume?: boolean;
+  streamEvents?: boolean;
+  stateSlices?: boolean;
+  candidates?: boolean;
+  checkpoints?: boolean;
+  checkpointEvaluations?: boolean;
+  inferenceEndpoint?: boolean;
+  localSlotBinding?: boolean;
+};
+
+export type OptimizerUsageSummary = {
+  costUsd?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  rollouts?: number;
+  wallTimeMs?: number;
+  extra?: Record<string, unknown>;
+};
+
+export type OptimizerResourceRef = {
+  kind: string;
+  id: string;
+  digest?: string | null;
+  role?: string | null;
+  title?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type OptimizerExecutionBinding = {
+  kind: string;
+  id: string;
+  label?: string | null;
+  status?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type OptimizerRunRecord = {
+  schemaVersion: "optimizer_run.v1" | string;
+  id: string;
+  algorithmId: string;
+  algorithmVersion?: string | null;
+  status: string;
+  source: string;
+  objective?: string | null;
+  projectRef?: string | null;
+  sessionRef?: string | null;
+  createdAt: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  cursorSeq: number;
+  capabilities: OptimizerCapabilities;
+  executionBindings: OptimizerExecutionBinding[];
+  inputRefs: OptimizerResourceRef[];
+  outputRefs: OptimizerResourceRef[];
+  visualRefs: OptimizerResourceRef[];
+  summary: Record<string, unknown>;
+  usage: OptimizerUsageSummary;
+  error?: unknown;
+};
+
+export type OptimizerAlgorithmInfo = {
+  id: string;
+  title: string;
+  availability: "available" | "private_beta" | "unavailable" | string;
+  description?: string;
+};
+
 export type Project = {
   id: string;
   name: string;
@@ -330,7 +400,7 @@ export type RuntimeHealth = {
   };
   local: {
     model: "laguna-xs-2.1";
-    mode: "stub" | "mlx";
+    mode: "absent" | "mlx";
     modelPath?: string | null;
   };
   openrouter: {
@@ -424,7 +494,9 @@ export function targetLabel(target: ExecutionTarget): string {
   }
   if (target.kind === "remote") {
     const short = target.model.split("/").pop() ?? target.model;
-    return `OpenRouter · ${short}`;
+    return target.provider === "synth-cloud"
+      ? `Synth Cloud · ${short}`
+      : `OpenRouter · ${short}`;
   }
   return target.mode === "sync" ? "Intern · Live" : "Intern · Background";
 }

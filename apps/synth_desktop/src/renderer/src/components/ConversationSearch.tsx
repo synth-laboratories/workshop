@@ -5,7 +5,7 @@ type Result = { id: string; title: string; detail: string; haystack: string; kin
 
 type Props = {
 	state: LandingState;
-	onClose: () => void;
+	onClose: (options?: { restoreFocus?: boolean }) => void;
 	onOpenChat: (id: string) => void;
 	onOpenSync: (id: string) => void;
 	onOpenAsync: () => void;
@@ -27,15 +27,22 @@ export function ConversationSearch({ state, onClose, onOpenChat, onOpenSync, onO
 	}, [query, state]);
 
 	const open = (result: Result) => {
-		onClose();
+		onClose({ restoreFocus: false });
 		if (result.kind === "chat") onOpenChat(result.id);
 		else if (result.kind === "sync") onOpenSync(result.id);
 		else onOpenAsync();
 	};
 
 	return (
-		<div className="search-scrim" role="presentation">
-			<div className="conversation-search" role="dialog" aria-modal="true" aria-label="Search conversations" data-testid="conversation-search">
+		<div
+			className="search-scrim"
+			role="presentation"
+			data-testid="search-scrim"
+			onClick={(event) => {
+				if (event.target === event.currentTarget) onClose();
+			}}
+		>
+			<div className="conversation-search" role="dialog" aria-modal="true" aria-label="Search conversations" aria-keyshortcuts="Escape Meta+K" data-testid="conversation-search">
 				<label className="conversation-search-input">
 					<span aria-hidden>⌕</span>
 					<input
@@ -51,6 +58,9 @@ export function ConversationSearch({ state, onClose, onOpenChat, onOpenSync, onO
 						aria-label="Search conversations"
 					/>
 					<kbd>⌘K</kbd>
+					<button type="button" className="conversation-search-close" onClick={() => onClose()} aria-label="Close search">
+						<span aria-hidden>×</span>
+					</button>
 				</label>
 				<div className="conversation-results" role="listbox" aria-label="Conversations">
 					{results.map((result, index) => (

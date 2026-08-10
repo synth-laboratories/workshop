@@ -8,22 +8,25 @@ description: Use for Synth container discovery, real workspace-owned rollout har
 Use `synth-containers-mcp` as the registry authority. Never scan ports or invent
 container records, endpoints, results, model metadata, token usage, or rewards.
 
-Codex exposes this MCP server through the custom tool `mcp__synth_containers`.
-Choose an operation with its `method` field. Do not invent individual function
-names such as `mcp__synth_containers__container_list`; they are not callable in
-this runtime.
+Codex exposes this MCP server as the `mcp__synth_containers` namespace. Call its
+named operations directly; do not use shell or scan ports as a fallback.
 
 ## Discover the engine
 
-1. Call `mcp__synth_containers` with `{"method":"container_list"}`.
+1. Call `container_list` in the `mcp__synth_containers` namespace.
 2. Select a registered container by task family and capabilities, not by a
    guessed name or port.
-3. Refresh it with `{"method":"container_probe","container_id":"..."}` and
-   read it with `{"method":"container_get","container_id":"..."}`.
+3. Refresh it with `container_probe` and read it with `container_get`.
 4. Treat `/health`, `/info`, or `/metadata` as engine discovery only. A ready
    engine is not a policy and proves no model was in the loop.
 5. Register a container only when the user or workspace gives an explicit URL.
    Use `container_register`; never infer a localhost port.
+
+For a bounded engine acceptance run, call `container_run_rollouts` once with the
+registered `container_id`, an exact `count`, optional integer `seeds`, and 1-64
+explicit action names. The tool permits only registered loopback HTTP services,
+records each rollout in Desktop inventory, and returns the exact live state and
+event log. Do not call it again when the requested count has already completed.
 
 ## Locate the policy harness
 

@@ -41,6 +41,34 @@ function Scatter({ block }: { block: Extract<Block, { kind: "scatter" }> }) {
   return <section className="sv-section"><SectionTitle title={block.title} /><div role="img" aria-label={`${block.yLabel} versus ${block.xLabel}`} style={{ border: "1px solid var(--sv-border)", borderRadius: 8 }}><svg viewBox="0 0 360 210" width="100%">{[45,85,125,165].map((y) => <line key={y} x1="46" y1={y} x2="340" y2={y} stroke="#e8eaee" />)}{block.points.map((point, index) => { const x = 58 + point.x / maxX * 265; const y = 165 - point.y / maxY * 130; return <g key={`${point.label}-${index}`}><circle cx={x} cy={y} r="7" fill={point.color ?? (index ? INK : ORANGE)} stroke="#fff" strokeWidth="2" /><text x={x} y={y - 12} textAnchor="middle" fill="#5c6573" fontSize="9">{point.label}</text></g>; })}<text x="196" y="202" textAnchor="middle" fill="#8b93a1" fontSize="10">{block.xLabel}</text><text x="13" y="104" textAnchor="middle" fill="#8b93a1" fontSize="10" transform="rotate(-90 13 104)">{block.yLabel}</text></svg></div></section>;
 }
 
+function normalizeBlock(raw: unknown): Block | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const block = raw as Record<string, unknown>;
+  // Agent-authored CUA payloads persist `type` / `text`; the shell schema uses `kind` / `body`.
+  const kind = typeof block.kind === "string" ? block.kind : typeof block.type === "string" ? block.type : null;
+  if (!kind) return null;
+  if (kind === "note") {
+    const body = typeof block.body === "string" ? block.body : typeof block.text === "string" ? block.text : "";
+    return {
+      kind: "note",
+      title: typeof block.title === "string" ? block.title : undefined,
+      body,
+      tone: block.tone === "caution" ? "caution" : "neutral"
+    };
+  }
+  if (kind === "metrics" && Array.isArray(block.items)) {
+    return {
+      kind: "metrics",
+      title: typeof block.title === "string" ? block.title : undefined,
+      items: block.items as Extract<Block, { kind: "metrics" }>["items"]
+    };
+  }
+  if (kind === "ranked-bars" || kind === "frequency-diff" || kind === "table" || kind === "scatter") {
+    return { ...block, kind } as Block;
+  }
+  return null;
+}
+
 function renderBlock(block: Block, index: number) {
   if (block.kind === "note") return <section className="sv-section" key={index} style={{ padding: 12, borderRadius: 8, background: block.tone === "caution" ? "#fff6ee" : "#f5f7f9", color: "#5c6573", fontSize: 11 }}>{block.title ? <strong style={{ display: "block", marginBottom: 4, color: INK }}>{block.title}</strong> : null}{block.body}</section>;
   if (block.kind === "metrics") return <Metrics block={block} key={index} />;
@@ -51,9 +79,10 @@ function renderBlock(block: Block, index: number) {
 }
 
 export function Shell(props: ShellProps) {
-  const spec = props.data ?? props.spec;
-  if (!spec?.blocks?.length) return <VisualChrome title={props.title ?? "Analysis visual"} lede="No visual specification was provided." testId="visual-analysis-spec"><></></VisualChrome>;
-  return <VisualChrome kicker={spec.kicker ?? "Agent-authored analysis"} title={props.title ?? spec.title ?? "Analysis visual"} lede={props.lede ?? spec.lede} footer={spec.footer} testId="visual-analysis-spec">{spec.blocks.map(renderBlock)}</VisualChrome>;
+  const raw = props.data ?? props.spec;
+  const blocks = (raw?.blocks ?? []).map(normalizeBlock).filter((block): block is Block => block != null);
+  if (!blocks.length) return <VisualChrome title={props.title ?? "Analysis visual"} lede="No visual specification was provided." testId="visual-analysis-spec"><></></VisualChrome>;
+  return <VisualChrome kicker={raw?.kicker ?? "Agent-authored analysis"} title={props.title ?? raw?.title ?? "Analysis visual"} lede={props.lede ?? raw?.lede} footer={raw?.footer} testId="visual-analysis-spec">{blocks.map(renderBlock)}</VisualChrome>;
 }
 
 export default Shell;

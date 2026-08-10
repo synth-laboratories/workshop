@@ -1,26 +1,29 @@
 mod cloud;
 mod codex;
-mod device_auth;
 pub mod core_runtime;
+mod device_auth;
 mod domain;
+mod eval_driver;
 mod instance;
 mod intern_api;
 pub mod inventory;
 mod laguna;
 mod optimizers;
 mod runtime;
+mod skills;
 pub mod storage;
 mod synth_config;
 mod terminal;
 pub mod trace_ingest;
 mod visuals;
 mod visuals_ipc;
-mod eval_driver;
+mod whisper;
+mod workspace_scope;
 
 use codex::{
     CodexApprovalDecisionRequest, CodexManager, CodexSessionInfo, CodexSessionRecord,
-    CodexSessionRequest, CodexSessionStartRequest, CodexTurnFailure, CodexTurnSendRequest,
-    CodexTurnStartRequest,
+    CodexSessionRequest, CodexSessionStartRequest, CodexSteerRequest, CodexTurnFailure,
+    CodexTurnSendRequest, CodexTurnStartRequest,
 };
 pub use core_runtime::CoreRuntime;
 use instance::InstanceDiagnostics;
@@ -35,7 +38,8 @@ use inventory::{
 use laguna::{LagunaManager, LagunaModelHit, LagunaStatus};
 use optimizers::{
     OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerImportLocalRequest, OptimizerQuery,
-    OptimizerReconcileRequest, OptimizerRelationship, OptimizerRunRecord, OptimizerStateSlice,
+    OptimizerRecipeRunRequest, OptimizerReconcileRequest, OptimizerRelationship,
+    OptimizerRunRecord, OptimizerStateSlice,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -52,6 +56,8 @@ use visuals::{
     TemplateMeta, VisualCreateRequest, VisualQuery, VisualRecord, VisualRevision,
     VisualUpdateRequest,
 };
+use workspace_scope::WorkspaceGrantRequest;
+use workspace_scope::{ConversationWorkspaceScope, WorkspaceAccessMode};
 
 #[tauri::command]
 fn core_diagnostics(state: State<'_, Arc<CoreRuntime>>) -> Result<CoreDiagnostics, String> {
@@ -433,6 +439,26 @@ async fn optimizers_algorithms_list(
     state: State<'_, Arc<CoreRuntime>>,
 ) -> Result<Vec<Value>, String> {
     Ok(state.optimizers().list_algorithms())
+}
+
+#[tauri::command]
+async fn optimizers_recipes_list(state: State<'_, Arc<CoreRuntime>>) -> Result<Vec<Value>, String> {
+    Ok(state.optimizers().list_recipes())
+}
+
+#[tauri::command]
+async fn optimizers_recipe_start(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    request: OptimizerRecipeRunRequest,
+) -> Result<OptimizerRunRecord, String> {
+    let (run, event) = state
+        .optimizers()
+        .start_recipe(request)
+        .await
+        .map_err(|error| error.to_string())?;
+    publish_optimizer_event(&app, &state, event).await?;
+    Ok(run)
 }
 
 #[tauri::command]
@@ -827,6 +853,83 @@ fn synth_config_get() -> Result<BackendSettings, String> {
     synth_config::get().map_err(|error| error.to_string())
 }
 
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+struct ModelPerformanceMetric {
+    model_id: String,
+    provider: String,
+    sample_count: u64,
+    input_tokens: u64,
+    cached_input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+    output_tps_p50: f64,
+    output_tps_p95: f64,
+    total_tpm_p50: f64,
+    total_tpm_p95: f64,
+    latency_ms_p50: f64,
+    latency_ms_p95: f64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+struct ModelPerformanceSnapshot {
+    window_minutes: u16,
+    generated_at: String,
+    models: Vec<ModelPerformanceMetric>,
+}
+
+#[tauri::command]
+async fn model_performance_get(
+    window_minutes: Option<u16>,
+) -> Result<ModelPerformanceSnapshot, String> {
+    let backend = synth_config::resolve().map_err(|error| error.to_string())?;
+    let api_key = backend
+        .api_key
+        .ok_or_else(|| "Sign in to read Synth Cloud model telemetry".to_string())?;
+    let window_minutes = window_minutes.unwrap_or(60).clamp(1, 1_440);
+    let url = format!(
+        "{}/api/v1/usage/model-performance?window_minutes={window_minutes}",
+        backend.backend_url.trim_end_matches('/')
+    );
+    let response = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|error| error.to_string())?
+        .get(url)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|error| {
+            let detail = error.to_string();
+            if detail.contains("backend-api")
+                || detail.contains("dns")
+                || detail.contains("failed to lookup")
+                || detail.contains("Connection refused")
+                || detail.contains("timed out")
+                || detail.contains("error sending request")
+            {
+                "Synth Cloud telemetry could not be reached. Check Account → Synth backend URL."
+                    .to_string()
+            } else {
+                format!("Synth Cloud telemetry request failed: {error}")
+            }
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let detail = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "Synth Cloud telemetry returned {status}: {}",
+            detail.chars().take(240).collect::<String>()
+        ));
+    }
+    response
+        .json::<ModelPerformanceSnapshot>()
+        .await
+        .map_err(|error| format!("Invalid Synth Cloud telemetry response: {error}"))
+}
+
 #[tauri::command]
 async fn synth_config_update(
     core: State<'_, Arc<CoreRuntime>>,
@@ -972,9 +1075,198 @@ async fn workspace_choose_directory(app: tauri::AppHandle) -> Result<Option<Stri
     receiver.await.map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+async fn workspace_scope_get(
+    core: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+) -> Result<Option<ConversationWorkspaceScope>, String> {
+    workspace_scope::get(core.storage().database(), &session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn workspace_scope_choose_and_attach(
+    app: tauri::AppHandle,
+    core: State<'_, Arc<CoreRuntime>>,
+    codex: State<'_, Arc<CodexManager>>,
+    session_id: String,
+    proposed_access: WorkspaceAccessMode,
+) -> Result<Option<ConversationWorkspaceScope>, String> {
+    if proposed_access == WorkspaceAccessMode::ReadOnly {
+        return Err("Read-only attachments are not yet supported by the macOS Codex sandbox; no access was granted".into());
+    }
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Choose a folder to attach")
+        .pick_folder(move |path| {
+            let _ = sender.send(path.map(|value| value.to_string()));
+        });
+    let Some(path) = receiver.await.map_err(|error| error.to_string())? else {
+        return Ok(None);
+    };
+    let scope = workspace_scope::attach(
+        core.storage().database(),
+        &session_id,
+        &path,
+        proposed_access,
+        workspace_scope::AttachmentSource::UserPicker,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    // Scope is durable before the old process is fenced. Closing preserves
+    // the thread record; the next send resumes it with the new revision.
+    codex
+        .close(&session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Some(scope))
+}
+
+#[tauri::command]
+async fn workspace_scope_recent_folders(
+    core: State<'_, Arc<CoreRuntime>>,
+) -> Result<Vec<String>, String> {
+    workspace_scope::recent_folders(core.storage().database())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn workspace_scope_attach_recent(
+    core: State<'_, Arc<CoreRuntime>>,
+    codex: State<'_, Arc<CodexManager>>,
+    session_id: String,
+    path: String,
+) -> Result<ConversationWorkspaceScope, String> {
+    let scope = workspace_scope::attach_recent(core.storage().database(), &session_id, &path)
+        .await
+        .map_err(|error| error.to_string())?;
+    codex.close(&session_id).await.map_err(|error| error.to_string())?;
+    Ok(scope)
+}
+
+#[tauri::command]
+async fn workspace_scope_remove_attachment(
+    core: State<'_, Arc<CoreRuntime>>,
+    codex: State<'_, Arc<CodexManager>>,
+    session_id: String,
+    path: String,
+) -> Result<ConversationWorkspaceScope, String> {
+    let scope = workspace_scope::remove_attachment(core.storage().database(), &session_id, &path)
+        .await
+        .map_err(|error| error.to_string())?;
+    codex
+        .close(&session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(scope)
+}
+
+#[tauri::command]
+async fn workspace_scope_request_agent_grant(
+    core: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+    path: String,
+    access: WorkspaceAccessMode,
+    reason: String,
+) -> Result<WorkspaceGrantRequest, String> {
+    workspace_scope::request_grant(
+        core.storage().database(),
+        &session_id,
+        &path,
+        access,
+        &reason,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn workspace_scope_grants_list(
+    core: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+) -> Result<Vec<WorkspaceGrantRequest>, String> {
+    workspace_scope::list_grants(core.storage().database(), &session_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn workspace_scope_deny_request(
+    core: State<'_, Arc<CoreRuntime>>,
+    request_id: String,
+) -> Result<WorkspaceGrantRequest, String> {
+    workspace_scope::deny_grant(core.storage().database(), &request_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn workspace_scope_approve_request(
+    app: tauri::AppHandle,
+    core: State<'_, Arc<CoreRuntime>>,
+    codex: State<'_, Arc<CodexManager>>,
+    request_id: String,
+) -> Result<Option<ConversationWorkspaceScope>, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Confirm the exact requested folder")
+        .pick_folder(move |path| {
+            let _ = sender.send(path.map(|v| v.to_string()));
+        });
+    let Some(path) = receiver.await.map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    let scope = workspace_scope::approve_grant(core.storage().database(), &request_id, &path)
+        .await
+        .map_err(|e| e.to_string())?;
+    codex
+        .close(&scope.session_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Some(scope))
+}
+
 /// Fills in the provider secrets and Laguna base URL that only the Rust side
 /// knows. Shared by the plain attach command and the atomic send command.
 async fn prepare_codex_start(
+    laguna: &LagunaManager,
+    core: &CoreRuntime,
+    mut request: CodexSessionStartRequest,
+) -> Result<CodexSessionStartRequest, String> {
+    // Never trust renderer-supplied roots. Rust persistence is authoritative.
+    request.writable_roots.clear();
+    let scope = workspace_scope::get(core.storage().database(), &request.session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let scope = match scope {
+        Some(scope) => {
+            let requested = workspace_scope::canonical_directory(&request.workspace)
+                .map_err(|error| error.to_string())?;
+            if requested.to_string_lossy() != scope.workspace {
+                return Err(
+                    "requested workspace does not match the conversation's persisted scope".into(),
+                );
+            }
+            scope
+        }
+        None => {
+            request.workspace = workspace_scope::canonical_directory(&request.workspace)
+                .map_err(|error| error.to_string())?
+                .to_string_lossy()
+                .into_owned();
+            return prepare_codex_provider(laguna, request).await;
+        }
+    };
+    request.workspace = scope.workspace.clone();
+    request.writable_roots = workspace_scope::writable_roots(&scope);
+    prepare_codex_provider(laguna, request).await
+}
+
+async fn prepare_codex_provider(
     laguna: &LagunaManager,
     mut request: CodexSessionStartRequest,
 ) -> Result<CodexSessionStartRequest, String> {
@@ -1027,10 +1319,11 @@ async fn codex_turn_send(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
     laguna: State<'_, Arc<LagunaManager>>,
+    core: State<'_, Arc<CoreRuntime>>,
     mut request: CodexTurnSendRequest,
 ) -> Result<CodexSessionInfo, CodexTurnFailure> {
     let session_id = request.start.session_id.clone();
-    request.start = prepare_codex_start(&laguna, request.start)
+    request.start = prepare_codex_start(&laguna, &core, request.start)
         .await
         .map_err(|message| CodexTurnFailure {
             code: "codex_provider_unavailable".into(),
@@ -1046,9 +1339,10 @@ async fn codex_session_start(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
     laguna: State<'_, Arc<LagunaManager>>,
+    core: State<'_, Arc<CoreRuntime>>,
     request: CodexSessionStartRequest,
 ) -> Result<CodexSessionInfo, String> {
-    let request = prepare_codex_start(&laguna, request).await?;
+    let request = prepare_codex_start(&laguna, &core, request).await?;
     state
         .start(app, request)
         .await
@@ -1074,6 +1368,18 @@ async fn codex_turn_interrupt(
 ) -> Result<(), String> {
     state
         .interrupt(&request.session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn codex_turn_steer(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CodexManager>>,
+    request: CodexSteerRequest,
+) -> Result<(), String> {
+    state
+        .steer_turn(app, request)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1316,6 +1622,8 @@ pub fn run() {
             inventory_usage_list,
             inventory_counts,
             optimizers_algorithms_list,
+            optimizers_recipes_list,
+            optimizers_recipe_start,
             optimizers_list,
             optimizers_get,
             optimizers_create,
@@ -1344,6 +1652,7 @@ pub fn run() {
             visuals_show,
             synth_config_get,
             synth_config_update,
+            model_performance_get,
             account_begin_sign_in,
             account_poll_sign_in,
             account_cancel_sign_in,
@@ -1352,6 +1661,15 @@ pub fn run() {
             model_multi_agent_update,
             workspace_access_get,
             workspace_access_update,
+            workspace_scope_get,
+            workspace_scope_choose_and_attach,
+            workspace_scope_recent_folders,
+            workspace_scope_attach_recent,
+            workspace_scope_remove_attachment,
+            workspace_scope_request_agent_grant,
+            workspace_scope_grants_list,
+            workspace_scope_approve_request,
+            workspace_scope_deny_request,
             crate::storage::legacy_migration::commands::migration_scan,
             crate::storage::legacy_migration::commands::migration_prepare,
             crate::storage::legacy_migration::commands::migration_apply,
@@ -1365,11 +1683,22 @@ pub fn run() {
             laguna::laguna_inference_stream_start,
             laguna::laguna_inference_stream_stop,
             laguna::laguna_model_unload,
-			workspace_choose_directory,
+            laguna::laguna_model_download,
+            laguna::laguna_settings_snapshot,
+            laguna::laguna_settings_update,
+            whisper::whisper_models_list,
+            whisper::whisper_model_download,
+            whisper::whisper_models_set_selected,
+            whisper::whisper_models_clear,
+            whisper::whisper_transcribe,
+            whisper::whisper_transcribe_base64,
+            skills::skills_list,
+            workspace_choose_directory,
             codex_session_start,
             codex_turn_start,
             codex_turn_send,
             codex_turn_interrupt,
+            codex_turn_steer,
             codex_approval_resolve,
             codex_session_close,
             codex_sessions_list,

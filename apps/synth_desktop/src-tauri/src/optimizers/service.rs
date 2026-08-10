@@ -1,0 +1,2293 @@
+use super::models::{
+    OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerQuery,
+    OptimizerRelationship, OptimizerResourceRef, OptimizerRunRecord, OptimizerStateSlice,
+    OptimizerUsageSummary, OPTIMIZER_EVENT_SCHEMA_VERSION, OPTIMIZER_RUN_SCHEMA_VERSION,
+    OPTIMIZER_STATE_SLICE_SCHEMA_VERSION,
+};
+use crate::storage::{append_event, AppEvent, Database, EventAppend, EventJournal, EventSource};
+use crate::visuals::{VisualCreateRequest, VisualRegistry, VISUAL_BINDINGS_SCHEMA_VERSION};
+use anyhow::{anyhow, bail, Context, Result};
+use chrono::Utc;
+use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{watch, Mutex};
+use uuid::Uuid;
+
+const GEPA_FIXTURE_ID: &str = "opt_gepa_fixture";
+const SFT_FIXTURE_ID: &str = "opt_sft_fixture";
+const GOEX_FIXTURE_ID: &str = "opt_goex_fixture";
+
+#[derive(Clone)]
+pub struct OptimizerService {
+    db: Arc<Database>,
+    #[allow(dead_code)]
+    journal: EventJournal,
+    visuals: VisualRegistry,
+    local_recipes: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
+}
+
+impl OptimizerService {
+    pub fn new(db: Arc<Database>, journal: EventJournal, visuals: VisualRegistry) -> Self {
+        Self {
+            db,
+            journal,
+            visuals,
+            local_recipes: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn list_algorithms(&self) -> Vec<Value> {
+        vec![
+            json!({"id":"gepa","title":"GEPA","availability":"available","description":"Genetic-Pareto prompt optimization"}),
+            json!({"id":"go-ex","title":"GELO / Go-Ex","availability":"available","description":"Hosted exploration with optional local slot binding"}),
+            json!({"id":"sft","title":"SFT","availability":"available","description":"Allowlisted Craftax GPT-OSS LoRA fine-tuning, durable import, replay, and visualization"}),
+        ]
+    }
+
+    pub fn list_recipes(&self) -> Vec<Value> {
+        vec![
+            super::recipes::recipe_catalog(),
+            super::sft_recipes::recipe_catalog(),
+        ]
+    }
+
+    pub async fn start_recipe(
+        &self,
+        request: super::models::OptimizerRecipeRunRequest,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        match request.recipe_id.as_str() {
+            super::recipes::BANKING77_GEPA_SMOKE_RECIPE => {
+                super::recipes::start(self, request).await
+            }
+            super::sft_recipes::CRAFTAX_SFT_SMOKE_RECIPE => {
+                super::sft_recipes::start(self, request).await
+            }
+            _ => bail!("unknown optimizer recipe: {}", request.recipe_id),
+        }
+    }
+
+    pub(super) async fn register_local_recipe(&self, run_id: String, cancel: watch::Sender<bool>) {
+        self.local_recipes.lock().await.insert(run_id, cancel);
+    }
+
+    pub(super) async fn unregister_local_recipe(&self, run_id: &str) {
+        self.local_recipes.lock().await.remove(run_id);
+    }
+
+    pub async fn list(&self, query: OptimizerQuery) -> Result<Vec<OptimizerRunRecord>> {
+        let db = self.db.clone();
+        db.run(move |conn| list_runs(conn, &query)).await
+    }
+
+    pub async fn get(&self, optimizer_run_id: String) -> Result<OptimizerRunRecord> {
+        let db = self.db.clone();
+        db.run(move |conn| load_run(conn, &optimizer_run_id)).await
+    }
+
+    pub async fn create(
+        &self,
+        request: OptimizerCreateRequest,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        if let Some(fixture) = request.seed_fixture.clone() {
+            return self
+                .seed_fixture(&fixture, request.session_ref.clone())
+                .await;
+        }
+        if let Some(path) = request.local_path.clone() {
+            return self
+                .import_local(super::models::OptimizerImportLocalRequest {
+                    path,
+                    session_ref: request.session_ref.clone(),
+                    open_visual: request.open_visual,
+                })
+                .await;
+        }
+        let source = request
+            .source
+            .clone()
+            .unwrap_or_else(|| "local".into())
+            .to_ascii_lowercase();
+        if source == "cloud" {
+            return self.create_cloud(request).await;
+        }
+        let algorithm_id = super::normalize::normalize_algorithm_id(&request.algorithm_id);
+        if algorithm_id.is_empty() || algorithm_id == "unknown" {
+            bail!("algorithm_id is required");
+        }
+        let now = Utc::now().to_rfc3339();
+        let id = request
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("opt_{}", Uuid::new_v4()));
+        let capabilities = request
+            .capabilities
+            .clone()
+            .unwrap_or_else(|| OptimizerCapabilities::for_algorithm(&algorithm_id));
+        let run = OptimizerRunRecord {
+            schema_version: OPTIMIZER_RUN_SCHEMA_VERSION.into(),
+            id: id.clone(),
+            algorithm_id: algorithm_id.clone(),
+            algorithm_version: request.algorithm_version.clone(),
+            status: "queued".into(),
+            source: request.source.clone().unwrap_or_else(|| "local".into()),
+            objective: request.objective.clone(),
+            project_ref: request.project_ref.clone(),
+            session_ref: request.session_ref.clone(),
+            created_at: now.clone(),
+            started_at: None,
+            finished_at: None,
+            cursor_seq: 0,
+            capabilities,
+            execution_bindings: request.execution_bindings.clone().unwrap_or_default(),
+            input_refs: request.input_refs.clone().unwrap_or_default(),
+            output_refs: vec![],
+            visual_refs: vec![],
+            summary: request.summary.clone().unwrap_or_else(|| json!({})),
+            usage: OptimizerUsageSummary::default(),
+            error: None,
+        };
+        let db = self.db.clone();
+        let inserted = run.clone();
+        let (mut run, event) = db
+            .run_transaction(move |conn| {
+                upsert_run(conn, &inserted)?;
+                if let Some(session_ref) = inserted.session_ref.as_deref() {
+                    insert_relationship(
+                        conn,
+                        &OptimizerRelationship {
+                            from_kind: "optimizer".into(),
+                            from_id: inserted.id.clone(),
+                            edge: "started_from".into(),
+                            to_kind: "session".into(),
+                            to_id: session_ref.into(),
+                            metadata: json!({}),
+                        },
+                    )?;
+                }
+                let event = append_event(
+                    conn,
+                    EventAppend {
+                        event_id: None,
+                        session_id: inserted.session_ref.clone(),
+                        run_id: None,
+                        source: EventSource::System,
+                        kind: "optimizer.run.created".into(),
+                        payload: json!({
+                            "optimizerRunId": inserted.id,
+                            "algorithmId": inserted.algorithm_id,
+                            "status": inserted.status
+                        }),
+                        remote_sequence: None,
+                        command_id: None,
+                        created_at: None,
+                    },
+                )?;
+                Ok((inserted, event))
+            })
+            .await?;
+        if request.open_visual.unwrap_or(true) {
+            run = self.open_visual(run.id.clone()).await?.0;
+        }
+        Ok((run, Some(event)))
+    }
+
+    pub async fn refresh(&self, optimizer_run_id: String) -> Result<OptimizerRunRecord> {
+        if let Ok(run) = self.get(optimizer_run_id.clone()).await {
+            if run.source == "cloud" {
+                let (run, _) = self
+                    .reconcile_cloud(super::models::OptimizerReconcileRequest {
+                        optimizer_run_id: optimizer_run_id.clone(),
+                        after_seq: Some(run.cursor_seq),
+                        open_visual: Some(false),
+                    })
+                    .await?;
+                return Ok(run);
+            }
+        }
+        let mut run = self.get(optimizer_run_id.clone()).await?;
+        if run.source == "local"
+            && matches!(run.status.as_str(), "completed" | "failed" | "cancelled")
+        {
+            run = super::recipes::reconcile_persisted(self, &optimizer_run_id).await?;
+        }
+        let slices = self.project_slices(&run.id, run.cursor_seq, None).await?;
+        let db = self.db.clone();
+        db.run(move |conn| {
+            for slice in &slices {
+                cache_slice(conn, slice)?;
+            }
+            Ok(())
+        })
+        .await?;
+        self.get(optimizer_run_id).await
+    }
+
+    pub async fn events_after(
+        &self,
+        optimizer_run_id: String,
+        after_seq: u64,
+        limit: Option<i64>,
+    ) -> Result<Vec<OptimizerEventEnvelope>> {
+        let db = self.db.clone();
+        let limit = limit.unwrap_or(500).clamp(1, 2000);
+        db.run(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT payload_json FROM optimizer_events
+                 WHERE optimizer_run_id = ?1 AND sequence_number > ?2
+                 ORDER BY sequence_number ASC LIMIT ?3",
+            )?;
+            let rows = stmt
+                .query_map(params![optimizer_run_id, after_seq as i64, limit], |row| {
+                    row.get::<_, String>(0)
+                })?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(serde_json::from_str(&row?)?);
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    pub async fn append_events(
+        &self,
+        optimizer_run_id: String,
+        events: Vec<OptimizerEventEnvelope>,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            let mut run = load_run(conn, &optimizer_run_id)?;
+            for event in events {
+                if event.optimizer_run_id != run.id {
+                    bail!("event optimizer_run_id mismatch");
+                }
+                if event.sequence_number <= run.cursor_seq {
+                    continue;
+                }
+                insert_event(conn, &event)?;
+                apply_event_to_run(&mut run, &event);
+                run.cursor_seq = event.sequence_number;
+                upsert_cursor(conn, &run.id, run.cursor_seq, &event.occurred_at)?;
+            }
+            upsert_run(conn, &run)?;
+            let projected = project_from_events(
+                &run,
+                &load_events_upto(conn, &run.id, run.cursor_seq)?,
+                None,
+            )?;
+            for slice in projected {
+                cache_slice(conn, &slice)?;
+            }
+            let event = append_event(
+                conn,
+                EventAppend {
+                    event_id: None,
+                    session_id: run.session_ref.clone(),
+                    run_id: None,
+                    source: EventSource::System,
+                    kind: "optimizer.run.updated".into(),
+                    payload: json!({
+                        "optimizerRunId": run.id,
+                        "status": run.status,
+                        "cursorSeq": run.cursor_seq
+                    }),
+                    remote_sequence: None,
+                    command_id: None,
+                    created_at: None,
+                },
+            )?;
+            Ok((run, Some(event)))
+        })
+        .await
+    }
+
+    pub async fn get_state(
+        &self,
+        optimizer_run_id: String,
+        slice_id: String,
+        at_seq: Option<u64>,
+    ) -> Result<OptimizerStateSlice> {
+        let run = self.get(optimizer_run_id.clone()).await?;
+        let cursor = at_seq.unwrap_or(run.cursor_seq);
+        if at_seq.is_none() {
+            let db = self.db.clone();
+            let sid = slice_id.clone();
+            let rid = optimizer_run_id.clone();
+            if let Some(cached) = db
+                .run(move |conn| load_cached_slice(conn, &rid, &sid))
+                .await?
+            {
+                if cached.cursor_seq == cursor {
+                    return Ok(cached);
+                }
+            }
+        }
+        let slices = self
+            .project_slices(&optimizer_run_id, cursor, Some(slice_id.as_str()))
+            .await?;
+        slices
+            .into_iter()
+            .find(|slice| slice.slice_id == slice_id)
+            .ok_or_else(|| anyhow!("state slice not found: {slice_id}"))
+    }
+
+    pub async fn get_state_batch(
+        &self,
+        optimizer_run_id: String,
+        slice_ids: Option<Vec<String>>,
+        at_seq: Option<u64>,
+    ) -> Result<Vec<OptimizerStateSlice>> {
+        let run = self.get(optimizer_run_id.clone()).await?;
+        let cursor = at_seq.unwrap_or(run.cursor_seq);
+        let mut slices = self.project_slices(&optimizer_run_id, cursor, None).await?;
+        if let Some(ids) = slice_ids {
+            slices.retain(|slice| ids.iter().any(|id| id == &slice.slice_id));
+        }
+        Ok(slices)
+    }
+
+    pub async fn relationships(
+        &self,
+        optimizer_run_id: String,
+    ) -> Result<Vec<OptimizerRelationship>> {
+        let db = self.db.clone();
+        db.run(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT from_kind, from_id, edge, to_kind, to_id, metadata_json
+                 FROM optimizer_relationships
+                 WHERE from_id = ?1 OR to_id = ?1
+                 ORDER BY created_at ASC",
+            )?;
+            let rows = stmt.query_map(params![optimizer_run_id], |row| {
+                Ok(OptimizerRelationship {
+                    from_kind: row.get(0)?,
+                    from_id: row.get(1)?,
+                    edge: row.get(2)?,
+                    to_kind: row.get(3)?,
+                    to_id: row.get(4)?,
+                    metadata: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or(json!({})),
+                })
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    pub async fn cancel(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        if let Some(cancel) = self.local_recipes.lock().await.get(&id).cloned() {
+            cancel
+                .send(true)
+                .map_err(|_| anyhow!("local optimizer recipe is no longer running"))?;
+            return self.command(id, "cancel", "cancelled").await;
+        }
+        if let Ok(run) = self.get(id.clone()).await {
+            if run.source == "cloud" {
+                if let Ok(client) = super::cloud::CloudOptimizerClient::from_config() {
+                    let _ = client.cancel_run(&id).await;
+                }
+                return self
+                    .reconcile_cloud(super::models::OptimizerReconcileRequest {
+                        optimizer_run_id: id,
+                        after_seq: None,
+                        open_visual: Some(false),
+                    })
+                    .await;
+            }
+        }
+        self.command(id, "cancel", "cancelled").await
+    }
+
+    pub async fn pause(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        self.command(id, "pause", "paused").await
+    }
+
+    pub async fn resume(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        self.command(id, "resume", "running").await
+    }
+
+    pub async fn open_visual(
+        &self,
+        optimizer_run_id: String,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        let mut run = self.get(optimizer_run_id.clone()).await?;
+        let title = format!(
+            "{} · {}",
+            algorithm_label(&run.algorithm_id),
+            run.objective.clone().unwrap_or_else(|| run.id.clone())
+        );
+        let bindings = json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "slots": [{
+                "slot": "optimizer_run",
+                "kind": "optimizer_run",
+                "source": run.id,
+                "schema": OPTIMIZER_RUN_SCHEMA_VERSION
+            }]
+        });
+        let existing = run
+            .visual_refs
+            .iter()
+            .find(|r| r.kind == "visual")
+            .map(|r| r.id.clone());
+        let visual = if let Some(visual_id) = existing {
+            self.visuals.get(visual_id).await?
+        } else {
+            let (created, _) = self
+                .visuals
+                .create(VisualCreateRequest {
+                    template_id: "optimizer.run.v1".into(),
+                    title: Some(title),
+                    bindings: Some(bindings),
+                    id: None,
+                    status: None,
+                    renderer_kind: None,
+                    session_id: run.session_ref.clone(),
+                    message_id: None,
+                    run_id: None,
+                    trace_id: None,
+                    parent_visual_id: None,
+                    source_agent_id: None,
+                    source_model: None,
+                    content: None,
+                    metadata: Some(json!({
+                        "optimizerRunId": run.id,
+                        "algorithmId": run.algorithm_id
+                    })),
+                })
+                .await?;
+            run.visual_refs.push(OptimizerResourceRef {
+                kind: "visual".into(),
+                id: created.id.clone(),
+                digest: None,
+                role: Some("primary".into()),
+                title: Some(created.title.clone()),
+                metadata: json!({ "templateId": "optimizer.run.v1" }),
+            });
+            let visual_id = created.id.clone();
+            let db = self.db.clone();
+            let persisted = run.clone();
+            db.run_transaction(move |conn| {
+                upsert_run(conn, &persisted)?;
+                insert_relationship(
+                    conn,
+                    &OptimizerRelationship {
+                        from_kind: "optimizer".into(),
+                        from_id: persisted.id.clone(),
+                        edge: "visualized_by".into(),
+                        to_kind: "visual".into(),
+                        to_id: visual_id,
+                        metadata: json!({}),
+                    },
+                )?;
+                Ok(())
+            })
+            .await?;
+            created
+        };
+        let (shown, show_event) = self
+            .visuals
+            .show(visual.id.clone(), run.session_ref.clone())
+            .await?;
+        let event = serde_json::from_value::<AppEvent>(show_event)
+            .ok()
+            .or(Some(AppEvent {
+                schema_version: crate::storage::APP_EVENT_SCHEMA_VERSION.into(),
+                sequence: 0,
+                event_id: Uuid::new_v4().to_string(),
+                session_id: run.session_ref.clone(),
+                session_sequence: None,
+                run_id: None,
+                source: EventSource::System,
+                kind: "optimizer.visual.opened".into(),
+                payload: json!({
+                    "optimizerRunId": run.id,
+                    "visualId": shown.id,
+                    "templateId": shown.template_id
+                }),
+                remote_sequence: None,
+                command_id: None,
+                created_at: Utc::now().to_rfc3339(),
+            }));
+        Ok((self.get(run.id).await?, event))
+    }
+
+    pub async fn seed_fixture(
+        &self,
+        fixture: &str,
+        session_ref: Option<String>,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        let (run, events) = match fixture {
+            "gepa" | "gepa_events" => gepa_fixture(session_ref),
+            "go-ex" | "goex" | "goex_events" => goex_fixture(session_ref),
+            "sft" | "sft_events" => sft_fixture(session_ref),
+            other => bail!("unknown optimizer fixture: {other}"),
+        };
+        let db = self.db.clone();
+        let seed = run.clone();
+        db.run_transaction(move |conn| {
+            upsert_run(conn, &seed)?;
+            upsert_cursor(conn, &seed.id, 0, &seed.created_at)?;
+            Ok(())
+        })
+        .await?;
+        let (run, event) = self.append_events(run.id.clone(), events).await?;
+        let (run, visual_event) = self.open_visual(run.id).await?;
+        Ok((run, event.or(visual_event)))
+    }
+
+    /// Import a local OSS GEPA event feed or optimizers-beta/GELO workspace.
+    pub async fn import_local(
+        &self,
+        request: super::models::OptimizerImportLocalRequest,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        let imported = super::local::import_local_path(&request.path)?;
+        let algorithm_id = super::normalize::normalize_algorithm_id(&imported.algorithm_id);
+        let events =
+            super::normalize::normalize_events(&imported.events, &imported.run_id, &algorithm_id);
+        if events.is_empty() {
+            bail!("no normalizable events found at {}", request.path);
+        }
+        let now = Utc::now().to_rfc3339();
+        let run = OptimizerRunRecord {
+            schema_version: OPTIMIZER_RUN_SCHEMA_VERSION.into(),
+            id: imported.run_id.clone(),
+            algorithm_id: algorithm_id.clone(),
+            algorithm_version: None,
+            status: "running".into(),
+            source: "local".into(),
+            objective: imported.objective.clone(),
+            project_ref: None,
+            session_ref: request.session_ref.clone(),
+            created_at: now.clone(),
+            started_at: Some(now.clone()),
+            finished_at: None,
+            cursor_seq: 0,
+            capabilities: OptimizerCapabilities::for_algorithm(&algorithm_id),
+            execution_bindings: vec![],
+            input_refs: vec![OptimizerResourceRef {
+                kind: "local_path".into(),
+                id: imported.source_path.display().to_string(),
+                digest: None,
+                role: Some("event_feed".into()),
+                title: Some("Local optimizer workspace".into()),
+                metadata: json!({}),
+            }],
+            output_refs: vec![],
+            visual_refs: vec![],
+            summary: json!({ "importedFrom": imported.source_path.display().to_string() }),
+            usage: OptimizerUsageSummary::default(),
+            error: None,
+        };
+        let db = self.db.clone();
+        let seed = run.clone();
+        db.run_transaction(move |conn| {
+            upsert_run(conn, &seed)?;
+            upsert_cursor(conn, &seed.id, 0, &seed.created_at)?;
+            if let Some(session_ref) = seed.session_ref.as_deref() {
+                insert_relationship(
+                    conn,
+                    &OptimizerRelationship {
+                        from_kind: "optimizer".into(),
+                        from_id: seed.id.clone(),
+                        edge: "started_from".into(),
+                        to_kind: "session".into(),
+                        to_id: session_ref.into(),
+                        metadata: json!({}),
+                    },
+                )?;
+            }
+            Ok(())
+        })
+        .await?;
+        let (run, event) = self.append_events(run.id.clone(), events).await?;
+        if request.open_visual.unwrap_or(true) {
+            let (run, visual_event) = self.open_visual(run.id).await?;
+            return Ok((run, event.or(visual_event)));
+        }
+        Ok((run, event))
+    }
+
+    /// Mirror + backfill a hosted Synth Cloud run (GEPA or optimizers-beta GELO).
+    pub async fn reconcile_cloud(
+        &self,
+        request: super::models::OptimizerReconcileRequest,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        let client = super::cloud::CloudOptimizerClient::from_config()?;
+        let remote = client.get_run(&request.optimizer_run_id).await?;
+        let (id, algorithm_id, status, remote_cursor, objective) =
+            super::normalize::cloud_run_to_mirror(&remote)
+                .ok_or_else(|| anyhow!("invalid cloud optimizer run payload"))?;
+        let existing = self.get(id.clone()).await.ok();
+        let now = Utc::now().to_rfc3339();
+        let mut run = existing.unwrap_or_else(|| OptimizerRunRecord {
+            schema_version: OPTIMIZER_RUN_SCHEMA_VERSION.into(),
+            id: id.clone(),
+            algorithm_id: algorithm_id.clone(),
+            algorithm_version: None,
+            status: status.clone(),
+            source: "cloud".into(),
+            objective: objective
+                .clone()
+                .or_else(|| Some(format!("cloud {algorithm_id}"))),
+            project_ref: remote
+                .get("project_id")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            session_ref: None,
+            created_at: remote
+                .get("created_at")
+                .or_else(|| remote.get("submitted_at"))
+                .and_then(Value::as_str)
+                .unwrap_or(&now)
+                .to_string(),
+            started_at: remote
+                .get("created_at")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            finished_at: remote
+                .get("terminal_at")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            cursor_seq: 0,
+            capabilities: OptimizerCapabilities::for_algorithm(&algorithm_id),
+            execution_bindings: vec![],
+            input_refs: vec![],
+            output_refs: vec![],
+            visual_refs: vec![],
+            summary: json!({ "cloud": true }),
+            usage: OptimizerUsageSummary::default(),
+            error: remote.get("error").cloned(),
+        });
+        run.status = status;
+        run.algorithm_id = algorithm_id.clone();
+        run.source = "cloud".into();
+        if let Some(objective) = objective {
+            run.objective = Some(objective);
+        }
+        let after_seq = request.after_seq.unwrap_or(run.cursor_seq);
+        let db = self.db.clone();
+        let seed = run.clone();
+        db.run_transaction(move |conn| {
+            upsert_run(conn, &seed)?;
+            upsert_cursor(conn, &seed.id, seed.cursor_seq, &Utc::now().to_rfc3339())?;
+            Ok(())
+        })
+        .await?;
+
+        let raw_events = client
+            .events_after(&id, after_seq, Some(2000))
+            .await
+            .unwrap_or_default();
+        let events = super::normalize::normalize_events(&raw_events, &id, &algorithm_id);
+        let (mut run, event) = if events.is_empty() {
+            run.cursor_seq = run.cursor_seq.max(remote_cursor);
+            let db = self.db.clone();
+            let persisted = run.clone();
+            db.run(move |conn| upsert_run(conn, &persisted)).await?;
+            (run, None)
+        } else {
+            self.append_events(id.clone(), events).await?
+        };
+        if request.open_visual.unwrap_or(false) || run.visual_refs.is_empty() {
+            let opened = self.open_visual(run.id.clone()).await?;
+            run = opened.0;
+            return Ok((run, event.or(opened.1)));
+        }
+        Ok((run, event))
+    }
+
+    pub async fn list_cloud(
+        &self,
+        algorithm: Option<String>,
+        status: Option<String>,
+        limit: Option<i64>,
+    ) -> Result<Vec<Value>> {
+        let client = super::cloud::CloudOptimizerClient::from_config()?;
+        client
+            .list_runs(algorithm.as_deref(), status.as_deref(), limit)
+            .await
+    }
+
+    async fn create_cloud(
+        &self,
+        request: OptimizerCreateRequest,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        let algorithm_id = super::normalize::normalize_algorithm_id(&request.algorithm_id);
+        let config = request
+            .cloud_config
+            .clone()
+            .ok_or_else(|| anyhow!("cloud create requires cloudConfig"))?;
+        let client = super::cloud::CloudOptimizerClient::from_config()?;
+        let submitted = client
+            .create_run(
+                &algorithm_id,
+                config,
+                request.project_ref.as_deref(),
+                request.id.as_deref(),
+            )
+            .await?;
+        let run_id = submitted
+            .get("run_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("cloud create response missing run_id"))?
+            .to_string();
+        self.reconcile_cloud(super::models::OptimizerReconcileRequest {
+            optimizer_run_id: run_id,
+            after_seq: Some(0),
+            open_visual: request.open_visual.or(Some(true)),
+        })
+        .await
+    }
+
+    async fn command(
+        &self,
+        optimizer_run_id: String,
+        command: &str,
+        next_status: &str,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        let command = command.to_string();
+        let next_status = next_status.to_string();
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            let mut run = load_run(conn, &optimizer_run_id)?;
+            match command.as_str() {
+                "cancel" if !run.capabilities.cancel => {
+                    bail!("cancel is not available for this run")
+                }
+                "pause" if !run.capabilities.pause => bail!("pause is not available for this run"),
+                "resume" if !run.capabilities.resume => {
+                    bail!("resume is not available for this run")
+                }
+                _ => {}
+            }
+            run.status = next_status;
+            if command == "resume" && run.started_at.is_none() {
+                run.started_at = Some(Utc::now().to_rfc3339());
+            }
+            if command == "cancel" {
+                run.finished_at = Some(Utc::now().to_rfc3339());
+            }
+            upsert_run(conn, &run)?;
+            let event = append_event(
+                conn,
+                EventAppend {
+                    event_id: None,
+                    session_id: run.session_ref.clone(),
+                    run_id: None,
+                    source: EventSource::System,
+                    kind: format!("optimizer.run.{command}"),
+                    payload: json!({ "optimizerRunId": run.id, "status": run.status }),
+                    remote_sequence: None,
+                    command_id: None,
+                    created_at: None,
+                },
+            )?;
+            Ok((run, Some(event)))
+        })
+        .await
+    }
+
+    async fn project_slices(
+        &self,
+        optimizer_run_id: &str,
+        at_seq: u64,
+        only: Option<&str>,
+    ) -> Result<Vec<OptimizerStateSlice>> {
+        let run_id = optimizer_run_id.to_string();
+        let only = only.map(str::to_string);
+        let db = self.db.clone();
+        db.run(move |conn| {
+            let run = load_run(conn, &run_id)?;
+            let events = load_events_upto(conn, &run_id, at_seq)?;
+            let mut slices = project_from_events(&run, &events, None)?;
+            if let Some(only) = only {
+                slices.retain(|slice| slice.slice_id == only);
+            }
+            Ok(slices)
+        })
+        .await
+    }
+}
+
+fn algorithm_label(algorithm_id: &str) -> &'static str {
+    match algorithm_id {
+        "gepa" => "GEPA",
+        "go-ex" => "GELO",
+        "sft" => "SFT",
+        _ => "Optimizer",
+    }
+}
+
+fn list_runs(conn: &Connection, query: &OptimizerQuery) -> Result<Vec<OptimizerRunRecord>> {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let offset = query.offset.unwrap_or(0).max(0);
+    let mut sql = String::from("SELECT payload_json FROM optimizer_runs WHERE 1=1");
+    let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    if let Some(status) = query.status.as_deref() {
+        sql.push_str(" AND status = ?");
+        binds.push(Box::new(status.to_string()));
+    }
+    if let Some(algorithm_id) = query.algorithm_id.as_deref() {
+        sql.push_str(" AND algorithm_id = ?");
+        binds.push(Box::new(algorithm_id.to_string()));
+    }
+    if let Some(source) = query.source.as_deref() {
+        sql.push_str(" AND source = ?");
+        binds.push(Box::new(source.to_string()));
+    }
+    if let Some(session_ref) = query.session_ref.as_deref() {
+        sql.push_str(" AND session_ref = ?");
+        binds.push(Box::new(session_ref.to_string()));
+    }
+    if let Some(search) = query.search.as_deref() {
+        sql.push_str(" AND (id LIKE ? OR objective LIKE ? OR algorithm_id LIKE ?)");
+        let pattern = format!("%{search}%");
+        binds.push(Box::new(pattern.clone()));
+        binds.push(Box::new(pattern.clone()));
+        binds.push(Box::new(pattern));
+    }
+    sql.push_str(" ORDER BY updated_at DESC LIMIT ? OFFSET ?");
+    binds.push(Box::new(limit));
+    binds.push(Box::new(offset));
+    let mut stmt = conn.prepare(&sql)?;
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt.query_map(params_refs.as_slice(), |row| row.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(serde_json::from_str(&row?).context("decode optimizer run")?);
+    }
+    Ok(out)
+}
+
+fn load_run(conn: &Connection, optimizer_run_id: &str) -> Result<OptimizerRunRecord> {
+    let payload: String = conn
+        .query_row(
+            "SELECT payload_json FROM optimizer_runs WHERE id = ?1",
+            params![optimizer_run_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("optimizer run not found"))?;
+    Ok(serde_json::from_str(&payload)?)
+}
+
+fn upsert_run(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
+    let payload = serde_json::to_string(run)?;
+    conn.execute(
+        "INSERT INTO optimizer_runs(
+            id, algorithm_id, algorithm_version, status, source, objective,
+            project_ref, session_ref, created_at, started_at, finished_at,
+            cursor_seq, capabilities_json, bindings_json, input_refs_json,
+            output_refs_json, visual_refs_json, summary_json, usage_json,
+            error_json, payload_json, updated_at
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
+         ON CONFLICT(id) DO UPDATE SET
+            algorithm_id=excluded.algorithm_id,
+            algorithm_version=excluded.algorithm_version,
+            status=excluded.status,
+            source=excluded.source,
+            objective=excluded.objective,
+            project_ref=excluded.project_ref,
+            session_ref=excluded.session_ref,
+            started_at=excluded.started_at,
+            finished_at=excluded.finished_at,
+            cursor_seq=excluded.cursor_seq,
+            capabilities_json=excluded.capabilities_json,
+            bindings_json=excluded.bindings_json,
+            input_refs_json=excluded.input_refs_json,
+            output_refs_json=excluded.output_refs_json,
+            visual_refs_json=excluded.visual_refs_json,
+            summary_json=excluded.summary_json,
+            usage_json=excluded.usage_json,
+            error_json=excluded.error_json,
+            payload_json=excluded.payload_json,
+            updated_at=excluded.updated_at",
+        params![
+            run.id,
+            run.algorithm_id,
+            run.algorithm_version,
+            run.status,
+            run.source,
+            run.objective,
+            run.project_ref,
+            run.session_ref,
+            run.created_at,
+            run.started_at,
+            run.finished_at,
+            run.cursor_seq as i64,
+            serde_json::to_string(&run.capabilities)?,
+            serde_json::to_string(&run.execution_bindings)?,
+            serde_json::to_string(&run.input_refs)?,
+            serde_json::to_string(&run.output_refs)?,
+            serde_json::to_string(&run.visual_refs)?,
+            serde_json::to_string(&run.summary)?,
+            serde_json::to_string(&run.usage)?,
+            run.error.as_ref().map(serde_json::to_string).transpose()?,
+            payload,
+            Utc::now().to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_cursor(conn: &Connection, run_id: &str, cursor_seq: u64, updated_at: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO optimizer_event_cursors(optimizer_run_id, cursor_seq, updated_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(optimizer_run_id) DO UPDATE SET
+            cursor_seq=excluded.cursor_seq,
+            updated_at=excluded.updated_at",
+        params![run_id, cursor_seq as i64, updated_at],
+    )?;
+    Ok(())
+}
+
+fn insert_event(conn: &Connection, event: &OptimizerEventEnvelope) -> Result<()> {
+    let payload = serde_json::to_string(event)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO optimizer_events(
+            event_id, optimizer_run_id, sequence_number, event_type,
+            algorithm_id, occurred_at, payload_json
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        params![
+            event
+                .event_id
+                .clone()
+                .unwrap_or_else(|| format!("{}:{}", event.optimizer_run_id, event.sequence_number)),
+            event.optimizer_run_id,
+            event.sequence_number as i64,
+            event.event_type,
+            event.algorithm_id,
+            event.occurred_at,
+            payload
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_relationship(conn: &Connection, rel: &OptimizerRelationship) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO optimizer_relationships(
+            from_kind, from_id, edge, to_kind, to_id, metadata_json, created_at
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        params![
+            rel.from_kind,
+            rel.from_id,
+            rel.edge,
+            rel.to_kind,
+            rel.to_id,
+            serde_json::to_string(&rel.metadata)?,
+            Utc::now().to_rfc3339()
+        ],
+    )?;
+    Ok(())
+}
+
+fn cache_slice(conn: &Connection, slice: &OptimizerStateSlice) -> Result<()> {
+    conn.execute(
+        "INSERT INTO optimizer_cached_slices(
+            optimizer_run_id, slice_id, cursor_seq, updated_at, payload_json
+         ) VALUES (?1,?2,?3,?4,?5)
+         ON CONFLICT(optimizer_run_id, slice_id) DO UPDATE SET
+            cursor_seq=excluded.cursor_seq,
+            updated_at=excluded.updated_at,
+            payload_json=excluded.payload_json",
+        params![
+            slice.run_id,
+            slice.slice_id,
+            slice.cursor_seq as i64,
+            slice.updated_at,
+            serde_json::to_string(slice)?
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_cached_slice(
+    conn: &Connection,
+    run_id: &str,
+    slice_id: &str,
+) -> Result<Option<OptimizerStateSlice>> {
+    let payload: Option<String> = conn
+        .query_row(
+            "SELECT payload_json FROM optimizer_cached_slices
+             WHERE optimizer_run_id = ?1 AND slice_id = ?2",
+            params![run_id, slice_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(payload.map(|raw| serde_json::from_str(&raw)).transpose()?)
+}
+
+fn load_events_upto(
+    conn: &Connection,
+    run_id: &str,
+    at_seq: u64,
+) -> Result<Vec<OptimizerEventEnvelope>> {
+    let mut stmt = conn.prepare(
+        "SELECT payload_json FROM optimizer_events
+         WHERE optimizer_run_id = ?1 AND sequence_number <= ?2
+         ORDER BY sequence_number ASC",
+    )?;
+    let rows = stmt.query_map(params![run_id, at_seq as i64], |row| {
+        row.get::<_, String>(0)
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(serde_json::from_str(&row?)?);
+    }
+    Ok(out)
+}
+
+fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelope) {
+    if let Some(status) = event
+        .snapshot
+        .as_ref()
+        .and_then(|s| s.get("status"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            event
+                .delta
+                .get("status")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+    {
+        run.status = status;
+    }
+    if event.event_type.ends_with(".started") || event.event_type.ends_with(".created") {
+        if run.started_at.is_none() {
+            run.started_at = Some(event.occurred_at.clone());
+        }
+        if run.status == "queued" {
+            run.status = "running".into();
+        }
+    }
+    if event.event_type.ends_with(".completed")
+        || event.event_type.ends_with(".failed")
+        || event.event_type.ends_with(".finished")
+    {
+        run.finished_at = Some(event.occurred_at.clone());
+        if event.event_type.contains("fail") {
+            run.status = "failed".into();
+        } else if run.status != "cancelled" {
+            run.status = "completed".into();
+        }
+    }
+    if let Some(usage) = &event.usage_delta {
+        if let Some(v) = usage.get("cost_usd").and_then(Value::as_f64) {
+            run.usage.cost_usd += v;
+        }
+        if let Some(v) = usage.get("prompt_tokens").and_then(Value::as_u64) {
+            run.usage.prompt_tokens += v;
+        }
+        if let Some(v) = usage.get("completion_tokens").and_then(Value::as_u64) {
+            run.usage.completion_tokens += v;
+        }
+        if let Some(v) = usage.get("rollouts").and_then(Value::as_u64) {
+            run.usage.rollouts += v;
+        }
+        if let Some(v) = usage.get("wall_time_ms").and_then(Value::as_u64) {
+            run.usage.wall_time_ms += v;
+        }
+    }
+    if let Some(snapshot) = &event.snapshot {
+        if let Some(summary) = snapshot.get("summary") {
+            run.summary = summary.clone();
+        }
+        if let Some(best) = snapshot
+            .get("best_score")
+            .or_else(|| snapshot.get("bestScore"))
+        {
+            if let Some(obj) = run.summary.as_object_mut() {
+                obj.insert("bestScore".into(), best.clone());
+            } else {
+                run.summary = json!({ "bestScore": best });
+            }
+        }
+    }
+    if let Some(error) = &event.error {
+        run.error = Some(error.clone());
+    }
+}
+
+fn project_from_events(
+    run: &OptimizerRunRecord,
+    events: &[OptimizerEventEnvelope],
+    _only: Option<&str>,
+) -> Result<Vec<OptimizerStateSlice>> {
+    let cursor = events.last().map(|e| e.sequence_number).unwrap_or(0);
+    let updated_at = events
+        .last()
+        .map(|e| e.occurred_at.clone())
+        .unwrap_or_else(|| run.created_at.clone());
+
+    let mut timeline = Vec::new();
+    let mut candidates: BTreeMap<String, Value> = BTreeMap::new();
+    let mut frontier = Vec::new();
+    let mut reflections = Vec::new();
+    let mut artifacts = Vec::new();
+    let mut logs = Vec::new();
+    let mut themes = Vec::new();
+    let mut board = json!({ "phase": "idle", "tick": 0 });
+    let mut checkpoints = Vec::new();
+    let mut curves = json!({ "steps": [], "epochs": [], "trainLoss": [], "validationLoss": [], "learningRate": [] });
+    let mut dataset = json!({ "splits": {} });
+    let mut compute = json!({ "provider": null });
+    let mut examples = Vec::new();
+    let mut checkpoint_evals = Vec::new();
+    let mut usage = OptimizerUsageSummary::default();
+
+    for event in events {
+        timeline.push(json!({
+            "sequence": event.sequence_number,
+            "type": event.event_type,
+            "occurredAt": event.occurred_at,
+            "level": event.level,
+            "itemId": event.item.as_ref().and_then(|i| i.get("id")).cloned()
+        }));
+        logs.push(json!({
+            "sequence": event.sequence_number,
+            "type": event.event_type,
+            "occurredAt": event.occurred_at,
+            "message": event.delta.get("message").cloned().unwrap_or(Value::Null),
+            "raw": event.raw
+        }));
+        for artifact in &event.artifact_refs {
+            artifacts.push(artifact.clone());
+        }
+        if let Some(usage_delta) = &event.usage_delta {
+            if let Some(v) = usage_delta.get("cost_usd").and_then(Value::as_f64) {
+                usage.cost_usd += v;
+            }
+            if let Some(v) = usage_delta.get("prompt_tokens").and_then(Value::as_u64) {
+                usage.prompt_tokens += v;
+            }
+            if let Some(v) = usage_delta.get("completion_tokens").and_then(Value::as_u64) {
+                usage.completion_tokens += v;
+            }
+            if let Some(v) = usage_delta.get("rollouts").and_then(Value::as_u64) {
+                usage.rollouts += v;
+            }
+            if let Some(v) = usage_delta.get("wall_time_ms").and_then(Value::as_u64) {
+                usage.wall_time_ms += v;
+            }
+        }
+        match event.event_type.as_str() {
+            "candidate.accepted"
+            | "candidate.rejected"
+            | "candidate.evaluated"
+            | "candidate.full_train_evaluated"
+            | "gepa.candidate.updated" => {
+                if let Some(item) = &event.item {
+                    if let Some(id) = item.get("id").and_then(Value::as_str) {
+                        let mut entry = item.clone();
+                        if let Some(obj) = entry.as_object_mut() {
+                            obj.insert("sequence".into(), json!(event.sequence_number));
+                            for (k, v) in &event.delta {
+                                obj.insert(k.clone(), v.clone());
+                            }
+                            if let Some(snapshot) = &event.snapshot {
+                                for (k, v) in snapshot {
+                                    obj.insert(k.clone(), v.clone());
+                                }
+                            }
+                        }
+                        candidates.insert(id.to_string(), entry);
+                    }
+                }
+            }
+            "frontier.updated" | "frontier.snapshot" | "gepa.frontier.updated" => {
+                if let Some(cells) = event
+                    .snapshot
+                    .as_ref()
+                    .and_then(|s| s.get("cells"))
+                    .or_else(|| event.delta.get("cells"))
+                {
+                    if let Some(arr) = cells.as_array() {
+                        frontier = arr.clone();
+                    }
+                }
+            }
+            "gepa.reflection" | "proposer.completed" => {
+                reflections.push(json!({
+                    "sequence": event.sequence_number,
+                    "occurredAt": event.occurred_at,
+                    "delta": event.delta,
+                    "snapshot": event.snapshot
+                }));
+            }
+            "go-ex.board.updated" | "goex.board.updated" => {
+                board = event
+                    .snapshot
+                    .as_ref()
+                    .map(|s| Value::Object(s.clone()))
+                    .unwrap_or_else(|| Value::Object(event.delta.clone()));
+            }
+            "go-ex.theme.updated" | "goex.theme.updated" => {
+                themes.push(json!({
+                    "sequence": event.sequence_number,
+                    "delta": event.delta,
+                    "snapshot": event.snapshot
+                }));
+            }
+            "sft.checkpoint.created" => {
+                if let Some(item) = &event.item {
+                    checkpoints.push(item.clone());
+                }
+            }
+            "sft.checkpoint.promoted" => {
+                if let Some(item) = &event.item {
+                    let id = item.get("id").and_then(Value::as_str).unwrap_or("");
+                    let mut found = false;
+                    for checkpoint in checkpoints.iter_mut() {
+                        if checkpoint.get("id").and_then(Value::as_str) == Some(id) {
+                            if let Some(obj) = checkpoint.as_object_mut() {
+                                obj.insert("status".into(), json!("promoted"));
+                                if let Some(raw) = obj.get_mut("raw").and_then(Value::as_object_mut)
+                                {
+                                    raw.insert("promoted".into(), json!(true));
+                                }
+                            }
+                            found = true;
+                        }
+                    }
+                    if !found {
+                        checkpoints.push(item.clone());
+                    }
+                }
+            }
+            "sft.step.metrics" => {
+                if let Some(obj) = curves.as_object_mut() {
+                    push_curve(obj, "steps", event.delta.get("step"));
+                    push_curve(obj, "epochs", event.delta.get("epoch"));
+                    push_curve(obj, "trainLoss", event.delta.get("train_loss"));
+                    push_curve(obj, "validationLoss", event.delta.get("validation_loss"));
+                    push_curve(obj, "learningRate", event.delta.get("learning_rate"));
+                }
+            }
+            "sft.dataset.validated" => {
+                dataset = event
+                    .snapshot
+                    .as_ref()
+                    .map(|s| Value::Object(s.clone()))
+                    .unwrap_or_else(|| Value::Object(event.delta.clone()));
+            }
+            "sft.compute.updated" => {
+                compute = event
+                    .snapshot
+                    .as_ref()
+                    .map(|s| Value::Object(s.clone()))
+                    .unwrap_or_else(|| Value::Object(event.delta.clone()));
+            }
+            "sft.checkpoint_eval.completed" | "sft.heldout_eval.completed" => {
+                checkpoint_evals.push(json!({
+                    "sequence": event.sequence_number,
+                    "delta": event.delta,
+                    "snapshot": event.snapshot,
+                    "item": event.item,
+                    "role": event.delta.get("role").cloned().unwrap_or(json!("selection")),
+                    "measurementOnly": event.delta.get("measurementOnly").cloned().unwrap_or(json!(false))
+                }));
+            }
+            "sft.examples.updated" => {
+                if let Some(rows) = event
+                    .snapshot
+                    .as_ref()
+                    .and_then(|s| s.get("examples"))
+                    .and_then(Value::as_array)
+                {
+                    examples = rows.clone();
+                }
+            }
+            "sft.model.materialized" => {
+                if let Some(item) = &event.item {
+                    artifacts.push(item.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut projected_run = run.clone();
+    projected_run.usage = OptimizerUsageSummary::default();
+    projected_run.finished_at = None;
+    for event in events {
+        apply_event_to_run(&mut projected_run, event);
+    }
+    projected_run.cursor_seq = cursor;
+    projected_run.usage = usage.clone();
+
+    let mk = |slice_id: &str, projection: &str, data: Value| OptimizerStateSlice {
+        schema_version: OPTIMIZER_STATE_SLICE_SCHEMA_VERSION.into(),
+        projection_schema_version: projection.into(),
+        run_id: run.id.clone(),
+        algorithm_id: run.algorithm_id.clone(),
+        slice_id: slice_id.into(),
+        cursor_seq: cursor,
+        updated_at: updated_at.clone(),
+        data,
+    };
+
+    let mut slices = vec![
+        mk(
+            "run.summary",
+            "run.summary.v1",
+            json!({
+                "id": projected_run.id,
+                "algorithmId": projected_run.algorithm_id,
+                "status": projected_run.status,
+                "objective": projected_run.objective,
+                "source": projected_run.source,
+                "capabilities": projected_run.capabilities,
+                "summary": projected_run.summary,
+                "startedAt": projected_run.started_at,
+                "finishedAt": projected_run.finished_at,
+                "cursorSeq": projected_run.cursor_seq
+            }),
+        ),
+        mk(
+            "run.timeline",
+            "run.timeline.v1",
+            json!({ "events": timeline }),
+        ),
+        mk("run.usage", "run.usage.v1", serde_json::to_value(&usage)?),
+        mk("run.logs", "run.logs.v1", json!({ "entries": logs })),
+        mk(
+            "run.artifacts",
+            "run.artifacts.v1",
+            json!({ "artifacts": artifacts }),
+        ),
+        mk(
+            "run.execution",
+            "run.execution.v1",
+            json!({ "bindings": projected_run.execution_bindings }),
+        ),
+    ];
+
+    match run.algorithm_id.as_str() {
+        "gepa" => {
+            slices.push(mk(
+                "gepa.candidates",
+                "gepa.candidates.v1",
+                json!({ "candidates": candidates.values().cloned().collect::<Vec<_>>() }),
+            ));
+            slices.push(mk(
+                "gepa.frontier",
+                "gepa.frontier.v1",
+                json!({ "cells": frontier }),
+            ));
+            slices.push(mk(
+                "gepa.reflections",
+                "gepa.reflections.v1",
+                json!({ "entries": reflections }),
+            ));
+        }
+        "go-ex" => {
+            slices.push(mk("go-ex.board", "go-ex.board.v1", board));
+            slices.push(mk(
+                "go-ex.themes",
+                "go-ex.themes.v1",
+                json!({ "themes": themes }),
+            ));
+            slices.push(mk(
+                "go-ex.data_engine",
+                "go-ex.data_engine.v1",
+                json!({ "queue": [] }),
+            ));
+        }
+        "sft" => {
+            slices.push(mk("sft.training_curves", "sft.training_curves.v1", curves));
+            slices.push(mk(
+                "sft.checkpoints",
+                "sft.checkpoints.v1",
+                json!({ "checkpoints": checkpoints }),
+            ));
+            slices.push(mk(
+                "sft.checkpoint_evaluations",
+                "sft.checkpoint_evaluations.v1",
+                json!({ "evaluations": checkpoint_evals }),
+            ));
+            slices.push(mk("sft.dataset", "sft.dataset.v1", dataset));
+            slices.push(mk("sft.compute", "sft.compute.v1", compute));
+            slices.push(mk(
+                "sft.examples",
+                "sft.examples.v1",
+                json!({ "examples": examples }),
+            ));
+        }
+        _ => {}
+    }
+    Ok(slices)
+}
+
+fn push_curve(obj: &mut Map<String, Value>, key: &str, value: Option<&Value>) {
+    let Some(value) = value else { return };
+    let entry = obj.entry(key.to_string()).or_insert_with(|| json!([]));
+    if let Some(arr) = entry.as_array_mut() {
+        arr.push(value.clone());
+    }
+}
+
+fn gepa_fixture(session_ref: Option<String>) -> (OptimizerRunRecord, Vec<OptimizerEventEnvelope>) {
+    let run = OptimizerRunRecord {
+        schema_version: OPTIMIZER_RUN_SCHEMA_VERSION.into(),
+        id: GEPA_FIXTURE_ID.into(),
+        algorithm_id: "gepa".into(),
+        algorithm_version: Some("1.0.0".into()),
+        status: "queued".into(),
+        source: "local".into(),
+        objective: Some("banking77 prompt · maximize macro-F1".into()),
+        project_ref: None,
+        session_ref,
+        created_at: "2026-08-09T15:00:00Z".into(),
+        started_at: None,
+        finished_at: None,
+        cursor_seq: 0,
+        capabilities: OptimizerCapabilities::for_algorithm("gepa"),
+        execution_bindings: vec![],
+        input_refs: vec![OptimizerResourceRef {
+            kind: "dataset".into(),
+            id: "banking77@pinned".into(),
+            digest: Some("sha256:banking77demo".into()),
+            role: Some("train".into()),
+            title: Some("Banking77".into()),
+            metadata: json!({}),
+        }],
+        output_refs: vec![],
+        visual_refs: vec![],
+        summary: json!({}),
+        usage: OptimizerUsageSummary::default(),
+        error: None,
+    };
+    let mut events = vec![
+        evt(
+            "gepa.run.started",
+            1,
+            "gepa",
+            GEPA_FIXTURE_ID,
+            "2026-08-09T15:00:01Z",
+            json!({"status":"running"}),
+            None,
+            usage(0.0, 0, 0, 0, 0),
+        ),
+        evt(
+            "proposer.started",
+            2,
+            "gepa",
+            GEPA_FIXTURE_ID,
+            "2026-08-09T15:00:05Z",
+            json!({"generation":1}),
+            None,
+            None,
+        ),
+        evt(
+            "candidate.evaluated",
+            3,
+            "gepa",
+            GEPA_FIXTURE_ID,
+            "2026-08-09T15:00:20Z",
+            json!({"train_reward":0.71,"rank":2}),
+            Some(item(
+                "candidate",
+                "cand_seed",
+                "evaluated",
+                json!({"parentId":null}),
+            )),
+            usage(0.12, 800, 200, 8, 15_000),
+        ),
+        evt(
+            "candidate.accepted",
+            4,
+            "gepa",
+            GEPA_FIXTURE_ID,
+            "2026-08-09T15:00:25Z",
+            json!({"train_reward":0.71,"reason":"seed"}),
+            Some(item(
+                "candidate",
+                "cand_seed",
+                "accepted",
+                json!({"score":0.71,"costUsd":0.12,"rollouts":8}),
+            )),
+            None,
+        ),
+        evt(
+            "proposer.completed",
+            5,
+            "gepa",
+            GEPA_FIXTURE_ID,
+            "2026-08-09T15:01:00Z",
+            json!({"generation":1,"proposal_count":2,"message":"mutate instruction clarity"}),
+            None,
+            usage(0.4, 2400, 900, 0, 35_000),
+        ),
+        evt(
+            "candidate.full_train_evaluated",
+            6,
+            "gepa",
+            GEPA_FIXTURE_ID,
+            "2026-08-09T15:01:40Z",
+            json!({"train_reward":0.82,"best_train_reward":0.82}),
+            Some(item(
+                "candidate",
+                "cand_m1",
+                "evaluated",
+                json!({"parentId":"cand_seed","score":0.82,"costUsd":0.31,"rollouts":16,"delta":0.11}),
+            )),
+            usage(0.31, 1600, 500, 16, 40_000),
+        ),
+        evt(
+            "candidate.accepted",
+            7,
+            "gepa",
+            GEPA_FIXTURE_ID,
+            "2026-08-09T15:01:42Z",
+            json!({"train_reward":0.82,"reason":"dominates parent"}),
+            Some(item(
+                "candidate",
+                "cand_m1",
+                "accepted",
+                json!({"parentId":"cand_seed","score":0.82,"costUsd":0.31,"rollouts":16,"rank":1}),
+            )),
+            None,
+        ),
+        evt(
+            "frontier.updated",
+            8,
+            "gepa",
+            GEPA_FIXTURE_ID,
+            "2026-08-09T15:01:43Z",
+            json!({}),
+            None,
+            None,
+        ),
+        evt(
+            "gepa.reflection",
+            9,
+            "gepa",
+            GEPA_FIXTURE_ID,
+            "2026-08-09T15:01:50Z",
+            json!({"message":"Clarify fee vs balance intents; keep short system preamble."}),
+            None,
+            None,
+        ),
+        evt(
+            "gepa.run.finished",
+            10,
+            "gepa",
+            GEPA_FIXTURE_ID,
+            "2026-08-09T15:02:10Z",
+            json!({"status":"completed"}),
+            None,
+            None,
+        ),
+    ];
+    if let Some(event) = events.get_mut(7) {
+        event.snapshot = Some(map_from(json!({
+            "cells": [
+                {"candidateId":"cand_seed","quality":0.71,"costUsd":0.12,"rollouts":8},
+                {"candidateId":"cand_m1","quality":0.82,"costUsd":0.31,"rollouts":16,"accent":true}
+            ],
+            "bestScore": 0.82,
+            "status": "running",
+            "summary": {"bestScore": 0.82, "iteration": 1}
+        })));
+    }
+    if let Some(event) = events.get_mut(9) {
+        event.snapshot = Some(map_from(json!({
+            "status": "completed",
+            "bestScore": 0.82,
+            "summary": {"bestScore": 0.82, "iteration": 1, "accepted": 2}
+        })));
+    }
+    (run, events)
+}
+
+fn goex_fixture(session_ref: Option<String>) -> (OptimizerRunRecord, Vec<OptimizerEventEnvelope>) {
+    let run = OptimizerRunRecord {
+        schema_version: OPTIMIZER_RUN_SCHEMA_VERSION.into(),
+        id: GOEX_FIXTURE_ID.into(),
+        algorithm_id: "go-ex".into(),
+        algorithm_version: Some("0.9.0".into()),
+        status: "queued".into(),
+        source: "cloud".into(),
+        objective: Some("craftax themes · saturate near-misses".into()),
+        project_ref: None,
+        session_ref,
+        created_at: "2026-08-09T15:10:00Z".into(),
+        started_at: None,
+        finished_at: None,
+        cursor_seq: 0,
+        capabilities: OptimizerCapabilities::for_algorithm("go-ex"),
+        execution_bindings: vec![super::models::OptimizerExecutionBinding {
+            kind: "local_slot".into(),
+            id: "local-mac-01".into(),
+            label: Some("local-mac-01".into()),
+            status: Some("leased".into()),
+            metadata: json!({ "leaseId": "lease_demo" }),
+        }],
+        input_refs: vec![],
+        output_refs: vec![],
+        visual_refs: vec![],
+        summary: json!({}),
+        usage: OptimizerUsageSummary::default(),
+        error: None,
+    };
+    let mut events = vec![
+        evt(
+            "optimizer.run.created",
+            1,
+            "go-ex",
+            GOEX_FIXTURE_ID,
+            "2026-08-09T15:10:01Z",
+            json!({"status":"starting"}),
+            None,
+            None,
+        ),
+        evt(
+            "go-ex.board.updated",
+            2,
+            "go-ex",
+            GOEX_FIXTURE_ID,
+            "2026-08-09T15:10:05Z",
+            json!({}),
+            None,
+            usage(0.5, 0, 0, 4, 5_000),
+        ),
+        evt(
+            "go-ex.theme.updated",
+            3,
+            "go-ex",
+            GOEX_FIXTURE_ID,
+            "2026-08-09T15:10:20Z",
+            json!({"theme":"wood","saturation":0.4}),
+            None,
+            usage(1.2, 0, 0, 12, 20_000),
+        ),
+        evt(
+            "optimizer.run.completed",
+            4,
+            "go-ex",
+            GOEX_FIXTURE_ID,
+            "2026-08-09T15:12:00Z",
+            json!({"status":"completed"}),
+            None,
+            None,
+        ),
+    ];
+    if let Some(event) = events.get_mut(1) {
+        event.snapshot = Some(map_from(
+            json!({"phase":"explore","tick":3,"status":"running"}),
+        ));
+    }
+    (run, events)
+}
+
+fn sft_fixture(session_ref: Option<String>) -> (OptimizerRunRecord, Vec<OptimizerEventEnvelope>) {
+    let run = OptimizerRunRecord {
+        schema_version: OPTIMIZER_RUN_SCHEMA_VERSION.into(),
+        id: SFT_FIXTURE_ID.into(),
+        algorithm_id: "sft".into(),
+        algorithm_version: Some("0.1.0".into()),
+        status: "queued".into(),
+        source: "local".into(),
+        objective: Some("craftax gpt-oss-20b · fixture curves".into()),
+        project_ref: None,
+        session_ref,
+        created_at: "2026-08-09T15:20:00Z".into(),
+        started_at: None,
+        finished_at: None,
+        cursor_seq: 0,
+        capabilities: OptimizerCapabilities::for_algorithm("sft"),
+        execution_bindings: vec![],
+        input_refs: vec![],
+        output_refs: vec![],
+        visual_refs: vec![],
+        summary: json!({
+            "baseModel": "openai/gpt-oss-20b",
+            "adapter": "lora_r16",
+            "backend": "fake"
+        }),
+        usage: OptimizerUsageSummary::default(),
+        error: None,
+    };
+    let mut events = vec![
+        evt(
+            "optimizer.run.created",
+            1,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:20:01Z",
+            json!({"status":"starting"}),
+            None,
+            None,
+        ),
+        evt(
+            "sft.dataset.validation_started",
+            2,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:20:03Z",
+            json!({"status":"validating_dataset"}),
+            None,
+            None,
+        ),
+        evt(
+            "sft.dataset.validated",
+            3,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:20:05Z",
+            json!({}),
+            None,
+            None,
+        ),
+        evt(
+            "sft.training.queued",
+            4,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:20:08Z",
+            json!({"status":"queued"}),
+            None,
+            None,
+        ),
+        evt(
+            "sft.training.started",
+            5,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:20:10Z",
+            json!({"status":"running"}),
+            None,
+            usage(0.2, 0, 0, 0, 1_000),
+        ),
+        evt(
+            "sft.compute.updated",
+            6,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:20:12Z",
+            json!({}),
+            None,
+            None,
+        ),
+        evt(
+            "sft.step.metrics",
+            7,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:20:30Z",
+            json!({"step":50,"epoch":1,"train_loss":1.8,"validation_loss":1.6,"learning_rate":0.0002}),
+            None,
+            usage(1.0, 0, 0, 0, 20_000),
+        ),
+        evt(
+            "sft.checkpoint.created",
+            8,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:21:00Z",
+            json!({}),
+            Some(item(
+                "checkpoint",
+                "ckpt_50",
+                "created",
+                json!({"step":50,"digest":"sha256:ckpt50","promoted":false}),
+            )),
+            None,
+        ),
+        evt(
+            "sft.checkpoint_eval.completed",
+            9,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:21:20Z",
+            json!({"metric":"macro_f1","score":0.74,"accuracy":0.81,"split":"selection","role":"selection"}),
+            Some(item(
+                "evaluation",
+                "eval_ckpt_50",
+                "completed",
+                json!({"checkpointId":"ckpt_50"}),
+            )),
+            usage(0.5, 0, 0, 0, 10_000),
+        ),
+        evt(
+            "sft.training.paused",
+            10,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:21:30Z",
+            json!({"status":"paused"}),
+            None,
+            None,
+        ),
+        evt(
+            "sft.training.resumed",
+            11,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:21:40Z",
+            json!({"status":"running"}),
+            None,
+            None,
+        ),
+        evt(
+            "sft.step.metrics",
+            12,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:22:00Z",
+            json!({"step":100,"epoch":2,"train_loss":1.1,"validation_loss":1.05,"learning_rate":0.00015}),
+            None,
+            usage(1.4, 0, 0, 0, 40_000),
+        ),
+        evt(
+            "sft.checkpoint.created",
+            13,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:22:10Z",
+            json!({}),
+            Some(item(
+                "checkpoint",
+                "ckpt_100",
+                "created",
+                json!({"step":100,"digest":"sha256:ckpt100","promoted":false}),
+            )),
+            None,
+        ),
+        evt(
+            "sft.checkpoint_eval.completed",
+            14,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:22:30Z",
+            json!({"metric":"macro_f1","score":0.81,"accuracy":0.88,"split":"selection","role":"selection"}),
+            Some(item(
+                "evaluation",
+                "eval_ckpt_100",
+                "completed",
+                json!({"checkpointId":"ckpt_100"}),
+            )),
+            usage(0.5, 0, 0, 0, 10_000),
+        ),
+        evt(
+            "sft.checkpoint.promoted",
+            15,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:22:40Z",
+            json!({"checkpointId":"ckpt_100"}),
+            Some(item(
+                "checkpoint",
+                "ckpt_100",
+                "promoted",
+                json!({"step":100,"digest":"sha256:ckpt100","promoted":true}),
+            )),
+            None,
+        ),
+        evt(
+            "sft.heldout_eval.completed",
+            16,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:23:10Z",
+            json!({"metric":"macro_f1","score":0.79,"accuracy":0.86,"split":"heldout","role":"heldout","measurementOnly":true}),
+            Some(item(
+                "evaluation",
+                "eval_heldout_ckpt_100",
+                "completed",
+                json!({"checkpointId":"ckpt_100"}),
+            )),
+            usage(0.6, 0, 0, 0, 12_000),
+        ),
+        evt(
+            "sft.examples.updated",
+            17,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:23:20Z",
+            json!({}),
+            None,
+            None,
+        ),
+        evt(
+            "sft.model.materialized",
+            18,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:23:40Z",
+            json!({"status":"completed"}),
+            Some(item(
+                "artifact",
+                "model_ckpt_100",
+                "ready",
+                json!({
+                    "baseModel":"openai/gpt-oss-20b",
+                    "adapter":"lora_r16",
+                    "checkpointId":"ckpt_100",
+                    "digest":"sha256:model100"
+                }),
+            )),
+            None,
+        ),
+        evt(
+            "optimizer.run.completed",
+            19,
+            "sft",
+            SFT_FIXTURE_ID,
+            "2026-08-09T15:24:00Z",
+            json!({"status":"completed"}),
+            None,
+            usage(0.8, 0, 0, 0, 77_000),
+        ),
+    ];
+    if let Some(event) = events.get_mut(0) {
+        event.snapshot = Some(map_from(json!({
+            "summary": {
+                "baseModel": "openai/gpt-oss-20b",
+                "adapter": "lora_r16",
+                "backend": "fake"
+            }
+        })));
+    }
+    if let Some(event) = events.get_mut(2) {
+        event.snapshot = Some(map_from(json!({
+            "splits": {
+                "train": {"count": 8000, "digest": "sha256:train"},
+                "selection": {"count": 1000, "digest": "sha256:selection"},
+                "heldout": {"count": 1000, "digest": "sha256:heldout"}
+            },
+            "rejected": 42,
+            "format": "chat_jsonl"
+        })));
+    }
+    if let Some(event) = events.get_mut(5) {
+        event.snapshot = Some(map_from(json!({
+            "provider": "fake",
+            "gpu": "A100-40G",
+            "utilization": 0.72,
+            "tokensPerSec": 4100,
+            "spendUsd": 0.2
+        })));
+    }
+    if let Some(event) = events.get_mut(6) {
+        event.snapshot = Some(map_from(json!({"summary": {"step": 50, "epoch": 1}})));
+    }
+    if let Some(event) = events.get_mut(11) {
+        event.snapshot = Some(map_from(json!({"summary": {"step": 100, "epoch": 2}})));
+    }
+    if let Some(event) = events.get_mut(14) {
+        event.snapshot = Some(map_from(
+            json!({"summary": {"promotedCheckpointId": "ckpt_100"}}),
+        ));
+    }
+    if let Some(event) = events.get_mut(16) {
+        event.snapshot = Some(map_from(json!({
+            "examples": [
+                {
+                    "id": "ex_1",
+                    "intent": "craft_table",
+                    "baseline": "walk toward wood",
+                    "selected": "gather wood, then craft table",
+                    "improved": true
+                },
+                {
+                    "id": "ex_2",
+                    "intent": "survive_night",
+                    "baseline": "keep exploring",
+                    "selected": "return to shelter before nightfall",
+                    "improved": true
+                }
+            ]
+        })));
+    }
+    if let Some(event) = events.get_mut(17) {
+        event.artifact_refs = vec![json!({
+            "kind": "model",
+            "id": "model_ckpt_100",
+            "digest": "sha256:model100"
+        })];
+    }
+    (run, events)
+}
+
+fn evt(
+    event_type: &str,
+    sequence: u64,
+    algorithm_id: &str,
+    run_id: &str,
+    occurred_at: &str,
+    delta: Value,
+    item: Option<Value>,
+    usage_delta: Option<Map<String, Value>>,
+) -> OptimizerEventEnvelope {
+    OptimizerEventEnvelope {
+        schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+        event_id: Some(format!("{run_id}:{sequence}")),
+        event_type: event_type.into(),
+        sequence_number: sequence,
+        occurred_at: occurred_at.into(),
+        optimizer_run_id: run_id.into(),
+        algorithm_id: algorithm_id.into(),
+        level: Some("info".into()),
+        item,
+        delta: map_from(delta),
+        snapshot: None,
+        usage_delta,
+        artifact_refs: vec![],
+        error: None,
+        raw: json!({}),
+    }
+}
+
+fn item(kind: &str, id: &str, status: &str, raw: Value) -> Value {
+    json!({"kind": kind, "type": kind, "id": id, "status": status, "raw": raw})
+}
+
+fn usage(
+    cost_usd: f64,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    rollouts: u64,
+    wall_time_ms: u64,
+) -> Option<Map<String, Value>> {
+    Some(map_from(json!({
+        "cost_usd": cost_usd,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "rollouts": rollouts,
+        "wall_time_ms": wall_time_ms
+    })))
+}
+
+fn map_from(value: Value) -> Map<String, Value> {
+    value.as_object().cloned().unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::{ContentStore, Storage};
+    use tempfile::tempdir;
+
+    async fn service() -> (OptimizerService, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path().join("core")).unwrap();
+        let journal = EventJournal::new(storage.database().clone());
+        let content = ContentStore::new(storage.content_root());
+        let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
+        (
+            OptimizerService::new(storage.database().clone(), journal, visuals),
+            dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn seeds_gepa_fixture_and_projects_slices() {
+        let (svc, _dir) = service().await;
+        let (run, _) = svc
+            .seed_fixture("gepa", Some("session_test".into()))
+            .await
+            .unwrap();
+        assert_eq!(run.algorithm_id, "gepa");
+        assert!(run.cursor_seq >= 10);
+        assert!(!run.visual_refs.is_empty());
+        let frontier = svc
+            .get_state(run.id.clone(), "gepa.frontier".into(), Some(8))
+            .await
+            .unwrap();
+        assert_eq!(frontier.slice_id, "gepa.frontier");
+        let cells = frontier
+            .data
+            .get("cells")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(cells.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn dedupes_replayed_events() {
+        let (svc, _dir) = service().await;
+        let (run, _) = svc.seed_fixture("gepa", None).await.unwrap();
+        let events = svc.events_after(run.id.clone(), 0, None).await.unwrap();
+        let (again, _) = svc.append_events(run.id.clone(), events).await.unwrap();
+        assert_eq!(again.cursor_seq, run.cursor_seq);
+    }
+
+    #[tokio::test]
+    async fn reports_sft_as_available_algorithm() {
+        let (svc, _dir) = service().await;
+        let sft = svc
+            .list_algorithms()
+            .into_iter()
+            .find(|a| a.get("id") == Some(&json!("sft")))
+            .unwrap();
+        assert_eq!(sft.get("availability"), Some(&json!("available")));
+    }
+
+    #[tokio::test]
+    async fn sft_fixture_projects_slices_and_scrubs_checkpoints() {
+        let (svc, _dir) = service().await;
+        let (run, _) = svc.seed_fixture("sft", None).await.unwrap();
+        assert_eq!(run.algorithm_id, "sft");
+        assert!(run.cursor_seq >= 18);
+        assert_eq!(
+            svc.list_algorithms()
+                .into_iter()
+                .find(|a| a.get("id") == Some(&json!("sft")))
+                .unwrap()
+                .get("availability"),
+            Some(&json!("available"))
+        );
+
+        let latest = svc
+            .get_state_batch(
+                run.id.clone(),
+                Some(vec![
+                    "sft.checkpoints".into(),
+                    "sft.training_curves".into(),
+                    "sft.checkpoint_evaluations".into(),
+                    "sft.dataset".into(),
+                    "sft.examples".into(),
+                ]),
+                None,
+            )
+            .await
+            .unwrap();
+        let checkpoints = latest
+            .iter()
+            .find(|slice| slice.slice_id == "sft.checkpoints")
+            .unwrap();
+        let ckpts = checkpoints
+            .data
+            .get("checkpoints")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(ckpts.len(), 2);
+        assert!(ckpts.iter().any(|ckpt| {
+            ckpt.get("status") == Some(&json!("promoted"))
+                || ckpt.get("raw").and_then(|raw| raw.get("promoted")) == Some(&json!(true))
+        }));
+
+        let mid = svc
+            .get_state(run.id.clone(), "sft.checkpoints".into(), Some(9))
+            .await
+            .unwrap();
+        let mid_ckpts = mid
+            .data
+            .get("checkpoints")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(mid_ckpts.len(), 1);
+        assert_eq!(mid_ckpts[0].get("id"), Some(&json!("ckpt_50")));
+
+        let evals = svc
+            .get_state(run.id.clone(), "sft.checkpoint_evaluations".into(), None)
+            .await
+            .unwrap();
+        let evaluations = evals
+            .data
+            .get("evaluations")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert!(evaluations.iter().any(|evaluation| {
+            evaluation.get("role") == Some(&json!("heldout"))
+                || evaluation.get("delta").and_then(|delta| delta.get("role"))
+                    == Some(&json!("heldout"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn imports_local_gepa_oss_event_feed() {
+        let (svc, dir) = service().await;
+        let feed = dir.path().join("event_feed.jsonl");
+        std::fs::write(
+            &feed,
+            r#"{"schema_version":"event_stream_record.v1","event_id":"e1","sequence_number":1,"event_type":"run.started","timestamp":"2026-08-09T15:00:00Z","fields":{"run_id":"gepa_import_1"},"event":{}}
+{"schema_version":"event_stream_record.v1","event_id":"e2","sequence_number":2,"event_type":"candidate.accepted","timestamp":"2026-08-09T15:00:01Z","fields":{"run_id":"gepa_import_1","candidate_id":"c1","train_reward":0.5},"event":{}}
+"#,
+        )
+        .unwrap();
+        let (run, _) = svc
+            .import_local(super::super::models::OptimizerImportLocalRequest {
+                path: feed.display().to_string(),
+                session_ref: None,
+                open_visual: Some(false),
+            })
+            .await
+            .unwrap();
+        assert_eq!(run.id, "gepa_import_1");
+        assert_eq!(run.algorithm_id, "gepa");
+        assert_eq!(run.source, "local");
+        assert!(run.cursor_seq >= 2);
+    }
+
+    #[tokio::test]
+    async fn imports_local_gelo_events_jsonl() {
+        let (svc, dir) = service().await;
+        let run_dir = dir
+            .path()
+            .join("runs")
+            .join("goex_import_1")
+            .join("artifacts");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let feed = run_dir.join("events.jsonl");
+        std::fs::write(
+            &feed,
+            r#"{"run_id":"goex_import_1","event_type":"theme.updated","_seq":1,"created_at":"2026-08-09T15:10:00Z","payload":{"theme":"oak"},"algorithm":"go-ex"}
+{"run_id":"goex_import_1","event_type":"run.completed","_seq":2,"created_at":"2026-08-09T15:11:00Z","payload":{},"algorithm":"go-ex"}
+"#,
+        )
+        .unwrap();
+        let (run, _) = svc
+            .import_local(super::super::models::OptimizerImportLocalRequest {
+                path: dir
+                    .path()
+                    .join("runs")
+                    .join("goex_import_1")
+                    .display()
+                    .to_string(),
+                session_ref: None,
+                open_visual: Some(false),
+            })
+            .await
+            .unwrap();
+        assert_eq!(run.algorithm_id, "go-ex");
+        assert_eq!(run.source, "local");
+        assert!(run.cursor_seq >= 2);
+    }
+
+    #[tokio::test]
+    async fn imports_local_optimizer_event_sidecar() {
+        let (svc, dir) = service().await;
+        let feed = dir.path().join("events.optimizer.jsonl");
+        std::fs::write(
+            &feed,
+            r#"{"schema_version":"optimizer_event.v1","type":"theme.updated","sequence_number":1,"created_at":"2026-08-09T15:10:00Z","run_id":"goex_canon_1","optimizer_run_id":"goex_canon_1","algorithm_id":"go-ex","delta":{"theme":"oak"},"raw":{}}
+{"schema_version":"optimizer_event.v1","type":"run.completed","sequence_number":2,"created_at":"2026-08-09T15:11:00Z","run_id":"goex_canon_1","optimizer_run_id":"goex_canon_1","algorithm_id":"go-ex","delta":{},"raw":{}}
+"#,
+        )
+        .unwrap();
+        let (run, _) = svc
+            .import_local(super::super::models::OptimizerImportLocalRequest {
+                path: feed.display().to_string(),
+                session_ref: None,
+                open_visual: Some(false),
+            })
+            .await
+            .unwrap();
+        assert_eq!(run.id, "goex_canon_1");
+        assert_eq!(run.algorithm_id, "go-ex");
+        assert!(run.cursor_seq >= 2);
+    }
+}

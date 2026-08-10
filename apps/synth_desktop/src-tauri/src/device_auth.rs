@@ -177,8 +177,7 @@ impl DeviceAuthManager {
             .context("reach the Workshop sign-in service")?;
         match response.status().as_u16() {
             200 => {
-                let token: TokenResponse =
-                    response.json().await.context("parse pairing result")?;
+                let token: TokenResponse = response.json().await.context("parse pairing result")?;
                 store(&token.synth_api_key)?;
                 *self.pending.lock().unwrap() = None;
                 Ok(SignInPoll::Active)
@@ -211,7 +210,9 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
-    fn spawn_fake_workshop(responses: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    fn spawn_fake_workshop(
+        responses: Vec<(u16, String)>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
@@ -240,12 +241,14 @@ mod tests {
 
     #[tokio::test]
     async fn begin_then_poll_to_active_stores_key_exactly_once() {
-        let init_body =
-            r#"{"device_code":"abc123","verification_uri":"/signin?redirect_to=x","expires_in":600}"#;
+        let init_body = r#"{"device_code":"abc123","verification_uri":"/signin?redirect_to=x","expires_in":600}"#;
         let (origin, handle) = spawn_fake_workshop(vec![
             (200, init_body.into()),
             (428, r#"{"error":"AUTH_PENDING"}"#.into()),
-            (200, r#"{"synth_api_key":"sk_live_devicepair_secret"}"#.into()),
+            (
+                200,
+                r#"{"synth_api_key":"sk_live_devicepair_secret"}"#.into(),
+            ),
         ]);
         let manager = DeviceAuthManager::new();
         let begin = manager.begin(&origin).await.unwrap();
@@ -284,8 +287,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_code_clears_pending() {
-        let init_body =
-            r#"{"device_code":"gone","verification_uri":"/signin","expires_in":600}"#;
+        let init_body = r#"{"device_code":"gone","verification_uri":"/signin","expires_in":600}"#;
         let (origin, handle) = spawn_fake_workshop(vec![
             (200, init_body.into()),
             (410, r#"{"error":"DEVICE_CODE_EXPIRED"}"#.into()),

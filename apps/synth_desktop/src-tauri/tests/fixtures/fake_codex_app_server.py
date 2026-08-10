@@ -11,6 +11,12 @@ home = pathlib.Path(os.environ["CODEX_HOME"])
 home.mkdir(parents=True, exist_ok=True)
 requests_path = home / "fake-app-server-requests.jsonl"
 turn_number = 0
+# Lifecycle race control. When this marker exists the server dies the moment a
+# turn/start arrives, without answering it, which is exactly what a real
+# app-server crash between attach and turn start looks like to the manager.
+# A marker whose contents are "once" removes itself first, so the very next
+# attempt succeeds.
+exit_on_turn_start = home / "exit-on-turn-start"
 
 
 def send(message: dict) -> None:
@@ -44,10 +50,16 @@ for raw in sys.stdin:
     elif method == "thread/loaded/list":
         result = {"data": [params.get("threadId", "thread-fixture")]}
     elif method == "turn/start":
+        if exit_on_turn_start.exists():
+            if exit_on_turn_start.read_text(encoding="utf-8").strip() == "once":
+                exit_on_turn_start.unlink()
+            sys.exit(0)
         turn_number += 1
         result = {"turn": {"id": f"turn-fixture-{os.getpid()}-{turn_number}"}}
     elif method == "turn/interrupt":
         result = {}
+    elif method == "turn/steer":
+        result = {"turnId": params.get("expectedTurnId")}
     else:
         send({
             "jsonrpc": "2.0",

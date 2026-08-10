@@ -189,7 +189,13 @@ pub fn validate_bindings(bindings: &Value) -> anyhow::Result<()> {
         let kind = slot.get("kind").and_then(Value::as_str).unwrap_or_default();
         if !matches!(
             kind,
-            "inline" | "trace_v5" | "local_cas" | "run_ref" | "live_sse" | "fixture"
+            "inline"
+                | "trace_v5"
+                | "local_cas"
+                | "run_ref"
+                | "live_sse"
+                | "fixture"
+                | "optimizer_run"
         ) {
             anyhow::bail!("unsupported visual binding kind: {kind}");
         }

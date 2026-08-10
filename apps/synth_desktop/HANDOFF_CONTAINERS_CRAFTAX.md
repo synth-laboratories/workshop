@@ -153,10 +153,18 @@ Optional Playwright smoke mirroring steps 4–7 with a mock HTTP server if CUA e
 
 ### 2026-08-09 policy-rollout acceptance evidence
 
-The former Workshop-owned two-session acceptance shortcut was removed. The
-authoritative acceptance path now runs real low/high Luna policies through the
-workspace benchmark harness, promotes their calls/actions/rewards/usage into
-canonical Trace V5, and opens the digest-bound rollout inspector in Desktop.
+The former Workshop-owned two-session **policy evaluation** shortcut was
+removed. The authoritative policy-evaluation path runs real low/high Luna
+policies through the workspace benchmark harness, promotes their
+calls/actions/rewards/usage into canonical Trace V5, and opens the digest-bound
+rollout inspector in Desktop.
+
+The MCP also exposes a separate `container_run_rollouts` operation for the
+native Responses transport gate. It can execute 1–8 explicitly bounded action
+sequences only against a previously registered loopback HTTP container, with
+redirects disabled, and returns the engine's exact rollout IDs/state/event
+logs. This proves agent → MCP → Desktop → container dispatch and must not be
+reported as LLM policy-quality evidence.
 
 ---
 

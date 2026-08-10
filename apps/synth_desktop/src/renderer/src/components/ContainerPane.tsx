@@ -35,6 +35,7 @@ function interfaces(value: unknown): string[] {
 }
 
 type MetadataRow = { path: string; value: string };
+type InferredField = { path: string; type: "number" | "boolean" | "string"; values: string[] };
 
 function flattenMetadata(value: unknown, path = "", rows: MetadataRow[] = []): MetadataRow[] {
 	if (Array.isArray(value)) {
@@ -45,6 +46,79 @@ function flattenMetadata(value: unknown, path = "", rows: MetadataRow[] = []): M
 		rows.push({ path, value: String(value) });
 	}
 	return rows;
+}
+
+function inferInstanceFields(instances: JsonObject[]): InferredField[] {
+	const fields = new Map<string, { types: Set<string>; values: Map<string, number> }>();
+	for (const instance of instances) for (const row of flattenMetadata(instance)) {
+		const entry = fields.get(row.path) ?? { types: new Set<string>(), values: new Map<string, number>() };
+		const raw = row.value;
+		entry.types.add(raw === "true" || raw === "false" ? "boolean" : raw !== "" && Number.isFinite(Number(raw)) ? "number" : "string");
+		entry.values.set(raw, (entry.values.get(raw) ?? 0) + 1);
+		fields.set(row.path, entry);
+	}
+	return [...fields].map(([path, entry]) => ({
+		path,
+		type: entry.types.size === 1 ? [...entry.types][0] as InferredField["type"] : "string",
+		values: [...entry.values].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([value]) => value)
+	})).sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function stripSqlValue(value: string): string {
+	const trimmed = value.trim();
+	return ((trimmed.startsWith("'") && trimmed.endsWith("'")) || (trimmed.startsWith('"') && trimmed.endsWith('"')))
+		? trimmed.slice(1, -1) : trimmed;
+}
+
+function instanceFieldValue(instance: JsonObject, requested: string): unknown {
+	const rows = flattenMetadata(instance);
+	const normalized = requested.trim().toLowerCase();
+	const exact = rows.find((row) => row.path.toLowerCase() === normalized);
+	if (exact) return exact.value;
+	const metadata = rows.find((row) => row.path.toLowerCase() === `metadata.${normalized}`);
+	if (metadata) return metadata.value;
+	const leaf = rows.filter((row) => row.path.toLowerCase().split(".").at(-1) === normalized);
+	return leaf.length === 1 ? leaf[0].value : undefined;
+}
+
+function queryInstance(instance: JsonObject, query: string): { match: boolean; error?: string } {
+	const trimmed = query.trim();
+	if (!trimmed) return { match: true };
+	const legacy = !/\s+(?:and|or|like|in)\s+|[=!<>]/i.test(trimmed) && trimmed.includes(":");
+	const clauses = legacy ? trimmed.split(/\s+/).map((part) => {
+		const [field, ...value] = part.split(":"); return `${field} LIKE '%${value.join(":")}%'`;
+	}) : trimmed.split(/\s+AND\s+/i);
+	for (const clause of clauses) {
+		const inMatch = clause.match(/^([\w.[\]-]+)\s+IN\s*\((.*)\)$/i);
+		if (inMatch) {
+			const actual = instanceFieldValue(instance, inMatch[1]);
+			const expected = inMatch[2].split(",").map(stripSqlValue);
+			if (!expected.some((value) => String(actual) === value)) return { match: false };
+			continue;
+		}
+		const match = clause.match(/^([\w.[\]-]+)\s*(=|!=|>=|<=|>|<|LIKE)\s*(.+)$/i);
+		if (!match) {
+			const haystack = JSON.stringify(instance).toLowerCase();
+			if (clauses.length === 1) return { match: haystack.includes(stripSqlValue(clause).toLowerCase()) };
+			return { match: false, error: `Could not parse: ${clause}` };
+		}
+		const [, field, operatorRaw, rawExpected] = match;
+		const actual = instanceFieldValue(instance, field);
+		if (actual === undefined) return { match: false, error: `Unknown field: ${field}` };
+		const expected = stripSqlValue(rawExpected);
+		const operator = operatorRaw.toUpperCase();
+		let passes = false;
+		if (operator === "LIKE") {
+			const pattern = expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*").replace(/_/g, ".");
+			passes = new RegExp(`^${pattern}$`, "i").test(String(actual));
+		} else if ([">", ">=", "<", "<="].includes(operator)) {
+			const left = Number(actual); const right = Number(expected);
+			if (!Number.isFinite(left) || !Number.isFinite(right)) return { match: false, error: `${field} is not numeric` };
+			passes = operator === ">" ? left > right : operator === ">=" ? left >= right : operator === "<" ? left < right : left <= right;
+		} else passes = operator === "=" ? String(actual).toLowerCase() === expected.toLowerCase() : String(actual).toLowerCase() !== expected.toLowerCase();
+		if (!passes) return { match: false };
+	}
+	return { match: true };
 }
 
 function taskEntries(catalog: unknown, fallback: unknown): JsonObject[] {
@@ -103,6 +177,10 @@ export function ContainerPane({
 	const [selectedTask, setSelectedTask] = useState<string | null>(null);
 	const [metadataQuery, setMetadataQuery] = useState("");
 	const [instanceQuery, setInstanceQuery] = useState("");
+	const inferredFields = useMemo(() => inferInstanceFields(instances), [instances]);
+	const [builderField, setBuilderField] = useState("");
+	const [builderOperator, setBuilderOperator] = useState("=");
+	const [builderValue, setBuilderValue] = useState("");
 	const selectedIndex = Math.max(0, tasks.findIndex((task, index) => taskId(task, index) === selectedTask));
 	const selected = tasks[selectedIndex];
 	const detailedTask = object(taskInfo.task);
@@ -117,14 +195,18 @@ export function ContainerPane({
 		if (!valueParts.length) return `${row.path} ${row.value}`.toLowerCase().includes(pathPart);
 		return row.path.toLowerCase().includes(pathPart) && row.value.toLowerCase().includes(valueParts.join(":"));
 	})).slice(0, 100) : [];
-	const instanceParts = instanceQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
-	const filteredInstances = instances.filter((instance) => instanceParts.every((part) => {
-		const rows = flattenMetadata(instance);
-		const [pathPart, ...valueParts] = part.split(":");
-		return rows.some((row) => valueParts.length
-			? row.path.toLowerCase().includes(pathPart) && row.value.toLowerCase().includes(valueParts.join(":"))
-			: `${row.path} ${row.value}`.toLowerCase().includes(pathPart));
-	}));
+	const queryResults = instances.map((instance) => ({ instance, result: queryInstance(instance, instanceQuery) }));
+	const queryError = queryResults.find((entry) => entry.result.error)?.result.error;
+	const filteredInstances = queryError ? instances : queryResults.filter((entry) => entry.result.match).map((entry) => entry.instance);
+	const selectedBuilderField = inferredFields.find((field) => field.path === builderField);
+	const addBuilderClause = () => {
+		if (!builderField || !builderValue.trim()) return;
+		const quoted = selectedBuilderField?.type === "number" || selectedBuilderField?.type === "boolean"
+			? builderValue.trim() : `'${builderValue.trim().replace(/'/g, "''")}'`;
+		const clause = builderOperator === "IN" ? `${builderField} IN (${builderValue.split(",").map((value) => `'${value.trim().replace(/'/g, "''")}'`).join(", ")})` : `${builderField} ${builderOperator} ${quoted}`;
+		setInstanceQuery((current) => current.trim() ? `${current.trim()} AND ${clause}` : clause);
+		setBuilderValue("");
+	};
 
 	return (
 		<aside className={`container-pane${expanded ? " expanded" : ""}`} data-testid="container-pane" aria-label="Container inspector">
@@ -172,7 +254,20 @@ export function ContainerPane({
 				{instances.length ? <section className="container-pane-section container-instance-browser">
 					<p className="container-pane-kicker">Task instances</p>
 					<p>{filteredInstances.length} of {instances.length} instances</p>
-					<input value={instanceQuery} onChange={(event) => setInstanceQuery(event.target.value)} placeholder="Filter e.g. split:test output_label:card" aria-label="Filter task instances" />
+					<div className="container-query-builder">
+						<strong>Inferred query</strong><span>{inferredFields.length} fields inferred from cached instances</span>
+						<div className="container-query-controls">
+							<select value={builderField} onChange={(event) => { setBuilderField(event.target.value); setBuilderValue(""); }} aria-label="Query field"><option value="">Choose field…</option>{inferredFields.map((field) => <option key={field.path} value={field.path}>{field.path} · {field.type}</option>)}</select>
+							<select value={builderOperator} onChange={(event) => setBuilderOperator(event.target.value)} aria-label="Query operator">{["=", "!=", "LIKE", "IN", ">", ">=", "<", "<="].map((operator) => <option key={operator}>{operator}</option>)}</select>
+							<input list="container-query-values" value={builderValue} onChange={(event) => setBuilderValue(event.target.value)} placeholder={builderOperator === "IN" ? "value, value" : "Value"} aria-label="Query value" />
+							<datalist id="container-query-values">{selectedBuilderField?.values.map((value) => <option key={value} value={value} />)}</datalist>
+							<button type="button" onClick={addBuilderClause} disabled={!builderField || !builderValue.trim()}>Add</button>
+						</div>
+						{selectedBuilderField?.values.length ? <div className="container-query-suggestions">{selectedBuilderField.values.slice(0, 8).map((value) => <button type="button" key={value} onClick={() => setBuilderValue(value)}>{value}</button>)}</div> : null}
+					</div>
+					<label className="container-sql-query"><span>SQL-like filter</span><input value={instanceQuery} onChange={(event) => setInstanceQuery(event.target.value)} placeholder="split = 'test' AND metadata.output_label LIKE 'card%'" aria-label="Filter task instances" /></label>
+					{queryError ? <p className="container-query-error" role="alert">{queryError}</p> : null}
+					{instanceQuery.trim() ? <button type="button" className="container-query-clear" onClick={() => setInstanceQuery("")}>Clear query</button> : null}
 					<div className="container-instance-list">{filteredInstances.slice(0, 100).map((instance, index) => {
 						const id = text(instance.task_instance_id) ?? text(instance.id) ?? `instance-${index + 1}`;
 						const instanceMetadata = object(instance.metadata);

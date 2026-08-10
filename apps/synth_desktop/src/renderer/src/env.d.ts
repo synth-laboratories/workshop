@@ -79,6 +79,53 @@ export type LagunaBridge = {
 	chooseModelDirectory(): Promise<string | null>;
 	setModelDirectory(path: string): Promise<LagunaModelHit>;
 	clearModelDirectory(): Promise<void>;
+	downloadModel(): Promise<LagunaModelHit>;
+};
+
+export type WhisperModelHit = {
+	id: string;
+	title: string;
+	description?: string | null;
+	recommended: boolean;
+	multilingual: boolean;
+	downloadBytes: number;
+	installedBytes?: number | null;
+	path?: string | null;
+	selected: boolean;
+	modelsRoot: string;
+};
+
+export type WhisperDownloadProgress = {
+	id: string;
+	phase: "preparing" | "downloading" | "ready" | "error";
+	detail: string;
+	downloadedBytes?: number;
+	totalBytes?: number;
+};
+
+export type WhisperBridge = {
+	listModels(): Promise<WhisperModelHit[]>;
+	downloadModel(id: string): Promise<WhisperModelHit>;
+	onDownloadProgress?(listener: (progress: WhisperDownloadProgress) => void): () => void;
+	setSelected(id: string): Promise<void>;
+	clearModel(id: string): Promise<void>;
+	transcribe(audioPath: string): Promise<string>;
+	/**
+	 * Fallback for renderers that cannot write a temp file (no fs/path plugin
+	 * wired yet). Renderer records with MediaRecorder, base64-encodes the blob,
+	 * and hands it to the bridge instead of a file path.
+	 */
+	transcribeAudio?(base64: string, mimeType: string): Promise<string>;
+};
+
+export type SkillHit = {
+	id: string;
+	name: string;
+	description: string;
+};
+
+export type SkillsBridge = {
+	list(): Promise<SkillHit[]>;
 };
 
 export type SynthBackendSettings = {
@@ -178,6 +225,8 @@ export type CodexBridge = {
 	 */
 	sendTurn?(request: CodexSessionStart, prompt: string, effort?: string): Promise<CodexSessionInfo>;
 	interrupt(sessionId: string): Promise<void>;
+	/** Mid-turn user input via Codex `turn/steer`. Optional on browser fixtures without a native runtime. */
+	steerTurn?(sessionId: string, text: string): Promise<void>;
 	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject"): Promise<void>;
 	close(sessionId: string): Promise<void>;
 	onEvent(listener: (event: CodexEvent) => void): () => void;
@@ -259,6 +308,15 @@ export type VisualsBridge = {
 
 export type OptimizersBridge = {
 	listAlgorithms(): Promise<import("@synth/runtime-protocol").OptimizerAlgorithmInfo[]>;
+	listRecipes(): Promise<Array<{
+		id: string;
+		title: string;
+		algorithmId: string;
+		task: string;
+		availability: string;
+		limits: Record<string, number>;
+	}>>;
+	startRecipe(request: { recipeId: string; sessionRef?: string; openVisual?: boolean }): Promise<import("@synth/runtime-protocol").OptimizerRunRecord>;
 	list(query?: {
 		status?: string;
 		algorithmId?: string;
@@ -310,6 +368,21 @@ export type TerminalBridge = {
 	onEvent(listener: (event: TerminalEvent) => void): () => void;
 };
 
+export type WorkspaceAccessMode = "read_only" | "read_write";
+export type WorkspaceAttachment = { path: string; access: WorkspaceAccessMode; source: "user_picker" | "recent_folder" | "agent_request" | "migrated_default"; createdAt: string };
+export type ConversationWorkspaceScope = { sessionId: string; workspace: string; attachments: WorkspaceAttachment[]; revision: number; boundRevision: number; bindingStatus: "pending" | "active" | "failed"; bindingError?: string | null };
+export type WorkspaceGrantRequest = { id: string; sessionId: string; path: string; access: WorkspaceAccessMode; reason: string; status: "pending" | "approved" | "denied"; createdAt: string; resolvedAt?: string | null };
+export type WorkspaceScopeBridge = {
+	get(sessionId: string): Promise<ConversationWorkspaceScope | null>;
+	chooseAndAttach(sessionId: string, access: WorkspaceAccessMode): Promise<ConversationWorkspaceScope | null>;
+	listRecentFolders(): Promise<string[]>;
+	attachRecent(sessionId: string, path: string): Promise<ConversationWorkspaceScope>;
+	removeAttachment(sessionId: string, path: string): Promise<ConversationWorkspaceScope>;
+	listGrants(sessionId: string): Promise<WorkspaceGrantRequest[]>;
+	approveRequest(requestId: string): Promise<ConversationWorkspaceScope | null>;
+	denyRequest(requestId: string): Promise<WorkspaceGrantRequest>;
+};
+
 type SemanticEvalApi = {
 	schemaVersion: "synth.desktop-eval-api.v1";
 	getState(): unknown;
@@ -344,7 +417,10 @@ declare global {
 		/** Browser fixture/explicit compatibility bridge; not installed by Tauri. */
 		synthRuntime?: RuntimeBridge;
 		synthLaguna?: LagunaBridge;
+		synthWhisper?: WhisperBridge;
+		synthSkills?: SkillsBridge;
 		synthConfig?: SynthConfigBridge;
+		synthWorkspaceScope?: WorkspaceScopeBridge;
 		synthAccount?: SynthAccountBridge;
 		synthCodex?: CodexBridge;
 		synthCore?: CoreBridge;

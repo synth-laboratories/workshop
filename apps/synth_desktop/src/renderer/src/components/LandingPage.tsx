@@ -1,37 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { EXECUTION_TARGETS, TARGET_GROUP_LABEL } from "../types/landing";
+import { EXECUTION_TARGETS, LAUNCH_PICKER_TARGETS, TARGET_GROUP_LABEL } from "../types/landing";
 import type { ExecutionTargetOption, LandingState } from "../types/landing";
 import { SynthLogo } from "./SynthLogo";
+import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
 
 type Props = {
 	state: LandingState;
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
-	onSetupAgent: () => void;
 };
-
-function IconAgents() {
-	return (
-		<span className="quick-card-icon-stack" aria-hidden>
-			<svg className="quick-card-icon quick-card-icon-back" viewBox="0 0 24 24" fill="none">
-				<circle cx="11" cy="12" r="6.5" stroke="currentColor" strokeWidth="1.4" />
-				<path
-					d="M11 8.2c2.2 0 4 1.7 4 4s-1.8 4-4 4"
-					stroke="currentColor"
-					strokeWidth="1.4"
-					strokeLinecap="round"
-				/>
-			</svg>
-			<svg className="quick-card-icon quick-card-icon-accent" viewBox="0 0 24 24" fill="none">
-				<path
-					d="M16.5 7.2l.7 1.7 1.7.7-1.7.7-.7 1.7-.7-1.7-1.7-.7 1.7-.7.7-1.7z"
-					fill="#f05f22"
-				/>
-			</svg>
-		</span>
-	);
-}
 
 export function ModelPicker({
 	selectedTargetId,
@@ -69,7 +47,10 @@ export function ModelPicker({
 				aria-controls="model-dropdown"
 				aria-haspopup="listbox"
 			>
-				<SynthLogo className="model-pill-logo" compact />
+				<ProviderMark
+					kind={providerMarkForTarget(selectedTargetId)}
+					className={`model-pill-logo model-pill-logo-${providerMarkForTarget(selectedTargetId)}`}
+				/>
 				<span className="model-pill-label">{selected.label}</span>
 				<svg className="model-pill-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden>
 					<path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" fill="none" />
@@ -78,7 +59,7 @@ export function ModelPicker({
 			{open ? (
 				<div id="model-dropdown" className="model-dropdown" role="listbox" data-testid="model-dropdown">
 					{(["local", "remote", "cloud"] as const).map((group) => {
-						const items = EXECUTION_TARGETS.filter((t) => t.group === group);
+						const items = LAUNCH_PICKER_TARGETS.filter((t) => t.group === group);
 						if (!items.length) return null;
 						return (
 							<div key={group} className="model-dropdown-group">
@@ -147,8 +128,7 @@ export function LandingPage({
 	state,
 	selectedTargetId,
 	onSelectTarget,
-	onConfigureAccount,
-	onSetupAgent
+	onConfigureAccount
 }: Props) {
 	const [accountChoiceMade, setAccountChoiceMade] = useState(
 		() => window.localStorage.getItem("synth.accountChoiceMade") === "1"
@@ -180,18 +160,6 @@ export function LandingPage({
 						onSelectTarget={onSelectTarget}
 						onConfigureAccount={onConfigureAccount}
 					/>
-				</div>
-				<div className="quick-actions">
-					<button
-						type="button"
-						className="quick-card"
-						onClick={onSetupAgent}
-						data-testid="quick-setup-agent"
-					>
-						<span className="quick-card-icon-wrap"><IconAgents /></span>
-						<span><strong>Set up an agent</strong><small>Schedule recurring work</small></span>
-						<span className="quick-card-arrow" aria-hidden>→</span>
-					</button>
 				</div>
 			</div>
 		</div>

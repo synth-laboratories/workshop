@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
 	EXECUTION_TARGETS,
+	LAUNCH_PICKER_TARGETS,
 	TARGET_GROUP_LABEL,
 	type ExecutionTargetOption,
 	type LandingState
 } from "../types/landing";
-import { SynthLogo } from "./SynthLogo";
+import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
 import type { ApprovalMode } from "../runtime/nativeCodex";
 import {
 	modelCapabilitiesForTarget,
@@ -14,6 +15,10 @@ import {
 	type ModelKnobValue,
 	type ModelKnobValues
 } from "../runtime/modelCapabilities";
+import { IconSparkle, SlashCommandMenu, type SlashCommandId, type SlashCommandMenuHandle } from "./SlashCommandMenu";
+import type { Skill } from "../runtime/skills";
+import type { ConversationWorkspaceScope } from "../env";
+import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
 
 type Props = {
 	state: LandingState;
@@ -39,31 +44,50 @@ type Props = {
 	onKeepQueued?: () => void;
 	steerSupported?: boolean;
 	steerError?: string | null;
+	/** Opens Settings → Voice so the user can pick/download a Whisper model. */
+	onOpenVoiceSettings?: () => void;
+	/** Skills selectable from the "/" menu; each attaches as a removable chip. */
+	skills?: Array<Skill>;
+	onSlashNew?: () => void;
+	onSlashMode?: () => void;
+	onSlashModel?: () => void;
+	onSlashMcp?: () => void;
+	onSlashRename?: () => void;
+	workspaceSessionId?: string | null;
+	onEnsureWorkspaceSession?: () => Promise<string | null>;
+	workspaceFallback?: string | null;
+	workspaceScope?: ConversationWorkspaceScope | null;
+	onWorkspaceScopeChange?: (scope: ConversationWorkspaceScope) => void;
+	onWorkspaceError?: (message: string) => void;
 };
 
 const APPROVAL_OPTIONS: Array<{ id: ApprovalMode; label: string; description: string }> = [
 	{ id: "ask", label: "Always ask", description: "Ask before commands or protected actions." },
 	{ id: "accept-edits", label: "Accept edits", description: "Allow workspace edits; ask for risky commands." },
-	{ id: "plan", label: "Plan", description: "Read-only exploration; no file changes." },
 	{ id: "allow-all", label: "Allow all", description: "Full system access without prompts." }
 ];
 
-function PermissionMenu({ mode, onSelect, disabled }: { mode: ApprovalMode; onSelect: (mode: ApprovalMode) => void; disabled: boolean }) {
-	const [open, setOpen] = useState(false);
+function PermissionMenu({ mode, onSelect, disabled, open, onOpenChange }: {
+	mode: ApprovalMode;
+	onSelect: (mode: ApprovalMode) => void;
+	disabled: boolean;
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+}) {
 	const ref = useRef<HTMLDivElement>(null);
 	const selected = APPROVAL_OPTIONS.find((option) => option.id === mode)!;
 	useEffect(() => {
 		if (!open) return;
-		const close = (event: MouseEvent) => { if (!ref.current?.contains(event.target as Node)) setOpen(false); };
+		const close = (event: MouseEvent) => { if (!ref.current?.contains(event.target as Node)) onOpenChange(false); };
 		document.addEventListener("mousedown", close);
 		return () => document.removeEventListener("mousedown", close);
-	}, [open]);
+	}, [open, onOpenChange]);
 	return <div className="permission-wrap" ref={ref}>
-		<button type="button" className="permission-select" disabled={disabled} onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-controls="approval-mode-menu" aria-haspopup="listbox" data-testid="approval-mode-select">
+		<button type="button" className="permission-select" disabled={disabled} onClick={() => onOpenChange(!open)} aria-expanded={open} aria-controls="approval-mode-menu" aria-haspopup="listbox" data-testid="approval-mode-select">
 			<IconAsk />{selected.label}<IconChevron />
 		</button>
 		{open ? <div id="approval-mode-menu" className="permission-menu" role="listbox" aria-label="Approval mode" data-testid="approval-mode-menu">
-			{APPROVAL_OPTIONS.map((option) => <button key={option.id} type="button" role="option" aria-selected={option.id === mode} className={`permission-option${option.id === mode ? " selected" : ""}`} onClick={() => { onSelect(option.id); setOpen(false); }}>
+			{APPROVAL_OPTIONS.map((option) => <button key={option.id} type="button" role="option" aria-selected={option.id === mode} className={`permission-option${option.id === mode ? " selected" : ""}`} onClick={() => { onSelect(option.id); onOpenChange(false); }}>
 				<span><strong>{option.label}</strong><small>{option.description}</small></span>{option.id === mode ? <b aria-hidden>✓</b> : null}
 			</button>)}
 		</div> : null}
@@ -157,6 +181,23 @@ function IconMic() {
 	);
 }
 
+function blobToBase64(blob: Blob): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onloadend = () => {
+			const result = reader.result;
+			if (typeof result !== "string") {
+				reject(new Error("Unexpected FileReader result"));
+				return;
+			}
+			const commaIndex = result.indexOf(",");
+			resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+		};
+		reader.onerror = () => reject(reader.error ?? new Error("Failed to read recorded audio"));
+		reader.readAsDataURL(blob);
+	});
+}
+
 function IconSend() {
 	return (
 		<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
@@ -199,11 +240,11 @@ function composerPlaceholder(state: LandingState): string {
 	}
 	if (state.selectedTargetId === "synth-cloud-laguna-s") {
 		return state.apiKeyConfigured
-			? "Ask via Synth Cloud (usage tracked)…"
+			? "Ask anything…"
 			: "Configure Synth API key in Settings → Account";
 	}
 	if (state.selectedTargetId.startsWith("openrouter-")) {
-		return "Ask via OpenRouter (usage tracked)…";
+		return "Ask anything…";
 	}
 	if (
 		(state.selectedTargetId === "intern-sync" || state.selectedTargetId === "intern-async") &&
@@ -229,16 +270,24 @@ function composerEnabled(state: LandingState): boolean {
 
 const GROUP_ORDER: ExecutionTargetOption["group"][] = ["local", "remote", "cloud"];
 
+function formatSkillMention(skill: Skill): string {
+	const slug = skill.name.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+	return `$${slug || skill.id}`;
+}
+
 function ModelMenu({
 	state,
 	onSelectTarget,
-	onConfigureAccount
+	onConfigureAccount,
+	open,
+	onOpenChange
 }: {
 	state: LandingState;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
 }) {
-	const [open, setOpen] = useState(false);
 	const ref = useRef<HTMLDivElement>(null);
 	const modelLabel = modelChipLabel(state);
 	const modelReady = !(
@@ -249,10 +298,10 @@ function ModelMenu({
 	useEffect(() => {
 		if (!open) return;
 		const onDocClick = (e: MouseEvent) => {
-			if (!ref.current?.contains(e.target as Node)) setOpen(false);
+			if (!ref.current?.contains(e.target as Node)) onOpenChange(false);
 		};
 		const onKey = (e: KeyboardEvent) => {
-			if (e.key === "Escape") setOpen(false);
+			if (e.key === "Escape") onOpenChange(false);
 		};
 		document.addEventListener("mousedown", onDocClick);
 		document.addEventListener("keydown", onKey);
@@ -260,11 +309,11 @@ function ModelMenu({
 			document.removeEventListener("mousedown", onDocClick);
 			document.removeEventListener("keydown", onKey);
 		};
-	}, [open]);
+	}, [open, onOpenChange]);
 
 	const pickTarget = (targetId: string) => {
 		onSelectTarget(targetId);
-		setOpen(false);
+		onOpenChange(false);
 	};
 
 	return (
@@ -272,21 +321,24 @@ function ModelMenu({
 			<button
 				type="button"
 				className={`model-chip${modelReady ? "" : " is-empty"}${open ? " open" : ""}`}
-				onClick={() => setOpen((v) => !v)}
+				onClick={() => onOpenChange(!open)}
 				aria-label={`Model: ${modelLabel}`}
 				aria-expanded={open}
 				aria-controls="composer-model-menu"
 				aria-haspopup="listbox"
 				data-testid="composer-model"
 			>
-				<SynthLogo className="model-chip-logo" compact />
+				<ProviderMark
+					kind={providerMarkForTarget(state.selectedTargetId)}
+					className={`model-chip-logo model-chip-logo-${providerMarkForTarget(state.selectedTargetId)}`}
+				/>
 				<span className="model-chip-label">{modelLabel}</span>
 				<IconChevron />
 			</button>
 			{open ? (
 				<div id="composer-model-menu" className="composer-model-menu" role="listbox" data-testid="composer-model-menu">
 					{GROUP_ORDER.map((group) => {
-						const items = EXECUTION_TARGETS.filter((t) => t.group === group);
+						const items = LAUNCH_PICKER_TARGETS.filter((t) => t.group === group);
 						if (!items.length) return null;
 						return (
 							<div key={group} className="composer-model-group">
@@ -333,7 +385,7 @@ function ModelMenu({
 													data-testid="composer-model-configure-synth-api-key"
 													onClick={() => {
 														onConfigureAccount?.();
-														setOpen(false);
+														onOpenChange(false);
 													}}
 												>
 													Configure Synth API key
@@ -404,11 +456,37 @@ export function Composer({
 	onSendNextQueued,
 	onKeepQueued,
 	steerSupported = false,
-	steerError = null
+	steerError = null,
+	onOpenVoiceSettings,
+	skills = [],
+	onSlashNew,
+	onSlashMode,
+	onSlashModel,
+	onSlashMcp,
+	onSlashRename,
+	workspaceSessionId,
+	onEnsureWorkspaceSession,
+	workspaceFallback,
+	workspaceScope,
+	onWorkspaceScopeChange,
+	onWorkspaceError
 }: Props) {
 	const [value, setValue] = useState("");
 	const [submitting, setSubmitting] = useState(false);
+	const [recording, setRecording] = useState(false);
+	const [transcribing, setTranscribing] = useState(false);
+	const [voiceError, setVoiceError] = useState<string | null>(null);
+	const [slashDismissed, setSlashDismissed] = useState(false);
+	const [skillChip, setSkillChip] = useState<Skill | null>(null);
+	const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
+	const [modelMenuOpen, setModelMenuOpen] = useState(false);
+	const [workspaceMenuSignal, setWorkspaceMenuSignal] = useState(0);
 	const dockRef = useRef<HTMLDivElement>(null);
+	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	const slashMenuRef = useRef<SlashCommandMenuHandle>(null);
+	const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+	const audioChunksRef = useRef<Blob[]>([]);
+	const streamRef = useRef<MediaStream | null>(null);
 	const enabled = composerEnabled(state);
 	const placeholder = composerPlaceholder(state);
 	const modelCapabilities = modelCapabilitiesForTarget(state.selectedTargetId);
@@ -417,9 +495,25 @@ export function Composer({
 		? (activeEnterAction === "enqueue" ? "steer" : "enqueue")
 		: null;
 
+	const slashMatch = /^\/(\S*)$/.exec(value);
+	const slashQuery = slashMatch?.[1] ?? "";
+	const slashMenuVisible = Boolean(slashMatch) && !slashDismissed;
+	const approvalModeLabel = APPROVAL_OPTIONS.find((option) => option.id === approvalMode)?.label ?? "";
+
 	useEffect(() => {
 		setValue("");
+		setSkillChip(null);
+		setSlashDismissed(false);
 	}, [state.id]);
+
+	useEffect(() => {
+		if (!slashMenuVisible) return;
+		const close = (event: MouseEvent) => {
+			if (!dockRef.current?.contains(event.target as Node)) setSlashDismissed(true);
+		};
+		document.addEventListener("mousedown", close);
+		return () => document.removeEventListener("mousedown", close);
+	}, [slashMenuVisible]);
 
 	useLayoutEffect(() => {
 		const dock = dockRef.current;
@@ -452,14 +546,155 @@ export function Composer({
 		};
 	}, []);
 
+	useEffect(() => {
+		return () => {
+			mediaRecorderRef.current?.stop();
+			streamRef.current?.getTracks().forEach((track) => track.stop());
+		};
+	}, []);
+
+	const stopMicStream = () => {
+		streamRef.current?.getTracks().forEach((track) => track.stop());
+		streamRef.current = null;
+	};
+
+	const handleRecordingStopped = async (mimeType: string) => {
+		stopMicStream();
+		const chunks = audioChunksRef.current;
+		audioChunksRef.current = [];
+		if (!chunks.length) return;
+		setTranscribing(true);
+		setVoiceError(null);
+		try {
+			const blob = new Blob(chunks, { type: mimeType });
+			const base64 = await blobToBase64(blob);
+			const text = await window.synthWhisper?.transcribeAudio?.(base64, mimeType);
+			if (text?.trim()) {
+				setValue((current) => (current.trim().length ? `${current.trim()} ${text.trim()}` : text.trim()));
+			}
+		} catch (reason) {
+			setVoiceError(reason instanceof Error ? reason.message : String(reason));
+		} finally {
+			setTranscribing(false);
+		}
+	};
+
+	const startRecording = async () => {
+		setVoiceError(null);
+		try {
+			const getUserMedia = navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices);
+			if (!getUserMedia) {
+				throw new Error(
+					"Microphone capture is unavailable in this app build. Restart Synth Desktop after updating; if it persists, allow microphone access in System Settings → Privacy & Security → Microphone."
+				);
+			}
+			const stream = await getUserMedia({ audio: true });
+			streamRef.current = stream;
+			const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
+			const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+			audioChunksRef.current = [];
+			recorder.ondataavailable = (event) => {
+				if (event.data.size > 0) audioChunksRef.current.push(event.data);
+			};
+			recorder.onstop = () => {
+				void handleRecordingStopped(recorder.mimeType || mimeType || "audio/webm");
+			};
+			mediaRecorderRef.current = recorder;
+			recorder.start();
+			setRecording(true);
+		} catch (reason) {
+			setVoiceError(reason instanceof Error ? reason.message : String(reason));
+			setRecording(false);
+		}
+	};
+
+	const stopRecording = () => {
+		mediaRecorderRef.current?.stop();
+		mediaRecorderRef.current = null;
+		setRecording(false);
+	};
+
+	const onMicClick = async () => {
+		if (transcribing) return;
+		if (recording) {
+			stopRecording();
+			return;
+		}
+		try {
+			const models = (await window.synthWhisper?.listModels()) ?? [];
+			const selectedModel = models.find((model) => model.selected);
+			if (!selectedModel || (!selectedModel.path && !selectedModel.installedBytes)) {
+				onOpenVoiceSettings?.();
+				return;
+			}
+		} catch {
+			onOpenVoiceSettings?.();
+			return;
+		}
+		await startRecording();
+	};
+
+	const openSlashMenuFromButton = () => {
+		if (!enabled) return;
+		if (!/^\/(\S*)$/.test(value)) setValue("/");
+		setSlashDismissed(false);
+		textareaRef.current?.focus();
+	};
+
+	const closeSlashMenu = () => setSlashDismissed(true);
+
+	const focusSkillsInSlashMenu = () => {
+		setValue("/");
+		setSlashDismissed(false);
+	};
+
+	const clearSlashInput = () => {
+		setValue("");
+		setSlashDismissed(false);
+		textareaRef.current?.focus();
+	};
+
+	const handleSelectSlashCommand = (id: SlashCommandId) => {
+		switch (id) {
+			case "new":
+				onSlashNew?.();
+				break;
+			case "mode":
+				setPermissionMenuOpen(true);
+				onSlashMode?.();
+				break;
+			case "workspace":
+				setWorkspaceMenuSignal((value) => value + 1);
+				break;
+			case "model":
+				setModelMenuOpen(true);
+				onSlashModel?.();
+				break;
+			case "mcp":
+				onSlashMcp?.();
+				break;
+			case "rename":
+				onSlashRename?.();
+				break;
+		}
+		clearSlashInput();
+	};
+
+	const handleSelectSkill = (skill: Skill) => {
+		setSkillChip(skill);
+		clearSlashInput();
+	};
+
 	const perform = async (intent: "submit" | "steer" | "enqueue") => {
 		if (!enabled || !value.trim() || submitting) return;
-		const text = value.trim();
+		const trimmed = value.trim();
+		const text = skillChip ? `${formatSkillMention(skillChip)} ${trimmed}` : trimmed;
 		setSubmitting(true);
 		try {
 			if (intent === "enqueue") {
 				onEnqueue?.(text);
 				setValue("");
+				setSkillChip(null);
 				return;
 			}
 			if (intent === "steer") {
@@ -470,10 +705,12 @@ export function Composer({
 				}
 				await onSteer?.(text);
 				setValue("");
+				setSkillChip(null);
 				return;
 			}
 			onSend(text);
 			setValue("");
+			setSkillChip(null);
 		} finally {
 			setSubmitting(false);
 		}
@@ -495,6 +732,12 @@ export function Composer({
 			: steerSupported
 				? "Steer active turn"
 				: "Steer unavailable";
+	const intentSummary = activeEnterAction === "enqueue" ? "Queue next" : "Steer current";
+	const intentDescription = activeEnterAction === "enqueue"
+		? steerSupported
+			? "Enter queues the next message. Command-Enter steers the active turn."
+			: "Enter queues the next message. Steering is unavailable until the runtime supports it."
+		: "Enter steers the active turn. Command-Enter queues the next message.";
 
 	return (
 		<div className="composer-dock" data-testid="composer-dock" ref={dockRef}>
@@ -536,23 +779,23 @@ export function Composer({
 			{steerError ? (
 				<p className="composer-steer-error" role="alert" data-testid="steer-error">{steerError}</p>
 			) : null}
+			{voiceError ? (
+				<p className="composer-steer-error" role="alert" data-testid="composer-mic-error">{voiceError}</p>
+			) : null}
 			<div className={`composer${enabled ? "" : " is-disabled"}`} data-testid="composer" data-enter-action={enterAction}>
-				{agentWorking ? (
-					<p className="composer-intent-hint" data-testid="composer-intent-hint">
-						{activeEnterAction === "enqueue"
-							? "Enter enqueues · ⌘Enter steers"
-							: "Enter steers · ⌘Enter enqueues"}
-						{!steerSupported ? " · Steer needs a runtime primitive" : ""}
-					</p>
-				) : null}
 				<textarea
+					ref={textareaRef}
 					className="composer-input"
 					rows={2}
 					disabled={!enabled || submitting}
 					placeholder={placeholder}
 					value={value}
-					onChange={(e) => setValue(e.target.value)}
+					onChange={(e) => {
+						setValue(e.target.value);
+						setSlashDismissed(false);
+					}}
 					onKeyDown={(e) => {
+						if (slashMenuVisible && slashMenuRef.current?.handleKeyDown(e)) return;
 						if (e.key !== "Enter" || e.shiftKey) return;
 						e.preventDefault();
 						if (e.metaKey || e.ctrlKey) submitAlternate();
@@ -561,15 +804,73 @@ export function Composer({
 					aria-label="Message composer"
 					data-testid="composer-input"
 				/>
+				{skillChip ? (
+					<div className="composer-skill-chip-row">
+						<span className="composer-skill-chip" data-testid="composer-skill-chip">
+							<IconSparkle />
+							<span className="composer-skill-chip-name">{skillChip.name}</span>
+							<button
+								type="button"
+								className="composer-skill-chip-remove"
+								aria-label={`Remove ${skillChip.name} skill`}
+								onClick={() => setSkillChip(null)}
+							>
+								<span aria-hidden>×</span>
+							</button>
+						</span>
+					</div>
+				) : null}
 				<div className="composer-toolbar">
 					<div className="composer-left">
-						<button type="button" className="composer-icon-btn" disabled={!enabled} aria-label="Edit context">
-							<IconEdit />
-						</button>
-						<PermissionMenu mode={approvalMode} onSelect={onSelectApprovalMode} disabled={!enabled} />
+						<WorkspaceScopeChip hideTrigger openSignal={workspaceMenuSignal} sessionId={workspaceSessionId ?? null} ensureSession={onEnsureWorkspaceSession} fallbackWorkspace={workspaceFallback ?? null} scope={workspaceScope ?? null} onScopeChange={(next) => onWorkspaceScopeChange?.(next)} onError={(message) => onWorkspaceError?.(message)} />
+						<div className="slash-command-wrap">
+							<button
+								type="button"
+								className="composer-icon-btn"
+								disabled={!enabled}
+								aria-label="Slash commands"
+								aria-haspopup="listbox"
+								aria-expanded={slashMenuVisible}
+								data-testid="composer-slash-btn"
+								onClick={openSlashMenuFromButton}
+							>
+								<IconEdit />
+							</button>
+							{slashMenuVisible ? (
+								<SlashCommandMenu
+									ref={slashMenuRef}
+									query={slashQuery}
+									skills={skills}
+									approvalModeLabel={approvalModeLabel}
+									workspaceLabel={workspaceLabel(workspaceScope?.workspace ?? workspaceFallback ?? "Workspace")}
+									onSelectCommand={handleSelectSlashCommand}
+									onSelectSkill={handleSelectSkill}
+									onFocusSkills={focusSkillsInSlashMenu}
+									onClose={closeSlashMenu}
+								/>
+							) : null}
+						</div>
+						<PermissionMenu
+							mode={approvalMode}
+							onSelect={onSelectApprovalMode}
+							disabled={!enabled}
+							open={permissionMenuOpen}
+							onOpenChange={setPermissionMenuOpen}
+						/>
+						{agentWorking ? (
+							<span className="composer-intent-hint" data-testid="composer-intent-hint" aria-label={intentDescription} title={intentDescription}>
+								{intentSummary}
+							</span>
+						) : null}
 					</div>
 					<div className="composer-right">
-						<ModelMenu state={state} onSelectTarget={onSelectTarget} onConfigureAccount={onConfigureAccount} />
+						<ModelMenu
+							state={state}
+							onSelectTarget={onSelectTarget}
+							onConfigureAccount={onConfigureAccount}
+							open={modelMenuOpen}
+							onOpenChange={setModelMenuOpen}
+						/>
 						{modelCapabilities?.knobs.map((knob) => (
 							<ModelKnobMenu
 								key={knob.id}
@@ -578,8 +879,17 @@ export function Composer({
 								onSelect={(value) => onSelectModelKnob(state.selectedTargetId, knob.id, value)}
 							/>
 						))}
-						<button type="button" className="composer-icon-btn" disabled={!enabled} aria-label="Voice input">
+						<button
+							type="button"
+							className={`composer-icon-btn composer-mic-btn${recording ? " recording" : ""}`}
+							disabled={!enabled || transcribing}
+							aria-label={transcribing ? "Transcribing voice input…" : recording ? "Stop recording" : "Voice input"}
+							aria-pressed={recording}
+							onClick={() => void onMicClick()}
+							data-testid="composer-mic"
+						>
 							<IconMic />
+							{recording ? <span className="sr-only" data-testid="composer-mic-recording">Recording</span> : null}
 						</button>
 						<button
 							type="button"

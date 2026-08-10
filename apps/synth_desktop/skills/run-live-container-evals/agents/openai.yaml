@@ -1,0 +1,6 @@
+interface:
+  display_name: "Run Live Container Evals"
+  short_description: "Stream container evals into a live visual"
+  default_prompt: "Use $run-live-container-evals to run a bounded live container evaluation and verify its Workshop stream."
+policy:
+  allow_implicit_invocation: true

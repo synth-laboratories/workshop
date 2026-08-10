@@ -1,7 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ArtifactRef, LocalActivityLine, LocalChat } from "../types/landing";
 import { FileTypeIcon, shortenPath } from "./FileTypeIcon";
 import { ContainerIcon } from "./ContainerPane";
+import {
+	activityStatusAnnouncement,
+	presentActivityLines,
+	type ToolActivityMode
+} from "../preferences";
 
 type Props = {
 	chat: LocalChat;
@@ -14,7 +19,10 @@ type Props = {
 	onAlwaysAllow?: (approvalId: string) => void;
 	onReject?: (approvalId: string) => void;
 	running?: boolean;
+	warmingUp?: boolean;
 	onStop?: () => void;
+	activityMode?: ToolActivityMode;
+	onActivityModeChange?: (mode: ToolActivityMode) => void;
 };
 
 function IconVisual() {
@@ -50,7 +58,8 @@ function ActivityLine({
 	onToggleContainer,
 	onApprove,
 	onAlwaysAllow,
-	onReject
+	onReject,
+	live = false
 }: {
 	line: LocalActivityLine;
 	visualOpen?: boolean;
@@ -60,6 +69,7 @@ function ActivityLine({
 	onApprove?: (approvalId: string) => void;
 	onAlwaysAllow?: (approvalId: string) => void;
 	onReject?: (approvalId: string) => void;
+	live?: boolean;
 }) {
 	const [open, setOpen] = useState(false);
 	const isVisualCue = Boolean(onToggleVisual) || line.kind === "visual";
@@ -193,20 +203,23 @@ function ActivityLine({
 		);
 	}
 
+	const isReasoning = line.kind === "thought";
 	return (
-		<div className={`local-activity expandable${open ? " open" : ""}`}>
+		<div className={`local-activity expandable${isReasoning ? " reasoning-disclosure" : ""}${open ? " open" : ""}`}>
 			<button
 				type="button"
 				className="local-activity-toggle"
 				aria-expanded={open}
+				aria-controls={`activity-detail-${line.id}`}
 				onClick={() => setOpen((v) => !v)}
 				data-testid={`activity-${line.id}`}
 			>
 				<span className="local-activity-label">{line.label}</span>
-				<span className="local-activity-hint">{open ? "Hide" : "Open"}</span>
+				{isReasoning ? <span className="reasoning-disclosure-meta">{line.reasoningDisplay === "summary" ? "Provider summary" : live ? "Streaming" : "Local model"}</span> : null}
+				<span className="local-activity-hint">{open ? "Hide" : "Show"}</span>
 			</button>
 			{open ? (
-				<pre className="local-activity-detail" data-testid={`activity-detail-${line.id}`}>
+				<pre id={`activity-detail-${line.id}`} className="local-activity-detail" data-testid={`activity-detail-${line.id}`}>
 					{line.detail}
 				</pre>
 			) : (
@@ -253,19 +266,293 @@ function VisualCard({
 	);
 }
 
-export function ChatTranscript({ chat, openArtifactId, onOpenArtifact, openContainerId = null, onOpenContainer, onApprove, onAlwaysAllow, onReject, running = false, onStop }: Props) {
-	const [resourcesOpen, setResourcesOpen] = useState(true);
+function ActivityGroup({
+	id,
+	label,
+	summary,
+	status,
+	count,
+	lines,
+	expanded,
+	onToggle,
+	renderLine
+}: {
+	id: string;
+	label: string;
+	summary: string;
+	status: string;
+	count: number;
+	lines: LocalActivityLine[];
+	expanded: boolean;
+	onToggle: () => void;
+	renderLine: (line: LocalActivityLine) => ReactNode;
+}) {
+	return (
+		<div className={`activity-group status-${status}`} data-testid={`activity-group-${id}`} data-status={status}>
+			<button
+				type="button"
+				className="activity-group-toggle"
+				aria-expanded={expanded}
+				aria-controls={`activity-group-body-${id}`}
+				onClick={onToggle}
+				data-testid={`activity-group-toggle-${id}`}
+			>
+				<span className="activity-group-label">{label}</span>
+				<span className="activity-group-summary">{summary}</span>
+				<span className="activity-group-count" aria-label={`${count} events`}>{count}</span>
+				<span className="activity-group-hint">{expanded ? "Hide" : "Expand"}</span>
+			</button>
+			{expanded ? (
+				<div id={`activity-group-body-${id}`} className="activity-group-body" data-testid={`activity-group-body-${id}`}>
+					{lines.map((line) => renderLine(line))}
+				</div>
+			) : null}
+		</div>
+	);
+}
+
+const COLLAPSE_USER_MESSAGE_AT = 1_000;
+const COLLAPSE_USER_MESSAGE_LINES = 12;
+
+/**
+ * A pasted brief can be important, but it must not turn the current turn into
+ * a screen-height blue wall. Keep the full value in the DOM and make expansion
+ * an explicit, reversible choice.
+ */
+function UserMessage({ id, body, onExpansionChange }: { id: string; body: string; onExpansionChange: () => void }) {
+	const [expanded, setExpanded] = useState(false);
+	const collapsible = body.length > COLLAPSE_USER_MESSAGE_AT || body.split(/\r?\n/).length > COLLAPSE_USER_MESSAGE_LINES;
+	const bodyId = `user-message-body-${id}`;
+	return (
+		<div
+			className={`local-bubble local-bubble-user${collapsible && !expanded ? " is-collapsed" : ""}`}
+			data-testid={`user-message-${id}`}
+		>
+			<p id={bodyId}>{body}</p>
+			{collapsible ? (
+				<button
+					type="button"
+					className="local-bubble-expand"
+					aria-expanded={expanded}
+					aria-controls={bodyId}
+					onClick={() => {
+						setExpanded((value) => !value);
+						onExpansionChange();
+					}}
+				>
+					{expanded ? "Show less" : "Show full message"}
+				</button>
+			) : null}
+		</div>
+	);
+}
+
+export function ChatTranscript({
+	chat,
+	openArtifactId,
+	onOpenArtifact,
+	openContainerId = null,
+	onOpenContainer,
+	onApprove,
+	onAlwaysAllow,
+	onReject,
+	running = false,
+	warmingUp = false,
+	onStop,
+	activityMode = "grouped",
+	onActivityModeChange
+}: Props) {
+	// Keep newly discovered resources discoverable through the Outputs badge without
+	// opening a floating panel over transcript controls while a turn is running.
+	const [resourcesOpen, setResourcesOpen] = useState(false);
+	const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
+	const [modeMenuOpen, setModeMenuOpen] = useState(false);
+	const modeMenuRef = useRef<HTMLDivElement>(null);
+	const scrollRef = useRef<HTMLDivElement>(null);
+	const followsTailRef = useRef(true);
+	const previousChatIdRef = useRef(chat.id);
+	const previousActiveRef = useRef<LocalActivityLine[] | undefined>(undefined);
+	const [liveAnnouncement, setLiveAnnouncement] = useState("");
 	const activityByMessageId = chat.activityByMessageId ?? {};
 	const artifacts = chat.artifacts ?? [];
 	const containerIds = [...new Set(Object.values(activityByMessageId).flat().map((line) => line.containerId).filter((id): id is string => Boolean(id)))];
 	const hasResources = containerIds.length > 0 || artifacts.length > 0;
+	const activeLines = activityByMessageId.__active__ ?? [];
+	const presentedActive = useMemo(
+		() => presentActivityLines(activeLines, activityMode, { running, expandedGroupIds }),
+		[activeLines, activityMode, running, expandedGroupIds]
+	);
+	const transcriptContentKey = useMemo(() => [
+		chat.id,
+		running ? "running" : "idle",
+		chat.messages.map((message) => `${message.id}:${message.role}:${message.body}`).join("\u001f"),
+		activeLines.map((line) => `${line.id}:${line.toolStatus ?? ""}:${line.label}:${line.detail ?? ""}`).join("\u001f")
+	].join("\u001e"), [activeLines, chat.id, chat.messages, running]);
+
+	useEffect(() => {
+		if (previousChatIdRef.current !== chat.id) followsTailRef.current = true;
+		previousChatIdRef.current = chat.id;
+	}, [chat.id]);
+
+	/*
+	 * The dock is an overlay, and it can grow for queued prompts or move above
+	 * the terminal. Measure its actual footprint instead of relying on a stale
+	 * CSS constant; the transcript can then always scroll its final turn above it.
+	 */
+	useLayoutEffect(() => {
+		const scroller = scrollRef.current;
+		const dock = document.querySelector<HTMLElement>("[data-testid=\"composer-dock\"]");
+		if (!scroller || !dock) return;
+		let frame = 0;
+		const updateClearance = () => {
+			cancelAnimationFrame(frame);
+			frame = requestAnimationFrame(() => {
+				const dockTop = dock.getBoundingClientRect().top;
+				const clearance = Math.max(148, Math.ceil(window.innerHeight - dockTop + 16));
+				scroller.style.setProperty("--composer-clearance", `${clearance}px`);
+			});
+		};
+		const observer = new ResizeObserver(updateClearance);
+		observer.observe(dock);
+		window.addEventListener("resize", updateClearance);
+		updateClearance();
+		return () => {
+			cancelAnimationFrame(frame);
+			observer.disconnect();
+			window.removeEventListener("resize", updateClearance);
+		};
+	}, [chat.id]);
+
+	useLayoutEffect(() => {
+		if (!followsTailRef.current) return;
+		const scroller = scrollRef.current;
+		if (!scroller) return;
+		const frame = requestAnimationFrame(() => {
+			scroller.scrollTop = scroller.scrollHeight;
+		});
+		return () => cancelAnimationFrame(frame);
+	}, [transcriptContentKey]);
+
 	useEffect(() => {
 		if (openArtifactId || openContainerId) setResourcesOpen(false);
 	}, [openArtifactId, openContainerId]);
 
+	useEffect(() => {
+		const announcement = activityStatusAnnouncement(previousActiveRef.current, activeLines, running);
+		previousActiveRef.current = activeLines;
+		if (announcement) setLiveAnnouncement(announcement);
+	}, [activeLines, running]);
+
+	useEffect(() => {
+		if (!modeMenuOpen) return;
+		const close = (event: MouseEvent) => {
+			if (!modeMenuRef.current?.contains(event.target as Node)) setModeMenuOpen(false);
+		};
+		document.addEventListener("mousedown", close);
+		return () => document.removeEventListener("mousedown", close);
+	}, [modeMenuOpen]);
+
+	const toggleGroup = (id: string) => {
+		setExpandedGroupIds((current) => {
+			const next = new Set(current);
+			if (next.has(id)) next.delete(id);
+			else next.add(id);
+			return next;
+		});
+	};
+
+	const keepTailVisible = () => {
+		followsTailRef.current = true;
+		requestAnimationFrame(() => {
+			const scroller = scrollRef.current;
+			if (scroller) scroller.scrollTop = scroller.scrollHeight;
+		});
+	};
+
+	const renderActivityLine = (line: LocalActivityLine, messageArtifacts: ArtifactRef[] = [], primaryOpen = false, live = false) => {
+		const primaryArtifact = messageArtifacts[0];
+		const linkedArtifact = line.artifactId
+			? artifacts.find((artifact) => artifact.id === line.artifactId)
+			: primaryArtifact;
+		const opensVisual = line.kind === "visual" || line.kind === "subagent" || /visual|artifact/i.test(line.label);
+		return (
+			<ActivityLine
+				key={line.id}
+				line={line}
+				visualOpen={linkedArtifact ? openArtifactId === linkedArtifact.id : primaryOpen}
+				onToggleVisual={opensVisual && linkedArtifact ? () => onOpenArtifact(linkedArtifact.id) : undefined}
+				containerOpen={Boolean(line.containerId && openContainerId === line.containerId)}
+				onToggleContainer={line.containerId && onOpenContainer ? () => onOpenContainer(openContainerId === line.containerId ? null : line.containerId!) : undefined}
+				onApprove={onApprove}
+				onAlwaysAllow={onAlwaysAllow}
+				onReject={onReject}
+				live={live && line.kind === "thought"}
+			/>
+		);
+	};
+
+	const renderPresented = (
+		items: ReturnType<typeof presentActivityLines>,
+		messageArtifacts: ArtifactRef[] = [],
+		primaryOpen = false,
+		live = false
+	) => items.map((item) => {
+		if (item.kind === "line") return renderActivityLine(item.line, messageArtifacts, primaryOpen, live);
+		return (
+			<ActivityGroup
+				key={item.id}
+				id={item.id}
+				label={item.label}
+				summary={item.summary}
+				status={item.status}
+				count={item.count}
+				lines={item.lines}
+				expanded={item.expanded}
+				onToggle={() => toggleGroup(item.id)}
+				renderLine={(line) => renderActivityLine(line, messageArtifacts, primaryOpen, live)}
+			/>
+		);
+	});
+
 	return (
-		<div className="chat-transcript" data-testid="chat-transcript">
+		<div className="chat-transcript" data-testid="chat-transcript" data-activity-mode={activityMode}>
+			<div className="transcript-toolbar" data-testid="transcript-toolbar">
+			<div className="activity-mode-bar" ref={modeMenuRef}>
+				<button
+					type="button"
+					className="activity-mode-trigger"
+					aria-expanded={modeMenuOpen}
+					aria-controls="activity-mode-menu"
+					aria-haspopup="menu"
+					data-testid="activity-mode-menu-trigger"
+					onClick={() => setModeMenuOpen((open) => !open)}
+				>
+					Activity · {activityMode}
+				</button>
+				{modeMenuOpen ? (
+					<div id="activity-mode-menu" className="activity-mode-menu" role="menu" data-testid="activity-mode-menu">
+						{(["detailed", "grouped", "compact"] as ToolActivityMode[]).map((mode) => (
+							<button
+								key={mode}
+								type="button"
+								role="menuitemradio"
+								aria-checked={activityMode === mode}
+								className={activityMode === mode ? "selected" : ""}
+								data-testid={`activity-mode-option-${mode}`}
+								onClick={() => {
+									onActivityModeChange?.(mode);
+									setModeMenuOpen(false);
+								}}
+							>
+								{mode[0]!.toUpperCase() + mode.slice(1)}
+							</button>
+						))}
+					</div>
+				) : null}
+			</div>
 			{hasResources ? <button type="button" className={`resource-shelf-trigger${resourcesOpen ? " active" : ""}`} onClick={() => setResourcesOpen((open) => !open)} aria-expanded={resourcesOpen} aria-controls="chat-resource-shelf" data-testid="resource-shelf-trigger"><span aria-hidden>☷</span> Outputs <strong>{containerIds.length + artifacts.length}</strong></button> : null}
+			</div>
+			<div className="sr-only" role="status" aria-live="polite" data-testid="activity-live-region">{liveAnnouncement}</div>
 			{hasResources && resourcesOpen ? <aside id="chat-resource-shelf" className="resource-shelf" aria-label="Outputs" data-testid="resource-shelf">
 				<header><span>Outputs</span><button type="button" onClick={() => setResourcesOpen(false)} aria-label="Close outputs panel">×</button></header>
 				{containerIds.length > 0 ? <section className="containers-rail" data-testid="containers-rail"><h3>Containers</h3>{containerIds.map((id) => (
@@ -292,7 +579,14 @@ export function ChatTranscript({ chat, openArtifactId, onOpenArtifact, openConta
 						})}</section> : null}
 			</aside> : null}
 
-			<div className="chat-transcript-scroll">
+			<div
+				className="chat-transcript-scroll"
+				ref={scrollRef}
+				onScroll={(event) => {
+					const node = event.currentTarget;
+					followsTailRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 96;
+				}}
+			>
 				<div className="chat-transcript-inner">
 						{chat.messages.map((m) => {
 						const messageArtifacts = artifacts.filter((a) => a.messageId === m.id);
@@ -300,31 +594,15 @@ export function ChatTranscript({ chat, openArtifactId, onOpenArtifact, openConta
 						const primaryOpen = primaryArtifact
 							? openArtifactId === primaryArtifact.id
 							: false;
+						const presented = presentActivityLines(activityByMessageId[m.id] ?? [], activityMode, {
+							running: false,
+							expandedGroupIds
+						});
 						return (
 							<div key={m.id} className={`local-turn local-turn-${m.role}`}>
-								{m.role === "assistant"
-									? (activityByMessageId[m.id] ?? []).map((line) => {
-										const linkedArtifact = line.artifactId
-											? artifacts.find((artifact) => artifact.id === line.artifactId)
-											: primaryArtifact;
-										const opensVisual = line.kind === "visual" || line.kind === "subagent" || /visual|artifact/i.test(line.label);
-										return <ActivityLine
-											key={line.id}
-											line={line}
-											visualOpen={linkedArtifact ? openArtifactId === linkedArtifact.id : primaryOpen}
-											onToggleVisual={opensVisual && linkedArtifact ? () => onOpenArtifact(linkedArtifact.id) : undefined}
-											containerOpen={Boolean(line.containerId && openContainerId === line.containerId)}
-											onToggleContainer={line.containerId && onOpenContainer ? () => onOpenContainer(openContainerId === line.containerId ? null : line.containerId!) : undefined}
-												onApprove={onApprove}
-												onAlwaysAllow={onAlwaysAllow}
-											onReject={onReject}
-										/>;
-									})
-									: null}
+								{m.role === "assistant" ? renderPresented(presented, messageArtifacts, primaryOpen, running) : null}
 								{m.role === "user" ? (
-									<div className="local-bubble local-bubble-user">
-										<p>{m.body}</p>
-									</div>
+									<UserMessage id={m.id} body={m.body} onExpansionChange={keepTailVisible} />
 								) : m.role === "system" ? (
 									<p className="local-system">{m.body}</p>
 								) : (
@@ -343,26 +621,11 @@ export function ChatTranscript({ chat, openArtifactId, onOpenArtifact, openConta
 							</div>
 						);
 						})}
-						{(activityByMessageId.__active__ ?? []).map((line) => {
-							const linkedArtifact = line.artifactId
-								? artifacts.find((artifact) => artifact.id === line.artifactId)
-								: undefined;
-							return <ActivityLine
-								key={line.id}
-								line={line}
-								visualOpen={linkedArtifact ? openArtifactId === linkedArtifact.id : false}
-								onToggleVisual={linkedArtifact ? () => onOpenArtifact(linkedArtifact.id) : undefined}
-								containerOpen={Boolean(line.containerId && openContainerId === line.containerId)}
-								onToggleContainer={line.containerId && onOpenContainer ? () => onOpenContainer(openContainerId === line.containerId ? null : line.containerId!) : undefined}
-								onApprove={onApprove}
-								onAlwaysAllow={onAlwaysAllow}
-								onReject={onReject}
-							/>;
-						})}
+						{renderPresented(presentedActive, [], false, running)}
 						{running ? (
 							<div className="model-working" role="status" aria-live="polite" data-testid="model-working">
 								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>
-								<span>Working…</span>
+								<span>{warmingUp ? "Warming up…" : "Working…"}</span>
 								<button type="button" onClick={onStop} aria-label="Stop generating">Stop</button>
 							</div>
 						) : null}

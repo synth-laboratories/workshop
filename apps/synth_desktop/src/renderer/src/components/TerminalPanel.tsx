@@ -47,7 +47,7 @@ export function TerminalPanel({ open, workspaceId, workspaceRoot, onOpenChange }
 
 	useEffect(() => {
 		if (!open || !activeId || !viewport.current) return;
-		const terminal = new Terminal({ convertEol: true, cursorBlink: true, fontFamily: '"SFMono-Regular", Menlo, monospace', fontSize: 12, theme: { background: "#fbfbfc", foreground: "#242425", cursor: "#f05f22", selectionBackground: "#d9def0" } });
+		const terminal = new Terminal({ convertEol: true, cursorBlink: true, fontFamily: '"SFMono-Regular", Menlo, monospace', fontSize: 12, theme: { background: "#17191d", foreground: "#d9dde5", cursor: "#f2763f", selectionBackground: "#3d4554" } });
 		const addon = new FitAddon(); terminal.loadAddon(addon); terminal.open(viewport.current); addon.fit();
 		xterm.current = terminal; fit.current = addon; seen.current = new Set();
 		const apply = (event: TerminalEvent) => {

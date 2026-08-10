@@ -128,6 +128,23 @@ mod tests {
         assert!(names.contains(&"visual_manage"));
         assert!(names.contains(&"visual_create"));
         assert!(names.contains(&"visual_open_in_pane"));
+        let facade = listed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "visual_manage")
+            .unwrap();
+        let advertised = serde_json::to_string(&serde_json::json!({
+            "name": facade["name"],
+            "description": facade["description"],
+            "inputSchema": facade["inputSchema"],
+        }))
+        .unwrap();
+        assert!(
+            advertised.len() < 600,
+            "compact facade grew to {} bytes",
+            advertised.len()
+        );
     }
 }
 

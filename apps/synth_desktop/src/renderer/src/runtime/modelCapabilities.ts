@@ -29,6 +29,12 @@ export type ModelCapabilitySpec = {
 	targetId: string;
 	target: { kind: "local" } | { kind: "remote"; models: string[] };
 	knobs: ModelKnobSpec[];
+	/**
+	 * How the provider's reasoning payload may be shown in the transcript.
+	 * This is deliberately separate from the request knob: a model can accept
+	 * a reasoning effort without ever returning displayable reasoning.
+	 */
+	reasoningDisplay: "none" | "full" | "summary";
 };
 
 const LUNA_EFFORT_OPTIONS: ModelKnobOption[] = [
@@ -44,6 +50,11 @@ const BINARY_THINKING_OPTIONS: ModelKnobOption[] = [
 	{ id: "max", label: "On" }
 ];
 
+const LOCAL_THINKING_OPTIONS: ModelKnobOption[] = [
+	{ id: "none", label: "Off" },
+	{ id: "high", label: "On" }
+];
+
 export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 	{
 		targetId: "local-laguna",
@@ -54,10 +65,13 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 			testId: "reasoning-effort",
 			storageKey: "synth.models.local-laguna.reasoning",
 			legacyStorageKeys: ["synth.lagunaThinking"],
-			defaultValue: "max",
-			options: BINARY_THINKING_OPTIONS,
+			defaultValue: "high",
+			options: LOCAL_THINKING_OPTIONS,
 			turnStartField: "effort"
-		}]
+		}],
+		// The owned MLX Responses bridge separates its <think> span from the
+		// answer stream, so this is the one target allowed to show that text.
+		reasoningDisplay: "full"
 	},
 	{
 		targetId: "openrouter-luna",
@@ -70,7 +84,10 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 			defaultValue: "medium",
 			options: LUNA_EFFORT_OPTIONS,
 			turnStartField: "effort"
-		}]
+		}],
+		// Closed/remote providers expose a provider-authored summary, not their
+		// private chain of thought. Render only that safe payload when present.
+		reasoningDisplay: "summary"
 	},
 	{
 		targetId: "openrouter-laguna-s",
@@ -84,7 +101,8 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 			defaultValue: "max",
 			options: BINARY_THINKING_OPTIONS,
 			turnStartField: "effort"
-		}]
+		}],
+		reasoningDisplay: "summary"
 	},
 	{
 		targetId: "synth-cloud-laguna-s",
@@ -98,7 +116,8 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 			defaultValue: "max",
 			options: BINARY_THINKING_OPTIONS,
 			turnStartField: "effort"
-		}]
+		}],
+		reasoningDisplay: "summary"
 	}
 ];
 

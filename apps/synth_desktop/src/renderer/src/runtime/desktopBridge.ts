@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexSessionInfo, DesktopInstanceDiagnostics, InventoryCounts, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, PersistedCodexSession, RequestOptions, RuntimeBridge, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TerminalEvent, TerminalInfo, VisualTemplateMeta, WorkspaceAccessSettings } from "../env";
+import type { CodexEvent, CodexSessionInfo, DesktopInstanceDiagnostics, InventoryCounts, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TerminalEvent, TerminalInfo, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WorkspaceAccessSettings } from "../env";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry } from "@synth/runtime-protocol";
 
@@ -158,6 +158,7 @@ export function installDesktopBridge(): void {
 			},
 			setModelDirectory: (path) => invoke<LagunaModelHit>("laguna_models_set_directory", { path }),
 			clearModelDirectory: () => invoke<void>("laguna_models_clear_directory"),
+			downloadModel: () => invoke<LagunaModelHit>("laguna_model_download"),
 			onStatus(listener) {
 				let disposed = false;
 				let unlisten: (() => void) | undefined;
@@ -178,10 +179,41 @@ export function installDesktopBridge(): void {
 			getStatus: async () => unavailableLaguna,
 			reload: async () => unavailableLaguna,
 			listModels: async () => [],
+			downloadModel: async () => { throw new Error("Model downloads require Synth Desktop"); },
 			chooseModelDirectory: async () => null,
 			setModelDirectory: async () => { throw new Error("Model folders require the desktop app"); },
 			clearModelDirectory: async () => undefined,
 			onStatus: () => () => undefined
+		};
+	window.synthWhisper ??= isTauri
+		? {
+			listModels: () => invoke<WhisperModelHit[]>("whisper_models_list"),
+			downloadModel: (id) => invoke<WhisperModelHit>("whisper_model_download", { id }),
+			onDownloadProgress(listener) {
+				let disposed = false;
+				let unlisten: (() => void) | undefined;
+				void listen<WhisperDownloadProgress>("whisper:download", ({ payload }) => listener(payload)).then((next) => {
+					if (disposed) next();
+					else unlisten = next;
+				});
+				return () => { disposed = true; unlisten?.(); };
+			},
+			setSelected: (id) => invoke<void>("whisper_models_set_selected", { id }),
+			clearModel: (id) => invoke<void>("whisper_models_clear", { id }),
+			transcribe: (audioPath) =>
+				invoke<{ text: string }>("whisper_transcribe", { audioPath }).then((result) => result.text),
+			transcribeAudio: (base64, mimeType) =>
+				invoke<{ text: string }>("whisper_transcribe_base64", { audioBase64: base64, mimeType }).then(
+					(result) => result.text
+				)
+		}
+		: {
+			listModels: async () => [],
+			downloadModel: async () => { throw new Error("Whisper model downloads require Synth Desktop"); },
+			setSelected: async () => { throw new Error("Whisper model selection requires Synth Desktop"); },
+			clearModel: async () => undefined,
+			transcribe: async () => { throw new Error("Transcription requires Synth Desktop"); },
+			transcribeAudio: async () => { throw new Error("Transcription requires Synth Desktop"); }
 		};
 	window.synthCore ??= isTauri
 		? {
@@ -232,7 +264,7 @@ export function installDesktopBridge(): void {
 			cancelSignIn: async () => undefined,
 			signOut: async () => { throw new Error("Sign out requires Synth Desktop"); }
 		};
-	window.synthConfig ??= isTauri
+window.synthConfig ??= isTauri
 		? {
 			get: () => invoke<SynthBackendSettings>("synth_config_get"),
 			update: (request) => invoke<SynthBackendSettings>("synth_config_update", { request }),
@@ -264,6 +296,27 @@ export function installDesktopBridge(): void {
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
 			updateWorkspaceAccess: async () => { throw new Error("Workspace access settings require Synth Desktop"); }
 		};
+window.synthWorkspaceScope ??= isTauri
+	? {
+		get: (sessionId) => invoke("workspace_scope_get", { sessionId }),
+		chooseAndAttach: (sessionId, proposedAccess) => invoke("workspace_scope_choose_and_attach", { sessionId, proposedAccess }),
+		listRecentFolders: () => invoke("workspace_scope_recent_folders"),
+		attachRecent: (sessionId, path) => invoke("workspace_scope_attach_recent", { sessionId, path }),
+		removeAttachment: (sessionId, path) => invoke("workspace_scope_remove_attachment", { sessionId, path }),
+		listGrants: (sessionId) => invoke("workspace_scope_grants_list", { sessionId }),
+		approveRequest: (requestId) => invoke("workspace_scope_approve_request", { requestId }),
+		denyRequest: (requestId) => invoke("workspace_scope_deny_request", { requestId })
+	}
+	: {
+		get: async () => null,
+		chooseAndAttach: async () => { throw new Error("Folder attachment requires Synth Desktop"); },
+		listRecentFolders: async () => [],
+		attachRecent: async () => { throw new Error("Recent folder attachment requires Synth Desktop"); },
+		removeAttachment: async () => { throw new Error("Folder attachment requires Synth Desktop"); },
+		listGrants: async () => [],
+		approveRequest: async () => { throw new Error("Folder approval requires Synth Desktop"); },
+		denyRequest: async () => { throw new Error("Folder approval requires Synth Desktop"); }
+	};
 	window.synthTerminal ??= isTauri
 		? {
 			available: true,
@@ -335,6 +388,16 @@ export function installDesktopBridge(): void {
 				return { containers: containers.length, traces: traces.length, usage: usage.length };
 			}
 		};
+	window.synthSkills ??= isTauri
+		? { list: () => invoke<SkillHit[]>("skills_list") }
+		: {
+			list: async () => [
+				{ id: "use-synth-containers", name: "use-synth-containers", description: "Synth container discovery and Trace V5 evidence." },
+				{ id: "use-synth-visuals", name: "use-synth-visuals", description: "Create and manage Synth visuals." },
+				{ id: "use-synth-optimizers", name: "use-synth-optimizers", description: "Operate Synth optimizer runs and recipes." },
+				{ id: "run-live-container-evals", name: "run-live-container-evals", description: "Run live container-backed eval rollouts." }
+			]
+		};
 	if (isTauri) {
 		window.synthCodex ??= {
 			defaultWorkspace: () => invoke<string>("codex_default_workspace"),
@@ -345,6 +408,8 @@ export function installDesktopBridge(): void {
 			sendTurn: (start, prompt, effort) =>
 				invoke<CodexSessionInfo>("codex_turn_send", { request: { start, prompt, effort } }),
 			interrupt: (sessionId) => invoke<void>("codex_turn_interrupt", { request: { sessionId } }),
+			steerTurn: (sessionId, text) =>
+				invoke<void>("codex_turn_steer", { request: { sessionId, text } }),
 			resolveApproval: (sessionId, approvalId, decision) => invoke<void>("codex_approval_resolve", { request: { sessionId, approvalId, decision } }),
 			close: (sessionId) => invoke<void>("codex_session_close", { request: { sessionId } }),
 			onEvent(listener) {
@@ -394,6 +459,8 @@ export function installDesktopBridge(): void {
 		};
 		window.synthOptimizers ??= {
 			listAlgorithms: () => invoke("optimizers_algorithms_list"),
+			listRecipes: () => invoke("optimizers_recipes_list"),
+			startRecipe: (request) => invoke("optimizers_recipe_start", { request }),
 			list: (query) => invoke("optimizers_list", { query: query ?? null }),
 			get: (optimizerRunId) => invoke("optimizers_get", { optimizerRunId }),
 			create: (request) => invoke("optimizers_create", { request }),

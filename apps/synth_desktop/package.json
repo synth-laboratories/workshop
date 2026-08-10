@@ -18,8 +18,10 @@
     "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml",
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:playwright": "playwright test --config playwright.config.ts",
-    "test:bombadil": "node tests/bombadil/run.mjs",
-    "test:bombadil:launch-debt": "BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/launch-debt.spec.ts node tests/bombadil/run.mjs"
+    "test:bombadil": "npm run frontend:build && node tests/bombadil/run.mjs",
+		"test:bombadil:alignment": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/visual-alignment.spec.ts node tests/bombadil/run.mjs",
+		"test:bombadil:composer-surfaces": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/composer-surfaces.spec.ts node tests/bombadil/run.mjs",
+		"test:bombadil:launch-debt": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/launch-debt.spec.ts node tests/bombadil/run.mjs"
   },
   "dependencies": {
     "@synth/runtime-protocol": "*",

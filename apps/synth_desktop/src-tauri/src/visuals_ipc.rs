@@ -133,6 +133,19 @@ fn parse_content_length(headers: &str) -> Result<usize> {
     Ok(0)
 }
 
+fn validated_loopback_rollout_base(base: &str) -> Result<String> {
+    let trimmed = base.trim_end_matches('/');
+    let parsed = reqwest::Url::parse(trimmed).context("invalid container base URL")?;
+    let local_host = matches!(
+        parsed.host_str(),
+        Some("127.0.0.1") | Some("localhost") | Some("::1") | Some("[::1]")
+    );
+    if parsed.scheme() != "http" || !local_host {
+        anyhow::bail!("live rollout execution is limited to registered loopback HTTP containers");
+    }
+    Ok(trimmed.to_string())
+}
+
 async fn dispatch_http(raw: &[u8], core: &CoreRuntime, token: &str) -> Result<Value> {
     let header_end = raw
         .windows(4)
@@ -172,6 +185,9 @@ async fn dispatch_http(raw: &[u8], core: &CoreRuntime, token: &str) -> Result<Va
     } else {
         serde_json::from_slice(body).context("invalid visuals IPC JSON body")?
     };
+    if path.starts_with("/v1/optimizers") {
+        return dispatch_optimizer(method, path, json_body, core).await;
+    }
     dispatch(method, path, json_body, core).await
 }
 
@@ -341,7 +357,9 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .as_deref()
                 .context("container has no base URL")?
                 .trim_end_matches('/');
-            let client = reqwest::Client::new();
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?;
             let health_response = client
                 .get(format!("{base}/health"))
                 .timeout(std::time::Duration::from_secs(3))
@@ -412,6 +430,122 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 )
                 .await?;
             Ok(json!({"container":updated}))
+        }
+        ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/rollouts") => {
+            let id = path
+                .trim_start_matches("/v1/containers/")
+                .trim_end_matches("/rollouts")
+                .trim_end_matches('/');
+            let container = core.inventory().get_container(id.to_string()).await?;
+            let base = container
+                .base_url
+                .as_deref()
+                .context("container has no base URL")?;
+            let base = validated_loopback_rollout_base(base)?;
+            let count = body.get("count").and_then(Value::as_u64).unwrap_or(1);
+            if !(1..=8).contains(&count) {
+                anyhow::bail!("count must be between 1 and 8");
+            }
+            let actions = body
+                .get("actions")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|value| {
+                            value
+                                .as_str()
+                                .map(str::to_string)
+                                .context("actions must contain only strings")
+                        })
+                        .collect::<Result<Vec<_>>>()
+                })
+                .transpose()?
+                .unwrap_or_else(|| {
+                    ["do", "left", "do", "up", "do", "right", "do", "down"]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect()
+                });
+            if actions.is_empty() || actions.len() > 64 {
+                anyhow::bail!("actions must contain between 1 and 64 bounded steps");
+            }
+            let seeds = body.get("seeds").and_then(Value::as_array);
+            if let Some(values) = seeds {
+                if values.len() != count as usize
+                    || values.iter().any(|value| value.as_i64().is_none())
+                {
+                    anyhow::bail!("seeds must contain exactly count integer values");
+                }
+            }
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?;
+            let mut rollouts = Vec::with_capacity(count as usize);
+            for index in 0..count {
+                let seed = seeds
+                    .and_then(|values| values.get(index as usize))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(index as i64 + 1);
+                let response = client
+                    .post(format!("{base}/rollouts"))
+                    .timeout(std::time::Duration::from_secs(10))
+                    .json(&json!({"seed":seed}))
+                    .send()
+                    .await?
+                    .error_for_status()?;
+                let mut state = response.json::<Value>().await?;
+                let rollout_id = state
+                    .get("rollout_id")
+                    .and_then(Value::as_str)
+                    .context("container rollout response omitted rollout_id")?
+                    .to_string();
+                for action in &actions {
+                    if state
+                        .get("terminated")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                        || state
+                            .get("truncated")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                    {
+                        break;
+                    }
+                    state = client
+                        .post(format!("{base}/rollouts/{rollout_id}/step"))
+                        .timeout(std::time::Duration::from_secs(10))
+                        .json(&json!({"action":action}))
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .json::<Value>()
+                        .await?;
+                }
+                let events = client
+                    .get(format!("{base}/rollouts/{rollout_id}/event_log"))
+                    .timeout(std::time::Duration::from_secs(10))
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<Value>()
+                    .await?;
+                core.update_container_last_rollout(id.to_string(), rollout_id.clone())
+                    .await?;
+                rollouts.push(json!({
+                    "rolloutId": rollout_id,
+                    "seed": seed,
+                    "actions": actions.clone(),
+                    "state": state,
+                    "eventLog": events,
+                }));
+            }
+            Ok(json!({
+                "containerId": id,
+                "baseUrl": base,
+                "rolloutCount": rollouts.len(),
+                "rollouts": rollouts,
+            }))
         }
         ("GET", "/v1/visuals/templates") => {
             let genre = body.get("genre").and_then(Value::as_str);
@@ -494,6 +628,125 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
     }
 }
 
+async fn dispatch_optimizer(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+) -> Result<Value> {
+    let optimizers = core.optimizers();
+    match (method, path) {
+        ("GET", "/v1/optimizers/algorithms") => {
+            Ok(json!({ "algorithms": optimizers.list_algorithms() }))
+        }
+        ("GET", "/v1/optimizers/recipes") => Ok(json!({ "recipes": optimizers.list_recipes() })),
+        ("POST", "/v1/optimizers/recipes/run") => {
+            let request: crate::optimizers::OptimizerRecipeRunRequest =
+                serde_json::from_value(body)?;
+            let (run, event) = optimizers.start_recipe(request).await?;
+            Ok(json!({ "run": run, "event": event }))
+        }
+        ("GET", "/v1/optimizers/runs") => {
+            let query: crate::optimizers::OptimizerQuery =
+                serde_json::from_value(body).unwrap_or_default();
+            let runs = optimizers.list(query).await?;
+            Ok(json!({ "runs": runs }))
+        }
+        ("POST", "/v1/optimizers/runs") => {
+            let request: crate::optimizers::OptimizerCreateRequest = serde_json::from_value(body)?;
+            let (run, event) = optimizers.create(request).await?;
+            Ok(json!({ "run": run, "event": event }))
+        }
+        ("GET", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/events") => {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/events");
+            let after_seq = body.get("after_seq").and_then(Value::as_u64).unwrap_or(0);
+            let limit = body.get("limit").and_then(Value::as_i64);
+            let events = optimizers
+                .events_after(id.to_string(), after_seq, limit)
+                .await?;
+            Ok(json!({ "events": events }))
+        }
+        ("GET", path)
+            if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/state/batch") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/state/batch");
+            let slices = body.get("slices").and_then(Value::as_array).map(|arr| {
+                arr.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            });
+            let at_seq = body.get("at_seq").and_then(Value::as_u64);
+            let batch = optimizers
+                .get_state_batch(id.to_string(), slices, at_seq)
+                .await?;
+            Ok(json!({ "slices": batch }))
+        }
+        ("GET", path) if path.starts_with("/v1/optimizers/runs/") && path.contains("/state/") => {
+            let rest = path.trim_start_matches("/v1/optimizers/runs/");
+            let (id, slice) = rest
+                .split_once("/state/")
+                .ok_or_else(|| anyhow::anyhow!("invalid optimizer state path"))?;
+            let at_seq = body.get("at_seq").and_then(Value::as_u64);
+            let slice = optimizers
+                .get_state(id.to_string(), slice.to_string(), at_seq)
+                .await?;
+            Ok(json!({ "slice": slice }))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/open_visual") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/open_visual");
+            let (run, event) = optimizers.open_visual(id.to_string()).await?;
+            Ok(json!({ "run": run, "event": event }))
+        }
+        ("POST", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/cancel") => {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/cancel");
+            let (run, event) = optimizers.cancel(id.to_string()).await?;
+            Ok(json!({ "run": run, "event": event }))
+        }
+        ("GET", path) if path.starts_with("/v1/optimizers/runs/") => {
+            let id = path.trim_start_matches("/v1/optimizers/runs/");
+            let run = optimizers.get(id.to_string()).await?;
+            Ok(json!({ "run": run }))
+        }
+        ("POST", "/v1/optimizers/import_local") => {
+            let request: crate::optimizers::OptimizerImportLocalRequest =
+                serde_json::from_value(body)?;
+            let (run, event) = optimizers.import_local(request).await?;
+            Ok(json!({ "run": run, "event": event }))
+        }
+        ("POST", "/v1/optimizers/reconcile_cloud") => {
+            let request: crate::optimizers::OptimizerReconcileRequest =
+                serde_json::from_value(body)?;
+            let (run, event) = optimizers.reconcile_cloud(request).await?;
+            Ok(json!({ "run": run, "event": event }))
+        }
+        ("GET", "/v1/optimizers/cloud/runs") => {
+            let algorithm = body
+                .get("algorithm")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let status = body
+                .get("status")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let limit = body.get("limit").and_then(Value::as_i64);
+            let runs = optimizers.list_cloud(algorithm, status, limit).await?;
+            Ok(json!({ "runs": runs }))
+        }
+        _ => anyhow::bail!("unsupported optimizer IPC route {method} {path}"),
+    }
+}
+
 pub fn local_addr(url: &str) -> Result<SocketAddr> {
     let trimmed = url.trim_start_matches("http://");
     trimmed.parse().context("parse visuals IPC addr")
@@ -515,5 +768,16 @@ mod tests {
                 "search": "reward chart", "limit": 5, "offset": 2
             })
         );
+    }
+
+    #[test]
+    fn rollout_base_is_strictly_loopback_http() {
+        assert_eq!(
+            validated_loopback_rollout_base("http://127.0.0.1:8098/").unwrap(),
+            "http://127.0.0.1:8098"
+        );
+        assert!(validated_loopback_rollout_base("https://127.0.0.1:8098").is_err());
+        assert!(validated_loopback_rollout_base("http://example.com:8098").is_err());
+        assert!(validated_loopback_rollout_base("file:///tmp/craftax").is_err());
     }
 }
