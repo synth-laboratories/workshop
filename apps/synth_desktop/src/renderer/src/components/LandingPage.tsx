@@ -46,10 +46,18 @@ export function ModelPicker({
 			const composer = document.querySelector<HTMLElement>('[data-testid="composer"]');
 			const composerTop = composer ? composer.getBoundingClientRect().top : Number.POSITIVE_INFINITY;
 			const bottomLimit = Math.min(window.innerHeight - inset, composerTop - gap);
-			const spaceBelow = bottomLimit - (rect.bottom + gap);
-			const spaceAbove = rect.top - gap - inset;
+			const spaceBelow = Math.max(0, bottomLimit - (rect.bottom + gap));
+			const spaceAbove = Math.max(0, rect.top - gap - inset);
 			const direction = spaceBelow >= 240 || spaceBelow >= spaceAbove ? "down" : "up";
-			const maxHeight = Math.max(120, Math.floor(direction === "down" ? spaceBelow : spaceAbove));
+			/*
+			 * Clamp to the space actually available on the chosen side. A floor
+			 * here (previously `Math.max(120, …)`) silently re-crossed the very
+			 * boundary bottomLimit exists to enforce, so a trigger sitting close
+			 * to the composer opened a dropdown straight over it. The panel
+			 * scrolls internally, so a tight slot degrades to scrolling, not
+			 * overlap.
+			 */
+			const maxHeight = Math.floor(direction === "down" ? spaceBelow : spaceAbove);
 			setPlacement({ direction, maxHeight });
 		};
 		compute();

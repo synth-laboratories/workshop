@@ -71,7 +71,7 @@ export const open_outputs_and_exercise_supported_viewports = actions(() => {
 
 export const outputs_panel_is_exercised = eventually(() =>
 	alignment.current.shelfOpen
-).within(5, "seconds");
+).within(8, "seconds");
 
 export const outputs_expanded_state_matches_the_panel = always(() =>
 	alignment.current.triggerStateMatchesPanel

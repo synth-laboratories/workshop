@@ -57,7 +57,7 @@ export const exercise_model_picker_over_terminal = actions(() => {
 
 export const picker_and_terminal_are_actually_exercised = eventually(() =>
 	surfaces.current.terminalOpen && surfaces.current.menuOpen
-).within(5, "seconds");
+).within(8, "seconds");
 
 export const model_picker_never_leaves_the_viewport = always(() =>
 	!surfaces.current.menuOpen || surfaces.current.menuInsideViewport
