@@ -10,7 +10,12 @@ from copy import deepcopy
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from ..config import LagunaConfig
-from .backends import FakeBackend, NativeMlxBackend, RemoteResponsesBackend
+from .backends import (
+    FakeBackend,
+    LlamaCppChatBackend,
+    NativeMlxBackend,
+    RemoteResponsesBackend,
+)
 from .backends.protocol import ModelBackend
 from .compaction import Compactor
 from .coordinator import ResponseCoordinator, response_shell
@@ -67,7 +72,24 @@ class ResponsesService:
     def _make_backend(config: LagunaConfig) -> ModelBackend:
         if config.backend == "mock":
             return FakeBackend(context_length=config.context_length)
+        if config.backend == "llama_cpp":
+            # A GGUF engine speaks Chat Completions and has no Responses
+            # surface. Binding it to the native-Responses passthrough is the
+            # historical bug this branch exists to prevent: that adapter would
+            # 502 every Responses turn and 501 every Chat turn.
+            return LlamaCppChatBackend(
+                engine_url=config.engine_base_url,
+                model=config.default_model,
+                context_length=config.context_length,
+                api_key=config.engine_api_key,
+            )
         if config.backend == "external":
+            if config.is_muse:
+                raise RuntimeError(
+                    "Muse Glimmer cannot be served through the native-Responses "
+                    "passthrough; configure SYNTH_LAGUNA_BACKEND=llama_cpp with "
+                    "SYNTH_LAGUNA_ENGINE_URL."
+                )
             return RemoteResponsesBackend(
                 config.upstream_url, config.upstream_api_key, config.context_length
             )
@@ -106,6 +128,17 @@ class ResponsesService:
         while True:
             await asyncio.sleep(1.0)
             await self.unload_if_idle()
+
+    async def engine_status(self) -> dict[str, Any] | None:
+        """State of an out-of-process engine, or None when weights are in-process.
+
+        Only a backend that depends on another process has an answer here; the
+        MLX backend's residency *is* the daemon's, so it has nothing to add.
+        """
+        probe = getattr(self.backend, "engine_status", None)
+        if probe is None:
+            return None
+        return await probe()
 
     def residency(self) -> dict[str, Any] | None:
         residency = getattr(self.backend, "residency", None)

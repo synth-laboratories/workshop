@@ -46,13 +46,17 @@ export function LocalModelResidency({ status }: { status: LagunaStatus | null })
 		const idle = status?.lastUsedAt != null
 			? Math.max(0, Math.floor((now - status.lastUsedAt) / 1_000))
 			: reportedIdle + elapsed;
-		const unloadAfter = status?.idleUnloadAfterSeconds ?? null;
+		// `freeAt` is the daemon's answer to "when do these weights go away",
+		// and a null answer means "no eviction is scheduled" — the case for a
+		// model whose weights live in an engine this daemon cannot unload.
+		// Deriving a countdown from the idle setting instead promised a free
+		// that never arrives: the sidebar showed Muse Glimmer freeing in 14
+		// minutes while it stays resident for as long as it is selected.
 		const remaining = status?.freeAt != null
 			? Math.max(0, Math.ceil((status.freeAt - now) / 1_000))
-			: unloadAfter == null ? null : Math.max(0, unloadAfter - idle);
-		const scheduledAt = status?.freeAt ?? (remaining == null ? null : now + remaining * 1_000);
-		return { idle, remaining, scheduledAt };
-	}, [now, status?.freeAt, status?.idleSeconds, status?.idleUnloadAfterSeconds, status?.lastUsedAt, status?.updatedAt]);
+			: null;
+		return { idle, remaining, scheduledAt: status?.freeAt ?? null };
+	}, [now, status?.freeAt, status?.idleSeconds, status?.lastUsedAt, status?.updatedAt]);
 
 	if (status?.phase !== "ready" || !status.loadedModel) return null;
 	const model = compactModelName(status.loadedModel);

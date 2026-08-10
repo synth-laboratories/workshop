@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from ..config import LagunaConfig
 from .errors import ResponsesError, invalid
 from .ids import ensure_id
 
@@ -178,7 +179,12 @@ def normalize_request(body: Any, *, default_model: str) -> dict[str, Any]:
                 400,
                 "reasoning.effort",
             )
-    request["model"] = str(request.get("model") or default_model)
+    # One model has one id. The pre-GGUF spelling of Muse is still accepted on
+    # the wire — a stored Codex profile can carry it — but it is normalized
+    # here so nothing downstream sees two names for the same weights.
+    request["model"] = LagunaConfig.normalize_model_id(
+        str(request.get("model") or default_model)
+    )
     if not request["model"]:
         raise invalid("model is required.", param="model")
     top_k = request.get("top_k")
