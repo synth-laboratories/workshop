@@ -28,7 +28,6 @@ type Props = {
 	onConfigureAccount?: () => void;
 	/** Opens the plan/billing recovery path when cloud spend is blocked. */
 	onResolveBilling?: () => void;
-	museReady?: boolean;
 	approvalPolicy: ApprovalPolicy;
 	sandboxMode: SandboxMode;
 	onSelectPermissions: (approvalPolicy: ApprovalPolicy, sandboxMode: SandboxMode) => void;
@@ -363,7 +362,6 @@ function ModelMenu({
 	onSelectTarget,
 	onConfigureAccount,
 	onResolveBilling,
-	museReady = false,
 	open,
 	onOpenChange
 }: {
@@ -373,7 +371,6 @@ function ModelMenu({
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
 	onResolveBilling?: () => void;
-	museReady?: boolean;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }) {
@@ -431,7 +428,7 @@ function ModelMenu({
 			{open ? (
 				<div id="composer-model-menu" className="composer-model-menu" role="listbox" data-testid="composer-model-menu">
 					{GROUP_ORDER.map((group) => {
-						const items = LAUNCH_PICKER_TARGETS.filter((t) => t.group === group && (t.id !== "local-muse-glimmer" || museReady));
+						const items = LAUNCH_PICKER_TARGETS.filter((t) => t.group === group);
 						if (!items.length) return null;
 						return (
 							<div key={group} className="composer-model-group">
@@ -589,7 +586,6 @@ export function Composer({
 	onSelectTarget,
 	onConfigureAccount,
 	onResolveBilling,
-	museReady = false,
 	approvalPolicy,
 	sandboxMode,
 	onSelectPermissions,
@@ -1164,7 +1160,6 @@ export function Composer({
 							onSelectTarget={onSelectTarget}
 							onConfigureAccount={onConfigureAccount}
 							onResolveBilling={onResolveBilling}
-							museReady={museReady}
 							open={modelMenuOpen}
 							onOpenChange={setModelMenuOpen}
 						/>

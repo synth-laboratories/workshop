@@ -53,15 +53,7 @@ const MUSE_MAIN_GGUF: &str = "muse-glimmer-30B-kquant-17gb.gguf";
 const MUSE_MMPROJ_GGUF: &str = "mmproj-kquant.gguf";
 const MUSE_DFLASH_GGUF: &str = "dflash-kquant.gguf";
 const MUSE_FILES: &[&str] = &[MUSE_MAIN_GGUF, MUSE_MMPROJ_GGUF, MUSE_DFLASH_GGUF];
-const MUSE_FILE_SIZES: &[(&str, u64)] = &[
-    (MUSE_MAIN_GGUF, 16_756_681_056),
-    (MUSE_MMPROJ_GGUF, 1_400_328_928),
-    (MUSE_DFLASH_GGUF, 1_631_205_312),
-];
-// First upstream commit containing Muse Glimmer, multimodal projector, and DFlash support.
-// b10342 predates ggml-org/llama.cpp#26841 and cannot load this architecture.
-const LLAMA_CPP_COMMIT: &str = "dd1ea524333b1e697489067d7a4c39c60d32beee";
-const CMAKE_RELEASE: &str = "4.1.0";
+const LLAMA_CPP_RELEASE: &str = "b10342";
 const MODEL_INDEX: &str = "model.safetensors.index.json";
 const SELECTED_MODEL_FILE: &str = "selected_model_path";
 /// The daemon at `DEFAULT_PORT` is the only local runtime: it owns the weights,
@@ -1185,16 +1177,10 @@ fn validate_model_dir(model_dir: &Path) -> Result<LagunaModelHit> {
     if model_dir.join(MUSE_MAIN_GGUF).is_file() {
         let canonical = model_dir.canonicalize()?;
         let mut total_bytes = 0;
-        for (file, expected_bytes) in MUSE_FILE_SIZES {
-            let actual_bytes = fs::metadata(canonical.join(file))
+        for file in MUSE_FILES {
+            total_bytes += fs::metadata(canonical.join(file))
                 .with_context(|| format!("Missing Muse runtime artifact {file}"))?
                 .len();
-            if actual_bytes != *expected_bytes {
-                return Err(anyhow::anyhow!(
-                    "Incomplete Muse runtime artifact {file}: expected {expected_bytes} bytes, found {actual_bytes}"
-                ));
-            }
-            total_bytes += actual_bytes;
         }
         let suffix_depth = Path::new(MUSE_GLIMMER_MODEL).components().count();
         let models_root = canonical
@@ -1460,7 +1446,7 @@ fn spawn_muse_engine(root: &Path) -> Result<()> {
         let _ = fs::remove_file(&pid_path);
     }
     let llama_server = dirs::home_dir().unwrap_or_default().join(format!(
-        ".synth-desktop/muse/runtime/llama-{LLAMA_CPP_COMMIT}/llama-server"
+        ".synth-desktop/muse/runtime/llama-{LLAMA_CPP_RELEASE}/llama-server"
     ));
     if !llama_server.is_file() {
         return Err(anyhow::anyhow!(
@@ -1666,7 +1652,7 @@ fn dir_size(path: &Path) -> u64 {
 
 fn muse_runtime_ready() -> bool {
     let server = dirs::home_dir().unwrap_or_default().join(format!(
-        ".synth-desktop/muse/runtime/llama-{LLAMA_CPP_COMMIT}/llama-server"
+        ".synth-desktop/muse/runtime/llama-{LLAMA_CPP_RELEASE}/llama-server"
     ));
     Command::new(server)
         .arg("--version")
@@ -1687,72 +1673,26 @@ where
     let muse_home = dirs::home_dir()
         .unwrap_or_default()
         .join(".synth-desktop/muse");
-    let source_archive = muse_home.join(format!("llama-{LLAMA_CPP_COMMIT}.tar.gz"));
-    let cmake_archive = muse_home.join(format!("cmake-{CMAKE_RELEASE}-macos-universal.tar.gz"));
-    let source = muse_home.join(format!("src/llama-{LLAMA_CPP_COMMIT}"));
-    let build = source.join("build");
-    let runtime = muse_home.join(format!("runtime/llama-{LLAMA_CPP_COMMIT}"));
-    let cmake = muse_home.join(format!(
-        "tools/cmake-{CMAKE_RELEASE}-macos-universal/CMake.app/Contents/bin/cmake"
-    ));
+    let archive = muse_home.join(format!("llama-{LLAMA_CPP_RELEASE}-macos-arm64.tar.gz"));
+    let archive_arg = archive.to_string_lossy().into_owned();
+    let runtime = muse_home.join("runtime");
+    let runtime_arg = runtime.to_string_lossy().into_owned();
     fs::create_dir_all(&muse_home)?;
-    fs::create_dir_all(&source)?;
-    fs::create_dir_all(muse_home.join("tools"))?;
-    progress("Downloading the Muse-compatible llama.cpp source and build tools…");
-    run_managed_command(
-        "/usr/bin/curl",
-        &[
-            "--fail", "--location", "--retry", "3", "--output",
-            &source_archive.to_string_lossy(),
-            &format!("https://github.com/ggml-org/llama.cpp/archive/{LLAMA_CPP_COMMIT}.tar.gz"),
-        ],
-        &muse_home.join("install.log"),
-    )?;
-    run_managed_command(
-        "/usr/bin/tar",
-        &["-xzf", &source_archive.to_string_lossy(), "--strip-components", "1", "-C", &source.to_string_lossy()],
-        &muse_home.join("install.log"),
-    )?;
-    run_managed_command(
-        "/usr/bin/curl",
-        &[
-            "--fail", "--location", "--retry", "3", "--output",
-            &cmake_archive.to_string_lossy(),
-            &format!("https://github.com/Kitware/CMake/releases/download/v{CMAKE_RELEASE}/cmake-{CMAKE_RELEASE}-macos-universal.tar.gz"),
-        ],
-        &muse_home.join("install.log"),
-    )?;
-    run_managed_command(
-        "/usr/bin/tar",
-        &["-xzf", &cmake_archive.to_string_lossy(), "-C", &muse_home.join("tools").to_string_lossy()],
-        &muse_home.join("install.log"),
-    )?;
-    progress("Building the pinned Muse-compatible Metal runtime…");
-    run_managed_command(
-        &cmake.to_string_lossy(),
-        &[
-            "-S", &source.to_string_lossy(), "-B", &build.to_string_lossy(),
-            "-DLLAMA_CURL=OFF", "-DGGML_METAL=ON", "-DLLAMA_BUILD_TESTS=OFF",
-            "-DLLAMA_BUILD_EXAMPLES=OFF", "-DLLAMA_BUILD_TOOLS=ON", "-DCMAKE_BUILD_TYPE=Release",
-        ],
-        &muse_home.join("install.log"),
-    )?;
-    run_managed_command(
-        &cmake.to_string_lossy(),
-        &["--build", &build.to_string_lossy(), "--config", "Release", "-j", "8", "--target", "llama-server"],
-        &muse_home.join("install.log"),
-    )?;
     fs::create_dir_all(&runtime)?;
-    for entry in fs::read_dir(build.join("bin"))? {
-        let entry = entry?;
-        let destination = runtime.join(entry.file_name());
-        if entry.file_type()?.is_symlink() {
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(fs::read_link(entry.path())?, destination)?;
-        } else if entry.file_type()?.is_file() {
-            fs::copy(entry.path(), destination)?;
-        }
-    }
+    progress("Downloading the official llama.cpp Metal runtime…");
+    run_managed_command(
+        "/usr/bin/curl",
+        &[
+            "--fail", "--location", "--retry", "3", "--output", &archive_arg,
+            "https://github.com/ggml-org/llama.cpp/releases/download/b10342/llama-b10342-bin-macos-arm64.tar.gz",
+        ],
+        &muse_home.join("install.log"),
+    )?;
+    run_managed_command(
+        "/usr/bin/tar",
+        &["-xzf", &archive_arg, "-C", &runtime_arg],
+        &muse_home.join("install.log"),
+    )?;
     if !muse_runtime_ready() {
         return Err(anyhow::anyhow!(
             "The managed llama.cpp runtime installed, but llama-server could not start. See {}",

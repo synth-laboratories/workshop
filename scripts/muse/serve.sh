@@ -2,7 +2,7 @@
 set -euo pipefail
 
 MUSE_HOME="${SYNTH_MUSE_HOME:-$HOME/.synth-desktop/muse}"
-SERVER="$MUSE_HOME/runtime/llama-dd1ea524333b1e697489067d7a4c39c60d32beee/llama-server"
+SERVER="$MUSE_HOME/runtime/llama-b10342/llama-server"
 MODEL_DIR="${SYNTH_MUSE_MODEL_PATH:-$HOME/.synth-desktop/models/meta-models/Muse-Glimmer-30B-GGUF}"
 MODEL="$MODEL_DIR/muse-glimmer-30B-kquant-17gb.gguf"
 MMPROJ="$MODEL_DIR/mmproj-kquant.gguf"

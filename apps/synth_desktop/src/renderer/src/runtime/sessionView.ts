@@ -9,7 +9,6 @@ import type {
 import {
 	OPENROUTER_LAGUNA_S_MODEL,
 	OPENROUTER_LUNA_MODEL,
-	MUSE_GLIMMER_MODEL,
 	SYNTH_CLOUD_LAGUNA_S_MODEL,
 	type ActivityEvent,
 	type ArtifactRef,
@@ -70,8 +69,6 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 	const adapter = null;
 
 	switch (targetId) {
-		case "local-muse-glimmer":
-			return { kind: "local", model: MUSE_GLIMMER_MODEL, adapter };
 		case "openrouter-luna":
 			return {
 				kind: "remote",
@@ -109,7 +106,7 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 }
 
 export function executionTargetToUiId(target: ExecutionTarget): string {
-	if (target.kind === "local") return target.model === MUSE_GLIMMER_MODEL ? "local-muse-glimmer" : "local-laguna";
+	if (target.kind === "local") return "local-laguna";
 	if (target.kind === "intern") {
 		return target.mode === "async" ? "intern-async" : "intern-sync";
 	}
