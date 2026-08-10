@@ -404,7 +404,8 @@ export default function App() {
 			return window.localStorage.getItem("synth.inferenceRailOpen") !== "0";
 		}
 	);
-	const inferenceMonitor = useInferenceMonitor({ visible: selectedTargetId === "local-laguna" });
+	const selectedTargetIsLocal = selectedTargetId === "local-laguna" || selectedTargetId === "local-muse-glimmer";
+	const inferenceMonitor = useInferenceMonitor({ visible: selectedTargetIsLocal });
 	const [modelPerformance, setModelPerformance] = useState<ModelPerformanceSummary[]>([]);
 	useEffect(() => {
 		let disposed = false;
@@ -434,7 +435,7 @@ export default function App() {
 		}
 		return chosen;
 	}, [modelPerformance]);
-	const selectedModelMedianTps = selectedTargetId === "local-laguna"
+	const selectedModelMedianTps = selectedTargetIsLocal
 		? inferenceMonitor.snapshot?.rolling.decodeTpsP50 ?? null
 		: null;
 	const selectedPersistedPerformance = persistedPerformanceByTarget.get(selectedTargetId);

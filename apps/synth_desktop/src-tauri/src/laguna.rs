@@ -92,6 +92,10 @@ const SETTINGS_PATH: &str = "/v1/synth/settings";
 /// Guards against an SSE peer that never emits an event boundary.
 const SSE_BUFFER_LIMIT: usize = 1 << 20;
 static LOCAL_RUNTIME_LEASE: OnceLock<std::sync::Mutex<Option<fs::File>>> = OnceLock::new();
+const GIB: u64 = 1024 * 1024 * 1024;
+const LOCAL_MODEL_SYSTEM_RESERVE_BYTES: u64 = 12 * GIB;
+const LAGUNA_PEAK_MEMORY_BYTES: u64 = 30 * GIB;
+const MUSE_PEAK_MEMORY_BYTES: u64 = 32 * GIB;
 
 fn local_runtime_lease() -> &'static std::sync::Mutex<Option<fs::File>> {
     LOCAL_RUNTIME_LEASE.get_or_init(|| std::sync::Mutex::new(None))
@@ -150,6 +154,85 @@ fn release_local_runtime_lease() {
             let _ = FileExt::unlock(&file);
         }
     }
+}
+
+fn parse_memory_pressure_free_percent(output: &str) -> Option<u64> {
+    output.lines().find_map(|line| {
+        line.strip_prefix("System-wide memory free percentage:")?
+            .trim()
+            .strip_suffix('%')?
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .filter(|percent| *percent <= 100)
+    })
+}
+
+fn mac_physical_memory_bytes() -> Option<u64> {
+    let output = Command::new("/usr/sbin/sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().parse().ok())
+        .flatten()
+}
+
+fn mac_available_memory_bytes(total: u64) -> Option<u64> {
+    let output = Command::new("/usr/bin/memory_pressure")
+        .arg("-Q")
+        .output()
+        .ok()?;
+    let percent = output.status.success().then(|| {
+        parse_memory_pressure_free_percent(&String::from_utf8_lossy(&output.stdout))
+    })??;
+    Some(total.saturating_mul(percent) / 100)
+}
+
+fn validate_local_model_memory_capacity(
+    model_id: &str,
+    total: u64,
+    available: Option<u64>,
+) -> Result<()> {
+    let peak = if model_id == MUSE_GLIMMER_MODEL {
+        MUSE_PEAK_MEMORY_BYTES
+    } else {
+        LAGUNA_PEAK_MEMORY_BYTES
+    };
+    let required = peak + LOCAL_MODEL_SYSTEM_RESERVE_BYTES;
+    if total < required {
+        return Err(anyhow::anyhow!(
+            "Not enough unified memory for {model_id}: this Mac has {:.0} GiB, but Synth requires {:.0} GiB ({:.0} GiB model peak + {:.0} GiB system reserve). The model was not loaded.",
+            total as f64 / GIB as f64,
+            required as f64 / GIB as f64,
+            peak as f64 / GIB as f64,
+            LOCAL_MODEL_SYSTEM_RESERVE_BYTES as f64 / GIB as f64,
+        ));
+    }
+    if let Some(available) = available {
+        if available < required {
+            return Err(anyhow::anyhow!(
+                "Not enough unified memory available for {model_id}: about {:.0} GiB is available now, but Synth requires {:.0} GiB ({:.0} GiB model peak + {:.0} GiB system reserve). Close memory-heavy apps or unload the current local model, then try again. The model was not loaded.",
+                available as f64 / GIB as f64,
+                required as f64 / GIB as f64,
+                peak as f64 / GIB as f64,
+                LOCAL_MODEL_SYSTEM_RESERVE_BYTES as f64 / GIB as f64,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_local_model_memory_capacity(model_id: &str) -> Result<()> {
+    if env::var("SYNTH_LOCAL_MODEL_MEMORY_GUARD").as_deref() == Ok("0") {
+        return Ok(());
+    }
+    let Some(total) = mac_physical_memory_bytes() else {
+        return Ok(());
+    };
+    validate_local_model_memory_capacity(model_id, total, mac_available_memory_bytes(total))
 }
 
 #[derive(Clone, Copy)]
@@ -709,6 +792,12 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
                     return Ok(None);
                 }
             }
+        }
+
+        if let Err(error) = ensure_local_model_memory_capacity(&selected_model) {
+            self.set_error(error.to_string()).await;
+            release_local_runtime_lease();
+            return Ok(None);
         }
 
         // The Synth-managed daemon is the only local runtime: it loads the
@@ -2099,6 +2188,37 @@ mod tests {
             parse_df_available_bytes(output),
             Some(48 * 1024 * 1024 * 1024)
         );
+    }
+
+    #[test]
+    fn parses_macos_memory_pressure_capacity_for_load_admission() {
+        let output = "The system has 68719476736 bytes.\nSystem-wide memory free percentage: 43%\n";
+        assert_eq!(parse_memory_pressure_free_percent(output), Some(43));
+        assert_eq!(parse_memory_pressure_free_percent("free: unknown"), None);
+        assert_eq!(
+            parse_memory_pressure_free_percent("System-wide memory free percentage: 101%"),
+            None
+        );
+    }
+
+    #[test]
+    fn refuses_a_second_oss_model_before_it_can_exhaust_unified_memory() {
+        let error = validate_local_model_memory_capacity(
+            MUSE_GLIMMER_MODEL,
+            64 * GIB,
+            Some(28 * GIB),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("28 GiB is available"));
+        assert!(error.contains("44 GiB"));
+        assert!(error.contains("was not loaded"));
+        assert!(validate_local_model_memory_capacity(
+            MUSE_GLIMMER_MODEL,
+            64 * GIB,
+            Some(50 * GIB)
+        )
+        .is_ok());
     }
     fn fixture() -> PathBuf {
         let root =
