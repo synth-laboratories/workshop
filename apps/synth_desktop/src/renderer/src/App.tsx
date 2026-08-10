@@ -1554,6 +1554,15 @@ export default function App() {
 		return status;
 	}, [refreshHealth]);
 
+	const onFreeLocalMemory = useCallback(async () => {
+		const bridge = window.synthLaguna;
+		if (!bridge?.freeMemory) throw new Error("Local model controls are unavailable in this build");
+		const outcome = await bridge.freeMemory();
+		if (outcome.conflict || !outcome.released) throw new Error(outcome.detail ?? "Local model memory could not be freed");
+		setLaguna(await bridge.getStatus());
+		showToast(outcome.detail ?? "Local model memory freed");
+	}, [showToast]);
+
 	const openSearch = useCallback(() => {
 		if (!searchOpen && document.activeElement instanceof HTMLElement) {
 			searchRestoreFocusRef.current = document.activeElement;
@@ -1855,6 +1864,7 @@ export default function App() {
 						}
 					}}
 					onPauseToggle={() => setDownloadPaused((v) => !v)}
+					onFreeLocalMemory={onFreeLocalMemory}
 				/>
 
 				<main className="main-pane">
@@ -1906,7 +1916,7 @@ export default function App() {
 								className={`titlebar-icon-btn${sidePanelOpen && sidePanelTab === "inference" ? " active" : ""}`}
 								aria-label={sidePanelOpen && sidePanelTab === "inference" ? "Hide inference panel" : "Show inference panel"}
 								aria-pressed={sidePanelOpen && sidePanelTab === "inference"}
-								title="MLX sidecar inference panel"
+								title="Local inference panel"
 								data-testid="toggle-inference-rail"
 								onClick={() => {
 									const next = !(sidePanelOpen && sidePanelTab === "inference");
@@ -2153,7 +2163,7 @@ export default function App() {
 										...(activeLocalModel ? [{
 											id: "inference",
 											label: "Inference",
-											content: <InferencePanel visible monitor={inferenceMonitor} turnRunning={Boolean(activeChatRunning && activeChatSession?.target.kind === "local")} warmingUp={activeChatWarmingUp} onOpenSettings={() => setView({ kind: "settings", section: "inference" })} />
+											content: <InferencePanel visible monitor={inferenceMonitor} observedPerformance={persistedPerformanceByTarget.get("local-laguna") ?? null} turnRunning={Boolean(activeChatRunning && activeChatSession?.target.kind === "local")} warmingUp={activeChatWarmingUp} onOpenSettings={() => setView({ kind: "settings", section: "inference" })} />
 										}] : [])
 									]}
 								/>

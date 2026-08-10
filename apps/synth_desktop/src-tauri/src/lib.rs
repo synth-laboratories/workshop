@@ -2,6 +2,7 @@ mod account;
 mod account_cloud;
 mod cloud;
 mod codex;
+mod credential_broker;
 pub mod core_runtime;
 mod device_auth;
 mod domain;
@@ -1431,9 +1432,10 @@ async fn prepare_codex_provider(
         .is_some_and(|provider| provider.eq_ignore_ascii_case("synth-cloud"))
     {
         let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
-        codex::apply_synth_cloud_provider(
-            &mut request,
-            &resolved.backend_url,
+		codex::apply_synth_cloud_provider(
+			&mut request,
+			credential_broker::shared().map_err(|error| error.to_string())?.as_ref(),
+			&resolved.backend_url,
             resolved.api_key.as_deref(),
         )?;
     }

@@ -161,6 +161,7 @@ export function installDesktopBridge(): void {
 		? {
 			getStatus: () => invoke<LagunaStatus>("laguna_get_status"),
 			reload: () => invoke<LagunaStatus>("laguna_reload"),
+			freeMemory: () => invoke<{ released: boolean; conflict: boolean; detail: string | null }>("laguna_model_unload"),
 			listModels: () => invoke<LagunaModelHit[]>("laguna_models_list"),
 			chooseModelDirectory: async () => {
 				const selection = await open({ directory: true, multiple: false, title: "Choose a Laguna model folder" });
@@ -198,6 +199,7 @@ export function installDesktopBridge(): void {
 		: {
 			getStatus: async () => unavailableLaguna,
 			reload: async () => unavailableLaguna,
+			freeMemory: async () => ({ released: false, conflict: false, detail: "Local model controls require Synth Desktop" }),
 			listModels: async () => [],
 			downloadModel: async () => { throw new Error("Model downloads require Synth Desktop"); },
 			deleteModel: async () => { throw new Error("Model deletion requires Synth Desktop"); },

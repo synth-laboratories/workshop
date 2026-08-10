@@ -34,7 +34,6 @@ const toolbar = extract((state: any) => {
 	const permission = document.querySelector<HTMLElement>('[data-testid="approval-mode-select"]');
 	const permissionLabel = permission?.querySelector<HTMLElement>("span") ?? null;
 	const model = document.querySelector<HTMLElement>('[data-testid="composer-model"]');
-	const throughput = document.querySelector<HTMLElement>(".model-chip-throughput");
 	const reasoning = document.querySelector<HTMLElement>('[data-testid="reasoning-effort-select"]');
 	const modelMenu = document.querySelector<HTMLElement>('[data-testid="composer-model-menu"]');
 	const lagunaOption = document.querySelector<HTMLElement>(
@@ -43,7 +42,6 @@ const toolbar = extract((state: any) => {
 	const permissionRect = permission?.getBoundingClientRect() ?? null;
 	const permissionLabelRect = permissionLabel?.getBoundingClientRect() ?? null;
 	const modelRect = model?.getBoundingClientRect() ?? null;
-	const throughputRect = throughput?.getBoundingClientRect() ?? null;
 	const reasoningRect = reasoning?.getBoundingClientRect() ?? null;
 	const permissionText = (permissionLabel?.textContent ?? "").replace(/\s+/g, " ").trim();
 	const showsFullSystemAccess = /Never ask.*Full system access/i.test(permissionText)
@@ -55,9 +53,6 @@ const toolbar = extract((state: any) => {
 	const permissionStacksVertically = showsFullSystemAccess && (
 		permissionLineCount > 1
 		|| Boolean(permissionRect && permissionRect.height > 36)
-	);
-	const throughputOverlapsReasoning = Boolean(
-		throughputRect && reasoningRect && overlaps(throughputRect, reasoningRect, 0)
 	);
 	const modelOverlapsReasoning = Boolean(
 		modelRect && reasoningRect && overlaps(modelRect, reasoningRect, 0)
@@ -71,11 +66,8 @@ const toolbar = extract((state: any) => {
 		permissionStacksVertically,
 		permissionLineCount,
 		permissionHeight: permissionRect?.height ?? 0,
-		throughputVisible: Boolean(throughput),
 		reasoningVisible: Boolean(reasoning),
-		throughputOverlapsReasoning,
 		modelOverlapsReasoning,
-		unavailableThroughput: /Unavailable\s+tok\/s/i.test(throughput?.textContent ?? ""),
 		viewportWidth: viewport.innerWidth
 	};
 });
@@ -102,7 +94,6 @@ export const select_laguna_s_with_max_thinking = actions(() => {
 export const toolbar_fixture_reaches_laguna_and_permissions = eventually(() =>
 	toolbar.current.showsFullSystemAccess
 		&& toolbar.current.reasoningVisible
-		&& (toolbar.current.throughputVisible || toolbar.current.unavailableThroughput)
 ).within(10, "seconds");
 
 /** CUA: "Never ask · Full system access" must stay one line in the toolbar. */
@@ -111,10 +102,9 @@ export const permission_control_never_stacks_full_system_access = always(() =>
 );
 
 /**
- * CUA: throughput label must not paint through/under the Thinking Max chip.
- * Checks both the throughput span and the whole model chip against Max.
+ * CUA: the compact model chip must not paint through the Thinking Max chip.
  */
 export const throughput_never_overlaps_thinking_chip = always(() =>
 	!toolbar.current.reasoningVisible
-		|| (!toolbar.current.throughputOverlapsReasoning && !toolbar.current.modelOverlapsReasoning)
+		|| !toolbar.current.modelOverlapsReasoning
 );

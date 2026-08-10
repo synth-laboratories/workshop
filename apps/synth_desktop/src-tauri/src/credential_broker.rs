@@ -362,7 +362,7 @@ async fn proxy(state: Arc<BrokerState>, request: Request<Incoming>) -> Result<Re
             .map_err(|_| std::io::Error::other("Synth Cloud ended the response early."))
     });
     Ok(response
-        .body(StreamBody::new(stream).boxed())
+		.body(BodyExt::boxed(StreamBody::new(stream)))
         .unwrap_or_else(|_| {
             json_error(
                 StatusCode::BAD_GATEWAY,

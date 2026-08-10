@@ -25,8 +25,8 @@ const { modelCapabilitiesForTarget } = await import(pathToFileURL(compiled).href
 test("Laguna XS presents minimal and max thinking without changing transport values", () => {
 	const reasoning = modelCapabilitiesForTarget("local-laguna")?.knobs.find((knob) => knob.id === "reasoning");
 	assert.deepEqual(reasoning?.options, [
-		{ id: "none", label: "Minimal" },
-		{ id: "high", label: "Max" }
+		{ displayValue: "Minimal", transportValue: "none" },
+		{ displayValue: "Max", transportValue: "high" }
 	]);
 	assert.equal(reasoning?.defaultValue, "high");
 });

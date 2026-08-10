@@ -432,7 +432,6 @@ function ModelMenu({
 					className={`model-chip-logo model-chip-logo-${providerMarkForTarget(state.selectedTargetId)}`}
 				/>
 				<span className="model-chip-label">{modelLabel}</span>
-				{modelMedianTpsLabel ? <span className="model-chip-throughput">{modelMedianTpsLabel}</span> : null}
 				<IconChevron />
 			</button>
 			{open ? (

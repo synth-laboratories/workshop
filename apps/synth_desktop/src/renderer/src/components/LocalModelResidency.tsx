@@ -31,9 +31,11 @@ function formatScheduledTime(timestamp: number): string {
 	}).format(new Date(timestamp));
 }
 
-export function LocalModelResidency({ status }: { status: LagunaStatus | null }) {
+export function LocalModelResidency({ status, onFreeMemory }: { status: LagunaStatus | null; onFreeMemory?: () => Promise<void> }) {
 	const [expanded, setExpanded] = useState(false);
 	const [now, setNow] = useState(Date.now());
+	const [freeing, setFreeing] = useState(false);
+	const [freeError, setFreeError] = useState<string | null>(null);
 	useEffect(() => {
 		if (status?.phase !== "ready" || !status.loadedModel) return;
 		const timer = window.setInterval(() => setNow(Date.now()), 1_000);
@@ -86,6 +88,15 @@ export function LocalModelResidency({ status }: { status: LagunaStatus | null })
 					<div><span>Last prompt</span><strong>{formatAge(timing.idle)}</strong></div>
 					<div><span>Memory</span><strong>{formatMemory(status.memoryBytes)}</strong></div>
 					<div><span>Next free</span><strong aria-live="polite">{countdown}</strong></div>
+					{freeError ? <p className="model-residency-error" role="alert">{freeError}</p> : null}
+					<button type="button" className="model-residency-free" data-testid="free-local-model-memory" disabled={freeing || !onFreeMemory} onClick={async () => {
+						if (!onFreeMemory) return;
+						setFreeing(true);
+						setFreeError(null);
+						try { await onFreeMemory(); }
+						catch (reason) { setFreeError(reason instanceof Error ? reason.message : String(reason)); }
+						finally { setFreeing(false); }
+					}}>{freeing ? "Freeing memory…" : "Free memory"}</button>
 				</div>
 			) : null}
 		</div>

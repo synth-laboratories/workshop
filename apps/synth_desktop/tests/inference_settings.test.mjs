@@ -216,7 +216,7 @@ test("the ready form renders every settings group with the daemon's values", () 
 	assert.match(html, /aria-checked="true"[^>]*data-testid="inference-reasoning-none"/);
 	assert.match(html, /aria-checked="false"[^>]*data-testid="inference-reasoning-high"/);
 	// The footer points at the panel instead of duplicating live stats.
-	assert.match(html, /MLX sidecar inference panel/);
+	assert.doesNotMatch(html, /MLX sidecar|Local inference panel/);
 	assert.doesNotMatch(html, /tok\/s/);
 });
 

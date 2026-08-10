@@ -500,9 +500,10 @@ async fn prepare_start(
         .is_some_and(|provider| provider.eq_ignore_ascii_case("synth-cloud"))
     {
         let resolved = synth_config::resolve()?;
-        crate::codex::apply_synth_cloud_provider(
-            &mut request,
-            &resolved.backend_url,
+		crate::codex::apply_synth_cloud_provider(
+			&mut request,
+			crate::credential_broker::shared()?.as_ref(),
+			&resolved.backend_url,
             resolved.api_key.as_deref(),
         )
         .map_err(|message| anyhow!(message))?;

@@ -33,6 +33,7 @@ type Props = {
 	onRetryAccount?: () => void;
 	onSignOut?: () => void | Promise<void>;
 	onPauseToggle: () => void;
+	onFreeLocalMemory?: () => Promise<void>;
 	onRenameChat?: (id: string, title: string) => void;
 	onPinChat?: (id: string, pinned: boolean) => void;
 	onArchiveChat?: (id: string, archived: boolean) => void;
@@ -134,6 +135,7 @@ export function Sidebar({
 	onRetryAccount,
 	onSignOut,
 	onPauseToggle,
+	onFreeLocalMemory,
 	onRenameChat,
 	onPinChat,
 	onArchiveChat,
@@ -407,7 +409,7 @@ export function Sidebar({
 			</div>
 
 			<div className="sidebar-footer">
-				<LocalModelResidency status={lagunaStatus} />
+				<LocalModelResidency status={lagunaStatus} onFreeMemory={onFreeLocalMemory} />
 				<ModelDownloadBar state={state} onPauseToggle={onPauseToggle} />
 				<div className="account-footer" ref={accountMenuRef}>
 					{accountMenuOpen ? (

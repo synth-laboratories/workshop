@@ -84,6 +84,7 @@ export type LagunaDownloadProgress = {
 export type LagunaBridge = {
 	getStatus(): Promise<LagunaStatus>;
 	reload(): Promise<LagunaStatus>;
+	freeMemory?(): Promise<{ released: boolean; conflict: boolean; detail: string | null }>;
 	onStatus(listener: (status: LagunaStatus) => void): () => void;
 	listModels(): Promise<LagunaModelHit[]>;
 	chooseModelDirectory(): Promise<string | null>;
@@ -204,7 +205,7 @@ export type CodexSessionStart = {
 	sessionId: string;
 	workspace: string;
 	baseUrl: string;
-	apiKey: string;
+	apiKey?: string;
 	model: string;
 	providerName: string;
 	providerTitle: string;
