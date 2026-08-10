@@ -74,12 +74,25 @@ for raw in sys.stdin:
 
     send({"jsonrpc": "2.0", "id": request_id, "result": result})
     if method == "thread/compact/start":
+        compact_turn_id = "compact-fixture-1"
         send({
             "jsonrpc": "2.0",
             "method": "thread/compacted",
             "params": {
                 "threadId": params.get("threadId", "thread-fixture"),
-                "turnId": "compact-fixture-1",
+                "turnId": compact_turn_id,
+            },
+        })
+        send({
+            "jsonrpc": "2.0",
+            "method": "turn/completed",
+            "params": {
+                "threadId": params.get("threadId", "thread-fixture"),
+                "turn": {
+                    "id": compact_turn_id,
+                    "status": "completed",
+                    "items": [],
+                },
             },
         })
     if method == "turn/interrupt":

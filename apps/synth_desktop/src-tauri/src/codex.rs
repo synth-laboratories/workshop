@@ -227,7 +227,12 @@ struct CodexEvent {
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
 /// Waiters for `thread/compacted`, keyed by Desktop session id.
-type CompactWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>;
+/// Model-switch compaction waiters. A `thread/compacted` notification means
+/// the summary exists, but the source app-server still owns an active
+/// compaction turn until its terminal turn event arrives. Rebinding before
+/// that terminal event can consume the user's destination prompt as the
+/// compaction turn and leave no answer.
+type CompactWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<Result<(), String>>>>>;
 
 #[derive(Clone, Debug)]
 struct PendingApproval {
@@ -899,7 +904,7 @@ impl CodexManager {
         {
             let mut waiters = self.compact_waiters.lock().await;
             if let Some(previous) = waiters.insert(session_id.to_owned(), tx) {
-                let _ = previous.send(());
+                let _ = previous.send(Err("context compaction was superseded".into()));
             }
         }
         let params = json!({ "threadId": session.thread_id });
@@ -909,7 +914,11 @@ impl CodexManager {
             return Err(error.context("thread/compact/start failed; staying on the current model"));
         }
         match tokio::time::timeout(Duration::from_secs(120), rx).await {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(message))) => {
+                self.pending_compact_sources.lock().await.remove(session_id);
+                Err(anyhow!(message))
+            }
             Ok(Err(_)) => {
                 self.pending_compact_sources.lock().await.remove(session_id);
                 Err(anyhow!(
@@ -1567,9 +1576,13 @@ async fn read_stdout<R: tauri::Runtime>(
             )
             .await;
         }
-        if method == "thread/compacted" || method == "thread/compact/completed" {
+        if matches!(method.as_str(), "turn/completed" | "thread/compact/completed") {
             if let Some(waiter) = persistence.compact_waiters.lock().await.remove(&session_id) {
-                let _ = waiter.send(());
+                let _ = waiter.send(Ok(()));
+            }
+        } else if matches!(method.as_str(), "turn/failed" | "turn/interrupted") {
+            if let Some(waiter) = persistence.compact_waiters.lock().await.remove(&session_id) {
+                let _ = waiter.send(Err(format!("context compaction ended with {method}")));
             }
         }
         if let Some(core) = &persistence.core {
