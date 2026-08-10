@@ -1554,9 +1554,21 @@ fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Result<()> {
     writable_roots.sort();
     writable_roots.dedup();
     let workspace_write_config = workspace_write_config(&writable_roots);
+    let compaction_config = if supports_provider_compaction(request) {
+        // OpenAI and Azure Responses providers are recognized by Codex itself.
+        // Leave their compaction configuration untouched so Codex uses the
+        // provider-hosted /responses/compact implementation.
+        String::new()
+    } else {
+        format!(
+            "model_auto_compact_token_limit = {}\ntool_output_token_limit = 12000\ncompact_prompt = \"{}\"\n",
+            auto_compact_token_limit(request),
+            toml_string(COMPACT_PROMPT)
+        )
+    };
     let config = format!(
-        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"default\"\nmodel_auto_compact_token_limit = {}\ntool_output_token_limit = 12000\ncompact_prompt = \"{}\"\n\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\nenv_key = \"{}\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n# Custom Workshop providers use Codex local summarization. Do not call /responses/compact.\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
-        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), auto_compact_token_limit(request), toml_string(COMPACT_PROMPT), workspace_write_config, toml_key(provider), toml_string(title), toml_string(&responses_base_url(&request.base_url)), toml_string(env_key), agents_enabled, multi_agent_v1, multi_agent_v2
+        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"default\"\n{}\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\nenv_key = \"{}\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n# Codex selects provider-hosted compaction for OpenAI/Azure and local summarization otherwise.\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
+        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), compaction_config, workspace_write_config, toml_key(provider), toml_string(title), toml_string(&responses_base_url(&request.base_url)), toml_string(env_key), agents_enabled, multi_agent_v1, multi_agent_v2
     );
     fs::write(home.join("config.toml"), config)?;
     let auth = home.join("auth.json");
@@ -1614,13 +1626,15 @@ fn validate_start(request: &CodexSessionStartRequest) -> Result<()> {
     if !Path::new(&request.workspace).is_dir() {
         return Err(anyhow!("workspace must be an existing directory"));
     }
-    let compact_limit = auto_compact_token_limit(request);
-    let max_compact_limit = model_context_window(&request.model) * 9 / 10;
-    if !(MIN_AUTO_COMPACT_TOKEN_LIMIT..=max_compact_limit).contains(&compact_limit) {
-        return Err(anyhow!(
-            "autoCompactTokenLimit must be between {MIN_AUTO_COMPACT_TOKEN_LIMIT} and {max_compact_limit} for {}",
-            request.model
-        ));
+    if !supports_provider_compaction(request) {
+        let compact_limit = auto_compact_token_limit(request);
+        let max_compact_limit = model_context_window(&request.model) * 9 / 10;
+        if !(MIN_AUTO_COMPACT_TOKEN_LIMIT..=max_compact_limit).contains(&compact_limit) {
+            return Err(anyhow!(
+                "autoCompactTokenLimit must be between {MIN_AUTO_COMPACT_TOKEN_LIMIT} and {max_compact_limit} for {}",
+                request.model
+            ));
+        }
     }
     if !(request.base_url.starts_with("http://127.0.0.1:")
         || request.base_url.starts_with("http://localhost:")
@@ -1655,6 +1669,33 @@ fn auto_compact_token_limit(request: &CodexSessionStartRequest) -> u64 {
     request
         .auto_compact_token_limit
         .unwrap_or_else(|| model_context_window(&request.model) * 4 / 5)
+}
+
+fn supports_provider_compaction(request: &CodexSessionStartRequest) -> bool {
+    if request.provider_name.as_deref() == Some("openai")
+        || request.provider_title.as_deref() == Some("OpenAI")
+        || request
+            .provider_name
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("azure"))
+        || request
+            .provider_title
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("azure"))
+    {
+        return true;
+    }
+    let base_url = request.base_url.to_ascii_lowercase();
+    [
+        "openai.azure.",
+        "cognitiveservices.azure.",
+        "aoai.azure.",
+        "azure-api.",
+        "azurefd.",
+        "windows.net/openai",
+    ]
+    .iter()
+    .any(|marker| base_url.contains(marker))
 }
 
 /// Produces an endpoint label that is useful in UI errors without exposing a
@@ -2854,6 +2895,39 @@ mod tests {
         assert_eq!(auto_compact_token_limit(&request), 840_000);
         request.model = "openai/gpt-5.6-luna".into();
         assert_eq!(auto_compact_token_limit(&request), 840_000);
+    }
+
+    #[test]
+    fn leaves_compaction_to_openai_and_azure_responses_providers() {
+        let temp = tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+
+        let mut openai = test_request(&workspace, "openai-compaction");
+        openai.provider_name = Some("openai".into());
+        openai.provider_title = Some("OpenAI".into());
+        openai.base_url = "https://api.openai.com/v1".into();
+        openai.model = "gpt-5.6-luna".into();
+        openai.auto_compact_token_limit = Some(999_999_999);
+        validate_start(&openai).unwrap();
+        let openai_home = temp.path().join("openai-home");
+        ensure_home(&openai_home, &openai).unwrap();
+        let openai_config = fs::read_to_string(openai_home.join("config.toml")).unwrap();
+        assert!(!openai_config.contains("model_auto_compact_token_limit"));
+        assert!(!openai_config.contains("compact_prompt"));
+
+        let mut azure = test_request(&workspace, "azure-compaction");
+        azure.provider_name = Some("custom-azure".into());
+        azure.provider_title = Some("Azure".into());
+        azure.base_url = "https://example.openai.azure.com/openai/v1".into();
+        assert!(supports_provider_compaction(&azure));
+
+        let mut openrouter = test_request(&workspace, "openrouter-compaction");
+        openrouter.provider_name = Some("openrouter".into());
+        openrouter.provider_title = Some("OpenRouter Responses".into());
+        openrouter.base_url = "https://openrouter.ai/api/v1".into();
+        openrouter.model = "openai/gpt-5.6-luna".into();
+        assert!(!supports_provider_compaction(&openrouter));
     }
 
     #[test]
