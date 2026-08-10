@@ -38,7 +38,12 @@ export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContain
 	const containerIds = outputContainerIds(chat);
 	const hasResources = containerIds.length > 0 || artifacts.length > 0;
 	return <div id="chat-resource-shelf" className="resource-shelf resource-shelf-docked" aria-label="Outputs" data-testid="resource-shelf">
-		{!hasResources ? <div className="resource-shelf-empty" data-testid="resource-shelf-empty"><strong>No outputs yet</strong><span>Files, visuals, and containers from this conversation will appear here.</span></div> : null}
+		{!hasResources ? <div className="resource-shelf-empty" data-testid="resource-shelf-empty">
+			<span className="resource-shelf-empty-icon" aria-hidden>
+				<svg viewBox="0 0 24 24" fill="none"><path d="M7.5 3.75h6l3 3v13.5h-9z"/><path d="M13.5 3.75v3h3M9.75 11h4.5M9.75 14h4.5"/></svg>
+			</span>
+			<span className="resource-shelf-empty-copy"><strong>No outputs yet</strong><span>Files, visuals, and containers will appear here.</span></span>
+		</div> : null}
 		{containerIds.length > 0 ? <section className="containers-rail" data-testid="containers-rail"><h3>Containers</h3>{containerIds.map((id) => (
 			<button key={id} type="button" className={`resource-shelf-row container-rail-btn${openContainerId === id ? " active" : ""}`} onClick={() => onOpenContainer?.(openContainerId === id ? null : id)} aria-pressed={openContainerId === id} aria-label={openContainerId === id ? "Hide container inspector" : "Open container inspector"} data-testid={`container-icon-${id}`}>
 				<span className="resource-shelf-icon"><ContainerIcon /></span><span><strong>Container</strong><code>{id}</code></span><span aria-hidden>›</span>
