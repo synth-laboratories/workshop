@@ -1731,10 +1731,15 @@ mod tests {
             Ok(value) => assert_eq!(laguna_port().to_string(), value.trim()),
             Err(_) => assert_eq!(laguna_port(), DEFAULT_PORT),
         }
-        let envs = daemon_env_for("mlx_lm", DEFAULT_MODEL);
+        let mut command = Command::new("/usr/bin/true");
+        apply_daemon_env(&mut command, "key", "mlx_lm", Path::new("/models"));
         assert_eq!(
-            lookup(&envs, "SYNTH_LAGUNA_PORT"),
-            Some(Some(laguna_port().to_string()))
+            command
+                .get_envs()
+                .find(|(key, _)| key.to_string_lossy() == "SYNTH_LAGUNA_PORT")
+                .and_then(|(_, value)| value)
+                .map(|value| value.to_string_lossy().into_owned()),
+            Some(laguna_port().to_string())
         );
     }
 
