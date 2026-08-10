@@ -332,7 +332,9 @@ function composerPlaceholder(state: LandingState): string {
 		return state.cloudBlockedReason ?? "Ask anything…";
 	}
 	if (state.selectedTargetId.startsWith("openrouter-")) {
-		return "Ask anything…";
+		return state.openrouterApiKeyConfigured
+			? "Ask anything…"
+			: "Configure an OpenRouter API key in Settings → Account";
 	}
 	if (
 		(state.selectedTargetId === "intern-sync" || state.selectedTargetId === "intern-async") &&
@@ -351,7 +353,9 @@ function composerEnabled(state: LandingState): boolean {
 		// billable cloud target is closed off.
 		return state.apiKeyConfigured === true && !state.cloudBlockedReason;
 	}
-	if (state.selectedTargetId.startsWith("openrouter-")) return true;
+	if (state.selectedTargetId.startsWith("openrouter-")) {
+		return state.openrouterApiKeyConfigured === true;
+	}
 	if (state.selectedTargetId === "intern-sync" || state.selectedTargetId === "intern-async") {
 		return state.internMode !== "unconfigured";
 	}
@@ -451,6 +455,8 @@ function ModelMenu({
 											state.model.status === "loading");
 									const needsSynthKey =
 										target.id === "synth-cloud-laguna-s" && state.apiKeyConfigured !== true;
+									const needsOpenRouterKey =
+										target.id.startsWith("openrouter-") && state.openrouterApiKeyConfigured !== true;
 									const allowanceBlocked =
 										target.id === "synth-cloud-laguna-s" && !needsSynthKey && Boolean(state.cloudBlockedReason);
 									const localProgress =
@@ -494,7 +500,8 @@ function ModelMenu({
 											</div>
 										);
 									}
-									if (needsSynthKey) {
+									if (needsSynthKey || needsOpenRouterKey) {
+										const providerName = needsOpenRouterKey ? "OpenRouter" : "Synth";
 										return (
 											<div
 												key={target.id}
@@ -508,18 +515,18 @@ function ModelMenu({
 													aria-disabled="true"
 												>
 													<span className="composer-model-option-label">{target.label}</span>
-													<span className="composer-model-option-desc">Synth API key required</span>
+												<span className="composer-model-option-desc">{providerName} API key required</span>
 												</span>
 												<button
 													type="button"
 													className="composer-model-configure"
-													data-testid="composer-model-configure-synth-api-key"
+												data-testid={`composer-model-configure-${providerName.toLowerCase()}-api-key`}
 													onClick={() => {
 														onConfigureAccount?.();
 														onOpenChange(false);
 													}}
 												>
-													Configure Synth API key
+												Configure {providerName} API key
 												</button>
 											</div>
 										);
@@ -1056,6 +1063,12 @@ export function Composer({
 				<p className="composer-steer-error" role="alert" data-testid="composer-mic-error">{voiceError}</p>
 			) : null}
 			{attachmentError ? <p className="composer-steer-error" role="alert" data-testid="composer-attachment-error">{attachmentError}</p> : null}
+			{state.selectedTargetId.startsWith("openrouter-") && !state.openrouterApiKeyConfigured ? (
+				<div className="composer-configuration-required" role="alert" data-testid="openrouter-key-required">
+					<span><strong>OpenRouter API key required</strong> Add it under Settings → Account before sending a message.</span>
+					<button type="button" onClick={onConfigureAccount} data-testid="configure-openrouter-api-key">Open Settings</button>
+				</div>
+			) : null}
 			{whisperRuntime?.phase !== "unloaded" ? (
 				<p className={`composer-whisper-status is-${whisperRuntime?.phase}`} role="status" data-testid="composer-whisper-status">
 					<span aria-hidden />

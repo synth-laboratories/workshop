@@ -67,3 +67,60 @@ test("Synth Cloud Laguna S is gated when api key is missing", async ({ page }) =
 	await expect(page.getByTestId("settings-page")).toBeVisible();
 	await expect(page.getByTestId("settings-account")).toBeVisible();
 });
+
+test("OpenRouter models are gated and link directly to Account settings", async ({ page }) => {
+	await page.getByTestId("composer-model").click();
+	const option = page.getByTestId("composer-model-option-openrouter-luna");
+	await expect(option.getByRole("option")).toHaveAttribute("aria-disabled", "true");
+	await expect(option).toContainText("OpenRouter API key required");
+	await option.getByTestId("composer-model-configure-openrouter-api-key").click();
+	await expect(page.getByTestId("settings-account")).toBeVisible();
+});
+
+test("a removed OpenRouter key rejects the message before creating a session", async ({ page }) => {
+	await page.addInitScript(() => {
+		let configured = true;
+		const testWindow = window as typeof window & {
+			__setOpenRouterConfigured?: (value: boolean) => void;
+		};
+		testWindow.__setOpenRouterConfigured = (value) => { configured = value; };
+		window.synthConfig = {
+			get: async () => ({
+				configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod",
+				backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY",
+				apiKeyConfigured: false, workerKeyConfigured: false,
+				openrouterApiKeyConfigured: configured
+			}),
+			update: async () => { throw new Error("unused"); },
+			listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
+			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
+			updateWorkspaceAccess: async () => ({ allowedRoots: [] })
+		};
+	});
+	await page.reload();
+	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-option-openrouter-luna").click();
+	await expect(page.getByTestId("composer-input")).toBeEnabled();
+
+	await page.evaluate(() => {
+		const testWindow = window as typeof window & {
+			__setOpenRouterConfigured: (value: boolean) => void;
+			__openRouterSessionCreates?: number;
+		};
+		testWindow.__setOpenRouterConfigured(false);
+		testWindow.__openRouterSessionCreates = 0;
+		const runtime = window.synthRuntime!;
+		const request = runtime.request.bind(runtime);
+		runtime.request = async (path, options) => {
+			if (path === "/v1/sessions" && options?.method === "POST") {
+				testWindow.__openRouterSessionCreates! += 1;
+			}
+			return request(path, options);
+		};
+	});
+	await page.getByTestId("composer-input").fill("must not leave this device");
+	await page.getByTestId("composer-send").click();
+
+	await expect(page.getByTestId("settings-account")).toBeVisible();
+	expect(await page.evaluate(() => (window as typeof window & { __openRouterSessionCreates?: number }).__openRouterSessionCreates)).toBe(0);
+});

@@ -15,6 +15,7 @@ type Props = {
 export function ModelPicker({
 	selectedTargetId,
 	apiKeyConfigured,
+	openrouterApiKeyConfigured,
 	cloudBlockedReason = null,
 	onSelectTarget,
 	onConfigureAccount,
@@ -22,6 +23,7 @@ export function ModelPicker({
 }: {
 	selectedTargetId: string;
 	apiKeyConfigured?: boolean;
+	openrouterApiKeyConfigured?: boolean;
 	/** Backend-authored reason billable cloud actions are blocked; local is unaffected. */
 	cloudBlockedReason?: string | null;
 	onSelectTarget: (id: string) => void;
@@ -134,6 +136,8 @@ export function ModelPicker({
 								{items.map((target: ExecutionTargetOption) => {
 									const needsSynthKey =
 										target.id === "synth-cloud-laguna-s" && apiKeyConfigured !== true;
+									const needsOpenRouterKey =
+										target.id.startsWith("openrouter-") && openrouterApiKeyConfigured !== true;
 									const allowanceBlocked =
 										target.id === "synth-cloud-laguna-s" && !needsSynthKey && Boolean(cloudBlockedReason);
 									if (allowanceBlocked) {
@@ -166,7 +170,8 @@ export function ModelPicker({
 											</div>
 										);
 									}
-									if (needsSynthKey) {
+									if (needsSynthKey || needsOpenRouterKey) {
+										const providerName = needsOpenRouterKey ? "OpenRouter" : "Synth";
 										return (
 											<div
 												key={target.id}
@@ -180,18 +185,18 @@ export function ModelPicker({
 													aria-disabled="true"
 												>
 													<span className="model-option-label">{target.label}</span>
-													<span className="model-option-desc">Synth API key required</span>
+												<span className="model-option-desc">{providerName} API key required</span>
 												</span>
 												<button
 													type="button"
 													className="model-option-configure"
-													data-testid="model-configure-synth-api-key"
+												data-testid={`model-configure-${providerName.toLowerCase()}-api-key`}
 													onClick={() => {
 														onConfigureAccount?.();
 														setOpen(false);
 													}}
 												>
-													Configure Synth API key
+												Configure {providerName} API key
 												</button>
 											</div>
 										);
@@ -257,6 +262,7 @@ export function LandingPage({
 					<ModelPicker
 						selectedTargetId={selectedTargetId}
 						apiKeyConfigured={state.apiKeyConfigured}
+						openrouterApiKeyConfigured={state.openrouterApiKeyConfigured}
 						cloudBlockedReason={state.cloudBlockedReason}
 						onSelectTarget={onSelectTarget}
 						onConfigureAccount={onConfigureAccount}
