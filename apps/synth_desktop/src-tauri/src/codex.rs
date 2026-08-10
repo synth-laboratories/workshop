@@ -1668,7 +1668,14 @@ fn model_context_window(model: &str) -> u64 {
 fn auto_compact_token_limit(request: &CodexSessionStartRequest) -> u64 {
     request
         .auto_compact_token_limit
-        .unwrap_or_else(|| model_context_window(&request.model) * 4 / 5)
+        .unwrap_or_else(|| {
+            let model = request.model.to_ascii_lowercase();
+            if model.contains("laguna-s-2.1") || model.contains("gpt-5.6-luna") {
+                250_000
+            } else {
+                model_context_window(&request.model) * 4 / 5
+            }
+        })
 }
 
 fn supports_provider_compaction(request: &CodexSessionStartRequest) -> bool {
@@ -2849,7 +2856,7 @@ mod tests {
         assert!(config.contains("base_url = \"http://127.0.0.1:41209/api/v1\""));
         assert!(config.contains("wire_api = \"responses\""));
         assert!(config.contains("env_key = \"SYNTH_API_KEY\""));
-        assert!(config.contains("model_auto_compact_token_limit = 840000"));
+        assert!(config.contains("model_auto_compact_token_limit = 250000"));
         assert!(config.contains("tool_output_token_limit = 12000"));
         assert!(config.contains("CONTEXT CHECKPOINT COMPACTION for a coding agent"));
         let optimizer_skill =
@@ -2887,14 +2894,14 @@ mod tests {
     }
 
     #[test]
-    fn defaults_auto_compaction_to_eighty_percent_of_each_model_window() {
+    fn defaults_luna_and_laguna_s_compaction_to_250k() {
         let temp = tempdir().unwrap();
         let mut request = test_request(temp.path(), "compact-defaults");
         assert_eq!(auto_compact_token_limit(&request), 209_715);
         request.model = "poolside/laguna-s-2.1".into();
-        assert_eq!(auto_compact_token_limit(&request), 840_000);
+        assert_eq!(auto_compact_token_limit(&request), 250_000);
         request.model = "openai/gpt-5.6-luna".into();
-        assert_eq!(auto_compact_token_limit(&request), 840_000);
+        assert_eq!(auto_compact_token_limit(&request), 250_000);
     }
 
     #[test]

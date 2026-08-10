@@ -6,7 +6,7 @@
  */
 
 export const PREFERENCES_STORAGE_KEY = "synth.preferences.v1";
-export const PREFERENCES_SCHEMA_VERSION = 1 as const;
+export const PREFERENCES_SCHEMA_VERSION = 2 as const;
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ToolActivityMode = "detailed" | "grouped" | "compact";
@@ -16,8 +16,8 @@ export type AutoCompactTokenLimits = Record<CompactContextModel, number>;
 
 export const DEFAULT_AUTO_COMPACT_TOKEN_LIMITS: AutoCompactTokenLimits = {
 	lagunaXs: 209_715,
-	lagunaS: 840_000,
-	luna: 840_000
+	lagunaS: 250_000,
+	luna: 250_000
 };
 
 export type LayoutSnapshot = {
@@ -64,7 +64,7 @@ export type DesktopPreferences = {
 		mode: ToolActivityMode;
 	};
 	agentContext: {
-		/** Per-model local summarization thresholds; defaults are 80% of each context window. */
+		/** Per-model local summarization thresholds. */
 		autoCompactTokenLimits: AutoCompactTokenLimits;
 	};
 	layout: {
@@ -199,6 +199,15 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 	const compactLimits = agentContext.autoCompactTokenLimits && typeof agentContext.autoCompactTokenLimits === "object"
 		? (agentContext.autoCompactTokenLimits as Record<string, unknown>)
 		: {};
+	const storedSchemaVersion = Number(source.schemaVersion);
+	// Version 1 persisted the old computed 80%-of-1.05M defaults. Move only
+	// those exact generated values to the new 250k defaults; preserve edits.
+	const lagunaSLimit = storedSchemaVersion < 2 && compactLimits.lagunaS === 840_000
+		? DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaS
+		: compactLimits.lagunaS;
+	const lunaLimit = storedSchemaVersion < 2 && compactLimits.luna === 840_000
+		? DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.luna
+		: compactLimits.luna;
 	const legacyCompactLimit = Number(agentContext.autoCompactTokenLimit);
 	const legacyOverride = Number.isFinite(legacyCompactLimit) && legacyCompactLimit !== 196_000
 		? legacyCompactLimit
@@ -251,8 +260,8 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 		agentContext: {
 			autoCompactTokenLimits: {
 				lagunaXs: clampNumber(compactLimits.lagunaXs ?? legacyOverride, 16_000, 235_929, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaXs),
-				lagunaS: clampNumber(compactLimits.lagunaS ?? legacyOverride, 16_000, 945_000, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaS),
-				luna: clampNumber(compactLimits.luna ?? legacyOverride, 16_000, 945_000, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.luna)
+				lagunaS: clampNumber(lagunaSLimit ?? legacyOverride, 16_000, 945_000, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaS),
+				luna: clampNumber(lunaLimit ?? legacyOverride, 16_000, 945_000, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.luna)
 			}
 		},
 		layout: {
