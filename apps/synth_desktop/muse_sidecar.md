@@ -1,6 +1,12 @@
 # Muse Glimmer — first-class Laguna sidecar integration
 
-Status: **shipped and installed** (local `dev`, uncommitted; `/Applications/Synth
+Status: **indefinitely paused for local use** (2026-08-10) — see
+`MUSE_LOCAL_PAUSED.md` at the repo root for the measured rationale and the
+resume checklist. Local weights and the managed runtime were removed from this
+machine. The integration below remains accurate as documentation of the built
+surface.
+
+Prior status: shipped and installed (local `dev`, uncommitted; `/Applications/Synth
 Desktop.app` rebuilt 2026-08-10). Muse is served by a Laguna-owned llama.cpp
 backend behind the same `:7333` contract as Laguna XS. Responses and Chat
 Completions both work, streaming and not, with tools, reasoning split, real

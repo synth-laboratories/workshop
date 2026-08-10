@@ -478,6 +478,13 @@ class LlamaCppChatBackend:
             # Without this the engine ends the stream with no usage object and
             # the turn's token counts would have to be invented.
             "stream_options": {"include_usage": True},
+            # Streams `prompt_progress` chunks while the prompt is processing.
+            # This is where the live prefill counters come from: the /slots
+            # endpoint is served through the engine's task queue, which does
+            # not drain during a long prompt batch, so polling it starves
+            # exactly when the numbers matter. Progress rides the generation's
+            # own stream instead, measured by the engine's own clock.
+            "return_progress": True,
             "max_tokens": turn.max_output_tokens,
             "temperature": turn.temperature,
             "top_p": turn.top_p,
@@ -554,11 +561,6 @@ class LlamaCppChatBackend:
                 f"The Muse engine refused the connection: {exc}"
             ) from exc
         self._open_streams[turn.generation_id] = (response, client)
-        observation_stop = asyncio.Event()
-        observation = asyncio.create_task(
-            self._observe_slot(timing, observation_stop),
-            name=f"muse-slot-{turn.generation_id}",
-        )
         try:
             if response.status_code >= 400:
                 await response.aread()
@@ -578,6 +580,12 @@ class LlamaCppChatBackend:
                     continue
                 if isinstance(chunk.get("usage"), dict):
                     usage = chunk["usage"]
+                progress = chunk.get("prompt_progress")
+                if isinstance(progress, dict):
+                    self._mark_progress(timing, progress)
+                engine_timings = chunk.get("timings")
+                if isinstance(engine_timings, dict):
+                    self._mark_timings(timing, engine_timings)
                 if isinstance(chunk.get("error"), dict):
                     raise ResponsesError(
                         "muse_engine_error",
@@ -628,8 +636,6 @@ class LlamaCppChatBackend:
                 f"The Muse engine stopped answering mid-turn: {exc}"
             ) from exc
         finally:
-            observation_stop.set()
-            await asyncio.gather(observation, return_exceptions=True)
             self._open_streams.pop(turn.generation_id, None)
             await self._close_connection(response, client)
         if not saw_reasoning_field:
@@ -646,48 +652,55 @@ class LlamaCppChatBackend:
             resolved = "tool_call"
         yield ModelEvent(kind="finish", finish_reason=resolved)
 
-    async def _observe_slot(
-        self, timing: GenerationTiming, stop: asyncio.Event
-    ) -> None:
-        """Copy llama.cpp's measured live counters into the active generation."""
-        client = self._new_client()
-        try:
-            while not stop.is_set():
-                try:
-                    response = await client.get("/slots", timeout=1.0)
-                    if response.status_code < 400:
-                        slots = response.json()
-                        slot = next(
-                            (
-                                item
-                                for item in slots
-                                if isinstance(item, dict) and item.get("is_processing")
-                            ),
-                            None,
-                        )
-                        if slot is not None:
-                            total = slot.get("n_prompt_tokens")
-                            processed = slot.get("n_prompt_tokens_processed")
-                            cached = slot.get("n_prompt_tokens_cache")
-                            if isinstance(total, int):
-                                timing.prompt_tokens = total
-                            if isinstance(processed, int):
-                                timing.prompt_tokens_processed = processed
-                            if isinstance(cached, int):
-                                timing.cached_tokens = cached
-                            next_token = slot.get("next_token") or []
-                            if next_token and isinstance(next_token[0], dict):
-                                decoded = next_token[0].get("n_decoded")
-                                if isinstance(decoded, int):
-                                    timing.output_tokens = decoded
-                except (httpx.HTTPError, ValueError, TypeError):
-                    pass
-                try:
-                    await asyncio.wait_for(stop.wait(), timeout=0.25)
-                except TimeoutError:
-                    continue
-        finally:
-            await client.aclose()
+    @staticmethod
+    def _mark_progress(timing: GenerationTiming, progress: dict[str, Any]) -> None:
+        """Live prefill counters from a streamed `prompt_progress` chunk.
+
+        `processed` includes the reused prefix, so the computed rate divides
+        the *uncached* work by the engine's own prompt-processing clock
+        (`time_ms`), which starts when prompt processing does — not when the
+        request was queued, admitted, or compiled.
+        """
+        total = progress.get("total")
+        processed = progress.get("processed")
+        cached = progress.get("cache")
+        time_ms = progress.get("time_ms")
+        if isinstance(total, int):
+            timing.prompt_tokens = total
+        if isinstance(processed, int):
+            timing.prompt_tokens_processed = processed
+        if isinstance(cached, int):
+            timing.cached_tokens = cached
+        if (
+            isinstance(processed, int)
+            and isinstance(cached, int)
+            and isinstance(time_ms, (int, float))
+            and time_ms > 0
+            and processed - cached > 0
+        ):
+            timing.engine_prefill_tps = round((processed - cached) / (time_ms / 1000.0), 3)
+
+    @staticmethod
+    def _mark_timings(timing: GenerationTiming, timings: dict[str, Any]) -> None:
+        """Final engine-measured rates and speculative counters.
+
+        These arrive on the last stream chunk and overwrite any live estimate:
+        they are the engine's own accounting of the turn that just happened.
+        """
+        prompt_tps = timings.get("prompt_per_second")
+        if isinstance(prompt_tps, (int, float)) and prompt_tps > 0:
+            timing.engine_prefill_tps = round(float(prompt_tps), 3)
+        decode_tps = timings.get("predicted_per_second")
+        if isinstance(decode_tps, (int, float)) and decode_tps > 0:
+            timing.measured_decode_tps = float(decode_tps)
+        cache_n = timings.get("cache_n")
+        if isinstance(cache_n, int) and cache_n >= 0:
+            timing.cached_tokens = cache_n
+        draft_n = timings.get("draft_n")
+        if isinstance(draft_n, int) and draft_n > 0:
+            timing.draft_tokens_proposed = draft_n
+            accepted = timings.get("draft_n_accepted")
+            timing.draft_tokens_accepted = accepted if isinstance(accepted, int) else 0
 
     def _engine_error(self, response: httpx.Response) -> ResponsesError:
         detail = response.text[:500]
@@ -722,7 +735,15 @@ class LlamaCppChatBackend:
         cached = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
         timing.prompt_tokens = input_tokens
         timing.output_tokens = output_tokens
-        timing.cached_tokens = cached
+        # The final `timings` chunk carries the engine's own cache accounting
+        # (`cache_n`); a zero here is the OAI usage shape lacking the detail,
+        # not evidence that nothing was reused.
+        if cached or not timing.cached_tokens:
+            timing.cached_tokens = cached
+        metadata: dict[str, Any] = {"cached_tokens": timing.cached_tokens}
+        if timing.draft_tokens_proposed:
+            metadata["draft_tokens_proposed"] = timing.draft_tokens_proposed
+            metadata["draft_tokens_accepted"] = timing.draft_tokens_accepted
         return ModelEvent(
             kind="usage",
             input_tokens=input_tokens,
@@ -731,7 +752,7 @@ class LlamaCppChatBackend:
             # and re-tokenizing the reasoning text here would be a second
             # tokenizer's opinion about the first one's output.
             reasoning_tokens=0,
-            metadata={"cached_tokens": cached},
+            metadata=metadata,
         )
 
     def _mark_token(self, timing: GenerationTiming) -> None:

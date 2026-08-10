@@ -1,0 +1,157 @@
+{
+  "label": "baseline-pinned",
+  "engine_binary": "/Users/joshuapurtell/.synth-desktop/muse/runtime/llama-dd1ea524333b1e697489067d7a4c39c60d32beee/llama-server",
+  "engine_argv": [
+    "--model",
+    "/Users/joshuapurtell/.synth-desktop/models/meta-models/Muse-Glimmer-30B-GGUF/muse-glimmer-30B-kquant-17gb.gguf",
+    "--alias",
+    "meta-models/Muse-Glimmer-30B-GGUF",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "7434",
+    "--ctx-size",
+    "131072",
+    "--parallel",
+    "1",
+    "--flash-attn",
+    "on",
+    "--cache-prompt",
+    "--jinja",
+    "--reasoning-format",
+    "deepseek",
+    "--temp",
+    "1.0",
+    "--top-p",
+    "0.95",
+    "--top-k",
+    "64",
+    "--n-gpu-layers",
+    "999",
+    "--mmproj",
+    "/Users/joshuapurtell/.synth-desktop/models/meta-models/Muse-Glimmer-30B-GGUF/mmproj-kquant.gguf",
+    "--model-draft",
+    "/Users/joshuapurtell/.synth-desktop/models/meta-models/Muse-Glimmer-30B-GGUF/dflash-kquant.gguf",
+    "--spec-type",
+    "draft-dflash",
+    "--n-gpu-layers-draft",
+    "999"
+  ],
+  "sampling": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 64
+  },
+  "prompt_target_tokens": 17033,
+  "measurements": {
+    "cold_load_s": 8.62,
+    "uncached": {
+      "client": {
+        "wall_s": 91.549,
+        "ttft_s": 72.058,
+        "chunks": 252,
+        "text_chars": 1086
+      },
+      "engine_timings": {
+        "cache_n": 0,
+        "prompt_n": 21058,
+        "prompt_ms": 71853.035,
+        "prompt_per_token_ms": 3.4121490644885557,
+        "prompt_per_second": 293.0704318892027,
+        "predicted_n": 256,
+        "predicted_ms": 19657.871,
+        "predicted_per_token_ms": 76.78855859375,
+        "predicted_per_second": 13.022773422411817,
+        "draft_n": 306,
+        "draft_n_accepted": 152
+      },
+      "engine_usage": {
+        "completion_tokens": 256,
+        "prompt_tokens": 21058,
+        "total_tokens": 21314,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      }
+    },
+    "cached": {
+      "client": {
+        "wall_s": 19.755,
+        "ttft_s": 0.282,
+        "chunks": 252,
+        "text_chars": 1003
+      },
+      "engine_timings": {
+        "cache_n": 21057,
+        "prompt_n": 1,
+        "prompt_ms": 88.515,
+        "prompt_per_token_ms": 88.515,
+        "prompt_per_second": 11.297520194317347,
+        "predicted_n": 256,
+        "predicted_ms": 19632.298,
+        "predicted_per_token_ms": 76.6886640625,
+        "predicted_per_second": 13.039736866259876,
+        "draft_n": 303,
+        "draft_n_accepted": 153
+      },
+      "engine_usage": {
+        "completion_tokens": 256,
+        "prompt_tokens": 21058,
+        "total_tokens": 21314,
+        "prompt_tokens_details": {
+          "cached_tokens": 21057
+        }
+      }
+    },
+    "decode": {
+      "client": {
+        "wall_s": 27.699,
+        "ttft_s": 0.937,
+        "chunks": 252,
+        "text_chars": 1063
+      },
+      "engine_timings": {
+        "cache_n": 21035,
+        "prompt_n": 19,
+        "prompt_ms": 711.748,
+        "prompt_per_token_ms": 37.46042105263158,
+        "prompt_per_second": 26.694841432641887,
+        "predicted_n": 256,
+        "predicted_ms": 26952.631,
+        "predicted_per_token_ms": 105.28371484375,
+        "predicted_per_second": 9.498145097597336,
+        "draft_n": 371,
+        "draft_n_accepted": 130
+      },
+      "engine_usage": {
+        "completion_tokens": 256,
+        "prompt_tokens": 21054,
+        "total_tokens": 21310,
+        "prompt_tokens_details": {
+          "cached_tokens": 21035
+        }
+      }
+    },
+    "peak_rss_bytes": 22740910080,
+    "peak_rss_gb": 22.74
+  },
+  "document_tokens_raw": 20961,
+  "summary": {
+    "cold_load_s": 8.62,
+    "uncached_prompt_n": 21058,
+    "uncached_prefill_tok_s": 293.1,
+    "uncached_prefill_wall_s": 71.9,
+    "uncached_ttft_client_s": 72.058,
+    "cached_reused_tokens": 21057,
+    "cached_ingest_tok_s": 11.3,
+    "cached_ttft_client_s": 0.282,
+    "decode_tok_s": 9.5,
+    "decode_tokens": 256,
+    "speculation": {
+      "draft_proposed": 371,
+      "draft_accepted": 130,
+      "acceptance_pct": 35.0
+    },
+    "peak_rss_gb": 22.74
+  }
+}

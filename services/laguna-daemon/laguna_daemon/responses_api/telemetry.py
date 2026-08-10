@@ -61,9 +61,20 @@ class GenerationTiming:
     cached_tokens: int = 0
     output_tokens: int = 0
     measured_decode_tps: float | None = None
+    #: Prefill rate as the engine measured it over its own prompt-processing
+    #: clock (updated live from streamed progress, finalized from `timings`).
+    #: Preferred over any wall-clock derivation here: the engine's clock starts
+    #: when prompt processing starts, not when the request was admitted.
+    engine_prefill_tps: float | None = None
+    #: Speculative-decoding counters as the engine reported them. Zero when no
+    #: draft model is loaded; never inferred from configuration.
+    draft_tokens_proposed: int = 0
+    draft_tokens_accepted: int = 0
     phase: str = "queued"
 
     def live_prefill_tokens_per_second(self, now: float | None = None) -> float | None:
+        if self.engine_prefill_tps is not None:
+            return self.engine_prefill_tps
         if self.phase != "prefill" or self.admitted_at is None:
             return self.prefill_tokens_per_second()
         processed = self.prompt_tokens_processed
@@ -75,12 +86,19 @@ class GenerationTiming:
             return None
         return round(computed / elapsed, 3)
 
+    def draft_acceptance_rate(self) -> float | None:
+        if not self.draft_tokens_proposed:
+            return None
+        return round(self.draft_tokens_accepted / self.draft_tokens_proposed, 4)
+
     def ttft_ms(self) -> float | None:
         if self.first_token_at is None:
             return None
         return round((self.first_token_at - self.queued_at) * 1000, 3)
 
     def prefill_tokens_per_second(self) -> float | None:
+        if self.engine_prefill_tps is not None:
+            return self.engine_prefill_tps
         start = self.admitted_at
         if start is None or self.first_token_at is None or not self.prompt_tokens:
             return None

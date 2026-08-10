@@ -1,0 +1,211 @@
+{
+  "label": "dm15",
+  "engine_binary": "/Users/joshuapurtell/.synth-desktop/muse/runtime/llama-dd1ea524333b1e697489067d7a4c39c60d32beee/llama-server",
+  "engine_argv": [
+    "--model",
+    "/Users/joshuapurtell/.synth-desktop/models/meta-models/Muse-Glimmer-30B-GGUF/muse-glimmer-30B-kquant-17gb.gguf",
+    "--alias",
+    "meta-models/Muse-Glimmer-30B-GGUF",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "7434",
+    "--ctx-size",
+    "131072",
+    "--parallel",
+    "1",
+    "--flash-attn",
+    "on",
+    "--cache-prompt",
+    "--jinja",
+    "--reasoning-format",
+    "deepseek",
+    "--temp",
+    "1.0",
+    "--top-p",
+    "0.95",
+    "--top-k",
+    "64",
+    "--n-gpu-layers",
+    "999",
+    "--mmproj",
+    "/Users/joshuapurtell/.synth-desktop/models/meta-models/Muse-Glimmer-30B-GGUF/mmproj-kquant.gguf",
+    "--model-draft",
+    "/Users/joshuapurtell/.synth-desktop/models/meta-models/Muse-Glimmer-30B-GGUF/dflash-kquant.gguf",
+    "--spec-type",
+    "draft-dflash",
+    "--n-gpu-layers-draft",
+    "999",
+    "--spec-draft-n-max",
+    "15"
+  ],
+  "sampling": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 64
+  },
+  "prompt_target_tokens": 17033,
+  "thermal_cpu_speed_limit_start_pct": null,
+  "measurements": {
+    "cold_load_s": 6.84,
+    "uncached": {
+      "client": {
+        "wall_s": 122.26,
+        "ttft_s": 75.088,
+        "chunks": 252,
+        "text_chars": 1073
+      },
+      "engine_timings": {
+        "cache_n": 0,
+        "prompt_n": 21058,
+        "prompt_ms": 74250.441,
+        "prompt_per_token_ms": 3.525996818311331,
+        "prompt_per_second": 283.60774315131675,
+        "predicted_n": 256,
+        "predicted_ms": 47976.904,
+        "predicted_per_token_ms": 187.40978125,
+        "predicted_per_second": 5.33590079093057,
+        "draft_n": 1273,
+        "draft_n_accepted": 167
+      },
+      "engine_usage": {
+        "completion_tokens": 256,
+        "prompt_tokens": 21058,
+        "total_tokens": 21314,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "message": {
+        "content": "",
+        "reasoning_content": "Read the following survey field log carefully. You will be asked about it.\n\n<log>\n...\n</log>\n\nCount how many distinct place-related nouns appear in the log, then summarize its overall structure in detail.\n\nWe need count distinct place-related nouns appear in log. Place-related nouns? The log is list of words. Likely the words are place-related nouns? The log contains many words: tundra mantle grove alloy mantle jetty lucent meridian marsh cinder drift gully harbor... These look like maybe nouns. Place-related nouns? Need identify which words are place-related nouns.\n\nWe have a list of tokens separated by spaces and newlines. Need count distinct place-related nouns appear in the log.\n\nWhat are place-related nouns? Possibly words like tundra, grove, mantle?, alloy?, jetty, meridian, marsh, gully, harbor, heath, onyx?, garnet?, clause?, verge, knoll, kelp, hollow, eyrie, estuary, vellum?, ember?, fathom, inlet, talus, islet, saline?, mesa, eyrie, quarry, zephyr?, ember, etc.\n\nWe need interpret place-related nouns. Might be a set of location types. Could be the"
+      }
+    },
+    "cached": {
+      "client": {
+        "wall_s": 41.005,
+        "ttft_s": 0.66,
+        "chunks": 252,
+        "text_chars": 1024
+      },
+      "engine_timings": {
+        "cache_n": 21057,
+        "prompt_n": 1,
+        "prompt_ms": 82.834,
+        "prompt_per_token_ms": 82.834,
+        "prompt_per_second": 12.07233744597629,
+        "predicted_n": 256,
+        "predicted_ms": 40890.193,
+        "predicted_per_token_ms": 159.72731640625,
+        "predicted_per_second": 6.260669887275905,
+        "draft_n": 1133,
+        "draft_n_accepted": 178
+      },
+      "engine_usage": {
+        "completion_tokens": 256,
+        "prompt_tokens": 21058,
+        "total_tokens": 21314,
+        "prompt_tokens_details": {
+          "cached_tokens": 21057
+        }
+      },
+      "message": {
+        "content": "",
+        "reasoning_content": "Read the following survey field log carefully. You will be asked about it.\n\n<log>... huge text ...\n\nCount how many distinct place-related nouns appear in the log, then summarize its overall structure in detail.\n\nWe need count how many distinct place-related nouns appear in log. Need identify place-related nouns. The log contains many words: tundra mantle grove alloy mantle jetty lucent meridian marsh cinder drift gully harbor... etc.\n\nWe need distinguish place-related nouns. The list includes many words that might be place-related nouns? Possibly the survey field log uses terms like tundra, grove, mantle, jetty, meridian, marsh, drift, gully, harbor, heath, onyx, garnet, clause, verge, knoll, kelp, hollow, eyrie, estuary, vellum, ember, fathom, inlet, talus, islet, saline, mesa, eyrie, quarry, zephyr, ... etc.\n\nWhich are place-related nouns? Likely geographical features: tundra, grove, mantle? mantle maybe geological? jetty, meridian? marsh, drift, gully, harbor, heath, verge, knoll, estuary, inlet, talus, is"
+      }
+    },
+    "decode": {
+      "client": {
+        "wall_s": 55.608,
+        "ttft_s": 1.188,
+        "chunks": 252,
+        "text_chars": 1057
+      },
+      "engine_timings": {
+        "cache_n": 21035,
+        "prompt_n": 19,
+        "prompt_ms": 611.65,
+        "prompt_per_token_ms": 32.19210526315789,
+        "prompt_per_second": 31.06351671707676,
+        "predicted_n": 256,
+        "predicted_ms": 54966.139,
+        "predicted_per_token_ms": 214.71148046875,
+        "predicted_per_second": 4.657412811913167,
+        "draft_n": 1463,
+        "draft_n_accepted": 153
+      },
+      "engine_usage": {
+        "completion_tokens": 256,
+        "prompt_tokens": 21054,
+        "total_tokens": 21310,
+        "prompt_tokens_details": {
+          "cached_tokens": 21035
+        }
+      },
+      "message": {
+        "content": "",
+        "reasoning_content": "Read the following survey field log carefully. You will be asked about it.\n\n<log> ... </log>\n\nNow write a long, detailed narrative report of the survey, section by section.\n\nWe need to read survey field log carefully. You will be asked about it. Now write a long, detailed narrative report of the survey, section by section.\n\nThe log is a long sequence of words. Probably each line or paragraph is a section? The log appears to have blank lines separating sections. Let's count blank lines.\n\nThe log starts:\n\ntundra mantle grove alloy mantle jetty lucent meridian marsh cinder drift gully harbor. harbor vellum heath onyx garnet clause verge knoll kelp jetty hollow. hollow eyrie hollow garnet estuary vellum ember fathom inlet inlet. talus islet saline grove mesa eyrie quarry zephyr ember. meridian yonder fjord onyx pumice onyx pumice quarry forage quorum loam jetty. basalt knoll jetty grove garnet vellum mesa garnet burrow forage islet umber. nectar gully lattice notch lucent shale eyrie dune ledge ember clause. russet hollow grove prism heath ember"
+      }
+    },
+    "multiturn": {
+      "client": {
+        "wall_s": 25.535,
+        "ttft_s": 1.505,
+        "chunks": 253,
+        "text_chars": 1074
+      },
+      "engine_timings": {
+        "cache_n": 21309,
+        "prompt_n": 24,
+        "prompt_ms": 909.7,
+        "prompt_per_token_ms": 37.90416666666667,
+        "prompt_per_second": 26.38232384302517,
+        "predicted_n": 256,
+        "predicted_ms": 24591.417,
+        "predicted_per_token_ms": 96.06022265625,
+        "predicted_per_second": 10.410136186946852,
+        "draft_n": 672,
+        "draft_n_accepted": 210
+      },
+      "engine_usage": {
+        "completion_tokens": 256,
+        "prompt_tokens": 21333,
+        "total_tokens": 21589,
+        "prompt_tokens_details": {
+          "cached_tokens": 21309
+        }
+      },
+      "message": {
+        "content": "",
+        "reasoning_content": "Good. Which section is weakest, and why?\n\nWe need to interpret prior request: Read survey field log carefully. You will be asked about it. Now write long detailed narrative report of survey, section by section.\n\nThen user says Good. Which section is weakest, and why?\n\nWe have no output of report? The assistant presumably wrote report. The user now asks which section is weakest, and why.\n\nWe need to analyze log. Probably sections separated by blank lines. Let's parse.\n\nThe log text is huge. Need to find sections. Blank lines separate.\n\nLet's copy log and split by blank line.\n\nFirst block:\ntundra mantle grove alloy mantle jetty lucent meridian marsh cinder drift gully harbor. harbor vellum heath onyx garnet clause verge knoll kelp jetty hollow. hollow eyrie hollow garnet estuary vellum ember fathom inlet inlet. talus islet saline grove mesa eyrie quarry zephyr ember. meridian yonder fjord onyx pumice onyx pumice quarry forage quorum loam jetty. basalt knoll jetty grove garnet vellum mesa garnet burrow forage islet umber. nectar gully lattice notch lucent shale"
+      }
+    },
+    "peak_rss_bytes": 23274766336,
+    "peak_rss_gb": 23.27
+  },
+  "document_tokens_raw": 20961,
+  "thermal_cpu_speed_limit_end_pct": null,
+  "summary": {
+    "cold_load_s": 6.84,
+    "uncached_prompt_n": 21058,
+    "uncached_prefill_tok_s": 283.6,
+    "uncached_prefill_wall_s": 74.3,
+    "uncached_ttft_client_s": 75.088,
+    "cached_reused_tokens": 21057,
+    "cached_ingest_tok_s": 12.1,
+    "cached_ttft_client_s": 0.66,
+    "decode_tok_s": 4.7,
+    "decode_tokens": 256,
+    "speculation": {
+      "draft_proposed": 1463,
+      "draft_accepted": 153,
+      "acceptance_pct": 10.5
+    },
+    "peak_rss_gb": 23.27,
+    "multiturn": {
+      "prompt_n": 24,
+      "reused_tokens": 21309,
+      "ttft_client_s": 1.505
+    }
+  }
+}

@@ -496,6 +496,13 @@ class ResponsesService:
                 "cacheHitRatio": active.cache_hit_ratio(),
                 "prefillTokensPerSecond": active.live_prefill_tokens_per_second(now),
                 "decodeTokensPerSecond": active.decode_tokens_per_second(),
+                # Engine-reported speculative counters; None until the engine
+                # has reported drafting, never inferred from configuration.
+                "draftTokensProposed": active.draft_tokens_proposed or None,
+                "draftTokensAccepted": (
+                    active.draft_tokens_accepted if active.draft_tokens_proposed else None
+                ),
+                "draftAcceptanceRate": active.draft_acceptance_rate(),
                 "elapsedMs": active.elapsed_ms(now),
             }
 

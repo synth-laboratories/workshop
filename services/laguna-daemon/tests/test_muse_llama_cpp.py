@@ -555,40 +555,111 @@ class EngineLifecycleTests(unittest.TestCase):
         self.assertEqual(estimate.input_tokens, 42)
         self.assertIn("/apply-template", [path for path, _ in engine.requests])
 
-    def test_live_slot_metrics_report_prefill_cache_and_decode_counts(self) -> None:
-        engine = FakeEngine(
-            slots=[
+    def test_streamed_progress_and_timings_feed_generation_metrics(self) -> None:
+        """Prefill counters ride the generation stream, not a /slots poll.
+
+        The engine serves /slots through its task queue, which does not drain
+        during a long prompt batch — polling it starves exactly when prefill
+        telemetry matters. `return_progress` chunks and the final `timings`
+        object are the engine's own measurements on the stream itself.
+        """
+        progress = {
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "model": MUSE_GLIMMER_MODEL,
+            "choices": [
                 {
-                    "is_processing": True,
-                    "n_prompt_tokens": 13271,
-                    "n_prompt_tokens_processed": 8192,
-                    "n_prompt_tokens_cache": 2048,
-                    "next_token": [{"n_decoded": 3}],
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": None},
+                    "finish_reason": None,
                 }
-            ]
-        )
-
-        async def scenario() -> GenerationTiming:
-            backend = backend_for(engine)
-            timing = GenerationTiming(
-                generation_id="gen_metrics",
-                queued_at=time.monotonic(),
-                admitted_at=time.monotonic(),
-                phase="prefill",
+            ],
+            "prompt_progress": {
+                "total": 13271,
+                "cache": 2048,
+                "processed": 8192,
+                "time_ms": 24576.0,
+            },
+        }
+        stop = {
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "model": MUSE_GLIMMER_MODEL,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "timings": {
+                "cache_n": 2048,
+                "prompt_n": 11223,
+                "prompt_ms": 44892.0,
+                "prompt_per_second": 250.0,
+                "predicted_n": 96,
+                "predicted_per_second": 21.5,
+                "draft_n": 120,
+                "draft_n_accepted": 84,
+            },
+        }
+        usage = {
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "model": MUSE_GLIMMER_MODEL,
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 13271,
+                "completion_tokens": 96,
+                "total_tokens": 13367,
+                "prompt_tokens_details": {"cached_tokens": 0},
+            },
+        }
+        engine = FakeEngine(
+            body=(
+                f"data: {json.dumps(progress)}\n\n"
+                + _chunk(content="ok")
+                + f"data: {json.dumps(stop)}\n\n"
+                + f"data: {json.dumps(usage)}\n\n"
+                + "data: [DONE]\n\n"
             )
-            stop = asyncio.Event()
-            task = asyncio.create_task(backend._observe_slot(timing, stop))
-            await asyncio.sleep(0.05)
-            stop.set()
-            await task
-            return timing
+        )
+        backend = backend_for(engine)
+        events = run(collect(backend, turn()))
 
-        timing = run(scenario())
+        chat_payloads = [
+            payload for path, payload in engine.requests if path == "/v1/chat/completions"
+        ]
+        self.assertTrue(chat_payloads[0]["return_progress"])
+
+        timing = backend.generation_metrics("gen_test")
+        self.assertIsNotNone(timing)
+        self.assertEqual(timing.prompt_tokens, 13271)
+        self.assertEqual(timing.prompt_tokens_processed, 8192)
+        # usage carried no cached detail; the timings cache_n survives.
+        self.assertEqual(timing.cached_tokens, 2048)
+        self.assertEqual(timing.engine_prefill_tps, 250.0)
+        self.assertEqual(timing.prefill_tokens_per_second(), 250.0)
+        self.assertEqual(timing.measured_decode_tps, 21.5)
+        self.assertEqual(timing.draft_tokens_proposed, 120)
+        self.assertEqual(timing.draft_tokens_accepted, 84)
+        self.assertAlmostEqual(timing.draft_acceptance_rate(), 0.7)
+
+        usage_events = [event for event in events if event.kind == "usage"]
+        self.assertEqual(usage_events[0].metadata["draft_tokens_proposed"], 120)
+        self.assertEqual(usage_events[0].metadata["draft_tokens_accepted"], 84)
+        self.assertEqual(usage_events[0].metadata["cached_tokens"], 2048)
+
+    def test_live_progress_rate_uses_the_engine_clock(self) -> None:
+        timing = GenerationTiming(
+            generation_id="gen_live",
+            queued_at=time.monotonic(),
+            admitted_at=time.monotonic(),
+            phase="prefill",
+        )
+        LlamaCppChatBackend._mark_progress(
+            timing,
+            {"total": 13271, "cache": 2048, "processed": 8192, "time_ms": 24576.0},
+        )
         self.assertEqual(timing.prompt_tokens, 13271)
         self.assertEqual(timing.prompt_tokens_processed, 8192)
         self.assertEqual(timing.cached_tokens, 2048)
-        self.assertEqual(timing.output_tokens, 3)
-        self.assertIsNotNone(timing.live_prefill_tokens_per_second())
+        # (8192 - 2048) uncached tokens over 24.576 engine-measured seconds.
+        self.assertEqual(timing.live_prefill_tokens_per_second(), 250.0)
 
     def test_missing_template_endpoint_still_counts_real_tokens(self) -> None:
         engine = FakeEngine(body="", tokens=7, template=False)
