@@ -1,4 +1,10 @@
 import { expect, test } from "./browser.fixture";
+import type { Page } from "@playwright/test";
+
+async function openSettings(page: Page) {
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-menu-settings").click();
+}
 
 /**
  * Design-debt and intended-architecture flags.
@@ -24,7 +30,7 @@ test.describe("design locks (must pass)", () => {
 	});
 
 	test("Settings has no Finetunes or adapter-placeholder UI", async ({ page }) => {
-		await page.getByRole("button", { name: "Settings" }).click();
+		await openSettings(page);
 		await expect(page.getByTestId("settings-page")).toBeVisible();
 		await expect(page.getByRole("button", { name: "Finetunes" })).toHaveCount(0);
 		await expect(page.getByTestId("settings-finetunes")).toHaveCount(0);
@@ -55,7 +61,7 @@ test.describe("design locks (must pass)", () => {
 		});
 		await page.reload();
 		await page.getByTestId("titlebar").waitFor();
-		await page.getByRole("button", { name: "Settings" }).click();
+		await openSettings(page);
 		await page.getByRole("button", { name: "Runtime", exact: true }).click();
 		await expect(page.getByTestId("workspace-access-settings")).toContainText("/Users/joshuapurtell/Documents/GitHub");
 		await page.getByRole("button", { name: "Remove /Users/joshuapurtell/Documents/GitHub" }).click();
@@ -133,12 +139,13 @@ test.describe("design debt (expected fail until fixed)", () => {
 		await expect(page.getByRole("button", { name: "Expand" })).toHaveCount(0);
 		await expect(page.getByText("Account menu — stub", { exact: true })).toHaveCount(0);
 		await expect(page.getByText("Expand — stub", { exact: true })).toHaveCount(0);
+		await page.getByTestId("account-menu-trigger").click();
 		await expect(page.getByTestId("open-account-settings")).toBeVisible();
 	});
 
 
 	test("Runtime settings has no legacy Python migration surface", async ({ page }) => {
-		await page.getByRole("button", { name: "Settings" }).click();
+		await openSettings(page);
 		await page.getByTestId("settings-page").getByRole("button", { name: "Runtime" }).click();
 		await expect(page.getByTestId("settings-runtime")).toBeVisible();
 		await expect(page.getByText("Legacy Python Runtime Data")).toHaveCount(0);
@@ -174,7 +181,7 @@ test.describe("design debt (expected fail until fixed)", () => {
 		});
 		await page.reload();
 		await page.getByTestId("titlebar").waitFor();
-		await page.getByRole("button", { name: "Settings" }).click();
+		await openSettings(page);
 		await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
 		await page.getByRole("button", { name: "Reload" }).click();
 		await expect
@@ -198,7 +205,7 @@ test.describe("design debt (expected fail until fixed)", () => {
 			};
 		});
 		await page.reload();
-		await page.getByRole("button", { name: "Settings" }).click();
+		await openSettings(page);
 		await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
 		await page.getByRole("button", { name: "Reload" }).click();
 		const status = page.getByTestId("laguna-reload-status");

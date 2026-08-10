@@ -62,6 +62,7 @@ test.describe("first-five-minutes golden path", () => {
 			.getByRole("button", { name: /Continue locally/ }).click();
 		const trigger = page.getByTestId("account-menu-trigger");
 		await expect(trigger).toBeVisible();
+		await expect(page.getByTestId("settings")).toHaveCount(0);
 		await expect(trigger).toContainText("Sign in to Synth");
 		await expect(trigger).toContainText("Local mode");
 		await trigger.click();

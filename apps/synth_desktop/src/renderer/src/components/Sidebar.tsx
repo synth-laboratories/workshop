@@ -492,16 +492,6 @@ export function Sidebar({
 						<span className="account-help" aria-hidden>?</span>
 					</button>
 				</div>
-				<button
-					type="button"
-					className="settings-btn"
-					onClick={onSettings}
-					data-testid="settings"
-					aria-label="Settings"
-				>
-					<IconSettings />
-					Settings
-				</button>
 			</div>
 			{onSidebarWidthChange ? (
 				<PaneResizeHandle

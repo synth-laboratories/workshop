@@ -1029,28 +1029,7 @@ a,
 	}
 }
 
-.settings-btn {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	width: 100%;
-	padding: 7px 10px;
-	border-radius: 7px;
-	font-size: 13.5px;
-	letter-spacing: -0.01em;
-	color: var(--color-text);
-	transition: background 0.15s ease, color 0.15s ease;
-}
-
-.settings-btn:hover {
-	background: rgba(0, 0, 0, 0.04);
-}
-
-.settings-btn .nav-icon {
-	color: #5c6068;
-}
-
-.account-footer { position: relative; margin-top: 4px; }
+.account-footer { position: relative; }
 .account-trigger {
 	display: flex;
 	align-items: center;

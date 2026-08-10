@@ -2,8 +2,8 @@ import { expect, test } from "./browser.fixture";
 import type { Page } from "@playwright/test";
 
 async function openSettings(page: Page) {
-	await page.getByTestId("account-footer-trigger").click();
-	await page.getByTestId("settings").click();
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-menu-settings").click();
 }
 
 test("parked Projects surface is absent while workspace access remains available", async ({ page }) => {
@@ -464,8 +464,9 @@ test.describe("layout persistence", () => {
 });
 
 test("keyboard-only settings navigation reaches General anchors", async ({ page }) => {
-	await page.getByTestId("account-footer-trigger").click();
-	await page.getByTestId("settings").focus();
+	await page.getByTestId("account-menu-trigger").focus();
+	await page.keyboard.press("Enter");
+	await page.getByTestId("account-menu-settings").focus();
 	await page.keyboard.press("Enter");
 	await expect(page.getByTestId("settings-general")).toBeVisible();
 	await page.getByRole("button", { name: "About" }).focus();

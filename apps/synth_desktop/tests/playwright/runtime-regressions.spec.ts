@@ -2,7 +2,8 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "./browser.fixture";
 
 async function openSettings(page: Page) {
-	await page.getByTestId("settings").click();
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-menu-settings").click();
 }
 
 type LagunaPhase = "starting" | "loading" | "ready";

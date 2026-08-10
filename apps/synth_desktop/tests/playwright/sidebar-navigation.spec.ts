@@ -274,8 +274,8 @@ test("reversible navigation does not retain abandoned DOM", async ({ page }) => 
 		await page.keyboard.press("Escape");
 		await expect(page.getByTestId("conversation-search")).toHaveCount(0);
 
-		await page.getByTestId("account-footer-trigger").click();
-		await page.getByTestId("settings").click();
+		await page.getByTestId("account-menu-trigger").click();
+		await page.getByTestId("account-menu-settings").click();
 		await page.getByTestId("settings-page").getByRole("button", { name: "← Back" }).click();
 		await expect(page.getByTestId("landing-page")).toBeVisible();
 

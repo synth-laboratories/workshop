@@ -266,8 +266,11 @@ const backNavigation = extract((state: any) => {
 		const rect = element?.getBoundingClientRect();
 		return rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null;
 	};
+	const settingsEntry = document.querySelector('[data-testid="account-menu-settings"]')
+		? '[data-testid="account-menu-settings"]'
+		: '[data-testid="account-menu-trigger"]';
 	const routes = [
-		{ id: "settings", page: '[data-testid="settings-page"]', entry: '[data-testid="account-footer-trigger"]', exit: '.desk-back' },
+		{ id: "settings", page: '[data-testid="settings-page"]', entry: settingsEntry, exit: '.desk-back' },
 		{ id: "connectors", page: '[data-testid="connectors-page"]', entry: '[data-testid="open-connectors"]', exit: '.page-back' },
 		{ id: "visuals", page: '[data-testid="visuals-page"]', entry: '[data-testid="open-visuals"]', exit: '.ghost-button' },
 		{ id: "inventory", page: '[data-testid="inventory-page"]', entry: '[data-testid="open-inventory"]', exit: '.desk-back' },
@@ -595,7 +598,7 @@ const polishControls = extract((state: any) => {
 		["Apply layout default", '[data-testid="apply-layout-default"]'],
 		["Reset layout", '[data-testid="reset-layout"]']
 	].map(([name, selector]) => ({ name, point: point(selector) })).filter((entry) => entry.point !== null);
-	return { settingsPoint: point('[data-testid="settings"]') ?? point('[data-testid="account-footer-trigger"]'), controls };
+	return { settingsPoint: point('[data-testid="account-menu-settings"]') ?? point('[data-testid="account-menu-trigger"]'), controls };
 });
 
 /** Exercise every currently visible preference control instead of only visiting Settings. */
