@@ -207,15 +207,12 @@ install_desktop() {
 	if [[ "$verification" == "release" ]]; then
 		verify_desktop
 	fi
-	# Codex resolves the MCP noun adapters next to the app executable with a
-	# build-tree fallback; keep the release copies fresh so installed sessions
-	# get working synth_* MCP servers on this machine.
-	cargo build \
-		--manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
-		--release \
-		--bin synth-containers-mcp \
-		--bin synth-visuals-mcp \
-		--bin synth-optimizers-mcp
+	# The synth_* MCP noun adapters are NOT bundled into the .app; the installed
+	# app resolves them beside its executable and then falls back to the build
+	# tree's target/debug copies (see codex.rs). Building release copies here
+	# added ~20s of link time per install without changing what the installed
+	# app loads, so it was removed; bundling them as Tauri sidecars is the real
+	# fix and is tracked in the launch program.
 	build_desktop
   [[ -d "$BUNDLE_APP" && -x "$BUNDLE_EXE" ]] || {
     echo "[desktop] build did not produce $BUNDLE_APP" >&2
