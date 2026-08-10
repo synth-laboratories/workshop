@@ -73,6 +73,29 @@ test("blobs poisoned with the 16k floor before v4 are remediated to defaults", (
 	assert.deepEqual(normalizePreferences(unversioned).agentContext.autoCompactTokenLimits, DEFAULT_LIMITS);
 });
 
+test("16k and lower compact limits always normalize to model defaults", () => {
+	for (const schemaVersion of [undefined, 3, PREFERENCES_SCHEMA_VERSION]) {
+		for (const poisonedValue of [null, "", -1, 0, 1, 15_999, 16_000, "16000"]) {
+			const raw = {
+				...(schemaVersion === undefined ? {} : { schemaVersion }),
+				agentContext: {
+					autoCompactTokenLimit: poisonedValue,
+					autoCompactTokenLimits: {
+						lagunaXs: poisonedValue,
+						lagunaS: poisonedValue,
+						luna: poisonedValue
+					}
+				}
+			};
+			assert.deepEqual(
+				normalizePreferences(raw).agentContext.autoCompactTokenLimits,
+				DEFAULT_LIMITS,
+				`schema=${schemaVersion} value=${JSON.stringify(poisonedValue)}`
+			);
+		}
+	}
+});
+
 test("intentional customs at the current schema survive normalization", () => {
 	const custom = {
 		schemaVersion: PREFERENCES_SCHEMA_VERSION,

@@ -147,6 +147,16 @@ export function clampNumber(value: unknown, min: number, max: number, fallback: 
 	return Math.min(max, Math.max(min, Math.round(n)));
 }
 
+function normalizeAutoCompactTokenLimit(value: unknown, max: number, fallback: number): number {
+	if (value === null || value === undefined || value === "") return fallback;
+	const parsed = typeof value === "number" ? value : Number(value);
+	// 16k was an accidental normalization floor, never a valid persisted
+	// compact threshold. Invalid and formerly floor-clamped values return to the
+	// model's documented default instead of being raised to another low limit.
+	if (!Number.isFinite(parsed) || parsed <= 16_000) return fallback;
+	return Math.min(max, Math.round(parsed));
+}
+
 export function normalizeLayoutSnapshot(
 	raw: unknown,
 	viewportWidth = typeof window !== "undefined" ? window.innerWidth : 1280,
@@ -232,8 +242,11 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 	const storedBeforeFloorFix = !(storedSchemaVersion >= 4);
 	const migrateFloor = (value: unknown, fallback: number) =>
 		storedBeforeFloorFix && value === 16_000 ? fallback : value;
-	const legacyCompactLimit = Number(agentContext.autoCompactTokenLimit);
-	const legacyOverride = Number.isFinite(legacyCompactLimit) && legacyCompactLimit !== 196_000 && !(storedBeforeFloorFix && legacyCompactLimit === 16_000)
+	const legacyCompactLimitValue = agentContext.autoCompactTokenLimit;
+	const legacyCompactLimit = legacyCompactLimitValue === null || legacyCompactLimitValue === undefined || legacyCompactLimitValue === ""
+		? Number.NaN
+		: Number(legacyCompactLimitValue);
+	const legacyOverride = Number.isFinite(legacyCompactLimit) && legacyCompactLimit !== 196_000 && legacyCompactLimit > 16_000
 		? legacyCompactLimit
 		: null;
 	const layout = source.layout && typeof source.layout === "object"
@@ -286,21 +299,18 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 		toolActivity: { mode },
 		agentContext: {
 			autoCompactTokenLimits: {
-				lagunaXs: clampNumber(
+				lagunaXs: normalizeAutoCompactTokenLimit(
 					migrateFloor(compactLimits.lagunaXs, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaXs) ?? legacyOverride,
-					16_000,
 					235_929,
 					DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaXs
 				),
-				lagunaS: clampNumber(
+				lagunaS: normalizeAutoCompactTokenLimit(
 					migrateFloor(lagunaSLimit, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaS) ?? legacyOverride,
-					16_000,
 					945_000,
 					DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaS
 				),
-				luna: clampNumber(
+				luna: normalizeAutoCompactTokenLimit(
 					migrateFloor(lunaLimit, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.luna) ?? legacyOverride,
-					16_000,
 					945_000,
 					DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.luna
 				)

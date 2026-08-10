@@ -225,7 +225,7 @@ export function GeneralPreferencesSettings({ preferences, onPreferencesChange }:
 					<NumericInput
 						label="Laguna XS auto-compact token limit"
 						value={preferences.agentContext.autoCompactTokenLimits.lagunaXs}
-						min={16_000}
+						min={16_001}
 						max={235_929}
 						testId="auto-compact-token-limit-laguna-xs"
 						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit("lagunaXs", limit))}
@@ -235,7 +235,7 @@ export function GeneralPreferencesSettings({ preferences, onPreferencesChange }:
 					<NumericInput
 						label="Laguna S auto-compact token limit"
 						value={preferences.agentContext.autoCompactTokenLimits.lagunaS}
-						min={16_000}
+						min={16_001}
 						max={945_000}
 						testId="auto-compact-token-limit-laguna-s"
 						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit("lagunaS", limit))}
@@ -245,7 +245,7 @@ export function GeneralPreferencesSettings({ preferences, onPreferencesChange }:
 					<NumericInput
 						label="Luna auto-compact token limit"
 						value={preferences.agentContext.autoCompactTokenLimits.luna}
-						min={16_000}
+						min={16_001}
 						max={945_000}
 						testId="auto-compact-token-limit-luna"
 						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit("luna", limit))}
