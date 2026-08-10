@@ -1419,23 +1419,27 @@ async fn prepare_codex_provider(
         .as_deref()
         .is_some_and(|provider| provider.eq_ignore_ascii_case("openrouter"))
     {
-        request.api_key = synth_config::openrouter_api_key()
+        let key = synth_config::openrouter_api_key()
             .map_err(|error| error.to_string())?
             .ok_or_else(|| {
                 "OpenRouter API key is not configured. Add it in Synth backend settings."
                     .to_string()
             })?;
-        request.provider_env_key = Some("OPENROUTER_API_KEY".into());
+        // The OpenRouter key is the user's, and leaks into shell snapshots the
+        // same way the Synth key did; it goes into native custody too.
+        let broker = credential_broker::shared().map_err(|error| error.to_string())?;
+        codex::apply_brokered_credential(&mut request, &broker, &key)?;
     } else if request
         .provider_name
         .as_deref()
         .is_some_and(|provider| provider.eq_ignore_ascii_case("synth-cloud"))
     {
         let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
-		codex::apply_synth_cloud_provider(
-			&mut request,
-			credential_broker::shared().map_err(|error| error.to_string())?.as_ref(),
-			&resolved.backend_url,
+        let broker = credential_broker::shared().map_err(|error| error.to_string())?;
+        codex::apply_synth_cloud_provider(
+            &mut request,
+            &broker,
+            &resolved.backend_url,
             resolved.api_key.as_deref(),
         )?;
     }
@@ -1655,6 +1659,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             instance::mark_manifest_running();
+            // Builds before the credential broker exported provider keys into
+            // Codex, which recorded them in its shell snapshots. Scrub what
+            // those builds left behind in Desktop's own Codex homes.
+            match credential_broker::redact_managed_shell_snapshots(&codex::codex_root()) {
+                Ok(0) => {}
+                Ok(count) => eprintln!("redacted provider secrets from {count} Codex shell snapshot(s)"),
+                Err(error) => eprintln!("could not scrub Codex shell snapshots: {error}"),
+            }
             let core =
                 Arc::new(CoreRuntime::open_default().map_err(|error| {
                     std::io::Error::other(format!("open CoreRuntime: {error}"))

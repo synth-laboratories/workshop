@@ -37,6 +37,26 @@ export type AccountViewModel = {
 	/** Non-null when billable Synth Cloud actions are blocked for this account. */
 	cloudBlockedReason: string | null;
 	statusNote: string | null;
+	/** The expandable `Usage remaining` summary in the account menu. */
+	allowance: AllowanceSummary;
+};
+
+/**
+ * The cloud allowance, resolved to exactly what the menu should show.
+ *
+ * Cloud only, by construction: device totals live in Inventory → Usage and are
+ * never summed into these rows (invariant 1). `rows` is empty whenever there is
+ * no metered dollar figure to show, so no surface can render an invented
+ * `$0.00` (invariant 2) — `note` says why instead.
+ */
+export type AllowanceSummary = {
+	/** Collapsed-row trailing value, or null when there is no honest figure. */
+	headline: string | null;
+	rows: { label: string; value: string }[];
+	/** Shown in place of rows when there is nothing metered to show. */
+	note: string | null;
+	/** True when `rows` came from the labelled local/dev stand-in. */
+	isDevSeed: boolean;
 };
 
 const CURRENCY = new Intl.NumberFormat("en-US", {
@@ -174,6 +194,8 @@ export function buildAccountView(
 		}
 	})();
 
+	const allowance = buildAllowance(state, plan, isDevSeed);
+
 	const statusNote = summary?.stale
 		? `Showing the last known plan${summary.error ? ` — ${summary.error}` : ""}`
 		: summary?.error ?? null;
@@ -190,6 +212,53 @@ export function buildAccountView(
 		planHasDollars: planHasDollars(plan),
 		primaryAction,
 		cloudBlockedReason: blockedReason(state, plan),
-		statusNote
+		statusNote,
+		allowance
+	};
+}
+
+/** Signed-out copy is fixed by contract: an invitation, never a zero dollar figure. */
+const SIGNED_OUT_ALLOWANCE_NOTE = "Sign in to Synth to see a cloud allowance";
+
+function buildAllowance(
+	state: SynthAccountState,
+	plan: SynthAccountPlan | null,
+	isDevSeed: boolean
+): AllowanceSummary {
+	if (state === "local_only" || state === "signed_out" || state === "pairing") {
+		return { headline: null, rows: [], note: SIGNED_OUT_ALLOWANCE_NOTE, isDevSeed: false };
+	}
+	if (!plan) {
+		return {
+			headline: null,
+			rows: [],
+			note: "Synth Cloud has not reported a plan for this account yet",
+			isDevSeed: false
+		};
+	}
+	if (!planHasDollars(plan)) {
+		// An unmetered account has a real plan but no dollar allowance. Naming
+		// the plan is honest; inventing an allowance for it is not.
+		return {
+			headline: null,
+			rows: [{ label: "Plan", value: plan.name }],
+			note: "This account is not metered in dollars",
+			isDevSeed
+		};
+	}
+	const resets = formatDate(plan.resetsAt);
+	return {
+		headline: typeof plan.remainingUsd === "number" ? formatUsd(plan.remainingUsd) : null,
+		rows: [
+			{ label: "Plan", value: plan.name },
+			{ label: "Monthly allowance", value: formatUsd(plan.monthlyAllowanceUsd) },
+			{ label: "Used this period", value: formatUsd(plan.usedUsd) },
+			...(typeof plan.remainingUsd === "number"
+				? [{ label: "Remaining", value: formatUsd(plan.remainingUsd) }]
+				: []),
+			...(resets ? [{ label: "Resets", value: resets }] : [])
+		],
+		note: null,
+		isDevSeed
 	};
 }

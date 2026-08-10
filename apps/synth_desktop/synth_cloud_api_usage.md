@@ -255,6 +255,34 @@ Open decisions (from `AUTH_BILLING_FLOW.md`):
   Log out
 ```
 
+#### Account menu contract — resolved 2026-08-10
+
+The shipped menu had drifted to a single flat `Usage` row while this document
+and `HANDOFF_CLOUD_ACCOUNT_QA.md` (A3, C2) still described an expandable
+summary. The expandable summary is canonical; the implementation was restored to
+match, and both rows now exist for distinct reasons:
+
+| Row | Shows | Source |
+| --- | --- | --- |
+| `Usage remaining` (expands in place) | Cloud allowance only: plan, monthly allowance, used this period, remaining, resets | Account Snapshot |
+| `Usage` (opens the sheet) | Cloud **and** device, in separate sections | Snapshot + local `usage_ledger` |
+
+Fixed copy, asserted by test rather than described in prose:
+
+- Signed out / local-only / pairing → `Sign in to Synth to see a cloud allowance`,
+  and no dollar figure anywhere in the summary.
+- Signed in, unmetered → the plan name and `This account is not metered in
+  dollars`; no invented allowance.
+- Signed in, no plan reported → `Synth Cloud has not reported a plan for this
+  account yet`.
+- The local/dev stand-in is labelled `Local/dev plan stand-in`.
+
+The summary is built in `accountView.ts` (`buildAccountView().allowance`), not in
+JSX, so every surface obeys the same two invariants. Contract tests live in
+`tests/account_view.test.mjs` and
+`tests/playwright/account-cloud-usage.spec.ts`; the signed-out case is in
+`tests/playwright/account-sign-in.spec.ts`.
+
 ### Usage modal / sheet (desired)
 
 Two clearly separated sections — never one blended total:

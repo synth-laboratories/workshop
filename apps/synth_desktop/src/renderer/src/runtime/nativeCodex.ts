@@ -52,7 +52,9 @@ export function codexStartRequest(
 		: autoCompactTokenLimits.lagunaS ?? 250_000;
 	if (target.provider === "synth-cloud") {
 		return {
-			// baseUrl is overwritten by the Rust host from synth_config; placeholder satisfies types.
+			// baseUrl and providerEnvKey are both overwritten by the Rust host,
+			// which routes this provider through the native credential broker;
+			// the placeholder only satisfies the type.
 			sessionId, workspace, baseUrl: "https://api.usesynth.ai/api/v1",
 			model: target.model, providerName: "synth-cloud", providerTitle: "Synth Cloud Responses",
 			providerEnvKey: "SYNTH_API_KEY", autoCompactTokenLimit, ...approval

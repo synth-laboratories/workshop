@@ -181,17 +181,21 @@ test("the local/dev stand-in is flagged so the UI can label it", () => {
 
 test("a stale snapshot keeps rendering and says so", () => {
 	const view = buildAccountView(
-		cloudSummary({ stale: true, error: "Synth Cloud is unavailable right now" }),
+		cloudSummary({ stale: true, error: "Synth Cloud is unavailable right now." }),
 		true
 	);
 	assert.equal(view.state, "active");
-	assert.match(view.statusNote, /Showing the last known plan/);
-	assert.match(view.statusNote, /unavailable/);
+	// The exact public sentence the host now produces (`AccountError`), composed
+	// into the exact note the product contract specifies.
+	assert.equal(
+		view.statusNote,
+		"Showing the last known plan — Synth Cloud is unavailable right now."
+	);
 });
 
 test("a failed snapshot in prod offers retry and no plan", () => {
 	const view = buildAccountView(
-		{ signedIn: true, state: "error", environment: "prod", source: "none", error: "Synth Cloud is unavailable right now" },
+		{ signedIn: true, state: "error", environment: "prod", source: "none", error: "Synth Cloud is unavailable right now." },
 		true
 	);
 	assert.equal(view.plan, null);
@@ -203,4 +207,78 @@ test("dollars format to two places, and nullish reads as zero rather than NaN", 
 	assert.equal(formatUsd(157.5), "$157.50");
 	assert.equal(formatUsd(undefined), "$0.00");
 	assert.equal(formatUsd(Number.NaN), "$0.00");
+});
+
+// ── `Usage remaining` — the expandable cloud allowance summary ──────────────
+//
+// Two documents specify this row (`HANDOFF_CLOUD_ACCOUNT_QA.md` A3/C2 and the
+// target UX in `synth_cloud_api_usage.md`), and it is the only surface that
+// states the allowance without opening a sheet. These tests pin the one
+// canonical behavior so implementation and contract cannot drift again.
+
+test("the allowance summary states plan, allowance, used, remaining and resets", () => {
+	const { allowance } = buildAccountView(cloudSummary(), true);
+	assert.equal(allowance.headline, "$157.50");
+	assert.equal(allowance.note, null);
+	assert.equal(allowance.isDevSeed, false);
+	assert.deepEqual(
+		allowance.rows.map((row) => row.label),
+		["Plan", "Monthly allowance", "Used this period", "Remaining", "Resets"]
+	);
+	assert.deepEqual(
+		allowance.rows.slice(0, 4).map((row) => row.value),
+		["Pro", "$200.00", "$42.50", "$157.50"]
+	);
+});
+
+test("signed out, the allowance invites sign-in and never shows $0.00", () => {
+	for (const state of ["local_only", "signed_out", "pairing"]) {
+		const view = buildAccountView({ signedIn: false, state, environment: "prod", source: "none" }, false);
+		assert.equal(view.allowance.note, "Sign in to Synth to see a cloud allowance");
+		assert.deepEqual(view.allowance.rows, []);
+		assert.equal(view.allowance.headline, null);
+		assert.equal(
+			JSON.stringify(view.allowance).includes("$"),
+			false,
+			`${state} must not render any dollar figure`
+		);
+	}
+});
+
+test("an unmetered account names its plan but invents no allowance", () => {
+	const { allowance } = buildAccountView(
+		cloudSummary({ plan: { name: "Research", metered: false, usedUsd: 0 } }),
+		true
+	);
+	assert.equal(allowance.headline, null);
+	assert.deepEqual(allowance.rows, [{ label: "Plan", value: "Research" }]);
+	assert.equal(allowance.note, "This account is not metered in dollars");
+});
+
+test("a signed-in account with no plan says so instead of showing zeros", () => {
+	const { allowance } = buildAccountView(
+		{ signedIn: true, state: "unknown", environment: "prod", source: "none" },
+		true
+	);
+	assert.deepEqual(allowance.rows, []);
+	assert.equal(allowance.note, "Synth Cloud has not reported a plan for this account yet");
+	assert.equal(allowance.headline, null);
+});
+
+test("the local/dev stand-in allowance is flagged so the menu can label it", () => {
+	const { allowance } = buildAccountView(
+		cloudSummary({ source: "dev_seed", plan: { ...cloudSummary().plan, source: "dev_seed" } }),
+		true
+	);
+	assert.equal(allowance.isDevSeed, true);
+	assert.equal(allowance.headline, "$157.50");
+});
+
+test("the allowance summary is cloud-only and never mixes in device usage", () => {
+	// Device totals arrive through a different bridge entirely; nothing in the
+	// summary may be derived from them.
+	const { allowance } = buildAccountView(cloudSummary(), true);
+	const labels = allowance.rows.map((row) => row.label.toLowerCase());
+	assert.equal(labels.some((label) => label.includes("device")), false);
+	assert.equal(labels.some((label) => label.includes("token")), false);
 });

@@ -74,6 +74,10 @@ menu — it must contain a `Usage` row beneath `Usage remaining`, and the expand
 must say **"Used this period"** and **"This device, this week"**. If it says "Used this
 month", stop and rebuild.
 
+> `Usage remaining` was missing from builds between the account-snapshot landing
+> and 2026-08-10 and has been restored; the canonical contract for both rows is
+> recorded in `synth_cloud_api_usage.md` → "Account menu contract — resolved".
+
 ### Backend for the cloud path
 
 The snapshot is API-key authed. Run the backend from the `dev` worktree:

@@ -151,24 +151,43 @@ export function Sidebar({
 	const [renameDraft, setRenameDraft] = useState("");
 	const [showAllChats, setShowAllChats] = useState(false);
 	const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+	const [allowanceOpen, setAllowanceOpen] = useState(false);
 	const accountMenuRef = useRef<HTMLDivElement>(null);
 	const accountTriggerRef = useRef<HTMLButtonElement>(null);
 
 	useEffect(() => {
 		if (!accountMenuOpen) return;
+		// Read the rows on demand: `Usage remaining` expands in place, so the
+		// menu's contents change while it is open.
+		const rows = () => Array.from(
+			accountMenuRef.current?.querySelectorAll<HTMLButtonElement>("[role=\"menuitem\"]") ?? []
+		);
+		// An open menu owns the focus, so a keyboard user is inside it rather
+		// than still on the trigger behind it.
+		requestAnimationFrame(() => rows()[0]?.focus());
 		const closeOutside = (event: MouseEvent) => {
 			if (!accountMenuRef.current?.contains(event.target as Node)) setAccountMenuOpen(false);
 		};
-		const closeOnEscape = (event: KeyboardEvent) => {
-			if (event.key !== "Escape") return;
-			setAccountMenuOpen(false);
-			requestAnimationFrame(() => accountTriggerRef.current?.focus());
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key === "Escape") {
+				setAccountMenuOpen(false);
+				requestAnimationFrame(() => accountTriggerRef.current?.focus());
+				return;
+			}
+			if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+			const items = rows();
+			if (!items.length) return;
+			// The arrows belong to the menu; let them not scroll the page.
+			event.preventDefault();
+			const current = items.indexOf(document.activeElement as HTMLButtonElement);
+			const step = event.key === "ArrowDown" ? 1 : -1;
+			items[(current + step + items.length) % items.length]?.focus();
 		};
 		document.addEventListener("mousedown", closeOutside);
-		document.addEventListener("keydown", closeOnEscape);
+		document.addEventListener("keydown", onKeyDown);
 		return () => {
 			document.removeEventListener("mousedown", closeOutside);
-			document.removeEventListener("keydown", closeOnEscape);
+			document.removeEventListener("keydown", onKeyDown);
 		};
 	}, [accountMenuOpen]);
 
@@ -423,6 +442,46 @@ export function Sidebar({
 							</div>
 							{account.cloudBlockedReason ? (
 								<p className="account-menu-alert" data-testid="account-menu-blocked">{account.cloudBlockedReason}</p>
+							) : null}
+							{/*
+							  Cloud allowance, expandable. Separate from the `Usage`
+							  row below on purpose: this summarizes Synth Cloud only,
+							  while `Usage` opens the sheet where cloud and device
+							  totals are shown side by side but never blended.
+							*/}
+							<button
+								type="button"
+								className="account-menu-row"
+								onClick={() => setAllowanceOpen((value) => !value)}
+								aria-expanded={allowanceOpen}
+								aria-controls="account-allowance-panel"
+								data-testid="account-usage-remaining"
+								role="menuitem"
+							>
+								<span className="account-menu-glyph" aria-hidden>◔</span>
+								<span>Usage remaining</span>
+								{account.allowance.headline ? (
+									<span className="account-menu-value" data-testid="account-usage-remaining-value">
+										{account.allowance.headline}
+									</span>
+								) : null}
+								<SectionChevron open={allowanceOpen} />
+							</button>
+							{allowanceOpen ? (
+								<div id="account-allowance-panel" className="account-menu-panel" data-testid="account-allowance-panel">
+									{account.allowance.rows.map((row) => (
+										<p key={row.label} className="account-menu-fact">
+											<span>{row.label}</span>
+											<strong>{row.value}</strong>
+										</p>
+									))}
+									{account.allowance.note ? (
+										<p className="account-menu-note" data-testid="account-allowance-note">{account.allowance.note}</p>
+									) : null}
+									{account.allowance.isDevSeed ? (
+										<p className="account-menu-note" data-testid="account-allowance-dev-seed">Local/dev plan stand-in</p>
+									) : null}
+								</div>
 							) : null}
 							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); onOpenUsage?.(); }} data-testid="account-open-usage" role="menuitem">
 								<span className="account-menu-glyph" aria-hidden>▤</span><span>Usage</span>

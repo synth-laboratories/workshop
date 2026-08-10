@@ -20,7 +20,8 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
+use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -91,8 +92,8 @@ impl fmt::Debug for LeaseHandle {
 }
 
 struct BrokerState {
-    /// session id -> lease. Keying by session means a restart replaces rather
-    /// than accumulates tokens, and closing a session revokes exactly one.
+    /// session id -> lease token. Keying by session means a restart replaces
+    /// rather than accumulates tokens, and closing a session revokes exactly one.
     by_session: RwLock<HashMap<String, String>>,
     /// lease token -> lease.
     leases: RwLock<HashMap<String, Arc<Lease>>>,
@@ -151,12 +152,11 @@ impl CredentialBroker {
             .context("make the credential proxy listener non-blocking")?;
         let state = broker.state.clone();
         tauri::async_runtime::spawn(async move {
-            // Adopt the listener inside the task: a tokio listener registers
-            // with the reactor of the runtime it is created on, so converting it
-            // here keeps the socket and its driver on the same runtime.
-            match tokio::net::TcpListener::from_std(listener) {
-                Ok(listener) => serve(state, listener).await,
-                Err(_) => { /* the port is already bound; cloud sessions will fail closed */ }
+            // Adopt the listener inside the task: a tokio listener registers with
+            // the reactor of the runtime it is created on, so converting it here
+            // keeps the socket and its driver on the same runtime.
+            if let Ok(listener) = tokio::net::TcpListener::from_std(listener) {
+                serve(state, listener).await;
             }
         });
         Ok(broker)
@@ -203,6 +203,14 @@ impl CredentialBroker {
         }
     }
 
+    /// The origin a lease is bound to, for tests that assert routing.
+    #[cfg(test)]
+    pub(crate) fn upstream_for(&self, token: &str) -> Option<String> {
+        self.state
+            .lookup(token)
+            .map(|lease| lease.upstream_origin.clone())
+    }
+
     #[cfg(test)]
     fn resolves(&self, token: &str) -> bool {
         self.state.lookup(token).is_some()
@@ -210,13 +218,12 @@ impl CredentialBroker {
 }
 
 /// One proxy per process. Every cloud session leases from the same broker, and
-/// `close` revokes through it, so it outlives any single manager.
-static SHARED: std::sync::OnceLock<std::sync::Mutex<Option<Arc<CredentialBroker>>>> =
-    std::sync::OnceLock::new();
+/// session teardown revokes through it, so it outlives any single manager.
+static SHARED: OnceLock<Mutex<Option<Arc<CredentialBroker>>>> = OnceLock::new();
 
 /// The process-wide broker, started on first use.
 pub fn shared() -> Result<Arc<CredentialBroker>> {
-    let slot = SHARED.get_or_init(|| std::sync::Mutex::new(None));
+    let slot = SHARED.get_or_init(|| Mutex::new(None));
     let mut guard = slot.lock().unwrap();
     if let Some(existing) = guard.as_ref() {
         return Ok(existing.clone());
@@ -264,7 +271,7 @@ fn json_error(status: StatusCode, message: &str) -> Response<ProxyBody> {
         .expect("static proxy error response")
 }
 
-/// Headers that describe *this* hop and must not be replayed upstream.
+/// Headers that describe *this* hop and must not be replayed to the other side.
 fn is_hop_by_hop(name: &str) -> bool {
     matches!(
         name,
@@ -292,7 +299,10 @@ fn bearer(request: &Request<Incoming>) -> Option<&str> {
         .map(str::trim)
 }
 
-async fn proxy(state: Arc<BrokerState>, request: Request<Incoming>) -> Result<Response<ProxyBody>, std::convert::Infallible> {
+async fn proxy(
+    state: Arc<BrokerState>,
+    request: Request<Incoming>,
+) -> Result<Response<ProxyBody>, std::convert::Infallible> {
     let Some(lease) = bearer(&request).and_then(|token| state.lookup(token)) else {
         return Ok(json_error(
             StatusCode::UNAUTHORIZED,
@@ -362,7 +372,7 @@ async fn proxy(state: Arc<BrokerState>, request: Request<Incoming>) -> Result<Re
             .map_err(|_| std::io::Error::other("Synth Cloud ended the response early."))
     });
     Ok(response
-		.body(BodyExt::boxed(StreamBody::new(stream)))
+        .body(BodyExt::boxed(StreamBody::new(stream)))
         .unwrap_or_else(|_| {
             json_error(
                 StatusCode::BAD_GATEWAY,
@@ -377,7 +387,7 @@ async fn proxy(state: Arc<BrokerState>, request: Request<Incoming>) -> Result<Re
 /// Scope is deliberately narrow: only `<codex_root>/homes/*/shell_snapshots`,
 /// which Desktop creates and owns. User shell files elsewhere are never read or
 /// rewritten.
-pub fn redact_managed_shell_snapshots(codex_root: &std::path::Path) -> Result<usize> {
+pub fn redact_managed_shell_snapshots(codex_root: &Path) -> Result<usize> {
     let homes = codex_root.join("homes");
     let Ok(entries) = std::fs::read_dir(&homes) else {
         return Ok(0);
@@ -436,7 +446,7 @@ fn redact_env_assignments(contents: &str) -> String {
 fn assignment_prefix(line: &str) -> Option<usize> {
     let trimmed = line.trim_start();
     let indent = line.len() - trimmed.len();
-    let rest = trimmed.strip_prefix("export ").map(|rest| rest.trim_start());
+    let rest = trimmed.strip_prefix("export ").map(str::trim_start);
     let (offset, body) = match rest {
         Some(body) => (indent + (trimmed.len() - body.len()), body),
         None => (indent, trimmed),
@@ -448,8 +458,8 @@ fn assignment_prefix(line: &str) -> Option<usize> {
         .then_some(offset + equals + 1)
 }
 
-/// Files Desktop writes that may hold or have held a secret are owner-only.
-pub fn restrict_to_owner(path: &std::path::Path) -> Result<()> {
+/// Files Desktop writes that may hold, or have held, a secret are owner-only.
+pub fn restrict_to_owner(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -475,10 +485,10 @@ mod tests {
     const SENTINEL: &str = "sk_dev_SENTINEL_CREDENTIAL_MUST_NOT_ESCAPE";
 
     /// Minimal upstream that records the `Authorization` it was given.
-    fn spawn_upstream(body: &'static str) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    fn spawn_upstream(body: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
-        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -532,9 +542,9 @@ mod tests {
         let handle = broker.lease("session-a", "http://127.0.0.1:41209", SENTINEL);
         let lease = broker.state.lookup(&handle.token).unwrap();
         for rendered in [
-            format!("{:?}", broker),
-            format!("{:?}", handle),
-            format!("{:?}", lease),
+            format!("{broker:?}"),
+            format!("{handle:?}"),
+            format!("{lease:?}"),
         ] {
             assert!(
                 !rendered.contains(SENTINEL),
@@ -561,8 +571,10 @@ mod tests {
 
         let request = seen.lock().unwrap().first().cloned().unwrap();
         assert!(
-            request.contains(&format!("authorization: Bearer {SENTINEL}"))
-                || request.contains(&format!("Authorization: Bearer {SENTINEL}")),
+            request.to_lowercase().contains(&format!(
+                "authorization: bearer {}",
+                SENTINEL.to_lowercase()
+            )),
             "upstream did not receive the real credential: {request}"
         );
         assert!(

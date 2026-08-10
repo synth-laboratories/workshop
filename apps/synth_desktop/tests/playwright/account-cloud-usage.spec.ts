@@ -142,6 +142,8 @@ test("the account menu supports keyboard traversal and restores trigger focus", 
 	const trigger = page.getByTestId("account-menu-trigger");
 	await trigger.focus();
 	await page.keyboard.press("Enter");
+	await expect(page.getByTestId("account-usage-remaining")).toBeFocused();
+	await page.keyboard.press("ArrowDown");
 	await expect(page.getByTestId("account-open-usage")).toBeFocused();
 	await page.keyboard.press("ArrowDown");
 	await expect(page.getByTestId("account-primary-action")).toBeFocused();
@@ -175,6 +177,40 @@ test("the usage sheet closes by Escape, backdrop, and button and restores focus"
 	await page.getByTestId("usage-sheet-close").click();
 	await expect(sheet).toBeHidden();
 	await expect(trigger).toBeFocused();
+});
+
+/*
+ * `Usage remaining` is an expandable summary above the `Usage` row, per
+ * HANDOFF_CLOUD_ACCOUNT_QA.md A3/C2 and the target UX in
+ * synth_cloud_api_usage.md. It summarizes Synth Cloud only; `Usage` opens the
+ * sheet where cloud and device sit side by side without blending.
+ */
+test("the account menu expands Usage remaining above a separate Usage row", async ({ page }) => {
+	await stubCloudAccount(page, { state: "active", remainingUsd: 157.5, usedUsd: 42.5 });
+	await page.getByTestId("account-menu-trigger").click();
+
+	const remaining = page.getByTestId("account-usage-remaining");
+	await expect(remaining).toBeVisible();
+	await expect(page.getByTestId("account-usage-remaining-value")).toHaveText("$157.50");
+	await expect(remaining).toHaveAttribute("aria-expanded", "false");
+	await expect(page.getByTestId("account-allowance-panel")).toBeHidden();
+
+	await remaining.click();
+	await expect(remaining).toHaveAttribute("aria-expanded", "true");
+	const panel = page.getByTestId("account-allowance-panel");
+	await expect(panel).toContainText("Pro");
+	await expect(panel).toContainText("Monthly allowance");
+	await expect(panel).toContainText("$200.00");
+	await expect(panel).toContainText("Used this period");
+	await expect(panel).toContainText("$42.50");
+	await expect(panel).toContainText("Remaining");
+	await expect(panel).toContainText("Resets");
+	// Cloud only: device figures live in the sheet, one row further down.
+	await expect(panel).not.toContainText("This device");
+
+	// The separate Usage entry still opens the sheet.
+	await page.getByTestId("account-open-usage").click();
+	await expect(page.getByTestId("usage-sheet")).toBeVisible();
 });
 
 test("manage billing opens a hosted URL through the host, never in-app", async ({ page }) => {
@@ -217,6 +253,28 @@ test("an unmetered account renders no dollar figures on account or usage surface
 	const account = page.getByTestId("settings-account");
 	await expect(account).toContainText("not metered in monthly dollars");
 	await expect(account).not.toContainText("$");
+});
+
+/*
+ * Desktop's half of the Upgrade deep link. Desktop asks the host for a hosted
+ * URL and opens it; the browser then lands on
+ * `{web}/usage?upgrade=<tier>&source=desktop`, which the frontend consumes
+ * (`src/lib/desktopUpgradeIntent.ts`). Desktop itself must never render a way
+ * to type a card number.
+ */
+test("Upgrade leaves through the host with a tier, and no card field exists in Desktop", async ({ page }) => {
+	await stubCloudAccount(page, { state: "limited", remainingUsd: 0, usedUsd: 200 });
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-primary-action").click();
+
+	await expect
+		.poll(async () => page.evaluate(() => (window as unknown as { __billingOpened: string[] }).__billingOpened))
+		.toEqual(["upgrade"]);
+
+	// Nothing in the shell collects payment details, on any surface.
+	await expect(page.locator("input[autocomplete*='cc-']")).toHaveCount(0);
+	await expect(page.locator("input[name*='card' i], input[placeholder*='card number' i]")).toHaveCount(0);
+	await expect(page.locator("iframe[src*='stripe' i], iframe[src*='checkout' i]")).toHaveCount(0);
 });
 
 test("an exhausted allowance blocks the cloud model and offers upgrade; local stays open", async ({ page }) => {

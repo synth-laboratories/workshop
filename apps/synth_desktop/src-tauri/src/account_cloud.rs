@@ -14,7 +14,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -178,14 +178,81 @@ fn connection_identity(backend_url: &str, api_key: &str) -> u64 {
     hasher.finish()
 }
 
-/// HTTP failures reach the user; keep them short and free of secrets.
-fn describe_status(status: u16) -> String {
-    match status {
-        401 | 403 => "Synth Cloud rejected this device's key; sign in again".into(),
-        404 => "This Synth backend does not serve the desktop account snapshot yet".into(),
-        429 => "Synth Cloud is rate limiting account refreshes; try again shortly".into(),
-        500..=599 => "Synth Cloud is unavailable right now".into(),
-        other => format!("Synth Cloud returned an unexpected status ({other})"),
+/// Why an account read failed.
+///
+/// The renderer composes this into user-visible chrome (`Showing the last known
+/// plan — {message}`), so every variant must render one complete, stable, public
+/// sentence. Transport and parser text is backend- or network-controlled and
+/// never reaches that copy; it is kept beside the variant for native diagnosis.
+#[derive(Clone, Debug)]
+pub enum AccountError {
+    /// Connection refused, DNS failure, TLS failure, or timeout.
+    Unreachable { detail: String },
+    Unauthorized,
+    /// The backend answered, but does not serve the account contract.
+    MissingRoute,
+    RateLimited,
+    /// The backend is up but failing (5xx).
+    Unavailable,
+    UnexpectedStatus(u16),
+    /// A schema this build does not speak. The reported version is backend text
+    /// and stays out of the copy.
+    UnsupportedSchema { reported: String },
+    /// A 200 whose body is not an account snapshot.
+    Malformed { detail: String },
+}
+
+impl AccountError {
+    pub fn from_status(status: u16) -> Self {
+        match status {
+            401 | 403 => Self::Unauthorized,
+            404 => Self::MissingRoute,
+            429 => Self::RateLimited,
+            500..=599 => Self::Unavailable,
+            other => Self::UnexpectedStatus(other),
+        }
+    }
+
+    /// The exact sentence the shell shows. Stable, complete, secret-free.
+    pub fn public_message(&self) -> String {
+        match self {
+            Self::Unreachable { .. } | Self::Unavailable => {
+                "Synth Cloud is unavailable right now.".into()
+            }
+            Self::Unauthorized => {
+                "Synth Cloud rejected this device's key. Sign in again to continue.".into()
+            }
+            Self::MissingRoute => {
+                "This Synth backend does not serve the desktop account snapshot yet.".into()
+            }
+            Self::RateLimited => {
+                "Synth Cloud is refreshing accounts too often right now. Try again shortly.".into()
+            }
+            Self::UnexpectedStatus(status) => {
+                format!("Synth Cloud returned an unexpected response ({status}).")
+            }
+            Self::UnsupportedSchema { .. } => {
+                "Synth Cloud sent an account format this version of Synth Desktop cannot read. Update Synth Desktop.".into()
+            }
+            Self::Malformed { .. } => {
+                "Synth Cloud sent an account snapshot Synth Desktop could not read.".into()
+            }
+        }
+    }
+
+    /// Native-only diagnosis. Never rendered and never logged automatically.
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            Self::Unreachable { detail } | Self::Malformed { detail } => Some(detail),
+            Self::UnsupportedSchema { reported } => Some(reported),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for AccountError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.public_message())
     }
 }
 
@@ -273,14 +340,18 @@ impl AccountCloudClient {
             Err(error) => SnapshotRead {
                 snapshot: cached.as_ref().map(|entry| entry.snapshot.clone()),
                 stale: cached.is_some(),
-                error: Some(error.to_string()),
+                error: Some(error.public_message()),
                 fetched_at: cached.as_ref().map(|entry| entry.fetched_at),
                 unauthenticated: false,
             },
         }
     }
 
-    async fn fetch(&self, backend_url: &str, api_key: &str) -> Result<CloudSnapshot> {
+    async fn fetch(
+        &self,
+        backend_url: &str,
+        api_key: &str,
+    ) -> std::result::Result<CloudSnapshot, AccountError> {
         let response = self
             .http
             .get(format!(
@@ -290,20 +361,24 @@ impl AccountCloudClient {
             .bearer_auth(api_key)
             .send()
             .await
-            .context("reach Synth Cloud")?;
+            .map_err(|error| AccountError::Unreachable {
+                detail: error.to_string(),
+            })?;
         let status = response.status();
         if !status.is_success() {
-            return Err(anyhow!(describe_status(status.as_u16())));
+            return Err(AccountError::from_status(status.as_u16()));
         }
-        let snapshot: CloudSnapshot = response
-            .json()
-            .await
-            .context("read the Synth Cloud account snapshot")?;
+        let snapshot: CloudSnapshot =
+            response
+                .json()
+                .await
+                .map_err(|error| AccountError::Malformed {
+                    detail: error.to_string(),
+                })?;
         if !snapshot.schema_version.is_empty() && snapshot.schema_version != SCHEMA_VERSION {
-            return Err(anyhow!(
-                "Synth Cloud sent account schema {} but this desktop speaks {SCHEMA_VERSION}; update Synth Desktop",
-                snapshot.schema_version
-            ));
+            return Err(AccountError::UnsupportedSchema {
+                reported: snapshot.schema_version,
+            });
         }
         Ok(snapshot)
     }
@@ -350,10 +425,11 @@ impl AccountCloudClient {
                         .ok_or_else(|| anyhow!("Synth Cloud returned an unreadable billing link")),
                 }
             }
-            Ok(response) => {
-                fallback.ok_or_else(|| anyhow!(describe_status(response.status().as_u16())))
-            }
-            Err(_) => fallback.ok_or_else(|| anyhow!("could not reach Synth Cloud billing")),
+            Ok(response) => fallback.ok_or_else(|| {
+                anyhow!(AccountError::from_status(response.status().as_u16()).public_message())
+            }),
+            Err(_) => fallback
+                .ok_or_else(|| anyhow!("Synth Cloud billing is unavailable right now.")),
         }
     }
 
@@ -489,7 +565,10 @@ mod tests {
             "a failed refresh must keep showing the last plan"
         );
         assert_eq!(stale.snapshot.map(|s| s.plan.tier), Some("pro".into()));
-        assert!(stale.error.unwrap().contains("unavailable"));
+        assert_eq!(
+            stale.error.as_deref(),
+            Some("Synth Cloud is unavailable right now.")
+        );
         assert_eq!(served.load(Ordering::SeqCst), 2);
     }
 
@@ -507,6 +586,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_unauthorized_snapshot_explains_itself_without_leaking_the_key() {
+        let (origin, _) = spawn_backend(vec![(401, r#"{"detail":"bad key"}"#.into())]);
+        let client = AccountCloudClient::new();
+        let read = client.read(&origin, Some("sk_dead"), false, now()).await;
+        let error = read.error.expect("error surfaced");
+        assert_eq!(
+            error,
+            "Synth Cloud rejected this device's key. Sign in again to continue."
+        );
+        assert!(!error.contains("sk_dead"));
+    }
+
+    #[tokio::test]
+    async fn a_schema_the_desktop_does_not_speak_is_refused() {
+        let body = snapshot_body("pro", 20_000)
+            .replace("synth.desktop-account.v1", "synth.desktop-account.v2");
+        let (origin, _) = spawn_backend(vec![(200, body)]);
+        let client = AccountCloudClient::new();
+        let read = client.read(&origin, Some("sk_test"), false, now()).await;
+        assert!(read.snapshot.is_none());
+        assert_eq!(
+            read.error.as_deref(),
+            Some(
+                "Synth Cloud sent an account format this version of Synth Desktop cannot read. Update Synth Desktop."
+            )
+        );
+    }
+
+    #[tokio::test]
     async fn a_different_backend_never_reads_another_origins_cache_for_the_same_key() {
         let (first_origin, _) = spawn_backend(vec![(200, snapshot_body("pro", 20_000))]);
         let (second_origin, _) = spawn_backend(vec![(503, r#"{"detail":"down"}"#.into())]);
@@ -520,17 +628,10 @@ mod tests {
             .await;
         assert!(other.snapshot.is_none());
         assert!(!other.stale);
-        assert!(other.error.unwrap().contains("unavailable"));
-    }
-
-    #[tokio::test]
-    async fn an_unauthorized_snapshot_explains_itself_without_leaking_the_key() {
-        let (origin, _) = spawn_backend(vec![(401, r#"{"detail":"bad key"}"#.into())]);
-        let client = AccountCloudClient::new();
-        let read = client.read(&origin, Some("sk_dead"), false, now()).await;
-        let error = read.error.expect("error surfaced");
-        assert!(error.contains("sign in again"));
-        assert!(!error.contains("sk_dead"));
+        assert_eq!(
+            other.error.as_deref(),
+            Some("Synth Cloud is unavailable right now.")
+        );
     }
 
     #[tokio::test]
@@ -541,19 +642,126 @@ mod tests {
         assert!(read.snapshot.is_none());
         assert_eq!(
             read.error.as_deref(),
-            Some("This Synth backend does not serve the desktop account snapshot yet")
+            Some("This Synth backend does not serve the desktop account snapshot yet.")
+        );
+    }
+
+    /// The outage the QA run hit: the local proxy was stopped mid-session. The
+    /// user must get a complete sentence, not an anyhow context fragment.
+    #[tokio::test]
+    async fn a_refused_connection_reads_as_one_complete_public_sentence() {
+        // Bind then drop, so the port is closed but routable.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", closed.local_addr().unwrap());
+        drop(closed);
+        let client = AccountCloudClient::new();
+        let read = client.read(&origin, Some("sk_test"), false, now()).await;
+        assert_eq!(
+            read.error.as_deref(),
+            Some("Synth Cloud is unavailable right now.")
+        );
+        assert!(!read.stale, "there is no cached plan to fall back to yet");
+    }
+
+    /// The same outage after a good read: the plan stays on screen, marked stale,
+    /// and the note reads exactly as the product contract specifies.
+    #[tokio::test]
+    async fn an_outage_after_a_good_read_keeps_the_plan_and_marks_it_stale() {
+        let (origin, _) = spawn_backend(vec![(200, snapshot_body("pro", 15_000))]);
+        let client = AccountCloudClient::new();
+        client.read(&origin, Some("sk_test"), false, now()).await;
+        // The scripted backend is exhausted and its listener is closed, so the
+        // refresh fails at the transport layer.
+        let read = client
+            .read(
+                &origin,
+                Some("sk_test"),
+                true,
+                now() + chrono::Duration::seconds(CACHE_TTL_SECONDS + 1),
+            )
+            .await;
+        assert!(read.stale);
+        assert_eq!(read.snapshot.map(|s| s.plan.tier), Some("pro".into()));
+        let note = format!("Showing the last known plan — {}", read.error.unwrap());
+        assert_eq!(
+            note,
+            "Showing the last known plan — Synth Cloud is unavailable right now."
         );
     }
 
     #[tokio::test]
-    async fn a_schema_the_desktop_does_not_speak_is_refused() {
-        let body = snapshot_body("pro", 20_000)
-            .replace("synth.desktop-account.v1", "synth.desktop-account.v2");
-        let (origin, _) = spawn_backend(vec![(200, body)]);
+    async fn a_timeout_reads_as_the_same_public_sentence_as_a_refusal() {
+        // A listener that accepts and then never answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept() {
+                held.push(stream);
+            }
+        });
+        let client = AccountCloudClient {
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_millis(150))
+                .build()
+                .unwrap(),
+            cache: Mutex::new(None),
+        };
+        let read = client.read(&origin, Some("sk_test"), false, now()).await;
+        assert_eq!(
+            read.error.as_deref(),
+            Some("Synth Cloud is unavailable right now.")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_two_hundred_that_is_not_a_snapshot_is_refused_with_stable_copy() {
+        let (origin, _) = spawn_backend(vec![(200, r#"{"unexpected": true}"#.into())]);
         let client = AccountCloudClient::new();
         let read = client.read(&origin, Some("sk_test"), false, now()).await;
         assert!(read.snapshot.is_none());
-        assert!(read.error.unwrap().contains("update Synth Desktop"));
+        assert_eq!(
+            read.error.as_deref(),
+            Some("Synth Cloud sent an account snapshot Synth Desktop could not read.")
+        );
+    }
+
+    /// Public copy is a closed set of complete sentences. Backend- and
+    /// transport-controlled text must never reach it.
+    #[test]
+    fn every_public_message_is_a_complete_secret_free_sentence() {
+        let cases = [
+            AccountError::Unreachable {
+                detail: "error sending request for url (http://127.0.0.1:1/x): connection refused"
+                    .into(),
+            },
+            AccountError::Unauthorized,
+            AccountError::MissingRoute,
+            AccountError::RateLimited,
+            AccountError::Unavailable,
+            AccountError::UnexpectedStatus(418),
+            AccountError::UnsupportedSchema {
+                reported: "synth.desktop-account.v2".into(),
+            },
+            AccountError::Malformed {
+                detail: "expected value at line 1 column 1".into(),
+            },
+        ];
+        for case in cases {
+            let message = case.public_message();
+            assert!(message.ends_with('.'), "not a complete sentence: {message}");
+            assert!(
+                message.starts_with(|c: char| c.is_ascii_uppercase()),
+                "not a complete sentence: {message}"
+            );
+            if let Some(detail) = case.detail() {
+                assert!(
+                    !message.contains(detail),
+                    "native diagnostics leaked into public copy: {message}"
+                );
+            }
+            assert_eq!(message, case.to_string());
+        }
     }
 
     #[tokio::test]

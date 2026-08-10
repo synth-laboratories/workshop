@@ -1266,11 +1266,11 @@ async fn interrupt_active_core_run(
     Ok(mutation.event)
 }
 
-/// Environment variables ending up in a Codex child are not private: Codex
-/// writes its inherited environment to `CODEX_HOME/shell_snapshots` as plain
-/// `export NAME=value`. These names are the ones a provider credential lives
-/// under, so a value under any of them is refused at the spawn boundary — the
-/// broker lease is the only thing that may cross it.
+/// Environment variables reaching a Codex child are not private: Codex writes
+/// its inherited environment to `CODEX_HOME/shell_snapshots` as plain
+/// `export NAME=value`. These names are the ones a real provider credential
+/// lives under, so a value under any of them is refused at the spawn boundary —
+/// a `credential_broker` lease is the only thing that may cross it.
 const CREDENTIAL_ENV_NAMES: &[&str] = &["SYNTH_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"];
 
 /// The single provider variable the Codex child is allowed to receive, if any.
@@ -1955,9 +1955,9 @@ async fn write_message(
 /// renderer-supplied `api_key` / `base_url` / env key — credentials never
 /// originate from the renderer.
 ///
-/// The real key is handed to `broker`, not to the request: what the request (and
-/// therefore the child process, its shell snapshots, and its config) carries is
-/// a revocable loopback lease token. See `credential_broker`.
+/// The real key is handed to `broker`, not to the request: what the request —
+/// and therefore the child process, its shell snapshots, and its config — ends
+/// up carrying is a revocable loopback lease token. See `credential_broker`.
 pub fn apply_synth_cloud_provider(
     request: &mut CodexSessionStartRequest,
     broker: &CredentialBroker,
@@ -1968,11 +1968,41 @@ pub fn apply_synth_cloud_provider(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Synth API key not configured — Settings → Account".to_string())?;
-    let lease = broker.lease(&request.session_id, &client_base_url(backend_url), key);
-    request.api_key = lease.token;
-    request.base_url = format!("{}/api/v1", lease.origin);
+    request.base_url = format!("{}/api/v1", client_base_url(backend_url));
     request.provider_name = Some("synth-cloud".into());
     request.provider_title = Some("Synth Cloud Responses".into());
+    apply_brokered_credential(request, broker, key)
+}
+
+/// Move a remote provider's credential into native custody.
+///
+/// The request keeps its logical endpoint path but is re-pointed at the loopback
+/// proxy, and the key it carries becomes a revocable lease token. Every provider
+/// whose credential belongs to the user — not to a local loopback service — goes
+/// through here before a child process can observe it.
+pub fn apply_brokered_credential(
+    request: &mut CodexSessionStartRequest,
+    broker: &CredentialBroker,
+    api_key: &str,
+) -> Result<(), String> {
+    let endpoint = reqwest::Url::parse(&request.base_url).map_err(|_| {
+        format!(
+            "{} could not start because its endpoint is invalid: {}. Update it in Settings → Account → Backend API.",
+            request
+                .provider_title
+                .as_deref()
+                .or(request.provider_name.as_deref())
+                .unwrap_or("Selected provider"),
+            safe_endpoint_label(&request.base_url)
+        )
+    })?;
+    let lease = broker.lease(
+        &request.session_id,
+        &endpoint.origin().ascii_serialization(),
+        api_key,
+    );
+    request.base_url = format!("{}{}", lease.origin, endpoint.path().trim_end_matches('/'));
+    request.api_key = lease.token;
     request.provider_env_key = Some(credential_broker::LEASE_ENV_KEY.into());
     Ok(())
 }
@@ -3436,9 +3466,11 @@ mod tests {
         let home = temp.path().join("home");
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(&workspace).unwrap();
+        let (broker, _listener) = CredentialBroker::bind().unwrap();
         let mut request = test_request(&workspace, "synth-cloud-config");
         apply_synth_cloud_provider(
             &mut request,
+            &broker,
             "http://127.0.0.1:41209",
             Some("sk_dev_00000000000000000000000000000001"),
         )
@@ -3449,9 +3481,21 @@ mod tests {
         assert!(config.contains("model = \"openrouter/poolside/laguna-s-2.1\""));
         assert!(config.contains("model_provider = \"synth-cloud\""));
         assert!(config.contains("[model_providers.\"synth-cloud\"]"));
-        assert!(config.contains("base_url = \"http://127.0.0.1:41209/api/v1\""));
+        // Codex is pointed at the native proxy, not at the backend directly.
+        assert!(config.contains(&format!(
+            "base_url = \"{}/api/v1\"",
+            broker.origin()
+        )));
         assert!(config.contains("wire_api = \"responses\""));
-        assert!(config.contains("env_key = \"SYNTH_API_KEY\""));
+        assert!(config.contains(&format!(
+            "env_key = \"{}\"",
+            credential_broker::LEASE_ENV_KEY
+        )));
+        assert!(!config.contains("SYNTH_API_KEY"));
+        assert_eq!(
+            broker.upstream_for(&request.api_key).as_deref(),
+            Some("http://127.0.0.1:41209")
+        );
         assert!(config.contains("model_auto_compact_token_limit = 250000"));
         assert!(config.contains("tool_output_token_limit = 12000"));
         assert!(config.contains("CONTEXT CHECKPOINT COMPACTION for a coding agent"));
@@ -3463,11 +3507,13 @@ mod tests {
     #[test]
     fn synth_cloud_provider_fails_closed_without_api_key() {
         let temp = tempdir().unwrap();
+        let (broker, _listener) = CredentialBroker::bind().unwrap();
         let mut request = test_request(temp.path(), "synth-cloud-missing-key");
         request.api_key = "renderer-supplied-should-not-matter".into();
         request.provider_name = Some("synth-cloud".into());
-        let error = apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", None)
-            .expect_err("missing Synth API key must fail closed");
+        let error =
+            apply_synth_cloud_provider(&mut request, &broker, "http://127.0.0.1:41209", None)
+                .expect_err("missing Synth API key must fail closed");
         assert!(error.contains("Synth API key not configured"));
         assert!(error.contains("Settings → Account"));
         assert_eq!(request.api_key, "renderer-supplied-should-not-matter");
@@ -3537,33 +3583,54 @@ mod tests {
     #[test]
     fn synth_cloud_provider_overwrites_renderer_api_key() {
         let temp = tempdir().unwrap();
+        let (broker, _listener) = CredentialBroker::bind().unwrap();
         let mut request = test_request(temp.path(), "synth-cloud-overwrite");
         request.api_key = "renderer-leaked-key".into();
         request.base_url = "https://evil.example/v1".into();
         apply_synth_cloud_provider(
             &mut request,
+            &broker,
             "http://127.0.0.1:41209/",
             Some("sk_dev_real_key"),
         )
         .unwrap();
-        assert_eq!(request.api_key, "sk_dev_real_key");
-        assert_eq!(request.base_url, "http://127.0.0.1:41209/api/v1");
+        // The renderer's value is discarded, and the real key is replaced by a
+        // lease rather than being carried on the request.
+        assert_ne!(request.api_key, "renderer-leaked-key");
+        assert_ne!(request.api_key, "sk_dev_real_key");
+        assert!(request.api_key.starts_with("sdl_"));
+        assert_eq!(request.base_url, format!("{}/api/v1", broker.origin()));
         assert_eq!(request.provider_name.as_deref(), Some("synth-cloud"));
-        assert_eq!(request.provider_env_key.as_deref(), Some("SYNTH_API_KEY"));
+        assert_eq!(
+            request.provider_env_key.as_deref(),
+            Some(credential_broker::LEASE_ENV_KEY)
+        );
+        assert_eq!(
+            broker.upstream_for(&request.api_key).as_deref(),
+            Some("http://127.0.0.1:41209")
+        );
     }
 
     #[test]
     fn synth_cloud_normalizes_a_local_bind_address_for_the_client() {
         let temp = tempdir().unwrap();
+        let (broker, _listener) = CredentialBroker::bind().unwrap();
         let mut request = test_request(temp.path(), "synth-cloud-loopback");
         apply_synth_cloud_provider(
             &mut request,
+            &broker,
             "http://0.0.0.0:41209/",
             Some("sk_dev_00000000000000000000000000000001"),
         )
         .unwrap();
         validate_start(&request).unwrap();
-        assert_eq!(request.base_url, "http://127.0.0.1:41209/api/v1");
+        assert_eq!(request.base_url, format!("{}/api/v1", broker.origin()));
+        // `0.0.0.0` is a bind address, not a destination; the proxy's upstream
+        // must still be rewritten to loopback.
+        assert_eq!(
+            broker.upstream_for(&request.api_key).as_deref(),
+            Some("http://127.0.0.1:41209")
+        );
     }
 
     #[test]
@@ -3607,16 +3674,128 @@ mod tests {
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(&workspace).unwrap();
         let secret = "sk_dev_SYNTH_CLOUD_SECRET_VALUE_DO_NOT_LEAK";
+        let (broker, _listener) = CredentialBroker::bind().unwrap();
         let mut request = test_request(&workspace, "synth-cloud-redact");
-        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some(secret)).unwrap();
+        apply_synth_cloud_provider(&mut request, &broker, "http://127.0.0.1:41209", Some(secret))
+            .unwrap();
         request.model = "openrouter/poolside/laguna-s-2.1".into();
         ensure_home(&home, &request).unwrap();
         let config = fs::read_to_string(home.join("config.toml")).unwrap();
         let auth = fs::read_to_string(home.join("auth.json")).unwrap();
         assert!(!config.contains(secret));
         assert!(!auth.contains(secret));
-        assert!(config.contains("env_key = \"SYNTH_API_KEY\""));
+        assert!(config.contains(&format!(
+            "env_key = \"{}\"",
+            credential_broker::LEASE_ENV_KEY
+        )));
         assert!(auth.contains("synth-desktop-provider"));
+    }
+
+    /// Every path that ever wrote a file under a generated Codex home, checked
+    /// against one sentinel value: the credential must exist only in the native
+    /// broker.
+    ///
+    /// `shell_snapshots` is the leak this guards. Codex serializes its inherited
+    /// environment there as `export NAME=value`, so the test reproduces that
+    /// step from the exact environment `spawn_server` would hand the child.
+    #[test]
+    fn the_synth_credential_never_reaches_a_generated_codex_home() {
+        const SENTINEL: &str = "sk_live_SENTINEL_ONLY_IN_NATIVE_CUSTODY";
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("codex");
+        let home = root.join("homes/session-sentinel");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+
+        let (broker, _listener) = CredentialBroker::bind().unwrap();
+        let mut request = test_request(&workspace, "session-sentinel");
+        apply_synth_cloud_provider(&mut request, &broker, "http://127.0.0.1:41209", Some(SENTINEL))
+            .unwrap();
+        validate_start(&request).unwrap();
+        ensure_home(&home, &request).unwrap();
+
+        // Stand in for the Codex child: write the snapshot it would write from
+        // the environment we actually pass it.
+        let snapshots = home.join("shell_snapshots");
+        fs::create_dir_all(&snapshots).unwrap();
+        let exported = provider_child_env(&request)
+            .map(|(name, value)| format!("export {name}={value}\n"))
+            .unwrap_or_default();
+        fs::write(snapshots.join("snapshot.sh"), format!("#!/bin/sh\n{exported}")).unwrap();
+        // Session logs and event payloads are the other things a home accumulates.
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        fs::write(
+            home.join("sessions/rollout.jsonl"),
+            serde_json::to_string(&json!({
+                "base_url": request.base_url,
+                "provider": request.provider_name,
+                "env_key": request.provider_env_key,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut scanned = 0usize;
+        let mut pending = vec![root.clone()];
+        while let Some(dir) = pending.pop() {
+            for entry in fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                scanned += 1;
+                let bytes = fs::read(&path).unwrap();
+                assert!(
+                    !String::from_utf8_lossy(&bytes).contains(SENTINEL),
+                    "the Synth credential reached {}",
+                    path.display()
+                );
+            }
+        }
+        assert!(scanned > 3, "the sentinel scan must actually read files");
+
+        // The broker holds it, and only the broker.
+        assert!(request.api_key.starts_with("sdl_"));
+        assert!(broker.upstream_for(&request.api_key).is_some());
+        // Nothing that renders to the user or a log can reproduce it either.
+        let rendered = format!(
+            "{:?} {:?} {}",
+            broker,
+            request.provider_env_key,
+            validate_start(&request)
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default()
+        );
+        assert!(!rendered.contains(SENTINEL));
+    }
+
+    #[test]
+    fn a_real_credential_variable_is_refused_at_the_spawn_boundary() {
+        let temp = tempdir().unwrap();
+        let mut request = test_request(temp.path(), "spawn-boundary");
+        request.api_key = "sk_live_should_never_be_exported".into();
+        for name in CREDENTIAL_ENV_NAMES {
+            request.provider_env_key = Some((*name).into());
+            assert_eq!(
+                provider_child_env(&request),
+                None,
+                "{name} must never be exported to a Codex child"
+            );
+        }
+        // The broker lease, and the local loopback token, still cross.
+        request.provider_env_key = Some(credential_broker::LEASE_ENV_KEY.into());
+        assert_eq!(
+            provider_child_env(&request),
+            Some((
+                credential_broker::LEASE_ENV_KEY.to_owned(),
+                "sk_live_should_never_be_exported".to_owned()
+            ))
+        );
+        request.provider_env_key = None;
+        request.api_key = String::new();
+        assert_eq!(provider_child_env(&request), None);
     }
 
     #[test]

@@ -134,3 +134,31 @@ test("cancel during pairing returns to the idle sign-in affordance", async ({ pa
 	await page.getByTestId("sign-in-cancel").click();
 	await expect(page.getByTestId("sign-in-begin")).toBeVisible();
 });
+
+/*
+ * Signed-out account menu, per HANDOFF_CLOUD_ACCOUNT_QA.md A3: no Log out, and
+ * `Usage remaining` expands to an invitation rather than an invented `$0.00`.
+ */
+test("signed out, the menu offers sign-in and never a zero cloud allowance", async ({ page }) => {
+	await page.addInitScript(() => {
+		window.synthAccount = {
+			beginSignIn: async () => ({ verificationUri: "https://example.test", expiresAtEpochS: 0 }),
+			pollSignIn: async () => ({ status: "pending" as const }),
+			cancelSignIn: async () => undefined,
+			signOut: async () => { throw new Error("unused"); },
+			getSummary: async () => ({ signedIn: false, state: "local_only" as const, environment: "dev" as const })
+		};
+	});
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+	await page.getByTestId("account-menu-trigger").click();
+
+	const menu = page.getByTestId("account-menu");
+	await expect(menu.getByTestId("account-log-out")).toHaveCount(0);
+	await expect(menu.getByTestId("account-usage-remaining-value")).toHaveCount(0);
+
+	await page.getByTestId("account-usage-remaining").click();
+	const panel = page.getByTestId("account-allowance-panel");
+	await expect(panel).toHaveText("Sign in to Synth to see a cloud allowance");
+	await expect(panel).not.toContainText("$");
+});

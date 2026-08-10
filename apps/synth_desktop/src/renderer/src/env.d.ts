@@ -189,6 +189,11 @@ export type SynthConfigBridge = {
 		backendUrl: string;
 		envFile: string;
 		apiKeyEnv: string;
+		/**
+		 * Write-only. The host stores these in the 0600 env file and never
+		 * returns them; `SynthBackendSettings` reports only fingerprint and
+		 * source. Omit to leave the stored secret untouched.
+		 */
 		apiKey?: string;
 		openrouterApiKey?: string;
 	}): Promise<SynthBackendSettings>;
