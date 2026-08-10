@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import type { RuntimeHealth } from "@synth/runtime-protocol";
 import type {
 	DesktopInstanceDiagnostics,
 	LagunaStatus,
@@ -15,17 +14,16 @@ import { InferenceSettings } from "./InferenceSettings";
 import { VoiceRecognitionSettings } from "./VoiceRecognitionSettings";
 import { ModelObservabilitySettings } from "./ModelObservabilitySettings";
 import { AccountPage } from "./AccountPage";
-import { WorkspaceAccessSettings } from "./WorkspaceAccessSettings";
 import { GeneralPreferencesSettings } from "./GeneralPreferencesSettings";
 import { SettingsCard } from "./SettingsCard";
 import type { DesktopPreferences } from "../preferences";
+import { ProviderMark } from "./ProviderMark";
 
 type Props = {
 	onBack: () => void;
 	/** Everything the consolidated Account section renders. */
 	account: AccountSectionProps;
 	onReloadLaguna: () => Promise<LagunaStatus>;
-	health?: RuntimeHealth | null;
 	lagunaPhase?: string | null;
 	initialSection?: SectionId;
 	preferences?: DesktopPreferences;
@@ -70,15 +68,6 @@ function IconMic() {
 	);
 }
 
-function IconTerminal() {
-	return (
-		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.8" stroke="currentColor" strokeWidth="1.3" />
-			<path d="m4.5 6.2 2 1.8-2 1.8M8.5 10h3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-		</svg>
-	);
-}
-
 function IconPerson() {
 	return (
 		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
@@ -112,7 +101,6 @@ const SECTIONS = [
 	{ id: "models", label: "Models", icon: IconChip },
 	{ id: "inference", label: "Inference", icon: IconGauge },
 	{ id: "voice", label: "Voice", icon: IconMic },
-	{ id: "runtime", label: "Runtime", icon: IconTerminal },
 	{ id: "account", label: "Account", icon: IconPerson },
 	{ id: "about", label: "About", icon: IconInfo }
 ] as const;
@@ -140,6 +128,44 @@ const MULTI_AGENT_CONFIG: Record<MultiAgentVersion, string> = {
 	v1: "[agents] enabled=true · [features] multi_agent=true · multi_agent_v2=false",
 	v2: "[agents] enabled=true · [features] multi_agent=true · multi_agent_v2=true"
 };
+
+type AuthorizedModel = {
+	id: string;
+	name: string;
+	provider: string;
+	providerMark: "openai" | "laguna" | "synth";
+	modelId: string;
+	inputPrice: string;
+	outputPrice: string;
+	planMetered?: boolean;
+};
+
+function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSettings | null }) {
+	const models: AuthorizedModel[] = [];
+	if (connection?.openrouterApiKeyConfigured) {
+		models.push(
+			{ id: "openrouter-luna", name: "GPT 5.6 Luna", provider: "OpenRouter · OpenAI", providerMark: "openai", modelId: "openai/gpt-5.6-luna", inputPrice: "$0.50", outputPrice: "$3.00" },
+			{ id: "openrouter-laguna-s", name: "Laguna S 2.1", provider: "OpenRouter · Poolside", providerMark: "laguna", modelId: "poolside/laguna-s-2.1", inputPrice: "$0.10", outputPrice: "$0.20" }
+		);
+	}
+	if (connection?.apiKeyConfigured) {
+		models.push({ id: "synth-cloud-laguna-s", name: "Laguna S 2.1", provider: "Synth Cloud", providerMark: "synth", modelId: "openrouter/poolside/laguna-s-2.1", inputPrice: "", outputPrice: "", planMetered: true });
+	}
+	if (!models.length) return null;
+	return (
+		<SettingsCard title="Authorized providers" testId="authorized-models" className="settings-card-embed">
+			<div className="authorized-model-list">
+				{models.map((model) => (
+					<article className="authorized-model-row" key={model.id} data-testid={`authorized-model-${model.id}`}>
+						<ProviderMark kind={model.providerMark} className="authorized-model-mark" />
+						<div className="authorized-model-identity"><strong>{model.name}</strong><span>{model.provider}</span><code>{model.modelId}</code></div>
+						{model.planMetered ? <dl><div><dt>Pricing</dt><dd>Plan metered</dd></div></dl> : <dl><div><dt>Input / 1M</dt><dd>{model.inputPrice}</dd></div><div><dt>Output / 1M</dt><dd>{model.outputPrice}</dd></div></dl>}
+					</article>
+				))}
+			</div>
+		</SettingsCard>
+	);
+}
 
 function multiAgentOverrideWarning(model: ModelMultiAgentSetting): string | null {
 	if (model.effective === model.preset) return null;
@@ -222,7 +248,6 @@ export function SettingsPage({
 	onBack,
 	account,
 	onReloadLaguna,
-	health,
 	lagunaPhase,
 	initialSection = "general",
 	preferences,
@@ -292,6 +317,7 @@ export function SettingsPage({
 							>
 								<OnDeviceModelsSettings lagunaPhase={lagunaPhase} onReloadLaguna={onReloadLaguna} />
 							</SettingsCard>
+							<AuthorizedModelsSettings connection={account.connection} />
 							<SettingsCard testId="models-all" className="settings-card-embed">
 								<ModelObservabilitySettings />
 								<MultiAgentModelSettings />
@@ -311,34 +337,6 @@ export function SettingsPage({
 								className="settings-card-embed"
 							>
 								<VoiceRecognitionSettings />
-							</SettingsCard>
-						</div>
-					) : null}
-					{section === "runtime" ? (
-						<div className="settings-sections" data-testid="settings-runtime">
-							<SettingsCard title="Local runtime">
-								<div className="finetune-base-card" data-testid="desktop-build-identity">
-									<span className="finetune-kicker">Desktop identity</span>
-									<strong>{desktopIdentity?.displayName ?? "Reading running build…"}</strong>
-									<span className="finetune-meta">
-										{desktopIdentity
-											? `v${desktopIdentity.appVersion} · ${desktopIdentity.mode} · source ${desktopIdentity.sourceRevision} · build ${desktopIdentity.buildRevision}`
-											: "The running process will report its exact source and build revision."}
-									</span>
-									<code className="finetune-file">
-										{desktopIdentity ? `PID ${desktopIdentity.processId} · ${desktopIdentity.executable}` : "Waiting for desktop diagnostics"}
-									</code>
-									<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? ""}</code>
-								</div>
-								<div className="finetune-base-card">
-									<span className="finetune-kicker">Data store</span>
-									<strong>{health?.dataStore?.events ?? 0} events · {health?.dataStore?.runs ?? 0} runs</strong>
-									<span className="finetune-meta">{health?.dataStore?.projects ?? 0} projects · {health?.dataStore?.usage ?? 0} usage entries</span>
-									<span className="finetune-file">{health?.dataStore?.path ?? "Runtime is connecting"}</span>
-								</div>
-							</SettingsCard>
-							<SettingsCard className="settings-card-embed">
-								<WorkspaceAccessSettings />
 							</SettingsCard>
 						</div>
 					) : null}

@@ -6,13 +6,13 @@ async function openSettings(page: Page) {
 	await page.getByTestId("account-menu-settings").click();
 }
 
-test("parked Projects surface is absent while workspace access remains available", async ({ page }) => {
+test("parked Projects and Runtime settings surfaces are absent", async ({ page }) => {
 	await expect(page.getByText("Projects", { exact: true })).toHaveCount(0);
 	await expect(page.getByTestId("project-list")).toHaveCount(0);
 	await expect(page.getByTestId("quick-add-project")).toHaveCount(0);
 	await openSettings(page);
-	await page.getByRole("button", { name: "Runtime" }).click();
-	await expect(page.getByTestId("workspace-access-settings")).toBeVisible();
+	await expect(page.getByRole("button", { name: "Runtime" })).toHaveCount(0);
+	await expect(page.getByTestId("workspace-access-settings")).toHaveCount(0);
 });
 
 test.describe("preferences persistence", () => {

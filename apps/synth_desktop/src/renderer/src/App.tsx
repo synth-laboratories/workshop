@@ -203,7 +203,7 @@ type MainView =
 	| { kind: "chat"; chatId: string }
 	| { kind: "sync"; sessionId: string }
 	| { kind: "async"; sessionId: string }
-	| { kind: "settings"; section?: "general" | "models" | "inference" | "voice" | "runtime" | "account" | "about" }
+	| { kind: "settings"; section?: "general" | "models" | "inference" | "voice" | "account" | "about" }
 	| { kind: "connectors" }
 	| { kind: "inventory" }
 	| { kind: "visuals" }
@@ -1994,7 +1994,6 @@ export default function App() {
 							key={view.section ?? "general"}
 							onBack={() => setView({ kind: "landing" })}
 							onReloadLaguna={onReloadLaguna}
-							health={health}
 							lagunaPhase={laguna?.phase}
 							initialSection={view.section}
 							preferences={preferences}

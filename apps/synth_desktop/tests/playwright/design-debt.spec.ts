@@ -39,34 +39,10 @@ test.describe("design locks (must pass)", () => {
 		await expect(page.getByTestId("settings-models")).not.toContainText("Adapters");
 	});
 
-	test("Runtime settings persist additional Codex workspace roots", async ({ page }) => {
-		await page.addInitScript(() => {
-			const allowedRoots = ["/Users/joshuapurtell/Documents/GitHub"];
-			(window as typeof window & { __savedWorkspaceRoots?: string[] }).__savedWorkspaceRoots = [...allowedRoots];
-			window.synthConfig = {
-				get: async () => ({
-					configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod",
-					backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY",
-					apiKeyConfigured: false, workerKeyConfigured: false, openrouterApiKeyConfigured: false
-				}),
-				update: async () => { throw new Error("unused"); },
-				listModelMultiAgent: async () => [],
-				updateModelMultiAgent: async () => [],
-				getWorkspaceAccess: async () => ({ allowedRoots: [...allowedRoots] }),
-				updateWorkspaceAccess: async (request) => {
-					(window as typeof window & { __savedWorkspaceRoots?: string[] }).__savedWorkspaceRoots = [...request.allowedRoots];
-					return { allowedRoots: [...request.allowedRoots] };
-				}
-			};
-		});
-		await page.reload();
-		await page.getByTestId("titlebar").waitFor();
+	test("Runtime settings are not exposed", async ({ page }) => {
 		await openSettings(page);
-		await page.getByRole("button", { name: "Runtime", exact: true }).click();
-		await expect(page.getByTestId("workspace-access-settings")).toContainText("/Users/joshuapurtell/Documents/GitHub");
-		await page.getByRole("button", { name: "Remove /Users/joshuapurtell/Documents/GitHub" }).click();
-		await page.getByTestId("save-workspace-roots").click();
-		await expect.poll(() => page.evaluate(() => (window as typeof window & { __savedWorkspaceRoots?: string[] }).__savedWorkspaceRoots)).toEqual([]);
+		await expect(page.getByRole("button", { name: "Runtime", exact: true })).toHaveCount(0);
+		await expect(page.getByTestId("settings-runtime")).toHaveCount(0);
 	});
 
 	test("Inventory exposes Attach container defaulting to Craftax Rust :8098", async ({ page }) => {
@@ -147,10 +123,9 @@ test.describe("design debt (expected fail until fixed)", () => {
 	});
 
 
-	test("Runtime settings has no legacy Python migration surface", async ({ page }) => {
+	test("Settings has no legacy Python migration surface", async ({ page }) => {
 		await openSettings(page);
-		await page.getByTestId("settings-page").getByRole("button", { name: "Runtime" }).click();
-		await expect(page.getByTestId("settings-runtime")).toBeVisible();
+		await expect(page.getByTestId("settings-runtime")).toHaveCount(0);
 		await expect(page.getByText("Legacy Python Runtime Data")).toHaveCount(0);
 		await expect(page.getByText("Legacy runtime.sqlite3 path")).toHaveCount(0);
 		await expect(page.getByRole("button", { name: "Inspect migration" })).toHaveCount(0);

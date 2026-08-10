@@ -204,11 +204,12 @@ test("renderer exposes CoreRuntime visual registry bridge commands", () => {
   assert.ok(bridge.includes('"visual:show"'));
 });
 
-test("Runtime Settings projects the persisted Rust run count", () => {
+test("Rust run counts remain projected without a Runtime Settings surface", () => {
   const app = read("App.tsx");
   const settings = read("components/SettingsPage.tsx");
   assert.ok(app.includes("runs: core.runCount"));
-  assert.ok(settings.includes("health?.dataStore?.runs"));
+  assert.ok(!settings.includes('id: "runtime"'));
+  assert.ok(!settings.includes("health?.dataStore?.runs"));
   assert.ok(!app.includes("runs: 0"));
 });
 

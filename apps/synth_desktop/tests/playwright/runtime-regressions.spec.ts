@@ -145,12 +145,28 @@ test("Settings offers and completes a real model-download bridge when weights ar
 
 test("Settings identifies the exact running desktop build", async ({ page }) => {
 	await openSettings(page);
-	await page.getByRole("button", { name: "Runtime" }).click();
-	const identity = page.getByTestId("desktop-build-identity");
+	await page.getByRole("button", { name: "About" }).click();
+	const identity = page.getByTestId("about-build-identity");
 	await expect(identity).toContainText("Synth Desktop · browser");
 	await expect(identity).toContainText("source vite · build vite");
-	await expect(identity).toContainText("PID 0 · browser");
 	await expect(page).toHaveTitle("Synth Desktop · browser");
+});
+
+test("Models lists only credentialed remote providers with pricing", async ({ page }) => {
+	await page.addInitScript(() => {
+		window.synthConfig = {
+			get: async () => ({ configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod", backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY", apiKeyConfigured: true, workerKeyConfigured: false, openrouterApiKeyConfigured: true }),
+			update: async () => { throw new Error("unused"); }, listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
+			getWorkspaceAccess: async () => ({ allowedRoots: [] }), updateWorkspaceAccess: async () => ({ allowedRoots: [] })
+		};
+	});
+	await page.reload();
+	await openSettings(page);
+	await page.getByRole("button", { name: "Models" }).click();
+	const models = page.getByTestId("authorized-models");
+	await expect(models.getByTestId("authorized-model-openrouter-luna")).toContainText("$0.50");
+	await expect(models.getByTestId("authorized-model-openrouter-laguna-s")).toContainText("$0.20");
+	await expect(models.getByTestId("authorized-model-synth-cloud-laguna-s")).toContainText("Plan");
 });
 
 test("Settings can force and reset a model multi-agent preset", async ({ page }) => {
