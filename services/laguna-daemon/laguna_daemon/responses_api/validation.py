@@ -20,6 +20,10 @@ TOP_LEVEL_FIELDS = {
     "text",
     "temperature",
     "top_p",
+    # Local extension: the MLX sampler supports top-k and Poolside's
+    # generation_config.json recommends temperature=1.0, top_k=20, top_p=1.0.
+    # The generated OpenResponses schema tolerates the extra field.
+    "top_k",
     "presence_penalty",
     "frequency_penalty",
     "parallel_tool_calls",
@@ -150,9 +154,37 @@ def normalize_request(body: Any, *, default_model: str) -> dict[str, Any]:
     if unknown:
         raise invalid(f"Unknown request field {unknown[0]!r}.", param=unknown[0])
     request = dict(body)
+    # Laguna's desktop control historically used `max` as the binary "On"
+    # value. OpenResponses currently tops out at `xhigh`, and the local
+    # checkpoint has one enabled thinking mode rather than distinct budgets.
+    # Normalize the compatibility spelling before generated-schema validation
+    # instead of advertising a value that the endpoint rejects.
+    reasoning = request.get("reasoning")
+    if isinstance(reasoning, dict):
+        effort = reasoning.get("effort")
+        if effort == "max":
+            reasoning = dict(reasoning)
+            reasoning["effort"] = "high"
+            request["reasoning"] = reasoning
+        elif effort not in {None, "none", "high"}:
+            # This checkpoint has exactly one thinking mode. Accepting `low`
+            # or `medium` and silently running `high` would misreport what was
+            # measured; never silently degrade `high` to `none` either.
+            raise ResponsesError(
+                "unsupported_reasoning_effort",
+                f"Reasoning effort {effort!r} is not supported by this model; "
+                "use 'none' or 'high' ('max' is accepted as a legacy alias "
+                "for 'high').",
+                400,
+                "reasoning.effort",
+            )
     request["model"] = str(request.get("model") or default_model)
     if not request["model"]:
         raise invalid("model is required.", param="model")
+    top_k = request.get("top_k")
+    if top_k is not None:
+        if not isinstance(top_k, int) or isinstance(top_k, bool) or not 0 <= top_k <= 8192:
+            raise invalid("top_k must be an integer between 0 and 8192.", param="top_k")
     raw_input = request.get("input", "")
     if isinstance(raw_input, str):
         raw_input = [{"type": "message", "role": "user", "content": raw_input}]

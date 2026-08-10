@@ -10,6 +10,7 @@ dependencies = [
   "huggingface-hub>=0.26",
   "openresponses-types==2.3.0.post1",
   "pydantic>=2.9",
+  "pyyaml>=6",
   "uvicorn>=0.32",
   "websockets==16.0",
 ]

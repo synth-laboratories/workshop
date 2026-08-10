@@ -10,14 +10,36 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
 const DEFAULT_PORT: u16 = 7333;
+const DEFAULT_PORT_STR: &str = "7333";
+/// Cleared before spawning the daemon so no inherited value can resurrect the
+/// deleted second-engine path.
+const UPSTREAM_ENV_VARS: [&str; 5] = [
+    "SYNTH_LAGUNA_EXTERNAL_URL",
+    "SYNTH_LAGUNA_EXTERNAL_API_KEY",
+    "SYNTH_LAGUNA_UPSTREAM_API_KEY",
+    "SYNTH_LAGUNA_UPSTREAM_HOST",
+    "SYNTH_LAGUNA_UPSTREAM_PORT",
+];
 const DEFAULT_MODEL: &str = "poolside/Laguna-XS-2.1-NVFP4-mlx";
+const DEFAULT_MODEL_REVISION: &str = "841778bda563a36104dd521e37d99218e46f4f25";
+const MIN_DOWNLOAD_DISK_BYTES: u64 = 24 * 1024 * 1024 * 1024;
 const MODEL_INDEX: &str = "model.safetensors.index.json";
 const SELECTED_MODEL_FILE: &str = "selected_model_path";
+/// The daemon at `DEFAULT_PORT` is the only local runtime: it owns the weights,
+/// the admission slot, the prompt caches, and every telemetry number below.
+const INFERENCE_PATH: &str = "/v1/synth/inference";
+const INFERENCE_STREAM_PATH: &str = "/v1/synth/inference/stream";
+const MODEL_UNLOAD_PATH: &str = "/v1/synth/model/unload";
+const SETTINGS_PATH: &str = "/v1/synth/settings";
+/// Guards against an SSE peer that never emits an event boundary.
+const SSE_BUFFER_LIMIT: usize = 1 << 20;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -46,16 +68,104 @@ pub struct LagunaStatus {
     pub updated_at: u64,
 }
 
+/// The generation currently holding the daemon's single GPU admission slot.
+///
+/// Every metric is `Option` on purpose: `null` from the daemon means the number
+/// is genuinely unavailable at this phase, and must never be rendered as zero.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LagunaGeneration {
+    pub generation_id: Option<String>,
+    /// `queued | loading | compiling | prefill | decode | complete`
+    pub phase: Option<String>,
+    // The daemon measures monotonic timestamps in fractional milliseconds.
+    // Keeping these as floats is part of the wire contract: serde rejects a
+    // JSON float for `u64`, which previously discarded every live snapshot.
+    pub queued_at: Option<f64>,
+    pub started_at: Option<f64>,
+    pub first_token_at: Option<f64>,
+    pub last_token_at: Option<f64>,
+    pub prompt_tokens: Option<u64>,
+    pub cached_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cache_hit_ratio: Option<f64>,
+    pub prefill_tokens_per_second: Option<f64>,
+    pub decode_tokens_per_second: Option<f64>,
+    pub elapsed_ms: Option<f64>,
+}
+
+/// Daemon-side rolling aggregates. Percentiles are absent until enough samples
+/// exist, which is reported as `null` rather than a fabricated value.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LagunaRollingStats {
+    pub requests_completed: Option<u64>,
+    pub requests_failed: Option<u64>,
+    pub requests_cancelled: Option<u64>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cached_tokens: Option<u64>,
+    pub ttft_p50_ms: Option<f64>,
+    pub ttft_p95_ms: Option<f64>,
+    pub decode_tps_p50: Option<f64>,
+    pub decode_tps_p95: Option<f64>,
+    pub latency_p50_ms: Option<f64>,
+    pub latency_p95_ms: Option<f64>,
+}
+
+/// One `GET /v1/synth/inference` payload, which is also the per-event shape of
+/// `GET /v1/synth/inference/stream`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LagunaInference {
+    pub model: Option<String>,
+    pub resident: bool,
+    pub resident_bytes: Option<u64>,
+    pub queue_depth: Option<u32>,
+    pub queue_capacity: Option<u32>,
+    /// `None` while the daemon is idle.
+    pub active: Option<LagunaGeneration>,
+    pub rolling: LagunaRollingStats,
+}
+
+/// Result of `POST /v1/synth/model/unload`. A 409 is an expected answer (a
+/// generation holds the slot), not a transport failure.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LagunaUnloadOutcome {
+    pub released: bool,
+    pub conflict: bool,
+    pub detail: Option<String>,
+}
+
+/// One `/v1/synth/settings` exchange. A 404 is an expected answer from a
+/// daemon build that predates the runtime-settings API, and a 400 carries the
+/// daemon's typed validation envelope — both are data for the renderer, not
+/// transport failures.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LagunaSettingsExchange {
+    pub supported: bool,
+    pub status: u16,
+    /// Parsed JSON body — the settings envelope on success, the typed error
+    /// envelope on rejection, `null` when the body was not JSON.
+    pub body: Value,
+}
+
 pub struct LagunaManager {
     status: RwLock<LagunaStatus>,
     ensure_lock: Mutex<()>,
     updates: broadcast::Sender<LagunaStatus>,
+    inference: RwLock<Option<LagunaInference>>,
+    inference_updates: broadcast::Sender<LagunaInference>,
+    inference_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     client: Client,
 }
 
 impl LagunaManager {
     pub fn new() -> Self {
         let (updates, _) = broadcast::channel(32);
+        let (inference_updates, _) = broadcast::channel(64);
         Self {
             status: RwLock::new(LagunaStatus {
                 phase: "unknown".into(),
@@ -72,12 +182,25 @@ impl LagunaManager {
             }),
             ensure_lock: Mutex::new(()),
             updates,
+            inference: RwLock::new(None),
+            inference_updates,
+            inference_task: Mutex::new(None),
             client: Client::new(),
         }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<LagunaStatus> {
         self.updates.subscribe()
+    }
+
+    /// High-frequency generation activity. `/health` remains the authoritative
+    /// low-frequency residency source and is deliberately not merged into this.
+    pub fn subscribe_inference(&self) -> broadcast::Receiver<LagunaInference> {
+        self.inference_updates.subscribe()
+    }
+
+    pub async fn last_inference(&self) -> Option<LagunaInference> {
+        self.inference.read().await.clone()
     }
     pub async fn status(&self) -> LagunaStatus {
         self.status.read().await.clone()
@@ -159,6 +282,46 @@ impl LagunaManager {
         }
     }
 
+    pub fn download_model(&self) -> Result<LagunaModelHit> {
+        let python = home().join(".venv/bin/python");
+        validate_python(&python)?;
+        let models_root = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".synth-desktop/models");
+        fs::create_dir_all(&models_root)?;
+        if let Some(available) = available_disk_bytes(&models_root) {
+            if available < MIN_DOWNLOAD_DISK_BYTES {
+                return Err(anyhow::anyhow!(
+                    "Laguna XS needs at least 24 GiB of free disk space; only {:.1} GiB is available.",
+                    available as f64 / 1024f64.powi(3)
+                ));
+            }
+        }
+        let model_dir = models_root.join(DEFAULT_MODEL);
+        fs::create_dir_all(&model_dir)?;
+        let script = r#"from huggingface_hub import snapshot_download
+import sys
+snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[3])
+"#;
+        let output = Command::new(&python)
+            .arg("-c")
+            .arg(script)
+            .arg(DEFAULT_MODEL)
+            .arg(DEFAULT_MODEL_REVISION)
+            .arg(&model_dir)
+            .stdin(Stdio::null())
+            .output()
+            .context("download Laguna XS from Hugging Face")?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow::anyhow!(
+                "Laguna download failed: {}",
+                detail.trim().chars().take(500).collect::<String>()
+            ));
+        }
+        self.select_model(&model_dir)
+    }
+
     pub async fn ensure(&self, workshop_root: &Path) -> Result<Option<String>> {
         let _ensure_guard = self.ensure_lock.lock().await;
         if env::var("SYNTH_LAGUNA_AUTO_START").as_deref() == Ok("0") {
@@ -209,16 +372,10 @@ impl LagunaManager {
             }
         }
 
-        // A selected directory must be loaded by our MLX backend. An already
-        // running Poolside upstream cannot be instructed to switch weights.
-        let upstream = if read_selected_model_path()?.is_some() {
-            None
-        } else {
-            discover_poolside_upstream(&self.client).await
-        };
-        let backend = if upstream.is_some() {
-            "external"
-        } else if cfg!(target_os = "macos") {
+        // The Synth-managed daemon is the only local runtime: it loads the
+        // weights in-process. There is no second engine to discover or proxy
+        // through — Poolside's own sidecar is not ours and is never reused.
+        let backend = if cfg!(target_os = "macos") {
             "mlx_lm"
         } else {
             "auto"
@@ -226,17 +383,10 @@ impl LagunaManager {
         let mut status = self.status().await;
         status.phase = "loading".into();
         status.backend = Some(backend.into());
-        status.detail = Some(
-            if upstream.is_some() {
-                "Connecting to local Laguna engine…"
-            } else {
-                "Starting Laguna sidecar…"
-            }
-            .into(),
-        );
+        status.detail = Some("Starting Laguna sidecar…".into());
         self.set_status(status).await;
         write_env_sh(&api_key, &base_url)?;
-        spawn_sidecar(workshop_root, &api_key, backend, upstream.as_ref())?;
+        spawn_sidecar(workshop_root, &api_key, backend)?;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         while tokio::time::Instant::now() < deadline {
@@ -325,6 +475,333 @@ impl LagunaManager {
             updated_at: observed_at,
         })
     }
+
+    /// Base URL for the telemetry endpoints. Falls back to the configured
+    /// default so a monitor can render before `ensure` has completed.
+    async fn inference_base_url(&self) -> String {
+        if let Some(url) = self.status().await.base_url {
+            return url;
+        }
+        trim_url(
+            env::var("SYNTH_LAGUNA_BASE_URL")
+                .unwrap_or_else(|_| format!("http://127.0.0.1:{DEFAULT_PORT}")),
+        )
+    }
+
+    async fn record_inference(&self, snapshot: LagunaInference) {
+        *self.inference.write().await = Some(snapshot.clone());
+        let _ = self.inference_updates.send(snapshot);
+    }
+
+    /// One-shot `GET /v1/synth/inference`.
+    pub async fn inference_snapshot(&self) -> Result<LagunaInference> {
+        let base_url = self.inference_base_url().await;
+        let response = self
+            .client
+            .get(format!("{base_url}{INFERENCE_PATH}"))
+            .bearer_auth(self.api_key().unwrap_or_default())
+            .timeout(Duration::from_millis(2000))
+            .send()
+            .await
+            .with_context(|| format!("Laguna inference telemetry is unreachable at {base_url}"))?;
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "Laguna inference telemetry returned {}",
+                response.status().as_u16()
+            ));
+        }
+        let snapshot: LagunaInference = response
+            .json()
+            .await
+            .context("Laguna inference telemetry returned an unreadable payload")?;
+        self.record_inference(snapshot.clone()).await;
+        Ok(snapshot)
+    }
+
+    /// `POST /v1/synth/model/unload`. A 409 is reported as a conflict outcome
+    /// rather than an error: a generation legitimately holds the slot.
+    pub async fn unload_model(&self) -> Result<LagunaUnloadOutcome> {
+        let base_url = self.inference_base_url().await;
+        let response = self
+            .client
+            .post(format!("{base_url}{MODEL_UNLOAD_PATH}"))
+            .bearer_auth(self.api_key().unwrap_or_default())
+            .timeout(Duration::from_secs(20))
+            .send()
+            .await
+            .with_context(|| format!("Laguna is unreachable at {base_url}"))?;
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        let outcome = unload_outcome(status, &body).map_err(anyhow::Error::msg)?;
+        if outcome.released {
+            // Residency truth lives in /health; refresh it rather than guessing.
+            self.refresh().await;
+        }
+        Ok(outcome)
+    }
+
+    /// One-shot `GET /v1/synth/settings`.
+    pub async fn settings_snapshot(&self) -> Result<LagunaSettingsExchange> {
+        let base_url = self.inference_base_url().await;
+        let response = self
+            .client
+            .get(format!("{base_url}{SETTINGS_PATH}"))
+            .bearer_auth(self.api_key().unwrap_or_default())
+            .timeout(Duration::from_millis(2000))
+            .send()
+            .await
+            .with_context(|| format!("Laguna settings are unreachable at {base_url}"))?;
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        Ok(settings_exchange(status, &body))
+    }
+
+    /// `PUT /v1/synth/settings` with a partial update. The daemon answers with
+    /// the full effective settings, or a typed validation envelope on 400.
+    pub async fn settings_update(&self, patch: Value) -> Result<LagunaSettingsExchange> {
+        let base_url = self.inference_base_url().await;
+        let response = self
+            .client
+            .put(format!("{base_url}{SETTINGS_PATH}"))
+            .bearer_auth(self.api_key().unwrap_or_default())
+            .json(&patch)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .with_context(|| format!("Laguna settings are unreachable at {base_url}"))?;
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        Ok(settings_exchange(status, &body))
+    }
+
+    /// Starts the SSE subscription if it is not already running. `emit` receives
+    /// every decoded event so the caller can forward it to the webview.
+    pub async fn start_inference_stream<E>(self: &Arc<Self>, emit: E)
+    where
+        E: Fn(LagunaInference) + Send + Sync + 'static,
+    {
+        let mut task = self.inference_task.lock().await;
+        if task
+            .as_ref()
+            .is_some_and(|handle| !handle.inner().is_finished())
+        {
+            return;
+        }
+        let manager = Arc::clone(self);
+        *task = Some(tauri::async_runtime::spawn(async move {
+            manager.run_inference_stream(emit).await;
+        }));
+    }
+
+    pub async fn stop_inference_stream(&self) {
+        if let Some(handle) = self.inference_task.lock().await.take() {
+            handle.abort();
+        }
+    }
+
+    async fn run_inference_stream<E>(self: Arc<Self>, emit: E)
+    where
+        E: Fn(LagunaInference) + Send + Sync + 'static,
+    {
+        let mut backoff = Duration::from_millis(500);
+        loop {
+            match self.read_inference_stream(&emit).await {
+                Ok(()) => backoff = Duration::from_millis(500),
+                Err(_) => backoff = (backoff * 2).min(Duration::from_secs(10)),
+            }
+            tokio::time::sleep(backoff).await;
+        }
+    }
+
+    async fn read_inference_stream<E>(&self, emit: &E) -> Result<()>
+    where
+        E: Fn(LagunaInference) + Send + Sync + 'static,
+    {
+        let base_url = self.inference_base_url().await;
+        let mut response = self
+            .client
+            .get(format!("{base_url}{INFERENCE_STREAM_PATH}"))
+            .bearer_auth(self.api_key().unwrap_or_default())
+            .header("accept", "text/event-stream")
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "Laguna inference stream returned {}",
+                response.status().as_u16()
+            ));
+        }
+        let mut buffer = String::new();
+        while let Some(chunk) = response.chunk().await? {
+            // Bare CRs never survive JSON encoding, so dropping them lets the
+            // frame splitter work on a single line-ending form.
+            buffer.push_str(&String::from_utf8_lossy(&chunk).replace('\r', ""));
+            if buffer.len() > SSE_BUFFER_LIMIT {
+                buffer.clear();
+                continue;
+            }
+            for payload in take_sse_payloads(&mut buffer) {
+                if payload.trim() == "[DONE]" {
+                    continue;
+                }
+                if let Ok(snapshot) = serde_json::from_str::<LagunaInference>(&payload) {
+                    self.record_inference(snapshot.clone()).await;
+                    emit(snapshot);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Splits complete SSE frames out of `buffer` and returns their `data:` bodies.
+/// Partial frames stay in the buffer for the next chunk.
+fn take_sse_payloads(buffer: &mut String) -> Vec<String> {
+    let mut payloads = Vec::new();
+    while let Some(index) = buffer.find("\n\n") {
+        let frame = buffer[..index].to_owned();
+        buffer.drain(..index + 2);
+        if let Some(payload) = sse_frame_data(&frame) {
+            payloads.push(payload);
+        }
+    }
+    payloads
+}
+
+fn sse_frame_data(frame: &str) -> Option<String> {
+    let mut data = String::new();
+    for line in frame.lines() {
+        if line.starts_with(':') {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("data:") else {
+            continue;
+        };
+        if !data.is_empty() {
+            data.push('\n');
+        }
+        data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+    }
+    (!data.trim().is_empty()).then_some(data)
+}
+
+fn settings_exchange(status: u16, body: &str) -> LagunaSettingsExchange {
+    LagunaSettingsExchange {
+        supported: status != 404,
+        status,
+        body: serde_json::from_str(body).unwrap_or(Value::Null),
+    }
+}
+
+fn unload_outcome(status: u16, body: &str) -> std::result::Result<LagunaUnloadOutcome, String> {
+    let detail = serde_json::from_str::<Value>(body).ok().and_then(|value| {
+        ["detail", "message", "error"]
+            .iter()
+            .find_map(|key| value.get(*key).and_then(Value::as_str).map(str::to_owned))
+    });
+    match status {
+        200..=299 => Ok(LagunaUnloadOutcome {
+            released: true,
+            conflict: false,
+            detail,
+        }),
+        409 => Ok(LagunaUnloadOutcome {
+            released: false,
+            conflict: true,
+            detail: Some(
+                detail
+                    .unwrap_or_else(|| "A generation is active; the model stays resident.".into()),
+            ),
+        }),
+        other => Err(format!("Laguna refused to free the model ({other})")),
+    }
+}
+
+#[tauri::command]
+pub async fn laguna_inference_snapshot(
+    state: State<'_, Arc<LagunaManager>>,
+) -> std::result::Result<LagunaInference, String> {
+    state
+        .inference_snapshot()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn laguna_inference_stream_start(
+    app: AppHandle,
+    state: State<'_, Arc<LagunaManager>>,
+) -> std::result::Result<(), String> {
+    let manager = state.inner().clone();
+    manager
+        .start_inference_stream(move |snapshot| {
+            let _ = app.emit("laguna:inference", snapshot);
+        })
+        .await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn laguna_inference_stream_stop(
+    state: State<'_, Arc<LagunaManager>>,
+) -> std::result::Result<(), String> {
+    state.stop_inference_stream().await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn laguna_model_unload(
+    state: State<'_, Arc<LagunaManager>>,
+) -> std::result::Result<LagunaUnloadOutcome, String> {
+    state
+        .unload_model()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn laguna_settings_snapshot(
+    state: State<'_, Arc<LagunaManager>>,
+) -> std::result::Result<LagunaSettingsExchange, String> {
+    state
+        .settings_snapshot()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn laguna_settings_update(
+    state: State<'_, Arc<LagunaManager>>,
+    patch: Value,
+) -> std::result::Result<LagunaSettingsExchange, String> {
+    state
+        .settings_update(patch)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn laguna_model_download(
+    app: AppHandle,
+    state: State<'_, Arc<LagunaManager>>,
+) -> std::result::Result<LagunaModelHit, String> {
+    let _ = app.emit(
+        "laguna:download",
+        serde_json::json!({"phase":"downloading","detail":"Downloading Laguna XS 2.1 from Hugging Face…"}),
+    );
+    let manager = state.inner().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || manager.download_model())
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string());
+    let payload = match &result {
+        Ok(hit) => {
+            serde_json::json!({"phase":"ready","detail":"Laguna XS download complete.","path":hit.path})
+        }
+        Err(error) => serde_json::json!({"phase":"error","detail":error}),
+    };
+    let _ = app.emit("laguna:download", payload);
+    result
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -573,75 +1050,7 @@ fn write_env_sh(api_key: &str, base_url: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone)]
-struct Upstream {
-    url: String,
-    api_key: String,
-}
-
-async fn discover_poolside_upstream(client: &Client) -> Option<Upstream> {
-    let process_key = Command::new("ps")
-        .args(["-axo", "command="])
-        .output()
-        .ok()
-        .and_then(|o| discover_key(&String::from_utf8_lossy(&o.stdout)));
-    let saved = fs::read_to_string(home().join("poolside_sidecar_api_key"))
-        .ok()
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty());
-    let api_key = env::var("SYNTH_LAGUNA_UPSTREAM_API_KEY")
-        .ok()
-        .or_else(|| env::var("SYNTH_LAGUNA_EXTERNAL_API_KEY").ok())
-        .or(saved)
-        .or(process_key)?;
-    let mut candidates = vec![
-        "http://127.0.0.1:63300".into(),
-        "http://127.0.0.1:49600".into(),
-    ];
-    if let Ok(url) = env::var("SYNTH_LAGUNA_EXTERNAL_URL") {
-        candidates.insert(0, trim_url(url));
-    }
-    for url in candidates {
-        let healthy = client
-            .get(format!("{url}/health"))
-            .bearer_auth(&api_key)
-            .timeout(Duration::from_millis(1200))
-            .send()
-            .await
-            .map(|response| response.status().is_success())
-            .unwrap_or(false);
-        if healthy {
-            let _ = fs::create_dir_all(home());
-            let _ = write_secret(&home().join("poolside_sidecar_api_key"), &api_key);
-            return Some(Upstream { url, api_key });
-        }
-    }
-    None
-}
-
-fn discover_key(output: &str) -> Option<String> {
-    for line in output.lines().filter(|line| line.contains("poolside-mlx")) {
-        let parts: Vec<_> = line.split_whitespace().collect();
-        for (index, part) in parts.iter().enumerate() {
-            if *part == "--api-key" {
-                if let Some(value) = parts.get(index + 1) {
-                    return Some((*value).into());
-                }
-            }
-            if let Some(value) = part.strip_prefix("--api-key=") {
-                return Some(value.into());
-            }
-        }
-    }
-    None
-}
-
-fn spawn_sidecar(
-    root: &Path,
-    api_key: &str,
-    backend: &str,
-    upstream: Option<&Upstream>,
-) -> Result<()> {
+fn spawn_sidecar(root: &Path, api_key: &str, backend: &str) -> Result<()> {
     fs::create_dir_all(home())?;
     let log = OpenOptions::new()
         .create(true)
@@ -668,9 +1077,21 @@ fn spawn_sidecar(
         "PYTHONPATH",
         append_path(&daemon, env::var("PYTHONPATH").ok()),
     );
+    apply_daemon_env(&mut command, api_key, backend, &models_dir()?);
+    detach(&mut command);
+    let child = command.spawn().context("spawn Laguna sidecar")?;
+    fs::write(home().join("sidecar.pid"), child.id().to_string())?;
+    Ok(())
+}
+
+/// Environment for the Synth-managed daemon. The upstream/external variables are
+/// actively cleared: an inherited `SYNTH_LAGUNA_EXTERNAL_URL` (or the legacy
+/// `:7334` upstream port) would otherwise make the daemon proxy to a second
+/// engine instead of owning the weights itself.
+fn apply_daemon_env(command: &mut Command, api_key: &str, backend: &str, models_dir: &Path) {
     command.envs([
         ("SYNTH_LAGUNA_HOST", "127.0.0.1"),
-        ("SYNTH_LAGUNA_PORT", "7333"),
+        ("SYNTH_LAGUNA_PORT", DEFAULT_PORT_STR),
         ("SYNTH_LAGUNA_API_KEY", api_key),
         ("SYNTH_LAGUNA_BACKEND", backend),
         ("SYNTH_LAGUNA_DEFAULT_MODEL", DEFAULT_MODEL),
@@ -678,17 +1099,18 @@ fn spawn_sidecar(
         ("SYNTH_LAGUNA_REQUIRE_AUTH", "1"),
     ]);
     command
-        .env("SYNTH_LAGUNA_MODELS_DIR", models_dir()?)
+        .env("SYNTH_LAGUNA_MODELS_DIR", models_dir)
         .env("SYNTH_LAGUNA_DATA_DIR", home());
-    if let Some(value) = upstream {
-        command
-            .env("SYNTH_LAGUNA_EXTERNAL_URL", &value.url)
-            .env("SYNTH_LAGUNA_UPSTREAM_API_KEY", &value.api_key);
+    for legacy in UPSTREAM_ENV_VARS {
+        command.env_remove(legacy);
     }
-    detach(&mut command);
-    let child = command.spawn().context("spawn Laguna sidecar")?;
-    fs::write(home().join("sidecar.pid"), child.id().to_string())?;
-    Ok(())
+}
+
+/// Only a process we started, and that is still the Laguna daemon, may be
+/// signalled. Poolside's `poolside-mlx-sidecar` and any stock `mlx_lm.server`
+/// belong to someone else and are never ours to stop.
+fn is_managed_sidecar_command(command: &str) -> bool {
+    command.contains("laguna_daemon")
 }
 
 fn stop_managed_sidecar() -> Result<bool> {
@@ -709,7 +1131,7 @@ fn stop_managed_sidecar() -> Result<bool> {
             .args(["-p", &pid.to_string(), "-o", "command="])
             .output()
             .context("inspect stale Synth-managed Laguna sidecar")?;
-        if !String::from_utf8_lossy(&command.stdout).contains("laguna_daemon") {
+        if !is_managed_sidecar_command(&String::from_utf8_lossy(&command.stdout)) {
             let _ = fs::remove_file(path);
             return Ok(false);
         }
@@ -753,6 +1175,24 @@ fn append_path(prefix: &Path, existing: Option<String>) -> String {
         .map(|v| format!("{}:{v}", prefix.display()))
         .unwrap_or_else(|| prefix.display().to_string())
 }
+
+fn parse_df_available_bytes(output: &str) -> Option<u64> {
+    let fields: Vec<&str> = output.lines().last()?.split_whitespace().collect();
+    fields.get(3)?.parse::<u64>().ok()?.checked_mul(1024)
+}
+
+fn available_disk_bytes(path: &Path) -> Option<u64> {
+    let output = Command::new("/bin/df")
+        .args(["-Pk"])
+        .arg(path)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| parse_df_available_bytes(&String::from_utf8_lossy(&output.stdout)))
+        .flatten()
+}
 #[cfg(unix)]
 fn detach(command: &mut Command) {
     use std::os::unix::process::CommandExt;
@@ -778,6 +1218,15 @@ fn libc_detach() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_portable_df_capacity_for_download_preflight() {
+        let output = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3s5 100000000 1000 50331648 1% /System/Volumes/Data\n";
+        assert_eq!(
+            parse_df_available_bytes(output),
+            Some(48 * 1024 * 1024 * 1024)
+        );
+    }
     fn fixture() -> PathBuf {
         let root =
             env::temp_dir().join(format!("synth-laguna-model-test-{}", uuid::Uuid::new_v4()));
@@ -794,16 +1243,44 @@ mod tests {
         root
     }
     #[test]
-    fn finds_poolside_key_forms() {
+    fn settings_exchange_marks_missing_endpoint_as_unsupported() {
+        let exchange = settings_exchange(404, "Not Found");
+        assert!(!exchange.supported);
+        assert_eq!(exchange.status, 404);
+        assert_eq!(exchange.body, Value::Null);
+    }
+
+    #[test]
+    fn settings_exchange_passes_settings_envelope_through() {
+        let body = r#"{"schema_version":"1.0","settings":{"default_temperature":1.0}}"#;
+        let exchange = settings_exchange(200, body);
+        assert!(exchange.supported);
         assert_eq!(
-            discover_key("/x/poolside-mlx --api-key secret"),
-            Some("secret".into())
-        );
-        assert_eq!(
-            discover_key("poolside-mlx-sidecar --api-key=token"),
-            Some("token".into())
+            exchange.body["settings"]["default_temperature"],
+            Value::from(1.0)
         );
     }
+
+    #[test]
+    fn settings_exchange_keeps_typed_validation_envelope_intact() {
+        let body = r#"{"error":{"code":"invalid_setting","message":"top_k must be an integer between 0 and 8192","retryable":false,"details":{"field":"default_top_k"}},"request_id":"req-1"}"#;
+        let exchange = settings_exchange(400, body);
+        assert!(exchange.supported);
+        assert_eq!(exchange.status, 400);
+        assert_eq!(exchange.body["error"]["code"], "invalid_setting");
+        assert_eq!(
+            exchange.body["error"]["details"]["field"],
+            "default_top_k"
+        );
+    }
+
+    #[test]
+    fn settings_exchange_tolerates_non_json_bodies() {
+        let exchange = settings_exchange(502, "<html>bad gateway</html>");
+        assert!(exchange.supported);
+        assert_eq!(exchange.body, Value::Null);
+    }
+
     #[test]
     fn trims_only_trailing_slashes() {
         assert_eq!(
@@ -913,5 +1390,171 @@ mod tests {
         assert_eq!(value["idleUnloadAfterSeconds"], 3);
         assert_eq!(value["lastUsedAt"], 4);
         assert_eq!(value["freeAt"], 5);
+    }
+
+    fn live_payload() -> &'static str {
+        r#"{
+            "model": "poolside/Laguna-XS-2.1-NVFP4-mlx",
+            "resident": true,
+            "residentBytes": 21568899389,
+            "queueDepth": 2,
+            "queueCapacity": 8,
+            "active": {
+                "generationId": "sha256:short-redacted-id",
+                "phase": "prefill",
+                "queuedAt": 10.125, "startedAt": 20.25, "firstTokenAt": null, "lastTokenAt": null,
+                "promptTokens": 12198, "cachedTokens": 0, "outputTokens": 0,
+                "cacheHitRatio": 0.0,
+                "prefillTokensPerSecond": null, "decodeTokensPerSecond": null,
+                "elapsedMs": 31.875
+            },
+            "rolling": {
+                "requestsCompleted": 31, "requestsFailed": 1, "requestsCancelled": 2,
+                "inputTokens": 500, "outputTokens": 226, "cachedTokens": 8420,
+                "ttftP50Ms": 1840.0, "ttftP95Ms": null,
+                "decodeTpsP50": 12.4, "decodeTpsP95": null,
+                "latencyP50Ms": null, "latencyP95Ms": null
+            }
+        }"#
+    }
+
+    #[test]
+    fn parses_the_pinned_inference_contract() {
+        let snapshot: LagunaInference = serde_json::from_str(live_payload()).unwrap();
+        assert!(snapshot.resident);
+        assert_eq!(snapshot.resident_bytes, Some(21_568_899_389));
+        assert_eq!(snapshot.queue_depth, Some(2));
+        assert_eq!(snapshot.queue_capacity, Some(8));
+        let active = snapshot.active.expect("active generation");
+        assert_eq!(active.phase.as_deref(), Some("prefill"));
+        assert_eq!(active.queued_at, Some(10.125));
+        assert_eq!(active.started_at, Some(20.25));
+        assert_eq!(active.elapsed_ms, Some(31.875));
+        assert_eq!(active.prompt_tokens, Some(12_198));
+        // Null must survive as absent, never as a fabricated zero.
+        assert_eq!(active.first_token_at, None);
+        assert_eq!(active.decode_tokens_per_second, None);
+        assert_eq!(active.cache_hit_ratio, Some(0.0));
+        assert_eq!(snapshot.rolling.ttft_p50_ms, Some(1840.0));
+        assert_eq!(snapshot.rolling.ttft_p95_ms, None);
+        assert_eq!(snapshot.rolling.requests_failed, Some(1));
+    }
+
+    #[test]
+    fn idle_and_sparse_payloads_deserialize_without_invented_values() {
+        let snapshot: LagunaInference =
+            serde_json::from_str(r#"{"model":"m","resident":false,"active":null}"#).unwrap();
+        assert!(!snapshot.resident);
+        assert!(snapshot.active.is_none());
+        assert_eq!(snapshot.resident_bytes, None);
+        assert_eq!(snapshot.queue_depth, None);
+        assert_eq!(snapshot.rolling.requests_completed, None);
+    }
+
+    #[test]
+    fn inference_round_trips_as_camel_case() {
+        let snapshot: LagunaInference = serde_json::from_str(live_payload()).unwrap();
+        let value = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(value["residentBytes"], 21_568_899_389u64);
+        assert_eq!(value["queueCapacity"], 8);
+        assert_eq!(value["active"]["generationId"], "sha256:short-redacted-id");
+        assert_eq!(value["active"]["promptTokens"], 12_198);
+        assert!(value["active"]["prefillTokensPerSecond"].is_null());
+        assert_eq!(value["rolling"]["decodeTpsP50"], 12.4);
+        assert!(value["rolling"]["latencyP95Ms"].is_null());
+        assert_eq!(
+            serde_json::from_value::<LagunaInference>(value).unwrap(),
+            snapshot
+        );
+    }
+
+    #[test]
+    fn splits_sse_frames_and_keeps_partial_tails() {
+        let mut buffer =
+            String::from("event: inference\ndata: {\"a\":1}\n\n: keepalive\n\ndata: {\"b\"");
+        let payloads = take_sse_payloads(&mut buffer);
+        assert_eq!(payloads, vec!["{\"a\":1}".to_string()]);
+        assert_eq!(buffer, "data: {\"b\"");
+        buffer.push_str(":2}\n\n");
+        assert_eq!(
+            take_sse_payloads(&mut buffer),
+            vec!["{\"b\":2}".to_string()]
+        );
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn joins_multiline_sse_data_and_ignores_empty_frames() {
+        assert_eq!(sse_frame_data("data: a\ndata: b"), Some("a\nb".into()));
+        assert_eq!(sse_frame_data(": comment only"), None);
+        assert_eq!(sse_frame_data("event: ping"), None);
+    }
+
+    #[test]
+    fn unload_conflict_is_an_outcome_not_an_error() {
+        let conflict = unload_outcome(409, r#"{"detail":"generation in flight"}"#).unwrap();
+        assert_eq!(
+            conflict,
+            LagunaUnloadOutcome {
+                released: false,
+                conflict: true,
+                detail: Some("generation in flight".into()),
+            }
+        );
+        let released = unload_outcome(200, "{}").unwrap();
+        assert!(released.released && !released.conflict);
+        assert!(unload_outcome(500, "").is_err());
+    }
+
+    #[test]
+    fn conflict_without_a_body_still_explains_itself() {
+        let conflict = unload_outcome(409, "").unwrap();
+        assert!(conflict.conflict);
+        assert!(conflict.detail.is_some_and(|detail| !detail.is_empty()));
+    }
+
+    #[test]
+    fn daemon_env_pins_7333_and_clears_every_upstream_variable() {
+        let mut command = Command::new("/usr/bin/true");
+        apply_daemon_env(&mut command, "key", "mlx_lm", Path::new("/models"));
+        let envs: Vec<_> = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        let get = |name: &str| {
+            envs.iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        };
+        assert_eq!(get("SYNTH_LAGUNA_PORT"), Some(Some("7333".into())));
+        assert_eq!(get("SYNTH_LAGUNA_BACKEND"), Some(Some("mlx_lm".into())));
+        for legacy in UPSTREAM_ENV_VARS {
+            assert_eq!(get(legacy), Some(None), "{legacy} must be cleared");
+        }
+        assert!(
+            !envs.iter().any(|(_, value)| value
+                .as_deref()
+                .is_some_and(|value| value.contains("7334") || value.contains("63300"))),
+            "no legacy or Poolside engine port may reach the daemon"
+        );
+    }
+
+    #[test]
+    fn only_our_own_laguna_daemon_may_be_stopped() {
+        assert!(is_managed_sidecar_command(
+            "/x/.venv/bin/python -m laguna_daemon"
+        ));
+        // Poolside's sidecar and a stock mlx_lm.server are never ours to kill.
+        assert!(!is_managed_sidecar_command(
+            "/Applications/Poolside.app/Contents/MacOS/poolside-mlx-sidecar --port 63300"
+        ));
+        assert!(!is_managed_sidecar_command(
+            "python -m mlx_lm.server --port 7334"
+        ));
     }
 }

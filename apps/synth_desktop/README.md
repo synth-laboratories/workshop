@@ -225,12 +225,16 @@ skill catalog entries. Skill bodies and references load only when their scoped
 workflow is selected. Codex sees one compact `visual_manage` dispatcher rather
 than 13 visual schemas on every turn; its operation payloads live in the lazy
 visual skill, while legacy visual tool names remain available to other MCP
-clients. The container MCP provides only list, explicit register, get, and
-probe. Policy execution belongs to the workspace-owned benchmark harness:
+clients. The container MCP provides list, explicit register, get, probe, and a
+bounded `container_run_rollouts` transport-acceptance operation. That last
+operation accepts only a previously registered loopback HTTP URL, disables
+redirects, limits each request to 1–8 rollouts and 1–64 explicit actions, and
+returns the engine's exact rollout IDs, states, and event logs. It proves live
+agent-to-MCP-to-container dispatch; it is not evidence of LLM policy quality.
+Policy evaluation belongs to the workspace-owned benchmark harness:
 coding agents discover the container contract, run real LLM policy rollouts,
 seal the result as Trace V5, and let Desktop derive its read-only inspector
-projection. Workshop embeds neither a Craftax policy nor a fixed rollout
-shortcut.
+projection. Workshop embeds no Craftax policy.
 
 The two bundled loopback MCP servers are provisioned with
 `default_tools_approval_mode = "approve"`. This trust is deliberately limited to Desktop's

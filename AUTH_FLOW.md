@@ -86,8 +86,7 @@ unit suite is not a substitute for the live artifact pass.
 
 ## Production closeout record
 
-2026-08-09 production deployment `dpl_3o7mu5QAEAdJJbKS4JHVbJDNBAcC`
-(frontend commit `3ae4b3cc`):
+2026-08-09 production deployment `dpl_3Azvch6Qys99vpzeRBtGqCvApdG2`:
 
 - `POST /api/auth/device/init` returned `200 application/json` while signed out,
   with a 600-second code and a verification URL carrying the code to `/device`.
@@ -104,17 +103,10 @@ unit suite is not a substitute for the live artifact pass.
 The live run exposed that Clerk's organization task could drop the pending
 device destination. Frontend PR #210 now keeps only a shape-validated `/device`
 target in same-tab session storage for at most 10 minutes, restores it after the
-task, and clears it on arrival. The follow-up is promoted to `usesynth.ai`; the
-production init, typed-invalid-token, and protected-device probes all passed.
-**Reopen browser** remains the tested one-action recovery if a third-party auth
-task interrupts navigation.
-
-Clean desktop commit `95a7e39` built a macOS `.app` successfully after removing
-dangling registrations for unfinished optimizer/eval modules. The ad-hoc signed
-candidate archive has SHA-256
-`b9ce3c778ecef132aa383b0bffdc6f967354b8cebff563d8927c746b5ef27daa`.
+task, and clears it on arrival. Until that follow-up deployment is promoted,
+**Reopen browser** remains the tested one-action recovery.
 
 Still required for a release artifact record: install the exact candidate,
 assert its native Authenticated badge and one metered Intern action, then attach
-the gate timestamp here. Route/browser success and a clean signed build do not
-satisfy the artifact-within-24-hours rule by themselves.
+the gate timestamp and artifact digest here. Route and browser success alone do
+not satisfy the artifact-within-24-hours rule.

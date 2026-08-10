@@ -144,6 +144,14 @@ Pick from debt flags or CUA; log when done.
 - **CUA notes:** The supplied desktop capture showed `Lifecycle Freeing memory…` while 20.1 GB was still resident, motivating the distinction.
 - **Refs:** `src/renderer/src/components/LocalModelResidency.tsx`, `tests/playwright/runtime-regressions.spec.ts`.
 
+### 2026-08-09 — Configurable native MLX idle release
+
+- **Shipped:** `SYNTH_LAGUNA_IDLE_UNLOAD_SECONDS` now governs the native Responses MLX backend as well as the legacy managed sidecar. The temporary local-development default is 30 seconds; native weights and prompt caches are released while the daemon remains available for the next prompt.
+- **Tests:** Added a native-backend lifecycle unit test. CUA ran the isolated **Synth Desktop · beta** app against a local MLX daemon: prompt load → `20.1 GB resident` → post-response 30-second countdown → resident card removed after unload.
+- **Flagged:** The countdown begins after an active generation completes; a generation is never evicted mid-response.
+- **CUA notes:** A single `Reply with exactly: ready` turn ran for 40 seconds. The UI deferred its initially elapsed schedule while that turn was active, then reset the countdown from the completed turn and removed residency after the next 30 seconds.
+- **Refs:** `services/laguna-daemon/laguna_daemon/config.py`, `responses_api/backends/mlx.py`, `responses_api/service.py`, `laguna_daemon/app.py`.
+
 ### 2026-08-09 — Reconcile detached local agent sessions
 
 - **Shipped:** Conversation, turn, and runtime-attachment state are now separate. Desktop startup reconciles orphaned running turns to interrupted; Stop is idempotent when the process is already gone; unexpected app-server exit emits a health event, persists the interrupted run, and removes only its fenced attachment generation. Sending another message lazily resumes the durable thread.
@@ -151,3 +159,138 @@ Pick from debt flags or CUA; log when done.
 - **Flagged:** App-server attachments are still per active conversation because existing per-session Codex homes contain provider configuration and thread history. `SESSION_LIFECYCLE.md` specifies the safe provider-supervisor migration rather than silently sharing homes or credentials.
 - **CUA notes:** Poolside uses one helper/MLX sidecar across chats and labels chat state independently; Codex app-server documents durable threads, resumable connections, loaded-thread state, and terminal interrupted turns.
 - **Refs:** `SESSION_LIFECYCLE.md`, `src-tauri/src/codex.rs`, `tests/playwright/session-lifecycle.spec.ts`.
+
+### 2026-08-09 — Real Codex process lifecycle integration suite
+
+- **Shipped:** Codex roots and binaries are injectable below the Tauri command layer, and CoreRuntime event publication now accepts any Tauri runtime. Production behavior is unchanged; tests can run the real process manager with isolated state.
+- **Tests:** Added an executable stdio JSON-RPC app-server fixture. Rust tests kill the child during a turn, assert SQLite interruption and reason, call Stop after detachment, resume the original thread in a replacement process, reconcile an orphan after restart, and prove stale EOF cannot detach a newer attachment.
+- **Flagged:** This covers the actual child-process and SQLite boundary but not a real model/provider or installed WebView. Those remain a separate, slower acceptance layer.
+- **Refs:** `SESSION_LIFECYCLE.md`, `testing.md`, `src-tauri/tests/fixtures/fake_codex_app_server.py`.
+
+### 2026-08-09 — steerTurn + visual_manage dogfood + debt scrub
+
+- **Shipped:** `window.synthCodex.steerTurn` → Rust `codex_turn_steer` / Codex `turn/steer`; composer `steerSupported` follows the bridge. MCP `visual_manage` create dogfood in Playwright: originating chat activity + registry id + pane open. `analysis.visual.v1` normalizes agent `type`/`text` blocks. Async leave-safe is projection-driven; Respond opens `intern-intervention-input` via send (no stub toast). Intern Live/Background stay out of the launch picker (lock replaces mailbox xfail).
+- **Tests:** Flipped `gaps` / `poolside-polish` / `design-debt` xfails to passing locks; static `design_debt.test.mjs` updated.
+- **Refs:** `tests/playwright/gaps.spec.ts`, `poolside-polish.spec.ts`, `design-debt.spec.ts`, `src-tauri/src/codex.rs`, `visuals/templates/analysis.visual.v1/shell.tsx`.
+
+### 2026-08-09 — Poolside polish first pass
+
+- **Shipped:** Unified `synth.preferences.v1` schema with migration from legacy keys; tool-activity Detailed/Grouped/Compact presentation; honest FIFO prompt enqueue with stop-after queue affordances; layout persistence (sidebar/output/terminal) with default/save/reset; conversation rename/pin/archive + archived Settings surface; Settings IA (General / Models / Runtime / Account / About) with theme, fonts, submission preference, shortcuts; a11y focus/hit-target/reduced-motion polish for new controls.
+- **Deferred (tested):** Duplicate conversation and permanent delete omitted until product defines copy/delete semantics. Fake updater / remote-access / app-icon switcher intentionally absent. Voice Recognition (Whisper download/select + local mic STT) and slash command/skills menu are shipped. Steer ships via `turn/steer` (see entry above).
+- **Architecture:** One renderer preferences module (`src/renderer/src/preferences/`) owns schema, normalize/migrate, layout, queue, and conversation meta. Model knobs stay in `modelCapabilities.ts`. Backend/env settings remain on `synthConfig`. Eval adapter: `window.__synthPreferences`.
+- **Tests:** `tests/playwright/poolside-polish.spec.ts` (prefs persistence, malformed normalize, activity modes, enqueue + honest steer fail without native bridge, FIFO, conversation actions, layout reload, keyboard settings, narrow overflow). Bombadil invariants extended for mode/theme/queue/focus/sidebar/composer/settings. Static a11y suite green (46). Typecheck green.
+- **Commands:** `npm --prefix apps/synth_desktop run typecheck` pass; `node --test apps/synth_desktop/tests/*.test.mjs` 46 pass; `npx playwright test … poolside-polish.spec.ts` 11 pass; `BOMBADIL_TIME_LIMIT=20s npm run test:bombadil --workspace @synth/synth-desktop` pass.
+- **Flagged:** Installed-app CUA relaunch / multi-chat keyboard pass still needed on a packaged build.
+- **Refs:** `HANDOFF_POOLSIDE_POLISH_FIRST_PASS.md`, `preferences/`, `tests/playwright/poolside-polish.spec.ts`.
+
+### 2026-08-09 — Projects parked and Poolside polish hardened
+
+- **Shipped:** Removed the premature Projects section, create-project action, project selection state, and active renderer/Rust project bridge. New conversations remain workspace-backed and projectless. Kept the existing SQLite project tables and migration history non-destructively so a future implementation can adopt an explicit contract.
+- **Documented:** `project.md` records why Poolside's repo-centric Projects model does not yet fit Workshop, the future Conversation / Workspace / Project distinction, persistence boundaries, reintroduction criteria, and the required Playwright/Bombadil/CUA test bar.
+- **Fixed:** Durable queued prompts are removed only after the runtime accepts them; concurrent drains are fenced per session; queue controls now receive pointer input and lay out above the composer; conversation menus support Arrow/Home/End and restore focus; Apply default and Reset layout have distinct saved-default/factory semantics; reduced-motion disables the working spinner and shortens motion globally.
+- **Fixed:** Outputs no longer auto-opens a floating shelf over live transcript controls when a resource appears. The Outputs badge remains visible and the shelf opens explicitly.
+- **Tests:** Added regression locks for the absent Projects surface, workspace settings, rejected queue sends, context-menu keyboard behavior, saved/default/factory layout behavior, and the closed-by-default Outputs shelf. Full Playwright suite: 75 passed. Static accessibility: 47 passed. Rust library: 119 passed. Typecheck passed. The bounded Bombadil exploration passed during the first-pass run; two later reruns explored without a property violation but hit Bombadil's process-exit watchdog after its time limit.
+- **Deferred (tested):** Real steer still requires a runtime primitive. Duplicate/permanent delete remain deferred pending product semantics. Historical project storage remains readable but has no active UI or command registration. Bombadil's intermittent post-limit hang remains a harness reliability issue.
+- **Installed CUA:** Rebuilt, signed, installed, and restarted `/Applications/Synth Desktop.app`. Confirmed no Projects section or project actions; General exposes theme/font/submission/activity/layout controls; an activity-mode change persisted across a real process restart; the user's original Grouped mode was restored; an existing resource-bearing chat showed `Outputs 2` collapsed with no shelf obscuring the transcript.
+- **Refs:** `project.md`, `preferences/`, `tests/playwright/poolside-polish.spec.ts`, `tests/playwright/runtime-regressions.spec.ts`.
+
+### 2026-08-09 — Bombadil visual-alignment coverage
+
+- **Shipped:** Added a deterministic Bombadil runtime fixture containing a local chat with an attached visual, plus a focused `test:bombadil:alignment` entrypoint that opens the fixture, expands Outputs, and holds it open while mutating supported viewport sizes.
+- **Invariants:** The Outputs trigger stays inside the chat with the documented right inset; the panel agrees with `aria-expanded`, shares the trigger's right edge, opens below it, stays inside the chat, clears the composer, and creates no horizontal overflow. The transcript and composer retain a common centerline.
+- **Tests:** Focused Bombadil run explored 117 states across 960×640, 1280×840, and 1440×900 with the panel expanded and zero violations.
+- **Refs:** `tests/bombadil/visual-alignment.spec.ts`, `tests/bombadil/layout.spec.ts`, `tests/bombadil/run.mjs`.
+
+### 2026-08-09 — Installed-app visual-system sweep
+
+- **CUA audit:** Reviewed the packaged landing, transcript, resource shelf, Connectors, Search, Visuals, Optimizers, Inventory containers/traces, every Settings section, inference monitor, embedded terminal, and compact split-pane states. Inventory Traces remains the strongest reference surface.
+- **Shipped:** Rebuilt Optimizers around a structured toolbar, run/inspector workbench, semantic status treatments, coherent actions, and useful empty states. Activity and Outputs now share a single non-overlapping transcript toolbar. The terminal has a distinct dark canvas and chrome. The landing agent action is a compact product card, and About no longer exposes internal parity/debt notes.
+- **Tests:** Typecheck and frontend build pass. Full Playwright suite: 76 passed. Rust/desktop install verification passed (125 library tests, 35 protocol tests, 3 visuals MCP tests, and all other executed targets; one real-bundle test remains intentionally ignored). Focused Bombadil alignment exploration exercised 960×640, 1280×840, and 1440×900 without a property violation before its configured time limit.
+- **Installed CUA:** Rebuilt, signed, installed, and restarted `/Applications/Synth Desktop.app`. Confirmed the new Optimizers empty/run structure, compact landing agent card, dark live terminal, and separated Activity/Outputs controls in the real WebView.
+- **Flagged:** The global sidebar can still become dense with many automatically titled chats, and Account/About remain intentionally sparse. Those are information-architecture/content issues rather than unresolved alignment defects.
+- **Refs:** `components/OptimizersPage.tsx`, `components/ChatTranscript.tsx`, `components/LandingPage.tsx`, `components/TerminalPanel.tsx`, `components/SettingsPage.tsx`, `styles/app.css`, `tests/playwright/poolside-polish.spec.ts`, `tests/playwright/runtime-regressions.spec.ts`, `tests/bombadil/visual-alignment.spec.ts`.
+
+### 2026-08-09 — Unified Workshop quality and style guide
+
+- **Documented:** Consolidated Synth visual language, Poolside-inspired interaction principles, runtime/state honesty, accessibility, CUA review, viewport/state matrices, test gates, and the definition of done in [`WORKSHOP_QUALITY_STYLE_GUIDE.md`](../../WORKSHOP_QUALITY_STYLE_GUIDE.md).
+- **Architecture:** Explicitly names `app.css`, visual chrome tokens, model capability registry, renderer preferences, Rust CoreRuntime/SQLite, `testing.md`, and `polish.md` as the relevant sources of truth.
+- **Refs:** `README.md`, `HANDOFF_POLISH_CUA_TESTS.md`, `HANDOFF_POOLSIDE_POLISH_FIRST_PASS.md`, `testing.md`, `visuals/chrome/tokens.css`.
+
+### 2026-08-09 — Provisional Workshop style triage
+
+- **Documented:** Recorded the categorical debugging rules in [`workshop_style.md`](../../workshop_style.md): trust, lifecycle, security, dead controls, layout, accessibility, chronology, hierarchy, copy, architecture smells, expected-fail flags, and the minimum proof for completion.
+- **Rule:** Never ship a polished-looking lie; fix it, remove it, or flag it with a test.
+- **Refs:** [`WORKSHOP_QUALITY_STYLE_GUIDE.md`](../../WORKSHOP_QUALITY_STYLE_GUIDE.md), `README.md`.
+
+### 2026-08-09 — Queue tray and inference inspector composition
+
+- **Shipped:** Reworked the active-turn queue into a bounded `Next turns` tray with a clear count, compact single-line rows, numbered affordances, ellipsis-safe editing, icon-only removal, and a restrained post-stop status strip. The queue now stays above the composer without widening the document or pushing the input below the viewport.
+- **Shipped:** Rebalanced the local inference monitor as an inset, rounded inspector card inside a proportional rail. The panel now has consistent internal rhythm, readable metric cards, restrained separators, responsive two-column chips, and compact sparkline/recent-request sections instead of a dense full-height slab. When open, the composer now ends at the transcript edge rather than floating underneath the inspector.
+- **Tests:** Queue Playwright coverage asserts ordering, bounded width, composer separation, no horizontal overflow, and ellipsis-safe rows. Native Codex stream coverage asserts inference rail/panel containment, inset spacing, composer/rail separation, and no overflow. Bombadil layout invariants cover the same panel geometry; inference component tests remain green. Typecheck, frontend build, full 76-test Playwright suite, and packaged install verification pass.
+- **Installed CUA:** Rebuilt, signed, installed, and restarted `/Applications/Synth Desktop.app`. Confirmed the real ready-state inspector is inset, contained, visually balanced, and clear of the composer; live metrics render without clipping or fabricated values.
+- **Flagged:** A real generating-state CUA pass remains useful for tuning live-rate density; component and browser fixtures cover the generating state without inventing values.
+- **Refs:** `components/Composer.tsx`, `components/InferencePanel.tsx`, `styles/app.css`, `tests/playwright/poolside-polish.spec.ts`, `tests/playwright/runtime-regressions.spec.ts`, `tests/bombadil/layout.spec.ts`.
+
+### 2026-08-09 — CUA fuzz: layered composer and dense-history recovery
+
+- **CUA findings:** A long user brief could visually dominate the transcript and leave the newest live state underneath the composer. The model picker/terminal stack had no explicit visibility or hit-test contract. A large automatically titled history made the sidebar feel like an unbounded log. Local telemetry also surfaced a clearly impossible nine-digit decode rate.
+- **Shipped:** Long user prompts now collapse to a compact, expandable surface; transcript bottom clearance follows the actual composer dock as the queue grows or terminal opens; model menus are bounded above the terminal; sidebar history starts compact while retaining pinned/active/working chats; implausible local decode samples are withheld; request counters have an explicit three-column row.
+- **Tests:** Added a 14-chat sidebar Playwright fixture; a long-prompt active-turn geometry test; model picker viewport/terminal/hit-test checks at four sizes; `composer-surfaces.spec.ts` Bombadil exploration; renderer and daemon throughput guards. Focused Playwright: 13 passed. Focused Bombadil: no property violation through its time-bounded exploration. Laguna telemetry unit suite: 28 passed.
+- **Record:** `CUA_FUZZ_INVARIANTS.md` contains the observed failures, non-vacuous invariant table, commands, and next CUA lanes.
+
+### 2026-08-09 — CUA fuzz: dense search containment
+
+- **CUA finding:** With enough conversations, Search visibly clipped the final result at the dialog's rounded edge, making a dense history feel unfinished even though the list was technically scrollable.
+- **Shipped:** The search dialog is now a bounded flex column: its input retains a fixed row and its result list fills only the remaining height, scrolls internally, and never bleeds below the dialog.
+- **Tests:** A 24-session Playwright fixture scrolls the final result into view, checks its geometry against the results and dialog bounds, proves internal scrolling/no horizontal overflow, and opens the final result.
+- **Refs:** `components/ConversationSearch.tsx`, `styles/app.css`, `tests/playwright/sidebar-navigation.spec.ts`, `CUA_FUZZ_INVARIANTS.md`.
+
+### 2026-08-09 — Working composer composition
+
+- **CUA finding:** The active-turn composer treated its keyboard affordance as a separate full-width line and inherited a global orange textarea focus outline. The result looked like stacked, unrelated form controls rather than one message surface.
+- **Shipped:** The active mode is now a small, honest toolbar status (`Queue next` / `Steer current`) with the complete behavior in its accessible label and tooltip. The text field is height-bounded and the outer composer owns the sole subdued focus treatment.
+- **Tests:** The active-turn Playwright fixture focuses the actual input and asserts the compact composer/input geometry, toolbar-contained status, absent textarea outline, absent internal runtime jargon, and no horizontal overflow.
+- **Refs:** `components/Composer.tsx`, `styles/app.css`, `tests/playwright/poolside-polish.spec.ts`, `CUA_FUZZ_INVARIANTS.md`.
+
+### 2026-08-09 — Capability-driven reasoning disclosures
+
+- **Shipped:** Local Laguna reasoning now appears as a restrained, collapsed `Thought` disclosure rather than generic tool activity. The owned MLX Responses bridge emits this stream separately from the answer, so it can be opened without contaminating assistant text.
+- **Safety:** Remote and closed-model targets—including GPT 5.6 Luna—are classified as `summary` only. When their provider returns a reasoning payload, Workshop labels it `Reasoning summary · Provider summary`; it never presents it as full local thought. A target that supplies no displayable reasoning renders no empty disclosure.
+- **Architecture:** `runtime/modelCapabilities.ts` now owns the display policy alongside each model's request knobs; `sessionView` applies it per durable session rather than branching in the transcript UI. This keeps new models declarative and prevents transport wording from deciding privacy semantics.
+- **Tests:** Playwright covers collapsed/expandable local thought and summary-only remote Luna behavior. A responsive Bombadil specification keeps any rendered reasoning disclosure semantic, transcript-contained, composer-clear, and free of horizontal overflow across supported viewport fuzzing. Focused Playwright (2) and Bombadil passed.
+- **Refs:** `runtime/modelCapabilities.ts`, `runtime/sessionView.ts`, `components/ChatTranscript.tsx`, `tests/playwright/runtime-regressions.spec.ts`, `tests/bombadil/reasoning-disclosure.spec.ts`.
+
+### 2026-08-09 — Canonical OpenRouter credential discovery
+
+- **Finding:** The canonical desktop used a profile-specific private env file for Synth credentials while an existing nonempty OpenRouter key remained in the original canonical private env file. The app therefore incorrectly reported OpenRouter as unconfigured despite a valid local credential being present.
+- **Shipped:** Canonical installs now resolve `OPENROUTER_API_KEY` from the active private env file first, then the canonical legacy private env file only when needed. Named development instances (which set `SYNTH_DESKTOP_DATA_ROOT`) remain credential-isolated and never inherit another instance's key.
+- **Tests / installed proof:** Added a Rust precedence test for active-versus-legacy credentials, rebuilt and installed the complete signed bundle, and verified via CUA that the installed app reports `OpenRouter ready`. The credential itself was never displayed or copied.
+- **Refs:** `src-tauri/src/synth_config.rs`, `src-tauri/src/lib.rs`.
+
+### 2026-08-09 — Synth Cloud local bind-address normalization
+
+- **Finding:** A Synth Cloud Laguna S start could fail before any provider request with `baseUrl must be local HTTP or HTTPS` when a local backend advertised its bind address as `http://0.0.0.0:port`. `0.0.0.0` is valid for listening but is not a usable client address.
+- **Shipped:** Synth Cloud provider setup normalizes that exact local bind address to `http://127.0.0.1:port/api/v1` before the Codex provider configuration and validation run. No remote HTTP hosts are newly permitted.
+- **Tests:** Added a Rust regression test that applies the provider setup, validates the resulting start request, and asserts the exact loopback Responses endpoint.
+- **Refs:** `src-tauri/src/codex.rs`.
+
+### 2026-08-09 — Safe, actionable provider endpoint errors
+
+- **Finding:** A provider validation failure exposed the implementation name `baseUrl` and omitted both the selected provider and the corrective path, leaving a user unable to tell whether the local service, cloud target, or a saved setting was at fault.
+- **Shipped:** Endpoint validation now identifies the selected provider, shows a sanitized endpoint, explains the supported local/HTTPS forms, and directs the user to **Settings → Account → Backend API**. URL credentials and query/fragment values are redacted before the message is displayed.
+- **Tests:** Rust regression test asserts the provider label and corrective path are present and that URL user-info and query tokens never enter the error text.
+- **Refs:** `src-tauri/src/codex.rs`.
+
+### 2026-08-09 — Terminal failure truthfulness
+
+- **Finding:** A Responses-compatible provider can send a `turn/completed` envelope whose nested turn is actually failed. Workshop treated the envelope name as authoritative, displayed `Worked`, and left the transcript with no answer.
+- **Shipped:** The Rust bridge and restored-event projection now normalize that envelope to a failed turn. When any terminal turn contains no assistant answer, the transcript renders a concise, retry-oriented explanation instead of a blank successful-looking result.
+- **Tests:** Playwright regression covers the exact contradictory envelope and asserts the provider error is visible while `Worked` is absent. The focused test passes. The accompanying Rust unit is blocked only by unrelated, concurrent `sft_recipes.rs` type errors in the shared worktree.
+- **Refs:** `src-tauri/src/codex.rs`, `src/renderer/src/runtime/nativeCodex.ts`, `src/renderer/src/runtime/sessionView.ts`, `tests/playwright/session-lifecycle.spec.ts`.
+
+### 2026-08-09 — Approval policy truthfulness
+
+- **Finding:** The composer could show `Allow all` while the in-flight app-server had already attached with Ask, allowing a later provider approval card to contradict the visible policy. Separately, a provider that asked despite `approvalPolicy: never` was rejected rather than automatically accepted.
+- **Shipped:** An in-flight policy change now remains visibly attached to the current turn and is saved for the following turn. The Rust bridge auto-accepts an unexpected request under explicit `Allow all`, preferring session approval and falling back to one permitted action; it emits no modal. Restored sessions that retain only the human approval-mode field now derive their required wire policy instead of silently reverting to Ask.
+- **Tests:** Focused Playwright approval-mode and terminal-lifecycle regressions pass. Rust auto-approval unit coverage is present but the workspace-wide Rust compile remains blocked by unrelated concurrent `sft_recipes.rs` type errors.
+- **Refs:** `src-tauri/src/codex.rs`, `src/renderer/src/App.tsx`, `tests/playwright/runtime-regressions.spec.ts`.

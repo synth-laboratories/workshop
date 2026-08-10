@@ -43,6 +43,10 @@ pub struct CodexSessionStartRequest {
     pub sandbox: Option<String>,
     pub thread_id: Option<String>,
     pub multi_agent_version: Option<MultiAgentVersion>,
+    /// Rust-populated exact roots for this conversation. Renderer input is
+    /// discarded by `prepare_codex_start` before launch.
+    #[serde(default)]
+    pub writable_roots: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -62,6 +66,12 @@ pub struct CodexTurnSendRequest {
     pub start: CodexSessionStartRequest,
     pub prompt: String,
     pub effort: Option<String>,
+    /// When the destination model differs from the live attachment, compact the
+    /// thread on the *source* model before rebind. Renderer sets this from the
+    /// send-time state machine (`modelSwitchPlan`): true only when the thread
+    /// has history; empty threads skip compact.
+    #[serde(default)]
+    pub compact_before_model_switch: bool,
 }
 
 /// Typed failure so the renderer can react to a lost app-server without
@@ -133,6 +143,13 @@ pub struct CodexApprovalDecisionRequest {
     pub decision: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSteerRequest {
+    pub session_id: String,
+    pub text: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionInfo {
@@ -171,6 +188,8 @@ struct CodexEvent {
 }
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
+/// Waiters for `thread/compacted`, keyed by Desktop session id.
+type CompactWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>;
 
 #[derive(Clone, Debug)]
 struct PendingApproval {
@@ -286,6 +305,8 @@ struct Session {
     turn_id: RwLock<Option<String>>,
     model: String,
     approval_policy: String,
+    sandbox: String,
+    workspace: String,
 }
 
 pub struct CodexManager {
@@ -294,6 +315,7 @@ pub struct CodexManager {
     /// Serializes attach + turn/start per session so no caller can observe the
     /// window between "the attachment exists" and "the turn is running".
     turn_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    compact_waiters: CompactWaiters,
     root: PathBuf,
     state_path: PathBuf,
     binary: PathBuf,
@@ -317,6 +339,7 @@ impl CodexManager {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::new(RwLock::new(records)),
             turn_locks: Mutex::new(HashMap::new()),
+            compact_waiters: Arc::new(Mutex::new(HashMap::new())),
             root,
             state_path,
             binary,
@@ -330,8 +353,25 @@ impl CodexManager {
         request: CodexSessionStartRequest,
     ) -> Result<CodexSessionInfo> {
         validate_start(&request)?;
-        if let Some(existing) = self.sessions.read().await.get(&request.session_id) {
-            return Ok(session_info(&request.session_id, existing).await);
+        let requested_approval = request
+            .approval_policy
+            .clone()
+            .unwrap_or_else(default_approval_policy);
+        let requested_sandbox = request.sandbox.clone().unwrap_or_else(default_sandbox);
+        let existing = self.sessions.read().await.get(&request.session_id).cloned();
+        if let Some(existing) = existing {
+            if existing.model == request.model
+                && existing.approval_policy == requested_approval
+                && existing.sandbox == requested_sandbox
+                && existing.workspace == request.workspace
+            {
+                return Ok(session_info(&request.session_id, &existing).await);
+            }
+            // Approval, sandbox and workspace are attachment-time properties in
+            // Codex app-server. Reusing an attachment after the composer mode
+            // changes would make the UI lie (for example, showing Allow all
+            // while the live process still asks for shell approval).
+            self.close(&request.session_id).await?;
         }
         let home = self
             .root
@@ -349,6 +389,7 @@ impl CodexManager {
             self.state_path.clone(),
             self.core.clone(),
             self.sessions.clone(),
+            self.compact_waiters.clone(),
             attachment_id,
         )
         .await?;
@@ -414,6 +455,8 @@ impl CodexManager {
                 .approval_policy
                 .clone()
                 .unwrap_or_else(default_approval_policy),
+            sandbox: request.sandbox.clone().unwrap_or_else(default_sandbox),
+            workspace: request.workspace.clone(),
         });
         self.sessions
             .write()
@@ -487,6 +530,19 @@ impl CodexManager {
                     let _ = core.publish_event(&app, event).await;
                 }
             }
+            if crate::workspace_scope::get(core.storage().database(), &request.session_id)
+                .await?
+                .is_none()
+            {
+                crate::workspace_scope::provision(
+                    core.storage().database(),
+                    &request.session_id,
+                    &request.workspace,
+                )
+                .await?;
+            }
+            crate::workspace_scope::mark_bound(core.storage().database(), &request.session_id)
+                .await?;
         }
         Ok(session_info(&request.session_id, &session).await)
     }
@@ -531,6 +587,15 @@ impl CodexManager {
         // still preserves the text the operator typed.
         self.record_user_prompt(&app, &session_id, &request.prompt)
             .await;
+
+        // Compact-on-send model switch: while the live attachment is still the
+        // source model, summarize before start() closes it and resumes as B.
+        if let Err(error) = self.maybe_compact_before_model_switch(&request).await {
+            let _ = self
+                .reconcile_failed_turn_start(&session_id, "model_switch_compact_failed")
+                .await;
+            return Err(CodexTurnFailure::rejected(&session_id, &error));
+        }
 
         let mut failure: Option<anyhow::Error> = None;
         for attempt in 0..2u8 {
@@ -665,6 +730,62 @@ impl CodexManager {
         Ok(session_info(&request.session_id, &session).await)
     }
 
+    /// Send-time compact before a model rebind.
+    ///
+    /// Only runs when the renderer asked for compact *and* a live attachment
+    /// is still bound to a different model than `request.start`. Chip fiddling
+    /// never reaches here; empty threads pass `compact_before_model_switch=false`.
+    async fn maybe_compact_before_model_switch(
+        &self,
+        request: &CodexTurnSendRequest,
+    ) -> Result<()> {
+        if !request.compact_before_model_switch {
+            return Ok(());
+        }
+        let session_id = &request.start.session_id;
+        let Some(session) = self.sessions.read().await.get(session_id).cloned() else {
+            // No live source attachment (cold resume). Rebind without compact
+            // rather than inventing a source provider/home from the destination
+            // request — that would be dishonest about which model summarized.
+            return Ok(());
+        };
+        if session.model == request.start.model {
+            return Ok(());
+        }
+        self.compact_thread(session_id, &session).await
+    }
+
+    async fn compact_thread(&self, session_id: &str, session: &Session) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut waiters = self.compact_waiters.lock().await;
+            if let Some(previous) = waiters.insert(session_id.to_owned(), tx) {
+                let _ = previous.send(());
+            }
+        }
+        let params = json!({ "threadId": session.thread_id });
+        if let Err(error) = session
+            .server
+            .request("thread/compact/start", params)
+            .await
+        {
+            self.compact_waiters.lock().await.remove(session_id);
+            return Err(error.context("thread/compact/start failed; staying on the current model"));
+        }
+        match tokio::time::timeout(Duration::from_secs(120), rx).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(anyhow!(
+                "compaction waiter dropped before thread/compacted; staying on the current model"
+            )),
+            Err(_) => {
+                self.compact_waiters.lock().await.remove(session_id);
+                Err(anyhow!(
+                    "timed out waiting for thread/compacted; staying on the current model"
+                ))
+            }
+        }
+    }
+
     pub async fn interrupt(&self, session_id: &str) -> Result<()> {
         let Some(session) = self.sessions.read().await.get(session_id).cloned() else {
             // Stop is idempotent. A persisted running record can outlive its
@@ -681,6 +802,39 @@ impl CodexManager {
             .request(
                 "turn/interrupt",
                 json!({"threadId":session.thread_id,"turnId":turn_id}),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Steers an in-flight turn with additional user input. Unlike `interrupt`,
+    /// this requires an attached session with an active turn: there is
+    /// nothing sensible to steer once the app-server has detached or the turn
+    /// has already finished, so both cases are surfaced as errors instead of
+    /// treated as idempotent no-ops.
+    pub async fn steer_turn<R: tauri::Runtime>(
+        &self,
+        app: AppHandle<R>,
+        request: CodexSteerRequest,
+    ) -> Result<()> {
+        if request.text.trim().is_empty() {
+            return Err(anyhow!("steer text must not be empty"));
+        }
+        let session = self.session(&request.session_id).await?;
+        let Some(turn_id) = session.turn_id.read().await.clone() else {
+            return Err(anyhow!("session {} has no active turn to steer", request.session_id));
+        };
+        self.record_user_prompt(&app, &request.session_id, &request.text)
+            .await;
+        session
+            .server
+            .request(
+                "turn/steer",
+                json!({
+                    "threadId": session.thread_id,
+                    "expectedTurnId": turn_id,
+                    "input": [{"type":"text","text": request.text, "textElements": []}],
+                }),
             )
             .await?;
         Ok(())
@@ -971,6 +1125,7 @@ async fn spawn_server<R: tauri::Runtime>(
     state_path: PathBuf,
     core: Option<Arc<CoreRuntime>>,
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
+    compact_waiters: CompactWaiters,
     attachment_id: uuid::Uuid,
 ) -> Result<Arc<AppServer>> {
     let env_key = request
@@ -1021,6 +1176,7 @@ async fn spawn_server<R: tauri::Runtime>(
             state_path,
             core,
             sessions,
+            compact_waiters,
             attachment_id,
         },
     ));
@@ -1045,6 +1201,7 @@ struct PersistenceContext {
     state_path: PathBuf,
     core: Option<Arc<CoreRuntime>>,
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
+    compact_waiters: CompactWaiters,
     attachment_id: uuid::Uuid,
 }
 
@@ -1075,8 +1232,13 @@ async fn read_stdout<R: tauri::Runtime>(
             }
             continue;
         }
-        let method = message["method"].as_str().unwrap_or_default().to_owned();
+        let raw_method = message["method"].as_str().unwrap_or_default();
         let params = message.get("params").cloned().unwrap_or(Value::Null);
+        // Some Responses-compatible servers report a terminal envelope as
+        // `turn/completed` even when the enclosed turn has failed. Preserve
+        // the actual outcome: otherwise the transcript says “Worked” while
+        // there is no answer to show.
+        let method = normalized_turn_method(raw_method, &params).to_owned();
         if let Some(rpc_id) = message.get("id").cloned() {
             if is_approval_method(&method) {
                 let available_decisions = params
@@ -1088,10 +1250,13 @@ async fn read_stdout<R: tauri::Runtime>(
                             .filter_map(Value::as_str)
                             .map(str::to_owned)
                             .collect::<Vec<_>>()
-                    })
+                })
                     .unwrap_or_default();
                 if approval_policy == "never" {
-                    let response = rejection_response(&available_decisions, rpc_id);
+                    // “Allow all” is an explicit session policy. A provider
+                    // may still ask despite it, so resolve the request rather
+                    // than surfacing a contradictory approval card.
+                    let response = automatic_approval_response(&available_decisions, rpc_id);
                     let _ = write_message(&stdin, &response).await;
                     continue;
                 }
@@ -1138,6 +1303,11 @@ async fn read_stdout<R: tauri::Runtime>(
                 params: params.clone(),
             },
         );
+        if method == "thread/compacted" || method == "thread/compact/completed" {
+            if let Some(waiter) = persistence.compact_waiters.lock().await.remove(&session_id) {
+                let _ = waiter.send(());
+            }
+        }
         if let Some(core) = &persistence.core {
             let _ = core
                 .append_and_emit(
@@ -1280,6 +1450,23 @@ async fn read_stdout<R: tauri::Runtime>(
     }
 }
 
+fn normalized_turn_method<'a>(method: &'a str, params: &Value) -> &'a str {
+    if method != "turn/completed" {
+        return method;
+    }
+    let turn = params.get("turn").unwrap_or(params);
+    let status_is_failure = turn
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| matches!(status.to_ascii_lowercase().as_str(), "failed" | "error"));
+    let has_error = turn.get("error").is_some_and(|error| !error.is_null());
+    if status_is_failure || has_error {
+        "turn/failed"
+    } else {
+        method
+    }
+}
+
 fn rejection_response(available: &[String], id: Value) -> Value {
     let decision = ["decline", "reject", "deny", "cancel", "no"]
         .iter()
@@ -1289,6 +1476,17 @@ fn rejection_response(available: &[String], id: Value) -> Value {
         None => {
             json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":"No supported rejection decision"}})
         }
+    }
+}
+
+fn automatic_approval_response(available: &[String], id: Value) -> Value {
+    // Prefer the durable session decision, then fall back to one permitted
+    // action for providers that do not expose a session-scoped variant.
+    match select_approval_decision(available, "always")
+        .or_else(|_| select_approval_decision(available, "once"))
+    {
+        Ok(decision) => json!({"jsonrpc":"2.0","id":id,"result":{"decision":decision}}),
+        Err(error) => json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":format!("Cannot automatically approve this request: {error}")}}),
     }
 }
 
@@ -1377,11 +1575,21 @@ pub fn apply_synth_cloud_provider(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Synth API key not configured — Settings → Account".to_string())?;
     request.api_key = key.to_owned();
-    request.base_url = format!("{}/api/v1", backend_url.trim_end_matches('/'));
+    request.base_url = format!("{}/api/v1", client_base_url(backend_url));
     request.provider_name = Some("synth-cloud".into());
     request.provider_title = Some("Synth Cloud Responses".into());
     request.provider_env_key = Some("SYNTH_API_KEY".into());
     Ok(())
+}
+
+/// Local services often advertise `0.0.0.0` as their bind address. That is
+/// not a usable client destination, so turn it into loopback before Codex
+/// validates or connects to the Synth Cloud Responses provider.
+fn client_base_url(backend_url: &str) -> String {
+    backend_url
+        .trim()
+        .trim_end_matches('/')
+        .replacen("http://0.0.0.0:", "http://127.0.0.1:", 1)
 }
 
 fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Result<()> {
@@ -1402,6 +1610,12 @@ fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Result<()> {
         visuals_skill.join("references/visual-recipes.md"),
         include_str!("../../skills/use-synth-visuals/references/visual-recipes.md"),
     )?;
+    let optimizers_skill = home.join("skills/use-synth-optimizers");
+    fs::create_dir_all(&optimizers_skill)?;
+    fs::write(
+        optimizers_skill.join("SKILL.md"),
+        include_str!("../../skills/use-synth-optimizers/SKILL.md"),
+    )?;
     let provider = request.provider_name.as_deref().unwrap_or("custom");
     let title = request
         .provider_title
@@ -1415,8 +1629,11 @@ fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Result<()> {
         .multi_agent_version
         .unwrap_or(MultiAgentVersion::None);
     let (agents_enabled, multi_agent_v1, multi_agent_v2) = multi_agent_flags(multi_agent_version);
-    let allowed_workspace_roots = crate::synth_config::allowed_workspace_roots()?;
-    let workspace_write_config = workspace_write_config(&allowed_workspace_roots);
+    let mut writable_roots = vec![request.workspace.clone()];
+    writable_roots.extend(request.writable_roots.clone());
+    writable_roots.sort();
+    writable_roots.dedup();
+    let workspace_write_config = workspace_write_config(&writable_roots);
     let config = format!(
         "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"default\"\n\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\nenv_key = \"{}\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
         toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), workspace_write_config, toml_key(provider), toml_string(title), toml_string(&responses_base_url(&request.base_url)), toml_string(env_key), agents_enabled, multi_agent_v1, multi_agent_v2
@@ -1429,13 +1646,14 @@ fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Result<()> {
             "{\n  \"OPENAI_API_KEY\": \"synth-desktop-provider\"\n}\n",
         )?;
     }
-    // Point Codex at the Rust container and visuals MCP adapters (both forward to CoreRuntime IPC).
+    // Point Codex at the Rust noun adapters (all forward to CoreRuntime IPC).
     if let Ok(exe) = env::current_exe() {
         let ipc = crate::storage::app_data_root().join("visuals-ipc.json");
         let mut existing = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
         for (server, binary) in [
             ("synth_containers", "synth-containers-mcp"),
             ("synth_visuals", "synth-visuals-mcp"),
+            ("synth_optimizers", "synth-optimizers-mcp"),
         ] {
             let bin = exe
                 .parent()
@@ -1480,9 +1698,43 @@ fn validate_start(request: &CodexSessionStartRequest) -> Result<()> {
         || request.base_url.starts_with("http://localhost:")
         || request.base_url.starts_with("https://"))
     {
-        return Err(anyhow!("baseUrl must be local HTTP or HTTPS"));
+        let provider = request
+            .provider_title
+            .as_deref()
+            .or(request.provider_name.as_deref())
+            .unwrap_or("Selected provider");
+        return Err(anyhow!(
+            "{provider} could not start because its endpoint is invalid: {}. Use an HTTPS endpoint, or a local endpoint such as http://127.0.0.1:<port>. Update it in Settings → Account → Backend API.",
+            safe_endpoint_label(&request.base_url),
+        ));
     }
     Ok(())
+}
+
+/// Produces an endpoint label that is useful in UI errors without exposing a
+/// query-string token or credentials embedded in the URL authority.
+fn safe_endpoint_label(endpoint: &str) -> String {
+    let without_query = endpoint
+        .trim()
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default();
+    let redacted = match without_query.split_once("://") {
+        Some((scheme, remainder)) => match remainder.split_once('@') {
+            Some((_, host_and_path)) => format!("{scheme}://[credentials]@{host_and_path}"),
+            None => without_query.to_owned(),
+        },
+        None => without_query.to_owned(),
+    };
+    const MAX_CHARS: usize = 160;
+    if redacted.chars().count() <= MAX_CHARS {
+        redacted
+    } else {
+        format!(
+            "{}…",
+            redacted.chars().take(MAX_CHARS.saturating_sub(1)).collect::<String>()
+        )
+    }
 }
 
 fn validate_reasoning_effort(value: &str) -> Result<&str> {
@@ -1573,6 +1825,7 @@ fn mcp_enabled_tools(server: &str) -> &'static str {
         // tools callable for other MCP clients, while visual_manage routes the
         // same operations after the visual skill is loaded.
         "synth_visuals" => "enabled_tools = [\"visual_manage\"]\n",
+        "synth_optimizers" => "enabled_tools = [\"optimizer_manage\"]\n",
         _ => "",
     }
 }
@@ -1680,6 +1933,7 @@ mod tests {
             sandbox: Some("workspace-write".into()),
             thread_id: None,
             multi_agent_version: Some(MultiAgentVersion::None),
+            writable_roots: Vec::new(),
         }
     }
 
@@ -1816,6 +2070,109 @@ mod tests {
             message["method"] == "thread/resume"
                 && message["params"]["threadId"] == "thread-fixture"
         }));
+        manager.close(&request.session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn steer_turn_sends_turn_steer_with_the_active_turn_id() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let manager =
+            CodexManager::with_paths(Some(core.clone()), codex_root.clone(), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let request = test_request(temp.path(), "steer-me");
+
+        manager
+            .start(app_handle.clone(), request.clone())
+            .await
+            .unwrap();
+        let turn_id = manager
+            .start_turn(
+                app_handle.clone(),
+                CodexTurnStartRequest {
+                    session_id: request.session_id.clone(),
+                    prompt: "keep working on the task".into(),
+                    effort: Some("none".into()),
+                },
+            )
+            .await
+            .unwrap()
+            .turn_id
+            .unwrap();
+
+        manager
+            .steer_turn(
+                app_handle.clone(),
+                CodexSteerRequest {
+                    session_id: request.session_id.clone(),
+                    text: "actually, focus on the tests first".into(),
+                },
+            )
+            .await
+            .unwrap();
+
+        // The turn id is unchanged: steering augments the in-flight turn
+        // rather than starting a new one.
+        assert_eq!(
+            manager
+                .sessions
+                .read()
+                .await
+                .get(&request.session_id)
+                .unwrap()
+                .turn_id
+                .read()
+                .await
+                .clone(),
+            Some(turn_id.clone())
+        );
+
+        let requests = fixture_requests(&codex_root, &request.session_id);
+        let steer = requests
+            .iter()
+            .find(|message| message["method"] == "turn/steer")
+            .expect("fixture did not see turn/steer");
+        assert_eq!(steer["params"]["threadId"], "thread-fixture");
+        assert_eq!(steer["params"]["expectedTurnId"], turn_id);
+        assert_eq!(
+            steer["params"]["input"][0]["text"],
+            "actually, focus on the tests first"
+        );
+        assert_eq!(steer["params"]["input"][0]["type"], "text");
+
+        manager.close(&request.session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn steer_turn_fails_when_there_is_no_active_turn() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let manager =
+            CodexManager::with_paths(Some(core.clone()), codex_root.clone(), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let request = test_request(temp.path(), "steer-without-turn");
+
+        manager
+            .start(app_handle.clone(), request.clone())
+            .await
+            .unwrap();
+
+        let error = manager
+            .steer_turn(
+                app_handle.clone(),
+                CodexSteerRequest {
+                    session_id: request.session_id.clone(),
+                    text: "hello".into(),
+                },
+            )
+            .await
+            .expect_err("steering without an active turn must fail");
+        assert!(error.to_string().contains("no active turn"));
+
         manager.close(&request.session_id).await.unwrap();
     }
 
@@ -1990,6 +2347,7 @@ mod tests {
             start,
             prompt: prompt.into(),
             effort: Some("none".into()),
+            compact_before_model_switch: false,
         }
     }
 
@@ -2291,6 +2649,7 @@ mod tests {
                     start: request.clone(),
                     prompt: "hello".into(),
                     effort: Some("ultra".into()),
+                    compact_before_model_switch: false,
                 },
             )
             .await
@@ -2304,6 +2663,75 @@ mod tests {
             .await
             .get(&request.session_id)
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn turn_send_compacts_on_source_model_before_rebind() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let manager =
+            CodexManager::with_paths(Some(core.clone()), codex_root.clone(), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut request = test_request(temp.path(), "compact-before-switch");
+
+        let first = manager
+            .send_turn(
+                app_handle.clone(),
+                send_request(request.clone(), "establish history on source model"),
+            )
+            .await
+            .expect("first turn starts");
+        assert!(first.turn_id.is_some());
+
+        request.model = "openai/gpt-5.6-luna".into();
+        request.provider_name = Some("openrouter".into());
+        let switched = manager
+            .send_turn(
+                app_handle.clone(),
+                CodexTurnSendRequest {
+                    start: request.clone(),
+                    prompt: "continue on destination".into(),
+                    effort: Some("medium".into()),
+                    compact_before_model_switch: true,
+                },
+            )
+            .await
+            .expect("switch turn starts after compact");
+        assert_eq!(switched.thread_id, first.thread_id);
+        assert!(switched.turn_id.is_some());
+
+        let messages = fixture_requests(&codex_root, &request.session_id);
+        let methods: Vec<&str> = messages
+            .iter()
+            .filter_map(|message| message.get("method").and_then(Value::as_str))
+            .collect();
+        assert!(
+            methods.iter().any(|method| *method == "thread/compact/start"),
+            "expected compact before rebind, got {methods:?}"
+        );
+        let compact_idx = methods
+            .iter()
+            .position(|method| *method == "thread/compact/start")
+            .unwrap();
+        let turn_after_compact = methods
+            .iter()
+            .enumerate()
+            .filter(|(_, method)| **method == "turn/start")
+            .map(|(idx, _)| idx)
+            .max()
+            .unwrap();
+        assert!(turn_after_compact > compact_idx);
+        assert_eq!(
+            manager
+                .records
+                .read()
+                .await
+                .get(&request.session_id)
+                .map(|record| record.model.as_str()),
+            Some("openai/gpt-5.6-luna")
+        );
     }
 
     #[test]
@@ -2386,6 +2814,22 @@ mod tests {
         );
     }
     #[test]
+    fn allow_all_auto_approves_without_emitting_a_modal() {
+        let session = automatic_approval_response(
+            &["decline".into(), "accept".into(), "acceptForSession".into()],
+            json!(9),
+        );
+        assert_eq!(
+            session.pointer("/result/decision").and_then(Value::as_str),
+            Some("acceptForSession")
+        );
+        let once = automatic_approval_response(&["accept".into()], json!(10));
+        assert_eq!(
+            once.pointer("/result/decision").and_then(Value::as_str),
+            Some("accept")
+        );
+    }
+    #[test]
     fn approval_decisions_only_use_server_supported_values() {
         let available = vec!["decline".into(), "accept".into(), "acceptForSession".into()];
         assert_eq!(
@@ -2445,6 +2889,10 @@ mod tests {
             "enabled_tools = [\"visual_manage\"]\n"
         );
         assert_eq!(mcp_enabled_tools("synth_containers"), "");
+        assert_eq!(
+            mcp_enabled_tools("synth_optimizers"),
+            "enabled_tools = [\"optimizer_manage\"]\n"
+        );
     }
     #[test]
     fn normalizes_responses_provider_base_url() {
@@ -2484,6 +2932,9 @@ mod tests {
         assert!(config.contains("base_url = \"http://127.0.0.1:41209/api/v1\""));
         assert!(config.contains("wire_api = \"responses\""));
         assert!(config.contains("env_key = \"SYNTH_API_KEY\""));
+        let optimizer_skill =
+            fs::read_to_string(home.join("skills/use-synth-optimizers/SKILL.md")).unwrap();
+        assert!(optimizer_skill.contains("gepa.banking77.smoke.v1"));
     }
 
     #[test]
@@ -2515,6 +2966,51 @@ mod tests {
         assert_eq!(request.base_url, "http://127.0.0.1:41209/api/v1");
         assert_eq!(request.provider_name.as_deref(), Some("synth-cloud"));
         assert_eq!(request.provider_env_key.as_deref(), Some("SYNTH_API_KEY"));
+    }
+
+    #[test]
+    fn synth_cloud_normalizes_a_local_bind_address_for_the_client() {
+        let temp = tempdir().unwrap();
+        let mut request = test_request(temp.path(), "synth-cloud-loopback");
+        apply_synth_cloud_provider(
+            &mut request,
+            "http://0.0.0.0:41209/",
+            Some("sk_dev_00000000000000000000000000000001"),
+        )
+        .unwrap();
+        validate_start(&request).unwrap();
+        assert_eq!(request.base_url, "http://127.0.0.1:41209/api/v1");
+    }
+
+    #[test]
+    fn completed_envelope_with_a_failed_turn_is_normalized_to_failed() {
+        let failed = json!({
+            "turn": {
+                "status": "failed",
+                "error": {"message": "provider disconnected"}
+            }
+        });
+        assert_eq!(normalized_turn_method("turn/completed", &failed), "turn/failed");
+        assert_eq!(
+            normalized_turn_method("turn/completed", &json!({"turn": {"status": "completed"}})),
+            "turn/completed"
+        );
+    }
+
+    #[test]
+    fn invalid_provider_endpoint_explains_the_fix_without_leaking_credentials() {
+        let temp = tempdir().unwrap();
+        let mut request = test_request(temp.path(), "invalid-provider-endpoint");
+        request.provider_title = Some("Synth Cloud Responses".into());
+        request.base_url =
+            "http://user:secret-token@0.0.0.0:41209/api/v1?api_key=secret-token".into();
+
+        let error = validate_start(&request).unwrap_err().to_string();
+
+        assert!(error.contains("Synth Cloud Responses could not start"));
+        assert!(error.contains("http://[credentials]@0.0.0.0:41209/api/v1"));
+        assert!(error.contains("Settings → Account → Backend API"));
+        assert!(!error.contains("secret-token"));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { InferencePanel } from "./InferencePanel";
 import type {
 	ContainerDeployment,
 	TraceV5Record,
@@ -6,7 +7,7 @@ import type {
 	VisualRecord
 } from "@synth/runtime-protocol";
 
-export type InventoryTab = "containers" | "traces" | "visuals" | "usage";
+export type InventoryTab = "containers" | "traces" | "visuals" | "usage" | "inference";
 
 const CONTAINER_POLL_MS = 15_000;
 const CONTAINER_GONE_GRACE_MS = 30_000;
@@ -198,6 +199,8 @@ export function InventoryPage({
 						if (now - since >= CONTAINER_GONE_GRACE_MS) next.add(container.id);
 					}
 				}
+				const changed = next.size !== current.size || [...next].some((id) => !current.has(id));
+				if (!changed) return current;
 				window.localStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next]));
 				return next;
 			});
@@ -372,6 +375,7 @@ export function InventoryPage({
 						["traces", "Traces", traces.length],
 						["visuals", "Visuals", visuals.length]
 						,["usage", "Usage", usage.length]
+						,["inference", "Inference", null]
 					] as const
 				).map(([id, label, count]) => (
 					<button
@@ -384,10 +388,18 @@ export function InventoryPage({
 						data-testid={`inventory-tab-${id}`}
 					>
 						{label}
-						<span className="inventory-tab-count">{count}</span>
+						{count == null ? null : <span className="inventory-tab-count">{count}</span>}
 					</button>
 				))}
 			</div>
+
+			{tab === "inference" ? (
+				<div className="inventory-panel" data-testid="inventory-inference">
+					{/* The panel owns its own subscription and only runs while it
+					    is the selected tab. */}
+					<InferencePanel visible />
+				</div>
+			) : null}
 
 			{tab === "containers" ? (
 				<div className="inventory-panel" data-testid="inventory-containers">

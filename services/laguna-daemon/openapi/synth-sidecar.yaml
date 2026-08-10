@@ -1,0 +1,743 @@
+# Hand-maintained OpenAPI document for the /v1/synth control surface.
+# Served verbatim (parsed to JSON) at GET /v1/synth/openapi.json.
+# The generation surface (/v1/responses, /v1/chat/completions, /v1/models)
+# is governed by the pinned OpenResponses schemas under schemas/, not here.
+openapi: 3.1.0
+info:
+  title: Synth Laguna Sidecar Control API
+  version: "1.0"
+  description: >
+    Typed control plane for the Synth Laguna daemon: canonical runtime state,
+    model lifecycle (download / load / unload), a JSON mirror of the rolling
+    inference telemetry, and an SSE feed of state transitions. Every metric is
+    measured or null — a null is never rendered as 0 and never interpolated.
+    The legacy endpoints /v1/synth/inference, /v1/synth/inference/stream,
+    /v1/synth/model/unload, and /metrics remain available unchanged as
+    compatibility aliases.
+servers:
+  - url: http://127.0.0.1:7333
+security:
+  - bearerAuth: []
+paths:
+  /v1/synth/status:
+    get:
+      operationId: getStatus
+      summary: Canonical sidecar status
+      responses:
+        "200":
+          description: Current status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/synth/capabilities:
+    get:
+      operationId: getCapabilities
+      summary: Model and control-API capabilities
+      responses:
+        "200":
+          description: Capability matrix.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Capabilities"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/synth/models:
+    get:
+      operationId: listControlModels
+      summary: Control-plane model inventory
+      description: >
+        Which models are on disk and which are resident. This is not the
+        OpenAI /v1/models serving catalog.
+      responses:
+        "200":
+          description: Inventory list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/synth/models/{model}/download:
+    post:
+      operationId: startDownload
+      summary: Start a background weights download
+      description: >
+        Downloads the configured model's weights from the Hugging Face hub in
+        a background thread after a 24 GiB free-disk preflight. Progress bytes
+        are best-effort; when the hub does not expose them they stay null.
+      parameters:
+        - $ref: "#/components/parameters/Model"
+      responses:
+        "202":
+          description: Download accepted; poll the job or watch /v1/synth/events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DownloadJob"
+        "400":
+          $ref: "#/components/responses/ControlError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: >
+            download_in_progress (a job for this model is already running) or
+            invalid_state_transition (weights already on disk).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "507":
+          description: download_failed with details.reason insufficient_disk.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/synth/downloads/{job_id}:
+    get:
+      operationId: getDownload
+      summary: Download job status
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^op_[0-9a-f]+$"
+      responses:
+        "200":
+          description: Job record.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DownloadJob"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: >
+            Unknown job id. Reported under code model_not_found — the error
+            vocabulary is fixed and operation handles share it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/synth/models/{model}/load:
+    post:
+      operationId: loadModel
+      summary: Load weights into memory
+      description: >
+        Idempotent — loading a resident model is a no-op that still returns an
+        operation_id. Runs a memory admission preflight; a blocked admission
+        returns insufficient_memory with required/available bytes in details.
+      parameters:
+        - $ref: "#/components/parameters/Model"
+      responses:
+        "200":
+          description: Weights resident.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LifecycleResult"
+        "400":
+          $ref: "#/components/responses/ControlError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: model_not_found — no weights on disk.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: download_in_progress or invalid_state_transition.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          description: load_failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "503":
+          description: insufficient_memory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/synth/models/{model}/unload:
+    post:
+      operationId: unloadModel
+      summary: Release weights
+      description: >
+        Idempotent — unloading an unloaded model is a no-op. Honors the same
+        eviction guard as the legacy /v1/synth/model/unload route: a
+        generation in flight returns 409 generation_busy.
+      parameters:
+        - $ref: "#/components/parameters/Model"
+      responses:
+        "200":
+          description: Weights released (or already released).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LifecycleResult"
+        "400":
+          $ref: "#/components/responses/ControlError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: generation_busy or unload_in_progress.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/synth/metrics:
+    get:
+      operationId: getMetrics
+      summary: JSON mirror of the rolling telemetry
+      description: >
+        The same rolling aggregates the Prometheus /metrics endpoint exposes,
+        as JSON. Unmeasured percentiles are null, never 0.
+      responses:
+        "200":
+          description: Metrics snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Metrics"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/synth/events:
+    get:
+      operationId: streamEvents
+      summary: SSE feed of state changes and lifecycle progress
+      description: >
+        Server-sent events. A bounded replay buffer of recent events is sent
+        on connect, then live events as they happen. Every event carries
+        operation_id (null when the transition was not caused by a control
+        operation), state, previous_state, and an ISO-8601 timestamp.
+      responses:
+        "200":
+          description: text/event-stream of ControlEvent payloads.
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/ControlEvent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/synth/settings:
+    get:
+      operationId: getSettings
+      summary: Effective runtime settings
+      description: >
+        The user-modifiable runtime settings (loaded from settings.toml beside
+        the daemon's key file), their source, and the read-only startup facts.
+      responses:
+        "200":
+          description: Settings envelope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettingsEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    put:
+      operationId: updateSettings
+      summary: Partially update runtime settings
+      description: >
+        Validates the whole batch first, then applies it atomically to the
+        running daemon and rewrites settings.toml (temp file + rename) so the
+        change survives restarts. Settings win over the legacy
+        SYNTH_LAGUNA_IDLE_UNLOAD_SECONDS environment variable, which remains
+        only as a fallback when the file does not set the key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Settings"
+      responses:
+        "200":
+          description: Full effective settings after the update.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettingsEnvelope"
+        "400":
+          description: invalid_setting naming the offending field and range.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          description: settings_write_failed — validated but not persisted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/synth/openapi.json:
+    get:
+      operationId: getOpenApi
+      summary: This document
+      description: Serves the checked-in openapi/synth-sidecar.yaml as JSON.
+      responses:
+        "200":
+          description: OpenAPI 3.1 document.
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Same bearer key as the generation surface.
+  parameters:
+    Model:
+      name: model
+      in: path
+      required: true
+      description: Model id, e.g. poolside/Laguna-XS-2.1-NVFP4-mlx.
+      schema:
+        type: string
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token.
+    ControlError:
+      description: Typed control error (invalid_model and friends).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    State:
+      type: string
+      description: Canonical runtime state machine — exactly one at a time.
+      enum:
+        - starting
+        - checking_memory
+        - downloading
+        - downloaded
+        - loading
+        - resident_idle
+        - queued
+        - prefill
+        - reasoning
+        - decoding
+        - unloading
+        - unloaded
+        - blocked_memory
+        - error
+    Status:
+      type: object
+      required:
+        - schema_version
+        - sidecar_version
+        - backend
+        - model
+        - state
+        - state_since
+        - memory
+        - generation
+        - reasoning
+        - idle_unload_after_seconds
+        - settings_schema_version
+      properties:
+        schema_version:
+          type: string
+          const: "1.0"
+        sidecar_version:
+          type: string
+        backend:
+          type: string
+          description: Configured backend (mock | mlx_lm | external).
+        model:
+          type: object
+          required: [id, revision, available, resident, resident_bytes]
+          properties:
+            id:
+              type: string
+            revision:
+              type: [string, "null"]
+            available:
+              type: boolean
+              description: Weights present on disk.
+            resident:
+              type: boolean
+            resident_bytes:
+              type: [integer, "null"]
+              description: Measured allocator bytes; null when unmeasurable.
+        state:
+          $ref: "#/components/schemas/State"
+        state_since:
+          type: string
+          format: date-time
+          description: Wall time of the last observed state transition.
+        memory:
+          type: object
+          required: [free_bytes, required_bytes, admission]
+          properties:
+            free_bytes:
+              type: [integer, "null"]
+              description: >
+                Unified-memory capacity minus the daemon's measured
+                allocation; null when either side is unmeasurable.
+            required_bytes:
+              type: integer
+            admission:
+              type: string
+              enum: [allowed, blocked]
+        generation:
+          type: object
+          required: [in_flight, queued, active_request_id]
+          properties:
+            in_flight:
+              type: integer
+            queued:
+              type: integer
+            active_request_id:
+              type: [string, "null"]
+              description: Truncated SHA-256 handle; never a raw id.
+        reasoning:
+          $ref: "#/components/schemas/ReasoningContract"
+        idle_unload_after_seconds:
+          type: integer
+        settings_schema_version:
+          type: string
+          const: "1.0"
+    ReasoningContract:
+      type: object
+      required: [supported, default, legacy_aliases]
+      properties:
+        supported:
+          type: array
+          items:
+            type: string
+        default:
+          type: string
+        legacy_aliases:
+          type: object
+          additionalProperties:
+            type: string
+    Capabilities:
+      type: object
+      required: [schema_version, sidecar_version, backend, model, reasoning, capabilities, control_api]
+      properties:
+        schema_version:
+          type: string
+          const: "1.0"
+        sidecar_version:
+          type: string
+        backend:
+          type: string
+        model:
+          type: string
+        reasoning:
+          $ref: "#/components/schemas/ReasoningContract"
+        capabilities:
+          type: object
+          description: The backend's model capability matrix.
+        control_api:
+          type: object
+          properties:
+            version:
+              type: string
+            openapi_url:
+              type: string
+            events_url:
+              type: string
+    ModelList:
+      type: object
+      required: [schema_version, object, data]
+      properties:
+        schema_version:
+          type: string
+          const: "1.0"
+        object:
+          type: string
+          const: list
+        data:
+          type: array
+          items:
+            type: object
+            required: [id, available, resident, resident_bytes, default, path]
+            properties:
+              id:
+                type: string
+              available:
+                type: boolean
+              resident:
+                type: boolean
+              resident_bytes:
+                type: [integer, "null"]
+              default:
+                type: boolean
+              path:
+                type: [string, "null"]
+    DownloadJob:
+      type: object
+      required:
+        - job_id
+        - operation_id
+        - model
+        - state
+        - bytes_done
+        - bytes_total
+        - error
+        - created_at
+        - updated_at
+      properties:
+        job_id:
+          type: string
+          pattern: "^op_[0-9a-f]+$"
+          description: Equals operation_id.
+        operation_id:
+          type: string
+          pattern: "^op_[0-9a-f]+$"
+        model:
+          type: string
+        state:
+          type: string
+          enum: [queued, downloading, downloaded, failed]
+        bytes_done:
+          type: [integer, "null"]
+          description: Best-effort; null when the hub exposes no byte counts.
+        bytes_total:
+          type: [integer, "null"]
+        error:
+          type: [string, "null"]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    LifecycleResult:
+      type: object
+      required: [operation_id, model, state, resident]
+      properties:
+        operation_id:
+          type: string
+          pattern: "^op_[0-9a-f]+$"
+        model:
+          type: string
+        state:
+          $ref: "#/components/schemas/State"
+        resident:
+          type: boolean
+        already_resident:
+          type: boolean
+        already_unloaded:
+          type: boolean
+    Metrics:
+      type: object
+      required:
+        - schema_version
+        - timestamp
+        - model
+        - state
+        - resident
+        - resident_bytes
+        - queue_depth
+        - queue_capacity
+        - rolling
+        - prefill_histogram
+      properties:
+        schema_version:
+          type: string
+          const: "1.0"
+        timestamp:
+          type: string
+          format: date-time
+        model:
+          type: string
+        state:
+          $ref: "#/components/schemas/State"
+        resident:
+          type: boolean
+        resident_bytes:
+          type: [integer, "null"]
+        queue_depth:
+          type: integer
+        queue_capacity:
+          type: integer
+        rolling:
+          type: object
+          description: >
+            Exact mirror of the rolling telemetry snapshot (same camelCase
+            keys as /v1/synth/inference). Unmeasured percentiles are null.
+        prefill_histogram:
+          type: object
+          description: >
+            Rolling prompt-size buckets for prefill calibration. Every bucket
+            is always present; unmeasured values are null, never 0.
+          propertyNames:
+            enum: ["<=1k", "<=5k", "<=10k", "<=25k", "<=50k", "<=150k", ">150k"]
+          additionalProperties:
+            type: object
+            required: [count, cached_token_share, ttft_p50_ms, prefill_tps_p50]
+            properties:
+              count:
+                type: integer
+              cached_token_share:
+                type: [number, "null"]
+              ttft_p50_ms:
+                type: [number, "null"]
+              prefill_tps_p50:
+                type: [number, "null"]
+                description: >
+                  (prompt_tokens - cached_tokens) over the measured
+                  compile-to-first-token span.
+    ControlEvent:
+      type: object
+      required: [event, operation_id, state, previous_state, timestamp]
+      properties:
+        event:
+          type: string
+          enum:
+            - runtime.state_changed
+            - download.state_changed
+            - download.progress
+        operation_id:
+          type: [string, "null"]
+          description: Null when no control operation caused the transition.
+        state:
+          type: string
+        previous_state:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        model:
+          type: string
+        bytes_done:
+          type: [integer, "null"]
+        bytes_total:
+          type: [integer, "null"]
+        error:
+          type: [string, "null"]
+    Settings:
+      type: object
+      description: >
+        User-modifiable runtime settings. Every key is optional in a PUT and
+        in settings.toml; defaults reproduce the daemon's historical behavior.
+        Sampling defaults apply only when a request omits the field
+        (request > settings > built-in).
+      additionalProperties: false
+      properties:
+        default_temperature:
+          type: number
+          minimum: 0.0
+          maximum: 2.0
+          default: 1.0
+        default_top_p:
+          type: number
+          exclusiveMinimum: 0.0
+          maximum: 1.0
+          default: 1.0
+        default_top_k:
+          type: integer
+          minimum: 0
+          maximum: 8192
+          default: 0
+        default_reasoning_effort:
+          type: string
+          enum: [none, high]
+          default: high
+          description: What an absent reasoning field means.
+        default_max_output_tokens:
+          type: integer
+          minimum: 1
+          maximum: 32768
+          default: 8192
+        idle_unload_after_seconds:
+          type: integer
+          minimum: 0
+          default: 900
+          description: 0 means never unload.
+        prompt_cache_slots:
+          type: integer
+          minimum: 1
+          maximum: 32
+          default: 2
+          description: Reductions evict LRU on the backend's next use.
+        queue_capacity:
+          type: integer
+          minimum: 1
+          maximum: 32
+          default: 9
+          description: Applies to new admissions only.
+    SettingsEnvelope:
+      type: object
+      required: [schema_version, settings, source, startup]
+      properties:
+        schema_version:
+          type: string
+          const: "1.0"
+        settings:
+          $ref: "#/components/schemas/Settings"
+        source:
+          type: object
+          required: [path, loaded_at]
+          properties:
+            path:
+              type: string
+            loaded_at:
+              type: string
+              format: date-time
+        startup:
+          type: object
+          description: Read-only startup facts; not settable through this API.
+          properties:
+            backend:
+              type: string
+            default_model:
+              type: string
+            models_dir:
+              type: string
+            host:
+              type: string
+            port:
+              type: integer
+    ErrorEnvelope:
+      type: object
+      required: [error, request_id]
+      properties:
+        error:
+          type: object
+          required: [code, message, retryable, details]
+          properties:
+            code:
+              type: string
+              enum:
+                - model_not_found
+                - download_in_progress
+                - download_failed
+                - invalid_model
+                - insufficient_memory
+                - load_failed
+                - unload_in_progress
+                - generation_busy
+                - invalid_state_transition
+                - invalid_setting
+                - settings_write_failed
+                - openapi_unavailable
+            message:
+              type: string
+            retryable:
+              type: boolean
+            details:
+              type: object
+        request_id:
+          type: string
+          pattern: "^req_[0-9a-f]+$"

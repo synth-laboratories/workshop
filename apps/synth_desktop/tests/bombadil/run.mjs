@@ -36,6 +36,12 @@ const outputPath = resolve(appRoot, "test-results/bombadil");
 const specificationPath = process.env.BOMBADIL_SPEC
 	? resolve(workshopRoot, process.env.BOMBADIL_SPEC)
 	: resolve(here, "layout.spec.ts");
+const includeCuaAnalysisVisual = specificationPath.endsWith("launch-debt.spec.ts");
+const timeLimit = process.env.BOMBADIL_TIME_LIMIT || "10s";
+const timeLimitMatch = /^(\d+(?:\.\d+)?)(ms|s|m)$/.exec(timeLimit);
+if (!timeLimitMatch) throw new Error(`Unsupported BOMBADIL_TIME_LIMIT: ${timeLimit}`);
+const timeLimitMs = Number(timeLimitMatch[1]) * ({ ms: 1, s: 1_000, m: 60_000 })[timeLimitMatch[2]];
+const watchdogMs = timeLimitMs + 35_000;
 const contentTypes = {
 	".css": "text/css",
 	".html": "text/html",
@@ -66,11 +72,41 @@ async function waitForConnection() {
 	throw new Error("Isolated Synth runtime did not become healthy");
 }
 
+async function seedVisualAlignmentFixture() {
+	const headers = {
+		"Content-Type": "application/json",
+		...(connection.token ? { Authorization: `Bearer ${connection.token}` } : {})
+	};
+	const sessionResponse = await fetch(`${connection.url}/v1/sessions`, {
+		method: "POST",
+		headers,
+		body: JSON.stringify({
+			target: { kind: "local", model: "laguna-xs-2.1", adapter: null },
+			title: "Bombadil visual alignment"
+		})
+	});
+	if (!sessionResponse.ok) throw new Error(`Could not seed Bombadil alignment session (${sessionResponse.status})`);
+	const session = await sessionResponse.json();
+	const visualResponse = await fetch(`${connection.url}/v1/visuals`, {
+		method: "POST",
+		headers,
+		body: JSON.stringify({
+			id: "bombadil-visual-alignment",
+			templateId: "model.compare.v1",
+			title: "Alignment comparison",
+			bindings: {},
+			sessionId: session.id,
+			metadata: { fixture: true, purpose: "layout-alignment" }
+		})
+	});
+	if (!visualResponse.ok) throw new Error(`Could not seed Bombadil alignment visual (${visualResponse.status})`);
+}
+
 function browserBridgeScript() {
 	return `<script>
 window.synthDesktop = {
   platform: "test",
-  chooseProjectDirectory: async () => null,
+  chooseWorkspaceDirectory: async () => null,
   getInstanceDiagnostics: async () => ({
     mode: "development", name: "bombadil", displayName: "Synth Desktop · bombadil",
     appVersion: "0.1.0", sourceRevision: "bombadil", buildRevision: "bombadil",
@@ -83,9 +119,9 @@ window.synthLaguna = {
   onStatus: () => () => {}
 };
 // This is the exact payload shape produced by the CUA-observed Laguna prompt
-// trim visual.  The normal layout spec never opens Visuals; the directed
-// launch-debt spec does, so it can keep the renderer from silently accepting
-// a registry visual that crashes its preview.
+// trim visual. Only the dedicated launch-debt spec receives it: the normal
+// navigation spec must be able to visit Visuals without knowingly rendering
+// an intentionally invalid debt fixture.
 const cuaAnalysisVisual = {
   schemaVersion: "synth.desktop-visual.v1", id: "laguna-prompt-trim-preinstall", currentRevision: 1,
   title: "Laguna Prompt Trim Preinstall", templateId: "analysis.visual.v1", status: "draft", rendererKind: "template",
@@ -97,10 +133,11 @@ const cuaAnalysisVisual = {
   sourceAgentId: "laguna", sourceModel: "laguna-xs-2.1", contentDigest: null, previewDigest: null,
   metadata: {}, createdAt: "2026-08-09T13:24:48.000Z", updatedAt: "2026-08-09T13:24:48.000Z"
 };
+const fixtureVisuals = ${includeCuaAnalysisVisual ? "[cuaAnalysisVisual]" : "[]"};
 window.synthVisuals = {
   listTemplates: async () => [{ id: "analysis.visual.v1", title: "Agent-authored analysis", genre: "analysis" }],
   getTemplate: async () => ({ id: "analysis.visual.v1", title: "Agent-authored analysis" }),
-  list: async () => [cuaAnalysisVisual], get: async () => cuaAnalysisVisual, revisions: async () => [],
+  list: async () => fixtureVisuals, get: async () => cuaAnalysisVisual, revisions: async () => [],
   create: async () => cuaAnalysisVisual, update: async () => cuaAnalysisVisual, save: async () => cuaAnalysisVisual,
   fork: async () => cuaAnalysisVisual, archive: async () => cuaAnalysisVisual, show: async () => cuaAnalysisVisual,
   onEvent: () => () => {}, onShow: () => () => {}
@@ -204,6 +241,7 @@ try {
 		detached: true
 	});
 	connection = await waitForConnection();
+	await seedVisualAlignmentFixture();
 
 	await new Promise((resolvePromise, reject) => {
 		rendererServer.once("error", reject);
@@ -222,7 +260,7 @@ try {
 		"--height", "840",
 		"--chrome-grant-permissions", "",
 		"--instrument-javascript", "",
-		"--time-limit", process.env.BOMBADIL_TIME_LIMIT || "10s",
+		"--time-limit", timeLimit,
 		"--exit-on-violation",
 		"--output-path", outputPath,
 		"--output-path-overwrite"
@@ -231,7 +269,7 @@ try {
 		const timeout = setTimeout(() => {
 			if (bombadilProcess?.pid) process.kill(-bombadilProcess.pid, "SIGTERM");
 			reject(new Error("Bombadil exceeded its test limit plus startup grace"));
-		}, 45_000);
+		}, watchdogMs);
 		bombadilProcess.once("error", reject);
 		bombadilProcess.once("exit", (value) => {
 			clearTimeout(timeout);

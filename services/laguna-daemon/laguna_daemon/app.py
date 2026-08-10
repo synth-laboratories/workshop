@@ -3,32 +3,22 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-import uuid
 from contextlib import asynccontextmanager
 from functools import partial
 from typing import Any, AsyncIterator, Callable
 
 import anyio
-import httpx
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from .chat_api import ChatService
 from .config import LagunaConfig
-from .manager import LagunaProcessManager
 from .responses_api import ResponsesService
 from .responses_api.errors import ResponsesError
-from .responses import (
-    build_chat_body_from_responses,
-    iter_response_sse_from_text,
-    mock_response_payload,
-    responses_input_to_messages,
-    response_tool_types,
-    sse_event,
-    translate_chat_sse_to_responses,
-    wrap_chat_as_response,
-)
+from .settings import SettingsStore
+from .synth_control import SynthControl, register_control_routes
 
 
 class DisconnectAwareStreamingResponse(StreamingResponse):
@@ -51,10 +41,6 @@ class DisconnectAwareStreamingResponse(StreamingResponse):
             await self.background()
 
 
-def _sse(payload: dict[str, Any]) -> bytes:
-    return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n".encode()
-
-
 def _openai_error(status: int, message: str) -> JSONResponse:
     return JSONResponse(
         status_code=status,
@@ -70,33 +56,6 @@ def _openai_error(status: int, message: str) -> JSONResponse:
 
 def _responses_error(error: ResponsesError) -> JSONResponse:
     return JSONResponse(status_code=error.status_code, content=error.payload())
-
-
-def _finish_request(response: Any, manager: LagunaProcessManager) -> Any:
-    """Release the eviction guard after a normal response or after streaming ends."""
-    if isinstance(response, StreamingResponse):
-        body_iterator = response.body_iterator
-
-        async def tracked_body() -> AsyncIterator[bytes | str]:
-            try:
-                async for chunk in body_iterator:
-                    yield chunk
-            finally:
-                manager.end_request()
-
-        response.body_iterator = tracked_body()
-    else:
-        manager.end_request()
-    return response
-
-
-def _mock_stream(prompt: str) -> list[str]:
-    text = (
-        "Synth Laguna sidecar (mock). "
-        f"Received: {prompt[:240]}"
-    )
-    words = text.split(" ")
-    return [words[0]] + [f" {w}" for w in words[1:]]
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
@@ -117,78 +76,29 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-def create_app(config: LagunaConfig | None = None) -> FastAPI:
-    cfg = config or LagunaConfig.from_env()
-    manager = LagunaProcessManager(cfg)
-
-    @asynccontextmanager
-    async def lifespan(_: FastAPI):
-        if cfg.auto_load and cfg.backend != "mock":
-            await manager.ensure_ready()
-        elif cfg.backend == "mock":
-            manager.state = "ready"
-        watchdog = asyncio.create_task(manager.watch_idle(), name="laguna-idle-unload")
-        try:
-            yield
-        finally:
-            watchdog.cancel()
-            await manager.shutdown()
-
-    app = FastAPI(
-        title="Synth Laguna Sidecar",
-        version="0.1.0",
-        lifespan=lifespan,
-        docs_url=None,
-        redoc_url=None,
-    )
-    app.state.config = cfg
-    app.state.manager = manager
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    app.add_middleware(BearerAuthMiddleware, api_key=cfg.api_key)
-
-    @app.api_route("/{full_path:path}", methods=["GET", "POST", "DELETE", "PUT", "PATCH"])
-    async def catch_unknown(full_path: str, request: Request) -> Any:
-        # Only reached if no more-specific route matched — but FastAPI matches
-        # this greedily; register concrete routes below via decorator order.
-        # We instead register concrete routes first (Python decorators bottom-up
-        # for same path isn't an issue when paths differ).
-        return _openai_error(404, f"unknown route /{full_path}")
-
-    return app
-
-
 def build_app(config: LagunaConfig | None = None) -> FastAPI:
     """Build app with Poolside-compatible routes registered before the catch-all."""
     cfg = config or LagunaConfig.from_env()
-    manager = LagunaProcessManager(cfg)
-    responses_service = ResponsesService(cfg)
+    # A settings file with an unknown key must fail startup loudly rather
+    # than silently leaving the real default in place.
+    settings_store = SettingsStore.load(cfg)
+    responses_service = ResponsesService(cfg, settings=settings_store)
+    chat_service = ChatService(cfg, responses_service)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        if cfg.backend == "mock":
-            manager.state = "ready"
-        elif cfg.auto_load and cfg.responses_engine == "legacy":
-            await manager.ensure_ready()
-        else:
-            manager.state = "unloaded"
         await responses_service.start()
-        watchdog = asyncio.create_task(manager.watch_idle(), name="laguna-idle-unload")
+        # One runtime, one idle watchdog. Weights load lazily on the first
+        # request and are released back without terminating the daemon.
         native_watchdog = asyncio.create_task(
             responses_service.watch_idle(), name="laguna-native-idle-unload"
         )
         try:
             yield
         finally:
-            watchdog.cancel()
             native_watchdog.cancel()
-            await asyncio.gather(watchdog, native_watchdog, return_exceptions=True)
+            await asyncio.gather(native_watchdog, return_exceptions=True)
             await responses_service.close()
-            await manager.shutdown()
 
     app = FastAPI(
         title="Synth Laguna Sidecar",
@@ -197,9 +107,11 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
         docs_url=None,
         redoc_url=None,
     )
+    synth_control = SynthControl(cfg, responses_service, settings=settings_store)
     app.state.config = cfg
-    app.state.manager = manager
     app.state.responses_service = responses_service
+    app.state.chat_service = chat_service
+    app.state.synth_control = synth_control
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -234,11 +146,12 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
             "slug": mid,
             "display_name": name,
             "description": "Native local MLX model served by Synth Laguna.",
-            "default_reasoning_level": "high",
+            # Derived from runtime settings so the advertised default always
+            # matches what an absent reasoning field actually does.
+            "default_reasoning_level": settings_store.sampling.reasoning_effort,
             "supported_reasoning_levels": [
                 {"effort": "none", "description": "Answer without a reasoning phase."},
                 {"effort": "high", "description": "Use Laguna's reasoning mode."},
-                {"effort": "max", "description": "Use the largest local reasoning budget."},
             ],
             "shell_type": "unified_exec",
             "visibility": "list",
@@ -284,216 +197,99 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        status = manager.status()
-        loaded = model_id() if status["state"] == "ready" else None
-        path = cfg.resolve_model_path(loaded) if loaded else None
+        """Authoritative, low-frequency residency.
+
+        Every field is sourced from the in-process MLX backend. There is no
+        second runtime whose process state could disagree with this.
+        """
+        residency = responses_service.residency()
+        resident = bool(residency and residency["loaded"])
+        loaded = cfg.default_model if resident else None
         memory = 0
-        if path is not None:
-            memory = sum(
-                f.stat().st_size for f in path.rglob("*") if f.is_file()
-            )
-        last_used_at = manager.last_used_at
-        free_at = (
-            last_used_at + cfg.idle_unload_after_seconds
-            if cfg.idle_unload_after_seconds > 0
-            else None
-        )
-        health_status = "ok" if status["state"] == "ready" else status["state"]
-        idle_seconds = manager.idle_seconds
-        idle_unload_after_seconds = cfg.idle_unload_after_seconds
-        external = await manager.external_health()
-        if external is not None:
-            health_status = str(external.get("status") or health_status)
-            loaded = external.get("loadedModel")
-            memory = external.get("memoryBytes") or 0
-            idle_seconds = external.get("idleSeconds")
-            idle_unload_after_seconds = external.get("idleUnloadAfterSeconds")
-            last_used_at = external.get("lastUsedAt")
-            free_at = external.get("freeAt")
-        else:
-            last_used_at = int(last_used_at * 1000)
-            free_at = int(free_at * 1000) if free_at is not None else None
-        native_health = await responses_service.health()
-        if cfg.responses_engine != "legacy":
-            # Native Responses owns the in-process model and loads it lazily;
-            # the legacy manager's upstream-process state is not its readiness
-            # signal. Advertise the validated local model as available so
-            # Desktop can issue the first request that performs the load.
-            health_status = "ok"
-            native_residency = responses_service.residency()
-            native_resident = bool(native_residency and native_residency["loaded"])
-            loaded = cfg.default_model if native_resident else None
-            native_path = cfg.resolve_model_path(cfg.default_model) if native_resident else None
-            if native_path is not None:
+        if resident:
+            model_path = cfg.resolve_model_path(cfg.default_model)
+            if model_path is not None:
                 memory = sum(
                     file.stat().st_size
-                    for file in native_path.rglob("*")
+                    for file in model_path.rglob("*")
                     if file.is_file()
                 )
-            else:
-                memory = 0
-            if native_residency is not None:
-                idle_seconds = native_residency["idle_seconds"]
-                last_used_at = native_residency["last_used_at"]
-                free_at = native_residency["free_at"]
         return {
-            "status": health_status,
+            # Weights load lazily on first use, so an unloaded daemon is still
+            # ready to serve; readiness is about the daemon, not residency.
+            "status": "ok",
             "responsesApi": True,
+            "chatCompletionsApi": True,
             "modelsDirectory": str(cfg.models_dir),
             "defaultModel": cfg.default_model,
             "loadedModel": loaded,
             "memoryBytes": memory,
-            "idleSeconds": idle_seconds,
-            "idleUnloadAfterSeconds": idle_unload_after_seconds,
-            "lastUsedAt": last_used_at,
-            "freeAt": free_at,
+            "idleSeconds": residency["idle_seconds"] if residency else None,
+            "idleUnloadAfterSeconds": responses_service.idle_unload_after_seconds,
+            "lastUsedAt": residency["last_used_at"] if residency else None,
+            "freeAt": residency["free_at"] if residency else None,
             "backend": cfg.backend,
             "publicUrl": cfg.public_url,
-            "responses": native_health,
-            "responsesEngine": cfg.responses_engine,
+            "responses": await responses_service.health(),
         }
 
     @app.get("/v1/models")
     async def list_models() -> dict[str, Any]:
-        if cfg.responses_engine == "legacy":
-            await manager.ensure_ready()
         return models_payload()
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Any:
+        """Chat Completions as a peer surface over the neutral turn core.
+
+        This never constructs a Responses object and never makes an internal
+        HTTP request. It compiles onto the same core and runs on the same
+        `TurnRunner`, so residency, the single admission slot, cancellation,
+        and token accounting are shared rather than duplicated.
+        """
         body = await request.json()
-        manager.begin_request()
-        stream = bool(body.get("stream"))
-        requested = body.get("model") or cfg.default_model
-        # Normalize aliases → default model id (Poolside uses full HF-style id)
-        aliases = {
-            "laguna-xs-2.1",
-            "synth/Laguna-XS-2.1",
-            "synth/Laguna-XS-2.1-NVFP4",
-        }
-        if requested in aliases:
-            requested = cfg.default_model
-        body = {**body, "model": requested}
-
         try:
-            status = await manager.ensure_ready()
-            if status["state"] != "ready":
-                return _finish_request(
-                    _openai_error(503, status.get("lastError") or "model not ready"),
-                    manager,
+            if isinstance(body, dict) and bool(body.get("stream")):
+                # Awaited so validation and compilation failures become real
+                # HTTP errors instead of frames inside a 200 response.
+                frames = await chat_service.open_stream(
+                    body, disconnected=request.is_disconnected
                 )
-
-            if cfg.backend == "mock":
-                prompt = ""
-                for message in reversed(body.get("messages") or []):
-                    if message.get("role") == "user":
-                        prompt = str(message.get("content") or "")
-                        break
-                response = await _mock_completion(requested, prompt, stream=stream)
-            else:
-                # Upstream mlx_lm may not know our alias; pass resolved filesystem path when possible
-                path = cfg.resolve_model_path(requested)
-                upstream_body = dict(body)
-                if path is not None and cfg.backend == "mlx_lm":
-                    # mlx_lm.server already loaded one model; keep its id
-                    upstream_body["model"] = requested
-                response = await _proxy_completion(
-                    cfg.upstream_url,
-                    upstream_body,
-                    stream=stream,
-                    api_key=cfg.upstream_api_key,
+                return DisconnectAwareStreamingResponse(
+                    frames,
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "X-Accel-Buffering": "no",
+                    },
                 )
-            return _finish_request(response, manager)
-        except BaseException:
-            manager.end_request()
-            raise
+            return await chat_service.create(body)
+        except ResponsesError as error:
+            return _responses_error(error)
 
     @app.post("/v1/responses")
     async def responses(request: Request) -> Any:
-        """Native Responses surface, with the old translator as an explicit rollback."""
+        """Native Responses. Items are canonical; nothing is lowered to Chat."""
         body = await request.json()
-        if cfg.responses_engine != "legacy":
-            try:
-                responses_service.capture(body, transport="http")
-                normalized = responses_service.normalize(body)
-                if normalized["stream"]:
-                    return DisconnectAwareStreamingResponse(
-                        responses_service.stream(
-                            normalized, disconnected=request.is_disconnected
-                        ),
-                        media_type="text/event-stream",
-                        headers={
-                            "Cache-Control": "no-cache",
-                            "X-Accel-Buffering": "no",
-                        },
-                    )
-                return await responses_service.create(normalized)
-            except ResponsesError as error:
-                return _responses_error(error)
-
-        manager.begin_request()
-        stream = bool(body.get("stream"))
-        requested = body.get("model") or cfg.default_model
-        aliases = {
-            "laguna-xs-2.1",
-            "synth/Laguna-XS-2.1",
-            "synth/Laguna-XS-2.1-NVFP4",
-        }
-        if requested in aliases:
-            requested = cfg.default_model
-
         try:
-            status = await manager.ensure_ready()
-            if status["state"] != "ready":
-                return _finish_request(
-                    _openai_error(503, status.get("lastError") or "model not ready"),
-                    manager,
+            responses_service.capture(body, transport="http")
+            normalized = responses_service.normalize(body)
+            if normalized["stream"]:
+                return DisconnectAwareStreamingResponse(
+                    responses_service.stream(
+                        normalized, disconnected=request.is_disconnected
+                    ),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "X-Accel-Buffering": "no",
+                    },
                 )
-
-            chat_body = build_chat_body_from_responses(body, default_model=requested)
-            chat_body["model"] = requested
-            tool_types = response_tool_types(body.get("tools"))
-
-            if cfg.backend == "mock":
-                messages = responses_input_to_messages(body)
-                prompt = ""
-                for message in reversed(messages):
-                    if message.get("role") == "user":
-                        prompt = str(message.get("content") or "")
-                        break
-                if stream:
-
-                    async def mock_stream() -> AsyncIterator[bytes]:
-                        for event in iter_response_sse_from_text(
-                            model=requested, text="".join(_mock_stream(prompt))
-                        ):
-                            await _sleep(0.008)
-                            yield sse_event(event)
-
-                    response: Any = StreamingResponse(
-                        mock_stream(), media_type="text/event-stream"
-                    )
-                else:
-                    response = mock_response_payload(requested, prompt)
-            else:
-                response = await _proxy_responses(
-                    cfg.upstream_url,
-                    chat_body,
-                    model=requested,
-                    stream=stream,
-                    api_key=cfg.upstream_api_key,
-                    tool_types=tool_types,
-                )
-            return _finish_request(response, manager)
-        except BaseException:
-            manager.end_request()
-            raise
+            return await responses_service.create(normalized)
+        except ResponsesError as error:
+            return _responses_error(error)
 
     @app.websocket("/v1/responses")
     async def responses_websocket(websocket: WebSocket) -> None:
-        if cfg.responses_engine == "legacy":
-            await websocket.close(code=1008, reason="WebSocket requires native responses engine")
-            return
         if cfg.api_key is not None and websocket.headers.get("authorization") != f"Bearer {cfg.api_key}":
             await websocket.close(code=1008, reason="missing or invalid bearer token")
             return
@@ -581,9 +377,139 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
             "data": list(responses_service.telemetry),
         }
 
-    @app.get("/v1/synth/status")
-    async def synth_status() -> dict[str, Any]:
-        return manager.status()
+    @app.get("/v1/synth/inference")
+    async def inference_snapshot() -> dict[str, Any]:
+        """Live, redacted inference activity for the Desktop monitor."""
+        return responses_service.inference_snapshot()
+
+    @app.get("/v1/synth/inference/stream")
+    async def inference_stream(request: Request) -> Any:
+        """The same snapshot, pushed while a client is watching.
+
+        The interval is deliberately coarse and the work per tick is a pure
+        read of counters the backend already keeps: sampling must never add
+        cost to the generation loop it is reporting on.
+        """
+
+        async def events() -> AsyncIterator[bytes]:
+            # Bounded so an undetected client loss cannot leave a poller
+            # running for the life of the daemon; a watching client reconnects.
+            deadline = time.monotonic() + 3600
+            while time.monotonic() < deadline:
+                payload = json.dumps(
+                    responses_service.inference_snapshot(),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                yield f"event: inference\ndata: {payload}\n\n".encode()
+                # Four updates per second keeps short prefill/decode phases
+                # visible without touching the generation thread itself.
+                await asyncio.sleep(0.25)
+                if await request.is_disconnected():
+                    return
+
+        # A plain streaming response is correct here: this endpoint holds no
+        # generation slot, so there is nothing for the disconnect-aware variant
+        # to rescue, and its listener would outlive the reader.
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/v1/synth/model/unload")
+    async def unload_model() -> Any:
+        """Release weights on request, honoring the eviction guard."""
+        if await responses_service.unload_now():
+            return {"unloaded": True, "model": cfg.default_model}
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "generation_in_flight",
+                    "message": "A generation is using the model; retry once it completes.",
+                    "param": None,
+                }
+            },
+        )
+
+    @app.get("/metrics")
+    async def metrics() -> Any:
+        """Prometheus exposition of the same snapshot.
+
+        Deliberately label-free: per-request labels would reintroduce
+        identifiers that the redaction rules keep out of telemetry.
+        """
+        snapshot = responses_service.inference_snapshot()
+        rolling = snapshot["rolling"]
+        lines = [
+            "# HELP laguna_model_resident Whether model weights are loaded.",
+            "# TYPE laguna_model_resident gauge",
+            f"laguna_model_resident {int(snapshot['resident'])}",
+            "# HELP laguna_resident_bytes Resident model size in bytes.",
+            "# TYPE laguna_resident_bytes gauge",
+            f"laguna_resident_bytes {snapshot['residentBytes']}",
+            "# HELP laguna_queue_depth Generations admitted and not yet complete.",
+            "# TYPE laguna_queue_depth gauge",
+            f"laguna_queue_depth {snapshot['queueDepth']}",
+            "# HELP laguna_queue_capacity Maximum admitted generations.",
+            "# TYPE laguna_queue_capacity gauge",
+            f"laguna_queue_capacity {snapshot['queueCapacity']}",
+            "# HELP laguna_requests_total Requests by outcome since daemon start.",
+            "# TYPE laguna_requests_total counter",
+            f'laguna_requests_total{{outcome="completed"}} {rolling["requestsCompleted"]}',
+            f'laguna_requests_total{{outcome="failed"}} {rolling["requestsFailed"]}',
+            f'laguna_requests_total{{outcome="cancelled"}} {rolling["requestsCancelled"]}',
+            "# HELP laguna_tokens_total Tokens by kind since daemon start.",
+            "# TYPE laguna_tokens_total counter",
+            f'laguna_tokens_total{{kind="input"}} {rolling["inputTokens"]}',
+            f'laguna_tokens_total{{kind="output"}} {rolling["outputTokens"]}',
+            f'laguna_tokens_total{{kind="cached"}} {rolling["cachedTokens"]}',
+        ]
+        # An unmeasured percentile is omitted rather than exported as zero.
+        for name, key in (
+            ("laguna_ttft_ms_p50", "ttftP50Ms"),
+            ("laguna_ttft_ms_p95", "ttftP95Ms"),
+            ("laguna_decode_tps_p50", "decodeTpsP50"),
+            ("laguna_decode_tps_p95", "decodeTpsP95"),
+            ("laguna_latency_ms_p50", "latencyP50Ms"),
+            ("laguna_latency_ms_p95", "latencyP95Ms"),
+        ):
+            if rolling[key] is not None:
+                lines.append(f"# TYPE {name} gauge")
+                lines.append(f"{name} {rolling[key]}")
+        histogram = responses_service.prefill_histogram()
+        lines.append(
+            "# HELP laguna_prefill_requests_total Completed generations by "
+            "prompt-size bucket over the rolling window."
+        )
+        lines.append("# TYPE laguna_prefill_requests_total counter")
+        for bucket, entry in histogram.items():
+            lines.append(
+                f'laguna_prefill_requests_total{{bucket="{bucket}"}} {entry["count"]}'
+            )
+        # A share that was never measured is omitted, not exported as zero.
+        share_lines = [
+            f'laguna_prefill_cached_token_share{{bucket="{bucket}"}} '
+            f'{entry["cached_token_share"]}'
+            for bucket, entry in histogram.items()
+            if entry["cached_token_share"] is not None
+        ]
+        if share_lines:
+            lines.append(
+                "# HELP laguna_prefill_cached_token_share Cached share of "
+                "prompt tokens per bucket over the rolling window."
+            )
+            lines.append("# TYPE laguna_prefill_cached_token_share gauge")
+            lines.extend(share_lines)
+        return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain")
+
+    # Typed /v1/synth control surface (status, capabilities, lifecycle,
+    # metrics mirror, events, openapi). The legacy /v1/synth/inference*,
+    # /v1/synth/model/unload, and /metrics routes above remain exactly as
+    # they are; these are additive and share the same bearer auth.
+    register_control_routes(app, synth_control)
 
     @app.api_route(
         "/{full_path:path}",
@@ -597,171 +523,3 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
 
 # Back-compat export used by __main__
 create_app = build_app
-
-
-async def _mock_completion(model: str, prompt: str, *, stream: bool) -> Any:
-    completion_id = f"chatcmpl-{uuid.uuid4().hex.upper()}"
-    created = int(time.time())
-    chunks = _mock_stream(prompt)
-    content = "".join(chunks)
-    if not stream:
-        return {
-            "id": completion_id,
-            "object": "chat.completion",
-            "created": created,
-            "model": model,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": content},
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": {
-                "prompt_tokens": max(1, len(prompt.split())),
-                "completion_tokens": max(1, len(content.split())),
-                "total_tokens": max(2, len(prompt.split()) + len(content.split())),
-            },
-        }
-
-    async def event_stream() -> AsyncIterator[bytes]:
-        yield _sse(
-            {
-                "id": completion_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model,
-                "choices": [{"index": 0, "delta": {"role": "assistant"}}],
-            }
-        )
-        for piece in chunks:
-            await _sleep(0.012)
-            yield _sse(
-                {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": model,
-                    "choices": [{"index": 0, "delta": {"content": piece}}],
-                }
-            )
-        yield _sse(
-            {
-                "id": completion_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-            }
-        )
-        yield b"data: [DONE]\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-
-async def _sleep(seconds: float) -> None:
-    import asyncio
-
-    await asyncio.sleep(seconds)
-
-
-async def _proxy_completion(
-    upstream: str,
-    body: dict[str, Any],
-    *,
-    stream: bool,
-    api_key: str | None = None,
-) -> Any:
-    url = f"{upstream}/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
-    if stream:
-
-        async def event_stream() -> AsyncIterator[bytes]:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    "POST", url, json=body, headers=headers
-                ) as response:
-                    if response.status_code >= 400:
-                        detail = await response.aread()
-                        yield _sse(
-                            {
-                                "error": {
-                                    "code": str(response.status_code),
-                                    "type": "invalid_request_error",
-                                    "message": detail.decode("utf-8", errors="replace")[
-                                        :800
-                                    ],
-                                }
-                            }
-                        )
-                        return
-                    async for chunk in response.aiter_bytes():
-                        yield chunk
-
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        response = await client.post(url, json=body, headers=headers)
-        if response.status_code >= 400:
-            return _openai_error(
-                502, response.text[:800] or f"upstream {response.status_code}"
-            )
-        return JSONResponse(response.json())
-
-
-async def _proxy_responses(
-    upstream: str,
-    chat_body: dict[str, Any],
-    *,
-    model: str,
-    stream: bool,
-    api_key: str | None = None,
-    tool_types: dict[str, str] | None = None,
-) -> Any:
-    url = f"{upstream}/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
-    if stream:
-        chat_body = {**chat_body, "stream": True}
-
-        async def event_stream() -> AsyncIterator[bytes]:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    "POST", url, json=chat_body, headers=headers
-                ) as response:
-                    if response.status_code >= 400:
-                        detail = await response.aread()
-                        yield sse_event(
-                            {
-                                "type": "error",
-                                "error": {
-                                    "code": str(response.status_code),
-                                    "message": detail.decode("utf-8", errors="replace")[
-                                        :800
-                                    ],
-                                },
-                            }
-                        )
-                        return
-
-                    async def byte_iter() -> AsyncIterator[bytes]:
-                        async for chunk in response.aiter_bytes():
-                            yield chunk
-
-                    async for frame in translate_chat_sse_to_responses(
-                        byte_iter(), model=model, tool_types=tool_types
-                    ):
-                        yield frame
-
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        response = await client.post(
-            url, json={**chat_body, "stream": False}, headers=headers
-        )
-        if response.status_code >= 400:
-            return _openai_error(
-                502, response.text[:800] or f"upstream {response.status_code}"
-            )
-        return wrap_chat_as_response(
-            response.json(), model=model, tool_types=tool_types
-        )

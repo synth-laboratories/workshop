@@ -21,7 +21,7 @@ export function WorkspaceAccessSettings() {
 		setError(null);
 		setSaved(false);
 		try {
-			const path = await window.synthDesktop.chooseProjectDirectory();
+			const path = await window.synthDesktop.chooseWorkspaceDirectory();
 			if (path) setRoots((current) => current.includes(path) ? current : [...current, path]);
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));

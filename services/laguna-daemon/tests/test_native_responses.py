@@ -15,7 +15,14 @@ from openresponses_types import ResponseResource
 
 from laguna_daemon.app import DisconnectAwareStreamingResponse, build_app
 from laguna_daemon.config import LagunaConfig
-from laguna_daemon.responses_api.backends.mlx import _rehydrate_tool_calls, _split_reasoning
+from laguna_daemon.responses_api.backends.mlx import (
+    NativeMlxBackend,
+    _ActivatedCustomGrammarProcessor,
+    _envelope_event,
+    _rehydrate_tool_calls,
+    _split_reasoning,
+    _TurnStateMachine,
+)
 from laguna_daemon.responses_api.backends.fake import FakeBackend
 from laguna_daemon.responses_api.backends.protocol import ModelEvent, ToolBinding
 from laguna_daemon.responses_api.errors import ResponsesError
@@ -39,8 +46,6 @@ def config(path: Path, *, context_length: int = 262_144) -> LagunaConfig:
         revision=None,
         draft_model=None,
         adapter=None,
-        upstream_host="127.0.0.1",
-        upstream_port=17999,
         external_url=None,
         upstream_api_key=None,
         data_dir=data,
@@ -48,7 +53,6 @@ def config(path: Path, *, context_length: int = 262_144) -> LagunaConfig:
         idle_unload_after_seconds=900,
         context_length=context_length,
         started_at=time.time(),
-        responses_engine="native",
     )
 
 
@@ -92,6 +96,24 @@ class NativeResponsesHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         validated = ResponseResource.model_validate(response.json())
         self.assertEqual(validated.status, "completed")
+
+    def test_output_limit_is_validated_even_with_extension_tools(self) -> None:
+        request = {
+            "input": "hello",
+            "store": False,
+            "tools": [{"type": "custom", "name": "shell", "format": {"type": "text"}}],
+        }
+        invalid_type = self.post(
+            "/v1/responses", {**request, "max_output_tokens": "lots"}
+        )
+        self.assertEqual(invalid_type.status_code, 400)
+        self.assertEqual(invalid_type.json()["error"]["param"], "max_output_tokens")
+
+        above_ceiling = self.post(
+            "/v1/responses", {**request, "max_output_tokens": 32_769}
+        )
+        self.assertEqual(above_ceiling.status_code, 400)
+        self.assertEqual(above_ceiling.json()["error"]["param"], "max_output_tokens")
 
     def test_stream_semantics_and_nonstream_equivalence(self) -> None:
         request = {"input": "equivalent response", "store": False}
@@ -187,7 +209,14 @@ class NativeResponsesHttpTests(unittest.TestCase):
         }
         first = self.post(
             "/v1/responses",
-            {"input": "Run exactly two Craftax rollouts.", "tools": [tool], "store": True},
+            {
+                "input": "Run exactly two Craftax rollouts.",
+                "tools": [tool],
+                "store": True,
+                # This test pins tool-item identity by output index; thinking
+                # (on by default) would prepend a reasoning item.
+                "reasoning": {"effort": "none"},
+            },
         ).json()
         call = first["output"][0]
         self.assertEqual(call["type"], "custom_tool_call")
@@ -197,6 +226,7 @@ class NativeResponsesHttpTests(unittest.TestCase):
             "/v1/responses",
             {
                 "previous_response_id": first["id"],
+                "reasoning": {"effort": "none"},
                 "input": [
                     {
                         "type": "custom_tool_call_output",
@@ -220,6 +250,9 @@ class NativeResponsesHttpTests(unittest.TestCase):
                 "stream": True,
                 "store": False,
                 "tools": [{"type": "custom", "name": "mcp__synth_containers"}],
+                # Pins output_index == 0 for the tool item; default thinking
+                # would prepend a reasoning item.
+                "reasoning": {"effort": "none"},
             },
         ) as response:
             events = parse_sse("".join(response.iter_text()))
@@ -257,7 +290,13 @@ class NativeResponsesHttpTests(unittest.TestCase):
         for tool, expected in cases:
             with self.subTest(expected=expected):
                 response = self.post(
-                    "/v1/responses", {"input": "use the tool", "tools": [tool], "store": False}
+                    "/v1/responses",
+                    {
+                        "input": "use the tool",
+                        "tools": [tool],
+                        "store": False,
+                        "reasoning": {"effort": "none"},
+                    },
                 )
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.json()["output"][0]["type"], expected)
@@ -275,6 +314,7 @@ class NativeResponsesHttpTests(unittest.TestCase):
                 "tools": [{"type": "web_search", "external_web_access": False}],
                 "tool_choice": "auto",
                 "store": False,
+                "reasoning": {"effort": "none"},
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -483,6 +523,131 @@ class NativeResponsesWebSocketTests(unittest.TestCase):
 
 
 class NativeBackendContractTests(unittest.TestCase):
+    def test_native_backend_rejects_insufficient_memory_before_loading(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="laguna-native-low-memory-") as tmp:
+            backend = NativeMlxBackend(
+                model_path=Path(tmp),
+                system_memory_bytes=16 * 1024**3,
+            )
+            with self.assertRaises(ResponsesError) as raised:
+                asyncio.run(backend._ensure_loaded())
+            self.assertEqual(raised.exception.code, "insufficient_system_memory")
+            self.assertEqual(raised.exception.status_code, 503)
+            self.assertIn("16.0 GiB", raised.exception.message)
+            self.assertFalse(backend.residency(900)["loaded"])
+            asyncio.run(backend.close())
+
+    def test_custom_grammar_activation_decodes_only_a_bounded_suffix(self) -> None:
+        class Tokenizer:
+            def __init__(self) -> None:
+                self.decoded_lengths: list[int] = []
+
+            def decode(self, ids: list[int], **_: object) -> str:
+                self.decoded_lengths.append(len(ids))
+                return "unrelated generated text"
+
+        processor = object.__new__(_ActivatedCustomGrammarProcessor)
+        processor._tokenizer = Tokenizer()
+        processor._choices = [("<tool_call>visual", object())]
+        processor._activation_window_tokens = 40
+        processor._active = None
+        processor._active_completed = False
+
+        logits = object()
+        ids = type(
+            "Ids", (), {"ndim": 1, "tolist": lambda self: list(range(12_000))}
+        )()
+        returned = processor(ids, logits)
+
+        self.assertIs(returned, logits)
+        self.assertEqual(processor._tokenizer.decoded_lengths, [40])
+
+    def test_turn_state_machine_emits_envelopes_and_keeps_parallel_calls(self) -> None:
+        machine = _TurnStateMachine(thinking_open=False, tools=True)
+        events = machine.feed(
+            "Let me check. <tool_call>one<arg_key>path<arg_value>.</arg_value>"
+            "</arg_key></tool_call>"
+        )
+        # Pre-call prose streams as answer text; the envelope arrives whole.
+        self.assertIn(("answer", "Let me check. "), events)
+        closes = [event for event in events if event[0] == "tool_call"]
+        self.assertEqual(len(closes), 1)
+        # A partial second opening marker is held back, not misclassified.
+        events = machine.feed("<tool_ca")
+        self.assertEqual(events, [])
+        self.assertTrue(machine.maybe_in_tool_call)
+        events = machine.feed("ll>two</tool_call>")
+        self.assertEqual([event[0] for event in events], ["tool_call"])
+
+    def test_arguments_are_typed_by_the_declared_schema(self) -> None:
+        """String-typed args stay verbatim text; only non-strings JSON-decode.
+
+        The chat template renders string values raw and non-strings as JSON,
+        so a schema-blind json.loads would turn a path spelled "123" into an
+        integer and strip meaning from JSON-looking file content.
+        """
+        binding = ToolBinding(
+            model_name="write_file",
+            original_name="write_file",
+            kind="function",
+            schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "contents": {"type": "string"},
+                    "mode": {"type": "integer"},
+                },
+            },
+        )
+        event = _envelope_event(
+            "write_file"
+            "<arg_key>path</arg_key><arg_value>123</arg_value>"
+            "<arg_key>contents</arg_key><arg_value>{\"not\": \"decoded\"}\n</arg_value>"
+            "<arg_key>mode</arg_key><arg_value>644</arg_value>",
+            {"write_file": binding},
+        )
+        arguments = json.loads(event.arguments)
+        self.assertEqual(arguments["path"], "123")
+        self.assertEqual(arguments["contents"], '{"not": "decoded"}\n')
+        self.assertEqual(arguments["mode"], 644)
+
+    def test_turn_state_machine_discards_a_truncated_envelope(self) -> None:
+        machine = _TurnStateMachine(thinking_open=False, tools=True)
+        machine.feed("<tool_call>write<arg_key>path</arg_key><arg_value>half of a")
+        leaked = machine.flush()
+        self.assertEqual(leaked, [])
+        self.assertTrue(machine.truncated_tool_call)
+
+    def test_turn_state_machine_reenters_an_interleaved_thinking_span(self) -> None:
+        machine = _TurnStateMachine(thinking_open=True, tools=True)
+        events = machine.feed("plan a</think>Answer. <think>plan b</think> More.")
+        kinds = [kind for kind, _ in events]
+        self.assertEqual(kinds, ["reasoning", "answer", "reasoning", "answer"])
+        self.assertEqual(events[2], ("reasoning", "plan b"))
+
+    def test_turn_state_machine_reasoning_may_open_a_tool_call_directly(self) -> None:
+        """Models sometimes skip </think> straight into an envelope."""
+        machine = _TurnStateMachine(thinking_open=True, tools=True)
+        events = machine.feed(
+            "I should list files.<tool_call>ls<arg_key>path</arg_key>"
+            "<arg_value>.</arg_value></tool_call>"
+        )
+        self.assertEqual(events[0], ("reasoning", "I should list files."))
+        self.assertEqual(events[1][0], "tool_call")
+
+    def test_native_backend_releases_idle_weights_without_stopping_the_daemon(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="laguna-native-idle-") as tmp:
+            backend = NativeMlxBackend(model_path=Path(tmp))
+            backend._model = object()
+            backend._tokenizer = object()
+            backend._last_used_at = time.time() - 31
+
+            self.assertTrue(asyncio.run(backend.unload_if_idle(30)))
+            self.assertIsNone(backend._model)
+            self.assertIsNone(backend._tokenizer)
+            self.assertFalse(backend.residency(30)["loaded"])
+            asyncio.run(backend.close())
+
     def test_coordinator_closes_backend_stream_when_event_sink_fails(self) -> None:
         class LeaseBackend(FakeBackend):
             def __init__(self) -> None:
@@ -564,6 +729,88 @@ class NativeBackendContractTests(unittest.TestCase):
         self.assertEqual(events[0].kind, "function_call")
         self.assertEqual(events[0].namespace, "mcp__synth_containers")
         self.assertEqual(remainder, "")
+
+    def test_mlx_rehydrates_evidenced_read_alias_as_exec_command(self) -> None:
+        binding = ToolBinding(
+            model_name="exec_command",
+            original_name="exec_command",
+            kind="function",
+            schema={
+                "type": "object",
+                "properties": {"cmd": {"type": "string"}},
+                "required": ["cmd"],
+            },
+        )
+        for alias in ("read", "read_file"):
+            with self.subTest(alias=alias):
+                events, remainder = _rehydrate_tool_calls(
+                    f"<tool_call>{alias}<arg_key>path</arg_key>"
+                    "<arg_value>folder/AGENTS.md</arg_value></tool_call>",
+                    {binding.model_name: binding},
+                )
+                self.assertEqual(events[0].kind, "function_call")
+                self.assertEqual(events[0].name, "exec_command")
+                self.assertEqual(
+                    json.loads(events[0].arguments or "{}"),
+                    {"cmd": "sed -n '1,240p' folder/AGENTS.md"},
+                )
+                self.assertEqual(remainder, "")
+
+    def test_mlx_rehydrates_evidenced_grep_alias_as_exec_command(self) -> None:
+        binding = ToolBinding(
+            model_name="exec_command",
+            original_name="exec_command",
+            kind="function",
+            schema={
+                "type": "object",
+                "properties": {"cmd": {"type": "string"}},
+                "required": ["cmd"],
+            },
+        )
+        events, remainder = _rehydrate_tool_calls(
+            "<tool_call>grep"
+            "<arg_key>pattern</arg_key><arg_value>needle</arg_value>"
+            "<arg_key>path</arg_key><arg_value>folder</arg_value>"
+            "<arg_key>output_mode</arg_key><arg_value>content</arg_value>"
+            "</tool_call>",
+            {binding.model_name: binding},
+        )
+        self.assertEqual(events[0].name, "exec_command")
+        self.assertEqual(
+            json.loads(events[0].arguments or "{}"),
+            {"cmd": "rg -n -- needle folder"},
+        )
+        self.assertEqual(remainder, "")
+
+    def test_mlx_rehydrates_evidenced_write_alias_as_exec_command(self) -> None:
+        binding = ToolBinding(
+            model_name="exec_command",
+            original_name="exec_command",
+            kind="function",
+            schema={
+                "type": "object",
+                "properties": {"cmd": {"type": "string"}},
+                "required": ["cmd"],
+            },
+        )
+        for content_key in ("input", "contents"):
+            with self.subTest(content_key=content_key):
+                events, remainder = _rehydrate_tool_calls(
+                    "<tool_call>write"
+                    "<arg_key>path</arg_key><arg_value>folder/file.txt</arg_value>"
+                    f"<arg_key>{content_key}</arg_key><arg_value>hello\n</arg_value>"
+                    "</tool_call>",
+                    {binding.model_name: binding},
+                )
+                self.assertEqual(events[0].name, "exec_command")
+                self.assertEqual(
+                    json.loads(events[0].arguments or "{}"),
+                    {
+                        "cmd": "mkdir -p folder && printf %s aGVsbG8K | "
+                        "base64 -D > folder/file.txt"
+                    },
+                )
+                self.assertEqual(remainder, "")
 
     def test_id_families_are_distinct(self) -> None:
         self.assertTrue(new_id("response").startswith("resp_"))

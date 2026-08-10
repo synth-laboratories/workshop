@@ -30,8 +30,6 @@ class LagunaConfig:
     revision: str | None
     draft_model: str | None
     adapter: str | None
-    upstream_host: str
-    upstream_port: int
     external_url: str | None
     upstream_api_key: str | None
     data_dir: Path
@@ -39,13 +37,20 @@ class LagunaConfig:
     idle_unload_after_seconds: int
     context_length: int
     started_at: float
-    responses_engine: str = "native"
 
     @property
     def upstream_url(self) -> str:
+        """Base URL of a remote *native Responses* provider.
+
+        This is a passthrough target for `backend == "external"` only. There is
+        no local upstream: the daemon owns its MLX weights in-process and never
+        manages or proxies a second local server.
+        """
         if self.backend == "external" and self.external_url:
             return self.external_url.rstrip("/")
-        return f"http://{self.upstream_host}:{self.upstream_port}"
+        raise RuntimeError(
+            "No upstream is configured. The local backend serves MLX in-process."
+        )
 
     @property
     def public_url(self) -> str:
@@ -146,8 +151,6 @@ class LagunaConfig:
             revision=(os.getenv("SYNTH_LAGUNA_REVISION") or "").strip() or None,
             draft_model=(os.getenv("SYNTH_LAGUNA_DRAFT_MODEL") or "").strip() or None,
             adapter=(os.getenv("SYNTH_LAGUNA_ADAPTER") or "").strip() or None,
-            upstream_host=os.getenv("SYNTH_LAGUNA_UPSTREAM_HOST", "127.0.0.1"),
-            upstream_port=int(os.getenv("SYNTH_LAGUNA_UPSTREAM_PORT", "7334")),
             external_url=(os.getenv("SYNTH_LAGUNA_EXTERNAL_URL") or "").rstrip("/")
             or None,
             upstream_api_key=(
@@ -159,15 +162,14 @@ class LagunaConfig:
             data_dir=data_dir,
             auto_load=_truthy(os.getenv("SYNTH_LAGUNA_AUTO_LOAD"), default=True),
             idle_unload_after_seconds=int(
-                # Keep the local-development memory cycle observable. Release
-                # builds should set this explicitly (for example, 900).
-                os.getenv("SYNTH_LAGUNA_IDLE_UNLOAD_SECONDS", "30")
+                # 15 minutes, matching the reference Poolside sidecar. Evicting
+                # a 20 GB model between turns of a normal coding session costs
+                # far more than it saves; set this low only to watch the
+                # residency cycle during development.
+                os.getenv("SYNTH_LAGUNA_IDLE_UNLOAD_SECONDS", "900")
             ),
             context_length=int(
                 os.getenv("SYNTH_LAGUNA_CONTEXT_LENGTH", str(DEFAULT_CONTEXT_LENGTH))
             ),
             started_at=time.time(),
-            responses_engine=(
-                os.getenv("SYNTH_LAGUNA_RESPONSES_ENGINE") or "native"
-            ).strip().lower(),
         )

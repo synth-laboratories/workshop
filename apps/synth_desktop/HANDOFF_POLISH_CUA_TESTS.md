@@ -10,6 +10,8 @@
 
 > Keep the product honest: **dogfood via CUA**, grow **Playwright / Bombadil / static debt tests**, fix what you can, and **record polish in `polish.md`**. When something is still wrong by design, leave a `test.fail` (or static grep) so the next person can’t forget it.
 
+For the shared visual and interaction bar, use the repo-level [`WORKSHOP_QUALITY_STYLE_GUIDE.md`](../../WORKSHOP_QUALITY_STYLE_GUIDE.md). This handoff describes the dogfood loop and Desktop-specific debt; the guide describes the product language and definition of done.
+
 ---
 
 ## 1. How you work (loop)

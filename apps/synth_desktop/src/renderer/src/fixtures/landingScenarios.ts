@@ -448,7 +448,6 @@ export const LANDING_SCENARIOS: Record<LandingScenarioId, LandingState> = {
 		chats: [],
 		syncSessions: [],
 		asyncIntern: null,
-		projects: [],
 		model: { status: "not_installed", name: "Laguna XS 2.1" },
 		selectedTargetId: "local-laguna",
 		composerEnabled: false,
@@ -460,7 +459,6 @@ export const LANDING_SCENARIOS: Record<LandingScenarioId, LandingState> = {
 		chats: [CHAT_PORTING],
 		syncSessions: [SYNC_CRAFTAX],
 		asyncIntern: ASYNC_SLEEPING,
-		projects: [],
 		model: {
 			status: "downloading",
 			name: "Laguna XS 2.1 NVFP4",
@@ -477,7 +475,6 @@ export const LANDING_SCENARIOS: Record<LandingScenarioId, LandingState> = {
 		chats: [],
 		syncSessions: [],
 		asyncIntern: ASYNC_RUNNING,
-		projects: [],
 		model: { status: "ready", name: "Laguna XS 2.1" },
 		selectedTargetId: "local-laguna",
 		composerEnabled: true,
@@ -535,7 +532,6 @@ export const LANDING_SCENARIOS: Record<LandingScenarioId, LandingState> = {
 			}
 		],
 		asyncIntern: ASYNC_NEEDS_INPUT,
-		projects: [],
 		model: { status: "ready", name: "Laguna XS 2.1" },
 		selectedTargetId: "local-laguna",
 		composerEnabled: true,
@@ -628,7 +624,6 @@ export const LANDING_SCENARIOS: Record<LandingScenarioId, LandingState> = {
 			}
 		],
 		asyncIntern: ASYNC_RUNNING,
-		projects: [{ id: "proj-1", name: "craftax-research" }],
 		model: { status: "ready", name: "Laguna XS 2.1" },
 		selectedTargetId: "intern-sync",
 		composerEnabled: true,

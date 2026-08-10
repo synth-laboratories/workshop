@@ -18,19 +18,33 @@ function read(rel) {
 	return readFileSync(join(renderer, rel), "utf8");
 }
 
-test("titlebar Account is wired while Downloads/Expand remain tracked debt", () => {
+test("titlebar Account and Models are wired; Account menu and Expand chrome are gone", () => {
 	const app = read("App.tsx");
 	assert.doesNotMatch(app, /Account — stub/);
 	assert.match(app, /data-testid="open-account-settings"/);
 	assert.match(app, /setView\(\{ kind: "settings", section: "account" \}\)/);
-	assert.match(app, /Account menu — stub/);
-	assert.match(app, /Downloads — stub/);
-	assert.match(app, /Expand — stub/);
+	assert.match(app, /data-testid="open-models-settings"/);
+	assert.doesNotMatch(app, /Account menu — stub/);
+	assert.doesNotMatch(app, /Downloads — stub/);
+	assert.doesNotMatch(app, /Expand — stub/);
+	assert.doesNotMatch(app, /aria-label="Account menu"/);
+	assert.doesNotMatch(app, /aria-label="Expand"/);
 });
 
-test("design debt: Set up agent remains a toast stub while Laguna reload is a typed bridge", () => {
+test("Runtime settings no longer expose legacy Python migration UI", () => {
+	const settings = read("components/SettingsPage.tsx");
+	assert.doesNotMatch(settings, /LegacyMigrationSettings/);
+	assert.doesNotMatch(settings, /runtime\.sqlite3/);
+});
+
+test("Landing Set up an agent card is removed; Laguna reload stays a typed bridge", () => {
 	const app = read("App.tsx");
-	assert.match(app, /Set up agent — stub/);
+	const landing = read("components/LandingPage.tsx");
+	assert.doesNotMatch(app, /Set up agent — stub/);
+	assert.doesNotMatch(app, /onSetupAgent/);
+	assert.doesNotMatch(landing, /quick-setup-agent/);
+	assert.doesNotMatch(landing, /Set up an agent/);
+	assert.doesNotMatch(landing, /onSetupAgent/);
 	assert.match(app, /onReloadLaguna=\{onReloadLaguna\}/);
 	assert.doesNotMatch(app, /Reload Laguna — stub/);
 	const bridge = read("runtime/desktopBridge.ts");
@@ -39,25 +53,29 @@ test("design debt: Set up agent remains a toast stub while Laguna reload is a ty
 	assert.match(rust, /async fn laguna_reload/);
 });
 
-test("design debt: CloudDesk leave-safe is hard-wired to async kind", () => {
+test("design debt: CloudDesk leave-safe is projection-driven from AsyncInternPin", () => {
 	const desk = read("components/CloudDesk.tsx");
-	assert.match(desk, /const leaveSafe = !isSync/);
+	assert.match(desk, /props\.intern\.leaveSafe === true/);
+	assert.ok(!desk.includes("const leaveSafe = !isSync"));
 });
 
-test("design debt: Cloud actions other than pause/resume/close/cancel/checkpoint fall through to stub toasts", () => {
+test("CloudDesk unknown actions report unavailable without theater copy", () => {
 	const app = read("App.tsx");
-	assert.match(app, /showToast\(`\$\{label\} — stub`\)/);
-	assert.ok(
-		!app.includes('lower === "provide input"') && !app.includes('lower === "respond"'),
-		"Provide input / Respond should be wired to Intern intervene before removing stub fallthrough"
-	);
+	assert.match(app, /showToast\(`\$\{label\} is not available`\)/);
+	assert.ok(!/\bstub\b/i.test(app));
 });
 
-test("design debt: agent-authored analysis shell does not normalize the persisted type-block payload", () => {
+test("Async Intern Respond opens an intervention control instead of a stub toast", () => {
+	const desk = read("components/CloudDesk.tsx");
+	assert.match(desk, /data-testid="intern-intervention-input"/);
+	assert.ok(!desk.includes('onAction("Provide input")'));
+});
+
+test("design debt: agent-authored analysis shell normalizes persisted type-block payloads", () => {
 	const shell = readFileSync(join(appRoot, "../../visuals/templates/analysis.visual.v1/shell.tsx"), "utf8");
-	assert.match(shell, /if \(block\.kind === "note"\)/);
-	assert.ok(!shell.includes("block.type"), "type-block normalization appeared — flip the CUA regression to a passing test");
-	assert.match(shell, /return <Scatter block=\{block\}/);
+	assert.match(shell, /normalizeBlock/);
+	assert.match(shell, /block\.type/);
+	assert.match(shell, /if \(kind === "note"\)/);
 });
 
 test("composer approval policy control is wired and test-addressable", () => {

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from collections import OrderedDict
 from typing import Any, AsyncIterator
 
 from ..capabilities import ModelCapabilities
-from ..compiler import compile_turn
+from ..compiler import compile_messages, compile_turn
 from ..ids import new_id
+from ..telemetry import GenerationTiming
 from .protocol import CompiledTurn, ModelEvent, TokenUsageEstimate
 
 
@@ -52,9 +55,18 @@ class FakeBackend:
             context_length=context_length,
         )
         self._cancelled: set[str] = set()
+        self._generations: dict[str, GenerationTiming] = {}
+        self._recent_generations: OrderedDict[str, GenerationTiming] = OrderedDict()
+        self._loaded = False
+        self._last_used_at = time.time()
 
     async def capabilities(self, model: str) -> ModelCapabilities:
         return self._capabilities
+
+    async def load(self) -> None:
+        """Explicit residency request, mirroring the native backend."""
+        self._loaded = True
+        self._last_used_at = time.time()
 
     async def compile(
         self,
@@ -62,7 +74,15 @@ class FakeBackend:
         context_items: list[dict[str, Any]],
         generation_id: str,
     ) -> CompiledTurn:
-        return compile_turn(request, context_items, generation_id)
+        return compile_turn(
+            request,
+            context_items,
+            generation_id,
+            defaults=getattr(self, "sampling_defaults", None),
+        )
+
+    async def compile_messages(self, **kwargs: Any) -> CompiledTurn:
+        return compile_messages(**kwargs)
 
     async def count_tokens(self, turn: CompiledTurn) -> TokenUsageEstimate:
         serialized = json.dumps(turn.messages, ensure_ascii=False)
@@ -70,28 +90,52 @@ class FakeBackend:
 
     async def stream(self, turn: CompiledTurn) -> AsyncIterator[ModelEvent]:
         usage = await self.count_tokens(turn)
+        self._loaded = True
+        self._last_used_at = time.time()
+        timing = GenerationTiming(
+            generation_id=turn.generation_id, queued_at=time.monotonic()
+        )
+        timing.admitted_at = timing.queued_at
+        timing.compiled_at = time.monotonic()
+        timing.prompt_tokens = usage.input_tokens
+        timing.phase = "prefill"
+        self._generations[turn.generation_id] = timing
+        try:
+            async for event in self._generate(turn, usage, timing):
+                if event.kind in {"text_delta", "reasoning_delta"} or event.kind.endswith("_call"):
+                    if timing.first_token_at is None:
+                        timing.first_token_at = time.monotonic()
+                        timing.phase = "decode"
+                    timing.last_token_at = time.monotonic()
+                if event.kind == "usage":
+                    timing.output_tokens = int(event.output_tokens or 0)
+                    timing.cached_tokens = int(event.metadata.get("cached_tokens") or 0)
+                yield event
+        finally:
+            timing.completed_at = time.monotonic()
+            timing.phase = "complete"
+            self._generations.pop(turn.generation_id, None)
+            self._recent_generations[turn.generation_id] = timing
+            while len(self._recent_generations) > 32:
+                self._recent_generations.popitem(last=False)
+
+    async def _generate(
+        self, turn: CompiledTurn, usage: TokenUsageEstimate, timing: GenerationTiming
+    ) -> AsyncIterator[ModelEvent]:
         if turn.generation_id in self._cancelled:
             yield ModelEvent(kind="finish", finish_reason="cancelled")
             return
-        reasoning = turn.request.get("reasoning")
-        if isinstance(reasoning, dict) and reasoning.get("effort") not in {
-            None,
-            "none",
-            "minimal",
-        }:
+        if turn.enable_thinking:
             yield ModelEvent(kind="reasoning_delta", delta="Checked the request contract.")
 
-        last = turn.context_items[-1] if turn.context_items else {}
-        last_kind = last.get("type") if isinstance(last, dict) else None
-        continuation_outputs = {
-            "function_call_output",
-            "custom_tool_call_output",
-            "shell_call_output",
-            "local_shell_call_output",
-            "apply_patch_call_output",
-            "mcp_call_output",
-            "tool_search_output",
-        }
+        # A turn that already carries tool output must answer, not call again.
+        # `items_to_messages` lowers every Responses `*_call_output` item to a
+        # `role: "tool"` message and Chat sends that role directly, so the last
+        # message role is the protocol-neutral form of this check.
+        last_message = turn.messages[-1] if turn.messages else {}
+        continues_tool_output = (
+            isinstance(last_message, dict) and last_message.get("role") == "tool"
+        )
         user_prompt = next(
             (
                 str(message.get("content") or "")
@@ -100,12 +144,11 @@ class FakeBackend:
             ),
             "",
         )
-        suppress_tools = (
-            turn.request.get("tool_choice") == "none"
-            or "do not call tools" in user_prompt.lower()
-        )
+        # `tool_choice: "none"` already empties `bindings` during compilation, so
+        # only the prompt-driven suppression needs checking here.
+        suppress_tools = "do not call tools" in user_prompt.lower()
         output_tokens = 0
-        if turn.bindings and last_kind not in continuation_outputs and not suppress_tools:
+        if turn.bindings and not continues_tool_output and not suppress_tools:
             binding = next(iter(turn.bindings.values()))
             call_id = new_id("call")
             if binding.kind == "custom":
@@ -188,7 +231,7 @@ class FakeBackend:
                 )
             elif format_spec.get("type") == "json_object":
                 text = '{"result":"ok"}'
-            elif last_kind in continuation_outputs:
+            elif continues_tool_output:
                 text = "Tool output received."
             else:
                 text = f"Synth Laguna native mock. Received: {user_prompt[:240]}"
@@ -205,7 +248,7 @@ class FakeBackend:
             kind="usage",
             input_tokens=usage.input_tokens,
             output_tokens=output_tokens,
-            reasoning_tokens=5 if reasoning else 0,
+            reasoning_tokens=5 if turn.enable_thinking else 0,
         )
         yield ModelEvent(kind="finish", finish_reason="stop")
 
@@ -214,3 +257,63 @@ class FakeBackend:
 
     async def close(self) -> None:
         self._cancelled.clear()
+
+    # -- telemetry surface, mirroring the native backend ---------------------
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            "loaded": self._loaded,
+            "loading": False,
+            "inflight_generations": len(self._generations),
+            "max_inflight_generations": 9,
+            "generation_slot_available": not self._generations,
+            "queued_generations": 0,
+            "generation_phases": {
+                key: timing.phase for key, timing in self._generations.items()
+            },
+        }
+
+    def memory_bytes(self) -> int | None:
+        """The deterministic backend holds no weights, so it holds no memory."""
+        return 0
+
+    def generation_metrics(self, generation_id: str) -> GenerationTiming | None:
+        timing = self._generations.get(generation_id)
+        if timing is not None:
+            return timing
+        return self._recent_generations.get(generation_id)
+
+    def active_generation(self) -> GenerationTiming | None:
+        return next(iter(self._generations.values()), None)
+
+    def queue_state(self) -> dict[str, int]:
+        return {"depth": len(self._generations), "capacity": 9}
+
+    def residency(self, idle_unload_after_seconds: int) -> dict[str, Any]:
+        last_used_at = int(self._last_used_at * 1000)
+        return {
+            "loaded": self._loaded,
+            "idle_seconds": max(0, int(time.time() - self._last_used_at)),
+            "last_used_at": last_used_at,
+            "free_at": (
+                last_used_at + idle_unload_after_seconds * 1000
+                if self._loaded and idle_unload_after_seconds > 0
+                else None
+            ),
+        }
+
+    async def unload_if_idle(self, idle_unload_after_seconds: int) -> bool:
+        if idle_unload_after_seconds <= 0 or not self._loaded:
+            return False
+        if time.time() - self._last_used_at < idle_unload_after_seconds:
+            return False
+        if self._generations:
+            return False
+        self._loaded = False
+        return True
+
+    async def unload(self) -> bool:
+        if self._generations:
+            return False
+        self._loaded = False
+        return True

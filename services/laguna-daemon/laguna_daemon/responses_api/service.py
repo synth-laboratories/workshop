@@ -22,6 +22,15 @@ from .storage import SQLiteResponseStore, StoredResponse
 from .validation import normalize_request
 
 
+def _redact_id(generation_id: str) -> str:
+    """Short, stable, non-reversible handle for a generation.
+
+    Telemetry must never carry a complete stable id that could be correlated
+    back to stored content, so the monitor gets a truncated digest instead.
+    """
+    return "sha256:" + hashlib.sha256(generation_id.encode()).hexdigest()[:12]
+
+
 class ResponsesService:
     CORE_SPEC_VERSION = "2.3.0"
     CORE_SPEC_DATE = "2026-04-24"
@@ -30,9 +39,22 @@ class ResponsesService:
     OPENAI_SCHEMA_COMMIT = "c309ca176bc22c6075a0c2c2543f2ac4f307c447"
     OPENAI_SCHEMA_SHA256 = "cdabcdfc529b1ec0582009bb2ef7d06b64a66d4f6644e66142305a48f0b7658d"
 
-    def __init__(self, config: LagunaConfig, backend: ModelBackend | None = None) -> None:
+    def __init__(
+        self,
+        config: LagunaConfig,
+        backend: ModelBackend | None = None,
+        settings: Any = None,
+    ) -> None:
+        from ..settings import SettingsStore
+
         self.config = config
+        self.settings = settings or SettingsStore.load(config)
         self.backend = backend or self._make_backend(config)
+        # One shared defaults object: the settings store mutates it, both
+        # compile front-ends read it. Explicitly injected test backends get
+        # it too, so PUT /v1/synth/settings behaves identically under mock.
+        self.backend.sampling_defaults = self.settings.sampling
+        self.settings.apply_to_backend(self.backend)
         self.store = SQLiteResponseStore(config.data_dir / "responses.sqlite3")
         self.coordinator = ResponseCoordinator(self.backend, self.store)
         self.compactor = Compactor(config.data_dir / "compaction.key")
@@ -68,11 +90,16 @@ class ResponsesService:
         await self.backend.close()
         await self.store.close()
 
+    @property
+    def idle_unload_after_seconds(self) -> int:
+        """Effective idle deadline: runtime settings win over startup config."""
+        return int(self.settings.idle_unload_after_seconds)
+
     async def unload_if_idle(self) -> bool:
         unload = getattr(self.backend, "unload_if_idle", None)
         if unload is None:
             return False
-        return bool(await unload(self.config.idle_unload_after_seconds))
+        return bool(await unload(self.idle_unload_after_seconds))
 
     async def watch_idle(self) -> None:
         """Evict native Responses weights without shutting down the daemon."""
@@ -84,7 +111,7 @@ class ResponsesService:
         residency = getattr(self.backend, "residency", None)
         if residency is None:
             return None
-        return residency(self.config.idle_unload_after_seconds)
+        return residency(self.idle_unload_after_seconds)
 
     def normalize(self, body: Any) -> dict[str, Any]:
         return normalize_request(body, default_model=self.config.default_model)
@@ -377,6 +404,97 @@ class ResponsesService:
                 "error_code": (response.get("error") or {}).get("code"),
             }
         )
+
+    def inference_snapshot(self) -> dict[str, Any]:
+        """Redacted live inference state for the Desktop monitor.
+
+        Sourced entirely from the backend's own timestamps and counters. Any
+        metric that was not measured is null so the surface renders
+        "Unavailable" rather than a plausible invention. No prompt text,
+        reasoning text, tool input or output, credential, file content, or
+        complete response id can appear here — the only identifier is a short
+        hash of the generation id.
+        """
+        residency = self.residency()
+        resident = bool(residency and residency["loaded"])
+        queue = getattr(self.backend, "queue_state", None)
+        queue_state = queue() if callable(queue) else {"depth": 0, "capacity": 0}
+        active_fn = getattr(self.backend, "active_generation", None)
+        active = active_fn() if callable(active_fn) else None
+        diagnostics = getattr(self.backend, "diagnostics", None)
+        runtime = diagnostics() if callable(diagnostics) else {}
+
+        active_payload: dict[str, Any] | None = None
+        if active is not None:
+            now = time.monotonic()
+            phase = "loading" if runtime.get("loading") else active.phase
+            active_payload = {
+                "generationId": _redact_id(active.generation_id),
+                "phase": phase,
+                "queuedAt": round(active.queued_at * 1000, 3),
+                "startedAt": (
+                    round(active.admitted_at * 1000, 3)
+                    if active.admitted_at is not None
+                    else None
+                ),
+                "firstTokenAt": (
+                    round(active.first_token_at * 1000, 3)
+                    if active.first_token_at is not None
+                    else None
+                ),
+                "lastTokenAt": (
+                    round(active.last_token_at * 1000, 3)
+                    if active.last_token_at is not None
+                    else None
+                ),
+                "promptTokens": active.prompt_tokens,
+                "cachedTokens": active.cached_tokens,
+                "outputTokens": active.output_tokens,
+                "cacheHitRatio": active.cache_hit_ratio(),
+                "prefillTokensPerSecond": active.prefill_tokens_per_second(),
+                "decodeTokensPerSecond": active.decode_tokens_per_second(),
+                "elapsedMs": active.elapsed_ms(now),
+            }
+
+        return {
+            "model": self.config.default_model,
+            "resident": resident,
+            # Real allocator bytes, or null when the backend cannot measure
+            # them. Summing the weights' on-disk size would report a fact about
+            # the filesystem under a name that promises a fact about memory.
+            "residentBytes": self.memory_bytes(),
+            "queueDepth": queue_state["depth"],
+            "queueCapacity": queue_state["capacity"],
+            "active": active_payload,
+            "rolling": self.coordinator.runner.telemetry.snapshot(),
+            # Apple GPU utilization counters are not reliably available, and
+            # deriving one from process CPU would be a fabrication.
+            "gpuUtilization": None,
+        }
+
+    def memory_bytes(self) -> int | None:
+        measure = getattr(self.backend, "memory_bytes", None)
+        return measure() if callable(measure) else None
+
+    def prefill_histogram(self) -> dict[str, Any]:
+        """Rolling prompt-size buckets, served by the control surface only:
+        the legacy inference payload's field set is pinned by its tests."""
+        return self.coordinator.runner.telemetry.prefill_histogram()
+
+    async def unload_now(self) -> bool:
+        """Release weights on request, honoring the same eviction guard."""
+        unload = getattr(self.backend, "unload", None)
+        if unload is not None:
+            return bool(await unload())
+        diagnostics = getattr(self.backend, "diagnostics", None)
+        runtime = diagnostics() if callable(diagnostics) else {}
+        if runtime.get("inflight_generations"):
+            return False
+        release = getattr(self.backend, "_release_model_memory", None)
+        if release is None:
+            return False
+        await release()
+        return True
 
     async def health(self) -> dict[str, Any]:
         capabilities = await self.backend.capabilities(self.config.default_model)

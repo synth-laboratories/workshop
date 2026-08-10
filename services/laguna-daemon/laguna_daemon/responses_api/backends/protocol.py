@@ -20,6 +20,14 @@ class ToolBinding:
 
 @dataclass(frozen=True, slots=True)
 class CompiledTurn:
+    """A protocol-neutral unit of work handed to a backend.
+
+    Everything a backend needs to generate lives in the neutral fields. The
+    `request`/`context_items` pair is Responses-only provenance retained for the
+    remote passthrough backend, which forwards the original body upstream; a
+    Chat turn leaves them empty rather than fabricating a Responses request.
+    """
+
     generation_id: str
     model: str
     request: dict[str, Any]
@@ -31,7 +39,12 @@ class CompiledTurn:
     max_output_tokens: int
     temperature: float
     top_p: float
+    # 0 disables top-k, matching the MLX sampler's own convention. Poolside's
+    # generation_config.json recommends 20 for this checkpoint.
+    top_k: int = 0
+    enable_thinking: bool = True
     structured_format: dict[str, Any] | None = None
+    prompt_cache_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +81,15 @@ class ModelBackend(Protocol):
         context_items: list[dict[str, Any]],
         generation_id: str,
     ) -> CompiledTurn: ...
+
+    async def compile_messages(self, **kwargs: Any) -> CompiledTurn:
+        """Compile an already-neutral turn.
+
+        The peer of `compile` for wire surfaces that are not Responses. Keyword
+        arguments are those of `compiler.compile_messages`; the backend supplies
+        its own prompt builder and ensures any weights it needs are loaded.
+        """
+        ...
 
     async def count_tokens(self, turn: CompiledTurn) -> TokenUsageEstimate: ...
 

@@ -109,8 +109,7 @@ pub fn get() -> Result<BackendSettings> {
         .unwrap_or(DEFAULT_API_KEY_ENV)
         .to_owned();
     let (api_key, api_key_source) = resolve_secret(&api_key_env, &resolved.env_file);
-    let (openrouter_api_key, openrouter_api_key_source) =
-        resolve_secret(OPENROUTER_API_KEY_ENV, &resolved.env_file);
+    let (openrouter_api_key, openrouter_api_key_source) = resolve_openrouter_secret(&resolved);
     Ok(BackendSettings {
         config_path: resolved.config_path.display().to_string(),
         env_file: resolved.env_file.display().to_string(),
@@ -234,7 +233,7 @@ pub fn remove_api_key() -> Result<()> {
 
 pub fn openrouter_api_key() -> Result<Option<String>> {
     let resolved = resolve()?;
-    Ok(resolve_secret(OPENROUTER_API_KEY_ENV, &resolved.env_file).0)
+    Ok(resolve_openrouter_secret(&resolved).0)
 }
 
 pub fn workspace_access_settings() -> Result<WorkspaceAccessSettings> {
@@ -493,6 +492,46 @@ fn resolve_secret(key: &str, env_file: &Path) -> (Option<String>, Option<String>
     (value, source)
 }
 
+/// A canonical desktop can keep its active Synth credentials in a profile
+/// env-file while retaining the OpenRouter key in the original shared private
+/// env-file. Honor that established migration path without making named
+/// development instances read another instance's credentials.
+fn resolve_openrouter_secret(resolved: &ResolvedBackend) -> (Option<String>, Option<String>) {
+    let configured = resolve_secret(OPENROUTER_API_KEY_ENV, &resolved.env_file);
+    if configured.0.is_some() {
+        return configured;
+    }
+
+    // Named development instances set a private data root and are deliberately
+    // credential-isolated. Only a canonical installed app may inherit the
+    // historic shared OpenRouter location.
+    if env::var_os(crate::instance::DATA_ROOT_ENV).is_some() {
+        return configured;
+    }
+    let canonical_root = crate::instance::state_root();
+    let legacy_env = canonical_root.join(".env");
+    if resolved.env_file == legacy_env {
+        return configured;
+    }
+    resolve_openrouter_secret_from_paths(&resolved.env_file, Some(&legacy_env))
+}
+
+fn resolve_openrouter_secret_from_paths(
+    env_file: &Path,
+    legacy_env: Option<&Path>,
+) -> (Option<String>, Option<String>) {
+    let configured = resolve_secret(OPENROUTER_API_KEY_ENV, env_file);
+    if configured.0.is_some() {
+        return configured;
+    }
+    let Some(legacy_env) = legacy_env else {
+        return configured;
+    };
+    let value = read_env_value(legacy_env, OPENROUTER_API_KEY_ENV);
+    let source = value.as_ref().map(|_| legacy_env.display().to_string());
+    (value, source)
+}
+
 fn read_env_value(path: &Path, key: &str) -> Option<String> {
     fs::read_to_string(path)
         .ok()?
@@ -690,6 +729,25 @@ mod tests {
         );
         assert!(fs::read_to_string(&path).unwrap().contains("KEEP=yes"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn openrouter_uses_the_canonical_legacy_env_only_after_the_active_env_misses() {
+        let root = env::temp_dir().join(format!("synth-openrouter-{}", uuid::Uuid::new_v4()));
+        let active = root.join("active.env");
+        let legacy = root.join("legacy.env");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&active, "SYNTH_API_KEY=synth-only\n").unwrap();
+        fs::write(&legacy, "OPENROUTER_API_KEY=legacy-openrouter-key\n").unwrap();
+        let (value, source) = resolve_openrouter_secret_from_paths(&active, Some(&legacy));
+        assert_eq!(value.as_deref(), Some("legacy-openrouter-key"));
+        assert_eq!(source.as_deref(), Some(legacy.to_string_lossy().as_ref()));
+
+        fs::write(&active, "OPENROUTER_API_KEY=active-openrouter-key\n").unwrap();
+        let (value, source) = resolve_openrouter_secret_from_paths(&active, Some(&legacy));
+        assert_eq!(value.as_deref(), Some("active-openrouter-key"));
+        assert_eq!(source.as_deref(), Some(active.to_string_lossy().as_ref()));
+        let _ = fs::remove_dir_all(root);
     }
     #[cfg(unix)]
     #[test]

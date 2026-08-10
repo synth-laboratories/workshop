@@ -1,10 +1,14 @@
 import { useEffect, useState } from "react";
 import type { RuntimeHealth } from "@synth/runtime-protocol";
 import type { DesktopInstanceDiagnostics, LagunaStatus, ModelMultiAgentSetting, MultiAgentVersion } from "../env";
-import { ModelLocationsSettings } from "./ModelLocationsSettings";
+import { OnDeviceModelsSettings } from "./OnDeviceModelsSettings";
+import { InferenceSettings } from "./InferenceSettings";
+import { VoiceRecognitionSettings } from "./VoiceRecognitionSettings";
+import { ModelObservabilitySettings } from "./ModelObservabilitySettings";
 import { BackendSettings } from "./BackendSettings";
-import { LegacyMigrationSettings } from "./LegacyMigrationSettings";
 import { WorkspaceAccessSettings } from "./WorkspaceAccessSettings";
+import { GeneralPreferencesSettings } from "./GeneralPreferencesSettings";
+import type { DesktopPreferences } from "../preferences";
 
 type Props = {
 	onBack: () => void;
@@ -12,16 +16,25 @@ type Props = {
 	health?: RuntimeHealth | null;
 	lagunaPhase?: string | null;
 	initialSection?: SectionId;
+	preferences?: DesktopPreferences;
+	onPreferencesChange?: (prefs: DesktopPreferences) => void;
+	conversationTitles?: Record<string, string>;
+	onUnarchiveConversation?: (id: string) => void;
+	onOpenConversation?: (id: string) => void;
 };
 
 /** Adapter UI is intentionally absent until its full runtime path exists. */
 const SECTIONS = [
+	{ id: "general", label: "General" },
 	{ id: "models", label: "Models" },
+	{ id: "inference", label: "Inference" },
+	{ id: "voice", label: "Voice" },
 	{ id: "runtime", label: "Runtime" },
-	{ id: "account", label: "Account" }
+	{ id: "account", label: "Account" },
+	{ id: "about", label: "About" }
 ] as const;
 
-type SectionId = (typeof SECTIONS)[number]["id"];
+export type SectionId = (typeof SECTIONS)[number]["id"];
 
 const MULTI_AGENT_OPTIONS: Array<{ value: MultiAgentVersion; label: string }> = [
 	{ value: "none", label: "None" },
@@ -75,7 +88,7 @@ function MultiAgentModelSettings() {
 	return (
 		<section className="model-capabilities" data-testid="model-multi-agent-settings">
 			<header className="model-capabilities-head">
-				<h3>Multi-agent compatibility</h3>
+				<h4>Multi-agent compatibility</h4>
 				<p>Presets follow the model family across providers. Overrides apply to new Codex app-server sessions.</p>
 			</header>
 			{error ? <div className="model-locations-error">{error}</div> : null}
@@ -112,28 +125,32 @@ function MultiAgentModelSettings() {
 	);
 }
 
-export function SettingsPage({ onBack, onReloadLaguna, health, lagunaPhase, initialSection = "models" }: Props) {
-	const [section, setSection] = useState<SectionId>(initialSection);
+export function SettingsPage({
+	onBack,
+	onReloadLaguna,
+	health,
+	lagunaPhase,
+	initialSection = "general",
+	preferences,
+	onPreferencesChange,
+	conversationTitles,
+	onUnarchiveConversation,
+	onOpenConversation
+}: Props) {
+	const [section, setSection] = useState<SectionId>(
+		SECTIONS.some((entry) => entry.id === initialSection) ? initialSection : "general"
+	);
 	const [desktopIdentity, setDesktopIdentity] = useState<DesktopInstanceDiagnostics | null>(null);
-	const [reloadState, setReloadState] = useState<"idle" | "reloading" | "ready" | "error">("idle");
-	const [reloadDetail, setReloadDetail] = useState<string | null>(null);
+
+	// Deep links (e.g. the inference panel's gear) retarget an already-open
+	// Settings view; internal nav clicks never change the prop, so they win.
+	useEffect(() => {
+		if (SECTIONS.some((entry) => entry.id === initialSection)) setSection(initialSection);
+	}, [initialSection]);
 
 	useEffect(() => {
 		void window.synthDesktop.getInstanceDiagnostics().then(setDesktopIdentity).catch(() => undefined);
 	}, []);
-
-	const reloadLaguna = async () => {
-		setReloadState("reloading");
-		setReloadDetail("Reloading Laguna XS…");
-		try {
-			const status = await onReloadLaguna();
-			setReloadState("ready");
-			setReloadDetail(status.detail ?? "Laguna XS is ready.");
-		} catch (reason) {
-			setReloadState("error");
-			setReloadDetail(reason instanceof Error ? reason.message : String(reason));
-		}
-	};
 
 	return (
 		<div className="settings-page" data-testid="settings-page">
@@ -159,36 +176,63 @@ export function SettingsPage({ onBack, onReloadLaguna, health, lagunaPhase, init
 				</nav>
 
 				<div className="settings-content">
+					{section === "general" && preferences && onPreferencesChange ? (
+						<GeneralPreferencesSettings
+							preferences={preferences}
+							onPreferencesChange={onPreferencesChange}
+							conversationTitles={conversationTitles}
+							onUnarchive={onUnarchiveConversation}
+							onOpenConversation={onOpenConversation}
+						/>
+					) : null}
 					{section === "models" ? (
 						<div className="settings-finetunes" data-testid="settings-models">
 							<header className="settings-section-head">
 								<div>
+									<p className="settings-breadcrumb">Settings → Models</p>
 									<h2>Models</h2>
-									<p>Local Metal residency, remote providers, and Intern routing.</p>
+									<p>On-device Laguna weights, telemetry, and compatibility for every provider.</p>
 								</div>
-									<div className="settings-reload-control">
-										<button type="button" className="settings-secondary-btn" onClick={() => void reloadLaguna()} disabled={reloadState === "reloading"}>
-											{reloadState === "reloading" ? "Reloading…" : "Reload"}
-										</button>
-										{reloadState !== "idle" ? (
-											<p data-testid="laguna-reload-status" role={reloadState === "error" ? "alert" : "status"} data-state={reloadState}>
-												{reloadState === "reloading" && lagunaPhase ? `Laguna ${lagunaPhase}…` : reloadDetail}
-											</p>
-										) : null}
-									</div>
 							</header>
-							<div className="finetune-base-card">
-								<span className="finetune-kicker">Local base</span>
-								<strong>Laguna XS 2.1 · NVFP4</strong>
-								<span className="finetune-meta">{health?.local.mode === "mlx" ? "MLX / Metal resident" : "Stub boundary"} · {lagunaPhase ?? "unknown"}</span>
-								<span className="finetune-file">{health?.local.modelPath ?? "See discovered local model locations below"}</span>
-							</div>
-							<div className="settings-runtime-grid">
-								<div><span>OpenRouter</span><strong>{health?.openrouter.mode ?? "connecting"}</strong></div>
-								<div><span>Intern</span><strong>{health?.intern.mode ?? "connecting"}</strong></div>
-							</div>
-							<ModelLocationsSettings />
-							<MultiAgentModelSettings />
+							<section className="models-half" data-testid="models-on-device">
+								<header className="models-half-head">
+									<h3>On-device</h3>
+									<p>Local MLX models for Workshop coding agents.</p>
+								</header>
+								<OnDeviceModelsSettings lagunaPhase={lagunaPhase} onReloadLaguna={onReloadLaguna} />
+							</section>
+							<section className="models-half models-half-all" data-testid="models-all">
+								<header className="models-half-head">
+									<h3>All</h3>
+									<p>Observability and multi-agent compatibility across local and cloud models.</p>
+								</header>
+								<ModelObservabilitySettings />
+								<MultiAgentModelSettings />
+							</section>
+						</div>
+					) : null}
+					{section === "inference" ? (
+						<div className="settings-finetunes" data-testid="settings-inference">
+							<header className="settings-section-head">
+								<div>
+									<p className="settings-breadcrumb">Settings → Inference</p>
+									<h2>Inference</h2>
+									<p>Daemon-side defaults for sampling, reasoning, and runtime residency.</p>
+								</div>
+							</header>
+							<InferenceSettings />
+						</div>
+					) : null}
+					{section === "voice" ? (
+						<div className="settings-finetunes" data-testid="settings-voice">
+							<header className="settings-section-head">
+								<div>
+									<p className="settings-breadcrumb">Settings → Voice Recognition</p>
+									<h2>Voice Recognition</h2>
+									<p>Local Whisper models that transcribe dictation from this desktop.</p>
+								</div>
+							</header>
+							<VoiceRecognitionSettings />
 						</div>
 					) : null}
 					{section === "runtime" ? (
@@ -214,36 +258,44 @@ export function SettingsPage({ onBack, onReloadLaguna, health, lagunaPhase, init
 								<span className="finetune-meta">{health?.dataStore?.projects ?? 0} projects · {health?.dataStore?.usage ?? 0} usage entries</span>
 								<span className="finetune-file">{health?.dataStore?.path ?? "Runtime is connecting"}</span>
 							</div>
-							<div className="finetune-base-card">
-								<span className="finetune-kicker">Intern routing</span>
-								<strong>
-									{health?.intern.mode === "remote"
-										? "Cloud mailbox connected"
-										: health?.intern.mode === "demo"
-											? "Explicit demo mailbox"
-											: "Setup required"}
-								</strong>
+							<div className="finetune-base-card" data-testid="intern-routing">
+								<span className="finetune-kicker">Intern routing · [alpha]</span>
+								<strong>Deferred to v0.2</strong>
 								<span className="finetune-meta">
-									{health?.intern.mode === "remote"
-										? "Sync and Async mirror the cloud Intern through the Rust runtime."
-										: health?.intern.mode === "demo"
-											? "Scripted local events are active; no cloud mailbox is contacted."
-											: "Choose cloud credentials or explicit demo mode before starting Intern."}
+									v0.1 does not claim a live Sync/Async cloud mailbox. Proper Intern cloud
+									routing returns when public backend contracts ship; internal or unfinished
+									endpoints are not shown as connected.
 								</span>
-								<code className="finetune-file">
-									{health?.intern.mode === "unconfigured"
-										? "Settings → Account → Synth backend"
-										: health?.intern.mode === "demo"
-											? "SYNTH_INTERN_DEMO=1 npm run dev:desktop"
-											: health?.intern.backendUrl ?? "Cloud endpoint configured"}
-								</code>
+								<code className="finetune-file">See launch_v0p1.md · Intern [alpha] → v0.2</code>
 							</div>
 							<WorkspaceAccessSettings />
-							<LegacyMigrationSettings />
 						</div>
 					) : null}
 					{section === "account" ? (
 						<BackendSettings />
+					) : null}
+					{section === "about" ? (
+						<div className="settings-finetunes" data-testid="settings-about">
+							<header className="settings-section-head">
+								<div>
+									<h2>About</h2>
+									<p>Version, build identity, and changelog entry points.</p>
+								</div>
+							</header>
+							<div className="finetune-base-card" data-testid="about-build-identity">
+								<span className="finetune-kicker">Synth Desktop</span>
+								<strong>{desktopIdentity?.displayName ?? "Synth Desktop"}</strong>
+								<span className="finetune-meta">
+									{desktopIdentity
+										? `v${desktopIdentity.appVersion} · ${desktopIdentity.mode} · source ${desktopIdentity.sourceRevision} · build ${desktopIdentity.buildRevision}`
+										: "Build identity unavailable in this environment."}
+								</span>
+								<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? "Local-first research workbench"}</code>
+							</div>
+							<p className="settings-runtime-copy">
+								Synth Desktop is a local-first research workbench. Release notes and acknowledgements ship with each desktop build.
+							</p>
+						</div>
 					) : null}
 				</div>
 			</div>

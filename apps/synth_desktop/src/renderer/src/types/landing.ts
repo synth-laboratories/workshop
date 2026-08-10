@@ -93,6 +93,8 @@ export type LocalActivityLine = {
 	alwaysAllowSupported?: boolean;
 	/** Expanded raw detail (tool output / thought) when the line is opened. */
 	detail?: string;
+	/** Whether the disclosure contains local thought text or a provider summary. */
+	reasoningDisplay?: "full" | "summary";
 	/** Opens the first-class runtime artifact associated with this activity. */
 	artifactId?: string;
 	/** Opens the first-class container inspector associated with this MCP activity. */
@@ -131,6 +133,8 @@ export type AsyncInternPin = {
 	phase: AsyncPhase;
 	summary: string;
 	needsInput?: boolean;
+	/** When true, closing the window does not pause the job (projection-driven). */
+	leaveSafe?: boolean;
 	cycle?: number;
 	checkpointId?: string;
 	remoteId?: string;
@@ -204,6 +208,16 @@ export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 		group: "cloud"
 	}
 ];
+
+/** Intern Live/Background stay in the catalog for fixtures, but are hidden from v0.1 pickers. */
+export function isInternTargetId(id: string): boolean {
+	return id === "intern-sync" || id === "intern-async";
+}
+
+/** Targets shown in Composer / Landing model menus for the v0.1 launch. */
+export const LAUNCH_PICKER_TARGETS: ExecutionTargetOption[] = EXECUTION_TARGETS.filter(
+	(target) => !isInternTargetId(target.id)
+);
 
 /** @deprecated Prefer openrouter-laguna-s — kept for fixture compatibility. */
 export const OPENROUTER_POOLSIDE_TARGET_ID = "openrouter-laguna-s";

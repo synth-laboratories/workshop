@@ -3,7 +3,36 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from .errors import ResponsesError, unsupported
+from .errors import ResponsesError, invalid, unsupported
+
+
+# A missing per-request limit must leave enough room for a coding agent to emit
+# a complete patch or file-writing tool call.  The old 1,024-token default
+# routinely cut a tool call in half, which Codex correctly treated as an
+# incomplete response and retried verbatim.  Keep the default below the model's
+# hard ceiling so an accidentally unbounded prose response is still contained.
+DEFAULT_MAX_OUTPUT_TOKENS = 8_192
+
+#: The model's hard output ceiling; requests and settings above it are invalid.
+HARD_MAX_OUTPUT_TOKENS = 32_768
+
+
+@dataclass(slots=True)
+class SamplingDefaults:
+    """What an absent request field means, for both wire surfaces.
+
+    Precedence is always: explicit request value > these defaults > nothing.
+    The built-in values reproduce the daemon's historical behavior exactly;
+    the settings store mutates one shared instance so a PUT applies to the
+    running daemon without a restart. Deliberately a leaf type here: the
+    compiler receives it as an argument and never reaches into global state.
+    """
+
+    temperature: float = 1.0
+    top_p: float = 1.0
+    top_k: int = 0
+    reasoning_effort: str = "high"  # absent reasoning means thinking on
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +62,23 @@ class ModelCapabilities:
 def validate_capabilities(
     request: dict[str, Any], capabilities: ModelCapabilities
 ) -> None:
+    requested_output = request.get("max_output_tokens")
+    if requested_output is not None:
+        if (
+            not isinstance(requested_output, int)
+            or isinstance(requested_output, bool)
+            or requested_output <= 0
+        ):
+            raise invalid(
+                "max_output_tokens must be a positive integer.",
+                param="max_output_tokens",
+            )
+        if requested_output > capabilities.max_output_tokens:
+            raise invalid(
+                "max_output_tokens exceeds the model limit of "
+                f"{capabilities.max_output_tokens}.",
+                param="max_output_tokens",
+            )
     input_items = request.get("input")
     if isinstance(input_items, str) or input_items is None:
         input_items = []

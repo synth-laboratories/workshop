@@ -22,6 +22,7 @@ import {
 	type SyncSession,
 	type SyncSessionStatus
 } from "../types/landing";
+import { modelCapabilitiesForExecutionTarget } from "./modelCapabilities";
 
 export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 	const adapter = null;
@@ -128,18 +129,13 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 	const order: string[] = [];
 	const subagentIds = new Set(eventsToSubagents(events).map((agent) => agent.id));
 	let activeAssistantId: string | null = null;
+	let producedAssistantForTurn = false;
 
 	for (const event of events) {
 		const payload = event.payload ?? {};
 		if (event.eventKind === "run.started") {
 			activeAssistantId = null;
-		}
-		if (
-			event.eventKind === "run.completed" ||
-			event.eventKind === "run.failed" ||
-			event.eventKind === "run.cancelled"
-		) {
-			activeAssistantId = null;
+			producedAssistantForTurn = false;
 		}
 		const eventThreadId = typeof payload.threadId === "string"
 			? payload.threadId
@@ -196,12 +192,18 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 				const existing = byId.get(messageId)!;
 				byId.set(messageId, { ...existing, role, body: content || existing.body });
 				}
-				if (!isInternAgentMessage && role === "assistant") activeAssistantId = messageId;
+				if (!isInternAgentMessage && role === "assistant") {
+					activeAssistantId = messageId;
+					producedAssistantForTurn = true;
+				}
 				// The locally inserted user event is the most reliable turn boundary.
 				// Some app-server/provider combinations emit turn/started late or omit
 				// it, so carrying the prior assistant id past a user message merges the
 				// next response into the preceding turn above the new prompt.
-				if (!isInternAgentMessage && role === "user") activeAssistantId = null;
+				if (!isInternAgentMessage && role === "user") {
+					activeAssistantId = null;
+					producedAssistantForTurn = false;
+				}
 				continue;
 		}
 
@@ -228,6 +230,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 				});
 				}
 				activeAssistantId = messageId;
+				producedAssistantForTurn = true;
 				continue;
 		}
 
@@ -262,10 +265,43 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 				});
 				}
 				activeAssistantId = completionMessageId;
+				producedAssistantForTurn = true;
 			}
+
+		if (
+			event.eventKind === "run.completed" ||
+			event.eventKind === "run.failed" ||
+			event.eventKind === "run.cancelled"
+		) {
+			if (!producedAssistantForTurn) {
+				const detail = terminalTurnDetail(event.payload ?? {});
+				const failureDetail = detail ? `: ${detail.replace(/[.!?]+$/, "")}.` : ".";
+				const message = event.eventKind === "run.failed"
+					? `The provider could not produce a response${failureDetail} Try again.`
+					: event.eventKind === "run.cancelled"
+						? "The response was stopped before the provider returned an answer."
+						: "The provider ended the turn without a response. Please try again.";
+				const id = `terminal-${event.sequence}`;
+				order.push(id);
+				byId.set(id, { id, role: "system", body: message, at: event.createdAt });
+			}
+			activeAssistantId = null;
+			producedAssistantForTurn = false;
+		}
 	}
 
 	return order.map((id) => byId.get(id)!).filter(Boolean);
+}
+
+function terminalTurnDetail(payload: Record<string, unknown>): string | undefined {
+	const turn = payload.turn && typeof payload.turn === "object"
+		? payload.turn as Record<string, unknown>
+		: payload;
+	const error = turn.error && typeof turn.error === "object"
+		? turn.error as Record<string, unknown>
+		: payload.error && typeof payload.error === "object" ? payload.error as Record<string, unknown> : undefined;
+	const message = typeof error?.message === "string" ? error.message : undefined;
+	return message?.trim() || undefined;
 }
 
 export function eventsToActivity(
@@ -685,7 +721,8 @@ export function eventsToSubagents(events: RuntimeEvent[]): SubagentState[] {
 
 export function eventsToLocalActivity(
 	events: RuntimeEvent[],
-	messages: ChatMessage[]
+	messages: ChatMessage[],
+	reasoningDisplay: "none" | "full" | "summary" = "none"
 ): Record<string, LocalActivityLine[]> {
 	const assistantIds = messages.filter((message) => message.role === "assistant").map((message) => message.id);
 	const approvalKey = (event: RuntimeEvent): string | undefined => {
@@ -714,8 +751,10 @@ export function eventsToLocalActivity(
 		}
 	}
 	const byMessage: Record<string, LocalActivityLine[]> = {};
-	let current = assistantIds[0] ?? "__active__";
-	let runIndex = 0;
+	// Activity belongs to the current turn, not to the first historical
+	// assistant message. Until the new assistant item has a stable id it stays
+	// in the active tail directly after the latest user bubble.
+	let current = "__active__";
 	const subagentTitles = new Map<string, string>();
 	const shownSubagentStarts = new Set<string>();
 	const shownSubagentEnds = new Set<string>();
@@ -762,7 +801,17 @@ export function eventsToLocalActivity(
 			continue;
 		}
 		const explicit = typeof payload.messageId === "string" ? payload.messageId : null;
-		if (explicit && assistantIds.includes(explicit)) current = explicit;
+		const chronologicalAssistant = event.eventKind.startsWith("message.")
+			? messages.filter((message) => message.role === "assistant" && message.at <= event.createdAt).at(-1)?.id
+			: undefined;
+		const resolvedAssistant = explicit && assistantIds.includes(explicit) ? explicit : chronologicalAssistant;
+		if (resolvedAssistant) {
+			if (current === "__active__" && byMessage.__active__?.length) {
+				(byMessage[resolvedAssistant] ??= []).push(...byMessage.__active__);
+				delete byMessage.__active__;
+			}
+			current = resolvedAssistant;
+		}
 		if (event.eventKind === "message.created" && payload.role === "user") {
 			const userIndex = messages.findIndex((message) => message.id === explicit);
 			const followingAssistant = userIndex >= 0
@@ -773,10 +822,6 @@ export function eventsToLocalActivity(
 			continue;
 		}
 		if (event.eventKind === "run.started") {
-			if (current === "__active__") {
-				current = assistantIds[Math.min(runIndex, assistantIds.length - 1)] ?? "__active__";
-			}
-			runIndex += 1;
 			runStartedAt = event.createdAt;
 			runActions = { commands: 0, reads: 0, writes: 0, searches: 0, tools: 0 };
 			shownToolLines.clear();
@@ -803,7 +848,7 @@ export function eventsToLocalActivity(
 			continue;
 		}
 		if (event.eventKind.startsWith("message.")) continue;
-		if (event.eventKind === "agent.reasoning" || event.eventKind.startsWith("thought.")) {
+		if (reasoningDisplay !== "none" && (event.eventKind === "agent.reasoning" || event.eventKind.startsWith("thought."))) {
 			const supplied =
 				typeof payload.delta === "string" ? payload.delta :
 				typeof payload.content === "string" ? payload.content :
@@ -812,11 +857,18 @@ export function eventsToLocalActivity(
 			if (!supplied) continue;
 			const lines = (byMessage[current] ??= []);
 			const previous = lines.at(-1);
-			if (previous?.kind === "thought" && previous.label === "Thinking") {
+			const label = reasoningDisplay === "full" ? "Thought" : "Reasoning summary";
+			if (previous?.kind === "thought" && previous.reasoningDisplay === reasoningDisplay) {
 				const existing = previous.detail ?? "";
 				previous.detail = supplied.startsWith(existing) ? supplied : existing + supplied;
 			} else {
-				lines.push({ id: `activity-${event.sequence}`, label: "Thinking", detail: supplied, kind: "thought" });
+				lines.push({
+					id: `activity-${event.sequence}`,
+					label,
+					detail: supplied,
+					kind: "thought",
+					reasoningDisplay
+				});
 			}
 			continue;
 		}
@@ -1061,7 +1113,7 @@ export function healthToModelStatus(
 			detail: "Connecting to local runtime…"
 		};
 	}
-	if (health.local.mode === "stub") {
+	if (health.local.mode === "absent") {
 		return {
 			status: "not_installed",
 			name,
@@ -1121,7 +1173,11 @@ export function buildLandingState(args: {
 				title: session.title,
 				messages,
 				artifacts,
-				activityByMessageId: eventsToLocalActivity(events, messages)
+				activityByMessageId: eventsToLocalActivity(
+					events,
+					messages,
+					modelCapabilitiesForExecutionTarget(session.target)?.reasoningDisplay ?? "none"
+				)
 			});
 			continue;
 		}
@@ -1157,6 +1213,7 @@ export function buildLandingState(args: {
 							? "Checkpoint saved · waiting for the next cycle"
 						: session.title,
 				needsInput: session.status === "waiting_for_input",
+				leaveSafe: true,
 				remoteId: session.remoteId ?? session.id,
 				cursor: session.latestCursor,
 				messages,

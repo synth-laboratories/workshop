@@ -41,6 +41,22 @@ pub fn apply_migrations(conn: &Connection) -> Result<i64> {
         )?;
     }
 
+    if current < 4 {
+        conn.execute_batch(MIGRATION_4)?;
+        conn.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (4, datetime('now'))",
+            [],
+        )?;
+    }
+
+    if current < 5 {
+        conn.execute_batch(MIGRATION_5)?;
+        conn.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (5, datetime('now'))",
+            [],
+        )?;
+    }
+
     let version: i64 = conn.query_row(
         "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
         [],
@@ -394,6 +410,115 @@ CREATE INDEX IF NOT EXISTS trace_annotations_trace_created
 ON trace_annotations(trace_digest, created_at);
 "#;
 
+const MIGRATION_4: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_runs (
+    id TEXT PRIMARY KEY,
+    algorithm_id TEXT NOT NULL,
+    algorithm_version TEXT,
+    status TEXT NOT NULL,
+    source TEXT NOT NULL,
+    objective TEXT,
+    project_ref TEXT,
+    session_ref TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    cursor_seq INTEGER NOT NULL DEFAULT 0,
+    capabilities_json TEXT NOT NULL DEFAULT '{}',
+    bindings_json TEXT NOT NULL DEFAULT '[]',
+    input_refs_json TEXT NOT NULL DEFAULT '[]',
+    output_refs_json TEXT NOT NULL DEFAULT '[]',
+    visual_refs_json TEXT NOT NULL DEFAULT '[]',
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    usage_json TEXT NOT NULL DEFAULT '{}',
+    error_json TEXT,
+    payload_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS optimizer_runs_status ON optimizer_runs(status);
+CREATE INDEX IF NOT EXISTS optimizer_runs_algorithm ON optimizer_runs(algorithm_id);
+CREATE INDEX IF NOT EXISTS optimizer_runs_updated ON optimizer_runs(updated_at);
+
+CREATE TABLE IF NOT EXISTS optimizer_event_cursors (
+    optimizer_run_id TEXT PRIMARY KEY REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    cursor_seq INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS optimizer_events (
+    event_id TEXT PRIMARY KEY,
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    sequence_number INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    algorithm_id TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    UNIQUE (optimizer_run_id, sequence_number)
+);
+
+CREATE INDEX IF NOT EXISTS optimizer_events_run_seq
+ON optimizer_events(optimizer_run_id, sequence_number);
+
+CREATE TABLE IF NOT EXISTS optimizer_relationships (
+    from_kind TEXT NOT NULL,
+    from_id TEXT NOT NULL,
+    edge TEXT NOT NULL,
+    to_kind TEXT NOT NULL,
+    to_id TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (from_kind, from_id, edge, to_kind, to_id)
+);
+
+CREATE INDEX IF NOT EXISTS optimizer_relationships_to
+ON optimizer_relationships(to_kind, to_id);
+
+CREATE TABLE IF NOT EXISTS optimizer_cached_slices (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    slice_id TEXT NOT NULL,
+    cursor_seq INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, slice_id)
+);
+"#;
+
+const MIGRATION_5: &str = r#"
+CREATE TABLE IF NOT EXISTS conversation_workspace_scopes (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    workspace TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    bound_revision INTEGER NOT NULL DEFAULT 0,
+    binding_status TEXT NOT NULL DEFAULT 'pending',
+    binding_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workspace_attachments (
+    session_id TEXT NOT NULL REFERENCES conversation_workspace_scopes(session_id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    access TEXT NOT NULL CHECK(access IN ('read_only', 'read_write')),
+    source TEXT NOT NULL CHECK(source IN ('user_picker', 'agent_request', 'migrated_default')),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS workspace_grant_requests (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    access TEXT NOT NULL CHECK(access IN ('read_only', 'read_write')),
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'denied')),
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS workspace_grants_session_status
+ON workspace_grant_requests(session_id, status, created_at);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,7 +549,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 3);
+        assert_eq!(apply_migrations(&conn).unwrap(), 5);
         let updated_at: String = conn
             .query_row(
                 "SELECT updated_at FROM runs WHERE id = 'run-1'",

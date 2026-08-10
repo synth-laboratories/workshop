@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
 	ASYNC_PHASE_LABEL,
 	SYNC_STATUS_LABEL,
@@ -7,6 +7,8 @@ import {
 import { ModelDownloadBar } from "./ModelDownloadBar";
 import { LocalModelResidency } from "./LocalModelResidency";
 import type { LagunaStatus } from "../env";
+import { ConversationContextMenu } from "./GeneralPreferencesSettings";
+import { PaneResizeHandle } from "./PaneResizeHandle";
 
 type Props = {
 	state: LandingState;
@@ -16,9 +18,12 @@ type Props = {
 	asyncActive?: boolean;
 	inventoryActive?: boolean;
 	visualsActive?: boolean;
+	optimizersActive?: boolean;
 	connectorsActive?: boolean;
 	workingChatIds?: ReadonlySet<string>;
 	unreadChatIds?: ReadonlySet<string>;
+	pinnedChatIds?: ReadonlySet<string>;
+	conversationTitles?: Record<string, string>;
 	onNewConversation: () => void;
 	onNewSyncSession: () => void;
 	onOpenChat: (id: string) => void;
@@ -26,13 +31,17 @@ type Props = {
 	onOpenAsync: () => void;
 	onOpenInventory: () => void;
 	onOpenVisuals: () => void;
+	onOpenOptimizers: () => void;
 	onOpenConnectors: () => void;
 	onSearch: () => void;
 	onSettings: () => void;
 	onPauseToggle: () => void;
-	onAddProject: () => void;
-	onSelectProject: (id: string) => void;
-	selectedProjectId?: string | null;
+	onRenameChat?: (id: string, title: string) => void;
+	onPinChat?: (id: string, pinned: boolean) => void;
+	onArchiveChat?: (id: string, archived: boolean) => void;
+	sidebarWidth?: number;
+	onSidebarWidthChange?: (width: number) => void;
+	sidebarVisible?: boolean;
 };
 
 function IconPlusSquare({ className = "nav-icon" }: { className?: string }) {
@@ -62,14 +71,6 @@ function IconSearch() {
 		<svg className="nav-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
 			<circle cx="7" cy="7" r="4" stroke="currentColor" strokeWidth="1.35" />
 			<path d="M10.2 10.2L13.5 13.5" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" />
-		</svg>
-	);
-}
-
-function IconFolderSmall() {
-	return (
-		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<path d="M2 4.5h4l1.2 1.4H14v6.5a1 1 0 01-1 1H3a1 1 0 01-1-1V4.5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
 		</svg>
 	);
 }
@@ -168,9 +169,12 @@ export function Sidebar({
 	asyncActive = false,
 	inventoryActive = false,
 	visualsActive = false,
+	optimizersActive = false,
 	connectorsActive = false,
 	workingChatIds = new Set<string>(),
 	unreadChatIds = new Set<string>(),
+	pinnedChatIds = new Set<string>(),
+	conversationTitles = {},
 	onNewConversation,
 	onNewSyncSession,
 	onOpenChat,
@@ -178,21 +182,48 @@ export function Sidebar({
 	onOpenAsync,
 	onOpenInventory,
 	onOpenVisuals,
+	onOpenOptimizers,
 	onOpenConnectors,
 	onSearch,
 	onSettings,
 	onPauseToggle,
-	onAddProject,
-	onSelectProject,
-	selectedProjectId = null
+	onRenameChat,
+	onPinChat,
+	onArchiveChat,
+	sidebarWidth = 260,
+	onSidebarWidthChange,
+	sidebarVisible = true
 }: Props) {
 	const [chatsOpen, setChatsOpen] = useState(true);
 	const [cloudOpen, setCloudOpen] = useState(true);
 	const [inventoryOpen, setInventoryOpen] = useState(true);
 	const [researchOpen, setResearchOpen] = useState(true);
+	const [menu, setMenu] = useState<{ id: string; x: number; y: number; invoker: HTMLButtonElement } | null>(null);
+	const [renamingId, setRenamingId] = useState<string | null>(null);
+	const [renameDraft, setRenameDraft] = useState("");
+	const [showAllChats, setShowAllChats] = useState(false);
+
+	const orderedChats = useMemo(() => [...state.chats].sort((a, b) => {
+		const aPinned = pinnedChatIds.has(a.id);
+		const bPinned = pinnedChatIds.has(b.id);
+		if (aPinned !== bPinned) return aPinned ? -1 : 1;
+		return 0;
+	}), [pinnedChatIds, state.chats]);
+	const visibleChats = useMemo(() => {
+		if (showAllChats) return orderedChats;
+		const alwaysVisible = new Set([
+			...orderedChats.filter((chat) => pinnedChatIds.has(chat.id)).map((chat) => chat.id),
+			...orderedChats.filter((chat) => chat.id === activeChatId || workingChatIds.has(chat.id)).map((chat) => chat.id)
+		]);
+		const priority = orderedChats.filter((chat) => alwaysVisible.has(chat.id));
+		const remainder = orderedChats.filter((chat) => !alwaysVisible.has(chat.id));
+		return [...priority, ...remainder].slice(0, Math.max(10, priority.length));
+	}, [activeChatId, orderedChats, pinnedChatIds, showAllChats, workingChatIds]);
+
+	if (!sidebarVisible) return null;
 
 	return (
-		<aside className="sidebar" data-testid="sidebar">
+		<aside className="sidebar" data-testid="sidebar" style={{ width: sidebarWidth }}>
 			<div className="sidebar-drag-strip" data-tauri-drag-region="" aria-hidden />
 
 			<nav className="sidebar-nav" aria-label="Primary">
@@ -224,6 +255,7 @@ export function Sidebar({
 							className="section-header-label"
 							onClick={() => setChatsOpen((v) => !v)}
 							aria-expanded={chatsOpen}
+							aria-controls="sidebar-chats"
 						>
 							Chats
 							<SectionChevron open={chatsOpen} />
@@ -238,66 +270,101 @@ export function Sidebar({
 						</button>
 					</div>
 					{chatsOpen ? (
-						<div className="section-list" data-testid="chat-list">
-							{state.chats.length === 0 ? (
+						<div id="sidebar-chats" className="section-list" data-testid="chat-list">
+							{orderedChats.length === 0 ? (
 								<p className="empty-hint">No local chats yet</p>
 							) : (
-								state.chats.map((chat) => (
-									<button
-										key={chat.id}
-										type="button"
-										className={`chat-item${activeChatId === chat.id ? " active" : ""}`}
-										onClick={() => onOpenChat(chat.id)}
-										data-testid={`local-chat-${chat.id}`}
-									>
-										<IconGlobe />
-										<span className="item-label">{chat.title}</span>
-										{workingChatIds.has(chat.id) ? (
-											<span className="chat-working-indicator" aria-label="Working" title="Working" data-testid={`chat-working-${chat.id}`} />
-										) : unreadChatIds.has(chat.id) ? (
-											<span className="chat-unread-indicator" aria-label="Finished, unviewed" title="Finished, unviewed" data-testid={`chat-unread-${chat.id}`} />
-										) : null}
-									</button>
-								))
+								visibleChats.map((chat) => {
+									const title = conversationTitles[chat.id] ?? chat.title;
+									const pinned = pinnedChatIds.has(chat.id);
+									const working = workingChatIds.has(chat.id);
+									if (renamingId === chat.id) {
+										return (
+											<form
+												key={chat.id}
+												className="chat-rename-form"
+												data-testid={`rename-chat-${chat.id}`}
+												onSubmit={(event) => {
+													event.preventDefault();
+													try {
+														onRenameChat?.(chat.id, renameDraft);
+														setRenamingId(null);
+													} catch {
+														/* keep editing on empty reject */
+													}
+												}}
+											>
+												<input
+													aria-label="Rename conversation"
+													value={renameDraft}
+													autoFocus
+													onChange={(event) => setRenameDraft(event.target.value)}
+													onKeyDown={(event) => {
+														if (event.key === "Escape") {
+															event.preventDefault();
+															setRenamingId(null);
+														}
+													}}
+												/>
+												<button type="submit">Save</button>
+												<button type="button" onClick={() => setRenamingId(null)}>Cancel</button>
+											</form>
+										);
+									}
+									return (
+										<button
+											key={chat.id}
+											type="button"
+											className={`chat-item${activeChatId === chat.id ? " active" : ""}${pinned ? " pinned" : ""}`}
+											onClick={() => onOpenChat(chat.id)}
+											onContextMenu={(event) => {
+												event.preventDefault();
+											setMenu({ id: chat.id, x: event.clientX, y: event.clientY, invoker: event.currentTarget });
+											}}
+											onKeyDown={(event) => {
+												if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+													event.preventDefault();
+													const rect = event.currentTarget.getBoundingClientRect();
+												setMenu({ id: chat.id, x: rect.left + 8, y: rect.bottom, invoker: event.currentTarget });
+												}
+											}}
+											aria-haspopup="menu"
+											data-testid={`local-chat-${chat.id}`}
+										>
+											<IconGlobe />
+											<span className="item-label">{title}</span>
+											{pinned ? <span className="chat-pin-marker" aria-label="Pinned" title="Pinned" data-testid={`chat-pinned-${chat.id}`}>Pinned</span> : null}
+											{working ? (
+												<span className="chat-working-indicator" aria-label="Working" title="Working" data-testid={`chat-working-${chat.id}`} />
+											) : unreadChatIds.has(chat.id) ? (
+												<span className="chat-unread-indicator" aria-label="Finished, unviewed" title="Finished, unviewed" data-testid={`chat-unread-${chat.id}`} />
+											) : null}
+										</button>
+									);
+								})
 							)}
+							{orderedChats.length > visibleChats.length ? (
+								<button
+									type="button"
+									className="sidebar-show-more"
+									data-testid="sidebar-show-all-chats"
+									aria-expanded={showAllChats}
+									onClick={() => setShowAllChats(true)}
+								>
+									Show {orderedChats.length - visibleChats.length} more
+								</button>
+							) : showAllChats && orderedChats.length > 10 ? (
+								<button
+									type="button"
+									className="sidebar-show-more"
+									data-testid="sidebar-show-fewer-chats"
+									onClick={() => setShowAllChats(false)}
+								>
+									Show fewer
+								</button>
+							) : null}
 						</div>
 					) : null}
-				</div>
-
-				<div className="sidebar-section">
-					<div className="section-header">
-						<span className="section-header-label">Projects</span>
-						<button
-							type="button"
-							className="section-action"
-							aria-label="Add project"
-							onClick={onAddProject}
-							data-testid="add-project"
-						>
-							<IconPlusSquare className="section-action-icon" />
-						</button>
-					</div>
-					<div className="section-list" data-testid="project-list">
-						{state.projects.length === 0 ? (
-							<button type="button" className="add-project-card" onClick={onAddProject}>
-								<IconPlusSquare className="item-icon" />
-								<span>Add a project</span>
-							</button>
-						) : (
-							state.projects.map((project) => (
-								<button
-									key={project.id}
-									type="button"
-									className={`project-item${selectedProjectId === project.id ? " active" : ""}`}
-									onClick={() => onSelectProject(project.id)}
-									data-testid={`project-${project.id}`}
-								>
-									<IconFolderSmall />
-									<span className="item-label">{project.name}</span>
-								</button>
-							))
-						)}
-					</div>
 				</div>
 
 				{/* ── Cloud = Intern sync sessions + pinned async ── */}
@@ -308,6 +375,7 @@ export function Sidebar({
 							className="section-header-label"
 							onClick={() => setCloudOpen((v) => !v)}
 							aria-expanded={cloudOpen}
+							aria-controls="sidebar-cloud"
 						>
 							Cloud
 							<SectionChevron open={cloudOpen} />
@@ -323,7 +391,7 @@ export function Sidebar({
 						</button>
 					</div>
 					{cloudOpen ? (
-						<div className="section-list" data-testid="cloud-list">
+						<div id="sidebar-cloud" className="section-list" data-testid="cloud-list">
 							<p className="cloud-sublabel">Sync sessions</p>
 							{state.syncSessions.length === 0 ? (
 								<p className="empty-hint">No live sessions</p>
@@ -377,13 +445,14 @@ export function Sidebar({
 							className="section-header-label"
 							onClick={() => setResearchOpen((v) => !v)}
 							aria-expanded={researchOpen}
+							aria-controls="sidebar-research"
 						>
 							Research
 							<SectionChevron open={researchOpen} />
 						</button>
 					</div>
 					{researchOpen ? (
-						<div className="section-list" data-testid="research-nav">
+						<div id="sidebar-research" className="section-list" data-testid="research-nav">
 							<button
 								type="button"
 								className={`chat-item${visualsActive ? " active" : ""}`}
@@ -392,6 +461,15 @@ export function Sidebar({
 							>
 								<IconSearch />
 								<span className="item-label">Visuals</span>
+							</button>
+							<button
+								type="button"
+								className={`chat-item${optimizersActive ? " active" : ""}`}
+								onClick={onOpenOptimizers}
+								data-testid="open-optimizers"
+							>
+								<IconInventory />
+								<span className="item-label">Optimizers</span>
 							</button>
 						</div>
 					) : null}
@@ -405,13 +483,14 @@ export function Sidebar({
 							className="section-header-label"
 							onClick={() => setInventoryOpen((v) => !v)}
 							aria-expanded={inventoryOpen}
+							aria-controls="sidebar-inventory"
 						>
 							Inventory
 							<SectionChevron open={inventoryOpen} />
 						</button>
 					</div>
 					{inventoryOpen ? (
-						<div className="section-list" data-testid="inventory-nav">
+						<div id="sidebar-inventory" className="section-list" data-testid="inventory-nav">
 							<button
 								type="button"
 								className={`chat-item${inventoryActive ? " active" : ""}`}
@@ -440,6 +519,37 @@ export function Sidebar({
 					Settings
 				</button>
 			</div>
+			{onSidebarWidthChange ? (
+				<PaneResizeHandle
+					value={sidebarWidth}
+					onChange={onSidebarWidthChange}
+					minPrimary={480}
+					minSecondary={180}
+					ariaLabel="Resize sidebar"
+					direction="sidebar"
+				/>
+			) : null}
+			<ConversationContextMenu
+				open={Boolean(menu)}
+				x={menu?.x ?? 0}
+				y={menu?.y ?? 0}
+				conversationId={menu?.id ?? ""}
+				pinned={menu ? pinnedChatIds.has(menu.id) : false}
+				archived={false}
+				working={menu ? workingChatIds.has(menu.id) : false}
+				onClose={() => {
+					const invoker = menu?.invoker;
+					setMenu(null);
+					requestAnimationFrame(() => invoker?.isConnected && invoker.focus());
+				}}
+				onRename={(id) => {
+					const chat = state.chats.find((entry) => entry.id === id);
+					setRenameDraft(conversationTitles[id] ?? chat?.title ?? "");
+					setRenamingId(id);
+				}}
+				onPin={(id, pinned) => onPinChat?.(id, pinned)}
+				onArchive={(id, archived) => onArchiveChat?.(id, archived)}
+			/>
 		</aside>
 	);
 }

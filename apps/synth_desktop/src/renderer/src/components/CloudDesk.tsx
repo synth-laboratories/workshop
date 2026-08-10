@@ -198,6 +198,8 @@ function ActivityStream({
 
 export function CloudDesk(props: Props) {
 	const [filter, setFilter] = useState<ActivityFilter>("all");
+	const [interventionOpen, setInterventionOpen] = useState(false);
+	const [interventionDraft, setInterventionDraft] = useState("");
 	const isSync = props.kind === "sync";
 	const title = isSync ? props.session.title : "Async Intern";
 	const status = isSync
@@ -207,7 +209,7 @@ export function CloudDesk(props: Props) {
 	const cursor = isSync ? props.session.cursor : props.intern.cursor;
 	const messages = isSync ? props.session.messages : props.intern.messages;
 	const activity = isSync ? props.session.activity : props.intern.activity;
-	const leaveSafe = !isSync;
+	const leaveSafe = isSync ? false : props.intern.leaveSafe === true;
 	const shortId = remoteId
 		? remoteId.replace(/^smr\.(intern-sync-session|intern-async-runtime)\.v1\//, "")
 		: null;
@@ -282,9 +284,35 @@ export function CloudDesk(props: Props) {
 				<div className="needs-input-banner" role="status">
 					<strong>Needs input</strong>
 					<span>{props.intern.summary}</span>
-					<button type="button" onClick={() => props.onAction("Provide input")}>
-						Respond
-					</button>
+					{interventionOpen ? (
+						<form
+							className="intern-intervention"
+							onSubmit={(event) => {
+								event.preventDefault();
+								const text = interventionDraft.trim();
+								if (!text) return;
+								if (props.onSendMessage) props.onSendMessage(text);
+								else props.onAction(`Send: ${text.slice(0, 48)}`);
+								setInterventionDraft("");
+								setInterventionOpen(false);
+							}}
+						>
+							<textarea
+								data-testid="intern-intervention-input"
+								aria-label="Operator intervention"
+								value={interventionDraft}
+								onChange={(event) => setInterventionDraft(event.target.value)}
+								rows={3}
+							/>
+							<button type="submit" disabled={!interventionDraft.trim()}>
+								Send response
+							</button>
+						</form>
+					) : (
+						<button type="button" onClick={() => setInterventionOpen(true)}>
+							Respond
+						</button>
+					)}
 				</div>
 			) : null}
 

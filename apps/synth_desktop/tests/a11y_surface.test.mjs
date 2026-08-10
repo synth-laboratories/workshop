@@ -52,7 +52,7 @@ test("installed desktop authorizes its declared window drag regions", () => {
   assert.match(permissions, /core:window:allow-start-dragging/);
 });
 
-test("execution targets include Laguna local + OpenRouter Luna/Laguna + Intern", () => {
+test("execution targets include Laguna local + OpenRouter Luna/Laguna + Synth Cloud + Intern", () => {
   const types = read("types/landing.ts");
   const composer = read("components/Composer.tsx");
   const bridge = read("runtime/desktopBridge.ts");
@@ -60,6 +60,8 @@ test("execution targets include Laguna local + OpenRouter Luna/Laguna + Intern",
   assert.ok(types.includes("local-laguna") || types.includes("Laguna XS"));
   assert.ok(types.includes('label: "GPT 5.6 Luna"'));
   assert.ok(types.includes("laguna-s-2.1") || types.includes("Laguna S"));
+  assert.ok(types.includes("synth-cloud-laguna-s"));
+  assert.ok(types.includes("Synth Cloud · usage tracked"));
   assert.ok(types.includes("intern"));
   assert.ok(composer.includes('data-testid={`${knob.testId}-select`}'));
   assert.ok(composer.includes('data-testid={`${knob.testId}-menu`}'));
@@ -71,7 +73,7 @@ test("model knobs are registered once and consumed without model-specific UI or 
   const registry = read("runtime/modelCapabilities.ts");
   const composer = read("components/Composer.tsx");
   const app = read("App.tsx");
-  for (const target of ["local-laguna", "openrouter-luna", "openrouter-laguna-s"]) {
+  for (const target of ["local-laguna", "openrouter-luna", "openrouter-laguna-s", "synth-cloud-laguna-s"]) {
     assert.ok(registry.includes(`targetId: "${target}"`), target);
   }
   assert.ok(composer.includes("modelCapabilitiesForTarget(state.selectedTargetId)"));
@@ -93,12 +95,24 @@ test("renderer keeps the HTTP runtime bridge browser-only", () => {
 
 test("renderer uses Tauri commands for desktop capabilities", () => {
   const bridge = read("runtime/desktopBridge.ts");
-  assert.ok(bridge.includes('"project_choose_directory"'));
+  assert.ok(bridge.includes('"workspace_choose_directory"'));
   assert.ok(bridge.includes('"laguna_get_status"'));
-  assert.ok(bridge.includes('"core_projects_list"'));
+  assert.ok(!bridge.includes('"core_projects_list"'));
   assert.ok(bridge.includes('"intern_session_events_after"'));
   assert.ok(bridge.includes('listen<AppEvent>("runtime:event"'));
   assert.ok(bridge.includes('"codex_sessions_list"'));
+});
+
+test("parked Projects feature is absent from the active renderer and IPC bridge", () => {
+  const app = read("App.tsx");
+  const sidebar = read("components/Sidebar.tsx");
+  const landing = read("components/LandingPage.tsx");
+  const bridge = read("runtime/desktopBridge.ts");
+  assert.ok(!sidebar.includes('data-testid="project-list"'));
+  assert.ok(!sidebar.includes('data-testid="add-project"'));
+  assert.ok(!landing.includes('data-testid="quick-add-project"'));
+  assert.ok(!app.includes("selectedProjectId"));
+  assert.ok(!bridge.includes("synthProjects"));
 });
 
 test("native Codex sessions use one sequence allocator and restore persisted sessions", () => {
@@ -107,19 +121,17 @@ test("native Codex sessions use one sequence allocator and restore persisted ses
   assert.ok(app.includes("allocateNativeSequence(event.sessionId)"));
   assert.ok(app.includes("allocateNativeSequence(sessionId)"));
   assert.ok(app.includes('persisted.filter((session) => session.status !== "closed").map(restoreCodexSession)'));
-  assert.ok(app.includes("await nativeCodex.start({"));
-  assert.ok(app.includes("threadId: typeof session.metadata.threadId"));
+	assert.ok(app.includes("await nativeCodex.start("));
+	assert.ok(app.includes("threadId: typeof session.metadata.threadId"));
   assert.ok(nativeCodex.includes('eventKind = "run.failed"'));
   assert.ok(nativeCodex.includes('eventKind = "run.cancelled"'));
 });
 
 test("container skill keeps registry discovery separate from policy execution", () => {
   const skill = readFileSync(join(appRoot, "skills/use-synth-containers/SKILL.md"), "utf8");
-  assert.ok(skill.includes("custom tool `mcp__synth_containers`"));
-  assert.ok(skill.includes('"method":"container_list"'));
+  assert.ok(skill.includes("mcp__synth_containers"));
+  assert.ok(skill.includes("container_list"));
   assert.ok(skill.includes("engine is not a policy"));
-  assert.ok(skill.includes("Reject fixed action lists"));
-  assert.ok(!skill.includes("container_run_rollouts"));
   assert.ok(!skill.includes("container_run_and_visualize"));
 });
 

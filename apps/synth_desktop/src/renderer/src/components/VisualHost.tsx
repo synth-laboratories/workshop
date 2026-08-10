@@ -168,6 +168,8 @@ function MockFallback({ artifact }: { artifact: ArtifactRef }) {
 function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [Shell, setShell] = useState<ComponentType<ShellProps> | null>(null);
 	const [failed, setFailed] = useState(false);
+	const [optimizerPayload, setOptimizerPayload] = useState<Record<string, unknown> | null>(null);
+	const [optimizerLoadError, setOptimizerLoadError] = useState<string | null>(null);
 	const resolved = useMemo(() => propsFromBindings(artifact.bindings), [artifact.bindings]);
 
 	useEffect(() => {
@@ -189,6 +191,43 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		return () => { cancelled = true; };
 	}, [artifact.templateId]);
 
+	useEffect(() => {
+		let cancelled = false;
+		const bindings = artifact.bindings as { slots?: Array<{ slot?: string; kind?: string; source?: string }> } | undefined;
+		const slot = bindings?.slots?.find((entry) => entry.slot === "optimizer_run" && entry.kind === "optimizer_run");
+		const optimizerRunId = slot?.source;
+		if (!optimizerRunId || !window.synthOptimizers) {
+			setOptimizerPayload(null);
+			setOptimizerLoadError(optimizerRunId ? "Optimizer bridge is unavailable" : null);
+			return;
+		}
+		const load = async () => {
+			try {
+				const [run, events] = await Promise.all([
+					window.synthOptimizers!.get(optimizerRunId),
+					window.synthOptimizers!.eventsAfter(optimizerRunId, 0)
+				]);
+				if (!cancelled) {
+					setOptimizerPayload({ run, events });
+					setOptimizerLoadError(null);
+				}
+			} catch (reason) {
+				if (!cancelled) {
+					setOptimizerPayload(null);
+					setOptimizerLoadError(reason instanceof Error ? reason.message : String(reason));
+				}
+			}
+		};
+		void load();
+		const unlisten = window.synthOptimizers.onEvent((event) => {
+			const eventRunId = typeof event.payload?.optimizerRunId === "string"
+				? event.payload.optimizerRunId
+				: typeof event.payload?.optimizer_run_id === "string" ? event.payload.optimizer_run_id : null;
+			if (!eventRunId || eventRunId === optimizerRunId) void load();
+		});
+		return () => { cancelled = true; unlisten?.(); };
+	}, [artifact.bindings]);
+
 	if (failed) return <VisualInvalidState title="Template unavailable" detail={`No bundled shell is registered for ${artifact.templateId ?? "this visual"}.`} />;
 	if (resolved.errors.length > 0) return <VisualInvalidState title="Visual data unavailable" detail={resolved.errors.join(" · ")} />;
 	if (!Shell) return <p className="visual-loading">Loading visual shell…</p>;
@@ -199,6 +238,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				title={artifact.title}
 				lede={artifact.summary}
 				bindings={artifact.bindings}
+				loadError={optimizerLoadError ?? undefined}
+				{...(optimizerPayload ?? {})}
+				data={optimizerPayload ?? resolved.props.optimizer_run}
 			/>
 		</div>
 	);

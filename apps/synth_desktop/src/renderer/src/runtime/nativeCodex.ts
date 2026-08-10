@@ -1,12 +1,17 @@
 import type { AppEvent, ExecutionTarget, RuntimeEvent, Session } from "@synth/runtime-protocol";
 import type { CodexEvent, CodexSessionStart, PersistedCodexSession } from "../env";
 
-export type ApprovalMode = "ask" | "accept-edits" | "plan" | "allow-all";
+export type ApprovalMode = "ask" | "accept-edits" | "allow-all";
+
+export function approvalModeFromConfig(approvalPolicy?: string, sandbox?: string): ApprovalMode {
+	if (approvalPolicy === "never" && sandbox === "danger-full-access") return "allow-all";
+	if (approvalPolicy === "on-request" && sandbox === "workspace-write") return "accept-edits";
+	return "ask";
+}
 
 export function approvalModeConfig(mode: ApprovalMode): Pick<CodexSessionStart, "approvalPolicy" | "sandbox"> {
 	switch (mode) {
 		case "accept-edits": return { approvalPolicy: "on-request", sandbox: "workspace-write" };
-		case "plan": return { approvalPolicy: "never", sandbox: "read-only" };
 		case "allow-all": return { approvalPolicy: "never", sandbox: "danger-full-access" };
 		case "ask":
 		default: return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
@@ -27,6 +32,14 @@ export function codexStartRequest(
 		};
 	}
 	if (target.kind !== "remote") throw new Error("Unsupported Codex execution target");
+	if (target.provider === "synth-cloud") {
+		return {
+			// baseUrl is overwritten by the Rust host from synth_config; placeholder satisfies types.
+			sessionId, workspace, baseUrl: "https://api.usesynth.ai/api/v1", apiKey: "",
+			model: target.model, providerName: "synth-cloud", providerTitle: "Synth Cloud Responses",
+			providerEnvKey: "SYNTH_API_KEY", ...approval
+		};
+	}
 	return {
 		sessionId, workspace, baseUrl: "https://openrouter.ai/api/v1", apiKey: "",
 		model: target.model, providerName: "openrouter", providerTitle: "OpenRouter Responses",
@@ -48,9 +61,15 @@ export function createCodexSession(
 export function restoreCodexSession(value: PersistedCodexSession): Session {
 	const now = new Date().toISOString();
 	const local = value.providerName === "local-laguna";
+	const synthCloud = value.providerName === "synth-cloud";
 	const target: ExecutionTarget = local
 		? { kind: "local", model: "laguna-xs-2.1", adapter: null }
-		: { kind: "remote", provider: "openrouter", model: value.model, adapter: null };
+		: {
+			kind: "remote",
+			provider: synthCloud ? "synth-cloud" : "openrouter",
+			model: value.model,
+			adapter: null
+		};
 	const allowedStatuses = new Set<Session["status"]>([
 		"created", "ready", "running", "waiting_for_input", "paused", "interrupted", "completed", "failed", "cancelled", "configuration_required"
 	]);
@@ -73,7 +92,8 @@ export function restoreCodexSession(value: PersistedCodexSession): Session {
 			providerTitle: value.providerTitle,
 			baseUrl: value.baseUrl,
 			approvalPolicy: value.approvalPolicy,
-			sandbox: value.sandbox
+			sandbox: value.sandbox,
+			approvalMode: approvalModeFromConfig(value.approvalPolicy, value.sandbox)
 		}
 	};
 }
@@ -86,6 +106,14 @@ function textValue(params: Record<string, unknown>): string | undefined {
 		candidates.push(value.delta, value.text, value.message, value.content);
 	}
 	return candidates.find((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+function completedTurnActuallyFailed(params: Record<string, unknown>): boolean {
+	const turn = params.turn && typeof params.turn === "object"
+		? params.turn as Record<string, unknown>
+		: params;
+	const status = typeof turn.status === "string" ? turn.status.toLowerCase() : "";
+	return status === "failed" || status === "error" || ("error" in turn && turn.error != null);
 }
 
 export function codexEventToRuntime(event: CodexEvent, sequence: number): RuntimeEvent {
@@ -101,7 +129,7 @@ export function codexEventToRuntime(event: CodexEvent, sequence: number): Runtim
 	} else if (lower.includes("reasoning") || itemType === "reasoning") eventKind = "agent.reasoning";
 	else if (lower.includes("commandexecution") || itemType === "commandexecution") eventKind = "command.execution";
 	else if (lower.includes("filechange") || itemType === "filechange") eventKind = "file.change";
-	else if (lower === "turn/completed") eventKind = "run.completed";
+	else if (lower === "turn/completed") eventKind = completedTurnActuallyFailed(event.params) ? "run.failed" : "run.completed";
 	else if (lower === "turn/failed") eventKind = "run.failed";
 	else if (lower === "turn/interrupted") eventKind = "run.cancelled";
 	else if (lower === "turn/started") eventKind = "run.started";

@@ -1,0 +1,38 @@
+[
+  {
+    "target_tokens": 1000,
+    "cold": {"input_tokens": 1074, "cached_tokens": 0, "output_tokens": 4, "ttft_s": 4.245, "prefill_tps": 253.0, "decode_tps": 4000.0, "total_s": 4.246},
+    "warm": {"input_tokens": 1073, "cached_tokens": 1058, "output_tokens": 3, "ttft_s": 0.149, "prefill_tps": 100.5, "decode_tps": 2223.9, "total_s": 0.151},
+    "warm_speedup": 28.49
+  },
+  {
+    "target_tokens": 5000,
+    "cold": {"input_tokens": 5424, "cached_tokens": 0, "output_tokens": 4, "ttft_s": 2.808, "prefill_tps": 1931.9, "decode_tps": 4000.0, "total_s": 2.808},
+    "warm": {"input_tokens": 5423, "cached_tokens": 5408, "output_tokens": 20, "ttft_s": 0.158, "prefill_tps": 95.0, "decode_tps": 47.7, "total_s": 0.577},
+    "warm_speedup": 17.77
+  },
+  {
+    "target_tokens": 10000,
+    "cold": {"input_tokens": 10915, "cached_tokens": 0, "output_tokens": 5, "ttft_s": 9.507, "prefill_tps": 1148.1, "decode_tps": 64.9, "total_s": 9.584},
+    "warm": {"input_tokens": 10914, "cached_tokens": 10899, "output_tokens": 2, "ttft_s": 0.301, "prefill_tps": 49.8, "decode_tps": 584.4, "total_s": 0.305},
+    "warm_speedup": 31.58
+  },
+  {
+    "target_tokens": 25000,
+    "cold": {"input_tokens": 27966, "cached_tokens": 0, "output_tokens": 3, "ttft_s": 32.017, "prefill_tps": 873.5, "decode_tps": 2570.6, "total_s": 32.018},
+    "warm": {"input_tokens": 27965, "cached_tokens": 27950, "output_tokens": 38, "ttft_s": 0.469, "prefill_tps": 32.0, "decode_tps": 26.6, "total_s": 1.896},
+    "warm_speedup": 68.27
+  },
+  {
+    "target_tokens": 50000,
+    "cold": {"input_tokens": 57000, "cached_tokens": 0, "output_tokens": 5, "ttft_s": 77.097, "prefill_tps": 739.3, "decode_tps": 5000.0, "total_s": 77.098},
+    "warm": {"input_tokens": 56999, "cached_tokens": 56984, "output_tokens": 3, "ttft_s": 0.573, "prefill_tps": 26.2, "decode_tps": 3000.0, "total_s": 0.573},
+    "warm_speedup": 134.55
+  },
+  {
+    "target_tokens": 150000,
+    "cold": {"input_tokens": 173136, "cached_tokens": 0, "output_tokens": 3, "ttft_s": 448.971, "prefill_tps": 385.6, "decode_tps": 3000.0, "total_s": 448.972},
+    "warm": {"input_tokens": 173135, "cached_tokens": 173120, "output_tokens": 3, "ttft_s": 2.778, "prefill_tps": 5.4, "decode_tps": 2018.8, "total_s": 2.779},
+    "warm_speedup": 161.62
+  }
+]
