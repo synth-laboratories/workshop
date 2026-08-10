@@ -332,7 +332,7 @@ export default function App() {
 	}, [selectedTargetId]);
 	const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
 	/** Connection facts for the Account page's Devices and Advanced sections. */
-	const [, setBackendSettings] = useState<SynthBackendSettings | null>(null);
+	const [backendSettings, setBackendSettings] = useState<SynthBackendSettings | null>(null);
 	const [accountUsage, setAccountUsage] = useState<ReturnType<typeof summarizeAccountUsage> | null>(null);
 	const [accountSummary, setAccountSummary] = useState<SynthAccountSummary | null>(null);
 	const [usageSheetOpen, setUsageSheetOpen] = useState(false);
@@ -1981,6 +1981,15 @@ export default function App() {
 
 					{view.kind === "settings" ? (
 						<SettingsPage
+							account={{
+								view: accountView,
+								summary: accountSummary,
+								deviceUsage: accountUsage,
+								connection: backendSettings,
+								onBilling: (action) => void openBilling(action),
+								onRefresh: () => refreshAccountSummary(true),
+								onOpenDeviceUsage: () => setView({ kind: "inventory" })
+							}}
 							key={view.section ?? "general"}
 							onBack={() => setView({ kind: "landing" })}
 							onReloadLaguna={onReloadLaguna}
@@ -2304,10 +2313,14 @@ export default function App() {
 						open={terminalOpen}
 						workspaceId={terminalWorkspaceId}
 						workspaceRoot={terminalWorkspaceRoot}
+						height={preferences.layout.last.bottomPanelHeight}
+						fontFamily={preferences.appearance.terminalFontFamily}
+						fontSize={preferences.appearance.terminalFontSize}
 						onOpenChange={(open) => {
 							setTerminalOpen(open);
 							persistLayoutSnapshot({ bottomPanelVisible: open });
 						}}
+						onHeightChange={(height) => persistLayoutSnapshot({ bottomPanelHeight: height })}
 			/>
 		</main>
 	</div>
