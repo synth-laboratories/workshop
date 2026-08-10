@@ -26,31 +26,36 @@ export function permissionConfigFromApprovalMode(mode: ApprovalMode): Permission
 }
 
 export function codexStartRequest(
-	sessionId: string, workspace: string, target: ExecutionTarget, permissions: ApprovalMode | PermissionConfig = "ask"
+	sessionId: string, workspace: string, target: ExecutionTarget, permissions: ApprovalMode | PermissionConfig = "ask",
+	autoCompactTokenLimits: Record<string, number> = { lagunaXs: 209_715, lagunaS: 250_000, luna: 250_000 }
 ): CodexSessionStart {
 	const approval = typeof permissions === "string" ? approvalModeConfig(permissions) : permissions;
 	if (target.kind === "intern") throw new Error("Intern sessions are owned by Synth Cloud");
 	if (target.kind === "local") {
+		const autoCompactTokenLimit = autoCompactTokenLimits.lagunaXs ?? 209_715;
 		return {
 			sessionId, workspace, baseUrl: "http://127.0.0.1:7333", apiKey: "",
 			model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
 			providerTitle: "Laguna XS Responses", providerEnvKey: "SYNTH_LAGUNA_API_KEY",
-			...approval
+			autoCompactTokenLimit, ...approval
 		};
 	}
 	if (target.kind !== "remote") throw new Error("Unsupported Codex execution target");
+	const autoCompactTokenLimit = target.model.includes("gpt-5.6-luna")
+		? autoCompactTokenLimits.luna ?? 250_000
+		: autoCompactTokenLimits.lagunaS ?? 250_000;
 	if (target.provider === "synth-cloud") {
 		return {
 			// baseUrl is overwritten by the Rust host from synth_config; placeholder satisfies types.
 			sessionId, workspace, baseUrl: "https://api.usesynth.ai/api/v1", apiKey: "",
 			model: target.model, providerName: "synth-cloud", providerTitle: "Synth Cloud Responses",
-			providerEnvKey: "SYNTH_API_KEY", ...approval
+			providerEnvKey: "SYNTH_API_KEY", autoCompactTokenLimit, ...approval
 		};
 	}
 	return {
 		sessionId, workspace, baseUrl: "https://openrouter.ai/api/v1", apiKey: "",
 		model: target.model, providerName: "openrouter", providerTitle: "OpenRouter Responses",
-		providerEnvKey: "OPENROUTER_API_KEY", ...approval
+		providerEnvKey: "OPENROUTER_API_KEY", autoCompactTokenLimit, ...approval
 	};
 }
 
@@ -133,7 +138,8 @@ export function codexEventToRuntime(event: CodexEvent, sequence: number): Runtim
 	const itemType = typeof item?.type === "string" ? item.type.toLowerCase() : "";
 	const agentMessage = lower.includes("agentmessage") || lower.includes("agent_message") || itemType === "agentmessage";
 	let eventKind = method;
-	if (agentMessage) {
+	if (lower === "thread/compacted" || itemType === "contextcompaction") eventKind = "thread/compacted";
+	else if (agentMessage) {
 		eventKind = lower.includes("delta") ? "message.delta" : lower.includes("completed") ? "message.completed" : "message.created";
 	} else if (lower.includes("reasoning") || itemType === "reasoning") eventKind = "agent.reasoning";
 	else if (lower.includes("commandexecution") || itemType === "commandexecution") eventKind = "command.execution";

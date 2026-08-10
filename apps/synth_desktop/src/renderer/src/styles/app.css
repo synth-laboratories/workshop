@@ -2257,6 +2257,28 @@ a,
 	font-weight: 600;
 }
 
+.context-compaction-divider {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	margin: 8px 0;
+	color: var(--color-text-muted);
+	font-size: 12px;
+}
+
+.context-compaction-divider::after {
+	content: "";
+	flex: 1;
+	height: 1px;
+	background: var(--color-border);
+}
+
+.context-compaction-divider svg {
+	flex: 0 0 auto;
+	width: 16px;
+	height: 16px;
+}
+
 .search-activity .tool-activity-icon {
 	border: 0;
 	font-family: inherit;

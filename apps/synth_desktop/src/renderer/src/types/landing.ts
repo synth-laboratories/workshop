@@ -106,14 +106,16 @@ export type LocalActivityLine = {
 	path?: string;
 	/** Sanitized lifecycle status for an allowlisted tool call. */
 	toolStatus?: "running" | "completed" | "failed";
-	kind?: "thought" | "search" | "command" | "file_read" | "file_write" | "visual" | "subagent" | "run_summary" | "approval" | "working";
+	/** Transcript placement relative to the assistant response owning this activity. */
+	placement?: "before" | "after";
+	kind?: "thought" | "search" | "command" | "file_read" | "file_write" | "visual" | "subagent" | "run_summary" | "context_compaction" | "approval" | "working";
 };
 
 export type LocalChat = {
 	id: string;
 	title: string;
 	messages: ChatMessage[];
-	/** Activity lines keyed by the assistant message they precede. */
+	/** Activity lines keyed by their owning assistant message. */
 	activityByMessageId?: Record<string, LocalActivityLine[]>;
 	artifacts?: ArtifactRef[];
 };

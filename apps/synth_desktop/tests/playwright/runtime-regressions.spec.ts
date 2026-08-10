@@ -797,6 +797,62 @@ test("closed-model reasoning renders only a provider summary disclosure", async 
 	await expect(transcript).toContainText("Checked the workspace boundary.");
 });
 
+test("manual XS compaction resumes the thread and renders success without an empty-turn error", async ({ page }) => {
+	await page.addInitScript(() => {
+		let listener: ((event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) | undefined;
+		const testWindow = window as typeof window & {
+			__emitCompactCodex?: typeof listener;
+			__compactRequest?: Record<string, unknown>;
+			synthCodex?: unknown;
+		};
+		testWindow.synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId: "compact-session", threadId: "thread-compact", workspace: "/workspaces/default",
+				model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
+				providerTitle: "Laguna XS", baseUrl: "http://127.0.0.1:7333", status: "ready"
+			}],
+			start: async () => ({ sessionId: "compact-session", threadId: "thread-compact" }),
+			startTurn: async () => ({ sessionId: "compact-session", threadId: "thread-compact", turnId: "turn-compact" }),
+			compact: async (request: Record<string, unknown>) => { testWindow.__compactRequest = request; },
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: (next: typeof listener) => {
+				listener = next;
+				testWindow.__emitCompactCodex = next;
+				return () => { listener = undefined; };
+			}
+		};
+	});
+	await installLagunaFixture(page, "ready");
+	await page.getByTestId("local-chat-compact-session").click();
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCompactCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCompactCodex;
+		emit({ sessionId: "compact-session", method: "item/completed", params: { item: { id: "answer-before-compact", type: "agentMessage", text: "BEFORE_COMPACT_OK" } } });
+	});
+	await page.getByTestId("composer-input").fill("/compact");
+	await page.getByRole("option", { name: /Compact context/ }).click();
+	await expect.poll(() => page.evaluate(() => Boolean((window as typeof window & { __compactRequest?: unknown }).__compactRequest))).toBe(true);
+	expect(await page.evaluate(() => (window as typeof window & { __compactRequest: { threadId?: string } }).__compactRequest.threadId)).toBe("thread-compact");
+
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCompactCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCompactCodex;
+		emit({ sessionId: "compact-session", method: "turn/started", params: { turn: { id: "turn-compact" } } });
+		emit({ sessionId: "compact-session", method: "item/completed", params: { item: { id: "compact-item", type: "contextCompaction" } } });
+		emit({ sessionId: "compact-session", method: "thread/compacted", params: { threadId: "thread-compact" } });
+		emit({ sessionId: "compact-session", method: "turn/completed", params: { turn: { id: "turn-compact", status: "completed" } } });
+	});
+	const transcript = page.getByTestId("chat-transcript");
+	await expect(transcript).toContainText("Context compacted");
+	await expect(transcript.locator(".context-compaction-divider")).toHaveCount(1);
+	await expect(transcript).not.toContainText("The provider ended the turn without a response");
+	const responseBox = await transcript.locator(".local-assistant", { hasText: "BEFORE_COMPACT_OK" }).boundingBox();
+	const markerBox = await transcript.locator(".context-compaction-divider").boundingBox();
+	expect(responseBox).not.toBeNull();
+	expect(markerBox).not.toBeNull();
+	expect(markerBox!.y).toBeGreaterThan(responseBox!.y + responseBox!.height - 1);
+});
+
 test("native Codex tool use renders safe Poolside-style rows and a compact run summary", async ({ page }) => {
 	await page.addInitScript(() => {
 		let listener: ((event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) | undefined;

@@ -56,7 +56,7 @@ import {
 	planModelChipChange,
 	threadHasHistoryFromEvents
 } from "./runtime/modelSwitchPlan";
-import type { CodexSessionInfo, CodexTurnFailure, ComposerImageAttachment, ConversationWorkspaceScope, LagunaStatus } from "./env";
+import type { CodexBridge, CodexSessionInfo, CodexSessionStart, CodexTurnFailure, ComposerImageAttachment, ConversationWorkspaceScope, LagunaStatus } from "./env";
 import {
 	applyPreferencesToDocument,
 	archiveConversation,
@@ -130,6 +130,39 @@ function summarizeAccountUsage(entries: UsageLedgerEntry[]) {
 		}
 		return summary;
 	}, { weeklyTokens: 0, weeklyCostUsd: 0, totalTokens: 0, totalCostUsd: 0, entries: entries.length });
+}
+
+function isCodexCompactionEvent(event: { method: string; params: Record<string, unknown> }): boolean {
+	if (event.method === "thread/compacted") return true;
+	const item = event.params.item;
+	return Boolean(item && typeof item === "object" && (item as Record<string, unknown>).type === "contextCompaction");
+}
+
+/** Rebuild a start request for an existing session (compaction path — no model switch). */
+async function codexResumeRequest(
+	nativeCodex: CodexBridge,
+	session: Session,
+	autoCompactTokenLimits: Record<string, number>
+): Promise<CodexSessionStart> {
+	if (session.metadata.runtime !== "codex-app-server") {
+		throw new Error(`Session ${session.id} is not owned by Codex app-server`);
+	}
+	const workspace = typeof session.metadata.workspace === "string"
+		? session.metadata.workspace
+		: await nativeCodex.defaultWorkspace();
+	const storedApprovalMode = typeof session.metadata.approvalMode === "string"
+		? session.metadata.approvalMode as ApprovalMode
+		: approvalModeFromConfig(
+			typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : undefined,
+			typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : undefined
+		);
+	const storedApproval = approvalModeConfig(storedApprovalMode);
+	return {
+		...codexStartRequest(session.id, workspace, session.target, "ask", autoCompactTokenLimits),
+		approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : storedApproval.approvalPolicy,
+		sandbox: typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : storedApproval.sandbox,
+		threadId: typeof session.metadata.threadId === "string" ? session.metadata.threadId : undefined
+	};
 }
 
 type MainView =
@@ -362,6 +395,8 @@ export default function App() {
 	// Sessions whose last turn start was rejected. A late `run.started` from the
 	// process that just died must not resurrect Working for them.
 	const staleRunFenceRef = useRef(new Set<string>());
+	const manualCompactionPendingRef = useRef(new Set<string>());
+	const queuedCompactionRef = useRef(new Set<string>());
 	const sendToSessionRef = useRef<(sessionId: string, text: string, options?: { messageId?: string }) => Promise<boolean>>(async () => false);
 	const queueDrainStatusesRef = useRef(new Map<string, Session["status"]>());
 	const queueDrainingRef = useRef(new Set<string>());
@@ -595,8 +630,13 @@ export default function App() {
 	useEffect(() => {
 		if (!nativeCodex) return;
 		return nativeCodex.onEvent((event) => {
+			const manualCompaction = isCodexCompactionEvent(event)
+				&& manualCompactionPendingRef.current.delete(event.sessionId);
+			const normalizedEvent = manualCompaction
+				? { ...event, params: { ...event.params, source: "manual" } }
+				: event;
 			const sequence = allocateNativeSequence(event.sessionId);
-			const runtimeEvent = codexEventToRuntime(event, sequence);
+			const runtimeEvent = codexEventToRuntime(normalizedEvent, sequence);
 			const updatedThreadName = event.method === "thread/name/updated"
 				&& typeof event.params.threadName === "string"
 				? event.params.threadName.trim()
@@ -605,6 +645,25 @@ export default function App() {
 			// process that emitted this run.started is the one that just died.
 			const fenced = runtimeEvent.eventKind === "run.started"
 				&& staleRunFenceRef.current.has(event.sessionId);
+			if (runtimeEvent.eventKind === "run.failed" || runtimeEvent.eventKind === "run.cancelled") {
+				manualCompactionPendingRef.current.delete(event.sessionId);
+			}
+			if (
+				(runtimeEvent.eventKind === "run.completed" || runtimeEvent.eventKind === "run.failed" || runtimeEvent.eventKind === "run.cancelled")
+				&& queuedCompactionRef.current.delete(event.sessionId)
+				&& nativeCodex.compact
+			) {
+				manualCompactionPendingRef.current.add(event.sessionId);
+				const session = sessionsRef.current.find((candidate) => candidate.id === event.sessionId);
+				if (!session) return;
+				void codexResumeRequest(nativeCodex, session, preferences.agentContext.autoCompactTokenLimits)
+					.then((request) => nativeCodex.compact!(request))
+					.then(() => showToast("Compacting context…"))
+					.catch((reason) => {
+						manualCompactionPendingRef.current.delete(event.sessionId);
+						showToast(reason instanceof Error ? reason.message : String(reason));
+					});
+			}
 			setEventsBySession((current) => ({
 				...current,
 				[event.sessionId]: appendEvent(current[event.sessionId] ?? [], runtimeEvent)
@@ -621,7 +680,7 @@ export default function App() {
 						: session.status }
 				: session));
 		});
-	}, [allocateNativeSequence, nativeCodex]);
+	}, [allocateNativeSequence, nativeCodex, preferences.agentContext.autoCompactTokenLimits, showToast]);
 
 	useEffect(() => {
 		const bridge = window.synthLaguna;
@@ -1070,7 +1129,7 @@ export default function App() {
 					// Every local/configured-provider task starts in the configured safe workspace.
 					const workspace = await nativeCodex.defaultWorkspace();
 					const permissions = { approvalPolicy, sandbox: sandboxMode };
-					await nativeCodex.start(codexStartRequest(id, workspace, target, permissions));
+					await nativeCodex.start(codexStartRequest(id, workspace, target, permissions, preferences.agentContext.autoCompactTokenLimits));
 					const session = createCodexSession(id, target, null, workspace, title, permissions);
 					sessionsRef.current = [session, ...sessionsRef.current.filter((item) => item.id !== session.id)];
 					setSessions(sessionsRef.current);
@@ -1096,7 +1155,7 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[approvalPolicy, sandboxMode, nativeCodex, nativeIntern, refreshSessions, selectedTargetId, showToast]
+		[approvalPolicy, sandboxMode, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
 	);
 
 	const ensureActiveSession = useCallback(async (objective: string): Promise<{ sessionId: string; objectiveConsumed: boolean } | null> => {
@@ -1146,7 +1205,7 @@ export default function App() {
 						);
 					const storedApproval = approvalModeConfig(storedApprovalMode);
 					const startRequest = {
-						...codexStartRequest(sessionId, workspace, executionTarget),
+						...codexStartRequest(sessionId, workspace, executionTarget, "ask", preferences.agentContext.autoCompactTokenLimits),
 						// Restored pre-policy sessions can carry only the human mode. Never
 						// turn that into an undefined request which Rust then treats as Ask.
 						approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : storedApproval.approvalPolicy,
@@ -1215,7 +1274,7 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[allocateNativeSequence, failTurnStart, modelKnobValues, nativeCodex, nativeIntern, refreshSessions, selectedTargetId, showToast]
+		[allocateNativeSequence, failTurnStart, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
 	);
 	sendToSessionRef.current = sendToSession;
 
@@ -1344,6 +1403,36 @@ export default function App() {
 		}
 		setPreferences(renameConversation(activeSessionId, trimmed));
 	}, [activeSessionId, showToast]);
+
+	const onSlashCompact = useCallback(async () => {
+		if (!activeSessionId || !nativeCodex?.compact) {
+			showToast("Context compaction requires an active Codex conversation");
+			return;
+		}
+		if (activeChatRunning) {
+			queuedCompactionRef.current.add(activeSessionId);
+			showToast("Compaction queued for after the current response");
+			return;
+		}
+		setBusy(true);
+		manualCompactionPendingRef.current.add(activeSessionId);
+		try {
+			const session = sessionsRef.current.find((candidate) => candidate.id === activeSessionId);
+			if (!session) throw new Error(`Native Codex session is not registered: ${activeSessionId}`);
+			const request = await codexResumeRequest(
+				nativeCodex,
+				session,
+				preferences.agentContext.autoCompactTokenLimits
+			);
+			await nativeCodex.compact(request);
+			showToast("Compacting context…");
+		} catch (reason) {
+			manualCompactionPendingRef.current.delete(activeSessionId);
+			showToast(reason instanceof Error ? reason.message : String(reason));
+		} finally {
+			setBusy(false);
+		}
+	}, [activeChatRunning, activeSessionId, nativeCodex, preferences.agentContext.autoCompactTokenLimits, showToast]);
 
 	const onReloadLaguna = useCallback(async () => {
 		const bridge = window.synthLaguna;
@@ -2066,6 +2155,7 @@ export default function App() {
 							onSlashNew={onNewConversation}
 							onSlashMcp={() => setView({ kind: "connectors" })}
 							onSlashRename={onSlashRename}
+							onSlashCompact={onSlashCompact}
 							approvalPolicy={approvalPolicy}
 							sandboxMode={sandboxMode}
 							onSelectPermissions={selectActivePermissions}

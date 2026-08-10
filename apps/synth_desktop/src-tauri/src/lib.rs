@@ -1373,6 +1373,21 @@ async fn codex_turn_interrupt(
 }
 
 #[tauri::command]
+async fn codex_thread_compact(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CodexManager>>,
+    laguna: State<'_, Arc<LagunaManager>>,
+    core: State<'_, Arc<CoreRuntime>>,
+    request: CodexSessionStartRequest,
+) -> Result<(), String> {
+    let request = prepare_codex_start(&laguna, &core, request).await?;
+    state
+        .compact(app, request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn codex_turn_steer(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
@@ -1698,6 +1713,7 @@ pub fn run() {
             codex_turn_start,
             codex_turn_send,
             codex_turn_interrupt,
+            codex_thread_compact,
             codex_turn_steer,
             codex_approval_resolve,
             codex_session_close,

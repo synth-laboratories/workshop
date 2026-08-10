@@ -7,6 +7,7 @@ import {
 	resetPreferences,
 	saveLayoutAsDefault,
 	setActiveEnterAction,
+	setAutoCompactTokenLimit,
 	setAppearanceFonts,
 	setTheme,
 	setToolActivityMode
@@ -194,6 +195,37 @@ export function GeneralPreferencesSettings({
 							<small>{option.description}</small>
 						</button>
 					))}
+				</div>
+			</section>
+
+			<section className="pref-section" aria-labelledby="pref-agent-context" data-testid="settings-agent-context">
+				<h3 id="pref-agent-context">Agent context</h3>
+				<p className="settings-runtime-copy">Laguna S and Luna default to 250,000 tokens; Laguna XS defaults to 80% of its smaller context window. Codex summarizes older context at the selected threshold; changes apply on the next turn.</p>
+				<div className="pref-grid">
+					<NumericSetting
+						label="Laguna XS (262,144 max)"
+						value={preferences.agentContext.autoCompactTokenLimits.lagunaXs}
+						min={16_000}
+						max={235_929}
+						testId="auto-compact-token-limit-laguna-xs"
+						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit("lagunaXs", limit))}
+					/>
+					<NumericSetting
+						label="Laguna S (1,050,000 max)"
+						value={preferences.agentContext.autoCompactTokenLimits.lagunaS}
+						min={16_000}
+						max={945_000}
+						testId="auto-compact-token-limit-laguna-s"
+						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit("lagunaS", limit))}
+					/>
+					<NumericSetting
+						label="Luna (1,050,000 max)"
+						value={preferences.agentContext.autoCompactTokenLimits.luna}
+						min={16_000}
+						max={945_000}
+						testId="auto-compact-token-limit-luna"
+						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit("luna", limit))}
+					/>
 				</div>
 			</section>
 

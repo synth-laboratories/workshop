@@ -9,7 +9,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env, fs,
     path::{Path, PathBuf},
     process::Stdio,
@@ -27,6 +27,8 @@ use tokio::{
 };
 
 const EVENT_NAME: &str = "codex:event";
+const MIN_AUTO_COMPACT_TOKEN_LIMIT: u64 = 16_000;
+const COMPACT_PROMPT: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION for a coding agent.\nWrite a handoff for another LLM that will continue the same workspace task.\nInclude:\n- Goal and acceptance criteria\n- Files read/changed (paths + one-line why)\n- Commands/tests run and outcomes\n- Decisions and constraints\n- Open bugs / next concrete steps\n- Any secrets-safe identifiers (branch names, ticket ids) needed to continue\nOmit raw file dumps, full command logs, and superseded plans.\nBe concise and structured (bullets).";
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +45,8 @@ pub struct CodexSessionStartRequest {
     pub sandbox: Option<String>,
     pub thread_id: Option<String>,
     pub multi_agent_version: Option<MultiAgentVersion>,
+    #[serde(default)]
+    pub auto_compact_token_limit: Option<u64>,
     /// Rust-populated exact roots for this conversation. Renderer input is
     /// discarded by `prepare_codex_start` before launch.
     #[serde(default)]
@@ -316,6 +320,7 @@ pub struct CodexManager {
     /// window between "the attachment exists" and "the turn is running".
     turn_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     compact_waiters: CompactWaiters,
+    manual_compactions: Arc<Mutex<HashSet<String>>>,
     root: PathBuf,
     state_path: PathBuf,
     binary: PathBuf,
@@ -340,6 +345,7 @@ impl CodexManager {
             records: Arc::new(RwLock::new(records)),
             turn_locks: Mutex::new(HashMap::new()),
             compact_waiters: Arc::new(Mutex::new(HashMap::new())),
+            manual_compactions: Arc::new(Mutex::new(HashSet::new())),
             root,
             state_path,
             binary,
@@ -390,6 +396,7 @@ impl CodexManager {
             self.core.clone(),
             self.sessions.clone(),
             self.compact_waiters.clone(),
+            self.manual_compactions.clone(),
             attachment_id,
         )
         .await?;
@@ -807,6 +814,66 @@ impl CodexManager {
         Ok(())
     }
 
+    pub async fn compact<R: tauri::Runtime>(
+        &self,
+        app: AppHandle<R>,
+        request: CodexSessionStartRequest,
+    ) -> Result<()> {
+        let session_id = request.session_id.clone();
+        let lock = self.turn_lock(&session_id).await;
+        let _guard = lock.lock().await;
+
+        let mut failure = None;
+        for attempt in 0..2u8 {
+            let attachment = match self.start(app.clone(), request.clone()).await {
+                Ok(_) => self
+                    .sessions
+                    .read()
+                    .await
+                    .get(&session_id)
+                    .map(|session| session.attachment_id),
+                Err(error) => {
+                    let detached = is_detached_failure(&error);
+                    failure = Some(error);
+                    if detached && attempt == 0 {
+                        self.discard_attachment(&session_id, None).await;
+                        continue;
+                    }
+                    break;
+                }
+            };
+            let session = self.session(&session_id).await?;
+            self.manual_compactions
+                .lock()
+                .await
+                .insert(session_id.clone());
+            match session
+                .server
+                .request(
+                    "thread/compact/start",
+                    json!({"threadId": session.thread_id}),
+                )
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(error) => {
+                    self.manual_compactions.lock().await.remove(&session_id);
+                    let detached = is_detached_failure(&error);
+                    failure = Some(error);
+                    if !detached {
+                        break;
+                    }
+                    self.discard_attachment(&session_id, attachment).await;
+                    if attempt == 0 {
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+        Err(failure.unwrap_or_else(|| anyhow!("context compaction could not be started")))
+    }
+
     /// Steers an in-flight turn with additional user input. Unlike `interrupt`,
     /// this requires an attached session with an active turn: there is
     /// nothing sensible to steer once the app-server has detached or the turn
@@ -1126,6 +1193,7 @@ async fn spawn_server<R: tauri::Runtime>(
     core: Option<Arc<CoreRuntime>>,
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     compact_waiters: CompactWaiters,
+    manual_compactions: Arc<Mutex<HashSet<String>>>,
     attachment_id: uuid::Uuid,
 ) -> Result<Arc<AppServer>> {
     let env_key = request
@@ -1177,6 +1245,7 @@ async fn spawn_server<R: tauri::Runtime>(
             core,
             sessions,
             compact_waiters,
+            manual_compactions,
             attachment_id,
         },
     ));
@@ -1202,6 +1271,7 @@ struct PersistenceContext {
     core: Option<Arc<CoreRuntime>>,
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     compact_waiters: CompactWaiters,
+    manual_compactions: Arc<Mutex<HashSet<String>>>,
     attachment_id: uuid::Uuid,
 }
 
@@ -1233,12 +1303,23 @@ async fn read_stdout<R: tauri::Runtime>(
             continue;
         }
         let raw_method = message["method"].as_str().unwrap_or_default();
-        let params = message.get("params").cloned().unwrap_or(Value::Null);
+        let mut params = message.get("params").cloned().unwrap_or(Value::Null);
         // Some Responses-compatible servers report a terminal envelope as
         // `turn/completed` even when the enclosed turn has failed. Preserve
         // the actual outcome: otherwise the transcript says “Worked” while
         // there is no answer to show.
         let method = normalized_turn_method(raw_method, &params).to_owned();
+        if is_context_compaction_notification(&method, &params)
+            && persistence
+                .manual_compactions
+                .lock()
+                .await
+                .contains(&session_id)
+        {
+            if let Some(value) = params.as_object_mut() {
+                value.insert("source".into(), Value::String("manual".into()));
+            }
+        }
         if let Some(rpc_id) = message.get("id").cloned() {
             if is_approval_method(&method) {
                 let available_decisions = params
@@ -1362,6 +1443,11 @@ async fn read_stdout<R: tauri::Runtime>(
             method.as_str(),
             "turn/completed" | "turn/failed" | "turn/interrupted"
         ) {
+            persistence
+                .manual_compactions
+                .lock()
+                .await
+                .remove(&session_id);
             let status = match method.as_str() {
                 "turn/completed" => "ready",
                 "turn/failed" => "failed",
@@ -1448,6 +1534,15 @@ async fn read_stdout<R: tauri::Runtime>(
             }
         }
     }
+}
+
+fn is_context_compaction_notification(method: &str, params: &Value) -> bool {
+    method == "thread/compacted"
+        || params
+            .get("item")
+            .and_then(|item| item.get("type"))
+            .and_then(Value::as_str)
+            == Some("contextCompaction")
 }
 
 fn normalized_turn_method<'a>(method: &'a str, params: &Value) -> &'a str {
@@ -1634,9 +1729,21 @@ fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Result<()> {
     writable_roots.sort();
     writable_roots.dedup();
     let workspace_write_config = workspace_write_config(&writable_roots);
+    let compaction_config = if supports_provider_compaction(request) {
+        // OpenAI and Azure Responses providers are recognized by Codex itself.
+        // Leave their compaction configuration untouched so Codex uses the
+        // provider-hosted /responses/compact implementation.
+        String::new()
+    } else {
+        format!(
+            "model_auto_compact_token_limit = {}\ntool_output_token_limit = 12000\ncompact_prompt = \"{}\"\n",
+            auto_compact_token_limit(request),
+            toml_string(COMPACT_PROMPT)
+        )
+    };
     let config = format!(
-        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"default\"\n\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\nenv_key = \"{}\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
-        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), workspace_write_config, toml_key(provider), toml_string(title), toml_string(&responses_base_url(&request.base_url)), toml_string(env_key), agents_enabled, multi_agent_v1, multi_agent_v2
+        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"default\"\n{}\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\nenv_key = \"{}\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n# Codex selects provider-hosted compaction for OpenAI/Azure and local summarization otherwise.\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
+        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), compaction_config, workspace_write_config, toml_key(provider), toml_string(title), toml_string(&responses_base_url(&request.base_url)), toml_string(env_key), agents_enabled, multi_agent_v1, multi_agent_v2
     );
     fs::write(home.join("config.toml"), config)?;
     let auth = home.join("auth.json");
@@ -1694,6 +1801,16 @@ fn validate_start(request: &CodexSessionStartRequest) -> Result<()> {
     if !Path::new(&request.workspace).is_dir() {
         return Err(anyhow!("workspace must be an existing directory"));
     }
+    if !supports_provider_compaction(request) {
+        let compact_limit = auto_compact_token_limit(request);
+        let max_compact_limit = model_context_window(&request.model) * 9 / 10;
+        if !(MIN_AUTO_COMPACT_TOKEN_LIMIT..=max_compact_limit).contains(&compact_limit) {
+            return Err(anyhow!(
+                "autoCompactTokenLimit must be between {MIN_AUTO_COMPACT_TOKEN_LIMIT} and {max_compact_limit} for {}",
+                request.model
+            ));
+        }
+    }
     if !(request.base_url.starts_with("http://127.0.0.1:")
         || request.base_url.starts_with("http://localhost:")
         || request.base_url.starts_with("https://"))
@@ -1709,6 +1826,58 @@ fn validate_start(request: &CodexSessionStartRequest) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn model_context_window(model: &str) -> u64 {
+    if model.to_ascii_lowercase().contains("laguna-xs") {
+        262_144
+    } else if model.to_ascii_lowercase().contains("laguna-s-2.1")
+        || model.to_ascii_lowercase().contains("gpt-5.6-luna")
+    {
+        1_050_000
+    } else {
+        262_144
+    }
+}
+
+fn auto_compact_token_limit(request: &CodexSessionStartRequest) -> u64 {
+    request
+        .auto_compact_token_limit
+        .unwrap_or_else(|| {
+            let model = request.model.to_ascii_lowercase();
+            if model.contains("laguna-s-2.1") || model.contains("gpt-5.6-luna") {
+                250_000
+            } else {
+                model_context_window(&request.model) * 4 / 5
+            }
+        })
+}
+
+fn supports_provider_compaction(request: &CodexSessionStartRequest) -> bool {
+    if request.provider_name.as_deref() == Some("openai")
+        || request.provider_title.as_deref() == Some("OpenAI")
+        || request
+            .provider_name
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("azure"))
+        || request
+            .provider_title
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("azure"))
+    {
+        return true;
+    }
+    let base_url = request.base_url.to_ascii_lowercase();
+    [
+        "openai.azure.",
+        "cognitiveservices.azure.",
+        "aoai.azure.",
+        "azure-api.",
+        "azurefd.",
+        "windows.net/openai",
+    ]
+    .iter()
+    .any(|marker| base_url.contains(marker))
 }
 
 /// Produces an endpoint label that is useful in UI errors without exposing a
@@ -1933,6 +2102,7 @@ mod tests {
             sandbox: Some("workspace-write".into()),
             thread_id: None,
             multi_agent_version: Some(MultiAgentVersion::None),
+            auto_compact_token_limit: None,
             writable_roots: Vec::new(),
         }
     }
@@ -2141,6 +2311,30 @@ mod tests {
             "actually, focus on the tests first"
         );
         assert_eq!(steer["params"]["input"][0]["type"], "text");
+
+        manager.close(&request.session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn compact_sends_thread_compact_start_for_the_attached_thread() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let manager = CodexManager::with_paths(Some(core), codex_root.clone(), fixture_binary());
+        let app = tauri::test::mock_app();
+        let request = test_request(temp.path(), "compact-me");
+
+        manager
+            .compact(app.handle().clone(), request.clone())
+            .await
+            .unwrap();
+
+        let requests = fixture_requests(&codex_root, &request.session_id);
+        let compact = requests
+            .iter()
+            .find(|message| message["method"] == "thread/compact/start")
+            .expect("fixture did not see thread/compact/start");
+        assert_eq!(compact["params"]["threadId"], "thread-fixture");
 
         manager.close(&request.session_id).await.unwrap();
     }
@@ -2932,9 +3126,12 @@ mod tests {
         assert!(config.contains("base_url = \"http://127.0.0.1:41209/api/v1\""));
         assert!(config.contains("wire_api = \"responses\""));
         assert!(config.contains("env_key = \"SYNTH_API_KEY\""));
+        assert!(config.contains("model_auto_compact_token_limit = 250000"));
+        assert!(config.contains("tool_output_token_limit = 12000"));
+        assert!(config.contains("CONTEXT CHECKPOINT COMPACTION for a coding agent"));
         let optimizer_skill =
             fs::read_to_string(home.join("skills/use-synth-optimizers/SKILL.md")).unwrap();
-        assert!(optimizer_skill.contains("gepa.banking77.smoke.v1"));
+        assert!(optimizer_skill.contains("optimizer_manage"));
     }
 
     #[test]
@@ -2948,6 +3145,66 @@ mod tests {
         assert!(error.contains("Synth API key not configured"));
         assert!(error.contains("Settings → Account"));
         assert_eq!(request.api_key, "renderer-supplied-should-not-matter");
+    }
+
+    #[test]
+    fn rejects_auto_compact_limits_outside_the_desktop_range() {
+        let temp = tempdir().unwrap();
+        let mut request = test_request(temp.path(), "compact-limit");
+        request.auto_compact_token_limit = Some(MIN_AUTO_COMPACT_TOKEN_LIMIT - 1);
+        assert!(validate_start(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("autoCompactTokenLimit"));
+        request.auto_compact_token_limit = Some(235_930);
+        assert!(validate_start(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("autoCompactTokenLimit"));
+    }
+
+    #[test]
+    fn defaults_luna_and_laguna_s_compaction_to_250k() {
+        let temp = tempdir().unwrap();
+        let mut request = test_request(temp.path(), "compact-defaults");
+        assert_eq!(auto_compact_token_limit(&request), 209_715);
+        request.model = "poolside/laguna-s-2.1".into();
+        assert_eq!(auto_compact_token_limit(&request), 250_000);
+        request.model = "openai/gpt-5.6-luna".into();
+        assert_eq!(auto_compact_token_limit(&request), 250_000);
+    }
+
+    #[test]
+    fn leaves_compaction_to_openai_and_azure_responses_providers() {
+        let temp = tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+
+        let mut openai = test_request(&workspace, "openai-compaction");
+        openai.provider_name = Some("openai".into());
+        openai.provider_title = Some("OpenAI".into());
+        openai.base_url = "https://api.openai.com/v1".into();
+        openai.model = "gpt-5.6-luna".into();
+        openai.auto_compact_token_limit = Some(999_999_999);
+        validate_start(&openai).unwrap();
+        let openai_home = temp.path().join("openai-home");
+        ensure_home(&openai_home, &openai).unwrap();
+        let openai_config = fs::read_to_string(openai_home.join("config.toml")).unwrap();
+        assert!(!openai_config.contains("model_auto_compact_token_limit"));
+        assert!(!openai_config.contains("compact_prompt"));
+
+        let mut azure = test_request(&workspace, "azure-compaction");
+        azure.provider_name = Some("custom-azure".into());
+        azure.provider_title = Some("Azure".into());
+        azure.base_url = "https://example.openai.azure.com/openai/v1".into();
+        assert!(supports_provider_compaction(&azure));
+
+        let mut openrouter = test_request(&workspace, "openrouter-compaction");
+        openrouter.provider_name = Some("openrouter".into());
+        openrouter.provider_title = Some("OpenRouter Responses".into());
+        openrouter.base_url = "https://openrouter.ai/api/v1".into();
+        openrouter.model = "openai/gpt-5.6-luna".into();
+        assert!(!supports_provider_compaction(&openrouter));
     }
 
     #[test]

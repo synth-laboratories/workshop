@@ -11,7 +11,8 @@ import {
 	type ActiveEnterAction,
 	type ApprovalPolicyPreference,
 	type SandboxModePreference,
-	type ThemePreference
+	type ThemePreference,
+	type CompactContextModel
 } from "./schema";
 
 type Listener = (prefs: DesktopPreferences) => void;
@@ -84,6 +85,18 @@ export function setToolActivityMode(mode: ToolActivityMode): DesktopPreferences 
 	return updatePreferences((current) => ({
 		...current,
 		toolActivity: { mode }
+	}));
+}
+
+export function setAutoCompactTokenLimit(model: CompactContextModel, autoCompactTokenLimit: number): DesktopPreferences {
+	return updatePreferences((current) => ({
+		...current,
+		agentContext: {
+			autoCompactTokenLimits: {
+				...current.agentContext.autoCompactTokenLimits,
+				[model]: autoCompactTokenLimit
+			}
+		}
 	}));
 }
 
