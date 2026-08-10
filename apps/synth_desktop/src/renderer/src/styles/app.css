@@ -347,8 +347,7 @@ a,
 	flex-direction: column;
 	background: #f3f5f8;
 	border-right: 1px solid var(--color-border);
-	/* Extra bottom pad so DEV scenario chip doesn't cover download/settings */
-	padding: 0 10px 56px;
+	padding: 0 10px 10px;
 	position: relative;
 }
 

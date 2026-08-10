@@ -85,6 +85,25 @@ test("landing shell has no horizontal overflow", async ({ page }) => {
 	await expect(page.getByTestId("titlebar")).toBeVisible();
 });
 
+test("sidebar account and settings footer stays anchored to the bottom edge", async ({ page }) => {
+	for (const [width, height] of [[1280, 840], [960, 640], [1440, 900]] as const) {
+		await page.setViewportSize({ width, height });
+		const geometry = await page.evaluate(() => {
+			const sidebar = document.querySelector<HTMLElement>('[data-testid="sidebar"]')?.getBoundingClientRect();
+			const footer = document.querySelector<HTMLElement>(".sidebar-footer")?.getBoundingClientRect();
+			if (!sidebar || !footer) throw new Error("Sidebar footer invariant target is absent");
+			return {
+				bottomInset: sidebar.bottom - footer.bottom,
+				footerTop: footer.top,
+				sidebarTop: sidebar.top
+			};
+		});
+		expect(geometry.bottomInset).toBeGreaterThanOrEqual(8);
+		expect(geometry.bottomInset).toBeLessThanOrEqual(12);
+		expect(geometry.footerTop).toBeGreaterThan(geometry.sidebarTop);
+	}
+});
+
 test("titlebar chrome is trimmed to terminal controls", async ({ page }) => {
 	await expect(page.getByRole("button", { name: "Show terminal" })).toBeVisible();
 	await expect(page.getByTestId("runtime-status")).toHaveCount(0);
