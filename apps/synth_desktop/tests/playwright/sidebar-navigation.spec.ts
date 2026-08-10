@@ -42,16 +42,23 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 	await expect(page.getByTestId("conversation-search")).toHaveCount(0);
 	await expect(page.getByTestId("chat-transcript")).toBeVisible();
 	const outputsTrigger = page.getByTestId("resource-shelf-trigger");
-	const outputsPanel = page.getByTestId("resource-shelf");
 	await expect(outputsTrigger).toBeVisible();
-	await expect(outputsTrigger).toHaveAttribute("aria-expanded", "true");
+	await expect(outputsTrigger).toHaveAttribute("aria-expanded", "false");
+	await outputsTrigger.click();
+	const sidePanel = page.getByTestId("workbench-side-panel");
+	const outputsPanel = sidePanel.getByTestId("resource-shelf");
+	await expect(sidePanel.getByRole("tab", { name: "Outputs" })).toHaveAttribute("aria-selected", "true");
+	await expect(sidePanel.getByRole("tab", { name: "Inference" })).toHaveAttribute("aria-selected", "false");
 	await expect(outputsPanel).toBeVisible();
 	await expect(outputsPanel.getByTestId("resource-shelf-empty")).toContainText("No outputs yet");
-	await outputsPanel.getByRole("button", { name: "Close outputs panel" }).click();
+	await sidePanel.getByRole("button", { name: "Close side panel" }).click();
 	await expect(outputsPanel).toHaveCount(0);
 	await expect(outputsTrigger).toHaveAttribute("aria-expanded", "false");
 	await outputsTrigger.click();
 	await expect(outputsPanel).toBeVisible();
+	await sidePanel.getByRole("tab", { name: "Inference" }).click();
+	await expect(page.getByTestId("inference-panel")).toBeVisible();
+	await expect(outputsPanel).toHaveCount(0);
 
 	await page.getByTestId("open-search").click();
 	await expect(page.getByTestId("conversation-search")).toBeVisible();

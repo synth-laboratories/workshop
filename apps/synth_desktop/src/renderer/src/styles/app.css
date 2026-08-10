@@ -1968,12 +1968,19 @@ a,
 .permission-select {
 	display: inline-flex;
 	align-items: center;
-	gap: 5px;
-	padding: 6px 9px;
+	flex: 0 0 auto;
+	gap: 4px;
+	min-height: 32px;
+	padding: 5px 7px;
 	border-radius: 8px;
-	font-size: 13px;
+	font-size: 12px;
 	color: #8b9098;
+	white-space: nowrap;
 }
+
+.permission-select-part { display: inline-flex; align-items: center; gap: 3px; line-height: 1; }
+.permission-select-part svg { flex: 0 0 auto; }
+.permission-select-separator { width: 1px; height: 14px; margin: 0 2px; background: var(--color-border); }
 
 .permission-select:hover:not(:disabled) {
 	background: rgba(0, 0, 0, 0.045);
@@ -6039,7 +6046,6 @@ html.sidebar-hidden .sidebar {
 }
 
 .prompt-queue-after-stop,
-.composer-intent-hint,
 .composer-steer-error {
 	width: 100%;
 	max-width: 720px;
@@ -6253,48 +6259,45 @@ html.sidebar-hidden .sidebar {
 	}
 }
 
-/* ── Inference rail ───────────────────────────────────────────────────────
-   The local-model monitor docked beside the chat transcript. It reuses the
-   same grid mechanism as the visual and container panes so only one of the
-   layout rules ever has to win, and the panel itself is width-responsive via
-   its own container query. */
-.workbench.with-inference {
+/* ── First-class workbench side panel ─────────────────────────────────── */
+.workbench.with-side-panel {
 	display: grid;
 	grid-template-columns: minmax(380px, 1fr) minmax(0, 380px);
 }
 
 /* When a visual or container pane is already docked, the rail takes a third
    column rather than fighting the existing two-column rules. */
-.workbench.with-inference.with-visual,
-.workbench.with-inference.with-container {
+.workbench.with-side-panel.with-visual,
+.workbench.with-side-panel.with-container {
 	grid-template-columns: minmax(380px, 1fr) minmax(0, 1fr) minmax(0, 360px);
 }
 
-.inference-rail {
+.workbench-side-panel {
 	min-width: 0;
 	min-height: 0;
-	overflow-y: auto;
-	overflow-x: hidden;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
 	border-left: 1px solid var(--hairline, rgba(0, 0, 0, .08));
 	background: var(--surface-raised, #fbfbfa);
 }
 
 /* The transcript occupies the first column; the rail must not be stretched
    across it when other panes are absent. */
-.workbench.with-inference > .chat-transcript {
+.workbench.with-side-panel > .chat-transcript {
 	grid-column: 1;
 }
 
 @media (max-width: 900px) {
 	/* Below this width the rail would leave the transcript unusable; the
 	   Inventory tab remains the full-size view. */
-	.workbench.with-inference,
-	.workbench.with-inference.with-visual,
-	.workbench.with-inference.with-container {
+	.workbench.with-side-panel,
+	.workbench.with-side-panel.with-visual,
+	.workbench.with-side-panel.with-container {
 		grid-template-columns: minmax(0, 1fr);
 	}
 	/*
-	 * No `.inference-rail { display: none }` here: App.tsx unmounts the rail
+	 * App.tsx unmounts the panel
 	 * once the workbench cannot host it. A hidden-but-present rail keeps a
 	 * zero-sized rect, which reads as a rail whose panel has lost its inset.
 	 */
@@ -6328,26 +6331,6 @@ html.sidebar-hidden .sidebar {
 	min-height: 46px;
 	padding: 6px 10px 9px;
 	border-top: 1px solid #f0f1f3;
-}
-
-.composer-intent-hint {
-	width: auto;
-	max-width: 120px;
-	margin: 0 0 0 4px;
-	padding: 3px 6px;
-	overflow: hidden;
-	border-radius: 6px;
-	background: #f4f5f7;
-	color: #767b84;
-	font-size: 10.5px;
-	font-weight: 600;
-	line-height: 16px;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-@media (max-width: 700px) {
-	.composer-intent-hint { display: none; }
 }
 
 .prompt-queue {
@@ -6460,19 +6443,22 @@ html.sidebar-hidden .sidebar {
 .sidebar-show-more:hover,
 .sidebar-show-more:focus-visible { background: var(--color-bg-subtle); color: var(--color-text); }
 
-.inference-rail {
-	display: flex;
-	flex-direction: column;
-	align-items: flex-start;
-	justify-content: center;
-	padding: 14px;
+.workbench-side-panel {
 	background: #f5f6f8;
 	border-left: 1px solid #e4e6ea;
 }
 
-.inference-rail-label { width: 100%; max-width: 390px; display: grid; gap: 4px; padding: 2px 4px 9px; color: #555d68; }
-.inference-rail-label span { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
-.inference-rail-label small { max-width: 330px; color: #7b838e; font-size: 10px; line-height: 1.35; }
+.workbench-side-panel-header { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 8px 10px 7px; border-bottom: 1px solid #e4e6ea; background: rgba(255, 255, 255, .72); }
+.workbench-side-panel-tabs { display: flex; align-items: center; gap: 3px; min-width: 0; flex: 1; }
+.workbench-side-panel-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 31px; padding: 5px 10px; border-radius: 8px; color: var(--color-text-muted); font-size: 12px; font-weight: 600; }
+.workbench-side-panel-tabs button:hover { background: rgba(0, 0, 0, .04); color: var(--color-text); }
+.workbench-side-panel-tabs button[aria-selected="true"] { background: #fff; color: var(--color-text); box-shadow: 0 0 0 1px #d9dce2, 0 1px 2px rgba(20, 25, 35, .05); }
+.workbench-side-panel-tabs strong { min-width: 17px; padding: 1px 5px; border-radius: 9px; background: #f0eef7; color: #6654a9; font-size: 9px; }
+.workbench-side-panel-close { width: 30px; height: 30px; flex: 0 0 30px; border-radius: 8px; color: var(--color-text-muted); font-size: 19px; }
+.workbench-side-panel-close:hover { background: rgba(0, 0, 0, .04); color: var(--color-text); }
+.workbench-side-panel-content { min-width: 0; min-height: 0; flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 14px; }
+
+.resource-shelf.resource-shelf-docked { position: static; inset: auto; z-index: auto; width: 100%; max-height: none; align-self: stretch; padding: 2px; overflow: visible; border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; }
 
 /* The composer stays inside the transcript column while the inspector is open;
    the rail owns the right edge. That inset is measured in Composer.tsx and

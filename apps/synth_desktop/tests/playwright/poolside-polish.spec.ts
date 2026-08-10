@@ -167,31 +167,26 @@ test.describe("steer and enqueue", () => {
 		await page.getByTestId("titlebar").waitFor();
 		await page.getByTestId("local-chat-queue-chat").click();
 		await expect(page.getByTestId("composer-input")).toBeEnabled();
-		await expect(page.getByTestId("composer-intent-hint")).toBeVisible();
+		await expect(page.getByTestId("composer-intent-hint")).toHaveCount(0);
 		await page.getByTestId("composer-input").focus();
 		const workingComposerGeometry = await page.evaluate(() => {
 			const composer = document.querySelector<HTMLElement>("[data-testid=composer]");
 			const input = document.querySelector<HTMLTextAreaElement>("[data-testid=composer-input]");
 			const toolbar = document.querySelector<HTMLElement>(".composer-toolbar");
-			const hint = document.querySelector<HTMLElement>("[data-testid=composer-intent-hint]");
-			if (!composer || !input || !toolbar || !hint) throw new Error("Working composer fixture is incomplete");
+			if (!composer || !input || !toolbar) throw new Error("Working composer fixture is incomplete");
 			const composerRect = composer.getBoundingClientRect();
-			const toolbarRect = toolbar.getBoundingClientRect();
-			const hintRect = hint.getBoundingClientRect();
 			return {
 				compact: composerRect.height <= 140 && input.getBoundingClientRect().height <= 80,
-				hintLivesInToolbar: hintRect.top >= toolbarRect.top && hintRect.bottom <= toolbarRect.bottom,
+				toolbarIsSingleRow: toolbar.scrollHeight <= toolbar.clientHeight + 1,
 				quietTextareaFocus: getComputedStyle(input).outlineStyle === "none",
-				noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1,
-				showsInternalRuntimeDetail: hint.textContent?.includes("runtime primitive") ?? false
+				noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1
 			};
 		});
 		expect(workingComposerGeometry).toEqual({
 			compact: true,
-			hintLivesInToolbar: true,
+			toolbarIsSingleRow: true,
 			quietTextareaFocus: true,
-			noHorizontalOverflow: true,
-			showsInternalRuntimeDetail: false
+			noHorizontalOverflow: true
 		});
 		await page.getByTestId("composer-input").fill("queued one");
 		await page.getByTestId("composer-send").click();

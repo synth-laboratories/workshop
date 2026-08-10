@@ -23,7 +23,7 @@ import {
 	isInternTargetId
 } from "./types/landing";
 import type { ArtifactRef } from "./types/landing";
-import { ChatTranscript } from "./components/ChatTranscript";
+import { ChatTranscript, OutputsPanel, outputContainerIds } from "./components/ChatTranscript";
 import { ContainerPane } from "./components/ContainerPane";
 // CloudDesk stays dormant for v0.2; see the removal contract at its route site.
 import { Composer } from "./components/Composer";
@@ -37,6 +37,7 @@ import { PaneResizeHandle } from "./components/PaneResizeHandle";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
 import { UsageSheet } from "./components/UsageSheet";
+import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
 import { buildAccountView } from "./runtime/accountView";
 import { SynthLogo } from "./components/SynthLogo";
 import { TerminalPanel } from "./components/TerminalPanel";
@@ -393,7 +394,7 @@ export default function App() {
 	// Local inference is a first-class part of the workbench. Default the MLX
 	// sidecar rail open once for existing installs, while preserving explicit
 	// show/hide choices after that migration.
-	const [inferenceRailOpen, setInferenceRailOpen] = useState(
+	const [sidePanelOpen, setSidePanelOpen] = useState(
 		() => {
 			if (window.localStorage.getItem("synth.inferenceRailDefaultV2") !== "1") {
 				window.localStorage.setItem("synth.inferenceRailDefaultV2", "1");
@@ -403,6 +404,7 @@ export default function App() {
 			return window.localStorage.getItem("synth.inferenceRailOpen") !== "0";
 		}
 	);
+	const [sidePanelTab, setSidePanelTab] = useState<"outputs" | "inference">("inference");
 	const inferenceMonitor = useInferenceMonitor({ visible: selectedTargetId === "local-laguna" });
 	const [modelPerformance, setModelPerformance] = useState<ModelPerformanceSummary[]>([]);
 	useEffect(() => {
@@ -1107,8 +1109,8 @@ export default function App() {
 	 * 300px = the rail's own minimum column.
 	 */
 	const workbenchWidth = viewportWidth - (sidebarVisible ? sidebarWidth : 0);
-	const inferenceRailFits = workbenchWidth >= 368 + 300;
-	const showInferenceRail = activeLocalModel && inferenceRailOpen && inferenceRailFits;
+	const sidePanelFits = workbenchWidth >= 368 + 300;
+	const showSidePanel = sidePanelOpen && sidePanelFits && (sidePanelTab === "outputs" || activeLocalModel);
 	const activeSync =
 		view.kind === "sync"
 			? (state.syncSessions.find((s) => s.id === view.sessionId) ?? null)
@@ -1901,17 +1903,16 @@ export default function App() {
 							</button>
 							{activeLocalModel ? <button
 								type="button"
-								className={`titlebar-icon-btn${inferenceRailOpen ? " active" : ""}`}
-								aria-label={inferenceRailOpen ? "Hide inference panel" : "Show inference panel"}
-								aria-pressed={inferenceRailOpen}
+								className={`titlebar-icon-btn${sidePanelOpen && sidePanelTab === "inference" ? " active" : ""}`}
+								aria-label={sidePanelOpen && sidePanelTab === "inference" ? "Hide inference panel" : "Show inference panel"}
+								aria-pressed={sidePanelOpen && sidePanelTab === "inference"}
 								title="MLX sidecar inference panel"
 								data-testid="toggle-inference-rail"
 								onClick={() => {
-									setInferenceRailOpen((current) => {
-										const next = !current;
+									const next = !(sidePanelOpen && sidePanelTab === "inference");
+									setSidePanelTab("inference");
+									setSidePanelOpen(next);
 										window.localStorage.setItem("synth.inferenceRailOpen", next ? "1" : "0");
-										return next;
-									});
 								}}
 							>
 								<IconSidePanel />
@@ -2084,7 +2085,7 @@ export default function App() {
 					) : null}
 
 					{view.kind === "chat" && activeChat ? (
-						<div className={`workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}${showInferenceRail ? " with-inference" : ""}`}>
+						<div className={`workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}${showSidePanel ? " with-side-panel" : ""}`}>
 								<ChatTranscript
 									chat={activeChat}
 									openArtifactId={openArtifactId}
@@ -2101,8 +2102,14 @@ export default function App() {
 											void controlActive("cancel");
 										}}
 										activityMode={preferences.toolActivity.mode}
-										onActivityModeChange={(mode) => setPreferences(setToolActivityMode(mode))}
-								/>
+									onActivityModeChange={(mode) => setPreferences(setToolActivityMode(mode))}
+									outputsOpen={showSidePanel && sidePanelTab === "outputs"}
+									onToggleOutputs={() => {
+										const next = !(showSidePanel && sidePanelTab === "outputs");
+										setSidePanelTab("outputs");
+										setSidePanelOpen(next);
+									}}
+							/>
 							{failedSend && failedSend.sessionId === activeChat.id ? (
 								<div
 									role="status"
@@ -2131,24 +2138,25 @@ export default function App() {
 									onClose={() => void toggleContainer(null)}
 								/>
 							) : null}
-							{showInferenceRail ? (
-								<aside className="inference-rail" data-testid="inference-rail" aria-label="Local inference monitor">
-									<div className="inference-rail-label">
-										<span>MLX sidecar</span>
-										<small>Owns local model memory, prompt caches, and the single-GPU queue.</small>
-									</div>
-									{/* `visible` drives subscribe/teardown, so a closed rail
-									    costs nothing. */}
-									<InferencePanel
-										visible
-										monitor={inferenceMonitor}
-										turnRunning={Boolean(
-											activeChatRunning && activeChatSession?.target.kind === "local"
-										)}
-										warmingUp={activeChatWarmingUp}
-										onOpenSettings={() => setView({ kind: "settings", section: "inference" })}
-									/>
-								</aside>
+							{showSidePanel ? (
+								<WorkbenchSidePanel
+									activeTabId={sidePanelTab}
+									onTabChange={(tabId) => setSidePanelTab(tabId as "outputs" | "inference")}
+									onClose={() => setSidePanelOpen(false)}
+									tabs={[
+										{
+											id: "outputs",
+											label: "Outputs",
+											badge: outputContainerIds(activeChat).length + (activeChat.artifacts?.length ?? 0),
+											content: <OutputsPanel chat={activeChat} openArtifactId={openArtifactId} onOpenArtifact={toggleArtifact} openContainerId={openContainer?.id ?? null} onOpenContainer={(id) => void toggleContainer(id)} />
+										},
+										...(activeLocalModel ? [{
+											id: "inference",
+											label: "Inference",
+											content: <InferencePanel visible monitor={inferenceMonitor} turnRunning={Boolean(activeChatRunning && activeChatSession?.target.kind === "local")} warmingUp={activeChatWarmingUp} onOpenSettings={() => setView({ kind: "settings", section: "inference" })} />
+										}] : [])
+									]}
+								/>
 							) : null}
 						</div>
 					) : null}

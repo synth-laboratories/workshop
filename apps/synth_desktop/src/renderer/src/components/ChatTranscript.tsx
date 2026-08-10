@@ -25,7 +25,33 @@ type Props = {
 	onStop?: () => void;
 	activityMode?: ToolActivityMode;
 	onActivityModeChange?: (mode: ToolActivityMode) => void;
+	outputsOpen?: boolean;
+	onToggleOutputs?: () => void;
 };
+
+export function outputContainerIds(chat: LocalChat): string[] {
+	return [...new Set(Object.values(chat.activityByMessageId ?? {}).flat().map((line) => line.containerId).filter((id): id is string => Boolean(id)))];
+}
+
+export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContainerId = null, onOpenContainer }: Pick<Props, "chat" | "openArtifactId" | "onOpenArtifact" | "openContainerId" | "onOpenContainer">) {
+	const artifacts = chat.artifacts ?? [];
+	const containerIds = outputContainerIds(chat);
+	const hasResources = containerIds.length > 0 || artifacts.length > 0;
+	return <div id="chat-resource-shelf" className="resource-shelf resource-shelf-docked" aria-label="Outputs" data-testid="resource-shelf">
+		{!hasResources ? <div className="resource-shelf-empty" data-testid="resource-shelf-empty"><strong>No outputs yet</strong><span>Files, visuals, and containers from this conversation will appear here.</span></div> : null}
+		{containerIds.length > 0 ? <section className="containers-rail" data-testid="containers-rail"><h3>Containers</h3>{containerIds.map((id) => (
+			<button key={id} type="button" className={`resource-shelf-row container-rail-btn${openContainerId === id ? " active" : ""}`} onClick={() => onOpenContainer?.(openContainerId === id ? null : id)} aria-pressed={openContainerId === id} aria-label={openContainerId === id ? "Hide container inspector" : "Open container inspector"} data-testid={`container-icon-${id}`}>
+				<span className="resource-shelf-icon"><ContainerIcon /></span><span><strong>Container</strong><code>{id}</code></span><span aria-hidden>›</span>
+			</button>
+		))}</section> : null}
+		{artifacts.length > 0 ? <section className="visuals-rail" data-testid="visuals-rail"><h3>Visuals</h3>{artifacts.map((artifact) => {
+			const active = openArtifactId === artifact.id;
+			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${artifact.title}` : `Show ${artifact.title}`} aria-pressed={active} aria-label={active ? `Hide visual ${artifact.title}` : `Show visual ${artifact.title}`} data-testid={`visuals-icon-${artifact.id}`}>
+				<span className="resource-shelf-icon">{artifact.templateId === "synth.subagents.v1" ? <IconSubagents /> : <IconVisual />}</span><span><strong>{artifact.title}</strong><code>{artifact.templateId ?? artifact.kind}</code></span><span aria-hidden>›</span>
+			</button>;
+		})}</section> : null}
+	</div>;
+}
 
 function IconVisual() {
 	return (
@@ -484,12 +510,10 @@ export function ChatTranscript({
 	warmingUp = false,
 	onStop,
 	activityMode = "grouped",
-	onActivityModeChange
+	onActivityModeChange,
+	outputsOpen = false,
+	onToggleOutputs
 }: Props) {
-	// Outputs is a permanent conversation affordance, like the Codex side panel.
-	// Start it open even before the first resource exists so the layout never
-	// appears or shifts only after a tool happens to produce an output.
-	const [resourcesOpen, setResourcesOpen] = useState(true);
 	const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
 	const [modeMenuOpen, setModeMenuOpen] = useState(false);
 	const modeMenuRef = useRef<HTMLDivElement>(null);
@@ -500,7 +524,7 @@ export function ChatTranscript({
 	const [liveAnnouncement, setLiveAnnouncement] = useState("");
 	const activityByMessageId = chat.activityByMessageId ?? {};
 	const artifacts = chat.artifacts ?? [];
-	const containerIds = [...new Set(Object.values(activityByMessageId).flat().map((line) => line.containerId).filter((id): id is string => Boolean(id)))];
+	const containerIds = outputContainerIds(chat);
 	const hasResources = containerIds.length > 0 || artifacts.length > 0;
 	const activeLines = activityByMessageId.__active__ ?? [];
 	const presentedActive = useMemo(
@@ -517,7 +541,6 @@ export function ChatTranscript({
 	useEffect(() => {
 		if (previousChatIdRef.current !== chat.id) {
 			followsTailRef.current = true;
-			setResourcesOpen(true);
 		}
 		previousChatIdRef.current = chat.id;
 	}, [chat.id]);
@@ -539,10 +562,6 @@ export function ChatTranscript({
 		});
 		return () => cancelAnimationFrame(frame);
 	}, [transcriptContentKey]);
-
-	useEffect(() => {
-		if (openArtifactId || openContainerId) setResourcesOpen(false);
-	}, [openArtifactId, openContainerId]);
 
 	useEffect(() => {
 		const announcement = activityStatusAnnouncement(previousActiveRef.current, activeLines, running);
@@ -622,7 +641,7 @@ export function ChatTranscript({
 	});
 
 	return (
-		<div className={`chat-transcript${resourcesOpen ? " resources-open" : ""}`} data-testid="chat-transcript" data-activity-mode={activityMode}>
+		<div className={`chat-transcript${outputsOpen ? " resources-open" : ""}`} data-testid="chat-transcript" data-activity-mode={activityMode}>
 			<div className="transcript-toolbar" data-testid="transcript-toolbar">
 			<div className="activity-mode-bar" ref={modeMenuRef}>
 				<button
@@ -657,35 +676,9 @@ export function ChatTranscript({
 					</div>
 				) : null}
 			</div>
-			<button type="button" className={`resource-shelf-trigger${resourcesOpen ? " active" : ""}`} onClick={() => setResourcesOpen((open) => !open)} aria-expanded={resourcesOpen} aria-controls="chat-resource-shelf" data-testid="resource-shelf-trigger"><span aria-hidden>☷</span> Outputs {hasResources ? <strong>{containerIds.length + artifacts.length}</strong> : null}</button>
+			<button type="button" className={`resource-shelf-trigger${outputsOpen ? " active" : ""}`} onClick={onToggleOutputs} aria-expanded={outputsOpen} aria-controls="workbench-side-panel" data-testid="resource-shelf-trigger"><span aria-hidden>☷</span> Outputs {hasResources ? <strong>{containerIds.length + artifacts.length}</strong> : null}</button>
 			</div>
 			<div className="sr-only" role="status" aria-live="polite" data-testid="activity-live-region">{liveAnnouncement}</div>
-			{resourcesOpen ? <aside id="chat-resource-shelf" className="resource-shelf" aria-label="Outputs" data-testid="resource-shelf">
-				<header><span>Outputs</span><button type="button" onClick={() => setResourcesOpen(false)} aria-label="Close outputs panel">×</button></header>
-				{!hasResources ? <div className="resource-shelf-empty" data-testid="resource-shelf-empty"><strong>No outputs yet</strong><span>Files, visuals, and containers from this conversation will appear here.</span></div> : null}
-				{containerIds.length > 0 ? <section className="containers-rail" data-testid="containers-rail"><h3>Containers</h3>{containerIds.map((id) => (
-					<button key={id} type="button" className={`resource-shelf-row container-rail-btn${openContainerId === id ? " active" : ""}`} onClick={() => { setResourcesOpen(false); onOpenContainer?.(openContainerId === id ? null : id); }} aria-pressed={openContainerId === id} aria-label={openContainerId === id ? "Hide container inspector" : "Open container inspector"} data-testid={`container-icon-${id}`}>
-						<span className="resource-shelf-icon"><ContainerIcon /></span><span><strong>Container</strong><code>{id}</code></span><span aria-hidden>›</span>
-					</button>
-				))}</section> : null}
-				{artifacts.length > 0 ? <section className="visuals-rail" data-testid="visuals-rail"><h3>Visuals</h3>{artifacts.map((a) => {
-						const active = openArtifactId === a.id;
-						return (
-							<button
-								key={a.id}
-								type="button"
-								className={`resource-shelf-row${active ? " active" : ""}`}
-								onClick={() => { setResourcesOpen(false); onOpenArtifact(a.id); }}
-								title={active ? `Hide ${a.title}` : `Show ${a.title}`}
-								aria-pressed={active}
-								aria-label={active ? `Hide visual ${a.title}` : `Show visual ${a.title}`}
-								data-testid={`visuals-icon-${a.id}`}
-							>
-								<span className="resource-shelf-icon">{a.templateId === "synth.subagents.v1" ? <IconSubagents /> : <IconVisual />}</span><span><strong>{a.title}</strong><code>{a.templateId ?? a.kind}</code></span><span aria-hidden>›</span>
-							</button>
-						);
-						})}</section> : null}
-			</aside> : null}
 
 			<div
 				className="chat-transcript-scroll"

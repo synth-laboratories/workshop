@@ -82,6 +82,9 @@ const SANDBOX_OPTIONS: Array<{ id: SandboxMode; label: string; description: stri
 	{ id: "danger-full-access", label: "Full system access", description: "Allow unrestricted filesystem and network access." }
 ];
 
+const APPROVAL_CHIP_LABEL: Record<ApprovalPolicy, string> = { untrusted: "Ask", "on-request": "Risky", never: "Auto" };
+const SANDBOX_CHIP_LABEL: Record<SandboxMode, string> = { "read-only": "Read", "workspace-write": "Workspace", "danger-full-access": "Full" };
+
 function PermissionMenu({ approvalPolicy, sandboxMode, onSelect, disabled, open, onOpenChange }: {
 	approvalPolicy: ApprovalPolicy;
 	sandboxMode: SandboxMode;
@@ -100,8 +103,11 @@ function PermissionMenu({ approvalPolicy, sandboxMode, onSelect, disabled, open,
 		return () => document.removeEventListener("mousedown", close);
 	}, [open, onOpenChange]);
 	return <div className="permission-wrap" ref={ref}>
-		<button type="button" className="permission-select" disabled={disabled} onClick={() => onOpenChange(!open)} aria-expanded={open} aria-controls="approval-mode-menu" aria-haspopup="listbox" data-testid="approval-mode-select">
-			<IconAsk /><span>{selectedApproval.label} · {selectedSandbox.label}</span><IconChevron />
+		<button type="button" className="permission-select" disabled={disabled} onClick={() => onOpenChange(!open)} aria-label={`Permissions: ${selectedApproval.label}; ${selectedSandbox.label}`} title={`${selectedApproval.label} · ${selectedSandbox.label}`} aria-expanded={open} aria-controls="approval-mode-menu" aria-haspopup="listbox" data-testid="approval-mode-select">
+			<span className="permission-select-part"><IconAsk /><span>{APPROVAL_CHIP_LABEL[approvalPolicy]}</span></span>
+			<span className="permission-select-separator" aria-hidden />
+			<span className="permission-select-part"><IconWorkspace /><span>{SANDBOX_CHIP_LABEL[sandboxMode]}</span></span>
+			<IconChevron />
 		</button>
 		{open ? <div id="approval-mode-menu" className="permission-menu" aria-label="Permissions" data-testid="approval-mode-menu">
 			<div className="permission-section" role="listbox" aria-label="Command approvals"><p>Command approvals</p>
@@ -185,6 +191,10 @@ function IconAsk() {
 			<circle cx="7" cy="10.05" r="0.7" fill="currentColor" />
 		</svg>
 	);
+}
+
+function IconWorkspace() {
+	return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden><path d="M1.75 4.25h10.5v6.5a1 1 0 01-1 1h-8.5a1 1 0 01-1-1v-6.5Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/><path d="M1.75 4.25V3.5a1 1 0 011-1h2.1l1.1 1.25h5.3a1 1 0 011 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 }
 
 function IconMic() {
@@ -993,13 +1003,6 @@ export function Composer({
 			: steerSupported
 				? "Steer active turn"
 				: "Steer unavailable";
-	const intentSummary = activeEnterAction === "enqueue" ? "Queue next" : "Steer current";
-	const intentDescription = activeEnterAction === "enqueue"
-		? steerSupported
-			? "Enter queues the next message. Command-Enter steers the active turn."
-			: "Enter queues the next message. Steering is unavailable until the runtime supports it."
-		: "Enter steers the active turn. Command-Enter queues the next message.";
-
 	return (
 		<div className="composer-dock" data-testid="composer-dock" ref={dockRef}>
 			{queuedPrompts.length > 0 ? (
@@ -1146,11 +1149,6 @@ export function Composer({
 							open={permissionMenuOpen}
 							onOpenChange={setPermissionMenuOpen}
 						/>
-						{agentWorking ? (
-							<span className="composer-intent-hint" data-testid="composer-intent-hint" aria-label={intentDescription} title={intentDescription}>
-								{intentSummary}
-							</span>
-						) : null}
 					</div>
 					<div className="composer-right">
 						<ModelMenu

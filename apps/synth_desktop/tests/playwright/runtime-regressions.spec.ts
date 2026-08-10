@@ -734,13 +734,13 @@ test("native Codex deltas form one readable message with working and stop state"
 	expect((await secondCommand.boundingBox())!.y).toBeGreaterThan((await secondUser.boundingBox())!.y);
 	await page.getByRole("button", { name: "Stop generating" }).click();
 	expect(await page.evaluate(() => (window as typeof window & { __conversationInterrupts: () => number }).__conversationInterrupts())).toBe(1);
-	await expect(page.getByTestId("inference-rail")).toBeVisible();
+	await expect(page.getByTestId("workbench-side-panel")).toBeVisible();
 	await expect(page.getByTestId("inference-panel")).toBeVisible();
-	await expect(page.getByText("MLX sidecar", { exact: true })).toBeVisible();
+	await expect(page.getByTestId("workbench-side-tab-inference")).toHaveAttribute("aria-selected", "true");
 	await page.getByTestId("toggle-inference-rail").click();
-	await expect(page.getByTestId("inference-rail")).toBeHidden();
+	await expect(page.getByTestId("workbench-side-panel")).toBeHidden();
 	await page.getByTestId("toggle-inference-rail").click();
-	await expect(page.getByTestId("inference-rail")).toBeVisible();
+	await expect(page.getByTestId("workbench-side-panel")).toBeVisible();
 	const inferenceGeometry = await page.getByTestId("inference-panel").evaluate((panel) => {
 		const rail = panel.parentElement!.getBoundingClientRect();
 		const panelRect = panel.getBoundingClientRect();
@@ -1007,7 +1007,7 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 		return { separated: activity.right + 4 <= outputs.left, contained: activity.top >= bounds.top && outputs.bottom <= bounds.bottom };
 	});
 	expect(toolbarGeometry).toEqual({ separated: true, contained: true });
-	await expect(transcript.getByTestId("resource-shelf")).toHaveCount(0);
+	await expect(page.getByTestId("resource-shelf")).toHaveCount(0);
 	await containerOpen.click();
 	const containerPane = page.getByTestId("container-pane");
 	await expect(containerPane).toBeVisible();
@@ -1063,11 +1063,11 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(transcript.getByText("Failed")).toBeVisible();
 	await expect(transcript).toContainText("template id craftax.rollout.v1 · title Craftax rollout · 2ms");
 	await transcript.getByTestId("resource-shelf-trigger").click();
-	const resourceShelf = transcript.getByTestId("resource-shelf");
+	const resourceShelf = page.getByTestId("resource-shelf");
 	await expect(resourceShelf).toContainText("Containers");
 	await expect(resourceShelf).toContainText("Visuals");
 	await expect(resourceShelf).toContainText("Reward comparison");
-	await resourceShelf.getByRole("button", { name: "Close outputs panel" }).click();
+	await page.getByRole("button", { name: "Close side panel" }).click();
 	const visualOpen = transcript.getByTestId("tool-visual-open-vis-reward-comparison");
 	await expect(visualOpen).toBeVisible();
 	await visualOpen.click();
@@ -1128,7 +1128,8 @@ test("approval modes configure new native sessions and pending requests resolve 
 	await menu.getByRole("option", { name: /Full system access/ }).click();
 	await page.getByTestId("composer-input").fill("check approvals");
 	await page.getByTestId("composer-send").click();
-	await expect(page.getByTestId("approval-mode-select")).toContainText("Ask for risky actions · Full system access");
+	await expect(page.getByTestId("approval-mode-select")).toHaveText("RiskyFull");
+	await expect(page.getByTestId("approval-mode-select")).toHaveAttribute("aria-label", "Permissions: Ask for risky actions; Full system access");
 
 	const started = await page.evaluate(() => (window as typeof window & { __approvalStarted: () => Record<string, unknown> }).__approvalStarted());
 	expect(started?.approvalPolicy).toBe("on-request");
