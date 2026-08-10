@@ -84,6 +84,13 @@ test.describe("design locks (must pass)", () => {
 		await page.getByTestId("account-menu-trigger").click();
 		await page.getByTestId("open-account-settings").click();
 		await expect(page.getByTestId("settings-page")).toBeVisible();
+		// Account leads with the user-facing sections; endpoint/key configuration
+		// is deliberately demoted behind Advanced connection but stays reachable.
+		await expect(page.getByTestId("settings-account")).toBeVisible();
+		await expect(page.getByTestId("account-page-profile")).toBeVisible();
+		await expect(page.getByTestId("account-page-plan")).toBeVisible();
+		await expect(page.getByTestId("backend-settings")).toBeHidden();
+		await page.getByTestId("account-page-advanced").getByText("Advanced connection").click();
 		await expect(page.getByTestId("backend-settings")).toBeVisible();
 		await expect(page.getByText("Account — stub", { exact: true })).toHaveCount(0);
 	});

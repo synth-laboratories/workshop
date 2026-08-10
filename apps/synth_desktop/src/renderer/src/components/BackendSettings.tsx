@@ -6,6 +6,128 @@ type PairState =
 	| { kind: "pairing"; verificationUri: string }
 	| { kind: "error"; message: string };
 
+function announceAccountChange(next: SynthBackendSettings) {
+	window.dispatchEvent(new CustomEvent("synth:account-changed", {
+		detail: { apiKeyConfigured: next.apiKeyConfigured }
+	}));
+}
+
+/**
+ * Browser sign-in for this device. Lives on its own so the Account page can put
+ * it under Devices & security while the endpoint/key editor stays demoted to
+ * Advanced connection — one sign-in affordance, not two.
+ */
+export function AccountSignIn() {
+	const [settings, setSettings] = useState<SynthBackendSettings | null>(null);
+	const [status, setStatus] = useState<string | null>(null);
+	const [saving, setSaving] = useState(false);
+	const [pair, setPair] = useState<PairState>({ kind: "idle" });
+	const pollTimer = useRef<number | null>(null);
+
+	const load = () => {
+		void window.synthConfig?.get().then(setSettings).catch(() => undefined);
+	};
+	useEffect(() => {
+		load();
+		const onChanged = () => load();
+		window.addEventListener("synth:account-changed", onChanged);
+		return () => window.removeEventListener("synth:account-changed", onChanged);
+	}, []);
+
+	const stopPolling = () => {
+		if (pollTimer.current !== null) {
+			window.clearInterval(pollTimer.current);
+			pollTimer.current = null;
+		}
+	};
+	useEffect(() => stopPolling, []);
+
+	const beginSignIn = async () => {
+		if (!window.synthAccount) return;
+		try {
+			const begin = await window.synthAccount.beginSignIn();
+			setPair({ kind: "pairing", verificationUri: begin.verificationUri });
+			stopPolling();
+			pollTimer.current = window.setInterval(() => {
+				void window.synthAccount?.pollSignIn().then((result) => {
+					if (result.status === "active") {
+						stopPolling();
+						setPair({ kind: "idle" });
+						setStatus("Signed in · runtime reconnected");
+						void window.synthConfig?.get().then((next) => {
+							setSettings(next);
+							announceAccountChange(next);
+						});
+					} else if (result.status === "expired") {
+						stopPolling();
+						setPair({ kind: "error", message: result.reason });
+					}
+				}).catch((error) => {
+					stopPolling();
+					setPair({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+				});
+			}, 4000);
+		} catch (error) {
+			setPair({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+		}
+	};
+	const cancelSignIn = () => {
+		stopPolling();
+		setPair({ kind: "idle" });
+		void window.synthAccount?.cancelSignIn();
+	};
+	const signOut = async () => {
+		if (!window.synthAccount) return;
+		setSaving(true);
+		try {
+			const next = await window.synthAccount.signOut();
+			setSettings(next);
+			announceAccountChange(next);
+			setStatus("Signed out · cloud credentials removed");
+		} catch (error) {
+			setStatus(error instanceof Error ? error.message : String(error));
+		} finally {
+			setSaving(false);
+		}
+	};
+
+	return (
+		<div className="backend-signin" data-testid="account-sign-in">
+			{pair.kind === "pairing" ? (
+				<>
+					<span role="status" className="finetune-meta" data-testid="sign-in-status">
+						Finish sign-in in your browser — this page updates automatically.
+					</span>
+					<button type="button" className="settings-secondary-btn" onClick={() => void beginSignIn()}>Reopen browser</button>
+					<button type="button" className="settings-secondary-btn" data-testid="sign-in-cancel" onClick={cancelSignIn}>Cancel</button>
+				</>
+			) : (
+				<>
+					{/* Steady-state copy stays here; a transient confirmation gets its own
+					    line so the status never hides what the device's state is. */}
+					<span role="status" className="finetune-meta" data-testid="sign-in-status">
+						{pair.kind === "error"
+							? pair.message
+							: settings?.apiKeyConfigured
+								? "Connected to Synth. Sign in again to switch accounts."
+								: "New here? Browser sign-in creates your Synth account and connects this device."}
+					</span>
+					{status ? <span className="finetune-meta" data-testid="account-sign-in-note">{status}</span> : null}
+					<button type="button" className="settings-secondary-btn" data-testid="sign-in-begin" onClick={() => void beginSignIn()}>
+						{settings?.apiKeyConfigured ? "Sign in again" : "Sign in with browser"}
+					</button>
+					{settings?.apiKeyConfigured ? (
+						<button type="button" className="settings-secondary-btn" data-testid="account-sign-out" disabled={saving} onClick={() => void signOut()}>
+							Sign out
+						</button>
+					) : null}
+				</>
+			)}
+		</div>
+	);
+}
+
+/** Advanced connection: endpoint, secrets file, and key material. */
 export function BackendSettings() {
 	const PROFILE_ENDPOINTS: Record<string, string> = {
 		prod: "https://api.usesynth.ai",
@@ -31,84 +153,26 @@ export function BackendSettings() {
 		}
 	};
 
+	// Reading settings must never announce a change: this panel also listens for
+	// that event, and re-broadcasting on load would loop.
 	const apply = (next: SynthBackendSettings) => {
 		setSettings(next);
 		setProfile(next.profile);
 		setBackendUrl(next.backendUrl);
 		setEnvFile(next.envFile);
 		setApiKeyEnv(next.apiKeyEnv);
-		window.dispatchEvent(new CustomEvent("synth:account-changed", {
-			detail: { apiKeyConfigured: next.apiKeyConfigured }
-		}));
 	};
-	const announceAccountChange = (next: SynthBackendSettings) => {
-		window.dispatchEvent(new CustomEvent("synth:account-changed", {
-			detail: { apiKeyConfigured: next.apiKeyConfigured }
-		}));
-	};
-
 	useEffect(() => {
-		void window.synthConfig?.get().then(apply).catch((error) => setStatus(String(error)));
+		const load = () => {
+			void window.synthConfig?.get().then(apply).catch((error) => setStatus(String(error)));
+		};
+		load();
+		// Sign-in and sign-out now happen in Devices & security; this panel must
+		// still show the resulting credential state rather than a stale one.
+		const onChanged = () => load();
+		window.addEventListener("synth:account-changed", onChanged);
+		return () => window.removeEventListener("synth:account-changed", onChanged);
 	}, []);
-
-	const [pair, setPair] = useState<PairState>({ kind: "idle" });
-	const pollTimer = useRef<number | null>(null);
-	const stopPolling = () => {
-		if (pollTimer.current !== null) {
-			window.clearInterval(pollTimer.current);
-			pollTimer.current = null;
-		}
-	};
-	useEffect(() => stopPolling, []);
-	const beginSignIn = async () => {
-		if (!window.synthAccount) return;
-		try {
-			const begin = await window.synthAccount.beginSignIn();
-			setPair({ kind: "pairing", verificationUri: begin.verificationUri });
-			stopPolling();
-			pollTimer.current = window.setInterval(() => {
-				void window.synthAccount?.pollSignIn().then((result) => {
-					if (result.status === "active") {
-						stopPolling();
-						setPair({ kind: "idle" });
-						setStatus("Signed in · runtime reconnected");
-						void window.synthConfig?.get().then((next) => {
-							apply(next);
-							announceAccountChange(next);
-						});
-					} else if (result.status === "expired") {
-						stopPolling();
-						setPair({ kind: "error", message: result.reason });
-					}
-				}).catch((error) => {
-					stopPolling();
-					setPair({ kind: "error", message: error instanceof Error ? error.message : String(error) });
-				});
-			}, 4000);
-		} catch (error) {
-			setPair({ kind: "error", message: error instanceof Error ? error.message : String(error) });
-		}
-	};
-	const cancelSignIn = () => {
-		stopPolling();
-		setPair({ kind: "idle" });
-		void window.synthAccount?.cancelSignIn();
-	};
-	const signOut = async () => {
-		if (!window.synthAccount) return;
-		setSaving(true);
-		setStatus(null);
-		try {
-			const next = await window.synthAccount.signOut();
-			apply(next);
-			announceAccountChange(next);
-			setStatus("Signed out · cloud credentials removed");
-		} catch (error) {
-			setStatus(error instanceof Error ? error.message : String(error));
-		} finally {
-			setSaving(false);
-		}
-	};
 
 	const save = async () => {
 		if (!window.synthConfig) return;
@@ -140,35 +204,6 @@ export function BackendSettings() {
 				<div><h2>Synth API</h2><p>Routing is stored in TOML. Credentials stay in a private env file read only by the native host.</p></div>
 				<span className="finetune-badge">{settings?.apiKeyConfigured ? "Authenticated" : "API key required"}</span>
 			</header>
-			<div className="backend-signin" data-testid="account-sign-in">
-				{pair.kind === "pairing" ? (
-					<>
-						<span role="status" className="finetune-meta" data-testid="sign-in-status">
-							Finish sign-in in your browser — this page updates automatically.
-						</span>
-						<button type="button" className="settings-secondary-btn" onClick={() => void beginSignIn()}>Reopen browser</button>
-						<button type="button" className="settings-secondary-btn" data-testid="sign-in-cancel" onClick={cancelSignIn}>Cancel</button>
-					</>
-				) : (
-					<>
-						<span role="status" className="finetune-meta" data-testid="sign-in-status">
-							{pair.kind === "error"
-								? pair.message
-								: settings?.apiKeyConfigured
-									? "Connected to Synth. Sign in again to switch accounts."
-									: "New here? Browser sign-in creates your Synth account and connects this device."}
-						</span>
-						<button type="button" className="settings-secondary-btn" data-testid="sign-in-begin" onClick={() => void beginSignIn()}>
-							{settings?.apiKeyConfigured ? "Sign in again" : "Sign in with browser"}
-						</button>
-						{settings?.apiKeyConfigured ? (
-							<button type="button" className="settings-secondary-btn" data-testid="account-sign-out" disabled={saving} onClick={() => void signOut()}>
-								Sign out
-							</button>
-						) : null}
-					</>
-				)}
-			</div>
 			<div className="backend-settings-grid">
 				<label><span>Profile</span><select value={profile} onChange={(event) => selectProfile(event.target.value)}>
 					<option value="prod">Production</option><option value="staging">Staging</option><option value="local">Local</option>

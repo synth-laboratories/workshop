@@ -151,3 +151,48 @@ test("an exhausted allowance blocks the cloud model and offers upgrade; local st
 	await expect(page.getByTestId("usage-sheet-blocked")).toContainText("allowance is used up");
 	await expect(page.getByTestId("usage-sheet-primary-action")).toContainText("Upgrade");
 });
+
+test("Settings \u2192 Account leads with account facts and demotes connection config", async ({ page }) => {
+	await stubCloudAccount(page, { state: "active", remainingUsd: 157.5, usedUsd: 42.5 });
+
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("open-account-settings").click();
+	const account = page.getByTestId("settings-account");
+	await expect(account).toBeVisible();
+
+	// Four user-facing sections, in order, before any endpoint field.
+	await expect(page.getByTestId("account-page-profile")).toBeVisible();
+	await expect(page.getByTestId("account-page-name")).toHaveText("ada");
+	await expect(page.getByTestId("account-page-org")).toHaveText("Ada Labs");
+	await expect(page.getByTestId("account-page-plan-name")).toHaveText("Pro");
+	await expect(page.getByTestId("account-page-allowance")).toHaveText("$200.00");
+	await expect(page.getByTestId("account-page-remaining")).toHaveText("$157.50");
+	await expect(page.getByTestId("account-page-7d")).toHaveText("$1.20");
+	await expect(page.getByTestId("account-page-devices")).toBeVisible();
+	await expect(page.getByTestId("account-page-catalog")).toContainText("Starter");
+
+	// Device usage is present but never merged into the cloud figures.
+	await expect(page.getByTestId("account-page-usage")).toContainText("This device");
+	await expect(page.getByTestId("account-page-usage")).toContainText("not your Synth Cloud allowance");
+
+	// Connection config is reachable, but only behind the disclosure.
+	await expect(page.getByTestId("backend-settings")).toBeHidden();
+	await page.getByTestId("account-page-advanced").getByText("Advanced connection").click();
+	await expect(page.getByTestId("backend-settings")).toBeVisible();
+	await expect(page.getByTestId("backend-settings")).toContainText("Authenticated");
+
+	// Billing still leaves the app through the host.
+	await page.getByTestId("account-page-primary-action").click();
+	await expect
+		.poll(async () => page.evaluate(() => (window as unknown as { __billingOpened: string[] }).__billingOpened))
+		.toEqual(["manage"]);
+});
+
+test("a limited account shows the block and an upgrade path on the Account page", async ({ page }) => {
+	await stubCloudAccount(page, { state: "limited", remainingUsd: 0, usedUsd: 200 });
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("open-account-settings").click();
+	await expect(page.getByTestId("account-page-blocked")).toContainText("allowance is used up");
+	await expect(page.getByTestId("account-page-primary-action")).toContainText("Upgrade");
+	await expect(page.getByTestId("account-page-remaining")).toHaveText("$0.00");
+});

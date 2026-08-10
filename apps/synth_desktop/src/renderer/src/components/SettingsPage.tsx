@@ -1,17 +1,28 @@
 import { useEffect, useState } from "react";
 import type { RuntimeHealth } from "@synth/runtime-protocol";
-import type { DesktopInstanceDiagnostics, LagunaStatus, ModelMultiAgentSetting, MultiAgentVersion } from "../env";
+import type {
+	DesktopInstanceDiagnostics,
+	LagunaStatus,
+	ModelMultiAgentSetting,
+	MultiAgentVersion,
+	SynthAccountSummary,
+	SynthBackendSettings
+} from "../env";
+import type { AccountViewModel } from "../runtime/accountView";
+import type { DeviceUsageSummary } from "./UsageSheet";
 import { OnDeviceModelsSettings } from "./OnDeviceModelsSettings";
 import { InferenceSettings } from "./InferenceSettings";
 import { VoiceRecognitionSettings } from "./VoiceRecognitionSettings";
 import { ModelObservabilitySettings } from "./ModelObservabilitySettings";
-import { BackendSettings } from "./BackendSettings";
+import { AccountPage } from "./AccountPage";
 import { WorkspaceAccessSettings } from "./WorkspaceAccessSettings";
 import { GeneralPreferencesSettings } from "./GeneralPreferencesSettings";
 import type { DesktopPreferences } from "../preferences";
 
 type Props = {
 	onBack: () => void;
+	/** Everything the consolidated Account section renders. */
+	account: AccountSectionProps;
 	onReloadLaguna: () => Promise<LagunaStatus>;
 	health?: RuntimeHealth | null;
 	lagunaPhase?: string | null;
@@ -35,6 +46,16 @@ const SECTIONS = [
 ] as const;
 
 export type SectionId = (typeof SECTIONS)[number]["id"];
+
+export type AccountSectionProps = {
+	view: AccountViewModel;
+	summary: SynthAccountSummary | null;
+	deviceUsage: DeviceUsageSummary | null;
+	connection: SynthBackendSettings | null;
+	onBilling: (action: "upgrade" | "manage") => void;
+	onRefresh: () => void;
+	onOpenDeviceUsage: () => void;
+};
 
 const MULTI_AGENT_OPTIONS: Array<{ value: MultiAgentVersion; label: string }> = [
 	{ value: "none", label: "None" },
@@ -127,6 +148,7 @@ function MultiAgentModelSettings() {
 
 export function SettingsPage({
 	onBack,
+	account,
 	onReloadLaguna,
 	health,
 	lagunaPhase,
@@ -272,7 +294,15 @@ export function SettingsPage({
 						</div>
 					) : null}
 					{section === "account" ? (
-						<BackendSettings />
+						<AccountPage
+							view={account.view}
+							summary={account.summary}
+							deviceUsage={account.deviceUsage}
+							connection={account.connection}
+							onBilling={account.onBilling}
+							onRefresh={account.onRefresh}
+							onOpenDeviceUsage={account.onOpenDeviceUsage}
+						/>
 					) : null}
 					{section === "about" ? (
 						<div className="settings-finetunes" data-testid="settings-about">
