@@ -57,12 +57,13 @@ const includeTraceCatalogLayout = specificationPath.endsWith("trace-catalog-layo
 const includeShellContainment = specificationPath.endsWith("shell-containment.spec.ts");
 const includeInferenceHonesty = specificationPath.endsWith("inference-state-honesty.spec.ts");
 const includeRunSummarySanity = specificationPath.endsWith("run-summary-sanity.spec.ts");
+const includeVisualContracts = specificationPath.endsWith("v0.1-visual-contracts.spec.ts");
 // Five seconds covers every directed/eventual horizon in layout.spec.ts. Longer
 // runs intermittently wedge the current Chromiumoxide transport after the
 // properties have already been exercised, turning a clean trace into a harness
 // watchdog failure. Nightly exploration can still opt into a longer duration.
 const timeLimit = process.env.BOMBADIL_TIME_LIMIT
-	|| (includeBlankWorkedTurn || includeComposerToolbar || includeTerminalPolish || includeMuseResidencyHonesty
+	|| (includeBlankWorkedTurn || includeComposerToolbar || includeTerminalPolish || includeVisualContracts
 		? "10s"
 		: "5s");
 const timeLimitMatch = /^(\d+(?:\.\d+)?)(ms|s|m)$/.exec(timeLimit);
@@ -366,6 +367,17 @@ ${includeInferenceHonesty ? `window.synthCodex.list = async () => [{
 }];` : ""}
 ${includeComposerToolbar ? composerToolbarBridgeScript() : ""}
 ${includeTerminalPolish ? terminalPolishBridgeScript() : ""}
+${includeVisualContracts ? `window.synthConfig = {
+  get: async () => ({
+    configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod",
+    backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY",
+    apiKeyConfigured: true, workerKeyConfigured: false, openrouterApiKeyConfigured: true
+  }),
+  update: async () => { throw new Error("not used"); },
+  listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
+  getWorkspaceAccess: async () => ({ allowedRoots: [] }),
+  updateWorkspaceAccess: async () => ({ allowedRoots: [] })
+};` : ""}
 ${includeTraceCatalogLayout ? `window.synthInventory = {
   listContainers: async () => [],
   getContainer: async () => { throw new Error("fixture has no containers"); },
@@ -538,9 +550,7 @@ try {
 		"--chrome-grant-permissions", "",
 		"--instrument-javascript", "",
 		"--time-limit", timeLimit,
-		// Muse residency honesty needs a few action ticks to expand the card
-		// before details-row locks can observe the CUA copy.
-		...(includeMuseResidencyHonesty ? [] : ["--exit-on-violation"]),
+		"--exit-on-violation",
 		"--output-path", outputPath,
 		"--output-path-overwrite"
 	], { cwd: workshopRoot, stdio: "inherit", detached: true });
