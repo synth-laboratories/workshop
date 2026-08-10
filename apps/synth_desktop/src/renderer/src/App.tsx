@@ -169,17 +169,6 @@ function truncate(label: string, max = 22) {
 	return `${label.slice(0, max - 1)}…`;
 }
 
-function localRuntimePresentation(health: RuntimeHealth | null, laguna: LagunaStatus | null) {
-	if (laguna?.phase === "ready" || health?.local.mode === "mlx") {
-		return { label: "Local ready", visibleLabel: "Local", tone: "is-ready" } as const;
-	}
-	if (laguna?.phase === "loading" || laguna?.phase === "starting") {
-		return { label: "Local starting", visibleLabel: "Local", tone: "is-starting" } as const;
-	}
-	if (!health && !laguna) return { label: "Connecting to local runtime", visibleLabel: "Local", tone: "is-connecting" } as const;
-	return { label: "Local offline", visibleLabel: "Local", tone: "is-offline" } as const;
-}
-
 function appendEvent(events: RuntimeEvent[], event: RuntimeEvent): RuntimeEvent[] {
 	const payloadId = (value: RuntimeEvent) => {
 		const payload = value.payload ?? {};
@@ -248,38 +237,11 @@ const browserRuntimeClient = {
 	}
 };
 
-function IconCloud() {
-	return (
-		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<path
-				d="M5.2 12.2h6.1a2.7 2.7 0 00.2-5.4 3.5 3.5 0 00-6.7-1.1A2.5 2.5 0 005.2 12.2z"
-				stroke="currentColor"
-				strokeWidth="1.25"
-				strokeLinejoin="round"
-			/>
-		</svg>
-	);
-}
-
 function IconLayout() {
 	return (
 		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
 			<rect x="2.5" y="2.5" width="11" height="11" rx="2" stroke="currentColor" strokeWidth="1.3" />
 			<path d="M6.2 2.5v11" stroke="currentColor" strokeWidth="1.3" />
-		</svg>
-	);
-}
-
-function IconPulse() {
-	return (
-		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<path
-				d="M1.5 8h2.6l1.6-4.3 2.4 8.6 1.7-4.3h2.7"
-				stroke="currentColor"
-				strokeWidth="1.3"
-				strokeLinecap="round"
-				strokeLinejoin="round"
-			/>
 		</svg>
 	);
 }
@@ -337,7 +299,7 @@ export default function App() {
 	// Local inference is a first-class part of the workbench. Default the MLX
 	// sidecar rail open once for existing installs, while preserving explicit
 	// show/hide choices after that migration.
-	const [inferenceRailOpen, setInferenceRailOpen] = useState(
+	const [inferenceRailOpen] = useState(
 		() => {
 			if (window.localStorage.getItem("synth.inferenceRailDefaultV2") !== "1") {
 				window.localStorage.setItem("synth.inferenceRailDefaultV2", "1");
@@ -1691,71 +1653,6 @@ export default function App() {
 							</button> : null}
 						</div>
 						<div className="titlebar-actions">
-							{(() => {
-								const runtime = localRuntimePresentation(health, laguna);
-								const diagnostic = health
-									? [
-										health.runtimeId,
-										`Laguna ${health.local.mode}`,
-										laguna?.phase ? `sidecar ${laguna.phase}` : null,
-										laguna?.backend ? `backend ${laguna.backend}` : null,
-										laguna?.loadedModel || health.local.modelPath ||
-											(laguna?.phase === "ready" ? "weights currently unloaded" : "weights not detected"),
-										`Intern ${health.intern.mode}`,
-										`OpenRouter ${health.openrouter.mode}`,
-										health.inventory
-											? `Inventory ${health.inventory.containers} containers, ${health.inventory.traces} traces, ${health.inventory.visuals} visuals`
-											: null
-									].filter(Boolean).join(" · ")
-									: laguna?.detail || runtime.label;
-								return (
-									<span
-										className={`runtime-pill ${runtime.tone}`}
-										data-testid="runtime-status"
-										aria-label={runtime.label}
-										title={diagnostic}
-									>
-										<span className="runtime-pill-dot" aria-hidden />
-										<span className="runtime-pill-label">{runtime.visibleLabel}</span>
-									</span>
-								);
-							})()}
-							{activeLocalModel ? <button
-								type="button"
-								className={`titlebar-icon-btn${inferenceRailOpen ? " active" : ""}`}
-								aria-label={inferenceRailOpen ? "Hide inference monitor" : "Show inference monitor"}
-								aria-pressed={inferenceRailOpen}
-								title="MLX sidecar inference stats"
-								data-testid="toggle-inference-rail"
-								onClick={() => {
-									setInferenceRailOpen((current) => {
-										const next = !current;
-										window.localStorage.setItem("synth.inferenceRailOpen", next ? "1" : "0");
-										return next;
-									});
-								}}
-							>
-								<IconPulse />
-							</button> : null}
-							<button
-								type="button"
-								className="avatar-btn"
-								aria-label="Account"
-								data-testid="open-account-settings"
-								onClick={() => setView({ kind: "settings", section: "account" })}
-							>
-								S
-							</button>
-							<button
-								type="button"
-								className="titlebar-icon-btn"
-								aria-label="Models"
-								title="Models"
-								data-testid="open-models-settings"
-								onClick={() => setView({ kind: "settings", section: "models" })}
-							>
-								<IconCloud />
-							</button>
 							<button
 								type="button"
 								className="titlebar-icon-btn"
