@@ -608,14 +608,7 @@ async fn wait_for_terminal(core: &CoreRuntime, session_id: &str, body: Value) ->
         for event in &events {
             after = after.max(event.session_sequence.unwrap_or(event.sequence));
             let kind = event.kind.as_str();
-            if matches!(
-                kind,
-                "run.completed"
-                    | "run.failed"
-                    | "run.cancelled"
-                    | "session.run.completed"
-                    | "session.run.failed"
-            ) {
+            if is_terminal_event(kind, &event.payload) {
                 return Ok(json!({
                     "terminal": true,
                     "kind": kind,
@@ -634,6 +627,21 @@ async fn wait_for_terminal(core: &CoreRuntime, session_id: &str, body: Value) ->
         }
         tokio::time::sleep(Duration::from_millis(poll_ms)).await;
     }
+}
+
+fn is_terminal_event(kind: &str, payload: &Value) -> bool {
+    matches!(
+        kind,
+        "run.completed"
+            | "run.failed"
+            | "run.cancelled"
+            | "session.run.completed"
+            | "session.run.failed"
+    ) || (kind == "run.status_changed"
+        && matches!(
+            payload.get("to").and_then(Value::as_str),
+            Some("completed" | "failed" | "cancelled" | "interrupted")
+        ))
 }
 
 async fn export_session(core: &CoreRuntime, session_id: &str) -> Result<Value> {
@@ -1121,5 +1129,20 @@ mod tests {
         assert!(validated_loopback_base("http://127.0.0.1:8098").is_ok());
         assert!(validated_loopback_base("http://example.com:8098").is_err());
         assert!(validated_loopback_base("https://127.0.0.1:8098").is_err());
+    }
+
+    #[test]
+    fn wait_terminal_recognizes_codex_run_status_events() {
+        for status in ["completed", "failed", "cancelled", "interrupted"] {
+            assert!(is_terminal_event(
+                "run.status_changed",
+                &json!({"from": "running", "to": status})
+            ));
+        }
+        assert!(!is_terminal_event(
+            "run.status_changed",
+            &json!({"from": "created", "to": "running"})
+        ));
+        assert!(is_terminal_event("run.completed", &json!({})));
     }
 }
