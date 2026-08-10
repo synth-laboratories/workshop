@@ -66,6 +66,12 @@ pub struct CodexTurnSendRequest {
     pub start: CodexSessionStartRequest,
     pub prompt: String,
     pub effort: Option<String>,
+    /// When the destination model differs from the live attachment, compact the
+    /// thread on the *source* model before rebind. Renderer sets this from the
+    /// send-time state machine (`modelSwitchPlan`): true only when the thread
+    /// has history; empty threads skip compact.
+    #[serde(default)]
+    pub compact_before_model_switch: bool,
 }
 
 /// Typed failure so the renderer can react to a lost app-server without
@@ -182,6 +188,8 @@ struct CodexEvent {
 }
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
+/// Waiters for `thread/compacted`, keyed by Desktop session id.
+type CompactWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>;
 
 #[derive(Clone, Debug)]
 struct PendingApproval {
@@ -307,6 +315,7 @@ pub struct CodexManager {
     /// Serializes attach + turn/start per session so no caller can observe the
     /// window between "the attachment exists" and "the turn is running".
     turn_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    compact_waiters: CompactWaiters,
     root: PathBuf,
     state_path: PathBuf,
     binary: PathBuf,
@@ -330,6 +339,7 @@ impl CodexManager {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::new(RwLock::new(records)),
             turn_locks: Mutex::new(HashMap::new()),
+            compact_waiters: Arc::new(Mutex::new(HashMap::new())),
             root,
             state_path,
             binary,
@@ -379,6 +389,7 @@ impl CodexManager {
             self.state_path.clone(),
             self.core.clone(),
             self.sessions.clone(),
+            self.compact_waiters.clone(),
             attachment_id,
         )
         .await?;
@@ -577,6 +588,15 @@ impl CodexManager {
         self.record_user_prompt(&app, &session_id, &request.prompt)
             .await;
 
+        // Compact-on-send model switch: while the live attachment is still the
+        // source model, summarize before start() closes it and resumes as B.
+        if let Err(error) = self.maybe_compact_before_model_switch(&request).await {
+            let _ = self
+                .reconcile_failed_turn_start(&session_id, "model_switch_compact_failed")
+                .await;
+            return Err(CodexTurnFailure::rejected(&session_id, &error));
+        }
+
         let mut failure: Option<anyhow::Error> = None;
         for attempt in 0..2u8 {
             let attachment = match self.start(app.clone(), request.start.clone()).await {
@@ -708,6 +728,62 @@ impl CodexManager {
         }
         self.set_status(&request.session_id, "running").await?;
         Ok(session_info(&request.session_id, &session).await)
+    }
+
+    /// Send-time compact before a model rebind.
+    ///
+    /// Only runs when the renderer asked for compact *and* a live attachment
+    /// is still bound to a different model than `request.start`. Chip fiddling
+    /// never reaches here; empty threads pass `compact_before_model_switch=false`.
+    async fn maybe_compact_before_model_switch(
+        &self,
+        request: &CodexTurnSendRequest,
+    ) -> Result<()> {
+        if !request.compact_before_model_switch {
+            return Ok(());
+        }
+        let session_id = &request.start.session_id;
+        let Some(session) = self.sessions.read().await.get(session_id).cloned() else {
+            // No live source attachment (cold resume). Rebind without compact
+            // rather than inventing a source provider/home from the destination
+            // request — that would be dishonest about which model summarized.
+            return Ok(());
+        };
+        if session.model == request.start.model {
+            return Ok(());
+        }
+        self.compact_thread(session_id, &session).await
+    }
+
+    async fn compact_thread(&self, session_id: &str, session: &Session) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut waiters = self.compact_waiters.lock().await;
+            if let Some(previous) = waiters.insert(session_id.to_owned(), tx) {
+                let _ = previous.send(());
+            }
+        }
+        let params = json!({ "threadId": session.thread_id });
+        if let Err(error) = session
+            .server
+            .request("thread/compact/start", params)
+            .await
+        {
+            self.compact_waiters.lock().await.remove(session_id);
+            return Err(error.context("thread/compact/start failed; staying on the current model"));
+        }
+        match tokio::time::timeout(Duration::from_secs(120), rx).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(anyhow!(
+                "compaction waiter dropped before thread/compacted; staying on the current model"
+            )),
+            Err(_) => {
+                self.compact_waiters.lock().await.remove(session_id);
+                Err(anyhow!(
+                    "timed out waiting for thread/compacted; staying on the current model"
+                ))
+            }
+        }
     }
 
     pub async fn interrupt(&self, session_id: &str) -> Result<()> {
@@ -1049,6 +1125,7 @@ async fn spawn_server<R: tauri::Runtime>(
     state_path: PathBuf,
     core: Option<Arc<CoreRuntime>>,
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
+    compact_waiters: CompactWaiters,
     attachment_id: uuid::Uuid,
 ) -> Result<Arc<AppServer>> {
     let env_key = request
@@ -1099,6 +1176,7 @@ async fn spawn_server<R: tauri::Runtime>(
             state_path,
             core,
             sessions,
+            compact_waiters,
             attachment_id,
         },
     ));
@@ -1123,6 +1201,7 @@ struct PersistenceContext {
     state_path: PathBuf,
     core: Option<Arc<CoreRuntime>>,
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
+    compact_waiters: CompactWaiters,
     attachment_id: uuid::Uuid,
 }
 
@@ -1224,6 +1303,11 @@ async fn read_stdout<R: tauri::Runtime>(
                 params: params.clone(),
             },
         );
+        if method == "thread/compacted" || method == "thread/compact/completed" {
+            if let Some(waiter) = persistence.compact_waiters.lock().await.remove(&session_id) {
+                let _ = waiter.send(());
+            }
+        }
         if let Some(core) = &persistence.core {
             let _ = core
                 .append_and_emit(
@@ -2263,6 +2347,7 @@ mod tests {
             start,
             prompt: prompt.into(),
             effort: Some("none".into()),
+            compact_before_model_switch: false,
         }
     }
 
@@ -2564,6 +2649,7 @@ mod tests {
                     start: request.clone(),
                     prompt: "hello".into(),
                     effort: Some("ultra".into()),
+                    compact_before_model_switch: false,
                 },
             )
             .await
@@ -2577,6 +2663,75 @@ mod tests {
             .await
             .get(&request.session_id)
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn turn_send_compacts_on_source_model_before_rebind() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let manager =
+            CodexManager::with_paths(Some(core.clone()), codex_root.clone(), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut request = test_request(temp.path(), "compact-before-switch");
+
+        let first = manager
+            .send_turn(
+                app_handle.clone(),
+                send_request(request.clone(), "establish history on source model"),
+            )
+            .await
+            .expect("first turn starts");
+        assert!(first.turn_id.is_some());
+
+        request.model = "openai/gpt-5.6-luna".into();
+        request.provider_name = Some("openrouter".into());
+        let switched = manager
+            .send_turn(
+                app_handle.clone(),
+                CodexTurnSendRequest {
+                    start: request.clone(),
+                    prompt: "continue on destination".into(),
+                    effort: Some("medium".into()),
+                    compact_before_model_switch: true,
+                },
+            )
+            .await
+            .expect("switch turn starts after compact");
+        assert_eq!(switched.thread_id, first.thread_id);
+        assert!(switched.turn_id.is_some());
+
+        let messages = fixture_requests(&codex_root, &request.session_id);
+        let methods: Vec<&str> = messages
+            .iter()
+            .filter_map(|message| message.get("method").and_then(Value::as_str))
+            .collect();
+        assert!(
+            methods.iter().any(|method| *method == "thread/compact/start"),
+            "expected compact before rebind, got {methods:?}"
+        );
+        let compact_idx = methods
+            .iter()
+            .position(|method| *method == "thread/compact/start")
+            .unwrap();
+        let turn_after_compact = methods
+            .iter()
+            .enumerate()
+            .filter(|(_, method)| **method == "turn/start")
+            .map(|(idx, _)| idx)
+            .max()
+            .unwrap();
+        assert!(turn_after_compact > compact_idx);
+        assert_eq!(
+            manager
+                .records
+                .read()
+                .await
+                .get(&request.session_id)
+                .map(|record| record.model.as_str()),
+            Some("openai/gpt-5.6-luna")
+        );
     }
 
     #[test]

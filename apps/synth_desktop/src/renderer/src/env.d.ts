@@ -103,10 +103,23 @@ export type WhisperDownloadProgress = {
 	totalBytes?: number;
 };
 
+export type WhisperRuntimeStatus = {
+	phase: string;
+	loadedModel: string | null;
+	idleSeconds: number | null;
+	idleUnloadAfterSeconds: number;
+	lastUsedAt: number | null;
+	freeAt: number | null;
+	updatedAt: number;
+};
+
 export type WhisperBridge = {
 	listModels(): Promise<WhisperModelHit[]>;
 	downloadModel(id: string): Promise<WhisperModelHit>;
 	onDownloadProgress?(listener: (progress: WhisperDownloadProgress) => void): () => void;
+	getRuntimeStatus?(): Promise<WhisperRuntimeStatus>;
+	onRuntimeStatus?(listener: (status: WhisperRuntimeStatus) => void): () => void;
+	warmSelected?(): Promise<WhisperRuntimeStatus>;
 	setSelected(id: string): Promise<void>;
 	clearModel(id: string): Promise<void>;
 	transcribe(audioPath: string): Promise<string>;
@@ -191,6 +204,7 @@ export type CodexSessionStart = {
 };
 
 export type CodexSessionInfo = { sessionId: string; threadId: string; turnId?: string | null };
+export type ComposerImageAttachment = { path: string; name: string; previewUrl: string };
 export type PersistedCodexSession = {
 	sessionId: string;
 	threadId: string;
@@ -222,8 +236,16 @@ export type CodexBridge = {
 	/**
 	 * Atomic attach-or-resume plus turn start. Optional because browser demo
 	 * adapters and older test fixtures only implement start + startTurn.
+	 * `options.compactBeforeModelSwitch` asks Rust to run `thread/compact/start`
+	 * on the live source model before rebinding when the start request targets
+	 * a different model (see `modelSwitchPlan.ts`).
 	 */
-	sendTurn?(request: CodexSessionStart, prompt: string, effort?: string): Promise<CodexSessionInfo>;
+	sendTurn?(
+		request: CodexSessionStart,
+		prompt: string,
+		effort?: string,
+		options?: { compactBeforeModelSwitch?: boolean }
+	): Promise<CodexSessionInfo>;
 	interrupt(sessionId: string): Promise<void>;
 	/** Mid-turn user input via Codex `turn/steer`. Optional on browser fixtures without a native runtime. */
 	steerTurn?(sessionId: string, text: string): Promise<void>;
@@ -412,6 +434,7 @@ declare global {
 		synthDesktop: {
 			platform: string;
 			chooseWorkspaceDirectory(): Promise<string | null>;
+			chooseImageFiles(): Promise<ComposerImageAttachment[]>;
 			getInstanceDiagnostics(): Promise<DesktopInstanceDiagnostics>;
 		};
 		/** Browser fixture/explicit compatibility bridge; not installed by Tauri. */

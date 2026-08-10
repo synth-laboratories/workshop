@@ -49,6 +49,8 @@ for raw in sys.stdin:
         result = {}
     elif method == "thread/loaded/list":
         result = {"data": [params.get("threadId", "thread-fixture")]}
+    elif method == "thread/compact/start":
+        result = {}
     elif method == "turn/start":
         if exit_on_turn_start.exists():
             if exit_on_turn_start.read_text(encoding="utf-8").strip() == "once":
@@ -69,6 +71,14 @@ for raw in sys.stdin:
         continue
 
     send({"jsonrpc": "2.0", "id": request_id, "result": result})
+    if method == "thread/compact/start":
+        send({
+            "jsonrpc": "2.0",
+            "method": "thread/compacted",
+            "params": {
+                "threadId": params.get("threadId", "thread-fixture"),
+            },
+        })
     if method == "turn/interrupt":
         send({
             "jsonrpc": "2.0",

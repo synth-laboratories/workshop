@@ -1,6 +1,11 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./browser.fixture";
 
+async function openSettings(page: Page) {
+	await page.getByTestId("account-footer-trigger").click();
+	await page.getByTestId("settings").click();
+}
+
 type LagunaPhase = "starting" | "loading" | "ready";
 
 async function installLagunaFixture(page: Page, phase: LagunaPhase): Promise<void> {
@@ -80,7 +85,7 @@ test("a blocked local startup does not trap remote or cloud target selection", a
 
 test("Settings exposes discovered models and accepts a chosen folder", async ({ page }) => {
 	await installLagunaFixture(page, "ready");
-	await page.getByRole("button", { name: "Settings" }).click();
+	await openSettings(page);
 	await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
 
 	const locations = page.getByTestId("laguna-model-locations");
@@ -113,7 +118,7 @@ test("Settings offers and completes a real model-download bridge when weights ar
 		};
 	});
 	await page.reload();
-	await page.getByRole("button", { name: "Settings" }).click();
+	await openSettings(page);
 	await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
 	await page.getByTestId("download-laguna-model").click();
 	const locations = page.getByTestId("laguna-model-locations");
@@ -122,7 +127,7 @@ test("Settings offers and completes a real model-download bridge when weights ar
 });
 
 test("Settings identifies the exact running desktop build", async ({ page }) => {
-	await page.getByRole("button", { name: "Settings" }).click();
+	await openSettings(page);
 	await page.getByRole("button", { name: "Runtime" }).click();
 	const identity = page.getByTestId("desktop-build-identity");
 	await expect(identity).toContainText("Synth Desktop · browser");
@@ -154,7 +159,7 @@ test("Settings can force and reset a model multi-agent preset", async ({ page })
 		};
 	});
 	await installLagunaFixture(page, "ready");
-	await page.getByRole("button", { name: "Settings" }).click();
+	await openSettings(page);
 	await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
 
 	const controls = page.getByRole("group", { name: "Laguna XS 2.1 multi-agent compatibility" });
@@ -354,10 +359,11 @@ test("Rust Inventory navigation never replaces native Codex sessions with legacy
 	await expect(page.getByTestId("local-chat-native-session")).toBeVisible();
 });
 
-test("changing providers in a bound chat starts a new provider task", async ({ page }) => {
+test("changing providers mid-chat stays in the thread and switches on send", async ({ page }) => {
 	await page.addInitScript(() => {
 		const starts: Array<Record<string, unknown>> = [];
 		const turns: Array<{ sessionId: string; prompt: string; effort?: string }> = [];
+		const listeners = new Set<(event: { sessionId: string; method: string; params: Record<string, unknown> }) => void>();
 		(window as typeof window & { __providerStarts?: typeof starts }).__providerStarts = starts;
 		(window as typeof window & { __providerTurns?: typeof turns }).__providerTurns = turns;
 		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
@@ -369,15 +375,23 @@ test("changing providers in a bound chat starts a new provider task", async ({ p
 			}],
 			start: async (request: Record<string, unknown>) => {
 				starts.push(request);
-				return { sessionId: request.sessionId, threadId: "new-provider-thread" };
+				return { sessionId: request.sessionId, threadId: "local-thread" };
 			},
 			startTurn: async (sessionId: string, prompt: string, effort?: string) => {
 				turns.push({ sessionId, prompt, effort });
-				return { sessionId, threadId: "new-provider-thread", turnId: "turn" };
+				queueMicrotask(() => {
+					for (const listener of listeners) {
+						listener({ sessionId, method: "turn/completed", params: { turn: { status: "completed" } } });
+					}
+				});
+				return { sessionId, threadId: "local-thread", turnId: `turn-${turns.length}` };
 			},
 			interrupt: async () => undefined,
 			close: async () => undefined,
-			onEvent: () => () => undefined
+			onEvent: (listener: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) => {
+				listeners.add(listener);
+				return () => { listeners.delete(listener); };
+			}
 		};
 	});
 	await installLagunaFixture(page, "ready");
@@ -395,7 +409,9 @@ test("changing providers in a bound chat starts a new provider task", async ({ p
 	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.models.local-laguna.reasoning"))).toBe("none");
 	await page.getByTestId("composer-model").click();
 	await page.getByTestId("composer-model-option-openrouter-luna").click();
-	await expect(page.getByText("Start a new conversation using")).toBeVisible();
+	// Chip fiddle stays in the same chat; compact/rebind wait for send.
+	await expect(page.getByTestId("chat-transcript")).toBeVisible();
+	await expect(page.getByText("Start a new conversation using")).toHaveCount(0);
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName("Model: GPT 5.6 Luna");
 	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Reasoning effort: Medium");
 	await page.getByTestId("reasoning-effort-select").click();
@@ -407,12 +423,18 @@ test("changing providers in a bound chat starts a new provider task", async ({ p
 	await page.getByTestId("composer-send").click();
 	const starts = await page.evaluate(() => (window as typeof window & { __providerStarts: Array<Record<string, unknown>> }).__providerStarts);
 	const turns = await page.evaluate(() => (window as typeof window & { __providerTurns: Array<{ sessionId: string; prompt: string; effort?: string }> }).__providerTurns);
-	expect(starts.at(-1)).toMatchObject({ providerName: "openrouter", model: "openai/gpt-5.6-luna" });
-	expect(turns.at(-1)).toMatchObject({ prompt: "hello Luna", effort: "high" });
+	expect(starts.at(-1)).toMatchObject({
+		sessionId: "bound-local",
+		providerName: "openrouter",
+		model: "openai/gpt-5.6-luna",
+		threadId: "local-thread"
+	});
+	expect(turns.at(-1)).toMatchObject({ sessionId: "bound-local", prompt: "hello Luna", effort: "high" });
 	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.reasoningEffort"))).toBe("high");
 
 	await page.getByTestId("composer-model").click();
 	await page.getByTestId("composer-model-option-openrouter-laguna-s").click();
+	await expect(page.getByTestId("chat-transcript")).toBeVisible();
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName("Model: Laguna S 2.1");
 	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Thinking: On");
 	await page.getByTestId("reasoning-effort-select").click();
@@ -421,7 +443,11 @@ test("changing providers in a bound chat starts a new provider task", async ({ p
 	await page.getByTestId("composer-send").click();
 	const lagunaStarts = await page.evaluate(() => (window as typeof window & { __providerStarts: Array<Record<string, unknown>> }).__providerStarts);
 	const lagunaTurns = await page.evaluate(() => (window as typeof window & { __providerTurns: Array<{ prompt: string; effort?: string }> }).__providerTurns);
-	expect(lagunaStarts.at(-1)).toMatchObject({ providerName: "openrouter", model: "poolside/laguna-s-2.1" });
+	expect(lagunaStarts.at(-1)).toMatchObject({
+		sessionId: "bound-local",
+		providerName: "openrouter",
+		model: "poolside/laguna-s-2.1"
+	});
 	expect(lagunaTurns.at(-1)).toMatchObject({ prompt: "hello Laguna S", effort: "none" });
 	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.models.openrouter-laguna-s.reasoning"))).toBe("none");
 });

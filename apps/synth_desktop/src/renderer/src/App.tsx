@@ -11,6 +11,7 @@ import type {
 	RuntimeHealth,
 	SemanticUiSnapshot,
 	Session,
+	UsageLedgerEntry,
 	VisualInstanceRecord,
 	VisualRecord
 } from "@synth/runtime-protocol";
@@ -22,7 +23,7 @@ import { CloudDesk } from "./components/CloudDesk";
 import { Composer } from "./components/Composer";
 import { ConnectorsPage } from "./components/ConnectorsPage";
 import { ConversationSearch } from "./components/ConversationSearch";
-import { InferencePanel } from "./components/InferencePanel";
+import { formatTps, InferencePanel, useInferenceMonitor } from "./components/InferencePanel";
 import { InventoryPage } from "./components/InventoryPage";
 import { LandingPage } from "./components/LandingPage";
 import { OptimizersPage } from "./components/OptimizersPage";
@@ -47,10 +48,16 @@ import {
 	loadModelKnobValues,
 	modelKnobForTarget,
 	modelKnobKey,
+	modelSupportsImageInput,
 	turnStartEffortForExecutionTarget,
 	type ModelKnobValue
 } from "./runtime/modelCapabilities";
-import type { CodexSessionInfo, CodexTurnFailure, ConversationWorkspaceScope, LagunaStatus } from "./env";
+import {
+	planComposerSend,
+	planModelChipChange,
+	threadHasHistoryFromEvents
+} from "./runtime/modelSwitchPlan";
+import type { CodexSessionInfo, CodexTurnFailure, ComposerImageAttachment, ConversationWorkspaceScope, LagunaStatus } from "./env";
 import {
 	applyPreferencesToDocument,
 	archiveConversation,
@@ -112,6 +119,19 @@ function turnFailureMessage(failure: CodexTurnFailure): string {
 
 /** A user message that reached no app-server, kept so it can be retried. */
 type FailedSend = { sessionId: string; text: string; messageId: string; message: string };
+
+function summarizeAccountUsage(entries: UsageLedgerEntry[]) {
+	const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+	return entries.reduce((summary, entry) => {
+		summary.totalTokens += Math.max(0, entry.totalTokens);
+		summary.totalCostUsd += Math.max(0, entry.costUsd ?? 0);
+		if (Date.parse(entry.createdAt) >= weekAgo) {
+			summary.weeklyTokens += Math.max(0, entry.totalTokens);
+			summary.weeklyCostUsd += Math.max(0, entry.costUsd ?? 0);
+		}
+		return summary;
+	}, { weeklyTokens: 0, weeklyCostUsd: 0, totalTokens: 0, totalCostUsd: 0, entries: entries.length });
+}
 
 type MainView =
 	| { kind: "landing" }
@@ -269,6 +289,12 @@ export default function App() {
 		if (isInternTargetId(selectedTargetId)) setSelectedTargetId("local-laguna");
 	}, [selectedTargetId]);
 	const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+	const [accountUsage, setAccountUsage] = useState<ReturnType<typeof summarizeAccountUsage> | null>(null);
+	useEffect(() => {
+		void window.synthInventory?.listUsage(2000)
+			.then((entries) => setAccountUsage(summarizeAccountUsage(entries)))
+			.catch(() => setAccountUsage(null));
+	}, []);
 	const [preferences, setPreferences] = useState<DesktopPreferences>(() => loadPreferences());
 	const [approvalMode, setApprovalMode] = useState<ApprovalMode>(() => loadPreferences().approvalMode);
 	const selectApprovalMode = useCallback((mode: ApprovalMode) => {
@@ -314,6 +340,13 @@ export default function App() {
 			return window.localStorage.getItem("synth.inferenceRailOpen") !== "0";
 		}
 	);
+	const inferenceMonitor = useInferenceMonitor({ visible: selectedTargetId === "local-laguna" });
+	const selectedModelMedianTps = selectedTargetId === "local-laguna"
+		? inferenceMonitor.snapshot?.rolling.decodeTpsP50 ?? null
+		: null;
+	const selectedModelMedianTpsLabel = selectedModelMedianTps == null
+		? null
+		: `${formatTps(selectedModelMedianTps)} tok/s p50`;
 	const [inventoryContainerWidth, setInventoryContainerWidth] = useState(() => loadPreferences().layout.last.outputPaneWidth);
 	const [busy, setBusy] = useState(false);
 	const [bootError, setBootError] = useState<string | null>(null);
@@ -438,11 +471,12 @@ export default function App() {
 
 	const refreshHealth = useCallback(async () => {
 		if (isDesktop && window.synthCore && window.synthConfig && window.synthInventory) {
-			const [core, config, counts, currentLaguna] = await Promise.all([
+			const [core, config, counts, currentLaguna, usage] = await Promise.all([
 				window.synthCore.diagnostics(),
 				window.synthConfig.get(),
 				window.synthInventory.counts(),
-				window.synthLaguna?.getStatus() ?? Promise.resolve(null)
+				window.synthLaguna?.getStatus() ?? Promise.resolve(null),
+				window.synthInventory.listUsage(2000).catch(() => [])
 			]);
 			const next: RuntimeHealth = {
 				status: "ok",
@@ -470,6 +504,7 @@ export default function App() {
 				}
 			};
 			setApiKeyConfigured(config.apiKeyConfigured);
+			setAccountUsage(summarizeAccountUsage(usage));
 			setHealth(next);
 			return next;
 		}
@@ -481,6 +516,16 @@ export default function App() {
 		setHealth(next);
 		return next;
 	}, [isDesktop]);
+
+	useEffect(() => {
+		const onAccountChanged = (event: Event) => {
+			const configured = (event as CustomEvent<{ apiKeyConfigured?: boolean }>).detail?.apiKeyConfigured;
+			if (typeof configured === "boolean") setApiKeyConfigured(configured);
+			else void refreshHealth().catch(() => undefined);
+		};
+		window.addEventListener("synth:account-changed", onAccountChanged);
+		return () => window.removeEventListener("synth:account-changed", onAccountChanged);
+	}, [refreshHealth]);
 
 	useEffect(() => {
 		void window.synthCodex?.defaultWorkspace().then(setDefaultWorkspace).catch(() => undefined);
@@ -1059,7 +1104,7 @@ export default function App() {
 	}, [activeSessionId, createConversation, selectedTargetId, view.kind]);
 
 	const sendToSession = useCallback(
-		async (sessionId: string, text: string, options?: { messageId?: string }) => {
+		async (sessionId: string, text: string, options?: { messageId?: string; images?: ComposerImageAttachment[] }) => {
 			setBusy(true);
 			try {
 				const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
@@ -1068,6 +1113,23 @@ export default function App() {
 					if (session.metadata.runtime !== "codex-app-server") {
 						throw new Error(`Session ${sessionId} is not owned by Codex app-server`);
 					}
+					const sessionTargetId = executionTargetToUiId(session.target);
+					const pendingTargetId = isInternTargetId(selectedTargetId) ? sessionTargetId : selectedTargetId;
+					const sendPlan = planComposerSend({
+						pendingTargetId,
+						sessionTargetId,
+						threadHasHistory: threadHasHistoryFromEvents(eventsBySessionRef.current[sessionId] ?? []),
+						turnRunning: session.status === "running",
+						hasPendingImages: Boolean(options?.images?.length),
+						destinationSupportsImages: modelSupportsImageInput(pendingTargetId)
+					});
+					if (sendPlan.kind === "block") {
+						showToast(sendPlan.message);
+						return false;
+					}
+					const executionTarget = sendPlan.kind === "model_switch_then_turn"
+						? targetIdToExecutionTarget(sendPlan.destinationTargetId)
+						: session.target;
 					const workspace = typeof session.metadata.workspace === "string"
 						? session.metadata.workspace
 						: await nativeCodex.defaultWorkspace();
@@ -1079,7 +1141,7 @@ export default function App() {
 						);
 					const storedApproval = approvalModeConfig(storedApprovalMode);
 					const startRequest = {
-						...codexStartRequest(sessionId, workspace, session.target),
+						...codexStartRequest(sessionId, workspace, executionTarget),
 						// Restored pre-policy sessions can carry only the human mode. Never
 						// turn that into an undefined request which Rust then treats as Ask.
 						approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : storedApproval.approvalPolicy,
@@ -1097,13 +1159,20 @@ export default function App() {
 						eventKind: "message.created", payload: { messageId, role: "user", content: text },
 						createdAt: now, source: "local"
 					}) }));
-					const effort = turnStartEffortForExecutionTarget(session.target, modelKnobValues);
+					const effort = turnStartEffortForExecutionTarget(executionTarget, modelKnobValues);
 					let started: CodexSessionInfo;
 					try {
 						// One round trip owns attach/resume and turn/start, so the
 						// app-server cannot exit in a gap the renderer can see.
+						// Model switches compact on the source model inside sendTurn
+						// before rebind (see modelSwitchPlan.ts).
 						started = nativeCodex.sendTurn
-							? await nativeCodex.sendTurn(startRequest, text, effort)
+							? await nativeCodex.sendTurn(
+								startRequest,
+								text,
+								effort,
+								{ compactBeforeModelSwitch: sendPlan.kind === "model_switch_then_turn" ? sendPlan.compact : false }
+							)
 							: await (async () => {
 								await nativeCodex.start(startRequest);
 								return nativeCodex.startTurn(sessionId, text, effort);
@@ -1116,11 +1185,15 @@ export default function App() {
 					setFailedSend((current) => (current?.sessionId === sessionId ? null : current));
 					// Working only appears once a real turn exists. Without a
 					// turn id the run.started event promotes the status instead.
-					if (started?.turnId) {
-						setSessions((current) => current.map((item) => item.id === sessionId
-							? { ...item, status: "running", updatedAt: new Date().toISOString() }
-							: item));
-					}
+					setSessions((current) => current.map((item) => {
+						if (item.id !== sessionId) return item;
+						return {
+							...item,
+							target: executionTarget,
+							status: started?.turnId ? "running" : item.status,
+							updatedAt: new Date().toISOString()
+						};
+					}));
 					return true;
 				}
 				if (session?.target.kind === "intern" && nativeIntern) {
@@ -1137,7 +1210,7 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[allocateNativeSequence, failTurnStart, modelKnobValues, nativeCodex, nativeIntern, refreshSessions, showToast]
+		[allocateNativeSequence, failTurnStart, modelKnobValues, nativeCodex, nativeIntern, refreshSessions, selectedTargetId, showToast]
 	);
 	sendToSessionRef.current = sendToSession;
 
@@ -1149,7 +1222,7 @@ export default function App() {
 	}, [failedSend, sendToSession]);
 
 	const onComposerSend = useCallback(
-		async (text: string) => {
+		async (text: string, images: ComposerImageAttachment[] = []) => {
 			try {
 				const ensured = await ensureActiveSession(text);
 				if (!ensured) {
@@ -1159,7 +1232,7 @@ export default function App() {
 				// Intern creation itself starts the objective. Sending the same text
 				// again would issue a duplicate operator command.
 				if (!ensured.objectiveConsumed) {
-					await sendToSession(ensured.sessionId, text);
+					await sendToSession(ensured.sessionId, text, { images });
 				}
 			} catch {
 				/* toast already shown */
@@ -1219,22 +1292,26 @@ export default function App() {
 
 	const onSelectTarget = useCallback((id: string) => {
 		if (isInternTargetId(id)) return;
-		setSelectedTargetId(id);
-		if (view.kind !== "chat") return;
-		const current = sessionsRef.current.find((session) => session.id === view.chatId);
-		if (!current || executionTargetToUiId(current.target) === id) return;
-		// A Codex app-server thread is bound to its provider/model at creation.
-		// Switching the composer target therefore starts a new task instead of
-		// relabeling the existing thread and silently sending to the old model.
-		setView({ kind: "landing" });
-		setOpenArtifactId(null);
-		setStandaloneVisual(null);
-	}, [view]);
+		// Model chip change only updates pendingTarget. Compact/rebind happen
+		// on the next send when pending ≠ session.target (modelSwitchPlan.ts).
+		const plan = planModelChipChange({ nextTargetId: id });
+		setSelectedTargetId(plan.pendingTargetId);
+	}, []);
 
 	const onNewConversation = useCallback(() => {
 		setView({ kind: "landing" });
 		setOpenArtifactId(null);
 		setStandaloneVisual(null);
+	}, []);
+
+	const openChat = useCallback((id: string) => {
+		setView({ kind: "chat", chatId: id });
+		const session = sessionsRef.current.find((candidate) => candidate.id === id);
+		if (session && sessionIsLocalChat(session)) {
+			// Opening a thread adopts its bound model as pendingTarget so a
+			// leftover chip from another chat cannot silently switch on send.
+			setSelectedTargetId(executionTargetToUiId(session.target));
+		}
 	}, []);
 
 	useEffect(() => {
@@ -1434,7 +1511,7 @@ export default function App() {
 					}
 					const session = sessions.find((s) => s.id === sessionId);
 					if (!session) throw new Error("session not found");
-					if (sessionIsLocalChat(session)) setView({ kind: "chat", chatId: sessionId });
+					if (sessionIsLocalChat(session)) openChat(sessionId);
 					else if (sessionIsSync(session)) setView({ kind: "sync", sessionId });
 					else setView({ kind: "async", sessionId });
 					return { selectedSessionId: sessionId };
@@ -1508,6 +1585,7 @@ export default function App() {
 		busy,
 		createConversation,
 		openArtifactId,
+		openChat,
 		openVisualRecord,
 		selectedTargetId,
 		sendToSession,
@@ -1542,7 +1620,7 @@ export default function App() {
 					onNewConversation={onNewConversation}
 					onNewSyncSession={onNewSyncSession}
 					onOpenChat={(id) => {
-						setView({ kind: "chat", chatId: id });
+						openChat(id);
 						persistLayoutSnapshot({ selectedConversationId: id });
 					}}
 					onOpenSyncSession={(id) => setView({ kind: "sync", sessionId: id })}
@@ -1585,6 +1663,22 @@ export default function App() {
 					onOpenConnectors={() => setView({ kind: "connectors" })}
 					onSearch={openSearch}
 					onSettings={() => setView({ kind: "settings" })}
+					accountSignedIn={apiKeyConfigured}
+					accountUsage={accountUsage}
+					onOpenAccount={() => setView({ kind: "settings", section: "account" })}
+					onSignOut={async () => {
+						if (!window.synthAccount) {
+							setView({ kind: "settings", section: "account" });
+							return;
+						}
+						try {
+							const next = await window.synthAccount.signOut();
+							setApiKeyConfigured(next.apiKeyConfigured);
+							showToast("Signed out of Synth");
+						} catch (reason) {
+							showToast(reason instanceof Error ? reason.message : String(reason));
+						}
+					}}
 					onPauseToggle={() => setDownloadPaused((v) => !v)}
 				/>
 
@@ -1727,7 +1821,7 @@ export default function App() {
 							onUnarchiveConversation={(id) => setPreferences(archiveConversation(id, false))}
 							onOpenConversation={(id) => {
 								setPreferences(archiveConversation(id, false));
-								setView({ kind: "chat", chatId: id });
+								openChat(id);
 							}}
 						/>
 					) : null}
@@ -1748,7 +1842,7 @@ export default function App() {
 								onGoToChat={(sessionId) => {
 									const session = sessions.find((item) => item.id === sessionId);
 									if (!session) return;
-									if (sessionIsLocalChat(session)) setView({ kind: "chat", chatId: sessionId });
+									if (sessionIsLocalChat(session)) openChat(sessionId);
 									else if (sessionIsSync(session)) setView({ kind: "sync", sessionId });
 									else setView({ kind: "async", sessionId });
 								}}
@@ -1909,6 +2003,7 @@ export default function App() {
 									    costs nothing. */}
 									<InferencePanel
 										visible
+										monitor={inferenceMonitor}
 										turnRunning={Boolean(
 											activeChatRunning && activeChatSession?.target.kind === "local"
 										)}
@@ -1968,6 +2063,7 @@ export default function App() {
 							onSelectApprovalMode={selectActiveApprovalMode}
 							modelKnobValues={modelKnobValues}
 							onSelectModelKnob={selectModelKnob}
+							modelMedianTpsLabel={selectedModelMedianTpsLabel}
 							agentWorking={Boolean(activeChatRunning)}
 							activeEnterAction={preferences.submission.activeEnterAction}
 							steerSupported={Boolean(nativeCodex?.steerTurn)}
@@ -2030,7 +2126,7 @@ export default function App() {
 		<ConversationSearch
 			state={state}
 			onClose={closeSearch}
-			onOpenChat={(id) => setView({ kind: "chat", chatId: id })}
+			onOpenChat={(id) => openChat(id)}
 			onOpenSync={(id) => setView({ kind: "sync", sessionId: id })}
 			onOpenAsync={() => {
 				const pinned = sessions.find((session) => sessionIsAsync(session));

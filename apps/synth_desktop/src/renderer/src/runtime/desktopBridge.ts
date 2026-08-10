@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexSessionInfo, DesktopInstanceDiagnostics, InventoryCounts, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TerminalEvent, TerminalInfo, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WorkspaceAccessSettings } from "../env";
+import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TerminalEvent, TerminalInfo, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../env";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry } from "@synth/runtime-protocol";
 
@@ -131,6 +131,16 @@ export function installDesktopBridge(): void {
 	if (!isTauri) window.synthRuntime ??= browserRuntimeBridge();
 	window.synthDesktop ??= {
 		platform: navigator.platform,
+		chooseImageFiles: async () => {
+			if (!isTauri) return [];
+			const selection = await open({ multiple: true, filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif"] }] });
+			const paths = Array.isArray(selection) ? selection : selection ? [selection] : [];
+			return Promise.all(paths.map(async (path): Promise<ComposerImageAttachment> => ({
+				path,
+				name: path.split("/").at(-1) ?? "Screenshot",
+				previewUrl: await invoke<string>("desktop_image_preview", { path })
+			})));
+		},
 		getInstanceDiagnostics: () => isTauri
 			? invoke<DesktopInstanceDiagnostics>("desktop_instance_diagnostics")
 			: Promise.resolve({
@@ -187,6 +197,13 @@ export function installDesktopBridge(): void {
 		};
 	window.synthWhisper ??= isTauri
 		? {
+			getRuntimeStatus: () => invoke<WhisperRuntimeStatus>("whisper_runtime_status"),
+			warmSelected: () => invoke<WhisperRuntimeStatus>("whisper_runtime_warm"),
+			onRuntimeStatus: (listener) => {
+				let unlisten: (() => void) | undefined;
+				void listen<WhisperRuntimeStatus>("whisper:runtime", (event) => listener(event.payload)).then((dispose) => { unlisten = dispose; });
+				return () => unlisten?.();
+			},
 			listModels: () => invoke<WhisperModelHit[]>("whisper_models_list"),
 			downloadModel: (id) => invoke<WhisperModelHit>("whisper_model_download", { id }),
 			onDownloadProgress(listener) {
@@ -405,8 +422,15 @@ window.synthWorkspaceScope ??= isTauri
 			start: (request) => invoke<CodexSessionInfo>("codex_session_start", { request }),
 			startTurn: (sessionId, prompt, effort) =>
 				invoke<CodexSessionInfo>("codex_turn_start", { request: { sessionId, prompt, effort } }),
-			sendTurn: (start, prompt, effort) =>
-				invoke<CodexSessionInfo>("codex_turn_send", { request: { start, prompt, effort } }),
+			sendTurn: (start, prompt, effort, options) =>
+				invoke<CodexSessionInfo>("codex_turn_send", {
+					request: {
+						start,
+						prompt,
+						effort,
+						compactBeforeModelSwitch: Boolean(options?.compactBeforeModelSwitch)
+					}
+				}),
 			interrupt: (sessionId) => invoke<void>("codex_turn_interrupt", { request: { sessionId } }),
 			steerTurn: (sessionId, text) =>
 				invoke<void>("codex_turn_steer", { request: { sessionId, text } }),
