@@ -942,17 +942,17 @@ a,
 	display: grid;
 	grid-template-columns: minmax(0, 1.25fr) minmax(260px, 1fr);
 	gap: 10px 24px;
-	margin: 16px 0;
-	padding: 14px 16px;
-	border: 1px solid #dce6f7;
-	border-radius: 12px;
-	background: #f7faff;
+	margin: 14px 0;
+	padding: 12px 14px;
+	border: 1px solid var(--color-border);
+	border-radius: 9px;
+	background: var(--color-bg-subtle);
 }
 
 .model-download-guide strong { color: var(--color-text); font-size: 13px; }
 .model-download-guide p { margin: 4px 0 0; color: var(--color-text-muted); font-size: 12px; line-height: 1.45; }
 .model-download-guide ul { margin: 0; padding-left: 18px; color: var(--color-text); font-size: 12px; line-height: 1.6; }
-.model-download-guide-status { grid-column: 1 / -1; padding-top: 8px; border-top: 1px solid #e3eaf5; }
+.model-download-guide-status { grid-column: 1 / -1; padding-top: 8px; border-top: 1px solid var(--color-border); }
 
 @media (max-width: 800px) {
 	.model-download-guide { grid-template-columns: 1fr; }
@@ -1068,6 +1068,7 @@ a,
 .usage-sheet-empty button { min-height: 34px; padding: 0 12px; border-radius: 8px; font-size: 12px; font-weight: 650; }
 
 /* ── Settings → Account: user-facing sections first, connection demoted ── */
+.account-page .finetune-badge { color: var(--color-text-muted); background: var(--color-bg-subtle); border: 1px solid var(--color-border); }
 .account-page-section { padding: 0 15px 14px; margin-bottom: 14px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-card); box-shadow: var(--shadow-sm); overflow: hidden; }
 .account-page-section > header { margin: 0 -15px 12px; padding: 9px 15px; background: var(--color-card-header); border-bottom: 1px solid var(--color-border); }
 .account-page-section h3 { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--color-text); }
@@ -3998,7 +3999,7 @@ a,
 }
 
 .settings-content-inner {
-	max-width: 700px;
+	max-width: 840px;
 	margin: 0 auto;
 }
 
@@ -4176,6 +4177,57 @@ a,
 .seg-control button:focus-visible {
 	outline: 2px solid var(--color-selection-ring);
 	outline-offset: 1px;
+}
+
+/* Designed empty/error state that keeps fallback content on the card system. */
+.settings-empty-card .settings-empty-body {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 7px;
+	padding: 20px 18px;
+}
+
+.settings-empty-body strong {
+	font-size: 13.5px;
+	font-weight: 600;
+	color: var(--color-text);
+}
+
+.settings-empty-body p {
+	margin: 0;
+	font-size: 12.5px;
+	line-height: 1.45;
+	color: var(--color-text-muted);
+	max-width: 62ch;
+}
+
+.settings-empty-body .inference-error {
+	color: #b42318;
+	font-size: 12.5px;
+}
+
+.settings-empty-body .inference-retry {
+	margin-top: 4px;
+	font-size: 12.5px;
+	font-weight: 500;
+	background: var(--color-bg);
+}
+
+/* Quiet uppercase label that groups related rows inside a card. */
+.settings-item-subhead {
+	margin-top: 2px;
+	padding: 11px 16px 3px;
+	border-top: 1px solid color-mix(in srgb, var(--color-border) 62%, transparent);
+	font-size: 10.5px;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--color-text-faint);
+}
+
+.settings-item-subhead + .settings-item {
+	border-top: 0;
 }
 
 /* Reset stays reachable but visually quiet, apart from ordinary settings. */

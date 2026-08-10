@@ -311,8 +311,6 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 					))}
 				</div>
 			) : null}
-
-			<p className="model-locations-note">Downloads, runtime setup, selection, startup, and removal are managed here.</p>
 		</div>
 	);
 }

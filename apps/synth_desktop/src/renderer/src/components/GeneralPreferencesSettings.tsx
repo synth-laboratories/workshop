@@ -142,6 +142,7 @@ export function GeneralPreferencesSettings({ preferences, onPreferencesChange }:
 						onChange={(theme) => onPreferencesChange(setTheme(theme))}
 					/>
 				</SettingsRow>
+				<div className="settings-item-subhead" aria-hidden>Fonts</div>
 				<SettingsRow label="Chat font size" htmlFor="chat-font-size">
 					<NumericInput
 						label="Chat font size"

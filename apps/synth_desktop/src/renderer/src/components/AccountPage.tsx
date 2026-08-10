@@ -85,7 +85,6 @@ export function AccountPage({
 			<header className="settings-section-head">
 				<div>
 					<h2>Account</h2>
-					<p>Identity, plan, and usage come from Synth Cloud. Connection settings are advanced.</p>
 				</div>
 				<span className="finetune-badge" data-testid="account-page-state">{view.subtitle}</span>
 			</header>
