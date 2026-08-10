@@ -166,6 +166,12 @@ export type LandingState = {
 	internMode?: "remote" | "demo" | "unconfigured";
 	/** Synth org API key present — gates Synth Cloud billed models. Boolean only; never the secret. */
 	apiKeyConfigured?: boolean;
+	/**
+	 * Backend-authored reason billable Synth Cloud actions are blocked for this
+	 * account (exhausted allowance, past due, cancelled). Local models are never
+	 * affected. Null when cloud actions are allowed.
+	 */
+	cloudBlockedReason?: string | null;
 	composerEnabled: boolean;
 	composerPlaceholder: string;
 };

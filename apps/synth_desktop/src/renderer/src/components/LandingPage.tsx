@@ -9,20 +9,26 @@ type Props = {
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
+	onResolveBilling?: () => void;
 	museReady?: boolean;
 };
 
 export function ModelPicker({
 	selectedTargetId,
 	apiKeyConfigured,
+	cloudBlockedReason = null,
 	onSelectTarget,
 	onConfigureAccount,
+	onResolveBilling,
 	museReady = false
 }: {
 	selectedTargetId: string;
 	apiKeyConfigured?: boolean;
+	/** Backend-authored reason billable cloud actions are blocked; local is unaffected. */
+	cloudBlockedReason?: string | null;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
+	onResolveBilling?: () => void;
 	museReady?: boolean;
 }) {
 	const [open, setOpen] = useState(false);
@@ -131,6 +137,38 @@ export function ModelPicker({
 								{items.map((target: ExecutionTargetOption) => {
 									const needsSynthKey =
 										target.id === "synth-cloud-laguna-s" && apiKeyConfigured !== true;
+									const allowanceBlocked =
+										target.id === "synth-cloud-laguna-s" && !needsSynthKey && Boolean(cloudBlockedReason);
+									if (allowanceBlocked) {
+										return (
+											<div
+												key={target.id}
+												className="model-option is-disabled"
+												data-testid={`model-option-${target.id}`}
+											>
+												<span
+													className="model-option-copy"
+													role="option"
+													aria-selected={false}
+													aria-disabled="true"
+												>
+													<span className="model-option-label">{target.label}</span>
+													<span className="model-option-desc" data-testid="model-option-allowance-blocked">{cloudBlockedReason}</span>
+												</span>
+												<button
+													type="button"
+													className="model-option-configure"
+													data-testid="model-resolve-synth-billing"
+													onClick={() => {
+														onResolveBilling?.();
+														setOpen(false);
+													}}
+												>
+													Manage plan
+												</button>
+											</div>
+										);
+									}
 									if (needsSynthKey) {
 										return (
 											<div
@@ -193,6 +231,7 @@ export function LandingPage({
 	selectedTargetId,
 	onSelectTarget,
 	onConfigureAccount,
+	onResolveBilling,
 	museReady
 }: Props) {
 	const [accountChoiceMade, setAccountChoiceMade] = useState(
@@ -222,8 +261,10 @@ export function LandingPage({
 					<ModelPicker
 						selectedTargetId={selectedTargetId}
 						apiKeyConfigured={state.apiKeyConfigured}
+						cloudBlockedReason={state.cloudBlockedReason}
 						onSelectTarget={onSelectTarget}
 						onConfigureAccount={onConfigureAccount}
+						onResolveBilling={onResolveBilling}
 						museReady={museReady}
 					/>
 				</div>

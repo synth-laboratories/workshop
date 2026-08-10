@@ -28,18 +28,22 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 			getSummary: async () => (paired
 				? {
 					signedIn: true,
+					state: "active" as const,
 					accountId: "dev-local",
 					displayName: "Synth Dev",
 					environment: "dev" as const,
+					source: "dev_seed" as const,
 					plan: {
 						name: "Synth Dev",
+						metered: true,
 						monthlyAllowanceUsd: 200,
 						usedUsd: 12.5,
 						remainingUsd: 187.5,
-						resetsAt: "2026-09-01T00:00:00+00:00"
+						resetsAt: "2026-09-01T00:00:00+00:00",
+						source: "dev_seed" as const
 					}
 				}
-				: { signedIn: false, environment: "dev" as const })
+				: { signedIn: false, state: "signed_out" as const, environment: "dev" as const })
 		};
 		const base = {
 			configPath: "/tmp/config.toml",
@@ -88,7 +92,9 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 	await expect(page.getByTestId("account-plan-used")).toHaveText("$12.50");
 	await expect(page.getByTestId("account-plan-remaining")).toHaveText("$187.50");
 	await expect(page.getByTestId("account-plan-resets")).not.toBeEmpty();
-	await expect(page.getByTestId("account-usage")).toContainText("Tracked this week");
+	// A dev/local plan is never presented as Synth Cloud truth.
+	await expect(page.getByTestId("account-plan-dev-seed")).toContainText("Dev stand-in");
+	await expect(page.getByTestId("account-usage")).toContainText("This device, this week");
 	await page.getByTestId("account-menu-trigger").click();
 
 	await signIn.getByTestId("account-sign-out").click();
@@ -116,7 +122,7 @@ test("cancel during pairing returns to the idle sign-in affordance", async ({ pa
 			pollSignIn: async () => ({ status: "pending" as const }),
 			cancelSignIn: async () => undefined,
 			signOut: async () => { throw new Error("unused"); },
-			getSummary: async () => ({ signedIn: false, environment: "dev" as const })
+			getSummary: async () => ({ signedIn: false, state: "local_only" as const, environment: "dev" as const })
 		};
 	});
 	await page.reload();

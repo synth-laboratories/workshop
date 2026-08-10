@@ -1262,6 +1262,7 @@ export function buildLandingState(args: {
 		loadedModel?: string | null;
 	} | null;
 	apiKeyConfigured?: boolean;
+	cloudBlockedReason?: string | null;
 }): LandingState {
 	const model = healthToModelStatus(args.health, args.laguna);
 	const chats: LocalChat[] = [];
@@ -1355,6 +1356,7 @@ export function buildLandingState(args: {
 		selectedTargetId: args.selectedTargetId,
 		internMode: args.health?.intern.mode,
 		apiKeyConfigured: args.apiKeyConfigured,
+		cloudBlockedReason: args.cloudBlockedReason ?? null,
 		composerEnabled: model.composerEnabled,
 		composerPlaceholder: model.composerPlaceholder
 	};

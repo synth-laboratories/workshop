@@ -3,6 +3,8 @@ import { type LandingState } from "../types/landing";
 import { ModelDownloadBar } from "./ModelDownloadBar";
 import { LocalModelResidency } from "./LocalModelResidency";
 import type { LagunaStatus } from "../env";
+import { type AccountViewModel, formatDate, formatUsd } from "../runtime/accountView";
+import type { DeviceUsageSummary } from "./UsageSheet";
 import { ConversationContextMenu } from "./GeneralPreferencesSettings";
 import { PaneResizeHandle } from "./PaneResizeHandle";
 
@@ -24,23 +26,13 @@ type Props = {
 	onOpenOptimizers: () => void;
 	onSearch: () => void;
 	onSettings: () => void;
-	accountSignedIn?: boolean;
-	accountDisplayName?: string | null;
-	accountPlan?: {
-		name: string;
-		monthlyAllowanceUsd: number;
-		usedUsd: number;
-		remainingUsd: number;
-		resetsAt: string;
-	} | null;
-	accountUsage?: {
-		weeklyTokens: number;
-		weeklyCostUsd: number;
-		totalTokens: number;
-		totalCostUsd: number;
-		entries: number;
-	} | null;
+	/** Composed by the renderer from the host's account summary. */
+	account: AccountViewModel;
+	accountUsage?: DeviceUsageSummary | null;
 	onOpenAccount?: () => void;
+	onOpenUsage?: () => void;
+	onBilling?: (action: "upgrade" | "manage") => void;
+	onRetryAccount?: () => void;
 	onSignOut?: () => void | Promise<void>;
 	onPauseToggle: () => void;
 	onRenameChat?: (id: string, title: string) => void;
@@ -137,11 +129,12 @@ export function Sidebar({
 	onOpenOptimizers,
 	onSearch,
 	onSettings,
-	accountSignedIn = false,
-	accountDisplayName = null,
-	accountPlan = null,
+	account,
 	accountUsage = null,
 	onOpenAccount,
+	onOpenUsage,
+	onBilling,
+	onRetryAccount,
 	onSignOut,
 	onPauseToggle,
 	onRenameChat,
@@ -424,42 +417,78 @@ export function Sidebar({
 					{accountMenuOpen ? (
 						<div id="account-menu-panel" className="account-menu" role="menu" data-testid="account-menu">
 							<div className="account-menu-identity">
-								<span className="account-avatar" aria-hidden>{(accountDisplayName ?? "S").slice(0, 1).toUpperCase()}</span>
-								<span><strong>{accountDisplayName ?? (accountSignedIn ? "Synth account" : "Local mode")}</strong><small>{accountSignedIn ? "Signed in" : "Not signed in"}</small></span>
+								<span className="account-avatar" aria-hidden>{account.initial}</span>
+								<span>
+									<strong>{account.title}</strong>
+									<small data-testid="account-menu-subtitle">{account.subtitle}</small>
+								</span>
 							</div>
+							{account.cloudBlockedReason ? (
+								<p className="account-menu-alert" data-testid="account-menu-blocked">{account.cloudBlockedReason}</p>
+							) : account.statusNote ? (
+								<p className="account-menu-alert" data-testid="account-menu-status-note">{account.statusNote}</p>
+							) : null}
 							<button type="button" className="account-menu-row" onClick={() => setUsageOpen((value) => !value)} aria-expanded={usageOpen} aria-controls="account-usage-panel" data-testid="account-usage-toggle">
 								<span className="account-menu-glyph" aria-hidden>◔</span><span>Usage remaining</span><span className={`account-menu-chevron${usageOpen ? " open" : ""}`} aria-hidden>›</span>
 							</button>
 							{usageOpen ? (
 								<div id="account-usage-panel" className="account-usage" data-testid="account-usage">
-									{accountPlan ? (
+									{account.plan ? (
 										<>
-											<div><span>{accountPlan.name} plan</span><strong data-testid="account-plan-allowance">${accountPlan.monthlyAllowanceUsd.toFixed(2)} monthly</strong></div>
-											<div><span>Used this month</span><strong data-testid="account-plan-used">${accountPlan.usedUsd.toFixed(2)}</strong></div>
-											<div><span>Remaining</span><strong data-testid="account-plan-remaining">${accountPlan.remainingUsd.toFixed(2)}</strong></div>
-											<div><span>Resets</span><strong data-testid="account-plan-resets">{new Date(accountPlan.resetsAt).toLocaleDateString()}</strong></div>
+											{account.planHasDollars ? (
+												<>
+													<div><span>{account.plan.name} plan</span><strong data-testid="account-plan-allowance">{formatUsd(account.plan.monthlyAllowanceUsd)} monthly</strong></div>
+													<div><span>Used this period</span><strong data-testid="account-plan-used">{formatUsd(account.plan.usedUsd)}</strong></div>
+													<div><span>Remaining</span><strong data-testid="account-plan-remaining">{formatUsd(account.plan.remainingUsd)}</strong></div>
+												</>
+											) : (
+												<div><span>{account.plan.name} plan</span><strong data-testid="account-plan-allowance">Not metered in dollars</strong></div>
+											)}
+											{formatDate(account.plan.resetsAt) ? (
+												<div><span>Resets</span><strong data-testid="account-plan-resets">{formatDate(account.plan.resetsAt)}</strong></div>
+											) : null}
+											{account.planIsDevSeed ? <p data-testid="account-plan-dev-seed">Dev stand-in — charged from this device, not Synth Cloud.</p> : null}
 										</>
+									) : account.signedIn ? (
+										<p data-testid="account-plan-unavailable">No Synth Cloud plan is reported for this account.</p>
 									) : (
-										<div><span>Weekly budget</span><strong>Not reported</strong></div>
+										<p data-testid="account-plan-signed-out">Sign in to Synth to see a cloud allowance.</p>
 									)}
-									<div><span>Tracked this week</span><strong>{(accountUsage?.weeklyTokens ?? 0).toLocaleString()} tokens</strong></div>
-									{(accountUsage?.weeklyCostUsd ?? 0) > 0 ? <div><span>Estimated cost</span><strong>${accountUsage!.weeklyCostUsd.toFixed(2)}</strong></div> : null}
-									<div><span>All tracked usage</span><strong>{(accountUsage?.totalTokens ?? 0).toLocaleString()} tokens · {accountUsage?.entries ?? 0} runs</strong></div>
-									{accountPlan ? null : <p>Synth does not currently report a cloud allowance or reset date.</p>}
+									<div><span>This device, this week</span><strong>{(accountUsage?.weeklyTokens ?? 0).toLocaleString()} tokens</strong></div>
+									{(accountUsage?.weeklyCostUsd ?? 0) > 0 ? <div><span>Estimated device cost</span><strong>{formatUsd(accountUsage?.weeklyCostUsd)}</strong></div> : null}
+									<div><span>All tracked device usage</span><strong>{(accountUsage?.totalTokens ?? 0).toLocaleString()} tokens · {accountUsage?.entries ?? 0} runs</strong></div>
 								</div>
 							) : null}
+							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); onOpenUsage?.(); }} data-testid="account-open-usage" role="menuitem">
+								<span className="account-menu-glyph" aria-hidden>▤</span><span>Usage</span>
+							</button>
+							{account.primaryAction && account.primaryAction.kind !== "sign_in" ? (
+								<button
+									type="button"
+									className="account-menu-row"
+									data-testid="account-primary-action"
+									role="menuitem"
+									onClick={() => {
+										setAccountMenuOpen(false);
+										if (account.primaryAction?.kind === "retry") onRetryAccount?.();
+										else onBilling?.(account.primaryAction?.kind === "upgrade" ? "upgrade" : "manage");
+									}}
+								>
+									<span className="account-menu-glyph" aria-hidden>↗</span><span>{account.primaryAction.label}</span>
+								</button>
+							) : null}
 							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); (onOpenAccount ?? onSettings)(); }} data-testid="open-account-settings" role="menuitem">
-								<span className="account-menu-glyph" aria-hidden>◎</span><span>{accountSignedIn ? "Manage account" : "Sign in to Synth"}</span>
+								<span className="account-menu-glyph" aria-hidden>◎</span><span>{account.signedIn ? "Manage account" : "Sign in to Synth"}</span>
 							</button>
 							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); onSettings(); }} data-testid="account-menu-settings" role="menuitem">
 								<IconSettings /><span>Settings</span><kbd>⌘,</kbd>
 							</button>
-							{accountSignedIn ? <button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); void onSignOut?.(); }} data-testid="account-log-out" role="menuitem"><span className="account-menu-glyph" aria-hidden>↪</span><span>Log out</span></button> : null}
+							{account.signedIn ? <button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); void onSignOut?.(); }} data-testid="account-log-out" role="menuitem"><span className="account-menu-glyph" aria-hidden>↪</span><span>Log out</span></button> : null}
 						</div>
 					) : null}
 					<button ref={accountTriggerRef} type="button" className="account-trigger" onClick={() => setAccountMenuOpen((value) => !value)} aria-expanded={accountMenuOpen} aria-controls="account-menu-panel" aria-haspopup="menu" data-testid="account-menu-trigger">
-						<span className="account-avatar" aria-hidden>{(accountDisplayName ?? "S").slice(0, 1).toUpperCase()}</span>
-						<span className="account-trigger-copy"><strong>{accountDisplayName ?? (accountSignedIn ? "Synth account" : "Sign in to Synth")}</strong><small>{accountSignedIn ? "Signed in" : "Local mode"}</small></span>
+						<span className="account-avatar" aria-hidden>{account.initial}</span>
+						<span className="account-trigger-copy"><strong>{account.title}</strong><small>{account.subtitle}</small></span>
 						<span className="account-help" aria-hidden>?</span>
 					</button>
 				</div>
