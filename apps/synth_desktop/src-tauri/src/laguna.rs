@@ -17,8 +17,11 @@ use std::{
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
+/// Canonical ports. A named development instance overrides both through the
+/// environment so several Desktops can run at once: they share one models
+/// directory of read-only weights, but never a daemon, an engine, a data
+/// directory, or a port. See `scripts/desktop-instance.sh`.
 const DEFAULT_PORT: u16 = 7333;
-const DEFAULT_PORT_STR: &str = "7333";
 /// Cleared before spawning the daemon so no inherited value can resurrect the
 /// deleted second-engine path.
 const UPSTREAM_ENV_VARS: [&str; 5] = [
@@ -34,6 +37,31 @@ const MUSE_GLIMMER_MODEL: &str = "meta-models/Muse-Glimmer-30B-GGUF";
 /// Loopback port of the Muse engine. The daemon is told this address; it never
 /// assumes one, because it does not own the process that listens there.
 const MUSE_ENGINE_PORT: u16 = 7334;
+
+/// This process's Laguna port. Read per call rather than cached so a launcher
+/// that sets it after startup is still honored.
+fn laguna_port() -> u16 {
+    env::var("SYNTH_LAGUNA_PORT")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(DEFAULT_PORT)
+}
+
+/// This process's Laguna base URL: an explicit override, else its own port.
+fn laguna_base_url() -> String {
+    env::var("SYNTH_LAGUNA_BASE_URL")
+        .unwrap_or_else(|_| format!("http://127.0.0.1:{}", laguna_port()))
+}
+
+/// This process's Muse engine port, paired with its Laguna port by the
+/// launcher. Two instances that shared one engine would also share its slots,
+/// its KV cache, and its api key.
+fn muse_engine_port() -> u16 {
+    env::var("SYNTH_MUSE_PORT")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(MUSE_ENGINE_PORT)
+}
 /// The engine's `--ctx-size`. The daemon advertises the same number as Muse's
 /// context window and derives its compaction limit from it, so the two must not
 /// drift apart.
@@ -578,10 +606,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         }
 
         let api_key = ensure_api_key()?;
-        let base_url = trim_url(
-            env::var("SYNTH_LAGUNA_BASE_URL")
-                .unwrap_or_else(|_| format!("http://127.0.0.1:{DEFAULT_PORT}")),
-        );
+        let base_url = trim_url(laguna_base_url());
         self.set_status(LagunaStatus {
             phase: "starting".into(),
             base_url: Some(base_url.clone()),
@@ -783,10 +808,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         if let Some(url) = self.status().await.base_url {
             return url;
         }
-        trim_url(
-            env::var("SYNTH_LAGUNA_BASE_URL")
-                .unwrap_or_else(|_| format!("http://127.0.0.1:{DEFAULT_PORT}")),
-        )
+        trim_url(laguna_base_url())
     }
 
     async fn record_inference(&self, snapshot: LagunaInference) {
@@ -1528,7 +1550,7 @@ impl MuseEngineFailure {
 
 fn muse_engine_url() -> String {
     env::var("SYNTH_MUSE_ENGINE_URL")
-        .unwrap_or_else(|_| format!("http://127.0.0.1:{MUSE_ENGINE_PORT}"))
+        .unwrap_or_else(|_| format!("http://127.0.0.1:{}", muse_engine_port()))
 }
 
 fn muse_model_dir() -> PathBuf {
@@ -1552,9 +1574,15 @@ fn spawn_muse_engine(api_key: &str) -> std::result::Result<(), MuseEngineFailure
             let output = Command::new("/bin/ps")
                 .args(["-p", &pid.to_string(), "-o", "command="])
                 .output();
+            // Identity is the model *and* this instance's port: another
+            // instance's engine is also a "Muse-Glimmer" process, and adopting
+            // it would put two Desktops on one set of slots.
+            let port_flag = muse_engine_port().to_string();
             if output.is_ok_and(|output| {
+                let command = String::from_utf8_lossy(&output.stdout).into_owned();
                 output.status.success()
-                    && String::from_utf8_lossy(&output.stdout).contains("Muse-Glimmer")
+                    && command.contains("Muse-Glimmer")
+                    && command.contains(&port_flag)
             }) {
                 return Ok(());
             }
@@ -1606,7 +1634,7 @@ fn spawn_muse_engine(api_key: &str) -> std::result::Result<(), MuseEngineFailure
         .args(["--spec-type", "draft-dflash"])
         .args(["--alias", MUSE_GLIMMER_MODEL])
         .args(["--host", "127.0.0.1"])
-        .args(["--port", &MUSE_ENGINE_PORT.to_string()])
+        .args(["--port", &muse_engine_port().to_string()])
         .args(["--ctx-size", MUSE_CONTEXT_LENGTH_STR])
         // Tool calling and the thinking/answer split are template work, and the
         // engine only does template work under --jinja. Without these two flags
@@ -1662,7 +1690,10 @@ fn stop_muse_engine() -> Result<bool> {
             .args(["-p", &pid.to_string(), "-o", "command="])
             .output()
             .context("inspect managed Muse engine")?;
-        if !String::from_utf8_lossy(&command.stdout).contains("Muse-Glimmer") {
+        let observed = String::from_utf8_lossy(&command.stdout).into_owned();
+        if !observed.contains("Muse-Glimmer")
+            || !observed.contains(&muse_engine_port().to_string())
+        {
             let _ = fs::remove_file(path);
             return Ok(false);
         }
@@ -1694,9 +1725,10 @@ fn apply_daemon_env(
     model_id: &str,
     models_dir: &Path,
 ) {
+    let laguna_port_string = laguna_port().to_string();
     command.envs([
         ("SYNTH_LAGUNA_HOST", "127.0.0.1"),
-        ("SYNTH_LAGUNA_PORT", DEFAULT_PORT_STR),
+        ("SYNTH_LAGUNA_PORT", laguna_port_string.as_str()),
         ("SYNTH_LAGUNA_API_KEY", api_key),
         ("SYNTH_LAGUNA_BACKEND", backend),
         ("SYNTH_LAGUNA_DEFAULT_MODEL", model_id),
@@ -2295,6 +2327,39 @@ mod tests {
                 .as_deref()
                 .is_some_and(|value| value.contains("7334") || value.contains("63300"))),
             "no legacy or Poolside engine port may reach the daemon"
+        );
+    }
+
+    #[test]
+    fn ports_come_from_the_environment_so_instances_do_not_share_a_daemon() {
+        // Defaults hold for the canonical app; a named instance overrides both
+        // through the environment. These are read per call rather than cached,
+        // which is what lets one process answer for its own instance only.
+        assert_eq!(DEFAULT_PORT, 7333);
+        assert_eq!(MUSE_ENGINE_PORT, 7334);
+        match env::var("SYNTH_LAGUNA_PORT") {
+            Ok(value) => assert_eq!(laguna_port().to_string(), value.trim()),
+            Err(_) => assert_eq!(laguna_port(), DEFAULT_PORT),
+        }
+        match env::var("SYNTH_MUSE_PORT") {
+            Ok(value) => assert_eq!(muse_engine_port().to_string(), value.trim()),
+            Err(_) => assert_eq!(muse_engine_port(), MUSE_ENGINE_PORT),
+        }
+        // The daemon is always told the port this process resolved, never the
+        // constant: an instance whose supervisor listens elsewhere would
+        // otherwise start a daemon on the canonical port and serve — or be
+        // served by — a different instance entirely.
+        let envs = daemon_env_for("mlx_lm", DEFAULT_MODEL);
+        assert_eq!(
+            lookup(&envs, "SYNTH_LAGUNA_PORT"),
+            Some(Some(laguna_port().to_string()))
+        );
+        // The engine address the daemon is given must name this instance's
+        // engine port, so two Desktops never drive one set of engine slots.
+        let muse_envs = daemon_env_for("llama_cpp", MUSE_GLIMMER_MODEL);
+        assert_eq!(
+            lookup(&muse_envs, "SYNTH_LAGUNA_ENGINE_URL"),
+            Some(Some(format!("http://127.0.0.1:{}", muse_engine_port())))
         );
     }
 

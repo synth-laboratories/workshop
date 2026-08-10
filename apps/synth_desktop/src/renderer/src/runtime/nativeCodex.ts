@@ -26,9 +26,15 @@ export function permissionConfigFromApprovalMode(mode: ApprovalMode): Permission
 	return approvalModeConfig(mode) as PermissionConfig;
 }
 
+/** Where the local daemon listens when nothing else says otherwise. A named
+ *  development instance gets its own port, so the caller passes the address the
+ *  supervisor actually reported rather than assuming this one. */
+export const DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:7333";
+
 export function codexStartRequest(
 	sessionId: string, workspace: string, target: ExecutionTarget, permissions: ApprovalMode | PermissionConfig = "ask",
-	autoCompactTokenLimits: Record<string, number> = { lagunaXs: 150_000, museGlimmer: 100_000, lagunaS: 250_000, luna: 250_000 }
+	autoCompactTokenLimits: Record<string, number> = { lagunaXs: 150_000, museGlimmer: 100_000, lagunaS: 250_000, luna: 250_000 },
+	localBaseUrl: string = DEFAULT_LOCAL_BASE_URL
 ): CodexSessionStart {
 	const approval = typeof permissions === "string" ? approvalModeConfig(permissions) : permissions;
 	if (target.kind === "intern") throw new Error("Intern sessions are owned by Synth Cloud");
@@ -42,7 +48,7 @@ export function codexStartRequest(
 			? autoCompactTokenLimits.museGlimmer ?? 100_000
 			: autoCompactTokenLimits.lagunaXs ?? 150_000;
 		return {
-			sessionId, workspace, baseUrl: "http://127.0.0.1:7333", apiKey: "",
+			sessionId, workspace, baseUrl: localBaseUrl, apiKey: "",
 			model: isMuse ? MUSE_GLIMMER_MODEL : "poolside/Laguna-XS-2.1-NVFP4-mlx",
 			providerName: isMuse ? "local-muse-glimmer" : "local-laguna",
 			providerTitle: isMuse ? "Muse Glimmer Responses" : "Laguna XS Responses",

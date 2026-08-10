@@ -64,7 +64,7 @@ import {
 	planModelChipChange,
 	threadHasHistoryFromEvents
 } from "./runtime/modelSwitchPlan";
-import type { CodexBridge, CodexSessionInfo, CodexSessionStart, CodexTurnFailure, ComposerImageAttachment, ConversationWorkspaceScope, LagunaStatus, ModelPerformanceSummary, SynthAccountSummary } from "./env";
+import type { CodexBridge, CodexSessionInfo, CodexSessionStart, CodexTurnFailure, ComposerImageAttachment, ConversationWorkspaceScope, LagunaStatus, ModelPerformanceSummary, SynthAccountSummary, SynthBackendSettings } from "./env";
 import {
 	applyPreferencesToDocument,
 	archiveConversation,
@@ -173,7 +173,8 @@ function isCodexCompactionEvent(event: { method: string; params: Record<string, 
 async function codexResumeRequest(
 	nativeCodex: CodexBridge,
 	session: Session,
-	autoCompactTokenLimits: Record<string, number>
+	autoCompactTokenLimits: Record<string, number>,
+	localBaseUrl?: string
 ): Promise<CodexSessionStart> {
 	if (session.metadata.runtime !== "codex-app-server") {
 		throw new Error(`Session ${session.id} is not owned by Codex app-server`);
@@ -189,7 +190,7 @@ async function codexResumeRequest(
 		);
 	const storedApproval = approvalModeConfig(storedApprovalMode);
 	return {
-		...codexStartRequest(session.id, workspace, session.target, "ask", autoCompactTokenLimits),
+		...codexStartRequest(session.id, workspace, session.target, "ask", autoCompactTokenLimits, localBaseUrl),
 		approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : storedApproval.approvalPolicy,
 		sandbox: typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : storedApproval.sandbox,
 		threadId: typeof session.metadata.threadId === "string" ? session.metadata.threadId : undefined
@@ -330,6 +331,8 @@ export default function App() {
 		if (isInternTargetId(selectedTargetId)) setSelectedTargetId("local-laguna");
 	}, [selectedTargetId]);
 	const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+	/** Connection facts for the Account page's Devices and Advanced sections. */
+	const [backendSettings, setBackendSettings] = useState<SynthBackendSettings | null>(null);
 	const [accountUsage, setAccountUsage] = useState<ReturnType<typeof summarizeAccountUsage> | null>(null);
 	const [accountSummary, setAccountSummary] = useState<SynthAccountSummary | null>(null);
 	const [usageSheetOpen, setUsageSheetOpen] = useState(false);
@@ -638,6 +641,7 @@ export default function App() {
 				}
 			};
 			setApiKeyConfigured(config.apiKeyConfigured);
+			setBackendSettings(config);
 			setAccountUsage(summarizeAccountUsage(usage));
 			setHealth(next);
 			return next;
@@ -646,7 +650,10 @@ export default function App() {
 			browserRuntimeClient.health(),
 			window.synthConfig?.get().catch(() => null) ?? Promise.resolve(null)
 		]);
-		if (config) setApiKeyConfigured(config.apiKeyConfigured);
+		if (config) {
+			setApiKeyConfigured(config.apiKeyConfigured);
+			setBackendSettings(config);
+		}
 		setHealth(next);
 		return next;
 	}, [isDesktop]);
@@ -757,7 +764,7 @@ export default function App() {
 				manualCompactionPendingRef.current.add(event.sessionId);
 				const session = sessionsRef.current.find((candidate) => candidate.id === event.sessionId);
 				if (!session) return;
-				void codexResumeRequest(nativeCodex, session, preferences.agentContext.autoCompactTokenLimits)
+				void codexResumeRequest(nativeCodex, session, preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined)
 					.then((request) => nativeCodex.compact!(request))
 					.then(() => showToast("Compacting context…"))
 					.catch((reason) => {
@@ -781,7 +788,7 @@ export default function App() {
 						: session.status }
 				: session));
 		});
-	}, [allocateNativeSequence, nativeCodex, preferences.agentContext.autoCompactTokenLimits, showToast]);
+	}, [allocateNativeSequence, laguna?.baseUrl, nativeCodex, preferences.agentContext.autoCompactTokenLimits, showToast]);
 
 	useEffect(() => {
 		const bridge = window.synthLaguna;
@@ -1252,7 +1259,7 @@ export default function App() {
 					// Every local/configured-provider task starts in the configured safe workspace.
 					const workspace = await nativeCodex.defaultWorkspace();
 					const permissions = { approvalPolicy, sandbox: sandboxMode };
-					await nativeCodex.start(codexStartRequest(id, workspace, target, permissions, preferences.agentContext.autoCompactTokenLimits));
+					await nativeCodex.start(codexStartRequest(id, workspace, target, permissions, preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined));
 					const session = createCodexSession(id, target, null, workspace, title, permissions);
 					sessionsRef.current = [session, ...sessionsRef.current.filter((item) => item.id !== session.id)];
 					setSessions(sessionsRef.current);
@@ -1278,7 +1285,7 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[approvalPolicy, sandboxMode, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
+		[approvalPolicy, sandboxMode, laguna?.baseUrl, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
 	);
 
 	const ensureActiveSession = useCallback(async (objective: string): Promise<{ sessionId: string; objectiveConsumed: boolean } | null> => {
@@ -1328,7 +1335,7 @@ export default function App() {
 						);
 					const storedApproval = approvalModeConfig(storedApprovalMode);
 					const startRequest = {
-						...codexStartRequest(sessionId, workspace, executionTarget, "ask", preferences.agentContext.autoCompactTokenLimits),
+						...codexStartRequest(sessionId, workspace, executionTarget, "ask", preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined),
 						// Restored pre-policy sessions can carry only the human mode. Never
 						// turn that into an undefined request which Rust then treats as Ask.
 						approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : storedApproval.approvalPolicy,
@@ -1397,7 +1404,7 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[allocateNativeSequence, failTurnStart, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
+		[allocateNativeSequence, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
 	);
 	sendToSessionRef.current = sendToSession;
 
@@ -1544,7 +1551,8 @@ export default function App() {
 			const request = await codexResumeRequest(
 				nativeCodex,
 				session,
-				preferences.agentContext.autoCompactTokenLimits
+				preferences.agentContext.autoCompactTokenLimits,
+				laguna?.baseUrl ?? undefined
 			);
 			await nativeCodex.compact(request);
 			showToast("Compacting context…");
@@ -1554,7 +1562,7 @@ export default function App() {
 		} finally {
 			setBusy(false);
 		}
-	}, [activeChatRunning, activeSessionId, nativeCodex, preferences.agentContext.autoCompactTokenLimits, showToast]);
+	}, [activeChatRunning, activeSessionId, laguna?.baseUrl, nativeCodex, preferences.agentContext.autoCompactTokenLimits, showToast]);
 
 	const onReloadLaguna = useCallback(async () => {
 		const bridge = window.synthLaguna;
@@ -1945,6 +1953,15 @@ export default function App() {
 
 					{view.kind === "settings" ? (
 						<SettingsPage
+							account={{
+								view: accountView,
+								summary: accountSummary,
+								deviceUsage: accountUsage,
+								connection: backendSettings,
+								onBilling: (action) => void openBilling(action),
+								onRefresh: () => refreshAccountSummary(true),
+								onOpenDeviceUsage: () => setView({ kind: "inventory" })
+							}}
 							key={view.section ?? "general"}
 							onBack={() => setView({ kind: "landing" })}
 							onReloadLaguna={onReloadLaguna}
@@ -2265,10 +2282,14 @@ export default function App() {
 						open={terminalOpen}
 						workspaceId={terminalWorkspaceId}
 						workspaceRoot={terminalWorkspaceRoot}
+						height={preferences.layout.last.bottomPanelHeight}
+						fontFamily={preferences.appearance.terminalFontFamily}
+						fontSize={preferences.appearance.terminalFontSize}
 						onOpenChange={(open) => {
 							setTerminalOpen(open);
 							persistLayoutSnapshot({ bottomPanelVisible: open });
 						}}
+						onHeightChange={(height) => persistLayoutSnapshot({ bottomPanelHeight: height })}
 			/>
 		</main>
 	</div>

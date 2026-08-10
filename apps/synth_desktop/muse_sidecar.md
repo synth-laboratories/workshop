@@ -203,6 +203,43 @@ Fixed by spawning `llama-server` directly from Rust with the arguments inline
 The sidebar also truncated that line to one row with a mid-word ellipsis;
 error and warning rows now wrap to three lines with the full text on hover.
 
+## Running more than one Desktop at a time
+
+Instances used to share one Laguna daemon, one engine, one api key, and one
+data directory: `desktop-instance.sh` defaulted `SYNTH_LAGUNA_HOME` to
+`~/.synth-desktop/laguna` and the base URL to `:7333`. Whichever instance
+launched last owned the daemon for everyone, with *its* binary's environment —
+which is how an older build bound Muse to the Responses passthrough and made
+every local turn in a newer instance fail with "stream disconnected before
+completion" while the daemon's own log showed only health polls.
+
+Each instance now derives a stable port pair from its name, beside the Vite
+port it already derived:
+
+```text
+CHECKSUM   = cksum(instance name)
+LAGUNA_PORT = 17300 + (CHECKSUM % 300) * 2
+MUSE_PORT   = LAGUNA_PORT + 1
+```
+
+and gets its own `SYNTH_LAGUNA_HOME` under the instance's data root, so api
+key, pid files, response store, logs, and selected model no longer collide.
+Weights stay shared — they are read-only and large.
+
+- The Rust supervisor reads `SYNTH_LAGUNA_PORT` / `SYNTH_MUSE_PORT` per call
+  and passes the resolved port to the daemon; the canonical app still defaults
+  to 7333/7334.
+- Codex is pointed at the base URL the supervisor reported, not a hardcoded
+  `:7333`.
+- Adopting an already-running engine now matches on the model *and* this
+  instance's port, so one Desktop cannot take over another's engine slots.
+- The launcher refuses to start when its Laguna port is already held, naming
+  the pid, instead of silently sharing.
+
+`scripts/desktop.sh install` builds the working tree, so a shared checkout can
+install an app carrying another agent's uncommitted changes. Check `git status`
+before treating an installed build as "dev plus my work".
+
 ## Key touchpoints
 
 | Need | Location |

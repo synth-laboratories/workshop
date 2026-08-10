@@ -39,6 +39,14 @@ APP_TITLE="Synth Desktop · $NAME"
 BUNDLE_ID="com.synth.desktop.dev.$NAME"
 CHECKSUM="$(printf '%s' "$NAME" | cksum | awk '{print $1}')"
 VITE_PORT=$((14200 + CHECKSUM % 1000))
+# Every instance owns a port pair, derived from its name so it is stable across
+# runs: the Laguna daemon and, beside it, the GGUF engine that daemon drives.
+# Instances share one models directory of read-only weights and nothing else —
+# two Desktops on one daemon means one instance's build serves the other's
+# turns, which is exactly how a stale binary bound Muse to the wrong backend
+# and made every local turn fail.
+LAGUNA_PORT=$((17300 + (CHECKSUM % 300) * 2))
+MUSE_PORT=$((LAGUNA_PORT + 1))
 SOURCE_REVISION="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
 if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
   SOURCE_REVISION="$SOURCE_REVISION-dirty"
@@ -213,6 +221,7 @@ status_instance() {
   echo "[desktop:$NAME] data $DATA_ROOT"
   echo "[desktop:$NAME] workspace $WORKSPACE"
   echo "[desktop:$NAME] vite http://127.0.0.1:$VITE_PORT"
+  echo "[desktop:$NAME] laguna http://127.0.0.1:$LAGUNA_PORT · muse engine :$MUSE_PORT"
   echo "[desktop:$NAME] identity $APP_TITLE · badge $ICON_LABEL · $BUNDLE_ID"
   echo "[desktop:$NAME] executable $EXE"
   echo "[desktop:$NAME] manifest $MANIFEST"
@@ -225,12 +234,29 @@ dev_instance() {
     exit 1
   fi
 
-  local laguna_home="${SYNTH_LAGUNA_HOME:-$HOME/.synth-desktop/laguna}"
+  # The daemon's data directory holds its api key, pid files, response store,
+  # logs, and selected model. Sharing it across instances shares all of those.
+  local laguna_home="${SYNTH_LAGUNA_HOME:-$DATA_ROOT/laguna}"
+  mkdir -p "$laguna_home"
   export SYNTH_LAGUNA_HOME="$laguna_home"
-  export SYNTH_LAGUNA_BASE_URL="${SYNTH_LAGUNA_BASE_URL:-http://127.0.0.1:7333}"
+  export SYNTH_LAGUNA_PORT="${SYNTH_LAGUNA_PORT:-$LAGUNA_PORT}"
+  export SYNTH_LAGUNA_BASE_URL="${SYNTH_LAGUNA_BASE_URL:-http://127.0.0.1:$SYNTH_LAGUNA_PORT}"
+  export SYNTH_MUSE_PORT="${SYNTH_MUSE_PORT:-$MUSE_PORT}"
   if [[ -z "${SYNTH_LAGUNA_API_KEY:-}" && -f "$laguna_home/api_key" ]]; then
     export SYNTH_LAGUNA_API_KEY
     SYNTH_LAGUNA_API_KEY="$(tr -d '\n' <"$laguna_home/api_key")"
+  fi
+
+  # Port derivation is a hash, so a collision is unlikely but not impossible,
+  # and a shared port is invisible until turns start failing in one instance
+  # for reasons that live in another. Fail here, by name, instead.
+  local port_holder
+  port_holder="$(lsof -nP -iTCP:"$SYNTH_LAGUNA_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+  if [[ -n "$port_holder" ]]; then
+    echo "[desktop:$NAME] ERROR Laguna port $SYNTH_LAGUNA_PORT is held by pid $port_holder:" >&2
+    ps -p "$port_holder" -o command= >&2 || true
+    echo "[desktop:$NAME] stop that process, or set SYNTH_LAGUNA_PORT to a free port for this instance" >&2
+    exit 1
   fi
 
   export SYNTH_DESKTOP_INSTANCE="$NAME"
@@ -260,7 +286,7 @@ dev_instance() {
     --bin synth-optimizers-mcp
 
   echo "[desktop:$NAME] launching $APP_TITLE"
-  echo "[desktop:$NAME] data=$DATA_ROOT vite=$VITE_PORT laguna=$SYNTH_LAGUNA_BASE_URL"
+  echo "[desktop:$NAME] data=$DATA_ROOT vite=$VITE_PORT laguna=$SYNTH_LAGUNA_BASE_URL muse=$SYNTH_MUSE_PORT home=$laguna_home"
   cd "$ROOT/apps/synth_desktop"
   exec npx tauri dev --config "$CONFIG"
 }
