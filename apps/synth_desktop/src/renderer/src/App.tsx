@@ -36,6 +36,8 @@ import { OptimizersPage } from "./components/OptimizersPage";
 import { PaneResizeHandle } from "./components/PaneResizeHandle";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
+import { UsageSheet } from "./components/UsageSheet";
+import { buildAccountView } from "./runtime/accountView";
 import { SynthLogo } from "./components/SynthLogo";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { artifactFromVisualRecord, VisualPane } from "./components/VisualHost";
@@ -330,13 +332,18 @@ export default function App() {
 	const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
 	const [accountUsage, setAccountUsage] = useState<ReturnType<typeof summarizeAccountUsage> | null>(null);
 	const [accountSummary, setAccountSummary] = useState<SynthAccountSummary | null>(null);
-	const refreshAccountSummary = useCallback(() => {
+	const [usageSheetOpen, setUsageSheetOpen] = useState(false);
+	const refreshAccountSummary = useCallback((force = false) => {
 		const bridge = window.synthAccount;
 		if (typeof bridge?.getSummary !== "function") {
 			setAccountSummary(null);
 			return;
 		}
-		void bridge.getSummary()
+		// `refresh` skips the host cache; older hosts only expose `getSummary`.
+		const read = force && typeof bridge.refresh === "function"
+			? bridge.refresh()
+			: bridge.getSummary();
+		void read
 			.then(setAccountSummary)
 			.catch(() => setAccountSummary(null));
 	}, []);
@@ -347,6 +354,10 @@ export default function App() {
 			.then((entries) => setAccountUsage(summarizeAccountUsage(entries)))
 			.catch(() => setAccountUsage(null));
 	}, [refreshAccountSummary]);
+	const accountView = useMemo(
+		() => buildAccountView(accountSummary, apiKeyConfigured),
+		[accountSummary, apiKeyConfigured]
+	);
 	const [preferences, setPreferences] = useState<DesktopPreferences>(() => loadPreferences());
 	const [, setApprovalMode] = useState<ApprovalMode>(() => loadPreferences().approvalMode);
 	const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>(() => loadPreferences().approvalPolicy);
@@ -479,6 +490,26 @@ export default function App() {
 		setToast(message);
 		window.setTimeout(() => setToast(null), 2200);
 	}, []);
+
+	/**
+	 * Billing always leaves the app: the host opens a backend-issued hosted URL
+	 * in the system browser. On return the snapshot is refetched so a completed
+	 * checkout shows up without a restart.
+	 */
+	const openBilling = useCallback(async (action: "upgrade" | "manage") => {
+		const bridge = window.synthAccount;
+		if (typeof bridge?.openBilling !== "function") {
+			showToast("Billing management requires Synth Desktop");
+			return;
+		}
+		try {
+			await bridge.openBilling(action, accountSummary?.billing?.upgradeTier);
+			showToast(action === "upgrade" ? "Finish your upgrade in the browser" : "Manage billing opened in your browser");
+			window.setTimeout(() => refreshAccountSummary(true), 4_000);
+		} catch (reason) {
+			showToast(reason instanceof Error ? reason.message : String(reason));
+		}
+	}, [accountSummary?.billing?.upgradeTier, refreshAccountSummary, showToast]);
 
 	useEffect(() => subscribePreferences((next) => {
 		setPreferences(next);
@@ -949,7 +980,8 @@ export default function App() {
 			codexActivityBySession,
 			selectedTargetId,
 			laguna,
-			apiKeyConfigured
+			apiKeyConfigured,
+			cloudBlockedReason: accountView.cloudBlockedReason
 		});
 		const archived = new Set(
 			Object.entries(preferences.conversations)
@@ -969,6 +1001,7 @@ export default function App() {
 			model: { ...withTitles.model, downloadPaused }
 		};
 	}, [
+		accountView.cloudBlockedReason,
 		apiKeyConfigured,
 		downloadPaused,
 		eventsBySession,
@@ -1817,10 +1850,11 @@ export default function App() {
 					onOpenOptimizers={() => setView({ kind: "optimizers" })}
 					onSearch={openSearch}
 					onSettings={() => setView({ kind: "settings" })}
-					accountSignedIn={accountSummary?.signedIn ?? apiKeyConfigured}
-					accountDisplayName={accountSummary?.displayName ?? null}
-					accountPlan={accountSummary?.plan ?? null}
+					account={accountView}
 					accountUsage={accountUsage}
+					onOpenUsage={() => setUsageSheetOpen(true)}
+					onBilling={(action) => void openBilling(action)}
+					onRetryAccount={() => refreshAccountSummary(true)}
 					onOpenAccount={() => setView({ kind: "settings", section: "account" })}
 					onSignOut={async () => {
 						if (!window.synthAccount) {
@@ -2054,6 +2088,7 @@ export default function App() {
 							selectedTargetId={selectedTargetId}
 							onSelectTarget={onSelectTarget}
 								onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
+							onResolveBilling={() => setUsageSheetOpen(true)}
 								museReady={museReady}
 						/>
 					) : null}
@@ -2152,6 +2187,7 @@ export default function App() {
 							onSend={(text) => void onComposerSend(text)}
 							onSelectTarget={onSelectTarget}
 							onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
+							onResolveBilling={() => setUsageSheetOpen(true)}
 							museReady={museReady}
 							onOpenVoiceSettings={() => setView({ kind: "settings", section: "voice" })}
 							skills={composerSkills}
@@ -2244,6 +2280,24 @@ export default function App() {
 			onOpenChat={(id) => openChat(id)}
 		/>
 	) : null}
+
+	<UsageSheet
+		open={usageSheetOpen}
+		view={accountView}
+		summary={accountSummary}
+		deviceUsage={accountUsage}
+		onClose={() => setUsageSheetOpen(false)}
+		onSignIn={() => {
+			setUsageSheetOpen(false);
+			setView({ kind: "settings", section: "account" });
+		}}
+		onBilling={(action) => void openBilling(action)}
+		onRetry={() => refreshAccountSummary(true)}
+		onOpenDeviceUsage={() => {
+			setUsageSheetOpen(false);
+			setView({ kind: "inventory" });
+		}}
+	/>
 
 			{toast ? (
 				<div className="toast" role="status" key={toast}>

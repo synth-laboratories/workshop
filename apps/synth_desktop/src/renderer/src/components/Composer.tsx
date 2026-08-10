@@ -26,6 +26,8 @@ type Props = {
 	onSend: (text: string, images?: ComposerImageAttachment[]) => void | Promise<void>;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
+	/** Opens the plan/billing recovery path when cloud spend is blocked. */
+	onResolveBilling?: () => void;
 	museReady?: boolean;
 	approvalPolicy: ApprovalPolicy;
 	sandboxMode: SandboxMode;
@@ -331,9 +333,8 @@ function composerPlaceholder(state: LandingState): string {
 		return state.composerPlaceholder;
 	}
 	if (state.selectedTargetId === "synth-cloud-laguna-s") {
-		return state.apiKeyConfigured
-			? "Ask anything…"
-			: "Configure Synth API key in Settings → Account";
+		if (state.apiKeyConfigured !== true) return "Configure Synth API key in Settings → Account";
+		return state.cloudBlockedReason ?? "Ask anything…";
 	}
 	if (state.selectedTargetId.startsWith("openrouter-")) {
 		return "Ask anything…";
@@ -351,7 +352,9 @@ function composerPlaceholder(state: LandingState): string {
 
 function composerEnabled(state: LandingState): boolean {
 	if (state.selectedTargetId === "synth-cloud-laguna-s") {
-		return state.apiKeyConfigured === true;
+		// Local models keep working when cloud spend is blocked; only the
+		// billable cloud target is closed off.
+		return state.apiKeyConfigured === true && !state.cloudBlockedReason;
 	}
 	if (state.selectedTargetId.startsWith("openrouter-")) return true;
 	if (state.selectedTargetId === "intern-sync" || state.selectedTargetId === "intern-async") {
@@ -373,6 +376,7 @@ function ModelMenu({
 	aggregateModelTpsLabels,
 	onSelectTarget,
 	onConfigureAccount,
+	onResolveBilling,
 	museReady = false,
 	open,
 	onOpenChange
@@ -382,6 +386,7 @@ function ModelMenu({
 	aggregateModelTpsLabels?: Readonly<Record<string, string>>;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
+	onResolveBilling?: () => void;
 	museReady?: boolean;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -451,6 +456,8 @@ function ModelMenu({
 											state.model.status === "loading");
 									const needsSynthKey =
 										target.id === "synth-cloud-laguna-s" && state.apiKeyConfigured !== true;
+									const allowanceBlocked =
+										target.id === "synth-cloud-laguna-s" && !needsSynthKey && Boolean(state.cloudBlockedReason);
 									const localProgress =
 										target.id === "local-laguna"
 											? state.model.status === "downloading"
@@ -463,6 +470,37 @@ function ModelMenu({
 											: null;
 									const selectedHere = target.id === state.selectedTargetId;
 									const aggregateTps = aggregateModelTpsLabels?.[target.id] ?? null;
+									if (allowanceBlocked) {
+										return (
+											<div
+												key={target.id}
+												className="composer-model-option is-disabled"
+												data-testid={`composer-model-option-${target.id}`}
+											>
+												<span
+													className="composer-model-option-main"
+													role="option"
+													aria-selected={false}
+													aria-disabled="true"
+												>
+													<span className="composer-model-option-label">{target.label}</span>
+													<span className="composer-model-option-desc" data-testid="composer-model-allowance-blocked">{state.cloudBlockedReason}</span>
+													<ModelCapabilityBadges targetId={target.id} />
+												</span>
+												<button
+													type="button"
+													className="composer-model-configure"
+													data-testid="composer-model-resolve-synth-billing"
+													onClick={() => {
+														onResolveBilling?.();
+														onOpenChange(false);
+													}}
+												>
+													Manage plan
+												</button>
+											</div>
+										);
+									}
 									if (needsSynthKey) {
 										return (
 											<div
@@ -544,6 +582,7 @@ export function Composer({
 	onSend,
 	onSelectTarget,
 	onConfigureAccount,
+	onResolveBilling,
 	museReady = false,
 	approvalPolicy,
 	sandboxMode,
@@ -1118,6 +1157,7 @@ export function Composer({
 							aggregateModelTpsLabels={aggregateModelTpsLabels}
 							onSelectTarget={onSelectTarget}
 							onConfigureAccount={onConfigureAccount}
+							onResolveBilling={onResolveBilling}
 							museReady={museReady}
 							open={modelMenuOpen}
 							onOpenChange={setModelMenuOpen}

@@ -1,4 +1,5 @@
 mod account;
+mod account_cloud;
 mod cloud;
 mod codex;
 pub mod core_runtime;
@@ -1008,6 +1009,7 @@ async fn account_begin_sign_in(
 async fn account_poll_sign_in(
     core: State<'_, Arc<CoreRuntime>>,
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
+    cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
 ) -> Result<device_auth::SignInPoll, String> {
     let origin = device_auth::workshop_origin();
     let result = manager
@@ -1018,6 +1020,10 @@ async fn account_poll_sign_in(
         core.reload_intern_config()
             .await
             .map_err(|error| error.to_string())?;
+        // A new key invalidates any cached snapshot, and the device is now
+        // known to have paired at least once.
+        cloud.clear_cache();
+        let _ = account::mark_paired(core.storage(), chrono::Utc::now());
     }
     Ok(result)
 }
@@ -1030,27 +1036,89 @@ fn account_cancel_sign_in(
     Ok(())
 }
 
-/// Authoritative account summary: identity, environment, and the seeded
-/// local/dev $200 monthly plan charged from the durable usage ledger. The
-/// renderer renders this verbatim; it never derives plan or identity itself.
-#[tauri::command]
-async fn account_get_summary(
-    core: State<'_, Arc<CoreRuntime>>,
+/// Compose the account summary the shell renders: the Synth Cloud Account
+/// Snapshot when the device is paired, the labelled local/dev stand-in when it
+/// is not reachable outside prod. The renderer never derives plan or identity.
+async fn account_summary_now(
+    core: &Arc<CoreRuntime>,
+    cloud: &Arc<account_cloud::AccountCloudClient>,
+    force: bool,
 ) -> Result<account::AccountSummary, String> {
     let settings = synth_config::get().map_err(|error| error.to_string())?;
+    let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
     let origin = device_auth::workshop_origin();
+    let now = chrono::Utc::now();
+    let read = cloud
+        .read(
+            &resolved.backend_url,
+            resolved.api_key.as_deref(),
+            force,
+            now,
+        )
+        .await;
     account::summary(
         core.storage(),
         &origin,
         settings.api_key_configured,
-        chrono::Utc::now(),
+        now,
+        &read,
     )
     .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-async fn account_sign_out(core: State<'_, Arc<CoreRuntime>>) -> Result<BackendSettings, String> {
+async fn account_get_summary(
+    core: State<'_, Arc<CoreRuntime>>,
+    cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
+) -> Result<account::AccountSummary, String> {
+    account_summary_now(&core, &cloud, false).await
+}
+
+/// Force a snapshot refetch — used after returning from hosted checkout and by
+/// the explicit retry in the account menu.
+#[tauri::command]
+async fn account_refresh(
+    core: State<'_, Arc<CoreRuntime>>,
+    cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
+) -> Result<account::AccountSummary, String> {
+    account_summary_now(&core, &cloud, true).await
+}
+
+/// Open a backend-issued hosted billing URL in the system browser. Desktop
+/// never renders a payment form and never receives card data.
+#[tauri::command]
+async fn account_open_billing(
+    app: tauri::AppHandle,
+    cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
+    action: account_cloud::BillingAction,
+    tier: Option<String>,
+) -> Result<String, String> {
+    let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
+    let url = cloud
+        .billing_url(
+            &resolved.backend_url,
+            resolved.api_key.as_deref(),
+            action,
+            tier.as_deref(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url.clone(), None::<String>)
+        .map_err(|error| error.to_string())?;
+    Ok(url)
+}
+
+#[tauri::command]
+async fn account_sign_out(
+    core: State<'_, Arc<CoreRuntime>>,
+    cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
+) -> Result<BackendSettings, String> {
     synth_config::remove_api_key().map_err(|error| error.to_string())?;
+    // Cloud facts belong to the signed-out session; local history and the
+    // device ledger stay untouched.
+    cloud.clear_cache();
     core.reload_intern_config()
         .await
         .map_err(|error| error.to_string())?;
@@ -1601,6 +1669,7 @@ pub fn run() {
             app.manage(codex.clone());
             app.manage(Arc::new(TerminalManager::new()));
             app.manage(Arc::new(device_auth::DeviceAuthManager::new()));
+            app.manage(Arc::new(account_cloud::AccountCloudClient::new()));
             app.manage(laguna.clone());
 
             // All committed CoreRuntime events reach Tauri through this single
@@ -1733,6 +1802,8 @@ pub fn run() {
             model_performance_get,
             account_begin_sign_in,
             account_get_summary,
+            account_refresh,
+            account_open_billing,
             account_poll_sign_in,
             account_cancel_sign_in,
             account_sign_out,

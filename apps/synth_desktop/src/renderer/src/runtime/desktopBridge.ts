@@ -285,14 +285,18 @@ export function installDesktopBridge(): void {
 			pollSignIn: () => invoke<SynthSignInPoll>("account_poll_sign_in"),
 			cancelSignIn: () => invoke<void>("account_cancel_sign_in"),
 			signOut: () => invoke<SynthBackendSettings>("account_sign_out"),
-			getSummary: () => invoke<SynthAccountSummary>("account_get_summary")
+			getSummary: () => invoke<SynthAccountSummary>("account_get_summary"),
+			refresh: () => invoke<SynthAccountSummary>("account_refresh"),
+			openBilling: (action, tier) => invoke<string>("account_open_billing", { action, tier })
 		}
 		: {
 			beginSignIn: async () => { throw new Error("Browser sign-in requires Synth Desktop"); },
 			pollSignIn: async () => ({ status: "expired", reason: "Browser sign-in requires Synth Desktop" }),
 			cancelSignIn: async () => undefined,
 			signOut: async () => { throw new Error("Sign out requires Synth Desktop"); },
-			getSummary: async () => ({ signedIn: false, environment: "local" })
+			getSummary: async () => ({ signedIn: false, state: "local_only", environment: "local", source: "none" }),
+			refresh: async () => ({ signedIn: false, state: "local_only", environment: "local", source: "none" }),
+			openBilling: async () => { throw new Error("Billing requires Synth Desktop"); }
 		};
 window.synthConfig ??= isTauri
 		? {

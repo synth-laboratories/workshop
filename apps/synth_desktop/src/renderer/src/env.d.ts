@@ -452,21 +452,89 @@ export type SynthSignInPoll =
 	| { status: "active" }
 	| { status: "expired"; reason: string };
 
+/**
+ * Shell account state. `pairing` is renderer-owned (a sign-in is in flight);
+ * every other value is decided by the Rust host from the Account Snapshot.
+ */
+export type SynthAccountState =
+	| "local_only"
+	| "signed_out"
+	| "pairing"
+	| "active"
+	| "limited"
+	| "past_due"
+	| "canceled"
+	| "error"
+	| "unknown";
+
+/** `cloud` = Synth Cloud snapshot; `dev_seed` = the labelled local/dev stand-in. */
+export type SynthAccountSource = "cloud" | "dev_seed" | "none";
+
 export type SynthAccountPlan = {
 	name: string;
-	monthlyAllowanceUsd: number;
+	tier?: string;
+	state?: string;
+	/** False when the backend reports no dollar allowance: show no dollars. */
+	metered?: boolean;
+	monthlyAllowanceUsd?: number;
 	usedUsd: number;
-	remainingUsd: number;
-	resetsAt: string;
+	remainingUsd?: number;
+	resetsAt?: string;
+	renewsAt?: string;
+	source?: SynthAccountSource;
+};
+
+export type SynthAccountOrganization = {
+	id: string;
+	displayName?: string;
+	role?: string;
+};
+
+export type SynthAccountUsageWindow = {
+	events: number;
+	costUsd: number;
+};
+
+export type SynthAccountCloudUsage = {
+	today: SynthAccountUsageWindow;
+	sevenDays: SynthAccountUsageWindow;
+	thirtyDays: SynthAccountUsageWindow;
+};
+
+export type SynthAccountBilling = {
+	checkoutUrl?: string;
+	portalUrl?: string;
+	upgradeTier?: string;
+};
+
+export type SynthAccountPlanOption = {
+	tier: string;
+	displayName: string;
+	priceUsd: number;
+	monthlyAllowanceUsd: number;
 };
 
 export type SynthAccountSummary = {
 	signedIn: boolean;
+	/** Absent on older hosts; the renderer derives a state when it is missing. */
+	state?: SynthAccountState;
 	accountId?: string;
 	displayName?: string;
+	email?: string;
+	organization?: SynthAccountOrganization;
 	environment: "local" | "dev" | "prod";
+	source?: SynthAccountSource;
 	plan?: SynthAccountPlan;
+	cloudUsage?: SynthAccountCloudUsage;
+	billing?: SynthAccountBilling;
+	catalog?: SynthAccountPlanOption[];
+	lastUpdated?: string;
+	/** True when the cloud facts shown are a cached copy after a failed refresh. */
+	stale?: boolean;
+	error?: string;
 };
+
+export type SynthBillingAction = "upgrade" | "manage";
 
 export type SynthAccountBridge = {
 	beginSignIn(): Promise<SynthSignInBegin>;
@@ -474,6 +542,10 @@ export type SynthAccountBridge = {
 	cancelSignIn(): Promise<void>;
 	signOut(): Promise<SynthBackendSettings>;
 	getSummary(): Promise<SynthAccountSummary>;
+	/** Force a snapshot refetch (retry, or return from hosted checkout). */
+	refresh?(): Promise<SynthAccountSummary>;
+	/** Opens a backend-issued hosted URL in the system browser. */
+	openBilling?(action: SynthBillingAction, tier?: string): Promise<string>;
 };
 
 declare global {
