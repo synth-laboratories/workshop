@@ -47,6 +47,8 @@ export {
 
 export {
 	presentActivityLines,
+	pairActivityGroupLines,
 	activityStatusAnnouncement,
-	type ActivityPresentationItem
+	type ActivityPresentationItem,
+	type ActivityTimelineRow
 } from "./activityPresentation";

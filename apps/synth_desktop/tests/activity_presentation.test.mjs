@@ -18,7 +18,7 @@ writeFileSync(compiled, transformSync(readFileSync(source, "utf8"), {
 	sourcefile: source
 }).code);
 
-const { presentActivityLines } = await import(pathToFileURL(compiled).href);
+const { pairActivityGroupLines, presentActivityLines } = await import(pathToFileURL(compiled).href);
 
 const thought = (id) => ({ id, label: "Thought", kind: "thought", detail: "Checking the workspace" });
 const command = (id, toolStatus = "completed") => ({
@@ -90,4 +90,17 @@ test("detailed mode remains the ungrouped audit trail", () => {
 	const presented = presentActivityLines(lines, "detailed");
 
 	assert.deepEqual(presented.map((item) => item.line.id), ["c1", "t1", "c2"]);
+});
+
+test("expanded groups pair preceding thought with its next tool call", () => {
+	const rows = pairActivityGroupLines([command("c0"), thought("t1"), command("c1"), thought("t2")]);
+
+	assert.deepEqual(rows.map((row) => ({
+		context: row.context.map((line) => line.id),
+		action: row.action?.id
+	})), [
+		{ context: [], action: "c0" },
+		{ context: ["t1"], action: "c1" },
+		{ context: ["t2"], action: undefined }
+	]);
 });

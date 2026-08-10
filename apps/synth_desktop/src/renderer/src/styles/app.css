@@ -5674,11 +5674,71 @@ html.sidebar-hidden .sidebar {
 }
 
 .activity-group-body {
-	padding: 4px 0 8px 22px;
+	padding: 3px 0 7px 22px;
 	display: grid;
-	gap: 4px;
+	gap: 1px;
 	max-width: 100%;
 	overflow-x: hidden;
+}
+
+.activity-group-step {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	align-items: start;
+	min-width: 0;
+	padding: 2px 0;
+}
+
+.activity-group-step.has-context {
+	grid-template-columns: minmax(110px, .34fr) 16px minmax(0, 1fr);
+	column-gap: 6px;
+}
+
+.activity-group-context,
+.activity-group-action { min-width: 0; }
+
+.activity-group-step-arrow {
+	align-self: center;
+	color: var(--color-text-faint);
+	font-size: 11px;
+	text-align: center;
+}
+
+.activity-group-context .reasoning-disclosure {
+	width: 100%;
+	margin: 0;
+}
+
+.activity-group-context .reasoning-disclosure .local-activity-toggle {
+	min-height: 22px;
+}
+
+.activity-group-context .reasoning-disclosure .local-activity-label {
+	font-size: 12px;
+}
+
+.activity-group-context .reasoning-disclosure .local-activity-wave { display: none; }
+
+.activity-group-context .reasoning-disclosure .local-activity-detail {
+	max-height: 180px;
+	margin: 5px 0 2px;
+	font-size: 12px;
+	line-height: 1.4;
+}
+
+.activity-group-action .local-activity.tool-activity,
+.activity-group-action .local-activity.file-activity {
+	max-width: 100%;
+	padding: 1px 0;
+}
+
+.activity-group-action .tool-activity-body { font-size: 12px; }
+.activity-group-action .tool-activity-body code { font-size: 12px; }
+
+@media (max-width: 760px) {
+	.activity-group-step.has-context { grid-template-columns: minmax(0, 1fr); }
+	.activity-group-step-arrow { display: none; }
+	.activity-group-action { padding-left: 20px; }
 }
 
 .activity-group.status-failed .activity-group-label,

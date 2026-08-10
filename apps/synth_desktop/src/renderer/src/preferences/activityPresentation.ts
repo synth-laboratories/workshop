@@ -14,10 +14,32 @@ export type ActivityPresentationItem =
 		expanded: boolean;
 	};
 
+export type ActivityTimelineRow = {
+	id: string;
+	context: LocalActivityLine[];
+	action?: LocalActivityLine;
+};
+
 // Grouped mode mirrors Codex's activity disclosures: a run of concrete tool
 // calls is one scannable row, while expansion restores every call and the
 // reasoning updates that occurred between them in their original order.
 const CONNECTIVE_KINDS = new Set(["thought", "working"]);
+
+/** Pair reasoning/working context with the concrete call that follows it. */
+export function pairActivityGroupLines(lines: LocalActivityLine[]): ActivityTimelineRow[] {
+	const rows: ActivityTimelineRow[] = [];
+	let context: LocalActivityLine[] = [];
+	for (const line of lines) {
+		if (CONNECTIVE_KINDS.has(line.kind ?? "")) {
+			context.push(line);
+			continue;
+		}
+		rows.push({ id: `step-${context[0]?.id ?? line.id}`, context, action: line });
+		context = [];
+	}
+	if (context.length > 0) rows.push({ id: `step-${context[0]!.id}`, context });
+	return rows;
+}
 
 type ActivityStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted" | "unhealthy" | "mixed";
 

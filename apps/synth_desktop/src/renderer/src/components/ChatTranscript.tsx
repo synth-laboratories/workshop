@@ -4,6 +4,7 @@ import { FileTypeIcon, shortenPath } from "./FileTypeIcon";
 import { ContainerIcon } from "./ContainerPane";
 import {
 	activityStatusAnnouncement,
+	pairActivityGroupLines,
 	presentActivityLines,
 	type ToolActivityMode
 } from "../preferences";
@@ -304,7 +305,16 @@ function ActivityGroup({
 			</button>
 			{expanded ? (
 				<div id={`activity-group-body-${id}`} className="activity-group-body" data-testid={`activity-group-body-${id}`}>
-					{lines.map((line) => renderLine(line))}
+					{pairActivityGroupLines(lines).map((row) => (
+						<div
+							key={row.id}
+							className={`activity-group-step${row.context.length ? " has-context" : ""}${row.action ? "" : " context-only"}`}
+						>
+							{row.context.length ? <div className="activity-group-context">{row.context.map((line) => renderLine(line))}</div> : null}
+							{row.context.length && row.action ? <span className="activity-group-step-arrow" aria-hidden>→</span> : null}
+							{row.action ? <div className="activity-group-action">{renderLine(row.action)}</div> : null}
+						</div>
+					))}
 				</div>
 			) : null}
 		</div>
