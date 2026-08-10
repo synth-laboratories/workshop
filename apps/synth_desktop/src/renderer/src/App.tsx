@@ -11,7 +11,7 @@ import type {
 	RuntimeHealth,
 	SemanticUiSnapshot,
 	Session,
-	UsageLedgerEntry,
+	UsageBreakdown,
 	VisualInstanceRecord,
 	VisualRecord
 } from "@synth/runtime-protocol";
@@ -36,7 +36,7 @@ import { OptimizersPage } from "./components/OptimizersPage";
 import { PaneResizeHandle } from "./components/PaneResizeHandle";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
-import { UsageSheet } from "./components/UsageSheet";
+import { UsageSheet, type DeviceUsageSummary } from "./components/UsageSheet";
 import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
 import { buildAccountView } from "./runtime/accountView";
 import { SynthLogo } from "./components/SynthLogo";
@@ -151,17 +151,25 @@ function performancePreference(summary: ModelPerformanceSummary, targetId: strin
 	return 1;
 }
 
-function summarizeAccountUsage(entries: UsageLedgerEntry[]) {
-	const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-	return entries.reduce((summary, entry) => {
-		summary.totalTokens += Math.max(0, entry.totalTokens);
-		summary.totalCostUsd += Math.max(0, entry.costUsd ?? 0);
-		if (Date.parse(entry.createdAt) >= weekAgo) {
-			summary.weeklyTokens += Math.max(0, entry.totalTokens);
-			summary.weeklyCostUsd += Math.max(0, entry.costUsd ?? 0);
-		}
-		return summary;
-	}, { weeklyTokens: 0, weeklyCostUsd: 0, totalTokens: 0, totalCostUsd: 0, entries: entries.length });
+/**
+ * Compact device rollup for the Settings/Account pages, derived from the
+ * native `usage_summary` aggregation — never by reducing raw ledger rows in
+ * the renderer. Billed money and unbilled estimates are combined here only
+ * because these pages show a single indicative figure; the Usage sheet keeps
+ * them separate and labeled.
+ */
+async function loadDeviceUsage(): Promise<DeviceUsageSummary | null> {
+	const bridge = window.synthUsage;
+	if (!bridge) return null;
+	const [sevenDays, allTime] = await Promise.all([bridge.summary("7d"), bridge.summary("all")]);
+	const cost = (totals: UsageBreakdown) => (totals.billedCostUsd ?? 0) + (totals.estimatedCostUsd ?? 0);
+	return {
+		weeklyTokens: sevenDays.totals.totalTokens,
+		weeklyCostUsd: cost(sevenDays.totals),
+		totalTokens: allTime.totals.totalTokens,
+		totalCostUsd: cost(allTime.totals),
+		entries: allTime.totals.requests
+	};
 }
 
 function isCodexCompactionEvent(event: { method: string; params: Record<string, unknown> }): boolean {
@@ -333,7 +341,7 @@ export default function App() {
 	const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
 	/** Connection facts for the Account page's Devices and Advanced sections. */
 	const [backendSettings, setBackendSettings] = useState<SynthBackendSettings | null>(null);
-	const [accountUsage, setAccountUsage] = useState<ReturnType<typeof summarizeAccountUsage> | null>(null);
+	const [accountUsage, setAccountUsage] = useState<DeviceUsageSummary | null>(null);
 	const [accountSummary, setAccountSummary] = useState<SynthAccountSummary | null>(null);
 	const [usageSheetOpen, setUsageSheetOpen] = useState(false);
 	const refreshAccountSummary = useCallback((force = false) => {
@@ -352,9 +360,8 @@ export default function App() {
 	}, []);
 	useEffect(() => {
 		refreshAccountSummary();
-		if (typeof window.synthInventory?.listUsage !== "function") return;
-		void window.synthInventory.listUsage(2000)
-			.then((entries) => setAccountUsage(summarizeAccountUsage(entries)))
+		void loadDeviceUsage()
+			.then(setAccountUsage)
 			.catch(() => setAccountUsage(null));
 	}, [refreshAccountSummary]);
 	const accountView = useMemo(
@@ -612,9 +619,7 @@ export default function App() {
 				window.synthConfig.get(),
 				window.synthInventory.counts(),
 				window.synthLaguna?.getStatus() ?? Promise.resolve(null),
-				typeof window.synthInventory.listUsage === "function"
-					? window.synthInventory.listUsage(2000).catch((): UsageLedgerEntry[] => [])
-					: Promise.resolve<UsageLedgerEntry[]>([])
+				loadDeviceUsage().catch(() => null)
 			]);
 			const next: RuntimeHealth = {
 				status: "ok",
@@ -643,7 +648,7 @@ export default function App() {
 			};
 			setApiKeyConfigured(config.apiKeyConfigured);
 			setBackendSettings(config);
-			setAccountUsage(summarizeAccountUsage(usage));
+			setAccountUsage(usage);
 			setHealth(next);
 			return next;
 		}
@@ -2320,7 +2325,6 @@ export default function App() {
 		open={usageSheetOpen}
 		view={accountView}
 		summary={accountSummary}
-		deviceUsage={accountUsage}
 		onClose={() => setUsageSheetOpen(false)}
 		onSignIn={() => {
 			setUsageSheetOpen(false);

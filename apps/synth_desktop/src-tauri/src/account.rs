@@ -181,9 +181,19 @@ fn usd(cents: i64) -> f64 {
 
 fn used_cents_since(storage: &Storage, since: DateTime<Utc>) -> Result<i64> {
     let floor = since.to_rfc3339();
+    // The dev stand-in charges from real device usage: the authoritative
+    // per-request ledger (settled charge first, else its labeled estimate)
+    // plus whatever the legacy ledger still holds.
     let used_usd: f64 = storage.database().with_conn(|conn| {
         let mut statement = conn.prepare(
-            "SELECT COALESCE(SUM(cost_usd), 0) FROM usage_ledger WHERE cost_usd IS NOT NULL AND created_at >= ?1",
+            "SELECT
+                (SELECT COALESCE(SUM(COALESCE(billed_cost_usd, estimated_cost_usd)), 0)
+                 FROM usage_records
+                 WHERE COALESCE(billed_cost_usd, estimated_cost_usd) IS NOT NULL AND created_at >= ?1)
+                +
+                (SELECT COALESCE(SUM(cost_usd), 0)
+                 FROM usage_ledger
+                 WHERE cost_usd IS NOT NULL AND created_at >= ?1)",
         )?;
         let value: f64 = statement.query_row([&floor], |row| row.get(0))?;
         Ok(value)

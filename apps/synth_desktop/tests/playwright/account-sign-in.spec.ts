@@ -91,12 +91,14 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 	await expect(page.getByTestId("account-menu-status-note")).toHaveCount(0);
 	await expect(page.getByTestId("account-usage")).toHaveCount(0);
 	await page.getByTestId("account-open-usage").click();
-	await expect(page.getByTestId("usage-sheet-allowance")).toHaveText("$200.00");
-	await expect(page.getByTestId("usage-sheet-used")).toHaveText("$12.50");
-	await expect(page.getByTestId("usage-sheet-remaining")).toHaveText("$187.50");
-	await expect(page.getByTestId("usage-sheet-resets")).not.toBeEmpty();
-	// Detailed dev/local provenance belongs in the dedicated usage surface.
+	// A dev stand-in is not an authoritative Synth Cloud plan: the sheet says
+	// so plainly and never dresses it in allowance dollars.
 	await expect(page.getByTestId("usage-sheet-dev-seed")).toContainText("Dev stand-in");
+	await expect(page.getByTestId("usage-sheet-allowance")).toHaveCount(0);
+	await expect(page.getByTestId("usage-sheet-used")).toHaveCount(0);
+	await expect(page.getByTestId("usage-sheet-remaining")).toHaveCount(0);
+	// The device dashboard is the real content of this sheet.
+	await expect(page.getByTestId("usage-sheet-device")).toContainText("This device");
 	await page.getByTestId("usage-sheet-close").click();
 
 	await page.getByTestId("account-menu-trigger").click();

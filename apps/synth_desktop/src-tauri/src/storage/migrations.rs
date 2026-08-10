@@ -73,6 +73,14 @@ pub fn apply_migrations(conn: &Connection) -> Result<i64> {
         )?;
     }
 
+    if current < 8 {
+        conn.execute_batch(MIGRATION_8)?;
+        conn.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (8, datetime('now'))",
+            [],
+        )?;
+    }
+
     let version: i64 = conn.query_row(
         "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
         [],
@@ -584,6 +592,79 @@ CREATE INDEX IF NOT EXISTS model_performance_completed
 ON model_performance_samples(status, completed_at_ms DESC);
 "#;
 
+/// One authoritative accounting record per provider request. Supersedes
+/// `model_performance_samples` (all rows are imported, then the old table is
+/// dropped) and takes over as the source for both throughput summaries and
+/// the usage dashboard. The legacy `usage_ledger` table is deliberately left
+/// in place untouched: the dev-seed allowance still charges from it, and its
+/// rows are preserved verbatim.
+///
+/// `total_tokens` is a generated column so `input + output` can never drift
+/// from its parts, and it stays NULL — not zero — while neither side has been
+/// reported. Unlike the performance table this one has no retention cap:
+/// billing history must never be silently trimmed.
+const MIGRATION_8: &str = r#"
+CREATE TABLE IF NOT EXISTS usage_records (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    model_revision TEXT,
+    session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+    run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+    request_id TEXT NOT NULL,
+    measurement_kind TEXT NOT NULL CHECK(measurement_kind IN ('decode', 'observed_stream', 'end_to_end', 'provider_reported')),
+    status TEXT NOT NULL CHECK(status IN ('completed', 'failed', 'interrupted')),
+    started_at_ms INTEGER NOT NULL,
+    first_output_at_ms INTEGER,
+    last_output_at_ms INTEGER,
+    completed_at_ms INTEGER NOT NULL,
+    input_tokens INTEGER,
+    cached_input_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    reasoning_tokens INTEGER,
+    output_tokens INTEGER,
+    total_tokens INTEGER GENERATED ALWAYS AS (
+        CASE WHEN input_tokens IS NULL AND output_tokens IS NULL THEN NULL
+             ELSE COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) END
+    ) STORED,
+    ttft_ms REAL,
+    observed_output_tps REAL,
+    end_to_end_output_tps REAL,
+    billed_cost_usd REAL,
+    estimated_cost_usd REAL,
+    cost_source TEXT NOT NULL DEFAULT 'none' CHECK(cost_source IN ('provider_reported', 'synth_cloud', 'tariff_estimate', 'none')),
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(provider, request_id)
+);
+
+INSERT INTO usage_records (
+    id, provider, model_id, model_revision, session_id, run_id, request_id,
+    measurement_kind, status, started_at_ms, first_output_at_ms, last_output_at_ms,
+    completed_at_ms, input_tokens, cached_input_tokens, reasoning_tokens,
+    output_tokens, ttft_ms, observed_output_tps, end_to_end_output_tps,
+    source, created_at
+)
+SELECT
+    id, provider, model_id, model_revision, session_id, run_id, request_id,
+    measurement_kind, status, started_at_ms, first_output_at_ms, last_output_at_ms,
+    completed_at_ms, input_tokens, cached_input_tokens, reasoning_tokens,
+    output_tokens, ttft_ms, observed_output_tps, end_to_end_output_tps,
+    source, created_at
+FROM model_performance_samples;
+
+DROP TABLE model_performance_samples;
+
+CREATE INDEX IF NOT EXISTS usage_records_model_created
+ON usage_records(provider, model_id, measurement_kind, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS usage_records_completed
+ON usage_records(status, completed_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS usage_records_window
+ON usage_records(completed_at_ms DESC);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,7 +695,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 7);
+        assert_eq!(apply_migrations(&conn).unwrap(), 8);
         let updated_at: String = conn
             .query_row(
                 "SELECT updated_at FROM runs WHERE id = 'run-1'",
@@ -637,6 +718,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(trace_tables, 8);
+        let accounting_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'usage_records'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(accounting_tables, 1);
+        // The performance table was folded into usage_records by migration 8.
         let performance_tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'model_performance_samples'",
@@ -644,6 +734,70 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(performance_tables, 1);
+        assert_eq!(performance_tables, 0);
+    }
+
+    /// A v7 database keeps every legacy `usage_ledger` row untouched, and its
+    /// performance samples all come across into `usage_records` verbatim.
+    #[test]
+    fn migration_8_preserves_ledger_rows_and_imports_performance_samples() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);",
+        )
+        .unwrap();
+        for (version, migration) in [
+            MIGRATION_1,
+            MIGRATION_2,
+            MIGRATION_3,
+            MIGRATION_4,
+            MIGRATION_5,
+            MIGRATION_6,
+            MIGRATION_7,
+        ]
+        .iter()
+        .enumerate()
+        {
+            conn.execute_batch(migration).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, datetime('now'))",
+                [version as i64 + 1],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO usage_ledger(id,provider,model,prompt_tokens,completion_tokens,total_tokens,cost_usd,created_at)
+             VALUES('ledger-1','openrouter','luna',10,20,30,0.5,'2026-08-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO model_performance_samples(id,provider,model_id,request_id,measurement_kind,status,started_at_ms,completed_at_ms,input_tokens,cached_input_tokens,reasoning_tokens,output_tokens,ttft_ms,observed_output_tps,source,created_at)
+             VALUES('perf-1','openrouter','openai/gpt-5.6-luna','req-1','observed_stream','completed',1000,2000,100,40,5,50,120.0,25.0,'codex_app_server','2026-08-01T00:00:01Z')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(apply_migrations(&conn).unwrap(), 8);
+
+        let (ledger_rows, ledger_cost): (i64, f64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(cost_usd),0) FROM usage_ledger",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(ledger_rows, 1);
+        assert!((ledger_cost - 0.5).abs() < 1e-9);
+        let (input, cached, total, cost_source): (i64, i64, i64, String) = conn
+            .query_row(
+                "SELECT input_tokens, cached_input_tokens, total_tokens, cost_source
+                 FROM usage_records WHERE provider='openrouter' AND request_id='req-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!((input, cached, total), (100, 40, 150));
+        assert_eq!(cost_source, "none");
     }
 }

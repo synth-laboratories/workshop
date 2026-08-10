@@ -16,6 +16,7 @@ mod runtime;
 mod skills;
 pub mod storage;
 mod synth_config;
+mod tariffs;
 mod terminal;
 pub mod trace_ingest;
 mod visuals;
@@ -449,6 +450,23 @@ async fn model_performance_summary(
 ) -> Result<Vec<ModelPerformanceSummary>, String> {
     ModelPerformanceRepository::new(state.storage().database().clone())
         .summaries()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Device-wide usage dashboard for one time window, aggregated in SQLite/Rust
+/// over the authoritative per-request `usage_records` ledger — the renderer
+/// never reduces raw rows itself.
+#[tauri::command]
+async fn usage_summary(
+    state: State<'_, Arc<CoreRuntime>>,
+    window: String,
+) -> Result<storage::UsageSummary, String> {
+    let now = chrono::Utc::now();
+    let offset_seconds = chrono::Local::now().offset().local_minus_utc();
+    let since_ms = storage::window_start_ms(&window, now, offset_seconds);
+    storage::UsageRecordsRepository::new(state.storage().database().clone())
+        .summary(window, since_ms)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1798,6 +1816,7 @@ pub fn run() {
             inventory_trace_projection_resolve,
             inventory_usage_list,
             model_performance_summary,
+            usage_summary,
             inventory_counts,
             optimizers_algorithms_list,
             optimizers_recipes_list,

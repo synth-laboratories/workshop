@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { AppEvent, CodexActivityEvent, ContainerDeployment, CoreDiagnostics, InternSessionControlRequest, InternSessionControlResult, InternSessionCreateRequest, InternSessionSendRequest, InternSessionSendResult, ResolvedTraceProjection, RuntimeEvent, Session, TraceBundleIngestRequest, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry } from "@synth/runtime-protocol";
+import type { AppEvent, CodexActivityEvent, ContainerDeployment, CoreDiagnostics, InternSessionControlRequest, InternSessionControlResult, InternSessionCreateRequest, InternSessionSendRequest, InternSessionSendResult, ResolvedTraceProjection, RuntimeEvent, Session, TraceBundleIngestRequest, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 
 export {};
 
@@ -321,6 +321,11 @@ export type ModelPerformanceBridge = {
 	summaries(): Promise<ModelPerformanceSummary[]>;
 };
 
+/** Device-wide usage dashboard, aggregated natively over `usage_records`. */
+export type UsageBridge = {
+	summary(window: UsageWindow): Promise<UsageSummary>;
+};
+
 export type VisualTemplateMeta = {
 	id: string;
 	title: string;
@@ -575,6 +580,7 @@ declare global {
 		synthIntern?: InternBridge;
 		synthInventory?: InventoryBridge;
 		synthModelPerformance?: ModelPerformanceBridge;
+		synthUsage?: UsageBridge;
 		synthVisuals?: VisualsBridge;
 		synthOptimizers?: OptimizersBridge;
 		synthTerminal: TerminalBridge;

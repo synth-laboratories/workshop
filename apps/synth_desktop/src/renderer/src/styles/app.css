@@ -1076,6 +1076,21 @@ a,
 .usage-sheet-empty { display: grid; gap: 10px; justify-items: start; }
 .usage-sheet-empty p { margin: 0; color: var(--color-text-muted); font-size: 12px; line-height: 1.45; }
 .usage-sheet-empty button { min-height: 34px; padding: 0 12px; border-radius: 8px; font-size: 12px; font-weight: 650; }
+.usage-window-control { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 2px 0 10px; overflow: hidden; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-border); }
+.usage-window-button { min-height: 28px; border: 0; background: #fff; color: var(--color-text-muted); font-size: 11px; font-weight: 650; cursor: pointer; }
+.usage-window-button:hover { color: var(--color-text); }
+.usage-window-button.is-active { background: var(--color-bg-subtle); color: var(--color-text); }
+.usage-totals { margin-bottom: 4px; }
+.usage-model-rows { display: grid; gap: 8px; margin-top: 10px; }
+.usage-model-row { display: grid; gap: 3px; padding: 9px 10px; border: 1px solid var(--color-border); border-radius: 9px; background: #fff; }
+.usage-model-title { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.usage-model-title strong { font-size: 12px; font-weight: 650; color: var(--color-text); overflow-wrap: anywhere; }
+.usage-model-title span { flex-shrink: 0; color: var(--color-text-faint); font-size: 10.5px; }
+.usage-model-tokens { color: var(--color-text-muted); font-size: 11px; }
+.usage-model-cost { font-size: 11px; font-weight: 650; color: var(--color-text); }
+.usage-model-cost-estimate { color: #694b1e; }
+.usage-model-cost-local, .usage-model-cost-none { color: var(--color-text-faint); font-weight: 500; }
+.usage-model-perf { color: var(--color-text-faint); font-size: 10.5px; }
 
 /* ── Settings → Account: user-facing sections first, connection demoted ── */
 .account-page .finetune-badge { color: var(--color-text-muted); background: var(--color-bg-subtle); border: 1px solid var(--color-border); }

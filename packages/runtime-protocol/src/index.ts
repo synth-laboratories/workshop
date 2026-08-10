@@ -309,6 +309,53 @@ export type UsageLedgerEntry = {
   createdAt: string;
 };
 
+export type UsageWindow = "today" | "7d" | "30d" | "all";
+
+export type UsageCostSource =
+  | "provider_reported"
+  | "synth_cloud"
+  | "tariff_estimate"
+  | "none";
+
+/**
+ * One aggregated usage slice — the device total or one (provider, model)
+ * pair — reduced natively over the per-request `usage_records` ledger.
+ * Nullable fields mean "never reported", which the UI renders as
+ * Unavailable rather than zero. `billedCostUsd` is settled money only;
+ * `estimatedCostUsd` covers exactly the requests that have no settled
+ * charge, so the two never double-count a request.
+ */
+export type UsageBreakdown = {
+  provider: string;
+  modelId: string;
+  requests: number;
+  inputTokens: number;
+  cachedInputTokens: number | null;
+  nonCachedInputTokens: number | null;
+  cacheWriteTokens: number | null;
+  reasoningTokens: number | null;
+  outputTokens: number;
+  totalTokens: number;
+  cacheHitRate: number | null;
+  billedCostUsd: number | null;
+  estimatedCostUsd: number | null;
+  costSource: UsageCostSource;
+  decodeTpsP50: number | null;
+  decodeTpsP95: number | null;
+  endToEndTpsP50: number | null;
+  endToEndTpsP95: number | null;
+  ttftMsP50: number | null;
+  ttftMsP95: number | null;
+  perfSampleCount: number;
+};
+
+export type UsageSummary = {
+  window: UsageWindow;
+  totals: UsageBreakdown;
+  models: UsageBreakdown[];
+  generatedAt: string;
+};
+
 export type OptimizerCapabilities = {
   cancel?: boolean;
   pause?: boolean;

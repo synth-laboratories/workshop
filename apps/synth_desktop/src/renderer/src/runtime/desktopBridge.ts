@@ -4,7 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
 import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TerminalEvent, TerminalInfo, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../env";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
-import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry } from "@synth/runtime-protocol";
+import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 
 // The packaged WebKit view is always served from the `tauri:` protocol.  The
 // injected internals global can appear too late for eager ES-module evaluation,
@@ -427,6 +427,11 @@ window.synthWorkspaceScope ??= isTauri
 	window.synthModelPerformance ??= isTauri
 		? { summaries: () => invoke<ModelPerformanceSummary[]>("model_performance_summary") }
 		: { summaries: async () => [] };
+	if (isTauri) {
+		window.synthUsage ??= {
+			summary: (window: UsageWindow) => invoke<UsageSummary>("usage_summary", { window })
+		};
+	}
 	window.synthSkills ??= isTauri
 		? { list: () => invoke<SkillHit[]>("skills_list") }
 		: {

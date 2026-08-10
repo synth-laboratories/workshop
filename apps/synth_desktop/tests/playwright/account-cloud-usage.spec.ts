@@ -66,6 +66,78 @@ async function stubCloudAccount(page: import("@playwright/test").Page, options: 
 			lastUpdated: "2026-08-10T12:00:00+00:00",
 			stale: false
 		};
+		const breakdown = (row: Record<string, unknown>) => ({
+			provider: "openrouter",
+			modelId: "unknown",
+			requests: 0,
+			inputTokens: 0,
+			cachedInputTokens: null,
+			nonCachedInputTokens: null,
+			cacheWriteTokens: null,
+			reasoningTokens: null,
+			outputTokens: 0,
+			totalTokens: 0,
+			cacheHitRate: null,
+			billedCostUsd: null,
+			estimatedCostUsd: null,
+			costSource: "none",
+			decodeTpsP50: null,
+			decodeTpsP95: null,
+			endToEndTpsP50: null,
+			endToEndTpsP95: null,
+			ttftMsP50: null,
+			ttftMsP95: null,
+			perfSampleCount: 0,
+			...row
+		});
+		const usageWindows: string[] = [];
+		(window as unknown as { __usageWindows: string[] }).__usageWindows = usageWindows;
+		window.synthUsage = {
+			summary: async (usageWindow) => {
+				usageWindows.push(usageWindow);
+				if (usageWindow === "today") {
+					return {
+						window: usageWindow,
+						totals: breakdown({ provider: "all", modelId: "all", requests: 1, inputTokens: 4000, outputTokens: 1000, totalTokens: 5000 }),
+						models: [breakdown({ modelId: "openai/gpt-5.6-luna", requests: 1, inputTokens: 4000, outputTokens: 1000, totalTokens: 5000, estimatedCostUsd: 0.01, costSource: "tariff_estimate" })],
+						generatedAt: "2026-08-10T12:00:00+00:00"
+					};
+				}
+				return {
+					window: usageWindow,
+					totals: breakdown({
+						provider: "all", modelId: "all", requests: 19,
+						inputTokens: 170_000, cachedInputTokens: 80_000, nonCachedInputTokens: 90_000,
+						cacheWriteTokens: 2_000, reasoningTokens: 1_500, outputTokens: 42_000,
+						totalTokens: 212_000, cacheHitRate: 80_000 / 170_000,
+						billedCostUsd: 0.42, estimatedCostUsd: 0.07, costSource: "provider_reported"
+					}),
+					models: [
+						breakdown({
+							modelId: "openai/gpt-5.6-luna", requests: 12,
+							inputTokens: 120_000, cachedInputTokens: 80_000, nonCachedInputTokens: 40_000,
+							cacheWriteTokens: 2_000, reasoningTokens: 1_500, outputTokens: 30_000,
+							totalTokens: 150_000, cacheHitRate: 2 / 3,
+							billedCostUsd: 0.42, costSource: "provider_reported",
+							decodeTpsP50: 25, decodeTpsP95: 40, endToEndTpsP50: 18, endToEndTpsP95: 30,
+							ttftMsP50: 800, ttftMsP95: 2_000, perfSampleCount: 12
+						}),
+						breakdown({
+							modelId: "poolside/laguna-s-2.1", requests: 4,
+							inputTokens: 40_000, outputTokens: 8_000, totalTokens: 48_000,
+							estimatedCostUsd: 0.07, costSource: "tariff_estimate",
+							endToEndTpsP50: 22, endToEndTpsP95: 28, perfSampleCount: 4
+						}),
+						breakdown({
+							provider: "local-laguna", modelId: "poolside/Laguna-XS-2.1-NVFP4-mlx", requests: 3,
+							inputTokens: 10_000, outputTokens: 4_000, totalTokens: 14_000,
+							decodeTpsP50: 26, decodeTpsP95: 27, ttftMsP50: 350, ttftMsP95: 500, perfSampleCount: 3
+						})
+					],
+					generatedAt: "2026-08-10T12:00:00+00:00"
+				};
+			}
+		};
 		window.synthAccount = {
 			beginSignIn: async () => ({ verificationUri: "https://example.test", expiresAtEpochS: 0 }),
 			pollSignIn: async () => ({ status: "active" as const }),
@@ -131,10 +203,53 @@ test("the usage sheet separates Synth Cloud from this device", async ({ page }) 
 	const device = page.getByTestId("usage-sheet-device");
 	await expect(device).toContainText("This device");
 	await expect(device).toContainText("not your Synth Cloud allowance");
-	await expect(device.getByTestId("usage-sheet-device-weekly-tokens")).toBeVisible();
+	await expect(device.getByTestId("usage-total-tokens")).toHaveText("212,000");
 
 	await page.getByTestId("usage-sheet-close").click();
 	await expect(sheet).toBeHidden();
+});
+
+test("the device dashboard labels billing authority per provider and model", async ({ page }) => {
+	await stubCloudAccount(page, { state: "active", remainingUsd: 157.5, usedUsd: 42.5 });
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-open-usage").click();
+	const device = page.getByTestId("usage-sheet-device");
+
+	// Totals keep settled and estimated money in separate labeled rows.
+	await expect(device.getByTestId("usage-total-billed")).toHaveText("$0.42");
+	await expect(device.getByTestId("usage-total-estimated")).toHaveText("$0.07");
+	await expect(device.getByTestId("usage-total-cached")).toContainText("80,000");
+	await expect(device.getByTestId("usage-total-cached")).toContainText("47% hit");
+
+	// Settled OpenRouter money says billed, never estimated.
+	const luna = device.getByTestId("usage-model-openrouter-openai-gpt-5-6-luna");
+	await expect(luna).toContainText("OpenRouter · 12 requests");
+	await expect(luna.getByTestId("usage-model-openrouter-openai-gpt-5-6-luna-cost")).toHaveText("$0.42 billed");
+	await expect(luna).toContainText("cached 80,000 (67%)");
+	const lunaPerf = luna.getByTestId("usage-model-openrouter-openai-gpt-5-6-luna-perf");
+	await expect(lunaPerf).toContainText("decode 25 tok/s (p95 40 tok/s)");
+	await expect(lunaPerf).toContainText("end-to-end 18 tok/s");
+	await expect(lunaPerf).toContainText("TTFT 800 ms (p95 2.0 s)");
+	await expect(lunaPerf).toContainText("12 samples");
+
+	// Unsettled money is clearly an estimate, and unreported cache telemetry
+	// reads unavailable — never zero.
+	const lagunaS = device.getByTestId("usage-model-openrouter-poolside-laguna-s-2-1");
+	await expect(lagunaS.getByTestId("usage-model-openrouter-poolside-laguna-s-2-1-cost")).toHaveText("$0.07 estimated");
+	await expect(lagunaS).toContainText("cached unavailable");
+
+	// Local runs carry no provider charge and never render $0.00.
+	const local = device.getByTestId("usage-model-local-laguna-poolside-Laguna-XS-2-1-NVFP4-mlx");
+	await expect(local.getByTestId("usage-model-local-laguna-poolside-Laguna-XS-2-1-NVFP4-mlx-cost"))
+		.toHaveText("On-device · no provider charge");
+	await expect(local).not.toContainText("$0.00");
+
+	// The window control refetches natively per window.
+	await device.getByTestId("usage-window-today").click();
+	await expect(device.getByTestId("usage-total-tokens")).toHaveText("5,000");
+	const windows = await page.evaluate(() => (window as unknown as { __usageWindows: string[] }).__usageWindows);
+	expect(windows).toContain("7d");
+	expect(windows).toContain("today");
 });
 
 test("the account menu supports keyboard traversal and restores trigger focus", async ({ page }) => {
@@ -243,9 +358,12 @@ test("an unmetered account renders no dollar figures on account or usage surface
 
 	await page.getByTestId("account-menu-trigger").click();
 	await page.getByTestId("account-open-usage").click();
-	const sheet = page.getByTestId("usage-sheet");
-	await expect(sheet).toContainText("not metered in monthly dollars");
-	await expect(sheet).not.toContainText("$");
+	// Cloud plan chrome invents no dollars for an unmetered account. Device
+	// rows may still show real provider charges — that money is a different
+	// pool and is asserted separately above.
+	const cloud = page.getByTestId("usage-sheet-cloud");
+	await expect(cloud).toContainText("not metered in monthly dollars");
+	await expect(cloud).not.toContainText("$");
 	await page.getByTestId("usage-sheet-close").click();
 
 	await page.getByTestId("account-menu-trigger").click();

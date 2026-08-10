@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { UsageBreakdown, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 import type { SynthAccountSummary } from "../env";
 import {
 	type AccountViewModel,
@@ -11,14 +12,19 @@ import {
 /**
  * Usage sheet: two sections that are never blended.
  *
- *   SYNTH CLOUD  — the Account Snapshot. Authoritative for plan dollars.
- *   THIS DEVICE  — the local usage ledger. Device facts, not an allowance.
+ *   SYNTH CLOUD  — the Account Snapshot. Authoritative for plan dollars, and
+ *                  rendered only when the backend actually reported a plan;
+ *                  the local dev stand-in never wears allowance chrome here.
+ *   THIS DEVICE  — the per-request usage ledger, aggregated natively. Device
+ *                  facts (tokens, cache traffic, throughput, provider bills),
+ *                  not an allowance.
  *
- * Signed-out and local-only users see the sign-in invitation instead of empty
- * plan chrome, and production never renders a dollar figure the backend did
- * not report.
+ * Dollar rules: a settled provider charge renders as billed; a tariff figure
+ * always says estimated; local runs say "On-device · no provider charge";
+ * missing telemetry renders "Unavailable", never zero.
  */
 
+/** Compact device rollup consumed by the Settings/Account pages. */
 export type DeviceUsageSummary = {
 	weeklyTokens: number;
 	weeklyCostUsd: number;
@@ -27,17 +33,77 @@ export type DeviceUsageSummary = {
 	entries: number;
 };
 
-type Props = {
-	open: boolean;
-	view: AccountViewModel;
-	summary: SynthAccountSummary | null;
-	deviceUsage: DeviceUsageSummary | null;
-	onClose: () => void;
-	onSignIn: () => void;
-	onBilling: (action: "upgrade" | "manage") => void;
-	onRetry: () => void;
-	onOpenDeviceUsage: () => void;
-};
+const WINDOWS: Array<{ id: UsageWindow; label: string }> = [
+	{ id: "today", label: "Today" },
+	{ id: "7d", label: "7 days" },
+	{ id: "30d", label: "30 days" },
+	{ id: "all", label: "All time" }
+];
+
+const UNAVAILABLE = "Unavailable";
+
+function maybeTokens(value: number | null | undefined): string {
+	return typeof value === "number" && Number.isFinite(value) ? formatTokens(value) : UNAVAILABLE;
+}
+
+function percent(rate: number | null): string {
+	return typeof rate === "number" && Number.isFinite(rate)
+		? `${(rate * 100).toFixed(rate >= 0.1 ? 0 : 1)}%`
+		: UNAVAILABLE;
+}
+
+function tps(value: number | null): string | null {
+	if (typeof value !== "number" || !Number.isFinite(value)) return null;
+	return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} tok/s`;
+}
+
+function ttft(value: number | null): string | null {
+	if (typeof value !== "number" || !Number.isFinite(value)) return null;
+	return value >= 1000 ? `${(value / 1000).toFixed(1)} s` : `${Math.round(value)} ms`;
+}
+
+function providerLabel(provider: string): string {
+	if (provider === "local-laguna") return "On-device";
+	if (provider === "openrouter") return "OpenRouter";
+	if (provider === "synth-cloud") return "Synth Cloud";
+	return provider;
+}
+
+function rowTestId(row: UsageBreakdown): string {
+	return `usage-model-${row.provider}-${row.modelId}`.replace(/[^a-zA-Z0-9_-]+/g, "-");
+}
+
+/**
+ * The one place a dollar figure gets its authority label. Billed money and
+ * unbilled estimates are shown side by side and never summed into one number.
+ */
+function costLine(row: UsageBreakdown): { text: string; kind: "local" | "billed" | "estimate" | "none" } {
+	if (row.provider === "local-laguna") {
+		return { text: "On-device · no provider charge", kind: "local" };
+	}
+	const parts: string[] = [];
+	if (row.billedCostUsd != null) parts.push(`${formatUsd(row.billedCostUsd)} billed`);
+	if (row.estimatedCostUsd != null) parts.push(`${formatUsd(row.estimatedCostUsd)} estimated`);
+	if (parts.length === 0) {
+		return { text: row.provider === "synth-cloud" ? "Billed by Synth Cloud" : "Cost unavailable", kind: "none" };
+	}
+	return { text: parts.join(" + "), kind: row.billedCostUsd != null ? "billed" : "estimate" };
+}
+
+function perfLine(row: UsageBreakdown): string {
+	const parts: string[] = [];
+	const decode = tps(row.decodeTpsP50);
+	const decodeP95 = tps(row.decodeTpsP95);
+	const endToEnd = tps(row.endToEndTpsP50);
+	const endToEndP95 = tps(row.endToEndTpsP95);
+	const firstToken = ttft(row.ttftMsP50);
+	const firstTokenP95 = ttft(row.ttftMsP95);
+	if (decode) parts.push(`decode ${decode}${decodeP95 ? ` (p95 ${decodeP95})` : ""}`);
+	if (endToEnd) parts.push(`end-to-end ${endToEnd}${endToEndP95 ? ` (p95 ${endToEndP95})` : ""}`);
+	if (firstToken) parts.push(`TTFT ${firstToken}${firstTokenP95 ? ` (p95 ${firstTokenP95})` : ""}`);
+	if (parts.length === 0) return `Throughput ${UNAVAILABLE.toLowerCase()}`;
+	return `${parts.join(" · ")} · ${row.perfSampleCount} sample${row.perfSampleCount === 1 ? "" : "s"}`;
+}
 
 function UsageRow({
 	label,
@@ -56,11 +122,21 @@ function UsageRow({
 	);
 }
 
+type Props = {
+	open: boolean;
+	view: AccountViewModel;
+	summary: SynthAccountSummary | null;
+	onClose: () => void;
+	onSignIn: () => void;
+	onBilling: (action: "upgrade" | "manage") => void;
+	onRetry: () => void;
+	onOpenDeviceUsage: () => void;
+};
+
 export function UsageSheet({
 	open,
 	view,
 	summary,
-	deviceUsage,
 	onClose,
 	onSignIn,
 	onBilling,
@@ -69,6 +145,9 @@ export function UsageSheet({
 }: Props) {
 	const closeRef = useRef<HTMLButtonElement>(null);
 	const returnFocusRef = useRef<HTMLElement | null>(null);
+	const [usageWindow, setUsageWindow] = useState<UsageWindow>("7d");
+	const [usage, setUsage] = useState<UsageSummary | null>(null);
+	const [usageFailed, setUsageFailed] = useState(false);
 	const closeSheet = useCallback(() => {
 		onClose();
 		requestAnimationFrame(() => {
@@ -92,12 +171,39 @@ export function UsageSheet({
 		return () => document.removeEventListener("keydown", onKey);
 	}, [closeSheet, open]);
 
+	useEffect(() => {
+		if (!open) return;
+		const bridge = window.synthUsage;
+		if (!bridge) {
+			setUsage(null);
+			setUsageFailed(true);
+			return;
+		}
+		let disposed = false;
+		setUsageFailed(false);
+		bridge
+			.summary(usageWindow)
+			.then((next) => {
+				if (!disposed) setUsage(next);
+			})
+			.catch(() => {
+				if (!disposed) {
+					setUsage(null);
+					setUsageFailed(true);
+				}
+			});
+		return () => {
+			disposed = true;
+		};
+	}, [open, usageWindow]);
+
 	if (!open) return null;
 
 	const plan = view.plan;
 	const cloudUsage = summary?.cloudUsage ?? null;
 	const lastUpdated = formatTimestamp(summary?.lastUpdated);
-	const showDollarFigures = view.planHasDollars;
+	const showDollarFigures = view.planHasDollars && !view.planIsDevSeed;
+	const totals = usage?.totals ?? null;
 
 	return (
 		<div
@@ -142,8 +248,8 @@ export function UsageSheet({
 						<>
 							{view.planIsDevSeed ? (
 								<p className="usage-sheet-note" data-testid="usage-sheet-dev-seed">
-									Dev stand-in — this allowance is seeded locally and charged from this
-									device, not from Synth Cloud.
+									Dev stand-in account — no authoritative Synth Cloud plan exists,
+									so no allowance is shown. Device usage below is real.
 								</p>
 							) : null}
 							{view.statusNote ? (
@@ -152,36 +258,28 @@ export function UsageSheet({
 								</p>
 							) : null}
 
-							{plan ? (
+							{plan && showDollarFigures ? (
 								<>
 									<UsageRow
 										label="Plan"
 										value={plan.name}
 										testId="usage-sheet-plan-name"
 									/>
-									{view.planHasDollars ? (
-										<>
-											<UsageRow
-												label="Monthly allowance"
-												value={formatUsd(plan.monthlyAllowanceUsd)}
-												testId="usage-sheet-allowance"
-											/>
-											<UsageRow
-												label="Used this period"
-												value={formatUsd(plan.usedUsd)}
-												testId="usage-sheet-used"
-											/>
-											<UsageRow
-												label="Remaining"
-												value={formatUsd(plan.remainingUsd)}
-												testId="usage-sheet-remaining"
-											/>
-										</>
-									) : (
-										<p className="usage-sheet-note">
-											This account is not metered in monthly dollars.
-										</p>
-									)}
+									<UsageRow
+										label="Monthly allowance"
+										value={formatUsd(plan.monthlyAllowanceUsd)}
+										testId="usage-sheet-allowance"
+									/>
+									<UsageRow
+										label="Used this period"
+										value={formatUsd(plan.usedUsd)}
+										testId="usage-sheet-used"
+									/>
+									<UsageRow
+										label="Remaining"
+										value={formatUsd(plan.remainingUsd)}
+										testId="usage-sheet-remaining"
+									/>
 									{formatDate(plan.resetsAt) ? (
 										<UsageRow
 											label="Resets"
@@ -193,27 +291,31 @@ export function UsageSheet({
 										<UsageRow label="Renews" value={formatDate(plan.renewsAt) as string} />
 									) : null}
 								</>
-							) : (
+							) : plan && !view.planIsDevSeed ? (
+								<p className="usage-sheet-note">
+									This account is not metered in monthly dollars.
+								</p>
+							) : !view.planIsDevSeed ? (
 								<p className="usage-sheet-note" data-testid="usage-sheet-no-plan">
 									No Synth Cloud plan is reported for this account yet.
 								</p>
-							)}
+							) : null}
 
-							{cloudUsage ? (
+							{cloudUsage && showDollarFigures ? (
 								<div className="usage-sheet-windows" data-testid="usage-sheet-windows">
 									<div>
 										<span>Today</span>
-										{showDollarFigures ? <strong data-testid="usage-sheet-today">{formatUsd(cloudUsage.today.costUsd)}</strong> : null}
+										<strong data-testid="usage-sheet-today">{formatUsd(cloudUsage.today.costUsd)}</strong>
 										<small>{cloudUsage.today.events} events</small>
 									</div>
 									<div>
 										<span>7 days</span>
-										{showDollarFigures ? <strong data-testid="usage-sheet-7d">{formatUsd(cloudUsage.sevenDays.costUsd)}</strong> : null}
+										<strong data-testid="usage-sheet-7d">{formatUsd(cloudUsage.sevenDays.costUsd)}</strong>
 										<small>{cloudUsage.sevenDays.events} events</small>
 									</div>
 									<div>
 										<span>30 days</span>
-										{showDollarFigures ? <strong data-testid="usage-sheet-30d">{formatUsd(cloudUsage.thirtyDays.costUsd)}</strong> : null}
+										<strong data-testid="usage-sheet-30d">{formatUsd(cloudUsage.thirtyDays.costUsd)}</strong>
 										<small>{cloudUsage.thirtyDays.events} events</small>
 									</div>
 								</div>
@@ -262,25 +364,93 @@ export function UsageSheet({
 				<section className="usage-sheet-section" data-testid="usage-sheet-device">
 					<header>
 						<h3>This device</h3>
-						<p>Local runs on this Mac — not your Synth Cloud allowance</p>
+						<p>Every model request from this Mac — not your Synth Cloud allowance</p>
 					</header>
-					<UsageRow
-						label="Tokens this week"
-						value={formatTokens(deviceUsage?.weeklyTokens)}
-						testId="usage-sheet-device-weekly-tokens"
-					/>
-					{showDollarFigures ? (
-						<UsageRow
-							label="Estimated cost this week"
-							value={formatUsd(deviceUsage?.weeklyCostUsd)}
-						/>
-					) : null}
-					<UsageRow
-						label="All tracked tokens"
-						value={formatTokens(deviceUsage?.totalTokens)}
-						testId="usage-sheet-device-total-tokens"
-					/>
-					<UsageRow label="Tracked runs" value={formatTokens(deviceUsage?.entries)} />
+
+					<div className="usage-window-control" role="group" aria-label="Usage window" data-testid="usage-window-control">
+						{WINDOWS.map((candidate) => (
+							<button
+								key={candidate.id}
+								type="button"
+								className={candidate.id === usageWindow ? "usage-window-button is-active" : "usage-window-button"}
+								aria-pressed={candidate.id === usageWindow}
+								onClick={() => setUsageWindow(candidate.id)}
+								data-testid={`usage-window-${candidate.id}`}
+							>
+								{candidate.label}
+							</button>
+						))}
+					</div>
+
+					{totals ? (
+						<>
+							<div className="usage-totals" data-testid="usage-totals">
+								<UsageRow label="Total tokens" value={maybeTokens(totals.totalTokens)} testId="usage-total-tokens" />
+								<UsageRow label="Input" value={maybeTokens(totals.inputTokens)} testId="usage-total-input" />
+								<UsageRow
+									label="Cached input"
+									value={
+										totals.cachedInputTokens == null
+											? UNAVAILABLE
+											: `${maybeTokens(totals.cachedInputTokens)} (${percent(totals.cacheHitRate)} hit)`
+									}
+									testId="usage-total-cached"
+								/>
+								<UsageRow label="Output" value={maybeTokens(totals.outputTokens)} testId="usage-total-output" />
+								<UsageRow
+									label="Billed"
+									value={totals.billedCostUsd == null ? UNAVAILABLE : formatUsd(totals.billedCostUsd)}
+									testId="usage-total-billed"
+								/>
+								{totals.estimatedCostUsd != null ? (
+									<UsageRow
+										label="Estimated (unbilled)"
+										value={formatUsd(totals.estimatedCostUsd)}
+										testId="usage-total-estimated"
+									/>
+								) : null}
+								<UsageRow label="Requests" value={maybeTokens(totals.requests)} testId="usage-total-requests" />
+							</div>
+
+							{usage && usage.models.length > 0 ? (
+								<div className="usage-model-rows" data-testid="usage-model-rows">
+									{usage.models.map((row) => {
+										const cost = costLine(row);
+										return (
+											<div className="usage-model-row" key={`${row.provider}:${row.modelId}`} data-testid={rowTestId(row)}>
+												<div className="usage-model-title">
+													<strong>{row.modelId}</strong>
+													<span>{providerLabel(row.provider)} · {formatTokens(row.requests)} request{row.requests === 1 ? "" : "s"}</span>
+												</div>
+												<div className="usage-model-tokens">
+													{`in ${maybeTokens(row.inputTokens)} · cached ${
+														row.cachedInputTokens == null
+															? UNAVAILABLE.toLowerCase()
+															: `${formatTokens(row.cachedInputTokens)} (${percent(row.cacheHitRate)})`
+													} · out ${maybeTokens(row.outputTokens)}`}
+												</div>
+												<div className={`usage-model-cost usage-model-cost-${cost.kind}`} data-testid={`${rowTestId(row)}-cost`}>
+													{cost.text}
+												</div>
+												<div className="usage-model-perf" data-testid={`${rowTestId(row)}-perf`}>
+													{perfLine(row)}
+												</div>
+											</div>
+										);
+									})}
+								</div>
+							) : (
+								<p className="usage-sheet-note" data-testid="usage-empty">
+									No model requests in this window yet.
+								</p>
+							)}
+						</>
+					) : (
+						<p className="usage-sheet-note" data-testid="usage-loading">
+							{usageFailed ? "Device usage is unavailable right now." : "Loading device usage…"}
+						</p>
+					)}
+
 					<div className="usage-sheet-actions">
 						<button
 							type="button"

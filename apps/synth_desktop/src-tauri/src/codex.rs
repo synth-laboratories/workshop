@@ -5,7 +5,7 @@ use crate::domain::{
     SessionTitleOrigin,
 };
 use crate::storage::{
-    EventAppend, EventSource, MeasurementKind, ModelPerformanceRepository, ModelPerformanceSample,
+    CostSource, EventAppend, EventSource, MeasurementKind, UsageRecord, UsageRecordsRepository,
 };
 use crate::synth_config::MultiAgentVersion;
 use anyhow::{anyhow, Context, Result};
@@ -246,6 +246,7 @@ type PendingApprovals = Arc<Mutex<HashMap<String, PendingApproval>>>;
 struct TurnTokenUsage {
     input_tokens: Option<i64>,
     cached_input_tokens: Option<i64>,
+    cache_write_tokens: Option<i64>,
     reasoning_tokens: Option<i64>,
     output_tokens: Option<i64>,
 }
@@ -1782,6 +1783,15 @@ fn usage_from_object(value: &Value) -> Option<TurnTokenUsage> {
             value,
             &["cached_input_tokens", "cachedInputTokens", "cached_tokens", "cachedTokens"],
         )),
+        cache_write_tokens: positive_i64(integer_field(
+            value,
+            &[
+                "cache_write_input_tokens",
+                "cacheWriteInputTokens",
+                "cache_creation_input_tokens",
+                "cacheCreationInputTokens",
+            ],
+        )),
         reasoning_tokens: details.and_then(|details| {
             positive_i64(integer_field(details, &["reasoning_tokens", "reasoningTokens"]))
         }),
@@ -1886,7 +1896,25 @@ async fn finalize_performance_tracker(
     } else {
         MeasurementKind::EndToEnd
     };
-    let sample = ModelPerformanceSample {
+    // A failed or interrupted turn still consumed whatever the provider
+    // reported, so it is recorded — and estimated — like any other request.
+    let estimated_cost_usd = crate::tariffs::estimate_cost_usd(
+        &tracker.provider,
+        &tracker.model_id,
+        completed_at_ms,
+        crate::tariffs::BillableTokens {
+            input_tokens: tracker.usage.input_tokens,
+            cached_input_tokens: tracker.usage.cached_input_tokens,
+            cache_write_tokens: tracker.usage.cache_write_tokens,
+            output_tokens: tracker.usage.output_tokens,
+        },
+    );
+    let cost_source = if estimated_cost_usd.is_some() {
+        CostSource::TariffEstimate
+    } else {
+        CostSource::None
+    };
+    let record = UsageRecord {
         id: format!("perf:{}:{}", tracker.provider, tracker.turn_id),
         provider: tracker.provider,
         model_id: tracker.model_id,
@@ -1902,6 +1930,7 @@ async fn finalize_performance_tracker(
         completed_at_ms,
         input_tokens: tracker.usage.input_tokens,
         cached_input_tokens: tracker.usage.cached_input_tokens,
+        cache_write_tokens: tracker.usage.cache_write_tokens,
         reasoning_tokens: tracker.usage.reasoning_tokens,
         output_tokens,
         ttft_ms: tracker
@@ -1909,11 +1938,14 @@ async fn finalize_performance_tracker(
             .map(|first| (first - tracker.started_at_ms).max(0) as f64),
         observed_output_tps,
         end_to_end_output_tps,
+        billed_cost_usd: None,
+        estimated_cost_usd,
+        cost_source,
         source: "codex_app_server".into(),
     };
-    let repository = ModelPerformanceRepository::new(core.storage().database().clone());
-    if let Err(error) = repository.record(sample).await {
-        eprintln!("model performance sample could not be persisted: {error:#}");
+    let repository = UsageRecordsRepository::new(core.storage().database().clone());
+    if let Err(error) = repository.record(record).await {
+        eprintln!("usage record could not be persisted: {error:#}");
     }
 }
 
