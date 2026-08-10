@@ -65,9 +65,7 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 		target: { kind: "local", models: [MUSE_GLIMMER_MODEL] },
 		knobs: [],
 		reasoningDisplay: "full",
-		// llama.cpp has the projector loaded, but Workshop's local Responses
-		// transport does not yet forward image parts to the Muse engine.
-		inputModalities: ["text"],
+		inputModalities: ["text", "image"],
 		maxContextTokens: 131_072
 	},
 	{

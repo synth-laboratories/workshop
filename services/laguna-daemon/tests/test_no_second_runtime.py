@@ -67,17 +67,9 @@ def _config(tmp: Path) -> LagunaConfig:
 class NoSecondRuntimeTests(unittest.TestCase):
     """The one-runtime architecture, enforced rather than documented.
 
-    Note for anyone reading a process list while debugging: the legacy managed
-    child was ours. Poolside's own sidecar runs on `:63300` from
+    Note for anyone reading a process list while debugging: `:7334` was *our*
+    legacy managed child. Poolside's own sidecar runs on `:63300` from
     /Applications/Poolside.app and is unrelated to this daemon.
-
-    A GGUF selection (Muse Glimmer) does involve a second process, and that is
-    still not a second *runtime* by this invariant: the daemon does not start
-    it, does not restart it, does not discover it, and does not know its port —
-    the Desktop supervisor owns its lifecycle and passes one address in through
-    the environment. Every rule below therefore still holds verbatim for the
-    llama.cpp backend, including the ban on the legacy port literal, and
-    `tests/test_muse_llama_cpp.py` asserts the same properties from its side.
     """
 
     def test_production_sources_cannot_reference_a_second_local_server(self) -> None:

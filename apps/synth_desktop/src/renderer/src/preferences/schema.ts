@@ -13,18 +13,11 @@ export type ToolActivityMode = "detailed" | "grouped" | "compact";
 export type ActiveEnterAction = "steer" | "enqueue";
 export type ApprovalPolicyPreference = "untrusted" | "on-request" | "never";
 export type SandboxModePreference = "read-only" | "workspace-write" | "danger-full-access";
-export type CompactContextModel = "lagunaXs" | "museGlimmer" | "lagunaS" | "luna";
+export type CompactContextModel = "lagunaXs" | "lagunaS" | "luna";
 export type AutoCompactTokenLimits = Record<CompactContextModel, number>;
-
-/** Muse Glimmer serves a 131,072-token context; 90% of it is the daemon's own
- *  advertised compaction limit, so the ceiling here matches what the model
- *  card tells Codex rather than a second, softer number. */
-export const MUSE_GLIMMER_CONTEXT_LENGTH = 131_072;
-export const MUSE_GLIMMER_COMPACT_CEILING = Math.floor(MUSE_GLIMMER_CONTEXT_LENGTH * 0.9);
 
 export const DEFAULT_AUTO_COMPACT_TOKEN_LIMITS: AutoCompactTokenLimits = {
 	lagunaXs: 150_000,
-	museGlimmer: 100_000,
 	lagunaS: 250_000,
 	luna: 250_000
 };
@@ -292,12 +285,6 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 					16_000,
 					235_929,
 					DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaXs
-				),
-				museGlimmer: clampNumber(
-					migrateFloor(compactLimits.museGlimmer, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.museGlimmer),
-					16_000,
-					MUSE_GLIMMER_COMPACT_CEILING,
-					DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.museGlimmer
 				),
 				lagunaS: clampNumber(
 					migrateFloor(lagunaSLimit, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaS) ?? legacyOverride,

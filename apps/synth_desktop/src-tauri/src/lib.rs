@@ -1152,7 +1152,8 @@ fn workspace_access_update(
 #[tauri::command]
 async fn laguna_get_status(state: State<'_, Arc<LagunaManager>>) -> Result<LagunaStatus, String> {
     if state.status().await.phase == "unknown" {
-        if let Err(error) = state.initialize_cold().await {
+        let root = runtime::workshop_root().map_err(|error| error.to_string())?;
+        if let Err(error) = state.ensure(&root).await {
             state.set_error(error.to_string()).await;
         }
         return Ok(state.status().await);
@@ -1172,13 +1173,12 @@ fn laguna_models_list(state: State<'_, Arc<LagunaManager>>) -> Result<Vec<Laguna
 }
 
 #[tauri::command]
-async fn laguna_models_set_directory(
+fn laguna_models_set_directory(
     state: State<'_, Arc<LagunaManager>>,
     path: String,
 ) -> Result<LagunaModelHit, String> {
     state
-        .select_model_cold(std::path::Path::new(&path))
-        .await
+        .select_model(std::path::Path::new(&path))
         .map_err(|error| error.to_string())
 }
 
@@ -1365,7 +1365,6 @@ async fn prepare_codex_start(
     laguna: &LagunaManager,
     core: &CoreRuntime,
     mut request: CodexSessionStartRequest,
-    ensure_local_runtime: bool,
 ) -> Result<CodexSessionStartRequest, String> {
     // Never trust renderer-supplied roots. Rust persistence is authoritative.
     request.writable_roots.clear();
@@ -1388,18 +1387,17 @@ async fn prepare_codex_start(
                 .map_err(|error| error.to_string())?
                 .to_string_lossy()
                 .into_owned();
-            return prepare_codex_provider(laguna, request, ensure_local_runtime).await;
+            return prepare_codex_provider(laguna, request).await;
         }
     };
     request.workspace = scope.workspace.clone();
     request.writable_roots = workspace_scope::writable_roots(&scope);
-    prepare_codex_provider(laguna, request, ensure_local_runtime).await
+    prepare_codex_provider(laguna, request).await
 }
 
 async fn prepare_codex_provider(
     laguna: &LagunaManager,
     mut request: CodexSessionStartRequest,
-    ensure_local_runtime: bool,
 ) -> Result<CodexSessionStartRequest, String> {
     if request.multi_agent_version.is_none() {
         request.multi_agent_version = Some(
@@ -1407,26 +1405,14 @@ async fn prepare_codex_provider(
                 .map_err(|error| error.to_string())?,
         );
     }
-    if ensure_local_runtime && matches!(
-        request.provider_name.as_deref(),
-        Some("local-laguna" | "local-muse-glimmer")
-    ) {
+    if request.provider_name.as_deref() == Some("local-laguna") {
         let root = runtime::workshop_root().map_err(|error| error.to_string())?;
-        laguna
-            .select_model_id_cold(&request.model)
-            .await
-            .map_err(|error| error.to_string())?;
         request.base_url = laguna
             .ensure(&root)
             .await
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "The local Responses server is unavailable".to_string())?;
-        request.api_key = laguna
-            .api_key()
-            .filter(|key| !key.trim().is_empty())
-            .ok_or_else(|| {
-                "The local runtime could not initialize its private loopback connection".to_string()
-            })?;
+            .ok_or_else(|| "Laguna Responses server is unavailable".to_string())?;
+        request.api_key = laguna.api_key().unwrap_or_default();
     } else if request
         .provider_name
         .as_deref()
@@ -1466,7 +1452,7 @@ async fn codex_turn_send(
     mut request: CodexTurnSendRequest,
 ) -> Result<CodexSessionInfo, CodexTurnFailure> {
     let session_id = request.start.session_id.clone();
-    request.start = prepare_codex_start(&laguna, &core, request.start, true)
+    request.start = prepare_codex_start(&laguna, &core, request.start)
         .await
         .map_err(|message| CodexTurnFailure {
             code: "codex_provider_unavailable".into(),
@@ -1485,11 +1471,7 @@ async fn codex_session_start(
     core: State<'_, Arc<CoreRuntime>>,
     request: CodexSessionStartRequest,
 ) -> Result<CodexSessionInfo, String> {
-    // Creating or restoring a local conversation must stay cold. The atomic
-    // send command repeats provider preparation with `true`, then connection
-    // identity fencing replaces this credential-free attachment before the
-    // first turn begins.
-    let request = prepare_codex_start(&laguna, &core, request, false).await?;
+    let request = prepare_codex_start(&laguna, &core, request).await?;
     state
         .start(app, request)
         .await
@@ -1527,7 +1509,7 @@ async fn codex_thread_compact(
     core: State<'_, Arc<CoreRuntime>>,
     request: CodexSessionStartRequest,
 ) -> Result<(), String> {
-    let request = prepare_codex_start(&laguna, &core, request, true).await?;
+    let request = prepare_codex_start(&laguna, &core, request).await?;
     state
         .compact(app, request)
         .await
@@ -1851,7 +1833,6 @@ pub fn run() {
             laguna::laguna_inference_stream_start,
             laguna::laguna_inference_stream_stop,
             laguna::laguna_model_unload,
-            laguna::laguna_free_memory,
             laguna::laguna_model_download,
             laguna::laguna_model_delete,
             laguna::laguna_settings_snapshot,
@@ -1883,11 +1864,6 @@ pub fn run() {
             terminal_resize,
             terminal_close
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building Synth Desktop")
-        .run(|_app, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                laguna::shutdown_managed_runtime();
-            }
-        });
+        .run(tauri::generate_context!())
+        .expect("error while running Synth Desktop");
 }

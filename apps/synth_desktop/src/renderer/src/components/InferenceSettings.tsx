@@ -118,7 +118,7 @@ export async function commitSettings(
 export function describeSettingsFailure(reason: unknown): string {
 	if (typeof reason === "string") return reason;
 	if (reason instanceof Error) return reason.message;
-	return "Local runtime settings are unavailable.";
+	return "Laguna runtime settings are unavailable.";
 }
 
 /* -------------------------------------------------------------- transport */
@@ -504,7 +504,7 @@ export function InferenceSettings({ transport, controller }: InferenceSettingsPr
 			</section>
 
 			<p className="settings-runtime-copy" data-testid="inference-settings-footer">
-				Live throughput, residency, and queue depth stay on the local inference panel.
+				Live throughput, residency, and queue depth stay on the MLX sidecar inference panel.
 			</p>
 		</div>
 	);

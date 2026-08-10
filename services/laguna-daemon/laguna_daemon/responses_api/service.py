@@ -10,12 +10,7 @@ from copy import deepcopy
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from ..config import LagunaConfig
-from .backends import (
-    FakeBackend,
-    LlamaCppChatBackend,
-    NativeMlxBackend,
-    RemoteResponsesBackend,
-)
+from .backends import FakeBackend, NativeMlxBackend, RemoteResponsesBackend
 from .backends.protocol import ModelBackend
 from .compaction import Compactor
 from .coordinator import ResponseCoordinator, response_shell
@@ -72,24 +67,7 @@ class ResponsesService:
     def _make_backend(config: LagunaConfig) -> ModelBackend:
         if config.backend == "mock":
             return FakeBackend(context_length=config.context_length)
-        if config.backend == "llama_cpp":
-            # A GGUF engine speaks Chat Completions and has no Responses
-            # surface. Binding it to the native-Responses passthrough is the
-            # historical bug this branch exists to prevent: that adapter would
-            # 502 every Responses turn and 501 every Chat turn.
-            return LlamaCppChatBackend(
-                engine_url=config.engine_base_url,
-                model=config.default_model,
-                context_length=config.context_length,
-                api_key=config.engine_api_key,
-            )
         if config.backend == "external":
-            if config.is_muse:
-                raise RuntimeError(
-                    "Muse Glimmer cannot be served through the native-Responses "
-                    "passthrough; configure SYNTH_LAGUNA_BACKEND=llama_cpp with "
-                    "SYNTH_LAGUNA_ENGINE_URL."
-                )
             return RemoteResponsesBackend(
                 config.upstream_url, config.upstream_api_key, config.context_length
             )
@@ -128,17 +106,6 @@ class ResponsesService:
         while True:
             await asyncio.sleep(1.0)
             await self.unload_if_idle()
-
-    async def engine_status(self) -> dict[str, Any] | None:
-        """State of an out-of-process engine, or None when weights are in-process.
-
-        Only a backend that depends on another process has an answer here; the
-        MLX backend's residency *is* the daemon's, so it has nothing to add.
-        """
-        probe = getattr(self.backend, "engine_status", None)
-        if probe is None:
-            return None
-        return await probe()
 
     def residency(self) -> dict[str, Any] | None:
         residency = getattr(self.backend, "residency", None)
@@ -192,7 +159,6 @@ class ResponsesService:
                 await queue.put(None)
 
         task = asyncio.create_task(run(), name="responses-sse")
-        last_keepalive = time.monotonic()
         try:
             while True:
                 if disconnected is not None and await disconnected():
@@ -204,16 +170,13 @@ class ResponsesService:
                         queue.get(), timeout=0.25 if disconnected is not None else 5.0
                     )
                 except TimeoutError:
+                    if disconnected is not None:
+                        continue
                     # Large local prompts can spend tens of seconds in MLX
-                    # or llama.cpp prefill before the first token. The
-                    # disconnect-aware path polls four times a second, but it
-                    # must still write periodically: polling without writing
-                    # let Codex's upstream idle timer close a healthy Muse
-                    # request midway through prefill.
-                    now = time.monotonic()
-                    if now - last_keepalive >= 2.0:
-                        yield b": keep-alive\n\n"
-                        last_keepalive = now
+                    # prefill before the first token. SSE comments keep SDK
+                    # and Codex idle timers alive without inventing semantic
+                    # events or consuming sequence numbers.
+                    yield b": keep-alive\n\n"
                     continue
                 if entry is None:
                     yield b"data: [DONE]\n\n"
@@ -485,16 +448,10 @@ class ResponsesService:
                     else None
                 ),
                 "promptTokens": active.prompt_tokens,
-                "promptTokensProcessed": active.prompt_tokens_processed,
-                "uncachedTokens": (
-                    max(0, active.prompt_tokens - active.cached_tokens)
-                    if active.prompt_tokens
-                    else None
-                ),
                 "cachedTokens": active.cached_tokens,
                 "outputTokens": active.output_tokens,
                 "cacheHitRatio": active.cache_hit_ratio(),
-                "prefillTokensPerSecond": active.live_prefill_tokens_per_second(now),
+                "prefillTokensPerSecond": active.prefill_tokens_per_second(),
                 "decodeTokensPerSecond": active.decode_tokens_per_second(),
                 "elapsedMs": active.elapsed_ms(now),
             }

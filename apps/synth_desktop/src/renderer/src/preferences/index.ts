@@ -4,8 +4,6 @@ export {
 	DEFAULT_PREFERENCES,
 	DEFAULT_LAYOUT,
 	DEFAULT_AUTO_COMPACT_TOKEN_LIMITS,
-	MUSE_GLIMMER_CONTEXT_LENGTH,
-	MUSE_GLIMMER_COMPACT_CEILING,
 	normalizePreferences,
 	normalizeLayoutSnapshot,
 	migrateLegacyPreferences,

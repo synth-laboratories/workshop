@@ -43,9 +43,7 @@ class ChatService:
     def normalize(self, body: Any) -> dict[str, Any]:
         if not isinstance(body, dict):
             raise ResponsesError("invalid_request", "The request body must be a JSON object.", 400)
-        requested = LagunaConfig.normalize_model_id(
-            body.get("model") or self.config.default_model
-        )
+        requested = body.get("model") or self.config.default_model
         if requested in MODEL_ALIASES:
             requested = self.config.default_model
         return {**body, "model": requested}

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import asyncio
 import json
 import tempfile
@@ -10,7 +9,6 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 from openresponses_types import ResponseResource
@@ -30,30 +28,6 @@ from laguna_daemon.responses_api.backends.protocol import ModelEvent, ToolBindin
 from laguna_daemon.responses_api.errors import ResponsesError
 from laguna_daemon.responses_api.ids import new_id
 from laguna_daemon.responses_api.service import ResponsesService
-
-
-
-
-def _string_literals(path: Path) -> list[str]:
-    """Every string the module's code can emit, excluding its documentation."""
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    # A bare string statement is documentation wherever it appears — including
-    # after `from __future__ import`, which is where this package puts its
-    # module docs — and is never a value the code can send.
-    docstrings = {
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Constant)
-        and isinstance(node.value.value, str)
-    }
-    return [
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and node not in docstrings
-    ]
 
 
 def config(path: Path, *, context_length: int = 262_144) -> LagunaConfig:
@@ -223,33 +197,6 @@ class NativeResponsesHttpTests(unittest.TestCase):
                 send,
             )
             self.assertTrue(cancelled.is_set())
-
-        asyncio.run(scenario())
-
-    def test_disconnect_aware_stream_keeps_the_client_alive_during_prefill(self) -> None:
-        async def scenario() -> None:
-            backend = FakeBackend()
-            service = ResponsesService(config(Path(self.temp.name) / "keepalive"), backend)
-            await service.start()
-
-            async def stall(*_args: Any, **_kwargs: Any) -> None:
-                await asyncio.sleep(60)
-
-            service.coordinator.run = AsyncMock(side_effect=stall)
-
-            async def is_disconnected() -> bool:
-                return False
-
-            stream = service.stream(
-                {"model": "test", "input": "hello", "stream": True},
-                disconnected=is_disconnected,
-            )
-            try:
-                first = await asyncio.wait_for(anext(stream), timeout=3.0)
-                self.assertEqual(first, b": keep-alive\n\n")
-            finally:
-                await stream.aclose()
-                await service.close()
 
         asyncio.run(scenario())
 
@@ -870,43 +817,10 @@ class NativeBackendContractTests(unittest.TestCase):
         self.assertTrue(new_id("custom_tool_call").startswith("ctc_"))
         self.assertTrue(new_id("call").startswith("call_"))
 
-    def test_responses_is_never_served_by_calling_a_chat_surface(self) -> None:
-        """The anti-shim invariant, stated precisely.
-
-        A Responses turn must never be produced by issuing a Chat request. One
-        file is allowed to name the Chat path: the llama.cpp backend, where it
-        is a *model engine's* only wire protocol and is used identically by
-        both of Laguna's surfaces. That engine never receives a Responses
-        object and never receives a client's Chat request — which is exactly
-        why it is a backend and not a passthrough. Anywhere else, naming that
-        path would be the old Responses-over-Chat shim returning.
-        """
+    def test_native_backend_does_not_reference_chat_completions(self) -> None:
         root = Path(__file__).parents[1] / "laguna_daemon" / "responses_api"
-        engine_backend = root / "backends" / "llama_cpp.py"
-        for path in root.rglob("*.py"):
-            if path == engine_backend:
-                continue
-            with self.subTest(module=path.name):
-                self.assertNotIn("/v1/chat/completions", path.read_text(encoding="utf-8"))
-        # The converse for the engine backend: it drives a local model, so it
-        # must never forward a Responses body upstream the way the remote
-        # passthrough does. Prose may discuss the surface; no request may
-        # address it, so this reads the literals the code can actually send.
-        for literal in _string_literals(engine_backend):
-            self.assertNotIn("/v1/responses", literal)
-
-    def test_responses_never_imports_the_chat_wire_surface(self) -> None:
-        """Peers, not layers: neither surface may be built from the other."""
-        root = Path(__file__).parents[1] / "laguna_daemon" / "responses_api"
-        for path in root.rglob("*.py"):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                module = ""
-                if isinstance(node, ast.ImportFrom):
-                    module = node.module or ""
-                elif isinstance(node, ast.Import):
-                    module = ",".join(alias.name for alias in node.names)
-                self.assertNotIn("chat_api", module, msg=f"{path.name} imports {module}")
+        source = "\n".join(path.read_text(encoding="utf-8") for path in root.rglob("*.py"))
+        self.assertNotIn("/v1/chat/completions", source)
 
 
 if __name__ == "__main__":

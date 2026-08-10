@@ -96,7 +96,6 @@ const AGENT_DISCONNECTED_MESSAGE =
 
 /** Legacy untyped rejections from the pre-`codex_turn_send` bridge path. */
 const DETACHED_ERROR_TEXT = /codex session not started|is not attached|app-server (stopped|stdout closed)/i;
-const EMPTY_THREAD_RESUME_ERROR = /no rollout found|thread\/resume/i;
 
 /** Normalizes both the typed Tauri rejection and any thrown Error. */
 function codexTurnFailure(sessionId: string, reason: unknown): CodexTurnFailure {
@@ -119,11 +118,7 @@ function codexTurnFailure(sessionId: string, reason: unknown): CodexTurnFailure 
 }
 
 function turnFailureMessage(failure: CodexTurnFailure): string {
-	if (
-		failure.code === "codex_session_detached"
-		|| DETACHED_ERROR_TEXT.test(failure.message)
-		|| EMPTY_THREAD_RESUME_ERROR.test(`${failure.message} ${failure.detail}`)
-	) {
+	if (failure.code === "codex_session_detached" || DETACHED_ERROR_TEXT.test(failure.message)) {
 		return AGENT_DISCONNECTED_MESSAGE;
 	}
 	return failure.message;
@@ -326,7 +321,6 @@ export default function App() {
 	const [health, setHealth] = useState<RuntimeHealth | null>(null);
 	const [laguna, setLaguna] = useState<LagunaStatus | null>(null);
 	const [museReady, setMuseReady] = useState(false);
-	const initialLocalTargetResolvedRef = useRef(false);
 	const [sessions, setSessions] = useState<Session[]>([]);
 	const sessionsRef = useRef<Session[]>([]);
 	const [eventsBySession, setEventsBySession] = useState<Record<string, RuntimeEvent[]>>({});
@@ -410,10 +404,7 @@ export default function App() {
 			return window.localStorage.getItem("synth.inferenceRailOpen") !== "0";
 		}
 	);
-	const selectedTargetIsLocal = selectedTargetId === "local-laguna" || selectedTargetId === "local-muse-glimmer";
-	const inferenceMonitor = useInferenceMonitor({
-		visible: selectedTargetIsLocal && !["unloaded", "error", "unavailable"].includes(laguna?.phase ?? "")
-	});
+	const inferenceMonitor = useInferenceMonitor({ visible: selectedTargetId === "local-laguna" });
 	const [modelPerformance, setModelPerformance] = useState<ModelPerformanceSummary[]>([]);
 	useEffect(() => {
 		let disposed = false;
@@ -443,7 +434,7 @@ export default function App() {
 		}
 		return chosen;
 	}, [modelPerformance]);
-	const selectedModelMedianTps = selectedTargetIsLocal
+	const selectedModelMedianTps = selectedTargetId === "local-laguna"
 		? inferenceMonitor.snapshot?.rolling.decodeTpsP50 ?? null
 		: null;
 	const selectedPersistedPerformance = persistedPerformanceByTarget.get(selectedTargetId);
@@ -489,7 +480,6 @@ export default function App() {
 	const queuedCompactionRef = useRef(new Set<string>());
 	const sendToSessionRef = useRef<(sessionId: string, text: string, options?: { messageId?: string }) => Promise<boolean>>(async () => false);
 	const queueDrainStatusesRef = useRef(new Map<string, Session["status"]>());
-	const queueDrainEligibleRef = useRef(new Set<string>());
 	const queueDrainingRef = useRef(new Set<string>());
 	eventsBySessionRef.current = eventsBySession;
 	const allocateNativeSequence = useCallback((sessionId: string) => {
@@ -672,7 +662,7 @@ export default function App() {
 		const onAccountChanged = (event: Event) => {
 			const configured = (event as CustomEvent<{ apiKeyConfigured?: boolean }>).detail?.apiKeyConfigured;
 			if (typeof configured === "boolean") setApiKeyConfigured(configured);
-			void refreshHealth().catch(() => undefined);
+			else void refreshHealth().catch(() => undefined);
 			refreshAccountSummary();
 		};
 		window.addEventListener("synth:account-changed", onAccountChanged);
@@ -819,21 +809,9 @@ export default function App() {
 	useEffect(() => {
 		let disposed = false;
 		const refresh = () => void window.synthLaguna?.listModels().then((models) => {
-			// Installed Muse stays selectable while cold. Selecting it is what
-			// repairs/starts the pinned llama.cpp runtime; residency is tracked
-			// independently by LagunaStatus.
 			if (!disposed) setMuseReady(models.some((model) =>
-				model.modelId === "meta-models/Muse-Glimmer-30B-GGUF"
+				model.modelId === "meta-models/Muse-Glimmer-30B-GGUF" && model.runtimeReady
 			));
-			if (!disposed && !initialLocalTargetResolvedRef.current) {
-				const selected = models.find((model) => model.selected);
-				if (selected) {
-					initialLocalTargetResolvedRef.current = true;
-					setSelectedTargetId(selected.modelId === "meta-models/Muse-Glimmer-30B-GGUF"
-						? "local-muse-glimmer"
-						: "local-laguna");
-				}
-			}
 		}).catch(() => { if (!disposed) setMuseReady(false); });
 		refresh();
 		const interval = window.setInterval(refresh, 5_000);
@@ -1090,10 +1068,6 @@ export default function App() {
 			const previous = queueDrainStatusesRef.current.get(session.id);
 			const finished = session.status === "ready" || session.status === "interrupted" || session.status === "completed" || session.status === "failed";
 			if (previous === "running" && finished) {
-				if (!queueDrainEligibleRef.current.delete(session.id)) {
-					queueDrainStatusesRef.current.set(session.id, session.status);
-					continue;
-				}
 				const next = nextQueuedPrompt(session.id);
 				if (next && !queueDrainingRef.current.has(session.id)) {
 					queueDrainingRef.current.add(session.id);
@@ -1136,20 +1110,6 @@ export default function App() {
 		activeChatSession?.target.kind === "local" &&
 		(laguna?.phase === "loading" || !laguna?.loadedModel)
 	);
-	const activeInferencePhase = inferenceMonitor.snapshot?.active?.phase ?? null;
-	const activeChatProgressLabel = activeChatWarmingUp
-		? "Loading model…"
-		: activeInferencePhase === "queued"
-			? "Queued for local inference…"
-			: activeInferencePhase === "loading"
-				? "Loading model weights…"
-				: activeInferencePhase === "compiling"
-					? "Warming up model…"
-				: activeInferencePhase === "prefill"
-						? "Prefilling…"
-						: activeInferencePhase === "decode"
-							? "Generating…"
-							: "Working…";
 	const activeLocalModel = activeChatSession?.target.kind === "local";
 	/*
 	 * The rail takes a fixed-ish column out of the workbench. Below this width
@@ -1349,11 +1309,10 @@ export default function App() {
 					}
 					const sessionTargetId = executionTargetToUiId(session.target);
 					const pendingTargetId = isInternTargetId(selectedTargetId) ? sessionTargetId : selectedTargetId;
-					const threadHasHistory = threadHasHistoryFromEvents(eventsBySessionRef.current[sessionId] ?? []);
 					const sendPlan = planComposerSend({
 						pendingTargetId,
 						sessionTargetId,
-						threadHasHistory,
+						threadHasHistory: threadHasHistoryFromEvents(eventsBySessionRef.current[sessionId] ?? []),
 						turnRunning: session.status === "running",
 						hasPendingImages: Boolean(options?.images?.length),
 						destinationSupportsImages: false
@@ -1381,11 +1340,7 @@ export default function App() {
 						// turn that into an undefined request which Rust then treats as Ask.
 						approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : storedApproval.approvalPolicy,
 						sandbox: typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : storedApproval.sandbox,
-						threadId: typeof session.metadata.threadId === "string" ? session.metadata.threadId : undefined,
-						// A cold local conversation has a provisioned Codex thread but no
-						// rollout yet. Starting a fresh thread after the provider is warmed
-						// avoids trying to resume an empty pre-warm attachment.
-						forceNewThread: executionTarget.kind === "local" && !threadHasHistory
+						threadId: typeof session.metadata.threadId === "string" ? session.metadata.threadId : undefined
 					};
 					const sequence = allocateNativeSequence(sessionId);
 					const now = new Date().toISOString();
@@ -1393,23 +1348,11 @@ export default function App() {
 					// A retry reuses the same message id so the bubble is
 					// updated in place instead of duplicated.
 					const messageId = options?.messageId ?? `user-${sequence}`;
-					// Only turns initiated by this renderer launch may drain their queued
-					// successor. Startup reconciliation of a stale persisted `running`
-					// record must never send a prompt and warm a local model on its own.
-					queueDrainEligibleRef.current.add(sessionId);
 					setEventsBySession((current) => ({ ...current, [sessionId]: appendEvent(current[sessionId] ?? [], {
 						schemaVersion: "synth.desktop-runtime-event.v1", sessionId, sequence,
 						eventKind: "message.created", payload: { messageId, role: "user", content: text },
 						createdAt: now, source: "local"
 					}) }));
-					if (executionTarget.kind === "local") {
-						// The prompt is already visible. Mark the local turn as active before
-						// provider preparation so ChatTranscript renders the agent's
-						// `Loading model…` state while admission and warm-up are in flight.
-						setSessions((current) => current.map((item) => item.id === sessionId
-							? { ...item, target: executionTarget, status: "running", updatedAt: now }
-							: item));
-					}
 					const effort = turnStartEffortForExecutionTarget(executionTarget, modelKnobValues);
 					let started: CodexSessionInfo;
 					try {
@@ -1429,7 +1372,6 @@ export default function App() {
 								return nativeCodex.startTurn(sessionId, text, effort);
 							})();
 					} catch (reason) {
-						queueDrainEligibleRef.current.delete(sessionId);
 						failTurnStart(sessionId, text, messageId, reason);
 						return false;
 					}
@@ -1532,7 +1474,6 @@ export default function App() {
 	const onSelectTarget = useCallback((id: string) => {
 		if (isInternTargetId(id)) return;
 		if (id === "local-muse-glimmer" && !museReady) return;
-		initialLocalTargetResolvedRef.current = true;
 		// Model chip change only updates pendingTarget. Compact/rebind happen
 		// on the next send when pending ≠ session.target (modelSwitchPlan.ts).
 		const plan = planModelChipChange({ nextTargetId: id });
@@ -1545,7 +1486,7 @@ export default function App() {
 				const hit = models.find((model) => model.modelId === modelId);
 				if (!hit) throw new Error(`${modelId} is not installed`);
 				await window.synthLaguna?.setModelDirectory(hit.path);
-				setLaguna(await window.synthLaguna!.getStatus());
+				setLaguna(await window.synthLaguna!.reload());
 			}).catch((reason) => showToast(reason instanceof Error ? reason.message : String(reason)));
 		}
 	}, [museReady, showToast]);
@@ -1625,7 +1566,7 @@ export default function App() {
 
 	const onReloadLaguna = useCallback(async () => {
 		const bridge = window.synthLaguna;
-		if (!bridge) throw new Error("Local model controls are unavailable in this build");
+		if (!bridge) throw new Error("Laguna controls are unavailable in this build");
 		await bridge.reload();
 		const status = await bridge.getStatus();
 		setLaguna(status);
@@ -1635,17 +1576,6 @@ export default function App() {
 		}
 		return status;
 	}, [refreshHealth]);
-
-	const onFreeLocalMemory = useCallback(async () => {
-		const bridge = window.synthLaguna;
-		if (!bridge?.freeMemory) throw new Error("Local model controls are unavailable in this build");
-		const outcome = await bridge.freeMemory();
-		if (outcome.conflict || !outcome.released) {
-			throw new Error(outcome.detail ?? "Local model memory could not be freed");
-		}
-		setLaguna(await bridge.getStatus());
-		showToast(outcome.detail ?? "Local model memory freed");
-	}, [showToast]);
 
 	const openSearch = useCallback(() => {
 		if (!searchOpen && document.activeElement instanceof HTMLElement) {
@@ -1948,7 +1878,6 @@ export default function App() {
 						}
 					}}
 					onPauseToggle={() => setDownloadPaused((v) => !v)}
-					onFreeLocalMemory={onFreeLocalMemory}
 				/>
 
 				<main className="main-pane">
@@ -2000,7 +1929,7 @@ export default function App() {
 								className={`titlebar-icon-btn${inferenceRailOpen ? " active" : ""}`}
 								aria-label={inferenceRailOpen ? "Hide inference panel" : "Show inference panel"}
 								aria-pressed={inferenceRailOpen}
-								title="Local inference panel"
+								title="MLX sidecar inference panel"
 								data-testid="toggle-inference-rail"
 								onClick={() => {
 									setInferenceRailOpen((current) => {
@@ -2036,7 +1965,7 @@ export default function App() {
 							onBack={() => setView({ kind: "landing" })}
 							onReloadLaguna={onReloadLaguna}
 							health={health}
-							lagunaStatus={laguna}
+							lagunaPhase={laguna?.phase}
 							initialSection={view.section}
 							preferences={preferences}
 							onPreferencesChange={(next) => {
@@ -2182,7 +2111,6 @@ export default function App() {
 
 					{view.kind === "chat" && activeChat ? (
 						<div className={`workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}${showInferenceRail ? " with-inference" : ""}`}>
-							<div className="conversation-column">
 								<ChatTranscript
 									chat={activeChat}
 									openArtifactId={openArtifactId}
@@ -2194,7 +2122,6 @@ export default function App() {
 										onReject={(approvalId) => void controlActive("reject", { approvalId })}
 										running={activeChatRunning}
 										warmingUp={activeChatWarmingUp}
-										workingLabel={activeChatProgressLabel}
 										onStop={() => {
 											setQueueAfterStop(promptsForConversation(activeChat.id).length > 0);
 											void controlActive("cancel");
@@ -2202,11 +2129,15 @@ export default function App() {
 										activityMode={preferences.toolActivity.mode}
 										onActivityModeChange={(mode) => setPreferences(setToolActivityMode(mode))}
 								/>
-								{failedSend && failedSend.sessionId === activeChat.id ? (
+							{failedSend && failedSend.sessionId === activeChat.id ? (
 								<div
 									role="status"
 									data-testid="send-retry"
-									className="send-retry"
+									style={{
+										display: "flex", alignItems: "center", justifyContent: "space-between",
+										gap: 12, margin: "0 16px 8px", padding: "8px 12px", borderRadius: 10,
+										border: "1px solid currentColor", opacity: 0.9, fontSize: 13
+									}}
 								>
 									<span>{failedSend.message}</span>
 									<button type="button" data-testid="send-retry-button" onClick={retryFailedSend}>
@@ -2214,7 +2145,6 @@ export default function App() {
 									</button>
 								</div>
 							) : null}
-							</div>
 							{openArtifact ? (
 								<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
 							) : null}
@@ -2230,8 +2160,8 @@ export default function App() {
 							{showInferenceRail ? (
 								<aside className="inference-rail" data-testid="inference-rail" aria-label="Local inference monitor">
 									<div className="inference-rail-label">
-										<span>Local inference</span>
-										<small>On-device runtime · manages model memory, caches, and the local queue.</small>
+										<span>MLX sidecar</span>
+										<small>Owns local model memory, prompt caches, and the single-GPU queue.</small>
 									</div>
 									{/* `visible` drives subscribe/teardown, so a closed rail
 									    costs nothing. */}
@@ -2242,8 +2172,6 @@ export default function App() {
 											activeChatRunning && activeChatSession?.target.kind === "local"
 										)}
 										warmingUp={activeChatWarmingUp}
-										runtimePhase={laguna?.phase}
-										runtimeDetail={laguna?.detail}
 										onOpenSettings={() => setView({ kind: "settings", section: "inference" })}
 									/>
 								</aside>

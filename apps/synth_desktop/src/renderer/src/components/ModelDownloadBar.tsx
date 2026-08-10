@@ -5,13 +5,6 @@ type Props = {
 	onPauseToggle: () => void;
 };
 
-function displayModelName(value: string): string {
-	const name = value.split("/").at(-1)?.replace(/-(?:mlx|gguf)$/i, "") ?? value;
-	if (/^muse-glimmer-30b$/i.test(name)) return "Muse Glimmer 30B";
-	if (/^laguna-xs-2\.1-nvfp4$/i.test(name)) return "Laguna XS 2.1 NVFP4";
-	return name.replace(/[-_]+/g, " ");
-}
-
 function IconPause() {
 	return (
 		<svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden>
@@ -29,39 +22,24 @@ function IconPlay() {
 	);
 }
 
-function IconModel({ spinning = false }: { spinning?: boolean }) {
-	return (
-		<svg className={`model-status-icon${spinning ? " is-spinning" : ""}`} viewBox="0 0 20 20" fill="none" aria-hidden>
-			<path d="M6.2 4.5h8.3v10.2H6.2z" stroke="currentColor" strokeWidth="1.35" strokeLinejoin="round" />
-			<path d="M3.2 6.5H6m-2.8 3H6m-2.8 3H6M9 2v2.5m3 0V2m-3 12.7V18m3-3.3V18" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" />
-			<path d="M9 7.4h2.8v3H9z" stroke="currentColor" strokeWidth="1.15" />
-		</svg>
-	);
-}
-
 export function ModelDownloadBar({ state, onPauseToggle }: Props) {
 	const { model } = state;
-	const modelName = displayModelName(model.name);
 
 	if (model.status === "not_installed") {
-		const detail = model.detail || `${modelName} not connected`;
 		return (
 			<div className="download-bar is-warning" data-testid="model-status-missing">
 				<div className="download-label">
-					{/* The title carries the whole message; the row clamps to
-					    three lines rather than ellipsing away the fix. */}
-					<span title={detail}>{detail}</span>
+					<span>{model.detail || `${model.name} not connected`}</span>
 				</div>
 			</div>
 		);
 	}
 
 	if (model.status === "error") {
-		const detail = model.detail || `${modelName} failed to start`;
 		return (
 			<div className="download-bar is-error" data-testid="model-status-error">
 				<div className="download-label">
-					<span title={detail}>{detail}</span>
+					<span>{model.detail || `${model.name} failed to start`}</span>
 				</div>
 			</div>
 		);
@@ -69,36 +47,33 @@ export function ModelDownloadBar({ state, onPauseToggle }: Props) {
 
 	if (model.status === "ready") {
 		return (
-			<div className="download-bar model-status-row" data-testid="model-status-ready">
+			<div className="download-bar" data-testid="model-status-ready">
 				<div className="download-label">
-					<IconModel />
-					<span>{modelName} ready</span>
-				</div>
-			</div>
-		);
-	}
-
-	if (model.status === "unloaded") {
-		return (
-			<div className="download-bar model-status-row is-unloaded" data-testid="model-status-unloaded">
-				<div className="download-label">
-					<IconModel />
-					<span title={model.detail}>{modelName} · Memory free</span>
+					<span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+						<span className="ready-dot" aria-hidden />
+						{model.name} ready
+					</span>
 				</div>
 			</div>
 		);
 	}
 
 	if (model.status === "starting" || model.status === "loading") {
+		const label =
+			model.detail ||
+			(model.status === "starting"
+				? `Starting ${model.name}…`
+				: `Loading ${model.name}…`);
 		return (
 			<div
-				className={`download-bar model-status-row is-${model.status}`}
+				className={`download-bar is-${model.status}`}
 				data-testid={`model-status-${model.status}`}
-				aria-label={model.detail || `Loading ${modelName}`}
 			>
-				<div className="download-label" role="status" aria-live="polite" aria-busy="true">
-					<IconModel spinning />
-					<span>Loading model…</span>
+				<div className="progress-track is-indeterminate" role="progressbar" aria-busy="true">
+					<div className="progress-fill progress-indeterminate" />
+				</div>
+				<div className="download-label">
+					<span>{label}</span>
 				</div>
 			</div>
 		);
@@ -121,7 +96,7 @@ export function ModelDownloadBar({ state, onPauseToggle }: Props) {
 			</div>
 			<div className="download-label">
 				<span>
-					Downloading {modelName}
+					Downloading {model.name}
 					{pct > 0 ? ` · ${pct}%` : ""}
 				</span>
 				<button

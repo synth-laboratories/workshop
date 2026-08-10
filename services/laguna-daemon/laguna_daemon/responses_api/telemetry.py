@@ -57,23 +57,10 @@ class GenerationTiming:
     last_token_at: float | None = None
     completed_at: float | None = None
     prompt_tokens: int = 0
-    prompt_tokens_processed: int | None = None
     cached_tokens: int = 0
     output_tokens: int = 0
     measured_decode_tps: float | None = None
     phase: str = "queued"
-
-    def live_prefill_tokens_per_second(self, now: float | None = None) -> float | None:
-        if self.phase != "prefill" or self.admitted_at is None:
-            return self.prefill_tokens_per_second()
-        processed = self.prompt_tokens_processed
-        if processed is None:
-            return None
-        elapsed = (now or time.monotonic()) - self.admitted_at
-        computed = max(0, processed - self.cached_tokens)
-        if elapsed <= 0 or computed <= 0:
-            return None
-        return round(computed / elapsed, 3)
 
     def ttft_ms(self) -> float | None:
         if self.first_token_at is None:

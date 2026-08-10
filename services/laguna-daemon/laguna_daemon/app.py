@@ -126,7 +126,7 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
     def models_payload() -> dict[str, Any]:
         mid = model_id()
         name = mid.split("/")[-1].replace("-", " ")
-        is_muse = cfg.is_muse
+        is_muse = mid == "meta-models/Muse-Glimmer-30B-GGUF"
         runtime_description = (
             "Local Muse Glimmer 4-bit K-quant served through llama.cpp Metal with DFlash."
             if is_muse
@@ -155,7 +155,7 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
             "context_length": cfg.context_length,
             "details": {
                 "family": "muse_glimmer" if is_muse else "poolside",
-                "format": "gguf" if is_muse else "safetensors",
+                "format": "safetensors",
                 "context_length": cfg.context_length,
             },
         }
@@ -211,44 +211,33 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        """Authoritative, low-frequency readiness and residency.
+        """Authoritative, low-frequency residency.
 
-        Every field is sourced from the bound backend. For in-process weights
-        that is the daemon's own state; for a GGUF selection it includes what
-        the supervisor-owned engine actually reports, so the wire-surface flags
-        can fail closed instead of advertising a surface that cannot answer.
+        Every field is sourced from the in-process MLX backend. There is no
+        second runtime whose process state could disagree with this.
         """
-        # The engine probe comes first: for an out-of-process backend it is what
-        # establishes residency, so reading residency before it would report
-        # "not loaded" for a running engine until some later call refreshed it.
-        engine = await responses_service.engine_status()
         residency = responses_service.residency()
         resident = bool(residency and residency["loaded"])
-        diagnostics = (await responses_service.health()).get("runtime") or {}
-
-        # A surface is advertised only while it can complete a turn. Chat and
-        # Responses are peers over one backend, so they are necessarily equal:
-        # any state that breaks one breaks both.
-        surfaces_ready = engine is None or engine["state"] in {"ready", "loading"}
-        if engine is not None and engine["state"] in {"unreachable", "error"}:
-            status = "error"
-        elif diagnostics.get("loading") or (engine is not None and engine["state"] == "loading"):
-            status = "loading"
-        else:
+        loaded = cfg.default_model if resident else None
+        memory = 0
+        if resident:
+            model_path = cfg.resolve_model_path(cfg.default_model)
+            if model_path is not None:
+                memory = sum(
+                    file.stat().st_size
+                    for file in model_path.rglob("*")
+                    if file.is_file()
+                )
+        return {
             # Weights load lazily on first use, so an unloaded daemon is still
-            # ready to serve; readiness is about the surface, not residency.
-            status = "ok"
-
-        payload: dict[str, Any] = {
-            "status": status,
-            "responsesApi": surfaces_ready,
-            "chatCompletionsApi": surfaces_ready,
+            # ready to serve; readiness is about the daemon, not residency.
+            "status": "ok",
+            "responsesApi": True,
+            "chatCompletionsApi": True,
             "modelsDirectory": str(cfg.models_dir),
             "defaultModel": cfg.default_model,
-            "loadedModel": cfg.default_model if resident else None,
-            # Measured allocator bytes, or null when the weights live where
-            # this process cannot measure them. Never the size on disk.
-            "memoryBytes": responses_service.memory_bytes(),
+            "loadedModel": loaded,
+            "memoryBytes": memory,
             "idleSeconds": residency["idle_seconds"] if residency else None,
             "idleUnloadAfterSeconds": responses_service.idle_unload_after_seconds,
             "lastUsedAt": residency["last_used_at"] if residency else None,
@@ -257,10 +246,6 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
             "publicUrl": cfg.public_url,
             "responses": await responses_service.health(),
         }
-        if engine is not None:
-            payload["engine"] = engine
-            payload["detail"] = engine["detail"]
-        return payload
 
     @app.get("/v1/models")
     async def list_models() -> dict[str, Any]:
@@ -449,14 +434,7 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
     @app.post("/v1/synth/model/unload")
     async def unload_model() -> Any:
         """Release weights on request, honoring the eviction guard."""
-        try:
-            released = await responses_service.unload_now()
-        except ResponsesError as error:
-            # A backend whose weights live in another process declines with its
-            # own reason; reporting the generic in-flight conflict instead
-            # would send the caller looking for a generation that is not there.
-            return _responses_error(error)
-        if released:
+        if await responses_service.unload_now():
             return {"unloaded": True, "model": cfg.default_model}
         return JSONResponse(
             status_code=409,

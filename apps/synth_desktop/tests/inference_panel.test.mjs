@@ -153,7 +153,7 @@ test("live generation renders phase, rate, queue and token chips", () => {
 	assert.match(html, />decode</);
 	assert.match(html, /12\.4 tok\/s/);
 	assert.match(html, /18\.2 s/);
-	assert.match(html, /LOADED/);
+	assert.match(html, /RESIDENT/);
 	assert.match(html, /20\.1 GB/);
 	assert.match(html, /2\/8/); // queue depth / capacity
 	assert.match(html, /12,198/); // prompt tokens
@@ -231,7 +231,7 @@ test("unloaded state reports no residency and disables Free now", () => {
 
 test("error state is announced and offers a retry", () => {
 	const html = render({
-	monitor: monitor({ state: "error", error: "The local inference engine is unreachable at http://127.0.0.1:7333" })
+		monitor: monitor({ state: "error", error: "Laguna is unreachable at http://127.0.0.1:7333" })
 	});
 	assert.match(html, /role="alert"/);
 	assert.match(html, /data-testid="inference-error"/);
@@ -472,7 +472,6 @@ test("formatters answer Unavailable instead of inventing values", () => {
 	assert.equal(formatQueue(2, null), "2");
 	assert.equal(formatQueue(0, 8), "0/8");
 	assert.equal(compactModelName("poolside/Laguna-XS-2.1-NVFP4-mlx"), "Laguna XS 2.1");
-	assert.equal(compactModelName("meta-models/Muse-Glimmer-30B-GGUF"), "Muse Glimmer 30B");
 	assert.equal(compactModelName(null), "Local model");
 });
 

@@ -1,6 +1,5 @@
 import type { AppEvent, ExecutionTarget, RuntimeEvent, Session } from "@synth/runtime-protocol";
 import type { CodexEvent, CodexSessionStart, PersistedCodexSession } from "../env";
-import { MUSE_GLIMMER_MODEL } from "../types/landing";
 
 export type ApprovalMode = "ask" | "accept-edits" | "allow-all";
 export type ApprovalPolicy = "untrusted" | "on-request" | "never";
@@ -33,26 +32,17 @@ export const DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:7333";
 
 export function codexStartRequest(
 	sessionId: string, workspace: string, target: ExecutionTarget, permissions: ApprovalMode | PermissionConfig = "ask",
-	autoCompactTokenLimits: Record<string, number> = { lagunaXs: 150_000, museGlimmer: 100_000, lagunaS: 250_000, luna: 250_000 },
+	autoCompactTokenLimits: Record<string, number> = { lagunaXs: 150_000, lagunaS: 250_000, luna: 250_000 },
 	localBaseUrl: string = DEFAULT_LOCAL_BASE_URL
 ): CodexSessionStart {
 	const approval = typeof permissions === "string" ? approvalModeConfig(permissions) : permissions;
 	if (target.kind === "intern") throw new Error("Intern sessions are owned by Synth Cloud");
 	if (target.kind === "local") {
-		// Both local models are served by the same daemon on the same port over
-		// the same wire API; only the model identity and its context budget
-		// differ. Sending Laguna XS's id and label for a Muse session would
-		// mislabel the provider and hand Codex the wrong compaction threshold.
-		const isMuse = target.model === MUSE_GLIMMER_MODEL;
-		const autoCompactTokenLimit = isMuse
-			? autoCompactTokenLimits.museGlimmer ?? 100_000
-			: autoCompactTokenLimits.lagunaXs ?? 150_000;
+		const autoCompactTokenLimit = autoCompactTokenLimits.lagunaXs ?? 150_000;
 		return {
 			sessionId, workspace, baseUrl: localBaseUrl, apiKey: "",
-			model: isMuse ? MUSE_GLIMMER_MODEL : "poolside/Laguna-XS-2.1-NVFP4-mlx",
-			providerName: isMuse ? "local-muse-glimmer" : "local-laguna",
-			providerTitle: isMuse ? "Muse Glimmer Responses" : "Laguna XS Responses",
-			providerEnvKey: "SYNTH_LAGUNA_API_KEY",
+			model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
+			providerTitle: "Laguna XS Responses", providerEnvKey: "SYNTH_LAGUNA_API_KEY",
 			autoCompactTokenLimit, ...approval
 		};
 	}
@@ -82,11 +72,7 @@ export function createCodexSession(
 	const approvalMode = approvalModeFromConfig(approval.approvalPolicy, approval.sandbox);
 	const now = new Date().toISOString();
 	return {
-		id,
-		title: title || (target.kind === "local"
-			? (target.model === MUSE_GLIMMER_MODEL ? "Muse Glimmer" : "Laguna XS")
-			: target.kind === "remote" ? target.model : "Intern"),
-		target,
+		id, title: title || (target.kind === "local" ? "Laguna XS" : target.kind === "remote" ? target.model : "Intern"), target,
 		projectId, createdAt: now, updatedAt: now, status: "ready", latestCursor: 0,
 		metadata: { runtime: "codex-app-server", workspace, approvalMode, ...approval }
 	};
@@ -94,14 +80,10 @@ export function createCodexSession(
 
 export function restoreCodexSession(value: PersistedCodexSession): Session {
 	const now = new Date().toISOString();
-	const muse = value.providerName === "local-muse-glimmer";
-	const local = muse || value.providerName === "local-laguna";
+	const local = value.providerName === "local-laguna";
 	const synthCloud = value.providerName === "synth-cloud";
 	const target: ExecutionTarget = local
-		// A restored session must come back on the model it ran on. Treating
-		// every local session as Laguna XS silently moved a Muse thread onto
-		// different weights on reload.
-		? { kind: "local", model: muse ? MUSE_GLIMMER_MODEL : "laguna-xs-2.1", adapter: null }
+		? { kind: "local", model: "laguna-xs-2.1", adapter: null }
 		: {
 			kind: "remote",
 			provider: synthCloud ? "synth-cloud" : "openrouter",
@@ -116,7 +98,7 @@ export function restoreCodexSession(value: PersistedCodexSession): Session {
 		: "ready";
 	return {
 		id: value.sessionId,
-		title: value.title || (local ? (muse ? "Muse Glimmer" : "Laguna XS") : value.model),
+		title: value.title || (local ? "Laguna XS" : value.model),
 		target,
 		projectId: null,
 		createdAt: now,

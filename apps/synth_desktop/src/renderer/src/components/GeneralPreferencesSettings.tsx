@@ -1,8 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ActiveEnterAction, DesktopPreferences, ThemePreference, ToolActivityMode } from "../preferences";
 import {
-	MUSE_GLIMMER_COMPACT_CEILING,
-	MUSE_GLIMMER_CONTEXT_LENGTH,
 	applyDefaultLayout,
 	listArchivedConversationIds,
 	resetLayoutToDefault,
@@ -202,7 +200,7 @@ export function GeneralPreferencesSettings({
 
 			<section className="pref-section" aria-labelledby="pref-agent-context" data-testid="settings-agent-context">
 				<h3 id="pref-agent-context">Agent context</h3>
-				<p className="settings-runtime-copy">Laguna S and Luna default to 250,000 tokens; local Laguna XS defaults to 150,000 and local Muse Glimmer to 100,000 within its smaller 131,072-token context. Codex summarizes older context at the selected threshold; changes apply on the next turn.</p>
+				<p className="settings-runtime-copy">Laguna S and Luna default to 250,000 tokens; local Laguna XS defaults to 150,000. Codex summarizes older context at the selected threshold; changes apply on the next turn.</p>
 				<div className="pref-grid">
 					<NumericSetting
 						label="Laguna XS (262,144 max)"
@@ -211,14 +209,6 @@ export function GeneralPreferencesSettings({
 						max={235_929}
 						testId="auto-compact-token-limit-laguna-xs"
 						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit("lagunaXs", limit))}
-					/>
-					<NumericSetting
-						label={`Muse Glimmer (${MUSE_GLIMMER_CONTEXT_LENGTH.toLocaleString()} max)`}
-						value={preferences.agentContext.autoCompactTokenLimits.museGlimmer}
-						min={16_000}
-						max={MUSE_GLIMMER_COMPACT_CEILING}
-						testId="auto-compact-token-limit-muse-glimmer"
-						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit("museGlimmer", limit))}
 					/>
 					<NumericSetting
 						label="Laguna S (1,050,000 max)"

@@ -81,16 +81,9 @@ export type LagunaDownloadProgress = {
 	totalBytes?: number;
 };
 
-export type LagunaUnloadOutcome = {
-	released: boolean;
-	conflict: boolean;
-	detail: string | null;
-};
-
 export type LagunaBridge = {
 	getStatus(): Promise<LagunaStatus>;
 	reload(): Promise<LagunaStatus>;
-	freeMemory?(): Promise<LagunaUnloadOutcome>;
 	onStatus(listener: (status: LagunaStatus) => void): () => void;
 	listModels(): Promise<LagunaModelHit[]>;
 	chooseModelDirectory(): Promise<string | null>;
@@ -195,6 +188,8 @@ export type SynthConfigBridge = {
 		backendUrl: string;
 		envFile: string;
 		apiKeyEnv: string;
+		apiKey?: string;
+		openrouterApiKey?: string;
 	}): Promise<SynthBackendSettings>;
 	listModelMultiAgent(): Promise<ModelMultiAgentSetting[]>;
 	updateModelMultiAgent(request: {
@@ -209,6 +204,7 @@ export type CodexSessionStart = {
 	sessionId: string;
 	workspace: string;
 	baseUrl: string;
+	apiKey: string;
 	model: string;
 	providerName: string;
 	providerTitle: string;
@@ -216,7 +212,6 @@ export type CodexSessionStart = {
 	approvalPolicy?: string;
 	sandbox?: string;
 	threadId?: string;
-	forceNewThread?: boolean;
 	multiAgentVersion?: MultiAgentVersion;
 	autoCompactTokenLimit: number;
 };

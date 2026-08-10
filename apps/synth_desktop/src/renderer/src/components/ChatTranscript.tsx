@@ -22,7 +22,6 @@ type Props = {
 	onReject?: (approvalId: string) => void;
 	running?: boolean;
 	warmingUp?: boolean;
-	workingLabel?: string;
 	onStop?: () => void;
 	activityMode?: ToolActivityMode;
 	onActivityModeChange?: (mode: ToolActivityMode) => void;
@@ -90,8 +89,7 @@ function ActivityLine({
 	const isVisualCue = Boolean(onToggleVisual) || line.kind === "visual";
 	const isFile =
 		Boolean(line.path) || line.kind === "file_read" || line.kind === "file_write";
-	const detail = line.detail?.trim() || "";
-	const expandable = Boolean(detail) && !isVisualCue && !isFile;
+	const expandable = Boolean(line.detail) && !isVisualCue && !isFile;
 	if (line.kind === "approval" && line.approvalId) {
 		const approvalId = line.approvalId ?? line.id;
 		return (
@@ -277,11 +275,11 @@ function ActivityLine({
 			</button>
 			{open ? (
 				<pre id={`activity-detail-${line.id}`} className="local-activity-detail" data-testid={`activity-detail-${line.id}`}>
-					{detail}
+					{line.detail}
 				</pre>
-			) : !isReasoning ? (
+			) : (
 				<div className="local-activity-wave" aria-hidden />
-			) : null}
+			)}
 		</div>
 	);
 }
@@ -484,7 +482,6 @@ export function ChatTranscript({
 	onReject,
 	running = false,
 	warmingUp = false,
-	workingLabel,
 	onStop,
 	activityMode = "grouped",
 	onActivityModeChange
@@ -741,14 +738,9 @@ export function ChatTranscript({
 						})}
 						{renderPresented(presentedActive, [], false, running)}
 						{running ? (
-							<div className={`model-working${warmingUp ? " is-warming" : ""}`} role="status" aria-live="polite" data-testid="model-working">
-								{warmingUp ? (
-									<svg className="model-working-icon" viewBox="0 0 20 20" fill="none" aria-hidden>
-										<path d="M6.2 4.5h8.3v10.2H6.2z" stroke="currentColor" strokeWidth="1.35" strokeLinejoin="round" />
-										<path d="M3.2 6.5H6m-2.8 3H6m-2.8 3H6M9 2v2.5m3 0V2m-3 12.7V18m3-3.3V18" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" />
-									</svg>
-								) : <span className="model-working-dots" aria-hidden><i /><i /><i /></span>}
-								<span>{workingLabel ?? (warmingUp ? "Loading model…" : "Working…")}</span>
+							<div className="model-working" role="status" aria-live="polite" data-testid="model-working">
+								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>
+								<span>{warmingUp ? "Warming up…" : "Working…"}</span>
 								<button type="button" onClick={onStop} aria-label="Stop generating">Stop</button>
 							</div>
 						) : null}

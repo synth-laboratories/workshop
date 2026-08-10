@@ -33,7 +33,6 @@ type Props = {
 	onRetryAccount?: () => void;
 	onSignOut?: () => void | Promise<void>;
 	onPauseToggle: () => void;
-	onFreeLocalMemory?: () => Promise<void>;
 	onRenameChat?: (id: string, title: string) => void;
 	onPinChat?: (id: string, pinned: boolean) => void;
 	onArchiveChat?: (id: string, archived: boolean) => void;
@@ -135,7 +134,6 @@ export function Sidebar({
 	onRetryAccount,
 	onSignOut,
 	onPauseToggle,
-	onFreeLocalMemory,
 	onRenameChat,
 	onPinChat,
 	onArchiveChat,
@@ -156,37 +154,19 @@ export function Sidebar({
 
 	useEffect(() => {
 		if (!accountMenuOpen) return;
-		requestAnimationFrame(() => {
-			accountMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-		});
 		const closeOutside = (event: MouseEvent) => {
 			if (!accountMenuRef.current?.contains(event.target as Node)) setAccountMenuOpen(false);
 		};
-		const handleMenuKey = (event: KeyboardEvent) => {
-			if (event.key === "Escape") {
-				setAccountMenuOpen(false);
-				requestAnimationFrame(() => accountTriggerRef.current?.focus());
-				return;
-			}
-			if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-			const items = Array.from(accountMenuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
-			if (!items.length) return;
-			event.preventDefault();
-			const current = items.indexOf(document.activeElement as HTMLElement);
-			const next = event.key === "Home"
-				? 0
-				: event.key === "End"
-					? items.length - 1
-					: event.key === "ArrowUp"
-						? (current <= 0 ? items.length - 1 : current - 1)
-						: (current + 1) % items.length;
-			items[next]?.focus();
+		const closeOnEscape = (event: KeyboardEvent) => {
+			if (event.key !== "Escape") return;
+			setAccountMenuOpen(false);
+			requestAnimationFrame(() => accountTriggerRef.current?.focus());
 		};
 		document.addEventListener("mousedown", closeOutside);
-		document.addEventListener("keydown", handleMenuKey);
+		document.addEventListener("keydown", closeOnEscape);
 		return () => {
 			document.removeEventListener("mousedown", closeOutside);
-			document.removeEventListener("keydown", handleMenuKey);
+			document.removeEventListener("keydown", closeOnEscape);
 		};
 	}, [accountMenuOpen]);
 
@@ -427,10 +407,8 @@ export function Sidebar({
 			</div>
 
 			<div className="sidebar-footer">
-				<LocalModelResidency status={lagunaStatus} onFreeMemory={onFreeLocalMemory} />
-				{lagunaStatus?.phase === "ready" && lagunaStatus.loadedModel
-					? null
-					: <ModelDownloadBar state={state} onPauseToggle={onPauseToggle} />}
+				<LocalModelResidency status={lagunaStatus} />
+				<ModelDownloadBar state={state} onPauseToggle={onPauseToggle} />
 				<div className="account-footer" ref={accountMenuRef}>
 					{accountMenuOpen ? (
 						<div id="account-menu-panel" className="account-menu" role="menu" data-testid="account-menu">

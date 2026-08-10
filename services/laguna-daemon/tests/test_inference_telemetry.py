@@ -30,8 +30,6 @@ ACTIVE_FIELDS = {
     "firstTokenAt",
     "lastTokenAt",
     "promptTokens",
-    "promptTokensProcessed",
-    "uncachedTokens",
     "cachedTokens",
     "outputTokens",
     "cacheHitRatio",

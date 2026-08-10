@@ -7,7 +7,6 @@ export type LandingScenarioId =
 
 export type ModelStatus =
 	| "not_installed"
-	| "unloaded"
 	| "starting"
 	| "loading"
 	| "downloading"
@@ -194,7 +193,7 @@ export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 	{
 		id: "local-muse-glimmer",
 		label: "Muse Glimmer 30B",
-		description: "Local · GGUF · Metal · DFlash",
+		description: "Local · GGUF · Metal · vision · DFlash",
 		group: "local"
 	},
 	{

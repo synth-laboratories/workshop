@@ -39,11 +39,11 @@ const MUSE_GLIMMER = {
 const MODEL_CATALOG = [LAGUNA_XS, MUSE_GLIMMER];
 
 type Props = {
-	lagunaStatus?: LagunaStatus | null;
+	lagunaPhase?: string | null;
 	onReloadLaguna: () => Promise<LagunaStatus>;
 };
 
-export function OnDeviceModelsSettings({ lagunaStatus, onReloadLaguna }: Props) {
+export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 	const [hits, setHits] = useState<LagunaModelHit[]>([]);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -70,7 +70,6 @@ export function OnDeviceModelsSettings({ lagunaStatus, onReloadLaguna }: Props) 
 	useEffect(() => window.synthLaguna?.onDownloadProgress?.(setDownloadProgress), []);
 
 	const selected = hits.find((hit) => hit.selected) ?? null;
-	const selectedIsMuse = selected?.modelId === MUSE_GLIMMER.modelId;
 	const modelsRoot = selected?.modelsRoot ?? hits[0]?.modelsRoot ?? "~/.synth-desktop/models";
 	const catalogPaths = new Set(MODEL_CATALOG.map((model) => model.modelId));
 	const alternates = hits.filter((hit) => !catalogPaths.has(hit.modelId) || (hit.modelId === selected?.modelId && hit.path !== selected.path));
@@ -81,14 +80,17 @@ export function OnDeviceModelsSettings({ lagunaStatus, onReloadLaguna }: Props) 
 		try {
 			await window.synthLaguna?.downloadModel(modelId);
 			setHits((await window.synthLaguna?.listModels()) ?? []);
+			setReloadState("reloading");
+			setReloadDetail("Starting the selected model…");
+			const status = await onReloadLaguna();
 			setReloadState("ready");
-			setReloadDetail("Installed and selected. Memory stays free until the first prompt.");
+			setReloadDetail(status.detail ?? "Model is ready.");
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
 		} finally {
 			setBusy(false);
 		}
-	}, []);
+	}, [onReloadLaguna]);
 
 	const deleteModel = useCallback(async (modelId: string) => {
 		const model = MODEL_CATALOG.find((candidate) => candidate.modelId === modelId);
@@ -135,39 +137,16 @@ export function OnDeviceModelsSettings({ lagunaStatus, onReloadLaguna }: Props) 
 
 	const reloadLaguna = async () => {
 		setReloadState("reloading");
-		setReloadDetail(selectedIsMuse ? "Warming up Muse Glimmer…" : "Warming up Laguna XS…");
+		setReloadDetail("Reloading Laguna XS…");
 		try {
 			const status = await onReloadLaguna();
 			setReloadState("ready");
-			setReloadDetail(status.detail ?? (selectedIsMuse ? "Muse Glimmer is ready." : "Laguna XS is ready."));
+			setReloadDetail(status.detail ?? "Laguna XS is ready.");
 		} catch (reason) {
 			setReloadState("error");
 			setReloadDetail(reason instanceof Error ? reason.message : String(reason));
 		}
 	};
-
-	const liveStatus = (() => {
-		if (!lagunaStatus) return null;
-		if (lagunaStatus.phase === "starting") {
-			return { state: "reloading", text: lagunaStatus.detail || (selectedIsMuse ? "Starting Muse Glimmer…" : "Starting Laguna XS…") };
-		}
-		if (lagunaStatus.phase === "loading") {
-			return { state: "reloading", text: lagunaStatus.detail || (selectedIsMuse ? "Loading Muse Glimmer weights…" : "Loading Laguna XS weights…") };
-		}
-		if (lagunaStatus.phase === "ready") {
-			return { state: "ready", text: lagunaStatus.detail || (selectedIsMuse ? "The Muse engine is serving." : "The Laguna engine is serving.") };
-		}
-		if (lagunaStatus.phase === "unloaded") {
-			return { state: "unloaded", text: selectedIsMuse ? "Muse is installed and its memory is free. Reload to warm it." : "Local model memory is free. Reload to warm it." };
-		}
-		if (lagunaStatus.phase === "error" || lagunaStatus.phase === "unavailable") {
-			return { state: "error", text: lagunaStatus.detail || "The local inference engine is unavailable." };
-		}
-		return null;
-	})();
-	const displayedStatus = liveStatus ?? (reloadState !== "idle" && reloadDetail
-		? { state: reloadState, text: reloadDetail }
-		: null);
 
 	return (
 		<div className="on-device-models" data-testid="laguna-model-locations">
@@ -188,14 +167,13 @@ export function OnDeviceModelsSettings({ lagunaStatus, onReloadLaguna }: Props) 
 					>
 						{reloadState === "reloading" ? "Reloading…" : "Reload"}
 					</button>
-					{displayedStatus ? (
+					{reloadState !== "idle" ? (
 						<p
 							data-testid="laguna-reload-status"
-							role={displayedStatus.state === "error" ? "alert" : "status"}
-							aria-live="polite"
-							data-state={displayedStatus.state}
+							role={reloadState === "error" ? "alert" : "status"}
+							data-state={reloadState}
 						>
-							{displayedStatus.text}
+							{reloadState === "reloading" && lagunaPhase ? `Laguna ${lagunaPhase}…` : reloadDetail}
 						</p>
 					) : null}
 				</div>
@@ -210,7 +188,7 @@ export function OnDeviceModelsSettings({ lagunaStatus, onReloadLaguna }: Props) 
 			<section className="model-download-guide" aria-labelledby="model-download-guide-title">
 				<div>
 					<strong id="model-download-guide-title">Managed downloads</strong>
-					<p>Choose Download and keep Workshop open. Runtime setup, verified model artifacts, and selection happen automatically; weights load on the first prompt.</p>
+					<p>Choose Download and keep Workshop open. Runtime setup, verified model artifacts, selection, and startup happen automatically.</p>
 				</div>
 				<ul>
 					<li>Laguna XS: 20.1 GB download · about 30 GB memory</li>
@@ -351,7 +329,7 @@ export function OnDeviceModelsSettings({ lagunaStatus, onReloadLaguna }: Props) 
 				</div>
 			) : null}
 
-			<p className="model-locations-note">Downloads, runtime setup, cold selection, first-prompt startup, and removal are managed here. Muse includes its 17 GB 4-bit K-quant, vision projector, and DFlash speculator.</p>
+			<p className="model-locations-note">Downloads, runtime setup, selection, startup, and removal are managed here. Muse includes its 17 GB 4-bit K-quant, vision projector, and DFlash speculator.</p>
 		</div>
 	);
 }

@@ -176,12 +176,7 @@ class LiveArchitectureTests(LiveDaemonTestCase):
         self.assertEqual(health["responses"]["backend"], "NativeMlxBackend")
 
     def test_no_second_local_server_is_listening(self) -> None:
-        """An MLX selection is self-contained: nothing on the legacy port.
-
-        Scoped to this module's live MLX daemon. A GGUF selection does have a
-        supervisor-owned engine on that port, which the daemon drives as a
-        backend and never proxies to; `tests/test_muse_llama_cpp.py` covers it.
-        """
+        """The daemon must be self-contained: nothing on the legacy port."""
         with self.assertRaises(httpx.ConnectError):
             httpx.get("http://127.0.0.1:7334/health", timeout=3)
 

@@ -459,12 +459,11 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
                 .into(),
         ),
         thread_id: None,
-        force_new_thread: false,
         multi_agent_version: None,
         auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
         writable_roots: Vec::new(),
     };
-    start = prepare_start(&deps.laguna, start, false).await?;
+    start = prepare_start(&deps.laguna, start).await?;
     let info = deps
         .codex
         .start(deps.app.clone(), start)
@@ -479,24 +478,14 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
 async fn prepare_start(
     laguna: &LagunaManager,
     mut request: CodexSessionStartRequest,
-    ensure_local_runtime: bool,
 ) -> Result<CodexSessionStartRequest> {
-    if ensure_local_runtime && matches!(
-        request.provider_name.as_deref(),
-        Some("local-laguna" | "local-muse-glimmer")
-    ) {
+    if request.provider_name.as_deref() == Some("local-laguna") {
         let root = crate::runtime::workshop_root()?;
-        laguna.select_model_id_cold(&request.model).await?;
         request.base_url = laguna
             .ensure(&root)
             .await?
-            .ok_or_else(|| anyhow!("The local Responses server is unavailable"))?;
-        request.api_key = laguna
-            .api_key()
-            .filter(|key| !key.trim().is_empty())
-            .ok_or_else(|| {
-                anyhow!("The local runtime could not initialize its private loopback connection")
-            })?;
+            .ok_or_else(|| anyhow!("Laguna Responses server is unavailable"))?;
+        request.api_key = laguna.api_key().unwrap_or_default();
     } else if request
         .provider_name
         .as_deref()
@@ -572,12 +561,11 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
         approval_policy: Some("never".into()),
         sandbox: Some("workspace-write".into()),
         thread_id: None,
-        force_new_thread: false,
         multi_agent_version: None,
         auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
         writable_roots: Vec::new(),
     };
-    start = prepare_start(&deps.laguna, start, true).await?;
+    start = prepare_start(&deps.laguna, start).await?;
     let info = deps
         .codex
         .send_turn(

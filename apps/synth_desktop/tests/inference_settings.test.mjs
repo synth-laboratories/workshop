@@ -216,7 +216,7 @@ test("the ready form renders every settings group with the daemon's values", () 
 	assert.match(html, /aria-checked="true"[^>]*data-testid="inference-reasoning-none"/);
 	assert.match(html, /aria-checked="false"[^>]*data-testid="inference-reasoning-high"/);
 	// The footer points at the panel instead of duplicating live stats.
-	assert.match(html, /local inference panel/);
+	assert.match(html, /MLX sidecar inference panel/);
 	assert.doesNotMatch(html, /tok\/s/);
 });
 
@@ -276,7 +276,7 @@ test("the panel header renders a labelled settings button only when a target exi
 test("the settings button deep-links to the Settings view and the rail explains the sidecar", () => {
 	const app = readFileSync(join(appRoot, "src/renderer/src/App.tsx"), "utf8");
 	assert.match(app, /onOpenSettings=\{\(\) => setView\(\{ kind: "settings", section: "inference" \}\)\}/);
-	assert.match(app, /On-device runtime · manages model memory, caches, and the local queue\./);
+	assert.match(app, /Owns local model memory, prompt caches, and the single-GPU queue\./);
 });
 
 test("Settings hosts an Inference section after Models and follows deep links", () => {

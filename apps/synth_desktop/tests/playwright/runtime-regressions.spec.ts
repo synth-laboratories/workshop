@@ -477,19 +477,20 @@ test("sidebar exposes the next local-model free time and countdown", async ({ pa
 	await page.reload();
 
 	const residency = page.getByTestId("model-residency");
-	const summary = residency.locator(".model-residency-summary");
+	const summary = residency.getByRole("button");
 	await expect(residency).toBeVisible();
-	await expect(summary).toContainText("Laguna XS 2.1 NVFP4 · 16 GB");
-	await expect(summary).toHaveAccessibleName(/last prompt: 1m ago/i);
-	await expect(summary).toHaveAccessibleName(/Frees automatically in ~4 min/i);
-	await summary.hover();
+	await expect(summary).toContainText("Laguna-XS-2.1-NVFP4");
+	await expect(summary).toContainText("16.0 GB resident");
+	await expect(summary).toHaveAccessibleName(/last prompt 1m ago/i);
+	await expect(summary).toHaveAccessibleName(/Frees at .+ · in 3m 5[3-5]s/i);
+	await summary.click();
 
-	const tooltip = page.getByTestId("model-residency-tooltip");
-	await expect(tooltip).toBeVisible();
-	await expect(tooltip).toContainText("Laguna XS 2.1 NVFP4 is loaded");
-	await expect(tooltip).toContainText("Memory: 16 GB");
-	await expect(tooltip).toContainText("Last prompt: 1m ago");
-	await expect(tooltip).toContainText("Frees automatically in ~4 min");
+	const details = page.getByTestId("model-residency-details");
+	await expect(details).toBeVisible();
+	await expect(details).toContainText("Last prompt");
+	await expect(details).toContainText("1m ago");
+	await expect(details).toContainText("Next free");
+	await expect(details).toContainText(/Frees at .+ · in 3m 5[3-5]s/);
 });
 
 test("expired local model free schedule reports its time and waits for Laguna unload", async ({ page }) => {
@@ -517,89 +518,9 @@ test("expired local model free schedule reports its time and waits for Laguna un
 	});
 	await page.reload();
 
-	const summary = page.getByTestId("model-residency").locator(".model-residency-summary");
-	await expect(summary).toHaveAccessibleName(/Frees automatically in now/i);
-});
-
-test("sidebar can explicitly free the resident local model", async ({ page }) => {
-	await page.addInitScript(() => {
-		let unloaded = false;
-		const testWindow = window as typeof window & {
-			synthLaguna?: unknown;
-			__freeMemoryCalls?: number;
-		};
-		testWindow.__freeMemoryCalls = 0;
-		testWindow.synthLaguna = {
-			getStatus: async () => ({
-				phase: unloaded ? "unloaded" : "ready",
-				baseUrl: "http://127.0.0.1:7333",
-				backend: "llama_cpp",
-				loadedModel: unloaded ? null : "meta-models/Muse-Glimmer-30B-GGUF",
-				detail: unloaded ? "Local model memory freed." : "Muse Glimmer ready",
-				memoryBytes: unloaded ? 0 : 24 * 1024 ** 3,
-				idleSeconds: 8,
-				freeAt: null,
-				updatedAt: Date.now()
-			}),
-			freeMemory: async () => {
-				testWindow.__freeMemoryCalls = (testWindow.__freeMemoryCalls ?? 0) + 1;
-				unloaded = true;
-				return { released: true, conflict: false, detail: "Local model memory freed." };
-			},
-			onStatus: () => () => undefined,
-			listModels: async () => [],
-			chooseModelDirectory: async () => null,
-			setModelDirectory: async () => { throw new Error("not used"); },
-			clearModelDirectory: async () => undefined
-		};
-	});
-	await page.reload();
-
-	const free = page.getByTestId("free-local-model-memory");
-	await expect(free).toBeVisible();
-	await expect(free).toHaveAccessibleName("Free Muse Glimmer 30B memory");
-	await free.click();
-
-	await expect(page.getByTestId("model-residency")).toBeHidden();
-	await expect(page.getByTestId("model-status-ready")).toHaveCount(0);
-	await expect(page.getByTestId("model-status-unloaded")).toContainText("Muse Glimmer 30B · Memory free");
-	await expect.poll(() => page.evaluate(() => (
-		window as typeof window & { __freeMemoryCalls?: number }
-	).__freeMemoryCalls)).toBe(1);
-});
-
-test("an installed cold Muse remains available in the model selector", async ({ page }) => {
-	await page.addInitScript(() => {
-		const testWindow = window as typeof window & { synthLaguna?: unknown; __coldMuseReloads?: number; __coldMuseSelections?: number };
-		testWindow.__coldMuseReloads = 0;
-		testWindow.__coldMuseSelections = 0;
-		testWindow.synthLaguna = {
-			getStatus: async () => ({
-				phase: "unloaded", baseUrl: null, backend: "llama_cpp", loadedModel: null,
-				detail: "Local model memory freed.", memoryBytes: 0, updatedAt: Date.now()
-			}),
-			onStatus: () => () => undefined,
-			listModels: async () => [{
-				path: "/models/meta-models/Muse-Glimmer-30B-GGUF", modelsRoot: "/models",
-				modelId: "meta-models/Muse-Glimmer-30B-GGUF", shardCount: 3,
-				totalBytes: 19_800_000_000, selected: true, runtimeReady: false, companionBytes: 1_500_000_000
-			}],
-			chooseModelDirectory: async () => null,
-			setModelDirectory: async () => { testWindow.__coldMuseSelections = (testWindow.__coldMuseSelections ?? 0) + 1; },
-			reload: async () => {
-				testWindow.__coldMuseReloads = (testWindow.__coldMuseReloads ?? 0) + 1;
-				throw new Error("selecting a cold model must not warm it");
-			},
-			clearModelDirectory: async () => undefined
-		};
-	});
-	await page.reload();
-	await page.getByTestId("composer-model").click();
-	await expect(page.getByTestId("composer-model-menu")).toContainText("Muse Glimmer 30B");
-	await page.getByTestId("composer-model-option-local-muse-glimmer").click();
-	await expect.poll(() => page.evaluate(() => (window as typeof window & { __coldMuseSelections?: number }).__coldMuseSelections ?? 0)).toBe(1);
-	await expect.poll(() => page.evaluate(() => (window as typeof window & { __coldMuseReloads?: number }).__coldMuseReloads ?? 0)).toBe(0);
-	await expect(page.getByTestId("model-status-unloaded")).toContainText("Memory free");
+	const summary = page.getByTestId("model-residency").getByRole("button");
+	await expect(summary).toHaveAccessibleName(/Free scheduled for .+ · awaiting unload/i);
+	await expect(summary).not.toHaveAccessibleName(/Freeing memory/i);
 });
 
 test("resident model disappears immediately when Laguna reports automatic unload", async ({ page }) => {
@@ -634,7 +555,7 @@ test("resident model disappears immediately when Laguna reports automatic unload
 	await expect(page.getByText(/Frees automatically in now/i)).toHaveCount(0);
 });
 
-test("a cold local turn says Loading model until model residency is reported", async ({ page }) => {
+test("a cold local turn says Warming up until model residency is reported", async ({ page }) => {
 	await page.addInitScript(() => {
 		const testWindow = window as typeof window & { synthLaguna?: unknown; synthCodex?: unknown };
 		testWindow.synthLaguna = {
@@ -664,181 +585,9 @@ test("a cold local turn says Loading model until model residency is reported", a
 	});
 	await page.reload();
 	await page.getByTestId("local-chat-cold-session").click();
-	await expect(page.getByTestId("model-working")).toContainText("Loading model…");
+	await expect(page.getByTestId("model-working")).toContainText("Warming up…");
 	await expect(page.getByTestId("model-working")).not.toContainText("Working…");
 	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
-});
-
-test("the first local prompt renders immediately while model warm-up is pending", async ({ page }) => {
-	await page.addInitScript(() => {
-		let lagunaListener: ((status: Record<string, unknown>) => void) | undefined;
-		let phase = "unloaded";
-		let resolveSend: ((value: Record<string, unknown>) => void) | undefined;
-		const testWindow = window as typeof window & {
-			synthLaguna?: unknown;
-			synthCodex?: unknown;
-			__coldStartCalls?: number;
-			__coldSendCalls?: number;
-			__coldForceNewThread?: boolean;
-			__resolveColdSend?: () => void;
-		};
-		testWindow.__coldStartCalls = 0;
-		testWindow.__coldSendCalls = 0;
-		const status = () => ({
-			phase, baseUrl: phase === "unloaded" ? null : "http://127.0.0.1:7333", backend: "mlx_lm",
-			loadedModel: null, detail: phase === "loading" ? "Loading Laguna XS…" : "Memory free",
-			memoryBytes: 0, updatedAt: Date.now()
-		});
-		testWindow.synthLaguna = {
-			getStatus: async () => status(),
-			onStatus: (next: typeof lagunaListener) => { lagunaListener = next; return () => { lagunaListener = undefined; }; },
-			listModels: async () => [{
-				modelId: "poolside/Laguna-XS-2.1-NVFP4-mlx", path: "/models/Laguna-XS-2.1-NVFP4-mlx",
-				provider: "poolside", quantization: "NVFP4", parameterCount: "33B / 3B active",
-				contextWindow: 262_144, estMemoryBytes: 30 * 1024 ** 3, downloadSizeBytes: 20 * 1024 ** 3,
-				weightFiles: 5, selected: true
-			}],
-			chooseModelDirectory: async () => null,
-			setModelDirectory: async () => undefined,
-			clearModelDirectory: async () => undefined
-		};
-		testWindow.synthCodex = {
-			defaultWorkspace: async () => "/workspaces/default",
-			list: async () => [],
-			start: async (request: { sessionId: string }) => {
-				testWindow.__coldStartCalls = (testWindow.__coldStartCalls ?? 0) + 1;
-				return { sessionId: request.sessionId, threadId: "thread-cold-first-prompt" };
-			},
-			sendTurn: async (request: { sessionId: string; forceNewThread?: boolean }) => {
-				testWindow.__coldSendCalls = (testWindow.__coldSendCalls ?? 0) + 1;
-				testWindow.__coldForceNewThread = request.forceNewThread;
-				phase = "loading";
-				lagunaListener?.(status());
-				return new Promise<Record<string, unknown>>((resolve) => {
-					resolveSend = resolve;
-					testWindow.__resolveColdSend = () => resolveSend?.({
-						sessionId: request.sessionId, threadId: "thread-cold-first-prompt", turnId: "turn-cold-first-prompt"
-					});
-				});
-			},
-			interrupt: async () => undefined,
-			close: async () => undefined,
-			onEvent: () => () => undefined
-		};
-	});
-	await page.reload();
-
-	await page.getByTestId("composer-input").fill("Show this prompt before warm-up finishes");
-	await page.getByTestId("composer-send").click();
-
-	await expect(page.getByTestId("chat-transcript").locator(".local-turn-user")).toContainText("Show this prompt before warm-up finishes");
-	await expect(page.getByTestId("model-working")).toContainText("Loading model…");
-	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
-	await expect.poll(() => page.evaluate(() => (window as typeof window & { __coldStartCalls?: number }).__coldStartCalls)).toBe(1);
-	await expect.poll(() => page.evaluate(() => (window as typeof window & { __coldSendCalls?: number }).__coldSendCalls)).toBe(1);
-	await expect.poll(() => page.evaluate(() => (window as typeof window & { __coldForceNewThread?: boolean }).__coldForceNewThread)).toBe(true);
-
-	await page.evaluate(() => (window as typeof window & { __resolveColdSend?: () => void }).__resolveColdSend?.());
-});
-
-test("a failed local send cannot displace the inference rail below the conversation", async ({ page }) => {
-	await page.addInitScript(() => {
-		const testWindow = window as typeof window & { synthLaguna?: unknown; synthCodex?: unknown };
-		testWindow.synthLaguna = {
-			getStatus: async () => ({
-				phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "llama_cpp",
-				loadedModel: "meta-models/Muse-Glimmer-30B-GGUF", detail: "Muse Glimmer ready",
-				memoryBytes: 20 * 1024 ** 3, updatedAt: Date.now()
-			}),
-			onStatus: () => () => undefined,
-			listModels: async () => [], chooseModelDirectory: async () => null,
-			setModelDirectory: async () => undefined, clearModelDirectory: async () => undefined
-		};
-		testWindow.synthCodex = {
-			defaultWorkspace: async () => "/workspaces/default",
-			list: async () => [{
-				sessionId: "failed-local-session", threadId: "empty-cold-thread", workspace: "/workspaces/default",
-				model: "meta-models/Muse-Glimmer-30B-GGUF", providerName: "local-muse-glimmer",
-				providerTitle: "Muse Glimmer 30B", baseUrl: "http://127.0.0.1:7333", status: "ready"
-			}],
-			start: async () => ({ sessionId: "failed-local-session", threadId: "empty-cold-thread" }),
-			sendTurn: async () => {
-				throw new Error('codex app-server thread/resume error: {"message":"no rollout found for thread id secret-thread-id"}');
-			},
-			interrupt: async () => undefined, close: async () => undefined,
-			onEvent: () => () => undefined
-		};
-	});
-	await page.reload();
-	await page.getByTestId("local-chat-failed-local-session").click();
-	await page.getByTestId("composer-input").fill("hello");
-	await page.getByTestId("composer-send").click();
-
-	await expect(page.getByTestId("send-retry")).toContainText("Retry to reconnect");
-	await expect(page.getByText("secret-thread-id")).toHaveCount(0);
-	const geometry = await page.evaluate(() => {
-		const conversation = document.querySelector<HTMLElement>(".conversation-column")!.getBoundingClientRect();
-		const rail = document.querySelector<HTMLElement>("[data-testid=inference-rail]")!.getBoundingClientRect();
-		return {
-			railIsRight: rail.left >= conversation.right - 1,
-			topsAlign: Math.abs(rail.top - conversation.top) <= 1,
-			heightsAlign: Math.abs(rail.height - conversation.height) <= 1
-		};
-	});
-	expect(geometry).toEqual({ railIsRight: true, topsAlign: true, heightsAlign: true });
-});
-
-test("startup reconciliation never drains a queued prompt from a restored running session", async ({ page }) => {
-	await page.addInitScript(() => {
-		localStorage.setItem("synth.preferences.v1", JSON.stringify({
-			promptQueue: [{
-				id: "stale-queued-hey", conversationId: "restored-running-local",
-				text: "hey", createdAt: new Date().toISOString()
-			}]
-		}));
-		let listener: ((event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) | undefined;
-		const testWindow = window as typeof window & {
-			synthLaguna?: unknown; synthCodex?: unknown;
-			__emitRestoredFailure?: () => void; __restoredQueueSends?: number;
-		};
-		testWindow.__restoredQueueSends = 0;
-		testWindow.synthLaguna = {
-			getStatus: async () => ({ phase: "unloaded", baseUrl: null, backend: "llama_cpp", loadedModel: null, detail: "Memory free", memoryBytes: 0, updatedAt: Date.now() }),
-			onStatus: () => () => undefined, listModels: async () => [{
-				modelId: "meta-models/Muse-Glimmer-30B-GGUF", path: "/models/Muse-Glimmer-30B-GGUF", selected: true
-			}], chooseModelDirectory: async () => null, setModelDirectory: async () => undefined, clearModelDirectory: async () => undefined
-		};
-		testWindow.synthCodex = {
-			defaultWorkspace: async () => "/workspaces/default",
-			list: async () => [{
-				sessionId: "restored-running-local", threadId: "restored-thread", workspace: "/workspaces/default",
-				model: "meta-models/Muse-Glimmer-30B-GGUF", providerName: "local-muse-glimmer",
-				providerTitle: "Muse Glimmer 30B", baseUrl: "http://127.0.0.1:7333", status: "running"
-			}],
-			start: async () => ({ sessionId: "restored-running-local", threadId: "restored-thread" }),
-			sendTurn: async () => {
-				testWindow.__restoredQueueSends = (testWindow.__restoredQueueSends ?? 0) + 1;
-				return { sessionId: "restored-running-local", threadId: "restored-thread", turnId: "unexpected-turn" };
-			},
-			interrupt: async () => undefined, close: async () => undefined,
-			onEvent: (next: typeof listener) => {
-				listener = next;
-				testWindow.__emitRestoredFailure = () => listener?.({
-					sessionId: "restored-running-local", method: "turn/failed",
-					params: { turn: { id: "stale-turn", status: "failed" } }
-				});
-				return () => { listener = undefined; };
-			}
-		};
-	});
-	await page.reload();
-	await page.getByTestId("local-chat-restored-running-local").waitFor();
-	await page.evaluate(() => (window as typeof window & { __emitRestoredFailure?: () => void }).__emitRestoredFailure?.());
-	await expect.poll(() => page.evaluate(() => (window as typeof window & { __restoredQueueSends?: number }).__restoredQueueSends ?? 0)).toBe(0);
-	await expect.poll(() => page.evaluate(() => {
-		const stored = JSON.parse(localStorage.getItem("synth.preferences.v1") ?? "{}");
-		return stored.promptQueue?.map((item: { text: string }) => item.text) ?? [];
-	})).toEqual(["hey"]);
 });
 
 test("native Codex deltas form one readable message with working and stop state", async ({ page }) => {
@@ -987,7 +736,7 @@ test("native Codex deltas form one readable message with working and stop state"
 	expect(await page.evaluate(() => (window as typeof window & { __conversationInterrupts: () => number }).__conversationInterrupts())).toBe(1);
 	await expect(page.getByTestId("inference-rail")).toBeVisible();
 	await expect(page.getByTestId("inference-panel")).toBeVisible();
-	await expect(page.getByText("Local inference", { exact: true })).toBeVisible();
+	await expect(page.getByText("MLX sidecar", { exact: true })).toBeVisible();
 	await page.getByTestId("toggle-inference-rail").click();
 	await expect(page.getByTestId("inference-rail")).toBeHidden();
 	await page.getByTestId("toggle-inference-rail").click();
