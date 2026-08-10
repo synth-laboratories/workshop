@@ -5,7 +5,7 @@ export const RUNTIME_EVENT_SCHEMA_VERSION = "synth.desktop-runtime-event.v1" as 
 
 export type LocalExecutionTarget = {
   kind: "local";
-  model: "laguna-xs-2.1";
+  model: "laguna-xs-2.1" | "meta-models/Muse-Glimmer-30B-GGUF";
   adapter: string | null;
 };
 
@@ -399,8 +399,8 @@ export type RuntimeHealth = {
     backendUrl?: string | null;
   };
   local: {
-    model: "laguna-xs-2.1";
-    mode: "absent" | "mlx";
+    model: "laguna-xs-2.1" | "meta-models/Muse-Glimmer-30B-GGUF";
+    mode: "absent" | "mlx" | "gguf";
     modelPath?: string | null;
   };
   openrouter: {

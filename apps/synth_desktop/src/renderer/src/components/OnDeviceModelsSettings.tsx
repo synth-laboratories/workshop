@@ -202,6 +202,7 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 					const installed = hits.find((hit) => hit.modelId === model.modelId) ?? null;
 					const inUse = installed?.selected ?? false;
 					const progress = downloadProgress?.modelId === model.modelId ? downloadProgress : null;
+					const providerMark = model.modelId === MUSE_GLIMMER.modelId ? "meta" : "laguna";
 					const modelBusy = busy && (!downloadProgress || progress !== null);
 					const pct = progress?.totalBytes && progress.downloadedBytes != null
 						? Math.min(100, Math.round(progress.downloadedBytes / progress.totalBytes * 100))
@@ -210,7 +211,7 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 					<header className="on-device-card-top">
 						<div className="on-device-card-identity">
 							<span className="on-device-card-mark" aria-hidden>
-								<ProviderMark kind="laguna" className="on-device-card-mark-img" />
+								<ProviderMark kind={providerMark} className="on-device-card-mark-img" />
 							</span>
 							<div>
 								<div className="on-device-card-title-row">

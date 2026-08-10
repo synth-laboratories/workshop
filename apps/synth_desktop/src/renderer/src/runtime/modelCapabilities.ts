@@ -1,5 +1,5 @@
 import type { ExecutionTarget } from "@synth/runtime-protocol";
-import { OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL, SYNTH_CLOUD_LAGUNA_S_MODEL } from "../types/landing";
+import { MUSE_GLIMMER_MODEL, OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL, SYNTH_CLOUD_LAGUNA_S_MODEL } from "../types/landing";
 
 /**
  * Declarative registry for model-specific composer controls.
@@ -27,7 +27,7 @@ export type ModelKnobSpec = {
 
 export type ModelCapabilitySpec = {
 	targetId: string;
-	target: { kind: "local" } | { kind: "remote"; models: string[] };
+	target: { kind: "local"; models?: string[] } | { kind: "remote"; models: string[] };
 	knobs: ModelKnobSpec[];
 	/**
 	 * How the provider's reasoning payload may be shown in the transcript.
@@ -61,8 +61,16 @@ const LOCAL_THINKING_OPTIONS: ModelKnobOption[] = [
 
 export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 	{
+		targetId: "local-muse-glimmer",
+		target: { kind: "local", models: [MUSE_GLIMMER_MODEL] },
+		knobs: [],
+		reasoningDisplay: "full",
+		inputModalities: ["text", "image"],
+		maxContextTokens: 131_072
+	},
+	{
 		targetId: "local-laguna",
-		target: { kind: "local" },
+		target: { kind: "local", models: ["laguna-xs-2.1"] },
 		knobs: [{
 			id: "reasoning",
 			label: "Thinking",
@@ -155,7 +163,7 @@ export function modelCapabilitiesForExecutionTarget(target: ExecutionTarget): Mo
 	if (target.kind === "intern") return undefined;
 	return MODEL_CAPABILITY_REGISTRY.find((entry) =>
 		entry.target.kind === target.kind &&
-		(entry.target.kind === "local" || entry.target.models.includes(target.model))
+		entry.target.models?.includes(target.model)
 	);
 }
 
