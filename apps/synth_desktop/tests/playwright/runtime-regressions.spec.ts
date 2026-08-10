@@ -182,6 +182,17 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 		expect(box.height, "authorized-provider logos stay visually quiet").toBeLessThanOrEqual(22);
 	}
 	expect(Math.max(...markBoxes.map((box) => box.centerX)) - Math.min(...markBoxes.map((box) => box.centerX)), "provider marks share one centerline").toBeLessThanOrEqual(1);
+	const slugStyles = await models.locator(".authorized-model-identity code").evaluateAll((elements) =>
+		elements.map((element) => {
+			const style = getComputedStyle(element);
+			return { fontSize: Number.parseFloat(style.fontSize), family: style.fontFamily };
+		})
+	);
+	expect(slugStyles).toHaveLength(3);
+	for (const style of slugStyles) {
+		expect(style.fontSize, "model slugs stay subordinate to provider labels").toBeLessThanOrEqual(10);
+		expect(style.family).toMatch(/SFMono|Menlo|Monaco|Consolas|monospace/i);
+	}
 });
 
 test("Settings can force and reset a model multi-agent preset", async ({ page }) => {
