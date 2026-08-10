@@ -284,9 +284,9 @@ test("Settings hosts an Inference section after Models and follows deep links", 
 		join(appRoot, "src/renderer/src/components/SettingsPage.tsx"),
 		"utf8"
 	);
-	const models = settings.indexOf('{ id: "models", label: "Models" }');
-	const inference = settings.indexOf('{ id: "inference", label: "Inference" }');
-	const voice = settings.indexOf('{ id: "voice", label: "Voice" }');
+	const models = settings.indexOf('{ id: "models", label: "Models"');
+	const inference = settings.indexOf('{ id: "inference", label: "Inference"');
+	const voice = settings.indexOf('{ id: "voice", label: "Voice"');
 	assert.ok(models !== -1 && inference !== -1 && voice !== -1);
 	assert.ok(models < inference && inference < voice, "Inference sits between Models and Voice");
 	// An already-open Settings view must retarget when the prop changes.

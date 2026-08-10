@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ActiveEnterAction, DesktopPreferences, ThemePreference, ToolActivityMode } from "../preferences";
 import {
 	applyDefaultLayout,
@@ -12,13 +12,11 @@ import {
 	setTheme,
 	setToolActivityMode
 } from "../preferences";
+import { SettingsCard, SettingsRow } from "./SettingsCard";
 
 type Props = {
 	preferences: DesktopPreferences;
 	onPreferencesChange: (prefs: DesktopPreferences) => void;
-	conversationTitles?: Record<string, string>;
-	onUnarchive?: (id: string) => void;
-	onOpenConversation?: (id: string) => void;
 };
 
 const THEME_OPTIONS: Array<{ id: ThemePreference; label: string }> = [
@@ -38,7 +36,50 @@ const ENTER_OPTIONS: Array<{ id: ActiveEnterAction; label: string; description: 
 	{ id: "steer", label: "Steer", description: "Enter steers the active turn when supported. ⌘Enter enqueues." }
 ];
 
-function NumericSetting({
+/** Named fonts presented instead of raw CSS stacks; values stay full stacks. */
+const CODE_FONT_CHOICES: Array<{ label: string; value: string }> = [
+	{ label: "System monospace", value: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
+	{ label: "SF Mono", value: '"SF Mono", ui-monospace, SFMono-Regular, Menlo, monospace' },
+	{ label: "Menlo", value: "Menlo, ui-monospace, monospace" },
+	{ label: "Monaco", value: "Monaco, ui-monospace, monospace" },
+	{ label: "JetBrains Mono", value: '"JetBrains Mono", ui-monospace, Menlo, monospace' },
+	{ label: "Fira Code", value: '"Fira Code", ui-monospace, Menlo, monospace' }
+];
+
+function SegmentedControl<T extends string>({
+	ariaLabel,
+	options,
+	value,
+	onChange,
+	testIdPrefix
+}: {
+	ariaLabel: string;
+	options: ReadonlyArray<{ id: T; label: string; description?: string }>;
+	value: T;
+	onChange: (id: T) => void;
+	testIdPrefix: string;
+}) {
+	return (
+		<div className="seg-control" role="radiogroup" aria-label={ariaLabel}>
+			{options.map((option) => (
+				<button
+					key={option.id}
+					type="button"
+					role="radio"
+					aria-checked={value === option.id}
+					className={value === option.id ? "active" : ""}
+					title={option.description}
+					data-testid={`${testIdPrefix}-${option.id}`}
+					onClick={() => onChange(option.id)}
+				>
+					{option.label}
+				</button>
+			))}
+		</div>
+	);
+}
+
+function NumericInput({
 	label,
 	value,
 	min,
@@ -57,14 +98,15 @@ function NumericSetting({
 	const [error, setError] = useState<string | null>(null);
 	useEffect(() => { setDraft(String(value)); setError(null); }, [value]);
 	return (
-		<label className="pref-field">
-			<span>{label}</span>
+		<div className="settings-numeric">
 			<input
+				id={testId}
 				type="number"
 				min={min}
 				max={max}
 				value={draft}
 				data-testid={testId}
+				aria-label={label}
 				aria-invalid={Boolean(error)}
 				aria-describedby={error ? `${testId}-error` : undefined}
 				onChange={(event) => setDraft(event.target.value)}
@@ -80,48 +122,28 @@ function NumericSetting({
 				}}
 			/>
 			{error ? <span id={`${testId}-error`} className="pref-field-error" role="alert" data-testid={`${testId}-error`}>{error}</span> : null}
-		</label>
+		</div>
 	);
 }
 
-export function GeneralPreferencesSettings({
-	preferences,
-	onPreferencesChange,
-	conversationTitles = {},
-	onUnarchive,
-	onOpenConversation
-}: Props) {
-	const archivedIds = listArchivedConversationIds(preferences);
-	const shortcutsId = useId();
+export function GeneralPreferencesSettings({ preferences, onPreferencesChange }: Props) {
+	const codeFontFamily = preferences.appearance.codeFontFamily;
+	const knownFont = CODE_FONT_CHOICES.some((choice) => choice.value === codeFontFamily);
 
 	return (
-		<div className="settings-finetunes" data-testid="settings-general">
-			<header className="settings-section-head">
-				<div>
-					<h2>General</h2>
-					<p>Appearance, fonts, submission, tool activity, and layout defaults.</p>
-				</div>
-			</header>
-
-			<section className="pref-section" aria-labelledby="pref-appearance" data-testid="settings-appearance">
-				<h3 id="pref-appearance">Appearance</h3>
-				<div className="pref-chip-row" role="radiogroup" aria-label="Theme">
-					{THEME_OPTIONS.map((option) => (
-						<button
-							key={option.id}
-							type="button"
-							role="radio"
-							aria-checked={preferences.appearance.theme === option.id}
-							className={preferences.appearance.theme === option.id ? "active" : ""}
-							data-testid={`theme-${option.id}`}
-							onClick={() => onPreferencesChange(setTheme(option.id))}
-						>
-							{option.label}
-						</button>
-					))}
-				</div>
-				<div className="pref-grid">
-					<NumericSetting
+		<div className="settings-sections" data-testid="settings-general">
+			<SettingsCard title="Appearance" testId="settings-appearance">
+				<SettingsRow label="Theme">
+					<SegmentedControl
+						ariaLabel="Theme"
+						options={THEME_OPTIONS}
+						value={preferences.appearance.theme}
+						testIdPrefix="theme"
+						onChange={(theme) => onPreferencesChange(setTheme(theme))}
+					/>
+				</SettingsRow>
+				<SettingsRow label="Chat font size" htmlFor="chat-font-size">
+					<NumericInput
 						label="Chat font size"
 						value={preferences.appearance.chatFontSize}
 						min={12}
@@ -129,7 +151,9 @@ export function GeneralPreferencesSettings({
 						testId="chat-font-size"
 						onChange={(chatFontSize) => onPreferencesChange(setAppearanceFonts({ chatFontSize }))}
 					/>
-					<NumericSetting
+				</SettingsRow>
+				<SettingsRow label="Code font size" htmlFor="code-font-size">
+					<NumericInput
 						label="Code font size"
 						value={preferences.appearance.codeFontSize}
 						min={10}
@@ -137,16 +161,22 @@ export function GeneralPreferencesSettings({
 						testId="code-font-size"
 						onChange={(codeFontSize) => onPreferencesChange(setAppearanceFonts({ codeFontSize }))}
 					/>
-					<label className="pref-field">
-						<span>Code font family</span>
-						<input
-							type="text"
-							value={preferences.appearance.codeFontFamily}
-							data-testid="code-font-family"
-							onChange={(event) => onPreferencesChange(setAppearanceFonts({ codeFontFamily: event.target.value }))}
-						/>
-					</label>
-					<NumericSetting
+				</SettingsRow>
+				<SettingsRow label="Code font" htmlFor="code-font-family">
+					<select
+						id="code-font-family"
+						data-testid="code-font-family"
+						value={codeFontFamily}
+						onChange={(event) => onPreferencesChange(setAppearanceFonts({ codeFontFamily: event.target.value }))}
+					>
+						{knownFont ? null : <option value={codeFontFamily}>Custom</option>}
+						{CODE_FONT_CHOICES.map((choice) => (
+							<option key={choice.label} value={choice.value}>{choice.label}</option>
+						))}
+					</select>
+				</SettingsRow>
+				<SettingsRow label="Terminal font size" htmlFor="terminal-font-size">
+					<NumericInput
 						label="Terminal font size"
 						value={preferences.appearance.terminalFontSize}
 						min={10}
@@ -154,111 +184,143 @@ export function GeneralPreferencesSettings({
 						testId="terminal-font-size"
 						onChange={(terminalFontSize) => onPreferencesChange(setAppearanceFonts({ terminalFontSize }))}
 					/>
-				</div>
-			</section>
+				</SettingsRow>
+			</SettingsCard>
 
-			<section className="pref-section" aria-labelledby="pref-submission" data-testid="settings-submission">
-				<h3 id="pref-submission">Prompt submission</h3>
-				<p className="settings-runtime-copy">While an agent is working, Enter performs the preferred action. ⌘Enter performs the alternate. When idle, Enter always submits normally.</p>
-				<div className="pref-option-list" role="radiogroup" aria-label="Active turn Enter behavior">
-					{ENTER_OPTIONS.map((option) => (
-						<button
-							key={option.id}
-							type="button"
-							role="radio"
-							aria-checked={preferences.submission.activeEnterAction === option.id}
-							className={`pref-option${preferences.submission.activeEnterAction === option.id ? " active" : ""}`}
-							data-testid={`active-enter-${option.id}`}
-							onClick={() => onPreferencesChange(setActiveEnterAction(option.id))}
-						>
-							<strong>{option.label}</strong>
-							<small>{option.description}</small>
-						</button>
-					))}
-				</div>
-			</section>
+			<SettingsCard
+				title="Prompt submission"
+				description="While an agent is working, Enter performs the preferred action and ⌘Enter the alternate. When idle, Enter submits."
+				testId="settings-submission"
+			>
+				<SettingsRow label="Enter while working">
+					<SegmentedControl
+						ariaLabel="Active turn Enter behavior"
+						options={ENTER_OPTIONS}
+						value={preferences.submission.activeEnterAction}
+						testIdPrefix="active-enter"
+						onChange={(action) => onPreferencesChange(setActiveEnterAction(action))}
+					/>
+				</SettingsRow>
+			</SettingsCard>
 
-			<section className="pref-section" aria-labelledby="pref-activity" data-testid="settings-tool-activity">
-				<h3 id="pref-activity">Tool activity</h3>
-				<div className="pref-option-list" role="radiogroup" aria-label="Tool activity presentation">
-					{ACTIVITY_OPTIONS.map((option) => (
-						<button
-							key={option.id}
-							type="button"
-							role="radio"
-							aria-checked={preferences.toolActivity.mode === option.id}
-							className={`pref-option${preferences.toolActivity.mode === option.id ? " active" : ""}`}
-							data-testid={`tool-activity-${option.id}`}
-							onClick={() => onPreferencesChange(setToolActivityMode(option.id))}
-						>
-							<strong>{option.label}</strong>
-							<small>{option.description}</small>
-						</button>
-					))}
-				</div>
-			</section>
+			<SettingsCard title="Tool activity" testId="settings-tool-activity">
+				<SettingsRow label="Presentation">
+					<SegmentedControl
+						ariaLabel="Tool activity presentation"
+						options={ACTIVITY_OPTIONS}
+						value={preferences.toolActivity.mode}
+						testIdPrefix="tool-activity"
+						onChange={(mode) => onPreferencesChange(setToolActivityMode(mode))}
+					/>
+				</SettingsRow>
+			</SettingsCard>
 
-			<section className="pref-section" aria-labelledby="pref-agent-context" data-testid="settings-agent-context">
-				<h3 id="pref-agent-context">Agent context</h3>
-				<p className="settings-runtime-copy">Laguna S and Luna default to 250,000 tokens; local Laguna XS defaults to 150,000. Codex summarizes older context at the selected threshold; changes apply on the next turn.</p>
-				<div className="pref-grid">
-					<NumericSetting
-						label="Laguna XS (262,144 max)"
+			<SettingsCard
+				title="Agent context"
+				description="Older context is summarized at the threshold; changes apply on the next turn."
+				testId="settings-agent-context"
+			>
+				<SettingsRow label="Laguna XS" description="Model max 262,144 tokens" htmlFor="auto-compact-token-limit-laguna-xs">
+					<NumericInput
+						label="Laguna XS auto-compact token limit"
 						value={preferences.agentContext.autoCompactTokenLimits.lagunaXs}
 						min={16_000}
 						max={235_929}
 						testId="auto-compact-token-limit-laguna-xs"
 						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit("lagunaXs", limit))}
 					/>
-					<NumericSetting
-						label="Laguna S (1,050,000 max)"
+				</SettingsRow>
+				<SettingsRow label="Laguna S" description="Model max 1,050,000 tokens" htmlFor="auto-compact-token-limit-laguna-s">
+					<NumericInput
+						label="Laguna S auto-compact token limit"
 						value={preferences.agentContext.autoCompactTokenLimits.lagunaS}
 						min={16_000}
 						max={945_000}
 						testId="auto-compact-token-limit-laguna-s"
 						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit("lagunaS", limit))}
 					/>
-					<NumericSetting
-						label="Luna (1,050,000 max)"
+				</SettingsRow>
+				<SettingsRow label="Luna" description="Model max 1,050,000 tokens" htmlFor="auto-compact-token-limit-luna">
+					<NumericInput
+						label="Luna auto-compact token limit"
 						value={preferences.agentContext.autoCompactTokenLimits.luna}
 						min={16_000}
 						max={945_000}
 						testId="auto-compact-token-limit-luna"
 						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit("luna", limit))}
 					/>
-				</div>
-			</section>
+				</SettingsRow>
+			</SettingsCard>
 
-			<section className="pref-section" aria-labelledby="pref-layout" data-testid="settings-layout">
-				<h3 id="pref-layout">Layout</h3>
-				<div className="pref-chip-row">
-					<button type="button" data-testid="save-layout-default" onClick={() => onPreferencesChange(saveLayoutAsDefault())}>
-						Save current as default
-					</button>
-					<button type="button" data-testid="apply-layout-default" onClick={() => onPreferencesChange(applyDefaultLayout())}>
-						Apply default
-					</button>
-					<button type="button" data-testid="reset-layout" onClick={() => onPreferencesChange(resetLayoutToDefault())}>
-						Reset layout
-					</button>
-				</div>
-			</section>
+			<SettingsCard title="Layout" testId="settings-layout">
+				<SettingsRow label="Window layout">
+					<div className="settings-btn-row">
+						<button type="button" className="settings-secondary-btn" data-testid="save-layout-default" onClick={() => onPreferencesChange(saveLayoutAsDefault())}>
+							Save current as default
+						</button>
+						<button type="button" className="settings-secondary-btn" data-testid="apply-layout-default" onClick={() => onPreferencesChange(applyDefaultLayout())}>
+							Apply default
+						</button>
+						<button type="button" className="settings-secondary-btn" data-testid="reset-layout" onClick={() => onPreferencesChange(resetLayoutToDefault())}>
+							Reset layout
+						</button>
+					</div>
+				</SettingsRow>
+			</SettingsCard>
 
-			<section className="pref-section" aria-labelledby={shortcutsId} data-testid="settings-shortcuts">
-				<h3 id={shortcutsId}>Keyboard shortcuts</h3>
+			<div className="settings-reset-row" data-testid="settings-reset">
+				<button type="button" className="settings-secondary-btn settings-reset-btn" data-testid="reset-preferences" onClick={() => onPreferencesChange(resetPreferences())}>
+					Restore documented defaults
+				</button>
+			</div>
+		</div>
+	);
+}
+
+const SHORTCUTS: Array<{ keys: string[]; label: string }> = [
+	{ keys: ["Enter"], label: "Submit, or the preferred active-turn action" },
+	{ keys: ["⌘", "Enter"], label: "Alternate active-turn action" },
+	{ keys: ["⌘", "K"], label: "Search conversations" },
+	{ keys: ["⌘", "J"], label: "Toggle terminal" },
+	{ keys: ["Esc"], label: "Close menus and dialogs" }
+];
+
+export function KeyboardShortcutsSettings() {
+	return (
+		<div className="settings-sections">
+			<SettingsCard ariaLabel="Keyboard shortcuts" testId="settings-shortcuts">
 				<ul className="pref-shortcut-list">
-					<li><kbd>Enter</kbd> Submit or preferred active-turn action</li>
-					<li><kbd>⌘</kbd>+<kbd>Enter</kbd> Alternate active-turn action</li>
-					<li><kbd>⌘</kbd>+<kbd>K</kbd> Search conversations</li>
-					<li><kbd>⌘</kbd>+<kbd>J</kbd> Toggle terminal</li>
-					<li><kbd>Esc</kbd> Close menus and dialogs</li>
+					{SHORTCUTS.map((shortcut) => (
+						<li key={shortcut.label}>
+							<span>{shortcut.label}</span>
+							<span className="pref-shortcut-keys">
+								{shortcut.keys.map((key) => <kbd key={key}>{key}</kbd>)}
+							</span>
+						</li>
+					))}
 				</ul>
-			</section>
+			</SettingsCard>
+		</div>
+	);
+}
 
-			<section className="pref-section" aria-labelledby="pref-archived" data-testid="settings-archived-chats">
-				<h3 id="pref-archived">Archived chats</h3>
+export function ArchivedChatsSettings({
+	preferences,
+	conversationTitles = {},
+	onUnarchive,
+	onOpenConversation
+}: {
+	preferences: DesktopPreferences;
+	conversationTitles?: Record<string, string>;
+	onUnarchive?: (id: string) => void;
+	onOpenConversation?: (id: string) => void;
+}) {
+	const archivedIds = listArchivedConversationIds(preferences);
+	return (
+		<div className="settings-sections">
+			<SettingsCard ariaLabel="Archived chats" testId="settings-archived-chats">
 				{archivedIds.length === 0 ? (
-					<p className="empty-hint" data-testid="archived-chats-empty">No archived conversations</p>
+					<p className="empty-hint settings-empty-hint" data-testid="archived-chats-empty">No archived conversations</p>
 				) : (
 					<ul className="archived-chat-list">
 						{archivedIds.map((id) => (
@@ -266,19 +328,12 @@ export function GeneralPreferencesSettings({
 								<button type="button" className="archived-chat-open" onClick={() => onOpenConversation?.(id)} data-testid={`archived-chat-${id}`}>
 									{conversationTitles[id] ?? preferences.conversations[id]?.titleOverride ?? id}
 								</button>
-								<button type="button" onClick={() => onUnarchive?.(id)} data-testid={`unarchive-chat-${id}`}>Unarchive</button>
+								<button type="button" className="settings-secondary-btn" onClick={() => onUnarchive?.(id)} data-testid={`unarchive-chat-${id}`}>Unarchive</button>
 							</li>
 						))}
 					</ul>
 				)}
-			</section>
-
-			<section className="pref-section" aria-labelledby="pref-reset" data-testid="settings-reset">
-				<h3 id="pref-reset">Reset</h3>
-				<button type="button" className="settings-secondary-btn" data-testid="reset-preferences" onClick={() => onPreferencesChange(resetPreferences())}>
-					Restore documented defaults
-				</button>
-			</section>
+			</SettingsCard>
 		</div>
 	);
 }

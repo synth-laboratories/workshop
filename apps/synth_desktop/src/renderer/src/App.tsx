@@ -1799,7 +1799,9 @@ export default function App() {
 	return (
 		<div className="app-shell">
 			<div className="body-row">
-					<Sidebar
+					{/* Settings owns the whole left rail; the conversation sidebar and its
+					    persisted visibility/width return untouched when Settings closes. */}
+					{view.kind !== "settings" ? <Sidebar
 						state={state}
 						lagunaStatus={laguna}
 					activeChatId={view.kind === "chat" ? view.chatId : null}
@@ -1865,7 +1867,7 @@ export default function App() {
 					}}
 					onPauseToggle={() => setDownloadPaused((v) => !v)}
 					onFreeLocalMemory={onFreeLocalMemory}
-				/>
+				/> : null}
 
 				<main className="main-pane">
 					<header className="titlebar" data-testid="titlebar" data-tauri-drag-region="">

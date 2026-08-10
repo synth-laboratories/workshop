@@ -16,7 +16,12 @@ import { VoiceRecognitionSettings } from "./VoiceRecognitionSettings";
 import { ModelObservabilitySettings } from "./ModelObservabilitySettings";
 import { AccountPage } from "./AccountPage";
 import { WorkspaceAccessSettings } from "./WorkspaceAccessSettings";
-import { GeneralPreferencesSettings } from "./GeneralPreferencesSettings";
+import {
+	ArchivedChatsSettings,
+	GeneralPreferencesSettings,
+	KeyboardShortcutsSettings
+} from "./GeneralPreferencesSettings";
+import { SettingsCard } from "./SettingsCard";
 import type { DesktopPreferences } from "../preferences";
 
 type Props = {
@@ -34,15 +39,109 @@ type Props = {
 	onOpenConversation?: (id: string) => void;
 };
 
+function IconSliders() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<path d="M2.5 4.5h7M12.5 4.5h1M2.5 11.5h1M6.5 11.5h7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+			<circle cx="11" cy="4.5" r="1.7" stroke="currentColor" strokeWidth="1.3" />
+			<circle cx="5" cy="11.5" r="1.7" stroke="currentColor" strokeWidth="1.3" />
+		</svg>
+	);
+}
+
+function IconChip() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="4" y="4" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M6 1.5v2M10 1.5v2M6 12.5v2M10 12.5v2M1.5 6h2M1.5 10h2M12.5 6h2M12.5 10h2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+		</svg>
+	);
+}
+
+function IconGauge() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<path d="M2.5 10.5a5.5 5.5 0 1 1 11 0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+			<path d="M8 10.5 10.8 6.6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+			<circle cx="8" cy="10.5" r="1.1" fill="currentColor" />
+		</svg>
+	);
+}
+
+function IconMic() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="6" y="1.8" width="4" height="7.4" rx="2" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+		</svg>
+	);
+}
+
+function IconTerminal() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.8" stroke="currentColor" strokeWidth="1.3" />
+			<path d="m4.5 6.2 2 1.8-2 1.8M8.5 10h3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+		</svg>
+	);
+}
+
+function IconPerson() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<circle cx="8" cy="5.2" r="2.7" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M2.8 13.8a5.4 5.4 0 0 1 10.4 0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+		</svg>
+	);
+}
+
+function IconKeyboard() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="1.8" y="4" width="12.4" height="8" rx="1.8" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M4.2 6.6h.01M6.7 6.6h.01M9.2 6.6h.01M11.7 6.6h.01M4.2 9.4h.01M5.8 9.4h4.4M11.7 9.4h.01" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+		</svg>
+	);
+}
+
+function IconArchive() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="1.8" y="2.8" width="12.4" height="3.4" rx="1" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M3 6.2v5.2a1.8 1.8 0 0 0 1.8 1.8h6.4a1.8 1.8 0 0 0 1.8-1.8V6.2M6.4 8.8h3.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+		</svg>
+	);
+}
+
+function IconInfo() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<circle cx="8" cy="8" r="6.2" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M8 7.4v3.4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+			<circle cx="8" cy="5" r="0.9" fill="currentColor" />
+		</svg>
+	);
+}
+
+function IconChevronLeft() {
+	return (
+		<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<path d="m10 3.5-4.5 4.5L10 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+		</svg>
+	);
+}
+
 /** Adapter UI is intentionally absent until its full runtime path exists. */
 const SECTIONS = [
-	{ id: "general", label: "General" },
-	{ id: "models", label: "Models" },
-	{ id: "inference", label: "Inference" },
-	{ id: "voice", label: "Voice" },
-	{ id: "runtime", label: "Runtime" },
-	{ id: "account", label: "Account" },
-	{ id: "about", label: "About" }
+	{ id: "general", label: "General", icon: IconSliders },
+	{ id: "models", label: "Models", icon: IconChip },
+	{ id: "inference", label: "Inference", icon: IconGauge },
+	{ id: "voice", label: "Voice", icon: IconMic },
+	{ id: "runtime", label: "Runtime", icon: IconTerminal },
+	{ id: "account", label: "Account", icon: IconPerson },
+	{ id: "shortcuts", label: "Keyboard Shortcuts", icon: IconKeyboard },
+	{ id: "archived", label: "Archived Chats", icon: IconArchive },
+	{ id: "about", label: "About", icon: IconInfo }
 ] as const;
 
 export type SectionId = (typeof SECTIONS)[number]["id"];
@@ -174,123 +273,113 @@ export function SettingsPage({
 		void window.synthDesktop.getInstanceDiagnostics().then(setDesktopIdentity).catch(() => undefined);
 	}, []);
 
+	const activeSection = SECTIONS.find((entry) => entry.id === section) ?? SECTIONS[0];
+
 	return (
 		<div className="settings-page" data-testid="settings-page">
-			<header className="settings-top">
-				<button type="button" className="desk-back" onClick={onBack}>
-					← Back
+			<nav className="settings-rail" aria-label="Settings sections">
+				<button type="button" className="desk-back settings-back" aria-label="← Back" onClick={onBack}>
+					<IconChevronLeft />
+					Back
 				</button>
-				<h1>Settings</h1>
-			</header>
+				<h1 className="settings-rail-title">Settings</h1>
+				<div className="settings-nav">
+					{SECTIONS.map((s) => {
+						const Icon = s.icon;
+						return (
+							<button
+								key={s.id}
+								type="button"
+								className={`settings-nav-item${section === s.id ? " active" : ""}`}
+								aria-current={section === s.id ? "page" : undefined}
+								onClick={() => setSection(s.id)}
+							>
+								<Icon />
+								<span>{s.label}</span>
+							</button>
+						);
+					})}
+				</div>
+			</nav>
 
-			<div className="settings-body">
-				<nav className="settings-nav" aria-label="Settings sections">
-					{SECTIONS.map((s) => (
-						<button
-							key={s.id}
-							type="button"
-							className={`settings-nav-item${section === s.id ? " active" : ""}`}
-							onClick={() => setSection(s.id)}
-						>
-							{s.label}
-						</button>
-					))}
-				</nav>
+			<div className="settings-content">
+				<div className="settings-content-inner">
+					{section !== "account" ? <h2 className="settings-section-title">{activeSection.label}</h2> : null}
 
-				<div className="settings-content">
 					{section === "general" && preferences && onPreferencesChange ? (
 						<GeneralPreferencesSettings
 							preferences={preferences}
 							onPreferencesChange={onPreferencesChange}
-							conversationTitles={conversationTitles}
-							onUnarchive={onUnarchiveConversation}
-							onOpenConversation={onOpenConversation}
 						/>
 					) : null}
 					{section === "models" ? (
-						<div className="settings-finetunes" data-testid="settings-models">
-							<header className="settings-section-head">
-								<div>
-									<p className="settings-breadcrumb">Settings → Models</p>
-									<h2>Models</h2>
-									<p>On-device Laguna weights, telemetry, and compatibility for every provider.</p>
-								</div>
-							</header>
-							<section className="models-half" data-testid="models-on-device">
-								<header className="models-half-head">
-									<h3>On-device</h3>
-									<p>Managed local models and inference runtimes for Workshop coding agents.</p>
-								</header>
+						<div className="settings-sections" data-testid="settings-models">
+							<SettingsCard
+								title="On-device"
+								description="Managed local models and inference runtimes."
+								testId="models-on-device"
+								className="settings-card-embed"
+							>
 								<OnDeviceModelsSettings lagunaPhase={lagunaPhase} onReloadLaguna={onReloadLaguna} />
-							</section>
-							<section className="models-half models-half-all" data-testid="models-all">
-								<header className="models-half-head">
-									<h3>All</h3>
-									<p>Observability and multi-agent compatibility across local and cloud models.</p>
-								</header>
+							</SettingsCard>
+							<SettingsCard testId="models-all" className="settings-card-embed">
 								<ModelObservabilitySettings />
 								<MultiAgentModelSettings />
-							</section>
+							</SettingsCard>
 						</div>
 					) : null}
 					{section === "inference" ? (
-						<div className="settings-finetunes" data-testid="settings-inference">
-							<header className="settings-section-head">
-								<div>
-									<p className="settings-breadcrumb">Settings → Inference</p>
-									<h2>Inference</h2>
-									<p>Daemon-side defaults for sampling, reasoning, and runtime residency.</p>
-								</div>
-							</header>
+						<div className="settings-sections" data-testid="settings-inference">
 							<InferenceSettings />
 						</div>
 					) : null}
 					{section === "voice" ? (
-						<div className="settings-finetunes" data-testid="settings-voice">
-							<header className="settings-section-head">
-								<div>
-									<p className="settings-breadcrumb">Settings → Voice Recognition</p>
-									<h2>Voice Recognition</h2>
-									<p>Local Whisper models that transcribe dictation from this desktop.</p>
-								</div>
-							</header>
-							<VoiceRecognitionSettings />
+						<div className="settings-sections" data-testid="settings-voice">
+							<SettingsCard
+								title="Voice recognition"
+								description="Local Whisper models transcribe dictation from this desktop."
+								className="settings-card-embed"
+							>
+								<VoiceRecognitionSettings />
+							</SettingsCard>
 						</div>
 					) : null}
 					{section === "runtime" ? (
-						<div className="settings-finetunes" data-testid="settings-runtime">
-							<h2>Runtime</h2>
-							<p className="settings-runtime-copy">One append-only local authority owns sessions, runs, events, approvals, traces, visuals, and usage. The UI can inspect the store without leaving the workbench.</p>
-							<div className="finetune-base-card" data-testid="desktop-build-identity">
-								<span className="finetune-kicker">Desktop identity</span>
-								<strong>{desktopIdentity?.displayName ?? "Reading running build…"}</strong>
-								<span className="finetune-meta">
-									{desktopIdentity
-										? `v${desktopIdentity.appVersion} · ${desktopIdentity.mode} · source ${desktopIdentity.sourceRevision} · build ${desktopIdentity.buildRevision}`
-										: "The running process will report its exact source and build revision."}
-								</span>
-								<code className="finetune-file">
-									{desktopIdentity ? `PID ${desktopIdentity.processId} · ${desktopIdentity.executable}` : "Waiting for desktop diagnostics"}
-								</code>
-								<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? ""}</code>
-							</div>
-							<div className="finetune-base-card">
-								<span className="finetune-kicker">Data store</span>
-								<strong>{health?.dataStore?.events ?? 0} events · {health?.dataStore?.runs ?? 0} runs</strong>
-								<span className="finetune-meta">{health?.dataStore?.projects ?? 0} projects · {health?.dataStore?.usage ?? 0} usage entries</span>
-								<span className="finetune-file">{health?.dataStore?.path ?? "Runtime is connecting"}</span>
-							</div>
-							<div className="finetune-base-card" data-testid="intern-routing">
-								<span className="finetune-kicker">Intern routing · [alpha]</span>
-								<strong>Deferred to v0.2</strong>
-								<span className="finetune-meta">
-									v0.1 does not claim a live Sync/Async cloud mailbox. Proper Intern cloud
-									routing returns when public backend contracts ship; internal or unfinished
-									endpoints are not shown as connected.
-								</span>
-								<code className="finetune-file">See launch_v0p1.md · Intern [alpha] → v0.2</code>
-							</div>
-							<WorkspaceAccessSettings />
+						<div className="settings-sections" data-testid="settings-runtime">
+							<SettingsCard title="Local runtime">
+								<div className="finetune-base-card" data-testid="desktop-build-identity">
+									<span className="finetune-kicker">Desktop identity</span>
+									<strong>{desktopIdentity?.displayName ?? "Reading running build…"}</strong>
+									<span className="finetune-meta">
+										{desktopIdentity
+											? `v${desktopIdentity.appVersion} · ${desktopIdentity.mode} · source ${desktopIdentity.sourceRevision} · build ${desktopIdentity.buildRevision}`
+											: "The running process will report its exact source and build revision."}
+									</span>
+									<code className="finetune-file">
+										{desktopIdentity ? `PID ${desktopIdentity.processId} · ${desktopIdentity.executable}` : "Waiting for desktop diagnostics"}
+									</code>
+									<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? ""}</code>
+								</div>
+								<div className="finetune-base-card">
+									<span className="finetune-kicker">Data store</span>
+									<strong>{health?.dataStore?.events ?? 0} events · {health?.dataStore?.runs ?? 0} runs</strong>
+									<span className="finetune-meta">{health?.dataStore?.projects ?? 0} projects · {health?.dataStore?.usage ?? 0} usage entries</span>
+									<span className="finetune-file">{health?.dataStore?.path ?? "Runtime is connecting"}</span>
+								</div>
+								<div className="finetune-base-card" data-testid="intern-routing">
+									<span className="finetune-kicker">Intern routing · [alpha]</span>
+									<strong>Deferred to v0.2</strong>
+									<span className="finetune-meta">
+										v0.1 does not claim a live Sync/Async cloud mailbox. Proper Intern cloud
+										routing returns when public backend contracts ship; internal or unfinished
+										endpoints are not shown as connected.
+									</span>
+									<code className="finetune-file">See launch_v0p1.md · Intern [alpha] → v0.2</code>
+								</div>
+							</SettingsCard>
+							<SettingsCard className="settings-card-embed">
+								<WorkspaceAccessSettings />
+							</SettingsCard>
 						</div>
 					) : null}
 					{section === "account" ? (
@@ -304,27 +393,32 @@ export function SettingsPage({
 							onOpenDeviceUsage={account.onOpenDeviceUsage}
 						/>
 					) : null}
+					{section === "shortcuts" ? <KeyboardShortcutsSettings /> : null}
+					{section === "archived" && preferences ? (
+						<ArchivedChatsSettings
+							preferences={preferences}
+							conversationTitles={conversationTitles}
+							onUnarchive={onUnarchiveConversation}
+							onOpenConversation={onOpenConversation}
+						/>
+					) : null}
 					{section === "about" ? (
-						<div className="settings-finetunes" data-testid="settings-about">
-							<header className="settings-section-head">
-								<div>
-									<h2>About</h2>
-									<p>Version, build identity, and changelog entry points.</p>
+						<div className="settings-sections" data-testid="settings-about">
+							<SettingsCard title="Synth Desktop">
+								<div className="finetune-base-card" data-testid="about-build-identity">
+									<span className="finetune-kicker">Build</span>
+									<strong>{desktopIdentity?.displayName ?? "Synth Desktop"}</strong>
+									<span className="finetune-meta">
+										{desktopIdentity
+											? `v${desktopIdentity.appVersion} · ${desktopIdentity.mode} · source ${desktopIdentity.sourceRevision} · build ${desktopIdentity.buildRevision}`
+											: "Build identity unavailable in this environment."}
+									</span>
+									<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? "Local-first research workbench"}</code>
 								</div>
-							</header>
-							<div className="finetune-base-card" data-testid="about-build-identity">
-								<span className="finetune-kicker">Synth Desktop</span>
-								<strong>{desktopIdentity?.displayName ?? "Synth Desktop"}</strong>
-								<span className="finetune-meta">
-									{desktopIdentity
-										? `v${desktopIdentity.appVersion} · ${desktopIdentity.mode} · source ${desktopIdentity.sourceRevision} · build ${desktopIdentity.buildRevision}`
-										: "Build identity unavailable in this environment."}
-								</span>
-								<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? "Local-first research workbench"}</code>
-							</div>
-							<p className="settings-runtime-copy">
-								Synth Desktop is a local-first research workbench. Release notes and acknowledgements ship with each desktop build.
-							</p>
+								<p className="settings-runtime-copy">
+									Synth Desktop is a local-first research workbench. Release notes and acknowledgements ship with each desktop build.
+								</p>
+							</SettingsCard>
 						</div>
 					) : null}
 				</div>

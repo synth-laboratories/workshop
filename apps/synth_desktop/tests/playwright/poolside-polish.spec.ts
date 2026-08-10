@@ -379,6 +379,7 @@ test.describe("conversation management", () => {
 		await page.getByRole("menuitem", { name: "Archive" }).click();
 		await expect(page.getByTestId("local-chat-manage-chat")).toHaveCount(0);
 		await openSettings(page);
+		await page.getByRole("button", { name: "Archived Chats" }).click();
 		await expect(page.getByTestId("archived-chat-manage-chat")).toBeVisible();
 	});
 });
@@ -447,8 +448,13 @@ test.describe("layout persistence", () => {
 			adapter.set({ ...prefs, layout: { ...prefs.layout, last: { ...prefs.layout.last, sidebarWidth: 220 } } });
 		});
 		await page.getByTestId("apply-layout-default").click();
+		// Settings owns the whole left rail; the conversation sidebar returns
+		// with the applied width once the workspace is back.
+		await page.getByRole("button", { name: "← Back" }).click();
 		await expect(page.getByTestId("sidebar")).toHaveCSS("width", "310px");
+		await openSettings(page);
 		await page.getByTestId("reset-layout").click();
+		await page.getByRole("button", { name: "← Back" }).click();
 		await expect(page.getByTestId("sidebar")).toHaveCSS("width", "260px");
 		const widths = await page.evaluate(() => {
 			const prefs = (window as typeof window & { __synthPreferences?: { get(): any } }).__synthPreferences!.get();
