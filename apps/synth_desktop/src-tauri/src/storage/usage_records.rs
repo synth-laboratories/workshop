@@ -160,6 +160,11 @@ impl UsageRecordsRepository {
     /// Attach a settled charge to an existing request. Returns `false` when
     /// the request has no row yet — the caller retries after the record
     /// exists rather than this module inventing a stub with fake timing.
+    ///
+    /// The amount and its label move together, and only when the incoming
+    /// authority is at least the stored one (or the row holds no amount yet):
+    /// a weaker source must never overwrite a stronger settled figure, and a
+    /// row must never carry one source's dollars under another source's name.
     pub async fn record_billed_cost(
         &self,
         provider: String,
@@ -169,14 +174,17 @@ impl UsageRecordsRepository {
     ) -> Result<bool> {
         self.db
             .run(move |conn| {
+                let authoritative = format!(
+                    "({incoming} >= {stored} OR billed_cost_usd IS NULL)",
+                    incoming = cost_rank("?4"),
+                    stored = cost_rank("cost_source"),
+                );
                 let updated = conn.execute(
                     &format!(
                         "UPDATE usage_records SET
-                            billed_cost_usd = ?3,
-                            cost_source = CASE WHEN {incoming} >= {stored} THEN ?4 ELSE cost_source END
+                            billed_cost_usd = CASE WHEN {authoritative} THEN ?3 ELSE billed_cost_usd END,
+                            cost_source = CASE WHEN {authoritative} THEN ?4 ELSE cost_source END
                          WHERE provider = ?1 AND request_id = ?2",
-                        incoming = cost_rank("?4"),
-                        stored = cost_rank("cost_source"),
                     ),
                     params![provider, request_id, billed_cost_usd, source.as_str()],
                 )?;
@@ -737,6 +745,57 @@ mod tests {
             Some(now.timestamp_millis() - 30 * day_ms)
         );
         assert_eq!(window_start_ms("all", now, 0), None);
+    }
+
+    #[tokio::test]
+    async fn a_settled_synth_cloud_amount_survives_a_weaker_estimate_replay() {
+        let (_t, repository) = open();
+        let mut r = record("synth-cloud", "openrouter/poolside/laguna-s-2.1", "req-1");
+        r.billed_cost_usd = Some(0.03);
+        r.cost_source = CostSource::SynthCloud;
+        repository.record(r).await.unwrap();
+
+        // A weaker authority may not overwrite the amount, and must not leave
+        // its own dollars under the stronger label either.
+        assert!(repository
+            .record_billed_cost(
+                "synth-cloud".into(),
+                "req-1".into(),
+                0.99,
+                CostSource::TariffEstimate
+            )
+            .await
+            .unwrap());
+        let summary = all_time(&repository).await;
+        assert_eq!(summary.totals.billed_cost_usd, Some(0.03));
+        assert_eq!(summary.totals.cost_source, CostSource::SynthCloud);
+
+        // Equal rank re-settles (a replayed receipt), a stronger rank wins.
+        assert!(repository
+            .record_billed_cost(
+                "synth-cloud".into(),
+                "req-1".into(),
+                0.04,
+                CostSource::SynthCloud
+            )
+            .await
+            .unwrap());
+        assert_eq!(
+            all_time(&repository).await.totals.billed_cost_usd,
+            Some(0.04)
+        );
+        assert!(repository
+            .record_billed_cost(
+                "synth-cloud".into(),
+                "req-1".into(),
+                0.05,
+                CostSource::ProviderReported
+            )
+            .await
+            .unwrap());
+        let summary = all_time(&repository).await;
+        assert_eq!(summary.totals.billed_cost_usd, Some(0.05));
+        assert_eq!(summary.totals.cost_source, CostSource::ProviderReported);
     }
 
     #[tokio::test]
