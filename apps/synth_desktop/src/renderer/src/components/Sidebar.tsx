@@ -3,8 +3,7 @@ import { type LandingState } from "../types/landing";
 import { ModelDownloadBar } from "./ModelDownloadBar";
 import { LocalModelResidency } from "./LocalModelResidency";
 import type { LagunaStatus } from "../env";
-import { type AccountViewModel, formatDate, formatUsd } from "../runtime/accountView";
-import type { DeviceUsageSummary } from "./UsageSheet";
+import { type AccountViewModel } from "../runtime/accountView";
 import { ConversationContextMenu } from "./GeneralPreferencesSettings";
 import { PaneResizeHandle } from "./PaneResizeHandle";
 
@@ -28,7 +27,6 @@ type Props = {
 	onSettings: () => void;
 	/** Composed by the renderer from the host's account summary. */
 	account: AccountViewModel;
-	accountUsage?: DeviceUsageSummary | null;
 	onOpenAccount?: () => void;
 	onOpenUsage?: () => void;
 	onBilling?: (action: "upgrade" | "manage") => void;
@@ -130,7 +128,6 @@ export function Sidebar({
 	onSearch,
 	onSettings,
 	account,
-	accountUsage = null,
 	onOpenAccount,
 	onOpenUsage,
 	onBilling,
@@ -152,7 +149,6 @@ export function Sidebar({
 	const [renameDraft, setRenameDraft] = useState("");
 	const [showAllChats, setShowAllChats] = useState(false);
 	const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-	const [usageOpen, setUsageOpen] = useState(false);
 	const accountMenuRef = useRef<HTMLDivElement>(null);
 	const accountTriggerRef = useRef<HTMLButtonElement>(null);
 
@@ -425,39 +421,6 @@ export function Sidebar({
 							</div>
 							{account.cloudBlockedReason ? (
 								<p className="account-menu-alert" data-testid="account-menu-blocked">{account.cloudBlockedReason}</p>
-							) : account.statusNote ? (
-								<p className="account-menu-alert" data-testid="account-menu-status-note">{account.statusNote}</p>
-							) : null}
-							<button type="button" className="account-menu-row" onClick={() => setUsageOpen((value) => !value)} aria-expanded={usageOpen} aria-controls="account-usage-panel" data-testid="account-usage-toggle">
-								<span className="account-menu-glyph" aria-hidden>◔</span><span>Usage remaining</span><span className={`account-menu-chevron${usageOpen ? " open" : ""}`} aria-hidden>›</span>
-							</button>
-							{usageOpen ? (
-								<div id="account-usage-panel" className="account-usage" data-testid="account-usage">
-									{account.plan ? (
-										<>
-											{account.planHasDollars ? (
-												<>
-													<div><span>{account.plan.name} plan</span><strong data-testid="account-plan-allowance">{formatUsd(account.plan.monthlyAllowanceUsd)} monthly</strong></div>
-													<div><span>Used this period</span><strong data-testid="account-plan-used">{formatUsd(account.plan.usedUsd)}</strong></div>
-													<div><span>Remaining</span><strong data-testid="account-plan-remaining">{formatUsd(account.plan.remainingUsd)}</strong></div>
-												</>
-											) : (
-												<div><span>{account.plan.name} plan</span><strong data-testid="account-plan-allowance">Not metered in dollars</strong></div>
-											)}
-											{formatDate(account.plan.resetsAt) ? (
-												<div><span>Resets</span><strong data-testid="account-plan-resets">{formatDate(account.plan.resetsAt)}</strong></div>
-											) : null}
-											{account.planIsDevSeed ? <p data-testid="account-plan-dev-seed">Dev stand-in — charged from this device, not Synth Cloud.</p> : null}
-										</>
-									) : account.signedIn ? (
-										<p data-testid="account-plan-unavailable">No Synth Cloud plan is reported for this account.</p>
-									) : (
-										<p data-testid="account-plan-signed-out">Sign in to Synth to see a cloud allowance.</p>
-									)}
-									<div><span>This device, this week</span><strong>{(accountUsage?.weeklyTokens ?? 0).toLocaleString()} tokens</strong></div>
-									{(accountUsage?.weeklyCostUsd ?? 0) > 0 ? <div><span>Estimated device cost</span><strong>{formatUsd(accountUsage?.weeklyCostUsd)}</strong></div> : null}
-									<div><span>All tracked device usage</span><strong>{(accountUsage?.totalTokens ?? 0).toLocaleString()} tokens · {accountUsage?.entries ?? 0} runs</strong></div>
-								</div>
 							) : null}
 							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); onOpenUsage?.(); }} data-testid="account-open-usage" role="menuitem">
 								<span className="account-menu-glyph" aria-hidden>▤</span><span>Usage</span>

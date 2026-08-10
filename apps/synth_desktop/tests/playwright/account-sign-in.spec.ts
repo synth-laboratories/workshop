@@ -84,18 +84,19 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 	await expect(signIn.getByTestId("sign-in-status")).toContainText("Connected to Synth");
 	await page.getByTestId("account-menu-trigger").click();
 	await expect(page.getByTestId("account-menu")).toContainText("Synth Dev");
-	await expect(page.getByTestId("account-menu")).toContainText("Usage remaining");
+	await expect(page.getByTestId("account-open-usage")).toContainText("Usage");
 	await expect(page.getByTestId("account-menu")).toContainText("Settings");
 	await expect(page.getByTestId("account-menu")).toContainText("Log out");
-	await page.getByTestId("account-usage-toggle").click();
-	await expect(page.getByTestId("account-plan-allowance")).toHaveText("$200.00 monthly");
-	await expect(page.getByTestId("account-plan-used")).toHaveText("$12.50");
-	await expect(page.getByTestId("account-plan-remaining")).toHaveText("$187.50");
-	await expect(page.getByTestId("account-plan-resets")).not.toBeEmpty();
-	// A dev/local plan is never presented as Synth Cloud truth.
-	await expect(page.getByTestId("account-plan-dev-seed")).toContainText("Dev stand-in");
-	await expect(page.getByTestId("account-usage")).toContainText("This device, this week");
-	await page.getByTestId("account-menu-trigger").click();
+	await expect(page.getByTestId("account-menu-status-note")).toHaveCount(0);
+	await expect(page.getByTestId("account-usage")).toHaveCount(0);
+	await page.getByTestId("account-open-usage").click();
+	await expect(page.getByTestId("usage-sheet-allowance")).toHaveText("$200.00");
+	await expect(page.getByTestId("usage-sheet-used")).toHaveText("$12.50");
+	await expect(page.getByTestId("usage-sheet-remaining")).toHaveText("$187.50");
+	await expect(page.getByTestId("usage-sheet-resets")).not.toBeEmpty();
+	// Detailed dev/local provenance belongs in the dedicated usage surface.
+	await expect(page.getByTestId("usage-sheet-dev-seed")).toContainText("Dev stand-in");
+	await page.getByTestId("usage-sheet-close").click();
 
 	await signIn.getByTestId("account-sign-out").click();
 	await expect(page.getByTestId("backend-settings")).toContainText("API key required");

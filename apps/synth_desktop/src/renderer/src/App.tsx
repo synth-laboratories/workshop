@@ -1859,7 +1859,6 @@ export default function App() {
 					onSearch={openSearch}
 					onSettings={() => setView({ kind: "settings" })}
 					account={accountView}
-					accountUsage={accountUsage}
 					onOpenUsage={() => setUsageSheetOpen(true)}
 					onBilling={(action) => void openBilling(action)}
 					onRetryAccount={() => refreshAccountSummary(true)}
