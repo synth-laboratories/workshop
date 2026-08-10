@@ -3928,6 +3928,17 @@ mod tests {
             .unwrap();
         let broker = credential_broker::shared().unwrap();
         let before = broker.token_for("lease-provider-identity").unwrap();
+        credential_broker::push_settled_receipt(credential_broker::SettledReceipt {
+            session_id: "lease-provider-identity".into(),
+            provider_response_id: "resp-born-under-old-name".into(),
+            model: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
+            cost_usd: Some(0.25),
+            completed_at_ms: 0,
+        });
 
         // Same endpoint, credential, model, workspace, approval and sandbox —
         // only the provider name differs.
@@ -3940,6 +3951,10 @@ mod tests {
         assert_ne!(before, after);
         assert!(!broker.resolves(&before));
         assert!(broker.resolves(&after));
+        assert!(
+            credential_broker::drain_settled_receipts("lease-provider-identity").is_empty(),
+            "receipts born under the old provider name must not survive the switch"
+        );
     }
 
     /// A changed credential or endpoint is part of the reuse comparison: the
