@@ -121,7 +121,7 @@ const unavailableLaguna: LagunaStatus = {
 	baseUrl: null,
 	backend: null,
 	loadedModel: null,
-	detail: "Laguna status is unavailable in the browser fixture",
+	detail: "Local model status is unavailable in the browser fixture",
 	memoryBytes: null,
 	updatedAt: Date.now()
 };

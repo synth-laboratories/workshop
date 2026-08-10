@@ -469,16 +469,91 @@ impl LagunaManager {
         self.status().await
     }
 
+    /// Reconcile a newly launched desktop process without allocating model
+    /// memory. Installed/selected is configuration; residency begins only
+    /// when the first local turn calls `ensure` (or the user explicitly
+    /// chooses Reload in Settings).
+    pub async fn initialize_cold(&self) -> Result<LagunaStatus> {
+        stop_managed_sidecar()?;
+        stop_muse_engine()?;
+        release_local_runtime_lease();
+        let model_id = selected_model_id()?;
+        let is_muse = model_id == MUSE_GLIMMER_MODEL;
+        let status = LagunaStatus {
+            phase: "unloaded".into(),
+            base_url: None,
+            backend: Some(if is_muse { "llama_cpp" } else { "mlx_lm" }.into()),
+            loaded_model: None,
+            detail: Some(if is_muse {
+                "Muse Glimmer is installed. Its weights will load with the first Muse prompt."
+                    .into()
+            } else {
+                "Laguna XS is installed. Its weights will load with the first local prompt."
+                    .into()
+            }),
+            memory_bytes: Some(0),
+            idle_seconds: None,
+            idle_unload_after_seconds: None,
+            last_used_at: None,
+            free_at: None,
+            updated_at: now_ms(),
+        };
+        self.set_status(status.clone()).await;
+        Ok(status)
+    }
+
+    /// Change the selected local model without warming it. If another local
+    /// model is resident, release it before recording the new cold selection.
+    pub async fn select_model_cold(&self, path: &Path) -> Result<LagunaModelHit> {
+        let hit = self.select_model(path)?;
+        let current = self.status().await;
+        let already_resident = current.phase == "ready"
+            && current.loaded_model.as_deref() == Some(hit.model_id.as_str());
+        if !already_resident {
+            stop_managed_sidecar()?;
+            stop_muse_engine()?;
+            release_local_runtime_lease();
+            let is_muse = hit.model_id == MUSE_GLIMMER_MODEL;
+            self.set_status(LagunaStatus {
+                phase: "unloaded".into(),
+                base_url: None,
+                backend: Some(if is_muse { "llama_cpp" } else { "mlx_lm" }.into()),
+                loaded_model: None,
+                detail: Some(if is_muse {
+                    "Muse Glimmer selected. Its weights will load with the first Muse prompt."
+                        .into()
+                } else {
+                    "Laguna XS selected. Its weights will load with the first local prompt."
+                        .into()
+                }),
+                memory_bytes: Some(0),
+                idle_seconds: None,
+                idle_unload_after_seconds: None,
+                last_used_at: None,
+                free_at: None,
+                updated_at: now_ms(),
+            })
+            .await;
+        }
+        Ok(hit)
+    }
+
     /// Restart the Synth-managed Laguna sidecar, then wait for the freshly
     /// started daemon to report its current residency. External upstreams are
     /// never killed; in that configuration this still performs a fresh probe.
     pub async fn reload(&self, workshop_root: &Path) -> Result<LagunaStatus> {
+        let selected_model = selected_model_id()?;
+        let is_muse = selected_model == MUSE_GLIMMER_MODEL;
         self.set_status(LagunaStatus {
             phase: "starting".into(),
             base_url: env::var("SYNTH_LAGUNA_BASE_URL").ok().map(trim_url),
-            backend: None,
+            backend: Some(if is_muse { "llama_cpp" } else { "mlx_lm" }.into()),
             loaded_model: None,
-            detail: Some("Reloading Laguna XS…".into()),
+            detail: Some(if is_muse {
+                "Warming up Muse Glimmer…".into()
+            } else {
+                "Warming up Laguna XS…".into()
+            }),
             memory_bytes: None,
             idle_seconds: None,
             idle_unload_after_seconds: None,
@@ -753,12 +828,18 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
 
         let api_key = ensure_api_key()?;
         let base_url = trim_url(laguna_base_url());
+        let selected_model = selected_model_id()?;
+        let is_muse = selected_model == MUSE_GLIMMER_MODEL;
         self.set_status(LagunaStatus {
             phase: "starting".into(),
             base_url: Some(base_url.clone()),
-            backend: None,
+            backend: Some(if is_muse { "llama_cpp" } else { "mlx_lm" }.into()),
             loaded_model: None,
-            detail: Some("Checking Laguna XS…".into()),
+            detail: Some(if is_muse {
+                "Preparing Muse Glimmer for the first prompt…".into()
+            } else {
+                "Preparing Laguna XS for the first prompt…".into()
+            }),
             memory_bytes: None,
             idle_seconds: None,
             idle_unload_after_seconds: None,
@@ -768,7 +849,6 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         })
         .await;
 
-        let selected_model = selected_model_id()?;
         if let Err(error) = acquire_local_runtime_lease(&selected_model) {
             self.set_error(error.to_string()).await;
             return Ok(None);
@@ -803,7 +883,6 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         // The Synth-managed daemon is the only local runtime: it loads the
         // weights in-process. There is no second engine to discover or proxy
         // through — Poolside's own sidecar is not ours and is never reused.
-        let is_muse = selected_model == MUSE_GLIMMER_MODEL;
         let backend = if is_muse {
             // A GGUF engine speaks Chat Completions and has no Responses
             // surface, so the daemon drives it through its own turn core
@@ -996,17 +1075,17 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
             .timeout(Duration::from_millis(2000))
             .send()
             .await
-            .with_context(|| format!("Laguna inference telemetry is unreachable at {base_url}"))?;
+            .with_context(|| format!("Local inference telemetry is unreachable at {base_url}"))?;
         if !response.status().is_success() {
             return Err(anyhow::anyhow!(
-                "Laguna inference telemetry returned {}",
+                "Local inference telemetry returned {}",
                 response.status().as_u16()
             ));
         }
         let snapshot: LagunaInference = response
             .json()
             .await
-            .context("Laguna inference telemetry returned an unreadable payload")?;
+            .context("Local inference telemetry returned an unreadable payload")?;
         self.record_inference(snapshot.clone()).await;
         Ok(snapshot)
     }
@@ -1022,7 +1101,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
             .timeout(Duration::from_secs(20))
             .send()
             .await
-            .with_context(|| format!("Laguna is unreachable at {base_url}"))?;
+            .with_context(|| format!("The local inference engine is unreachable at {base_url}"))?;
         let status = response.status().as_u16();
         let body = response.text().await.unwrap_or_default();
         let outcome = unload_outcome(status, &body).map_err(anyhow::Error::msg)?;
@@ -1188,7 +1267,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
             .await?;
         if !response.status().is_success() {
             return Err(anyhow::anyhow!(
-                "Laguna inference stream returned {}",
+                "Local inference stream returned {}",
                 response.status().as_u16()
             ));
         }
@@ -1388,6 +1467,12 @@ pub async fn laguna_model_download(
         Err(error) => serde_json::json!({"phase":"error","detail":error}),
     };
     let _ = app.emit("laguna:download", payload);
+    if let Ok(hit) = &result {
+        state
+            .select_model_cold(std::path::Path::new(&hit.path))
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     result
 }
 

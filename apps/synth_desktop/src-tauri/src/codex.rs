@@ -498,10 +498,10 @@ impl CodexManager {
             .write()
             .await
             .insert(request.session_id.clone(), session.clone());
-        let default_title = if request.provider_name.as_deref() == Some("local-laguna") {
-            "Laguna XS".to_owned()
-        } else {
-            request.model.clone()
+        let default_title = match request.provider_name.as_deref() {
+            Some("local-laguna") => "Laguna XS".to_owned(),
+            Some("local-muse-glimmer") => "Muse Glimmer".to_owned(),
+            _ => request.model.clone(),
         };
         let title = remembered
             .as_ref()

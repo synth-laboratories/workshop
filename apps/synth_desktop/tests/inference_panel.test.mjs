@@ -231,7 +231,7 @@ test("unloaded state reports no residency and disables Free now", () => {
 
 test("error state is announced and offers a retry", () => {
 	const html = render({
-		monitor: monitor({ state: "error", error: "Laguna is unreachable at http://127.0.0.1:7333" })
+	monitor: monitor({ state: "error", error: "The local inference engine is unreachable at http://127.0.0.1:7333" })
 	});
 	assert.match(html, /role="alert"/);
 	assert.match(html, /data-testid="inference-error"/);

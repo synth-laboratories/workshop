@@ -1152,8 +1152,7 @@ fn workspace_access_update(
 #[tauri::command]
 async fn laguna_get_status(state: State<'_, Arc<LagunaManager>>) -> Result<LagunaStatus, String> {
     if state.status().await.phase == "unknown" {
-        let root = runtime::workshop_root().map_err(|error| error.to_string())?;
-        if let Err(error) = state.ensure(&root).await {
+        if let Err(error) = state.initialize_cold().await {
             state.set_error(error.to_string()).await;
         }
         return Ok(state.status().await);
@@ -1173,12 +1172,13 @@ fn laguna_models_list(state: State<'_, Arc<LagunaManager>>) -> Result<Vec<Laguna
 }
 
 #[tauri::command]
-fn laguna_models_set_directory(
+async fn laguna_models_set_directory(
     state: State<'_, Arc<LagunaManager>>,
     path: String,
 ) -> Result<LagunaModelHit, String> {
     state
-        .select_model(std::path::Path::new(&path))
+        .select_model_cold(std::path::Path::new(&path))
+        .await
         .map_err(|error| error.to_string())
 }
 
@@ -1405,13 +1405,16 @@ async fn prepare_codex_provider(
                 .map_err(|error| error.to_string())?,
         );
     }
-    if request.provider_name.as_deref() == Some("local-laguna") {
+    if matches!(
+        request.provider_name.as_deref(),
+        Some("local-laguna" | "local-muse-glimmer")
+    ) {
         let root = runtime::workshop_root().map_err(|error| error.to_string())?;
         request.base_url = laguna
             .ensure(&root)
             .await
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "Laguna Responses server is unavailable".to_string())?;
+            .ok_or_else(|| "The local Responses server is unavailable".to_string())?;
         request.api_key = laguna.api_key().unwrap_or_default();
     } else if request
         .provider_name

@@ -173,6 +173,10 @@ test.describe("design debt (expected fail until fixed)", () => {
 				...(previous as object),
 				getStatus: previous?.getStatus ?? (async () => ready),
 				onStatus: previous?.onStatus ?? (() => () => undefined),
+				listModels: previous?.listModels ?? (async () => []),
+				chooseModelDirectory: previous?.chooseModelDirectory ?? (async () => null),
+				setModelDirectory: previous?.setModelDirectory ?? (async () => { throw new Error("unused"); }),
+				clearModelDirectory: previous?.clearModelDirectory ?? (async () => undefined),
 				reload: async () => {
 					(window as typeof window & { __lagunaReloads: number }).__lagunaReloads += 1;
 					return ready;

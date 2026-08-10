@@ -1239,6 +1239,15 @@ export function healthToModelStatus(
 			detail: laguna.detail
 		};
 	}
+	if (laguna?.phase === "unloaded") {
+		return {
+			status: "unloaded",
+			name,
+			composerEnabled: true,
+			composerPlaceholder: isMuse ? "Ask Muse something…" : "Ask Laguna something…",
+			detail: laguna.detail || "Local model memory is free. The model will warm before the next prompt."
+		};
+	}
 	// Native Tauri sessions do not require the legacy Python runtime health
 	// endpoint. A ready Laguna sidecar is authoritative on its own.
 	if (laguna?.phase === "ready" || health?.local.mode === "mlx") {

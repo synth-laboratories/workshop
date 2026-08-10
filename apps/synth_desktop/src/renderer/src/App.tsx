@@ -321,6 +321,7 @@ export default function App() {
 	const [health, setHealth] = useState<RuntimeHealth | null>(null);
 	const [laguna, setLaguna] = useState<LagunaStatus | null>(null);
 	const [museReady, setMuseReady] = useState(false);
+	const initialLocalTargetResolvedRef = useRef(false);
 	const [sessions, setSessions] = useState<Session[]>([]);
 	const sessionsRef = useRef<Session[]>([]);
 	const [eventsBySession, setEventsBySession] = useState<Record<string, RuntimeEvent[]>>({});
@@ -405,7 +406,10 @@ export default function App() {
 		}
 	);
 	const selectedTargetIsLocal = selectedTargetId === "local-laguna" || selectedTargetId === "local-muse-glimmer";
-	const inferenceMonitor = useInferenceMonitor({ visible: selectedTargetIsLocal });
+	const inferenceRailIsMuse = selectedTargetId === "local-muse-glimmer";
+	const inferenceMonitor = useInferenceMonitor({
+		visible: selectedTargetIsLocal && !["unloaded", "error", "unavailable"].includes(laguna?.phase ?? "")
+	});
 	const [modelPerformance, setModelPerformance] = useState<ModelPerformanceSummary[]>([]);
 	useEffect(() => {
 		let disposed = false;
@@ -810,9 +814,21 @@ export default function App() {
 	useEffect(() => {
 		let disposed = false;
 		const refresh = () => void window.synthLaguna?.listModels().then((models) => {
+			// Installed Muse stays selectable while cold. Selecting it is what
+			// repairs/starts the pinned llama.cpp runtime; residency is tracked
+			// independently by LagunaStatus.
 			if (!disposed) setMuseReady(models.some((model) =>
-				model.modelId === "meta-models/Muse-Glimmer-30B-GGUF" && model.runtimeReady
+				model.modelId === "meta-models/Muse-Glimmer-30B-GGUF"
 			));
+			if (!disposed && !initialLocalTargetResolvedRef.current) {
+				const selected = models.find((model) => model.selected);
+				if (selected) {
+					initialLocalTargetResolvedRef.current = true;
+					setSelectedTargetId(selected.modelId === "meta-models/Muse-Glimmer-30B-GGUF"
+						? "local-muse-glimmer"
+						: "local-laguna");
+				}
+			}
 		}).catch(() => { if (!disposed) setMuseReady(false); });
 		refresh();
 		const interval = window.setInterval(refresh, 5_000);
@@ -1491,6 +1507,7 @@ export default function App() {
 	const onSelectTarget = useCallback((id: string) => {
 		if (isInternTargetId(id)) return;
 		if (id === "local-muse-glimmer" && !museReady) return;
+		initialLocalTargetResolvedRef.current = true;
 		// Model chip change only updates pendingTarget. Compact/rebind happen
 		// on the next send when pending ≠ session.target (modelSwitchPlan.ts).
 		const plan = planModelChipChange({ nextTargetId: id });
@@ -1503,7 +1520,7 @@ export default function App() {
 				const hit = models.find((model) => model.modelId === modelId);
 				if (!hit) throw new Error(`${modelId} is not installed`);
 				await window.synthLaguna?.setModelDirectory(hit.path);
-				setLaguna(await window.synthLaguna!.reload());
+				setLaguna(await window.synthLaguna!.getStatus());
 			}).catch((reason) => showToast(reason instanceof Error ? reason.message : String(reason)));
 		}
 	}, [museReady, showToast]);
@@ -1583,7 +1600,7 @@ export default function App() {
 
 	const onReloadLaguna = useCallback(async () => {
 		const bridge = window.synthLaguna;
-		if (!bridge) throw new Error("Laguna controls are unavailable in this build");
+		if (!bridge) throw new Error("Local model controls are unavailable in this build");
 		await bridge.reload();
 		const status = await bridge.getStatus();
 		setLaguna(status);
@@ -1994,7 +2011,7 @@ export default function App() {
 							onBack={() => setView({ kind: "landing" })}
 							onReloadLaguna={onReloadLaguna}
 							health={health}
-							lagunaPhase={laguna?.phase}
+							lagunaStatus={laguna}
 							initialSection={view.section}
 							preferences={preferences}
 							onPreferencesChange={(next) => {
@@ -2190,8 +2207,8 @@ export default function App() {
 							{showInferenceRail ? (
 								<aside className="inference-rail" data-testid="inference-rail" aria-label="Local inference monitor">
 									<div className="inference-rail-label">
-										<span>{activeChatSession?.target.kind === "local" && activeChatSession.target.model.includes("Muse") ? "Local GGUF engine" : "MLX sidecar"}</span>
-										<small>{activeChatSession?.target.kind === "local" && activeChatSession.target.model.includes("Muse")
+										<span>{inferenceRailIsMuse ? "Local GGUF engine" : "MLX sidecar"}</span>
+										<small>{inferenceRailIsMuse
 											? "llama.cpp · Metal · DFlash; owns model memory, KV caches, and the GPU queue."
 											: "Owns local model memory, prompt caches, and the single-GPU queue."}</small>
 									</div>
@@ -2204,6 +2221,8 @@ export default function App() {
 											activeChatRunning && activeChatSession?.target.kind === "local"
 										)}
 										warmingUp={activeChatWarmingUp}
+										runtimePhase={laguna?.phase}
+										runtimeDetail={laguna?.detail}
 										onOpenSettings={() => setView({ kind: "settings", section: "inference" })}
 									/>
 								</aside>

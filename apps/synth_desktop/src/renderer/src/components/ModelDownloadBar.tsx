@@ -62,6 +62,16 @@ export function ModelDownloadBar({ state, onPauseToggle }: Props) {
 		);
 	}
 
+	if (model.status === "unloaded") {
+		return (
+			<div className="download-bar is-unloaded" data-testid="model-status-unloaded">
+				<div className="download-label">
+					<span title={model.detail}>{model.name} installed · memory free</span>
+				</div>
+			</div>
+		);
+	}
+
 	if (model.status === "starting" || model.status === "loading") {
 		const label =
 			model.detail ||

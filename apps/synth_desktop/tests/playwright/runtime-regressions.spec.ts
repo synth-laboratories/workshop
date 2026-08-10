@@ -564,9 +564,45 @@ test("sidebar can explicitly free the resident local model", async ({ page }) =>
 	await free.click();
 
 	await expect(page.getByTestId("model-residency")).toBeHidden();
+	await expect(page.getByTestId("model-status-ready")).toHaveCount(0);
+	await expect(page.getByTestId("model-status-unloaded")).toContainText("Muse-Glimmer-30B-GGUF installed · memory free");
 	await expect.poll(() => page.evaluate(() => (
 		window as typeof window & { __freeMemoryCalls?: number }
 	).__freeMemoryCalls)).toBe(1);
+});
+
+test("an installed cold Muse remains available in the model selector", async ({ page }) => {
+	await page.addInitScript(() => {
+		const testWindow = window as typeof window & { synthLaguna?: unknown; __coldMuseReloads?: number; __coldMuseSelections?: number };
+		testWindow.__coldMuseReloads = 0;
+		testWindow.__coldMuseSelections = 0;
+		testWindow.synthLaguna = {
+			getStatus: async () => ({
+				phase: "unloaded", baseUrl: null, backend: "llama_cpp", loadedModel: null,
+				detail: "Local model memory freed.", memoryBytes: 0, updatedAt: Date.now()
+			}),
+			onStatus: () => () => undefined,
+			listModels: async () => [{
+				path: "/models/meta-models/Muse-Glimmer-30B-GGUF", modelsRoot: "/models",
+				modelId: "meta-models/Muse-Glimmer-30B-GGUF", shardCount: 3,
+				totalBytes: 19_800_000_000, selected: true, runtimeReady: false, companionBytes: 1_500_000_000
+			}],
+			chooseModelDirectory: async () => null,
+			setModelDirectory: async () => { testWindow.__coldMuseSelections = (testWindow.__coldMuseSelections ?? 0) + 1; },
+			reload: async () => {
+				testWindow.__coldMuseReloads = (testWindow.__coldMuseReloads ?? 0) + 1;
+				throw new Error("selecting a cold model must not warm it");
+			},
+			clearModelDirectory: async () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("composer-model").click();
+	await expect(page.getByTestId("composer-model-menu")).toContainText("Muse Glimmer 30B");
+	await page.getByTestId("composer-model-option-local-muse-glimmer").click();
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __coldMuseSelections?: number }).__coldMuseSelections ?? 0)).toBe(1);
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __coldMuseReloads?: number }).__coldMuseReloads ?? 0)).toBe(0);
+	await expect(page.getByTestId("model-status-unloaded")).toContainText("installed · memory free");
 });
 
 test("resident model disappears immediately when Laguna reports automatic unload", async ({ page }) => {

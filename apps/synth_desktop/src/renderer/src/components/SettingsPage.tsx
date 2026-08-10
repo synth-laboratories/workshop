@@ -25,7 +25,7 @@ type Props = {
 	account: AccountSectionProps;
 	onReloadLaguna: () => Promise<LagunaStatus>;
 	health?: RuntimeHealth | null;
-	lagunaPhase?: string | null;
+	lagunaStatus?: LagunaStatus | null;
 	initialSection?: SectionId;
 	preferences?: DesktopPreferences;
 	onPreferencesChange?: (prefs: DesktopPreferences) => void;
@@ -151,7 +151,7 @@ export function SettingsPage({
 	account,
 	onReloadLaguna,
 	health,
-	lagunaPhase,
+	lagunaStatus,
 	initialSection = "general",
 	preferences,
 	onPreferencesChange,
@@ -213,7 +213,7 @@ export function SettingsPage({
 								<div>
 									<p className="settings-breadcrumb">Settings → Models</p>
 									<h2>Models</h2>
-									<p>On-device Laguna weights, telemetry, and compatibility for every provider.</p>
+									<p>On-device model weights, telemetry, and compatibility for every provider.</p>
 								</div>
 							</header>
 							<section className="models-half" data-testid="models-on-device">
@@ -221,7 +221,7 @@ export function SettingsPage({
 									<h3>On-device</h3>
 									<p>Managed local models and inference runtimes for Workshop coding agents.</p>
 								</header>
-								<OnDeviceModelsSettings lagunaPhase={lagunaPhase} onReloadLaguna={onReloadLaguna} />
+								<OnDeviceModelsSettings lagunaStatus={lagunaStatus} onReloadLaguna={onReloadLaguna} />
 							</section>
 							<section className="models-half models-half-all" data-testid="models-all">
 								<header className="models-half-head">

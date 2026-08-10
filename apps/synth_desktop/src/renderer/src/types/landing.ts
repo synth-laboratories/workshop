@@ -7,6 +7,7 @@ export type LandingScenarioId =
 
 export type ModelStatus =
 	| "not_installed"
+	| "unloaded"
 	| "starting"
 	| "loading"
 	| "downloading"

@@ -118,7 +118,7 @@ export async function commitSettings(
 export function describeSettingsFailure(reason: unknown): string {
 	if (typeof reason === "string") return reason;
 	if (reason instanceof Error) return reason.message;
-	return "Laguna runtime settings are unavailable.";
+	return "Local runtime settings are unavailable.";
 }
 
 /* -------------------------------------------------------------- transport */

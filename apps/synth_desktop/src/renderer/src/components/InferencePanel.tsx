@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 /**
- * Local inference monitor for the Laguna daemon on 127.0.0.1:7333.
+ * Local inference monitor for the managed daemon on 127.0.0.1:7333.
  *
  * The daemon is the only source of truth for residency and activity. Every
  * metric it reports is nullable, and `null` means *genuinely unavailable* —
@@ -290,7 +290,7 @@ export function reduceFeed(
 export function describeFailure(reason: unknown): string {
 	if (typeof reason === "string") return reason;
 	if (reason instanceof Error) return reason.message;
-	return "Laguna inference telemetry is unavailable.";
+	return "Local inference telemetry is unavailable.";
 }
 
 /**
@@ -508,6 +508,9 @@ export type InferencePanelProps = {
 	turnRunning?: boolean;
 	/** The local turn is currently waiting for model weights to become resident. */
 	warmingUp?: boolean;
+	/** Authoritative engine lifecycle from the host, including cold/error states before telemetry exists. */
+	runtimePhase?: string | null;
+	runtimeDetail?: string | null;
 	/** Supply to hoist the subscription lifecycle into the parent. */
 	monitor?: InferenceMonitor;
 	transport?: InferenceTransport;
@@ -521,6 +524,8 @@ export function InferencePanel({
 	visible = true,
 	turnRunning = false,
 	warmingUp = false,
+	runtimePhase = null,
+	runtimeDetail = null,
 	monitor,
 	transport,
 	historyLimit,
@@ -544,6 +549,46 @@ export function InferencePanel({
 	const rolling = snapshot?.rolling;
 
 	const shell = ["inference-panel", className].filter(Boolean).join(" ");
+
+	if (runtimePhase === "unloaded") {
+		return (
+			<section className={shell} data-testid="inference-panel" data-state="unloaded" data-phase="unloaded">
+				<header className="inference-head">
+					<h2>Inference</h2>
+					<InferenceSettingsButton onOpen={onOpenSettings} />
+				</header>
+				<p className="inference-note" role="status" data-testid="inference-unloaded">
+					No model weights are resident. The selected local model will warm with its first prompt.
+				</p>
+			</section>
+		);
+	}
+
+	if (runtimePhase === "starting" || runtimePhase === "loading") {
+		return (
+			<section className={shell} data-testid="inference-panel" data-state="loading" data-phase={runtimePhase}>
+				<header className="inference-head">
+					<h2>Inference</h2>
+					<InferenceSettingsButton onOpen={onOpenSettings} />
+				</header>
+				<p className="inference-note" role="status" data-testid="inference-loading">
+					{runtimeDetail || "Warming the selected local model…"}
+				</p>
+			</section>
+		);
+	}
+
+	if ((runtimePhase === "error" || runtimePhase === "unavailable") && runtimeDetail) {
+		return (
+			<section className={shell} data-testid="inference-panel" data-state="error" data-phase={runtimePhase}>
+				<header className="inference-head">
+					<h2>Inference</h2>
+					<InferenceSettingsButton onOpen={onOpenSettings} />
+				</header>
+				<p className="inference-error" role="alert" data-testid="inference-error">{runtimeDetail}</p>
+			</section>
+		);
+	}
 
 	if (state === "loading" || state === "off") {
 		return (
@@ -571,7 +616,7 @@ export function InferencePanel({
 					<InferenceSettingsButton onOpen={onOpenSettings} />
 				</header>
 				<p className="inference-error" role="alert" data-testid="inference-error">
-					{view.error ?? "Laguna inference telemetry is unavailable."}
+					{view.error ?? "Local inference telemetry is unavailable."}
 				</p>
 				<button type="button" className="inference-retry" onClick={view.retry}>
 					Try again

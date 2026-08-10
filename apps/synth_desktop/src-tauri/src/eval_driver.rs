@@ -479,12 +479,15 @@ async fn prepare_start(
     laguna: &LagunaManager,
     mut request: CodexSessionStartRequest,
 ) -> Result<CodexSessionStartRequest> {
-    if request.provider_name.as_deref() == Some("local-laguna") {
+    if matches!(
+        request.provider_name.as_deref(),
+        Some("local-laguna" | "local-muse-glimmer")
+    ) {
         let root = crate::runtime::workshop_root()?;
         request.base_url = laguna
             .ensure(&root)
             .await?
-            .ok_or_else(|| anyhow!("Laguna Responses server is unavailable"))?;
+            .ok_or_else(|| anyhow!("The local Responses server is unavailable"))?;
         request.api_key = laguna.api_key().unwrap_or_default();
     } else if request
         .provider_name
