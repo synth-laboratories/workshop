@@ -123,6 +123,39 @@ const MULTI_AGENT_OPTIONS: Array<{ value: MultiAgentVersion; label: string }> = 
 	{ value: "v2", label: "V2" }
 ];
 
+const CHANGELOG = [
+	{
+		version: "0.1.0",
+		date: "August 10, 2026",
+		groups: [
+			{
+				label: "New",
+				items: [
+					"Local Laguna XS inference with managed model downloads and memory controls.",
+					"A first-class right panel for conversation outputs and inference activity.",
+					"Credential-aware cloud models with provider and pricing details."
+				]
+			},
+			{
+				label: "Improved",
+				items: [
+					"A quieter, more consistent Settings experience across models, voice, inference, and account.",
+					"Compact composer controls for permissions, model choice, and thinking level.",
+					"Clearer local inference throughput, latency, cache, and request telemetry."
+				]
+			},
+			{
+				label: "Fixed",
+				items: [
+					"Thinking streams now render at their content height without oversized empty cards.",
+					"Auto-compaction preserves model-aware defaults and never falls back to a 16k limit.",
+					"Restored memory release controls and removed unfinished navigation and agent stubs."
+				]
+			}
+		]
+	}
+] as const;
+
 const MULTI_AGENT_CONFIG: Record<MultiAgentVersion, string> = {
 	none: "[agents] enabled=false · [features] multi_agent=false · multi_agent_v2=false",
 	v1: "[agents] enabled=true · [features] multi_agent=true · multi_agent_v2=false",
@@ -365,8 +398,28 @@ export function SettingsPage({
 									<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? "Local-first research workbench"}</code>
 								</div>
 								<p className="settings-runtime-copy">
-									Synth Desktop is a local-first research workbench. Release notes and acknowledgements ship with each desktop build.
+									Synth Desktop is a local-first research workbench.
 								</p>
+							</SettingsCard>
+							<SettingsCard title="What’s new" testId="about-changelog">
+								<div className="about-changelog">
+									{CHANGELOG.map((release) => (
+										<article className="about-release" key={release.version}>
+											<header>
+												<strong>Version {release.version}</strong>
+												<time>{release.date}</time>
+											</header>
+											<div className="about-release-groups">
+												{release.groups.map((group) => (
+													<section key={group.label}>
+														<h4>{group.label}</h4>
+														<ul>{group.items.map((item) => <li key={item}>{item}</li>)}</ul>
+													</section>
+												))}
+											</div>
+										</article>
+									))}
+								</div>
 							</SettingsCard>
 						</div>
 					) : null}

@@ -45,6 +45,17 @@ test.describe("design locks (must pass)", () => {
 		await expect(page.getByTestId("settings-runtime")).toHaveCount(0);
 	});
 
+	test("About ships the current release changelog", async ({ page }) => {
+		await openSettings(page);
+		await page.getByRole("button", { name: "About", exact: true }).click();
+		const changelog = page.getByTestId("about-changelog");
+		await expect(changelog).toBeVisible();
+		await expect(changelog).toContainText("Version 0.1.0");
+		await expect(changelog).toContainText("New");
+		await expect(changelog).toContainText("Improved");
+		await expect(changelog).toContainText("Fixed");
+	});
+
 	test("Inventory exposes Attach container defaulting to Craftax Rust :8098", async ({ page }) => {
 		await page.getByTestId("open-inventory").click();
 		await expect(page.getByTestId("inventory-page")).toBeVisible();
