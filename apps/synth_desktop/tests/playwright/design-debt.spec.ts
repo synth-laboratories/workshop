@@ -110,12 +110,12 @@ test.describe("design locks (must pass)", () => {
 		await permission.click();
 		const menu = page.getByTestId("approval-mode-menu");
 		await expect(menu).toBeVisible();
-		await expect(menu.getByRole("option")).toHaveCount(3);
+		await expect(menu.getByRole("option")).toHaveCount(6);
 		await expect(menu.getByRole("option", { name: /Always ask/ })).toBeVisible();
-		await expect(menu.getByRole("option", { name: /Allow all/ })).toBeVisible();
-		await menu.getByRole("option", { name: /Accept edits/ }).click();
-		await expect(permission).toContainText("Accept edits");
-		await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.approvalMode"))).toBe("accept-edits");
+		await expect(menu.getByRole("option", { name: /Full system access/ })).toBeVisible();
+		await menu.getByRole("option", { name: /Ask for risky actions/ }).click();
+		await menu.getByRole("option", { name: /Full system access/ }).click();
+		await expect(permission).toContainText("Ask for risky actions · Full system access");
 	});
 });
 

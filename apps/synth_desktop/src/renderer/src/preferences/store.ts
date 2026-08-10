@@ -9,6 +9,8 @@ import {
 	type QueuedPrompt,
 	type ToolActivityMode,
 	type ActiveEnterAction,
+	type ApprovalPolicyPreference,
+	type SandboxModePreference,
 	type ThemePreference
 } from "./schema";
 
@@ -141,7 +143,13 @@ export function setUnreadCompletedChats(ids: Iterable<string>): DesktopPreferenc
 }
 
 export function setApprovalModePreference(mode: DesktopPreferences["approvalMode"]): DesktopPreferences {
-	return updatePreferences((current) => ({ ...current, approvalMode: mode }));
+	const permissions = mode === "allow-all" ? { approvalPolicy: "never" as const, sandboxMode: "danger-full-access" as const } : mode === "accept-edits" ? { approvalPolicy: "on-request" as const, sandboxMode: "workspace-write" as const } : { approvalPolicy: "untrusted" as const, sandboxMode: "workspace-write" as const };
+	return updatePreferences((current) => ({ ...current, approvalMode: mode, ...permissions }));
+}
+
+export function setPermissionPreferences(approvalPolicy: ApprovalPolicyPreference, sandboxMode: SandboxModePreference): DesktopPreferences {
+	const approvalMode = approvalPolicy === "never" && sandboxMode === "danger-full-access" ? "allow-all" : approvalPolicy === "on-request" && sandboxMode === "workspace-write" ? "accept-edits" : "ask";
+	return updatePreferences((current) => ({ ...current, approvalMode, approvalPolicy, sandboxMode }));
 }
 
 function conversationMeta(current: DesktopPreferences, id: string): ConversationMeta {

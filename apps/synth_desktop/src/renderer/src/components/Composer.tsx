@@ -7,7 +7,7 @@ import {
 	type LandingState
 } from "../types/landing";
 import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
-import type { ApprovalMode } from "../runtime/nativeCodex";
+import type { ApprovalPolicy, SandboxMode } from "../runtime/nativeCodex";
 import {
 	modelCapabilitiesForTarget,
 	modelKnobValue,
@@ -25,10 +25,12 @@ type Props = {
 	onSend: (text: string) => void;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
-	approvalMode: ApprovalMode;
-	onSelectApprovalMode: (mode: ApprovalMode) => void;
+	approvalPolicy: ApprovalPolicy;
+	sandboxMode: SandboxMode;
+	onSelectPermissions: (approvalPolicy: ApprovalPolicy, sandboxMode: SandboxMode) => void;
 	modelKnobValues: ModelKnobValues;
 	onSelectModelKnob: (targetId: string, knobId: string, value: ModelKnobValue) => void;
+	modelMedianTpsLabel?: string | null;
 	/** True while the active conversation has a non-terminal run. */
 	agentWorking?: boolean;
 	/** Preferred Enter action while working. */
@@ -61,21 +63,28 @@ type Props = {
 	onWorkspaceError?: (message: string) => void;
 };
 
-const APPROVAL_OPTIONS: Array<{ id: ApprovalMode; label: string; description: string }> = [
-	{ id: "ask", label: "Always ask", description: "Ask before commands or protected actions." },
-	{ id: "accept-edits", label: "Accept edits", description: "Allow workspace edits; ask for risky commands." },
-	{ id: "allow-all", label: "Allow all", description: "Full system access without prompts." }
+const APPROVAL_OPTIONS: Array<{ id: ApprovalPolicy; label: string; description: string }> = [
+	{ id: "untrusted", label: "Always ask", description: "Ask before commands or protected actions." },
+	{ id: "on-request", label: "Ask for risky actions", description: "Let the agent request approval when needed." },
+	{ id: "never", label: "Never ask", description: "Run commands without approval prompts." }
+];
+const SANDBOX_OPTIONS: Array<{ id: SandboxMode; label: string; description: string }> = [
+	{ id: "read-only", label: "Read only", description: "Inspect files without changing them." },
+	{ id: "workspace-write", label: "Workspace access", description: "Read and write inside the workspace." },
+	{ id: "danger-full-access", label: "Full system access", description: "Allow unrestricted filesystem and network access." }
 ];
 
-function PermissionMenu({ mode, onSelect, disabled, open, onOpenChange }: {
-	mode: ApprovalMode;
-	onSelect: (mode: ApprovalMode) => void;
+function PermissionMenu({ approvalPolicy, sandboxMode, onSelect, disabled, open, onOpenChange }: {
+	approvalPolicy: ApprovalPolicy;
+	sandboxMode: SandboxMode;
+	onSelect: (approvalPolicy: ApprovalPolicy, sandboxMode: SandboxMode) => void;
 	disabled: boolean;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }) {
 	const ref = useRef<HTMLDivElement>(null);
-	const selected = APPROVAL_OPTIONS.find((option) => option.id === mode)!;
+	const selectedApproval = APPROVAL_OPTIONS.find((option) => option.id === approvalPolicy)!;
+	const selectedSandbox = SANDBOX_OPTIONS.find((option) => option.id === sandboxMode)!;
 	useEffect(() => {
 		if (!open) return;
 		const close = (event: MouseEvent) => { if (!ref.current?.contains(event.target as Node)) onOpenChange(false); };
@@ -84,12 +93,15 @@ function PermissionMenu({ mode, onSelect, disabled, open, onOpenChange }: {
 	}, [open, onOpenChange]);
 	return <div className="permission-wrap" ref={ref}>
 		<button type="button" className="permission-select" disabled={disabled} onClick={() => onOpenChange(!open)} aria-expanded={open} aria-controls="approval-mode-menu" aria-haspopup="listbox" data-testid="approval-mode-select">
-			<IconAsk />{selected.label}<IconChevron />
+			<IconAsk /><span>{selectedApproval.label} · {selectedSandbox.label}</span><IconChevron />
 		</button>
-		{open ? <div id="approval-mode-menu" className="permission-menu" role="listbox" aria-label="Approval mode" data-testid="approval-mode-menu">
-			{APPROVAL_OPTIONS.map((option) => <button key={option.id} type="button" role="option" aria-selected={option.id === mode} className={`permission-option${option.id === mode ? " selected" : ""}`} onClick={() => { onSelect(option.id); onOpenChange(false); }}>
-				<span><strong>{option.label}</strong><small>{option.description}</small></span>{option.id === mode ? <b aria-hidden>✓</b> : null}
-			</button>)}
+		{open ? <div id="approval-mode-menu" className="permission-menu" aria-label="Permissions" data-testid="approval-mode-menu">
+			<div className="permission-section" role="listbox" aria-label="Command approvals"><p>Command approvals</p>
+				{APPROVAL_OPTIONS.map((option) => <button key={option.id} type="button" role="option" aria-selected={option.id === approvalPolicy} className={`permission-option${option.id === approvalPolicy ? " selected" : ""}`} onClick={() => onSelect(option.id, sandboxMode)}><span><strong>{option.label}</strong><small>{option.description}</small></span>{option.id === approvalPolicy ? <b aria-hidden>✓</b> : null}</button>)}
+			</div>
+			<div className="permission-section" role="listbox" aria-label="Runtime permissions"><p>Runtime permissions</p>
+				{SANDBOX_OPTIONS.map((option) => <button key={option.id} type="button" role="option" aria-selected={option.id === sandboxMode} className={`permission-option${option.id === sandboxMode ? " selected" : ""}`} onClick={() => onSelect(approvalPolicy, option.id)}><span><strong>{option.label}</strong><small>{option.description}</small></span>{option.id === sandboxMode ? <b aria-hidden>✓</b> : null}</button>)}
+			</div>
 		</div> : null}
 	</div>;
 }
@@ -441,8 +453,9 @@ export function Composer({
 	onSend,
 	onSelectTarget,
 	onConfigureAccount,
-	approvalMode,
-	onSelectApprovalMode,
+	approvalPolicy,
+	sandboxMode,
+	onSelectPermissions,
 	modelKnobValues,
 	onSelectModelKnob,
 	agentWorking = false,
@@ -498,7 +511,7 @@ export function Composer({
 	const slashMatch = /^\/(\S*)$/.exec(value);
 	const slashQuery = slashMatch?.[1] ?? "";
 	const slashMenuVisible = Boolean(slashMatch) && !slashDismissed;
-	const approvalModeLabel = APPROVAL_OPTIONS.find((option) => option.id === approvalMode)?.label ?? "";
+	const approvalModeLabel = `${APPROVAL_OPTIONS.find((option) => option.id === approvalPolicy)?.label ?? ""} · ${SANDBOX_OPTIONS.find((option) => option.id === sandboxMode)?.label ?? ""}`;
 
 	useEffect(() => {
 		setValue("");
@@ -851,8 +864,9 @@ export function Composer({
 							) : null}
 						</div>
 						<PermissionMenu
-							mode={approvalMode}
-							onSelect={onSelectApprovalMode}
+							approvalPolicy={approvalPolicy}
+							sandboxMode={sandboxMode}
+							onSelect={onSelectPermissions}
 							disabled={!enabled}
 							open={permissionMenuOpen}
 							onOpenChange={setPermissionMenuOpen}

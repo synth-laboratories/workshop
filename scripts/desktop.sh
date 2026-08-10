@@ -28,8 +28,10 @@ usage() {
 Usage: ./scripts/desktop.sh <command>
 
   dev [name] Run an isolated named Tauri/Vite development instance (default: codex)
-  verify    Run the desktop type, Rust, and renderer acceptance gates
-  install   Build, install, sign, launch, and verify /Applications
+  verify-fast Run the fast local type and Rust compile checks
+  verify    Run the full desktop type, Rust, and renderer release gates
+  install   Fast-check, build, install, sign, and launch /Applications
+  install-release Run full release gates, then install /Applications
   restart   Restart the already-installed canonical app
   stop      Stop only the canonical installed/debug Synth Desktop process
   status    Show canonical Synth Desktop process and install status
@@ -133,9 +135,19 @@ verify_desktop() {
   npm run test:playwright --workspace @synth/synth-desktop
 }
 
+verify_desktop_fast() {
+  cd "$ROOT"
+  npm run typecheck --workspace @synth/synth-desktop
+  cargo check --manifest-path apps/synth_desktop/src-tauri/Cargo.toml
+}
+
 install_desktop() {
-  local timestamp stage backup=""
-  verify_desktop
+	local verification="${1:-fast}" timestamp stage backup=""
+	if [[ "$verification" == "release" ]]; then
+		verify_desktop
+	else
+		verify_desktop_fast
+	fi
   cd "$ROOT/apps/synth_desktop"
   npx tauri build --bundles app
   [[ -d "$BUNDLE_APP" && -x "$BUNDLE_EXE" ]] || {
@@ -185,8 +197,14 @@ case "$command" in
   verify)
     verify_desktop
     ;;
+  verify-fast)
+    verify_desktop_fast
+    ;;
   install)
-    install_desktop
+		install_desktop fast
+		;;
+	install-release)
+		install_desktop release
     ;;
   restart)
     stop_desktop

@@ -2,6 +2,9 @@ import type { AppEvent, ExecutionTarget, RuntimeEvent, Session } from "@synth/ru
 import type { CodexEvent, CodexSessionStart, PersistedCodexSession } from "../env";
 
 export type ApprovalMode = "ask" | "accept-edits" | "allow-all";
+export type ApprovalPolicy = "untrusted" | "on-request" | "never";
+export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+export type PermissionConfig = { approvalPolicy: ApprovalPolicy; sandbox: SandboxMode };
 
 export function approvalModeFromConfig(approvalPolicy?: string, sandbox?: string): ApprovalMode {
 	if (approvalPolicy === "never" && sandbox === "danger-full-access") return "allow-all";
@@ -18,10 +21,14 @@ export function approvalModeConfig(mode: ApprovalMode): Pick<CodexSessionStart, 
 	}
 }
 
+export function permissionConfigFromApprovalMode(mode: ApprovalMode): PermissionConfig {
+	return approvalModeConfig(mode) as PermissionConfig;
+}
+
 export function codexStartRequest(
-	sessionId: string, workspace: string, target: ExecutionTarget, approvalMode: ApprovalMode = "ask"
+	sessionId: string, workspace: string, target: ExecutionTarget, permissions: ApprovalMode | PermissionConfig = "ask"
 ): CodexSessionStart {
-	const approval = approvalModeConfig(approvalMode);
+	const approval = typeof permissions === "string" ? approvalModeConfig(permissions) : permissions;
 	if (target.kind === "intern") throw new Error("Intern sessions are owned by Synth Cloud");
 	if (target.kind === "local") {
 		return {
@@ -48,13 +55,15 @@ export function codexStartRequest(
 }
 
 export function createCodexSession(
-	id: string, target: ExecutionTarget, projectId: string | null, workspace: string, title?: string, approvalMode: ApprovalMode = "ask"
+	id: string, target: ExecutionTarget, projectId: string | null, workspace: string, title?: string, permissions: ApprovalMode | PermissionConfig = "ask"
 ): Session {
+	const approval = typeof permissions === "string" ? approvalModeConfig(permissions) : permissions;
+	const approvalMode = approvalModeFromConfig(approval.approvalPolicy, approval.sandbox);
 	const now = new Date().toISOString();
 	return {
 		id, title: title || (target.kind === "local" ? "Laguna XS" : target.kind === "remote" ? target.model : "Intern"), target,
 		projectId, createdAt: now, updatedAt: now, status: "ready", latestCursor: 0,
-		metadata: { runtime: "codex-app-server", workspace, approvalMode, ...approvalModeConfig(approvalMode) }
+		metadata: { runtime: "codex-app-server", workspace, approvalMode, ...approval }
 	};
 }
 

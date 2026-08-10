@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
 	ASYNC_PHASE_LABEL,
 	SYNC_STATUS_LABEL,
@@ -35,6 +35,17 @@ type Props = {
 	onOpenConnectors: () => void;
 	onSearch: () => void;
 	onSettings: () => void;
+	accountSignedIn?: boolean;
+	accountDisplayName?: string | null;
+	accountUsage?: {
+		weeklyTokens: number;
+		weeklyCostUsd: number;
+		totalTokens: number;
+		totalCostUsd: number;
+		entries: number;
+	} | null;
+	onOpenAccount?: () => void;
+	onSignOut?: () => void | Promise<void>;
 	onPauseToggle: () => void;
 	onRenameChat?: (id: string, title: string) => void;
 	onPinChat?: (id: string, pinned: boolean) => void;
@@ -186,6 +197,11 @@ export function Sidebar({
 	onOpenConnectors,
 	onSearch,
 	onSettings,
+	accountSignedIn = false,
+	accountDisplayName = null,
+	accountUsage = null,
+	onOpenAccount,
+	onSignOut,
 	onPauseToggle,
 	onRenameChat,
 	onPinChat,
@@ -202,6 +218,28 @@ export function Sidebar({
 	const [renamingId, setRenamingId] = useState<string | null>(null);
 	const [renameDraft, setRenameDraft] = useState("");
 	const [showAllChats, setShowAllChats] = useState(false);
+	const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+	const [usageOpen, setUsageOpen] = useState(false);
+	const accountMenuRef = useRef<HTMLDivElement>(null);
+	const accountTriggerRef = useRef<HTMLButtonElement>(null);
+
+	useEffect(() => {
+		if (!accountMenuOpen) return;
+		const closeOutside = (event: MouseEvent) => {
+			if (!accountMenuRef.current?.contains(event.target as Node)) setAccountMenuOpen(false);
+		};
+		const closeOnEscape = (event: KeyboardEvent) => {
+			if (event.key !== "Escape") return;
+			setAccountMenuOpen(false);
+			requestAnimationFrame(() => accountTriggerRef.current?.focus());
+		};
+		document.addEventListener("mousedown", closeOutside);
+		document.addEventListener("keydown", closeOnEscape);
+		return () => {
+			document.removeEventListener("mousedown", closeOutside);
+			document.removeEventListener("keydown", closeOnEscape);
+		};
+	}, [accountMenuOpen]);
 
 	const orderedChats = useMemo(() => [...state.chats].sort((a, b) => {
 		const aPinned = pinnedChatIds.has(a.id);
@@ -508,16 +546,40 @@ export function Sidebar({
 			<div className="sidebar-footer">
 				<LocalModelResidency status={lagunaStatus} />
 				<ModelDownloadBar state={state} onPauseToggle={onPauseToggle} />
-				<button
-					type="button"
-					className="settings-btn"
-					onClick={onSettings}
-					data-testid="settings"
-					aria-label="Settings"
-				>
-					<IconSettings />
-					Settings
-				</button>
+				<div className="account-footer" ref={accountMenuRef}>
+					{accountMenuOpen ? (
+						<div className="account-menu" role="menu" data-testid="account-menu">
+							<div className="account-menu-identity">
+								<span className="account-avatar" aria-hidden>{(accountDisplayName ?? "S").slice(0, 1).toUpperCase()}</span>
+								<span><strong>{accountDisplayName ?? (accountSignedIn ? "Synth account" : "Local mode")}</strong><small>{accountSignedIn ? "Signed in" : "Not signed in"}</small></span>
+							</div>
+							<button type="button" className="account-menu-row" onClick={() => setUsageOpen((value) => !value)} aria-expanded={usageOpen} data-testid="account-usage-toggle">
+								<span className="account-menu-glyph" aria-hidden>◔</span><span>Usage remaining</span><span className={`account-menu-chevron${usageOpen ? " open" : ""}`} aria-hidden>›</span>
+							</button>
+							{usageOpen ? (
+								<div className="account-usage" data-testid="account-usage">
+									<div><span>Weekly budget</span><strong>Not reported</strong></div>
+									<div><span>Tracked this week</span><strong>{(accountUsage?.weeklyTokens ?? 0).toLocaleString()} tokens</strong></div>
+									{(accountUsage?.weeklyCostUsd ?? 0) > 0 ? <div><span>Estimated cost</span><strong>${accountUsage!.weeklyCostUsd.toFixed(2)}</strong></div> : null}
+									<div><span>All tracked usage</span><strong>{(accountUsage?.totalTokens ?? 0).toLocaleString()} tokens · {accountUsage?.entries ?? 0} runs</strong></div>
+									<p>Synth does not currently report a cloud allowance or reset date.</p>
+								</div>
+							) : null}
+							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); (onOpenAccount ?? onSettings)(); }} data-testid="open-account-settings" role="menuitem">
+								<span className="account-menu-glyph" aria-hidden>◎</span><span>{accountSignedIn ? "Manage account" : "Sign in to Synth"}</span>
+							</button>
+							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); onSettings(); }} data-testid="settings" role="menuitem">
+								<IconSettings /><span>Settings</span><kbd>⌘,</kbd>
+							</button>
+							{accountSignedIn ? <button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); void onSignOut?.(); }} data-testid="account-log-out" role="menuitem"><span className="account-menu-glyph" aria-hidden>↪</span><span>Log out</span></button> : null}
+						</div>
+					) : null}
+					<button ref={accountTriggerRef} type="button" className="account-trigger" onClick={() => setAccountMenuOpen((value) => !value)} aria-expanded={accountMenuOpen} aria-haspopup="menu" data-testid="account-menu-trigger">
+						<span className="account-avatar" aria-hidden>{(accountDisplayName ?? "S").slice(0, 1).toUpperCase()}</span>
+						<span className="account-trigger-copy"><strong>{accountDisplayName ?? (accountSignedIn ? "Synth account" : "Sign in to Synth")}</strong><small>{accountSignedIn ? "Signed in" : "Local mode"}</small></span>
+						<span className="account-help" aria-hidden>?</span>
+					</button>
+				</div>
 			</div>
 			{onSidebarWidthChange ? (
 				<PaneResizeHandle

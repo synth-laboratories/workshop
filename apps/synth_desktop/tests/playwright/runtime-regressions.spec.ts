@@ -987,18 +987,19 @@ test("approval modes configure new native sessions and pending requests resolve 
 
 	await page.getByTestId("approval-mode-select").click();
 	const menu = page.getByTestId("approval-mode-menu");
-	await expect(menu.getByRole("option")).toHaveCount(3);
+	await expect(menu.getByRole("option")).toHaveCount(6);
 	await expect(menu).toContainText("Always ask");
-	await expect(menu).toContainText("Accept edits");
-	await expect(menu).toContainText("Allow all");
-	await menu.getByRole("option", { name: /Accept edits/ }).click();
+	await expect(menu).toContainText("Ask for risky actions");
+	await expect(menu).toContainText("Full system access");
+	await menu.getByRole("option", { name: /Ask for risky actions/ }).click();
+	await menu.getByRole("option", { name: /Full system access/ }).click();
 	await page.getByTestId("composer-input").fill("check approvals");
 	await page.getByTestId("composer-send").click();
-	await expect(page.getByTestId("approval-mode-select")).toContainText("Accept edits");
+	await expect(page.getByTestId("approval-mode-select")).toContainText("Ask for risky actions · Full system access");
 
 	const started = await page.evaluate(() => (window as typeof window & { __approvalStarted: () => Record<string, unknown> }).__approvalStarted());
 	expect(started?.approvalPolicy).toBe("on-request");
-	expect(started?.sandbox).toBe("workspace-write");
+	expect(started?.sandbox).toBe("danger-full-access");
 	const sessionId = String(started?.sessionId);
 	await page.evaluate((id) => {
 		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({

@@ -43,12 +43,11 @@ import {
 	targetIdToExecutionTarget,
 	visualRecordToArtifact
 } from "./runtime/sessionView";
-import { approvalModeConfig, approvalModeFromConfig, codexEventToRuntime, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode } from "./runtime/nativeCodex";
+import { approvalModeConfig, approvalModeFromConfig, codexEventToRuntime, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode, type ApprovalPolicy, type SandboxMode } from "./runtime/nativeCodex";
 import {
 	loadModelKnobValues,
 	modelKnobForTarget,
 	modelKnobKey,
-	modelSupportsImageInput,
 	turnStartEffortForExecutionTarget,
 	type ModelKnobValue
 } from "./runtime/modelCapabilities";
@@ -72,7 +71,7 @@ import {
 	removeQueuedPrompt,
 	renameConversation,
 	saveLayout,
-	setApprovalModePreference,
+	setPermissionPreferences,
 	setToolActivityMode,
 	setUnreadCompletedChats,
 	subscribePreferences,
@@ -296,11 +295,9 @@ export default function App() {
 			.catch(() => setAccountUsage(null));
 	}, []);
 	const [preferences, setPreferences] = useState<DesktopPreferences>(() => loadPreferences());
-	const [approvalMode, setApprovalMode] = useState<ApprovalMode>(() => loadPreferences().approvalMode);
-	const selectApprovalMode = useCallback((mode: ApprovalMode) => {
-		setApprovalMode(mode);
-		setPreferences(setApprovalModePreference(mode));
-	}, []);
+	const [, setApprovalMode] = useState<ApprovalMode>(() => loadPreferences().approvalMode);
+	const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>(() => loadPreferences().approvalPolicy);
+	const [sandboxMode, setSandboxMode] = useState<SandboxMode>(() => loadPreferences().sandboxMode);
 	const [modelKnobValues, setModelKnobValues] = useState(() => loadModelKnobValues(window.localStorage));
 	const selectModelKnob = useCallback((targetId: string, knobId: string, value: ModelKnobValue) => {
 		const knob = modelKnobForTarget(targetId, knobId);
@@ -384,6 +381,8 @@ export default function App() {
 	useEffect(() => subscribePreferences((next) => {
 		setPreferences(next);
 		setApprovalMode(next.approvalMode);
+		setApprovalPolicy(next.approvalPolicy);
+		setSandboxMode(next.sandboxMode);
 		setUnreadChatIds(new Set(next.unreadCompletedChats));
 		applyPreferencesToDocument(next);
 	}), []);
@@ -661,9 +660,11 @@ export default function App() {
 	}, [view]);
 	const terminalWorkspaceRoot = defaultWorkspace;
 	const terminalWorkspaceId = activeSessionId ?? "default";
-	const selectActiveApprovalMode = useCallback((mode: ApprovalMode) => {
+	const selectActivePermissions = useCallback((nextApprovalPolicy: ApprovalPolicy, nextSandboxMode: SandboxMode) => {
+		const mode = approvalModeFromConfig(nextApprovalPolicy, nextSandboxMode);
 		if (!activeSessionId) {
-			selectApprovalMode(mode);
+			setApprovalMode(mode); setApprovalPolicy(nextApprovalPolicy); setSandboxMode(nextSandboxMode);
+			setPreferences(setPermissionPreferences(nextApprovalPolicy, nextSandboxMode));
 			return;
 		}
 		const activeSession = sessionsRef.current.find((session) => session.id === activeSessionId);
@@ -672,18 +673,19 @@ export default function App() {
 			// not relabel an in-flight Ask turn as Allow all: preserve an honest
 			// current label and save the requested mode as the default for the
 			// next turn instead.
-			setPreferences(setApprovalModePreference(mode));
+			setPreferences(setPermissionPreferences(nextApprovalPolicy, nextSandboxMode));
 			showToast("Approval mode will apply after the current turn finishes.");
 			return;
 		}
-		selectApprovalMode(mode);
-		const config = approvalModeConfig(mode);
+		setApprovalMode(mode); setApprovalPolicy(nextApprovalPolicy); setSandboxMode(nextSandboxMode);
+		setPreferences(setPermissionPreferences(nextApprovalPolicy, nextSandboxMode));
+		const config = { approvalPolicy: nextApprovalPolicy, sandbox: nextSandboxMode };
 		setSessions((current) => current.map((session) => session.id === activeSessionId ? {
 			...session,
 			metadata: { ...session.metadata, approvalMode: mode, ...config }
 		} : session));
 		void nativeCodex?.close(activeSessionId).catch((reason) => showToast(reason instanceof Error ? reason.message : String(reason)));
-	}, [activeSessionId, nativeCodex, selectApprovalMode, showToast]);
+	}, [activeSessionId, nativeCodex, showToast]);
 
 	// The composer describes the active conversation, not merely the global
 	// default. Keep its label synchronized with the policy that will actually be
@@ -699,6 +701,8 @@ export default function App() {
 				typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : undefined
 			);
 		setApprovalMode(mode);
+		setApprovalPolicy(typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy as ApprovalPolicy : approvalModeConfig(mode).approvalPolicy as ApprovalPolicy);
+		setSandboxMode(typeof session.metadata.sandbox === "string" ? session.metadata.sandbox as SandboxMode : approvalModeConfig(mode).sandbox as SandboxMode);
 	}, [activeSessionId, sessions]);
 
 	useEffect(() => {
@@ -1065,8 +1069,9 @@ export default function App() {
 					const id = crypto.randomUUID();
 					// Every local/configured-provider task starts in the configured safe workspace.
 					const workspace = await nativeCodex.defaultWorkspace();
-					await nativeCodex.start(codexStartRequest(id, workspace, target, approvalMode));
-					const session = createCodexSession(id, target, null, workspace, title, approvalMode);
+					const permissions = { approvalPolicy, sandbox: sandboxMode };
+					await nativeCodex.start(codexStartRequest(id, workspace, target, permissions));
+					const session = createCodexSession(id, target, null, workspace, title, permissions);
 					sessionsRef.current = [session, ...sessionsRef.current.filter((item) => item.id !== session.id)];
 					setSessions(sessionsRef.current);
 					setView({ kind: "chat", chatId: session.id });
@@ -1091,7 +1096,7 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[approvalMode, nativeCodex, nativeIntern, refreshSessions, selectedTargetId, showToast]
+		[approvalPolicy, sandboxMode, nativeCodex, nativeIntern, refreshSessions, selectedTargetId, showToast]
 	);
 
 	const ensureActiveSession = useCallback(async (objective: string): Promise<{ sessionId: string; objectiveConsumed: boolean } | null> => {
@@ -1121,7 +1126,7 @@ export default function App() {
 						threadHasHistory: threadHasHistoryFromEvents(eventsBySessionRef.current[sessionId] ?? []),
 						turnRunning: session.status === "running",
 						hasPendingImages: Boolean(options?.images?.length),
-						destinationSupportsImages: modelSupportsImageInput(pendingTargetId)
+						destinationSupportsImages: false
 					});
 					if (sendPlan.kind === "block") {
 						showToast(sendPlan.message);
@@ -1816,6 +1821,8 @@ export default function App() {
 								setInventoryContainerWidth(next.layout.last.outputPaneWidth);
 								setTerminalOpen(next.layout.last.bottomPanelVisible);
 								setApprovalMode(next.approvalMode);
+								setApprovalPolicy(next.approvalPolicy);
+								setSandboxMode(next.sandboxMode);
 							}}
 							conversationTitles={conversationTitles}
 							onUnarchiveConversation={(id) => setPreferences(archiveConversation(id, false))}
@@ -2059,8 +2066,9 @@ export default function App() {
 							onSlashNew={onNewConversation}
 							onSlashMcp={() => setView({ kind: "connectors" })}
 							onSlashRename={onSlashRename}
-							approvalMode={approvalMode}
-							onSelectApprovalMode={selectActiveApprovalMode}
+							approvalPolicy={approvalPolicy}
+							sandboxMode={sandboxMode}
+							onSelectPermissions={selectActivePermissions}
 							modelKnobValues={modelKnobValues}
 							onSelectModelKnob={selectModelKnob}
 							modelMedianTpsLabel={selectedModelMedianTpsLabel}

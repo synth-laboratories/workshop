@@ -11,6 +11,8 @@ export const PREFERENCES_SCHEMA_VERSION = 1 as const;
 export type ThemePreference = "system" | "light" | "dark";
 export type ToolActivityMode = "detailed" | "grouped" | "compact";
 export type ActiveEnterAction = "steer" | "enqueue";
+export type ApprovalPolicyPreference = "untrusted" | "on-request" | "never";
+export type SandboxModePreference = "read-only" | "workspace-write" | "danger-full-access";
 
 export type LayoutSnapshot = {
 	sidebarVisible: boolean;
@@ -65,6 +67,8 @@ export type DesktopPreferences = {
 	/** Finished-but-unviewed chat ids (migrated from synth.unreadCompletedChats). */
 	unreadCompletedChats: string[];
 	approvalMode: "ask" | "accept-edits" | "allow-all";
+	approvalPolicy: ApprovalPolicyPreference;
+	sandboxMode: SandboxModePreference;
 };
 
 export const DEFAULT_LAYOUT: LayoutSnapshot = {
@@ -101,13 +105,23 @@ export const DEFAULT_PREFERENCES: DesktopPreferences = {
 	conversations: {},
 	promptQueue: [],
 	unreadCompletedChats: [],
-	approvalMode: "ask"
+	approvalMode: "ask",
+	approvalPolicy: "untrusted",
+	sandboxMode: "workspace-write"
 };
 
 const THEMES = new Set<ThemePreference>(["system", "light", "dark"]);
 const ACTIVITY_MODES = new Set<ToolActivityMode>(["detailed", "grouped", "compact"]);
 const ENTER_ACTIONS = new Set<ActiveEnterAction>(["steer", "enqueue"]);
 const APPROVAL_MODES = new Set(["ask", "accept-edits", "allow-all"]);
+const APPROVAL_POLICIES = new Set<ApprovalPolicyPreference>(["untrusted", "on-request", "never"]);
+const SANDBOX_MODES = new Set<SandboxModePreference>(["read-only", "workspace-write", "danger-full-access"]);
+
+function legacyPermissionConfig(mode: DesktopPreferences["approvalMode"]): Pick<DesktopPreferences, "approvalPolicy" | "sandboxMode"> {
+	if (mode === "allow-all") return { approvalPolicy: "never", sandboxMode: "danger-full-access" };
+	if (mode === "accept-edits") return { approvalPolicy: "on-request", sandboxMode: "workspace-write" };
+	return { approvalPolicy: "untrusted", sandboxMode: "workspace-write" };
+}
 
 export function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
 	const n = typeof value === "number" ? value : Number(value);
@@ -206,6 +220,9 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 	const approvalMode = APPROVAL_MODES.has(source.approvalMode as string)
 		? (source.approvalMode as DesktopPreferences["approvalMode"])
 		: DEFAULT_PREFERENCES.approvalMode;
+	const legacyPermissions = legacyPermissionConfig(approvalMode);
+	const approvalPolicy = APPROVAL_POLICIES.has(source.approvalPolicy as ApprovalPolicyPreference) ? source.approvalPolicy as ApprovalPolicyPreference : legacyPermissions.approvalPolicy;
+	const sandboxMode = SANDBOX_MODES.has(source.sandboxMode as SandboxModePreference) ? source.sandboxMode as SandboxModePreference : legacyPermissions.sandboxMode;
 
 	return {
 		schemaVersion: PREFERENCES_SCHEMA_VERSION,
@@ -230,7 +247,9 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 		conversations,
 		promptQueue,
 		unreadCompletedChats: unread,
-		approvalMode
+		approvalMode,
+		approvalPolicy,
+		sandboxMode
 	};
 }
 

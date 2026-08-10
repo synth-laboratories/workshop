@@ -12,6 +12,8 @@ export {
 	type ToolActivityMode,
 	type ActiveEnterAction,
 	type ThemePreference,
+	type ApprovalPolicyPreference,
+	type SandboxModePreference,
 	type ConversationMeta,
 	type QueuedPrompt
 } from "./schema";
@@ -32,6 +34,7 @@ export {
 	applyDefaultLayout,
 	setUnreadCompletedChats,
 	setApprovalModePreference,
+	setPermissionPreferences,
 	renameConversation,
 	pinConversation,
 	archiveConversation,
