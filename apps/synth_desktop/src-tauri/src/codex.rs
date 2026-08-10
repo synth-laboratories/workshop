@@ -1909,7 +1909,27 @@ async fn finalize_performance_tracker(
             output_tokens: tracker.usage.output_tokens,
         },
     );
-    let cost_source = if estimated_cost_usd.is_some() {
+    // Settled Synth Cloud accounting, captured by the credential broker as the
+    // child's responses streamed through it. Only cloud turns drain: local /
+    // on-device providers have no provider charge and their rows stay exactly
+    // as the tracker built them — billed stays `None`, never $0.
+    //
+    // Exactly-once contract: draining removes the receipts, and the
+    // `(provider, request_id)` upsert key dedupes a replayed finalize. A
+    // receipt landing after this drain (cancellation race) stays queued no
+    // longer than the session's next finalize; if the session closes first,
+    // the broker logs one line and drops it rather than inventing a row.
+    // The drain reads a module-level store — it never starts a broker.
+    let settled_cost_usd = if provider_class(Some(&tracker.provider)) == ProviderClass::SynthCloud {
+        settled_cost_from_receipts(&credential_broker::drain_settled_receipts(session_id))
+    } else {
+        None
+    };
+    // A settled receipt is authoritative; the tariff figure stays in
+    // `estimated_cost_usd` and must never override it.
+    let cost_source = if settled_cost_usd.is_some() {
+        CostSource::SynthCloud
+    } else if estimated_cost_usd.is_some() {
         CostSource::TariffEstimate
     } else {
         CostSource::None
@@ -1938,7 +1958,7 @@ async fn finalize_performance_tracker(
             .map(|first| (first - tracker.started_at_ms).max(0) as f64),
         observed_output_tps,
         end_to_end_output_tps,
-        billed_cost_usd: None,
+        billed_cost_usd: settled_cost_usd,
         estimated_cost_usd,
         cost_source,
         source: "codex_app_server".into(),
@@ -1947,6 +1967,17 @@ async fn finalize_performance_tracker(
     if let Err(error) = repository.record(record).await {
         eprintln!("usage record could not be persisted: {error:#}");
     }
+}
+
+/// Sum of the settled charges a turn's receipts carried. A turn is allowed to
+/// span several upstream requests, so several receipts sum into one figure.
+/// `None` when no receipt reported money — token-only receipts never fabricate
+/// a $0 settled charge.
+fn settled_cost_from_receipts(receipts: &[credential_broker::SettledReceipt]) -> Option<f64> {
+    receipts
+        .iter()
+        .filter_map(|receipt| receipt.cost_usd)
+        .fold(None, |total, cost| Some(total.unwrap_or(0.0) + cost))
 }
 
 fn normalized_turn_method<'a>(method: &'a str, params: &Value) -> &'a str {
@@ -2575,6 +2606,7 @@ fn automatic_thread_title(prompt: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::domain::{RunCreate, RunService, SessionCreate, SessionService};
+    use crate::storage::UsageBreakdown;
     use std::path::Path;
     use tempfile::tempdir;
 
@@ -4174,5 +4206,160 @@ mod tests {
             "item/agentMessage/delta",
             &json!({"delta": ""})
         ));
+    }
+
+    // ---- settled Synth Cloud accounting at turn finalize ----
+    // Session ids are unique per test: the broker's receipt store is
+    // process-wide and these tests run in parallel.
+
+    fn tracker_for(provider: &str, turn_id: &str) -> TurnPerformanceTracker {
+        TurnPerformanceTracker {
+            provider: provider.into(),
+            model_id: "openrouter/poolside/laguna-s-2.1".into(),
+            turn_id: turn_id.into(),
+            started_at_ms: 1_000,
+            first_output_at_ms: Some(1_100),
+            last_output_at_ms: Some(1_900),
+            usage: TurnTokenUsage {
+                input_tokens: Some(1_000),
+                cached_input_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+                output_tokens: Some(200),
+            },
+        }
+    }
+
+    fn settled_receipt(
+        session_id: &str,
+        response_id: &str,
+        cost_usd: Option<f64>,
+    ) -> credential_broker::SettledReceipt {
+        credential_broker::SettledReceipt {
+            session_id: session_id.into(),
+            provider_response_id: response_id.into(),
+            model: Some("openrouter/poolside/laguna-s-2.1".into()),
+            prompt_tokens: Some(500),
+            completion_tokens: Some(100),
+            cached_tokens: None,
+            reasoning_tokens: None,
+            cost_usd,
+            completed_at_ms: 1_950,
+        }
+    }
+
+    async fn finalize_turn(core: &Arc<CoreRuntime>, session_id: &str, provider: &str, turn: &str) {
+        let trackers: PerformanceTrackers = Arc::default();
+        trackers
+            .lock()
+            .await
+            .insert(session_id.to_owned(), tracker_for(provider, turn));
+        finalize_performance_tracker(core, &trackers, session_id, "completed", Some(2_000)).await;
+    }
+
+    async fn usage_totals(core: &Arc<CoreRuntime>) -> UsageBreakdown {
+        UsageRecordsRepository::new(core.storage().database().clone())
+            .summary("all".into(), None)
+            .await
+            .unwrap()
+            .totals
+    }
+
+    #[test]
+    fn settled_cost_sums_only_receipts_that_carried_money() {
+        assert_eq!(settled_cost_from_receipts(&[]), None);
+        assert_eq!(
+            settled_cost_from_receipts(&[settled_receipt("s", "a", None)]),
+            None
+        );
+        let mixed = [
+            settled_receipt("s", "a", Some(0.01)),
+            settled_receipt("s", "b", None),
+            settled_receipt("s", "c", Some(0.02)),
+        ];
+        let sum = settled_cost_from_receipts(&mixed).unwrap();
+        assert!((sum - 0.03).abs() < 1e-12, "{sum}");
+    }
+
+    #[tokio::test]
+    async fn a_synth_cloud_turn_records_the_sum_of_its_settled_receipts() {
+        let temp = tempdir().unwrap();
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let session = "wp4-cloud-settles";
+        // One turn may make several upstream requests; their settled charges
+        // sum, and a token-only receipt contributes no invented money.
+        credential_broker::push_settled_receipt(settled_receipt(session, "resp-1", Some(0.01)));
+        credential_broker::push_settled_receipt(settled_receipt(session, "resp-2", Some(0.02)));
+        credential_broker::push_settled_receipt(settled_receipt(session, "resp-3", None));
+        finalize_turn(&core, session, "synth-cloud", "turn-1").await;
+
+        let totals = usage_totals(&core).await;
+        assert_eq!(totals.requests, 1);
+        assert!((totals.billed_cost_usd.unwrap() - 0.03).abs() < 1e-12);
+        assert_eq!(totals.cost_source, CostSource::SynthCloud);
+        // Tokens stay the tracker's own counts, and the settled charge left
+        // nothing in the estimate column.
+        assert_eq!(totals.input_tokens, 1_000);
+        assert_eq!(totals.output_tokens, 200);
+        assert_eq!(totals.estimated_cost_usd, None);
+        // Drained: a replayed finalize finds nothing to double-bill.
+        assert!(credential_broker::drain_settled_receipts(session).is_empty());
+    }
+
+    #[tokio::test]
+    async fn cloud_receipts_without_money_leave_billed_unset() {
+        let temp = tempdir().unwrap();
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let session = "wp4-cloud-token-only";
+        credential_broker::push_settled_receipt(settled_receipt(session, "resp-1", None));
+        finalize_turn(&core, session, "synth-cloud", "turn-1").await;
+
+        let totals = usage_totals(&core).await;
+        assert_eq!(totals.requests, 1);
+        assert_eq!(totals.billed_cost_usd, None);
+        assert_eq!(totals.cost_source, CostSource::None);
+        assert_eq!(totals.input_tokens, 1_000);
+    }
+
+    #[tokio::test]
+    async fn local_turns_neither_drain_receipts_nor_carry_any_charge() {
+        let temp = tempdir().unwrap();
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let session = "wp4-local-untouched";
+        // Even a stray receipt under a local session's id must not turn an
+        // on-device row into a billed one — billed stays None, never $0.
+        credential_broker::push_settled_receipt(settled_receipt(session, "resp-1", Some(0.42)));
+        finalize_turn(&core, session, "local-laguna", "turn-1").await;
+
+        let totals = usage_totals(&core).await;
+        assert_eq!(totals.requests, 1);
+        assert_eq!(totals.billed_cost_usd, None);
+        assert_eq!(totals.estimated_cost_usd, None);
+        assert_eq!(totals.cost_source, CostSource::None);
+        // The local finalize did not consume the queue.
+        assert_eq!(credential_broker::drain_settled_receipts(session).len(), 1);
+    }
+
+    /// The cancellation-race contract: a receipt landing after its turn
+    /// finalized stays queued no longer than the session's next finalize, and
+    /// never becomes a row of its own.
+    #[tokio::test]
+    async fn a_late_receipt_waits_for_the_next_finalize_and_never_invents_a_row() {
+        let temp = tempdir().unwrap();
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let session = "wp4-late-receipt";
+        finalize_turn(&core, session, "synth-cloud", "turn-1").await;
+        let totals = usage_totals(&core).await;
+        assert_eq!((totals.requests, totals.billed_cost_usd), (1, None));
+
+        credential_broker::push_settled_receipt(settled_receipt(session, "resp-late", Some(0.05)));
+        // Still exactly one row: a queued receipt is not a usage record.
+        assert_eq!(usage_totals(&core).await.requests, 1);
+
+        finalize_turn(&core, session, "synth-cloud", "turn-2").await;
+        let totals = usage_totals(&core).await;
+        assert_eq!(totals.requests, 2);
+        assert!((totals.billed_cost_usd.unwrap() - 0.05).abs() < 1e-12);
+        assert_eq!(totals.cost_source, CostSource::SynthCloud);
     }
 }
