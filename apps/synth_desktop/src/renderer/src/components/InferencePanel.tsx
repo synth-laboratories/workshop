@@ -28,6 +28,8 @@ export type InferenceGeneration = {
 	firstTokenAt: number | null;
 	lastTokenAt: number | null;
 	promptTokens: number | null;
+	promptTokensProcessed?: number | null;
+	uncachedTokens?: number | null;
 	cachedTokens: number | null;
 	outputTokens: number | null;
 	cacheHitRatio: number | null;
@@ -156,6 +158,14 @@ export function formatBytes(bytes: number | null): string {
 export function formatCount(value: number | null): string {
 	if (!isNumber(value)) return UNAVAILABLE;
 	return Math.round(value).toLocaleString("en-US");
+}
+
+function formatPromptProgress(generation: InferenceGeneration | null): string {
+	if (!generation) return UNAVAILABLE;
+	if (isNumber(generation.promptTokensProcessed) && isNumber(generation.promptTokens)) {
+		return `${formatCount(generation.promptTokensProcessed)} / ${formatCount(generation.promptTokens)}`;
+	}
+	return formatCount(generation.promptTokens);
 }
 
 export function formatRatio(value: number | null): string {
@@ -685,10 +695,10 @@ export function InferencePanel({
 						</span>
 						<span className="inference-activity-rate">
 							<Metric
-								label="Decode throughput"
+								label={phase === "prefill" ? "Prefill throughput" : "Decode throughput"}
 								value={
-									isNumber(active.decodeTokensPerSecond)
-										? `${formatTps(active.decodeTokensPerSecond)} tok/s`
+									isNumber(phase === "prefill" ? active.prefillTokensPerSecond : active.decodeTokensPerSecond)
+										? `${formatTps(phase === "prefill" ? active.prefillTokensPerSecond : active.decodeTokensPerSecond)} tok/s`
 										: UNAVAILABLE
 								}
 							/>
@@ -736,7 +746,7 @@ export function InferencePanel({
 				<li>
 					<span>prompt</span>
 					<strong>
-						<Metric label="Prompt tokens" value={formatCount(active?.promptTokens ?? null)} />
+						<Metric label="Prompt tokens" value={formatPromptProgress(active)} />
 					</strong>
 				</li>
 				<li>
@@ -746,13 +756,16 @@ export function InferencePanel({
 						{isNumber(active?.cacheHitRatio) ? (
 							<em> · {formatRatio(active.cacheHitRatio)}</em>
 						) : null}
+						{isNumber(active?.uncachedTokens) ? (
+							<em> · {formatCount(active.uncachedTokens)} uncached</em>
+						) : null}
 					</strong>
 				</li>
 				<li>
-					<span>output</span>
-					<strong>
-						<Metric label="Output tokens" value={formatCount(active?.outputTokens ?? null)} />
-					</strong>
+				<span>output</span>
+				<strong>
+					<Metric label="Output tokens" value={formatCount(active?.outputTokens ?? null)} />
+				</strong>
 				</li>
 			</ul>
 

@@ -192,6 +192,7 @@ class ResponsesService:
                 await queue.put(None)
 
         task = asyncio.create_task(run(), name="responses-sse")
+        last_keepalive = time.monotonic()
         try:
             while True:
                 if disconnected is not None and await disconnected():
@@ -203,13 +204,16 @@ class ResponsesService:
                         queue.get(), timeout=0.25 if disconnected is not None else 5.0
                     )
                 except TimeoutError:
-                    if disconnected is not None:
-                        continue
                     # Large local prompts can spend tens of seconds in MLX
-                    # prefill before the first token. SSE comments keep SDK
-                    # and Codex idle timers alive without inventing semantic
-                    # events or consuming sequence numbers.
-                    yield b": keep-alive\n\n"
+                    # or llama.cpp prefill before the first token. The
+                    # disconnect-aware path polls four times a second, but it
+                    # must still write periodically: polling without writing
+                    # let Codex's upstream idle timer close a healthy Muse
+                    # request midway through prefill.
+                    now = time.monotonic()
+                    if now - last_keepalive >= 2.0:
+                        yield b": keep-alive\n\n"
+                        last_keepalive = now
                     continue
                 if entry is None:
                     yield b"data: [DONE]\n\n"
@@ -481,10 +485,16 @@ class ResponsesService:
                     else None
                 ),
                 "promptTokens": active.prompt_tokens,
+                "promptTokensProcessed": active.prompt_tokens_processed,
+                "uncachedTokens": (
+                    max(0, active.prompt_tokens - active.cached_tokens)
+                    if active.prompt_tokens
+                    else None
+                ),
                 "cachedTokens": active.cached_tokens,
                 "outputTokens": active.output_tokens,
                 "cacheHitRatio": active.cache_hit_ratio(),
-                "prefillTokensPerSecond": active.prefill_tokens_per_second(),
+                "prefillTokensPerSecond": active.live_prefill_tokens_per_second(now),
                 "decodeTokensPerSecond": active.decode_tokens_per_second(),
                 "elapsedMs": active.elapsed_ms(now),
             }

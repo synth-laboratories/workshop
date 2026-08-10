@@ -321,6 +321,8 @@ pub struct LagunaGeneration {
     pub first_token_at: Option<f64>,
     pub last_token_at: Option<f64>,
     pub prompt_tokens: Option<u64>,
+    pub prompt_tokens_processed: Option<u64>,
+    pub uncached_tokens: Option<u64>,
     pub cached_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub cache_hit_ratio: Option<f64>,
@@ -1981,6 +1983,15 @@ fn spawn_muse_engine(api_key: &str) -> std::result::Result<(), MuseEngineFailure
         .args(["--host", "127.0.0.1"])
         .args(["--port", &muse_engine_port().to_string()])
         .args(["--ctx-size", MUSE_CONTEXT_LENGTH_STR])
+        // Synth admits one local generation at a time. llama-server's auto
+        // default created four 131K slots anyway, multiplying KV residency
+        // and making the telemetry/queue contract false.
+        .args(["--parallel", "1"])
+        // llama.cpp's Apple-Silicon guidance recommends Flash Attention for
+        // prompt processing; make the optimized path explicit instead of
+        // depending on the build's changing `auto` heuristic.
+        .args(["--flash-attn", "on"])
+        .arg("--cache-prompt")
         // Tool calling and the thinking/answer split are template work, and the
         // engine only does template work under --jinja. Without these two flags
         // it silently ignores `tools` and leaves <think> spans inside content,

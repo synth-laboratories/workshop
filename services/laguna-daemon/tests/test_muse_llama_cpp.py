@@ -36,6 +36,7 @@ from laguna_daemon.responses_api.backends.remote_responses import RemoteResponse
 from laguna_daemon.responses_api.compiler import compile_messages
 from laguna_daemon.responses_api.errors import ResponsesError
 from laguna_daemon.responses_api.service import ResponsesService
+from laguna_daemon.responses_api.telemetry import GenerationTiming
 
 
 ENGINE_URL = "http://127.0.0.1:9999"
@@ -89,6 +90,7 @@ class FakeEngine:
         chat_error: dict[str, Any] | None = None,
         tokens: int = 11,
         template: bool = True,
+        slots: list[dict[str, Any]] | None = None,
     ) -> None:
         self.body = body
         self.health_status = health_status
@@ -96,6 +98,7 @@ class FakeEngine:
         self.chat_error = chat_error
         self.tokens = tokens
         self.template = template
+        self.slots = slots or []
         self.requests: list[tuple[str, dict[str, Any] | None]] = []
         self.chat_calls = 0
         self.health_calls = 0
@@ -120,6 +123,8 @@ class FakeEngine:
             return httpx.Response(200, json={"prompt": "<rendered prompt>"})
         if path == "/tokenize":
             return httpx.Response(200, json={"tokens": list(range(self.tokens))})
+        if path == "/slots":
+            return httpx.Response(200, json=self.slots)
         if path == "/v1/chat/completions":
             self.chat_calls += 1
             if self.chat_error is not None:
@@ -549,6 +554,41 @@ class EngineLifecycleTests(unittest.TestCase):
         estimate = run(backend.count_tokens(turn()))
         self.assertEqual(estimate.input_tokens, 42)
         self.assertIn("/apply-template", [path for path, _ in engine.requests])
+
+    def test_live_slot_metrics_report_prefill_cache_and_decode_counts(self) -> None:
+        engine = FakeEngine(
+            slots=[
+                {
+                    "is_processing": True,
+                    "n_prompt_tokens": 13271,
+                    "n_prompt_tokens_processed": 8192,
+                    "n_prompt_tokens_cache": 2048,
+                    "next_token": [{"n_decoded": 3}],
+                }
+            ]
+        )
+
+        async def scenario() -> GenerationTiming:
+            backend = backend_for(engine)
+            timing = GenerationTiming(
+                generation_id="gen_metrics",
+                queued_at=time.monotonic(),
+                admitted_at=time.monotonic(),
+                phase="prefill",
+            )
+            stop = asyncio.Event()
+            task = asyncio.create_task(backend._observe_slot(timing, stop))
+            await asyncio.sleep(0.05)
+            stop.set()
+            await task
+            return timing
+
+        timing = run(scenario())
+        self.assertEqual(timing.prompt_tokens, 13271)
+        self.assertEqual(timing.prompt_tokens_processed, 8192)
+        self.assertEqual(timing.cached_tokens, 2048)
+        self.assertEqual(timing.output_tokens, 3)
+        self.assertIsNotNone(timing.live_prefill_tokens_per_second())
 
     def test_missing_template_endpoint_still_counts_real_tokens(self) -> None:
         engine = FakeEngine(body="", tokens=7, template=False)

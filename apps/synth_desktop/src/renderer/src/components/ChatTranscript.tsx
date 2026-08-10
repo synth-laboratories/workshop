@@ -90,7 +90,8 @@ function ActivityLine({
 	const isVisualCue = Boolean(onToggleVisual) || line.kind === "visual";
 	const isFile =
 		Boolean(line.path) || line.kind === "file_read" || line.kind === "file_write";
-	const expandable = Boolean(line.detail) && !isVisualCue && !isFile;
+	const detail = line.detail?.trim() || "";
+	const expandable = Boolean(detail) && !isVisualCue && !isFile;
 	if (line.kind === "approval" && line.approvalId) {
 		const approvalId = line.approvalId ?? line.id;
 		return (
@@ -276,11 +277,11 @@ function ActivityLine({
 			</button>
 			{open ? (
 				<pre id={`activity-detail-${line.id}`} className="local-activity-detail" data-testid={`activity-detail-${line.id}`}>
-					{line.detail}
+					{detail}
 				</pre>
-			) : (
+			) : !isReasoning ? (
 				<div className="local-activity-wave" aria-hidden />
-			)}
+			) : null}
 		</div>
 	);
 }

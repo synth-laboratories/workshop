@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 from openresponses_types import ResponseResource
@@ -222,6 +223,33 @@ class NativeResponsesHttpTests(unittest.TestCase):
                 send,
             )
             self.assertTrue(cancelled.is_set())
+
+        asyncio.run(scenario())
+
+    def test_disconnect_aware_stream_keeps_the_client_alive_during_prefill(self) -> None:
+        async def scenario() -> None:
+            backend = FakeBackend()
+            service = ResponsesService(config(Path(self.temp.name) / "keepalive"), backend)
+            await service.start()
+
+            async def stall(*_args: Any, **_kwargs: Any) -> None:
+                await asyncio.sleep(60)
+
+            service.coordinator.run = AsyncMock(side_effect=stall)
+
+            async def is_disconnected() -> bool:
+                return False
+
+            stream = service.stream(
+                {"model": "test", "input": "hello", "stream": True},
+                disconnected=is_disconnected,
+            )
+            try:
+                first = await asyncio.wait_for(anext(stream), timeout=3.0)
+                self.assertEqual(first, b": keep-alive\n\n")
+            finally:
+                await stream.aclose()
+                await service.close()
 
         asyncio.run(scenario())
 

@@ -1145,8 +1145,8 @@ export default function App() {
 				? "Loading model weights…"
 				: activeInferencePhase === "compiling"
 					? "Warming up model…"
-					: activeInferencePhase === "prefill"
-						? "Reading context…"
+				: activeInferencePhase === "prefill"
+						? "Prefilling…"
 						: activeInferencePhase === "decode"
 							? "Generating…"
 							: "Working…";

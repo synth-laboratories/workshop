@@ -554,6 +554,11 @@ class LlamaCppChatBackend:
                 f"The Muse engine refused the connection: {exc}"
             ) from exc
         self._open_streams[turn.generation_id] = (response, client)
+        observation_stop = asyncio.Event()
+        observation = asyncio.create_task(
+            self._observe_slot(timing, observation_stop),
+            name=f"muse-slot-{turn.generation_id}",
+        )
         try:
             if response.status_code >= 400:
                 await response.aread()
@@ -623,6 +628,8 @@ class LlamaCppChatBackend:
                 f"The Muse engine stopped answering mid-turn: {exc}"
             ) from exc
         finally:
+            observation_stop.set()
+            await asyncio.gather(observation, return_exceptions=True)
             self._open_streams.pop(turn.generation_id, None)
             await self._close_connection(response, client)
         if not saw_reasoning_field:
@@ -638,6 +645,49 @@ class LlamaCppChatBackend:
         if accumulator and resolved == "stop":
             resolved = "tool_call"
         yield ModelEvent(kind="finish", finish_reason=resolved)
+
+    async def _observe_slot(
+        self, timing: GenerationTiming, stop: asyncio.Event
+    ) -> None:
+        """Copy llama.cpp's measured live counters into the active generation."""
+        client = self._new_client()
+        try:
+            while not stop.is_set():
+                try:
+                    response = await client.get("/slots", timeout=1.0)
+                    if response.status_code < 400:
+                        slots = response.json()
+                        slot = next(
+                            (
+                                item
+                                for item in slots
+                                if isinstance(item, dict) and item.get("is_processing")
+                            ),
+                            None,
+                        )
+                        if slot is not None:
+                            total = slot.get("n_prompt_tokens")
+                            processed = slot.get("n_prompt_tokens_processed")
+                            cached = slot.get("n_prompt_tokens_cache")
+                            if isinstance(total, int):
+                                timing.prompt_tokens = total
+                            if isinstance(processed, int):
+                                timing.prompt_tokens_processed = processed
+                            if isinstance(cached, int):
+                                timing.cached_tokens = cached
+                            next_token = slot.get("next_token") or []
+                            if next_token and isinstance(next_token[0], dict):
+                                decoded = next_token[0].get("n_decoded")
+                                if isinstance(decoded, int):
+                                    timing.output_tokens = decoded
+                except (httpx.HTTPError, ValueError, TypeError):
+                    pass
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=0.25)
+                except TimeoutError:
+                    continue
+        finally:
+            await client.aclose()
 
     def _engine_error(self, response: httpx.Response) -> ResponsesError:
         detail = response.text[:500]
