@@ -48,7 +48,7 @@ Usage: ./scripts/desktop.sh <command>
   install   Build, install, sign, and launch /Applications (no tests)
   install-release Run full release gates, then install /Applications
   restart   Restart the already-installed canonical app
-  stop      Stop only the canonical installed/debug Synth Desktop process
+  stop      Stop every Synth Desktop process, including stale backup/build copies
   status    Show canonical Synth Desktop process and install status
 EOF
 }
@@ -58,7 +58,7 @@ desktop_processes() {
     {
       pid=$1
       sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", $0)
-      if ($0 == installed || $0 == debug) print pid "\t" $0
+      if ($0 == installed || $0 == debug || $0 ~ /\/Synth Desktop\.app\/Contents\/MacOS\/synth-desktop$/) print pid "\t" $0
     }
   '
 }

@@ -718,9 +718,9 @@ test("native Codex deltas form one readable message with working and stop state"
 			}
 		});
 	});
-	await expect(transcript.locator(".local-assistant")).toHaveCount(1);
-	await expect(assistantText).toHaveText("One correct final answer.\nWith preserved spacing.");
-	await expect(transcript).not.toContainText("Fragmented draft");
+	await expect(transcript.locator(".local-assistant")).toHaveCount(2);
+	await expect(transcript.locator(".local-assistant p").last()).toHaveText("One correct final answer.\nWith preserved spacing.");
+	await expect(transcript.locator(".local-assistant p").first()).toContainText("Fragmented draft");
 	await expect(transcript).not.toContainText("remoteControl/status/changed");
 	await expect(transcript).not.toContainText("model-metadata");
 	await expect(transcript).not.toContainText("account/rateLimits/updated");
@@ -768,7 +768,7 @@ test("native Codex deltas form one readable message with working and stop state"
 		send("Replacement stream with one paragraph.");
 		send("Replacement stream with one paragraph.");
 	});
-	await expect(transcript.locator(".local-assistant")).toHaveCount(2);
+	await expect(transcript.locator(".local-assistant")).toHaveCount(3);
 	await expect(transcript.locator(".local-assistant p").last()).toHaveText("Replacement stream with one paragraph.");
 	const finalTurnOrder = await transcript.locator(".local-turn").evaluateAll((turns) => turns.slice(-2).map((turn) => ({
 		role: turn.classList.contains("local-turn-user") ? "user" : turn.classList.contains("local-turn-assistant") ? "assistant" : "system",
@@ -1100,6 +1100,7 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 		send("item/completed", { item: { id: "read-1", type: "mcpToolCall", tool: "read_file", arguments: { path: "/work/src/App.tsx" }, output: "file contents must stay hidden" } });
 		send("item/completed", { item: { id: "search-1", type: "mcpToolCall", tool: "web_search", arguments: { query: "Codex app-server events" } } });
 		send("item/completed", { item: { id: "unsafe-1", type: "mcpToolCall", tool: "dump_environment", output: "DO_NOT_RENDER_SECRET" } });
+		send("item/agentMessage/delta", { itemId: "post-tools-preamble", delta: "I am continuing after the tools." });
 		send("turn/completed", { turn: { id: "turn-tools" } });
 	});
 
@@ -1108,6 +1109,9 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	const preambleTurn = preamble.locator("xpath=ancestor::div[contains(@class, 'local-turn')]");
 	const postPreambleTool = preambleTurn.locator(".command-activity").filter({ hasText: "OPENROUTER_API_KEY=[redacted]" });
 	expect((await postPreambleTool.boundingBox())!.y).toBeGreaterThan((await preamble.boundingBox())!.y);
+	const laterPreamble = transcript.locator(".local-assistant p").filter({ hasText: "I am continuing after the tools." });
+	await expect(laterPreamble).toBeVisible();
+	expect((await laterPreamble.boundingBox())!.y).toBeGreaterThan((await postPreambleTool.boundingBox())!.y);
 	await expect(transcript.getByText(/OPENROUTER_API_KEY=\[redacted\] rg/)).toBeVisible();
 	await expect(transcript.getByText("App.tsx")).toBeVisible();
 	await expect(transcript.getByText("Searched the web")).toBeVisible();

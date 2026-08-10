@@ -184,6 +184,14 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 			compactedDuringTurn = true;
 			continue;
 		}
+		// Agent commentary is segmented by concrete activity. Once a tool or
+		// approval begins, a later assistant delta is a new chronological block;
+		// keeping the prior draft active would hoist that new text above the tools
+		// that already ran. Rotating token-envelope ids are still coalesced as long
+		// as no activity boundary intervenes.
+		if (safeToolActivity(event) || event.eventKind.startsWith("approval.")) {
+			activeAssistantId = null;
+		}
 		const eventThreadId = typeof payload.threadId === "string"
 			? payload.threadId
 			: typeof payload.thread_id === "string" ? payload.thread_id : undefined;
