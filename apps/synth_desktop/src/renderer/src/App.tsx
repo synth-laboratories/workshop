@@ -1901,7 +1901,10 @@ export default function App() {
 							) : null}
 							{showInferenceRail ? (
 								<aside className="inference-rail" data-testid="inference-rail" aria-label="Local inference monitor">
-									<div className="inference-rail-label"><span>MLX sidecar</span><small>btop-style live inference stats</small></div>
+									<div className="inference-rail-label">
+										<span>MLX sidecar</span>
+										<small>Owns local model memory, prompt caches, and the single-GPU queue.</small>
+									</div>
 									{/* `visible` drives subscribe/teardown, so a closed rail
 									    costs nothing. */}
 									<InferencePanel

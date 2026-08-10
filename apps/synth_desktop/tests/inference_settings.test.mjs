@@ -263,19 +263,20 @@ const panelMonitor = {
 	retry: () => undefined
 };
 
-test("the panel header renders a gear only when a settings target exists", () => {
-	const withGear = renderToStaticMarkup(
+test("the panel header renders a labelled settings button only when a target exists", () => {
+	const withButton = renderToStaticMarkup(
 		createElement(InferencePanel, { monitor: panelMonitor, onOpenSettings: () => undefined })
 	);
-	assert.match(withGear, /data-testid="inference-open-settings"/);
-	assert.match(withGear, /aria-label="Open inference settings"/);
+	assert.match(withButton, /data-testid="inference-open-settings"/);
+	assert.match(withButton, />Inference settings<\/span>/);
 	const without = renderToStaticMarkup(createElement(InferencePanel, { monitor: panelMonitor }));
 	assert.doesNotMatch(without, /data-testid="inference-open-settings"/);
 });
 
-test("the gear deep-links to the Settings view's inference section", () => {
+test("the settings button deep-links to the Settings view and the rail explains the sidecar", () => {
 	const app = readFileSync(join(appRoot, "src/renderer/src/App.tsx"), "utf8");
 	assert.match(app, /onOpenSettings=\{\(\) => setView\(\{ kind: "settings", section: "inference" \}\)\}/);
+	assert.match(app, /Owns local model memory, prompt caches, and the single-GPU queue\./);
 });
 
 test("Settings hosts an Inference section after Models and follows deep links", () => {
