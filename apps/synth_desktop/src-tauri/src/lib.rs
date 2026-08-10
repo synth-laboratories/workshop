@@ -1406,42 +1406,50 @@ async fn prepare_codex_provider(
                 .map_err(|error| error.to_string())?,
         );
     }
-    if request.provider_name.as_deref() == Some("local-laguna") {
-        let root = runtime::workshop_root().map_err(|error| error.to_string())?;
-        request.base_url = laguna
-            .ensure(&root)
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "Laguna Responses server is unavailable".to_string())?;
-        request.api_key = laguna.api_key().unwrap_or_default();
-    } else if request
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider| provider.eq_ignore_ascii_case("openrouter"))
-    {
-        let key = synth_config::openrouter_api_key()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| {
-                "OpenRouter API key is not configured. Add it in Synth backend settings."
-                    .to_string()
-            })?;
-        // The OpenRouter key is the user's, and leaks into shell snapshots the
-        // same way the Synth key did; it goes into native custody too.
-        let broker = credential_broker::shared().map_err(|error| error.to_string())?;
-        codex::apply_brokered_credential(&mut request, &broker, &key)?;
-    } else if request
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider| provider.eq_ignore_ascii_case("synth-cloud"))
-    {
-        let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
-        let broker = credential_broker::shared().map_err(|error| error.to_string())?;
-        codex::apply_synth_cloud_provider(
-            &mut request,
-            &broker,
-            &resolved.backend_url,
-            resolved.api_key.as_deref(),
-        )?;
+    // Exactly one preparation rule per provider class — see
+    // `codex::ProviderClass` for the endpoint/credential/custody table. User
+    // credentials are only *staged* here; `CodexManager::start` exchanges them
+    // for a loopback lease at spawn time, so preparing a send for a live,
+    // reused child never invalidates the token that child is presenting.
+    match codex::provider_class(request.provider_name.as_deref()) {
+        codex::ProviderClass::LocalLaguna => {
+            let root = runtime::workshop_root().map_err(|error| error.to_string())?;
+            request.base_url = laguna
+                .ensure(&root)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "Laguna Responses server is unavailable".to_string())?;
+            // The Laguna key is this process's loopback service token, not a
+            // user credential: the child talks to the local daemon directly
+            // and no broker lease is involved.
+            request.api_key = laguna.api_key().unwrap_or_default();
+        }
+        codex::ProviderClass::OpenRouter => {
+            let key = synth_config::openrouter_api_key()
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| {
+                    "OpenRouter API key is not configured. Add it in Synth backend settings."
+                        .to_string()
+                })?;
+            // The OpenRouter key is the user's, and leaks into shell snapshots
+            // the same way the Synth key did; it goes into native custody too.
+            codex::stage_brokered_credential(&mut request, &key)?;
+        }
+        codex::ProviderClass::SynthCloud => {
+            let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
+            codex::apply_synth_cloud_provider(
+                &mut request,
+                &resolved.backend_url,
+                resolved.api_key.as_deref(),
+            )?;
+        }
+        codex::ProviderClass::Direct => {
+            // openai / Azure / custom Responses endpoints: the renderer
+            // supplies endpoint and env key, Rust holds no credential for
+            // them, and the request passes through untouched. Deliberately no
+            // brokering — custody is only for credentials Rust itself
+            // resolves, never for renderer-controlled values.
+        }
     }
     Ok(request)
 }
@@ -1664,8 +1672,17 @@ pub fn run() {
             // those builds left behind in Desktop's own Codex homes.
             match credential_broker::redact_managed_shell_snapshots(&codex::codex_root()) {
                 Ok(0) => {}
-                Ok(count) => eprintln!("redacted provider secrets from {count} Codex shell snapshot(s)"),
-                Err(error) => eprintln!("could not scrub Codex shell snapshots: {error}"),
+                Ok(count) => {
+                    eprintln!("redacted provider secrets from {count} Codex shell snapshot(s)")
+                }
+                Err(error) => {
+                    return Err(std::io::Error::other(format!(
+                        "could not scrub provider secrets from Codex shell snapshots, so a \
+                         credential may remain in cleartext under {}: {error:#}",
+                        codex::codex_root().display()
+                    ))
+                    .into())
+                }
             }
             let core =
                 Arc::new(CoreRuntime::open_default().map_err(|error| {

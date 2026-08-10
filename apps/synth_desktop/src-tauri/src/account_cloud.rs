@@ -395,7 +395,6 @@ impl AccountCloudClient {
     ) -> Result<String> {
         let api_key = api_key.ok_or_else(|| anyhow!("sign in to manage Synth Cloud billing"))?;
         let base = backend_url.trim_end_matches('/');
-        let fallback = self.fallback_billing_url(backend_url, api_key, action);
         let request = match action {
             BillingAction::Upgrade => {
                 let plan = tier
@@ -417,37 +416,30 @@ impl AccountCloudClient {
                 .post(format!("{base}{PORTAL_PATH}"))
                 .bearer_auth(api_key),
         };
-        match request.send().await {
-            Ok(response) if response.status().is_success() => {
-                match response.json::<HostedBillingSession>().await {
-                    Ok(session) => Ok(session.url),
-                    Err(_) => fallback
-                        .ok_or_else(|| anyhow!("Synth Cloud returned an unreadable billing link")),
-                }
+        // The backend issues the hosted URL. Substituting a cached one when it
+        // refuses would open a checkout the server just declined to authorize,
+        // so every failure is reported as itself.
+        let response = request.send().await.map_err(|error| {
+            anyhow!(AccountError::Unreachable {
+                detail: error.to_string(),
             }
-            Ok(response) => fallback.ok_or_else(|| {
-                anyhow!(AccountError::from_status(response.status().as_u16()).public_message())
-            }),
-            Err(_) => fallback
-                .ok_or_else(|| anyhow!("Synth Cloud billing is unavailable right now.")),
+            .public_message())
+        })?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(anyhow!(
+                AccountError::from_status(status.as_u16()).public_message()
+            ));
         }
+        let session: HostedBillingSession = response.json().await.map_err(|error| {
+            anyhow!(AccountError::Malformed {
+                detail: error.to_string(),
+            }
+            .public_message())
+        })?;
+        Ok(session.url)
     }
 
-    fn fallback_billing_url(
-        &self,
-        backend_url: &str,
-        api_key: &str,
-        action: BillingAction,
-    ) -> Option<String> {
-        let actions = self
-            .cached_for(connection_identity(backend_url, api_key))?
-            .snapshot
-            .billing_actions;
-        match action {
-            BillingAction::Upgrade => actions.checkout_url.or(actions.portal_url),
-            BillingAction::Manage => actions.portal_url,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -765,18 +757,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn billing_falls_back_to_the_snapshot_url_when_the_session_endpoint_fails() {
+    async fn a_refused_checkout_session_is_reported_not_papered_over_with_a_cached_url() {
+        // The backend owns authorization for a purchase. Substituting the URL
+        // from an earlier snapshot would open a checkout the server just
+        // declined, so the refusal has to reach the caller.
         let (origin, _) = spawn_backend(vec![
             (200, snapshot_body("starter", 2_000)),
             (500, r#"{"detail":"no provider"}"#.into()),
         ]);
         let client = AccountCloudClient::new();
         client.read(&origin, Some("sk_test"), false, now()).await;
-        let url = client
+        let error = client
             .billing_url(&origin, Some("sk_test"), BillingAction::Upgrade, None)
             .await
-            .unwrap();
-        assert_eq!(url, "https://example.test/usage?upgrade=pro");
+            .expect_err("a 500 from the session endpoint must not yield a URL")
+            .to_string();
+        assert_eq!(error, "Synth Cloud is unavailable right now.");
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_billing_session_is_reported_rather_than_replaced() {
+        let (origin, _) = spawn_backend(vec![
+            (200, snapshot_body("starter", 2_000)),
+            (200, r#"{"not_a_url": true}"#.into()),
+        ]);
+        let client = AccountCloudClient::new();
+        client.read(&origin, Some("sk_test"), false, now()).await;
+        let error = client
+            .billing_url(&origin, Some("sk_test"), BillingAction::Manage, None)
+            .await
+            .expect_err("an unparseable session must not fall back to a cached link")
+            .to_string();
+        assert_eq!(
+            error,
+            "Synth Cloud sent an account snapshot Synth Desktop could not read."
+        );
     }
 
     #[tokio::test]

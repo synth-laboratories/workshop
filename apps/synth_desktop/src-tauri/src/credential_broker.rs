@@ -13,9 +13,9 @@
 //! never sees, and never serializes, the Synth key.
 //!
 //! The lease token that *does* reach the child is deliberately not a credential
-//! substitute: it is minted per session, is only accepted from loopback by this
-//! process, only reaches one pre-bound upstream origin, and is revoked when the
-//! session closes or the app exits.
+//! substitute: it is minted per spawned child, is only accepted from loopback by
+//! this process, only reaches one pre-bound upstream origin, and is revoked when
+//! the session closes or the app exits.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -155,8 +155,16 @@ impl CredentialBroker {
             // Adopt the listener inside the task: a tokio listener registers with
             // the reactor of the runtime it is created on, so converting it here
             // keeps the socket and its driver on the same runtime.
-            if let Ok(listener) = tokio::net::TcpListener::from_std(listener) {
-                serve(state, listener).await;
+            let served = match tokio::net::TcpListener::from_std(listener) {
+                Ok(listener) => serve(state, listener).await,
+                Err(error) => {
+                    Err(anyhow::Error::from(error).context("adopt the credential proxy listener"))
+                }
+            };
+            if let Err(error) = served {
+                // Nothing can await this task, so the failure is reported here
+                // rather than swallowed. Cloud sessions fail closed after it.
+                eprintln!("synth-desktop: credential proxy stopped serving: {error:#}");
             }
         });
         Ok(broker)
@@ -166,16 +174,24 @@ impl CredentialBroker {
         format!("http://127.0.0.1:{}", self.addr.port())
     }
 
-    /// Mint (or replace) the lease for `session_id`. The returned token is what
-    /// the child process may see; `api_key` stays here.
+    /// Mint the lease a child process is about to be spawned with, replacing
+    /// and invalidating any token the session held before. The returned token
+    /// is what the child may see; `api_key` stays here.
+    ///
+    /// Contract: called exactly once per spawned child, after the previous
+    /// child (if any) was closed and its lease revoked. Minting while a child
+    /// is live strands that child with a dead token mid-conversation, so a
+    /// caller that reuses a live child must not lease again —
+    /// `CodexManager::start` leases only on its spawn path.
     pub fn lease(&self, session_id: &str, upstream_origin: &str, api_key: &str) -> LeaseHandle {
+        let upstream_origin = upstream_origin.trim_end_matches('/');
         let token = format!(
             "sdl_{}{}",
             Uuid::new_v4().simple(),
             Uuid::new_v4().simple()
         );
         let lease = Arc::new(Lease {
-            upstream_origin: upstream_origin.trim_end_matches('/').to_owned(),
+            upstream_origin: upstream_origin.to_owned(),
             api_key: api_key.to_owned(),
         });
         let previous = self
@@ -211,9 +227,17 @@ impl CredentialBroker {
             .map(|lease| lease.upstream_origin.clone())
     }
 
+    /// Whether a token still maps to a live lease, for tests that assert the
+    /// lease lifecycle.
     #[cfg(test)]
-    fn resolves(&self, token: &str) -> bool {
+    pub(crate) fn resolves(&self, token: &str) -> bool {
         self.state.lookup(token).is_some()
+    }
+
+    /// The session's current token, for tests that assert lease lifecycle.
+    #[cfg(test)]
+    pub(crate) fn token_for(&self, session_id: &str) -> Option<String> {
+        self.state.by_session.read().unwrap().get(session_id).cloned()
     }
 }
 
@@ -241,17 +265,24 @@ pub fn revoke_shared(session_id: &str) {
     }
 }
 
-async fn serve(state: Arc<BrokerState>, listener: tokio::net::TcpListener) {
+async fn serve(state: Arc<BrokerState>, listener: tokio::net::TcpListener) -> Result<()> {
     loop {
-        let Ok((stream, _peer)) = listener.accept().await else {
-            continue;
-        };
+        // Retrying a failed accept forever turns a dead listener into a silent
+        // hot loop. Ending here makes every later lease fail visibly instead.
+        let (stream, _peer) = listener
+            .accept()
+            .await
+            .context("accept a connection on the Synth Desktop credential proxy")?;
         let state = state.clone();
         tauri::async_runtime::spawn(async move {
             let io = TokioIo::new(stream);
             let service = service_fn(move |request| proxy(state.clone(), request));
-            // A dropped client connection is routine; there is nothing to report.
-            let _ = http1::Builder::new().serve_connection(io, service).await;
+            // Reported rather than discarded: a connection that ends in an
+            // error took an agent's turn with it, and the reason is not
+            // recoverable from anywhere else.
+            if let Err(error) = http1::Builder::new().serve_connection(io, service).await {
+                eprintln!("synth-desktop: credential proxy connection ended: {error}");
+            }
         });
     }
 }
@@ -335,12 +366,18 @@ async fn proxy(
         if is_hop_by_hop(name.as_str()) {
             continue;
         }
-        if let (Ok(name), Ok(value)) = (
+        let (Ok(name), Ok(value)) = (
             reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes()),
             reqwest::header::HeaderValue::from_bytes(value.as_bytes()),
-        ) {
-            outbound = outbound.header(name, value);
-        }
+        ) else {
+            // Silently dropping it would forward a request the caller never
+            // wrote; refuse the whole request instead.
+            return Ok(json_error(
+                StatusCode::BAD_REQUEST,
+                "Synth Desktop could not forward a header on this request.",
+            ));
+        };
+        outbound = outbound.header(name, value);
     }
     // The one header the child could not supply, because it never had the key.
     outbound = outbound.bearer_auth(&lease.api_key);
@@ -389,23 +426,36 @@ async fn proxy(
 /// rewritten.
 pub fn redact_managed_shell_snapshots(codex_root: &Path) -> Result<usize> {
     let homes = codex_root.join("homes");
-    let Ok(entries) = std::fs::read_dir(&homes) else {
-        return Ok(0);
+    // No managed homes is a real answer: nothing was ever written to scrub.
+    // Any other read failure is not, because it means there may be snapshots
+    // holding a credential that this pass silently never looked at.
+    let entries = match std::fs::read_dir(&homes) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error).with_context(|| format!("read {}", homes.display())),
     };
     let mut redacted = 0usize;
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.with_context(|| format!("enumerate {}", homes.display()))?;
         let snapshots = entry.path().join("shell_snapshots");
-        let Ok(files) = std::fs::read_dir(&snapshots) else {
-            continue;
+        let files = match std::fs::read_dir(&snapshots) {
+            Ok(files) => files,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("read {}", snapshots.display()))
+            }
         };
-        for file in files.flatten() {
+        for file in files {
+            let file = file.with_context(|| format!("enumerate {}", snapshots.display()))?;
             let path = file.path();
             if !path.is_file() {
                 continue;
             }
-            let Ok(contents) = std::fs::read_to_string(&path) else {
-                continue;
-            };
+            // A snapshot that cannot be read is a snapshot that cannot be
+            // proven free of the credential, so it is an error rather than a
+            // file to pass over.
+            let contents = std::fs::read_to_string(&path)
+                .with_context(|| format!("read {}", path.display()))?;
             let scrubbed = redact_env_assignments(&contents);
             if scrubbed != contents {
                 std::fs::write(&path, &scrubbed)
@@ -519,13 +569,14 @@ mod tests {
     }
 
     #[test]
-    fn restarting_a_session_replaces_rather_than_accumulates_leases() {
+    fn re_leasing_a_session_replaces_and_invalidates_its_previous_token() {
         let (broker, _listener) = CredentialBroker::bind().unwrap();
         let first = broker.lease("session-a", "http://127.0.0.1:41209", SENTINEL);
         let second = broker.lease("session-a", "http://127.0.0.1:41209", SENTINEL);
         assert_ne!(first.token, second.token);
         assert!(!broker.resolves(&first.token));
         assert!(broker.resolves(&second.token));
+        assert_eq!(broker.token_for("session-a"), Some(second.token));
     }
 
     #[test]
@@ -691,6 +742,36 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&snapshot).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "snapshots must be owner-only");
+        }
+    }
+
+    #[test]
+    fn redaction_refuses_a_snapshot_it_cannot_read_rather_than_skipping_it() {
+        // Skipping an unreadable file would report success while leaving a
+        // credential in cleartext, which is the one outcome this pass exists
+        // to prevent.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("codex");
+        let snapshots = root.join("homes/abc123/shell_snapshots");
+        std::fs::create_dir_all(&snapshots).unwrap();
+        let unreadable = snapshots.join("snap.sh");
+        std::fs::write(&unreadable, format!("export SYNTH_API_KEY={SENTINEL}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+
+        let error = redact_managed_shell_snapshots(&root)
+            .expect_err("an unreadable snapshot must not be passed over")
+            .to_string();
+        assert!(error.contains("snap.sh"), "{error}");
+        assert!(!error.contains(SENTINEL), "{error}");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
     }
 

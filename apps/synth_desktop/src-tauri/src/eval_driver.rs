@@ -462,6 +462,7 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
         multi_agent_version: None,
         auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
         writable_roots: Vec::new(),
+        broker_credential: false,
     };
     start = prepare_start(&deps.laguna, start).await?;
     let info = deps
@@ -475,39 +476,40 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
     }))
 }
 
+/// Mirrors `prepare_codex_provider` in `lib.rs`: one preparation rule per
+/// `codex::ProviderClass`, so the eval driver exercises the same credential
+/// custody the product uses.
 async fn prepare_start(
     laguna: &LagunaManager,
     mut request: CodexSessionStartRequest,
 ) -> Result<CodexSessionStartRequest> {
-    if request.provider_name.as_deref() == Some("local-laguna") {
-        let root = crate::runtime::workshop_root()?;
-        request.base_url = laguna
-            .ensure(&root)
-            .await?
-            .ok_or_else(|| anyhow!("Laguna Responses server is unavailable"))?;
-        request.api_key = laguna.api_key().unwrap_or_default();
-    } else if request
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider| provider.eq_ignore_ascii_case("openrouter"))
-    {
-        request.api_key = synth_config::openrouter_api_key()?
-            .ok_or_else(|| anyhow!("OpenRouter API key is not configured"))?;
-        request.provider_env_key = Some("OPENROUTER_API_KEY".into());
-    } else if request
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider| provider.eq_ignore_ascii_case("synth-cloud"))
-    {
-        let resolved = synth_config::resolve()?;
-        let broker = crate::credential_broker::shared()?;
-        crate::codex::apply_synth_cloud_provider(
-            &mut request,
-            &broker,
-            &resolved.backend_url,
-            resolved.api_key.as_deref(),
-        )
-        .map_err(|message| anyhow!(message))?;
+    match crate::codex::provider_class(request.provider_name.as_deref()) {
+        crate::codex::ProviderClass::LocalLaguna => {
+            let root = crate::runtime::workshop_root()?;
+            request.base_url = laguna
+                .ensure(&root)
+                .await?
+                .ok_or_else(|| anyhow!("Laguna Responses server is unavailable"))?;
+            request.api_key = laguna.api_key().unwrap_or_default();
+        }
+        crate::codex::ProviderClass::OpenRouter => {
+            let key = synth_config::openrouter_api_key()?
+                .ok_or_else(|| anyhow!("OpenRouter API key is not configured"))?;
+            // Staged for native custody, exactly like the production path;
+            // `CodexManager::start` exchanges it for a loopback lease at spawn.
+            crate::codex::stage_brokered_credential(&mut request, &key)
+                .map_err(|message| anyhow!(message))?;
+        }
+        crate::codex::ProviderClass::SynthCloud => {
+            let resolved = synth_config::resolve()?;
+            crate::codex::apply_synth_cloud_provider(
+                &mut request,
+                &resolved.backend_url,
+                resolved.api_key.as_deref(),
+            )
+            .map_err(|message| anyhow!(message))?;
+        }
+        crate::codex::ProviderClass::Direct => {}
     }
     Ok(request)
 }
@@ -566,6 +568,7 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
         multi_agent_version: None,
         auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
         writable_roots: Vec::new(),
+        broker_credential: false,
     };
     start = prepare_start(&deps.laguna, start).await?;
     let info = deps

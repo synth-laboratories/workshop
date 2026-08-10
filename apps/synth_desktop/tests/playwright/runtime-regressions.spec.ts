@@ -164,7 +164,11 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 	await openSettings(page);
 	await page.getByRole("button", { name: "Models" }).click();
 	const models = page.getByTestId("authorized-models");
-	await expect(models.getByTestId("authorized-model-openrouter-luna")).toContainText("$0.50");
+	const luna = models.getByTestId("authorized-model-openrouter-luna");
+	await expect(luna).toContainText("$0.20");
+	await expect(luna).toContainText("$1.20");
+	await expect(luna).toContainText("Cached read / 1M$0.02");
+	await expect(luna).toContainText("Cache write / 1M$0.25");
 	await expect(models.getByTestId("authorized-model-openrouter-laguna-s")).toContainText("$0.20");
 	await expect(models.getByTestId("authorized-model-synth-cloud-laguna-s")).toContainText("Plan");
 });

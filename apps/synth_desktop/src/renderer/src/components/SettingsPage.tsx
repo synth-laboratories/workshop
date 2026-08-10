@@ -170,6 +170,8 @@ type AuthorizedModel = {
 	modelId: string;
 	inputPrice: string;
 	outputPrice: string;
+	cachedReadPrice?: string;
+	cacheWritePrice?: string;
 	planMetered?: boolean;
 };
 
@@ -177,7 +179,7 @@ function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSett
 	const models: AuthorizedModel[] = [];
 	if (connection?.openrouterApiKeyConfigured) {
 		models.push(
-			{ id: "openrouter-luna", name: "GPT 5.6 Luna", provider: "OpenRouter · OpenAI", providerMark: "openai", modelId: "openai/gpt-5.6-luna", inputPrice: "$0.50", outputPrice: "$3.00" },
+			{ id: "openrouter-luna", name: "GPT 5.6 Luna", provider: "OpenRouter · OpenAI", providerMark: "openai", modelId: "openai/gpt-5.6-luna", inputPrice: "$0.20", outputPrice: "$1.20", cachedReadPrice: "$0.02", cacheWritePrice: "$0.25" },
 			{ id: "openrouter-laguna-s", name: "Laguna S 2.1", provider: "OpenRouter · Poolside", providerMark: "laguna", modelId: "poolside/laguna-s-2.1", inputPrice: "$0.10", outputPrice: "$0.20" }
 		);
 	}
@@ -192,7 +194,7 @@ function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSett
 					<article className="authorized-model-row" key={model.id} data-testid={`authorized-model-${model.id}`}>
 						<ProviderMark kind={model.providerMark} className="authorized-model-mark" />
 						<div className="authorized-model-identity"><strong>{model.name}</strong><span>{model.provider}</span><code>{model.modelId}</code></div>
-						{model.planMetered ? <dl><div><dt>Pricing</dt><dd>Plan metered</dd></div></dl> : <dl><div><dt>Input / 1M</dt><dd>{model.inputPrice}</dd></div><div><dt>Output / 1M</dt><dd>{model.outputPrice}</dd></div></dl>}
+						{model.planMetered ? <dl><div><dt>Pricing</dt><dd>Plan metered</dd></div></dl> : <dl><div><dt>Input / 1M</dt><dd>{model.inputPrice}</dd></div><div><dt>Output / 1M</dt><dd>{model.outputPrice}</dd></div>{model.cachedReadPrice ? <div><dt>Cached read / 1M</dt><dd>{model.cachedReadPrice}</dd></div> : null}{model.cacheWritePrice ? <div><dt>Cache write / 1M</dt><dd>{model.cacheWritePrice}</dd></div> : null}</dl>}
 					</article>
 				))}
 			</div>

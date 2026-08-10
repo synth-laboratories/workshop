@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    env, fs,
+    env, fmt, fs,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -33,7 +33,7 @@ const EVENT_NAME: &str = "codex:event";
 const MIN_AUTO_COMPACT_TOKEN_LIMIT: u64 = 16_000;
 const COMPACT_PROMPT: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION for a coding agent.\nWrite a handoff for another LLM that will continue the same workspace task.\nInclude:\n- Goal and acceptance criteria\n- Files read/changed (paths + one-line why)\n- Commands/tests run and outcomes\n- Decisions and constraints\n- Open bugs / next concrete steps\n- Any secrets-safe identifiers (branch names, ticket ids) needed to continue\nOmit raw file dumps, full command logs, and superseded plans.\nBe concise and structured (bullets).";
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionStartRequest {
     pub session_id: String,
@@ -55,6 +55,36 @@ pub struct CodexSessionStartRequest {
     /// discarded by `prepare_codex_start` before launch.
     #[serde(default)]
     pub writable_roots: Vec<String>,
+    /// Rust-set marker that `api_key` holds a real user credential which must
+    /// move into native custody before any child process observes it. Staged
+    /// by `prepare_codex_start`, consumed by `CodexManager::start` at spawn
+    /// time. Serde skips it, so the renderer can never set it.
+    #[serde(skip)]
+    pub broker_credential: bool,
+}
+
+impl fmt::Debug for CodexSessionStartRequest {
+    /// Between preparation and spawn, `api_key` may hold a real user
+    /// credential rather than a lease token; never let `{:?}` reproduce it.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CodexSessionStartRequest")
+            .field("session_id", &self.session_id)
+            .field("workspace", &self.workspace)
+            .field("base_url", &self.base_url)
+            .field("api_key", &"<redacted>")
+            .field("model", &self.model)
+            .field("provider_name", &self.provider_name)
+            .field("provider_title", &self.provider_title)
+            .field("provider_env_key", &self.provider_env_key)
+            .field("approval_policy", &self.approval_policy)
+            .field("sandbox", &self.sandbox)
+            .field("thread_id", &self.thread_id)
+            .field("multi_agent_version", &self.multi_agent_version)
+            .field("auto_compact_token_limit", &self.auto_compact_token_limit)
+            .field("writable_roots", &self.writable_roots)
+            .field("broker_credential", &self.broker_credential)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -336,6 +366,13 @@ struct Session {
     approval_policy: String,
     sandbox: String,
     workspace: String,
+    /// The provider binding the child was spawned against, as staged by
+    /// `prepare_codex_start` — the upstream endpoint and credential *before*
+    /// brokering. Held in memory only, never serialized, and compared on
+    /// reuse so a rotated credential or endpoint respawns the child instead
+    /// of leaving it bound to the old provider.
+    upstream_endpoint: String,
+    upstream_credential: String,
 }
 
 pub struct CodexManager {
@@ -386,7 +423,7 @@ impl CodexManager {
     pub async fn start<R: tauri::Runtime>(
         &self,
         app: AppHandle<R>,
-        request: CodexSessionStartRequest,
+        mut request: CodexSessionStartRequest,
     ) -> Result<CodexSessionInfo> {
         validate_start(&request)?;
         let requested_approval = request
@@ -400,14 +437,32 @@ impl CodexManager {
                 && existing.approval_policy == requested_approval
                 && existing.sandbox == requested_sandbox
                 && existing.workspace == request.workspace
+                && existing.upstream_endpoint == request.base_url
+                && existing.upstream_credential == request.api_key
             {
                 return Ok(session_info(&request.session_id, &existing).await);
             }
             // Approval, sandbox and workspace are attachment-time properties in
             // Codex app-server. Reusing an attachment after the composer mode
             // changes would make the UI lie (for example, showing Allow all
-            // while the live process still asks for shell approval).
+            // while the live process still asks for shell approval). The
+            // provider binding is compared the same way: a child spawned
+            // against a rotated-away credential or endpoint must be replaced,
+            // not reused.
             self.close(&request.session_id).await?;
+        }
+        // Custody is taken here — at spawn, after the reuse decision — and
+        // nowhere earlier. Leasing during request preparation invalidated the
+        // token a live, reused child was still presenting (a mid-conversation
+        // 401), and on rebind the `close()` above revokes the previous lease,
+        // so this is the one point where a fresh token's lifetime matches the
+        // child's.
+        let upstream_endpoint = request.base_url.clone();
+        let upstream_credential = request.api_key.clone();
+        if request.broker_credential {
+            let broker = credential_broker::shared()
+                .map_err(|error| anyhow!("credential broker unavailable: {error}"))?;
+            apply_brokered_credential(&mut request, &broker).map_err(|message| anyhow!(message))?;
         }
         let home = self
             .root
@@ -495,6 +550,8 @@ impl CodexManager {
                 .unwrap_or_else(default_approval_policy),
             sandbox: request.sandbox.clone().unwrap_or_else(default_sandbox),
             workspace: request.workspace.clone(),
+            upstream_endpoint,
+            upstream_credential,
         });
         self.sessions
             .write()
@@ -1274,18 +1331,28 @@ async fn interrupt_active_core_run(
 const CREDENTIAL_ENV_NAMES: &[&str] = &["SYNTH_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"];
 
 /// The single provider variable the Codex child is allowed to receive, if any.
-fn provider_child_env(request: &CodexSessionStartRequest) -> Option<(String, String)> {
+///
+/// Refusing a real credential name is an error, not an omission: launching the
+/// child without the variable it was configured to read would surface later as
+/// an unauthenticated provider, and the reason would be nowhere in the logs.
+fn provider_child_env(
+    request: &CodexSessionStartRequest,
+) -> Result<Option<(String, String)>> {
     if request.api_key.is_empty() {
-        return None;
+        return Ok(None);
     }
     let env_key = request
         .provider_env_key
         .as_deref()
         .unwrap_or("SYNTH_LAGUNA_API_KEY");
     if CREDENTIAL_ENV_NAMES.contains(&env_key) {
-        return None;
+        return Err(anyhow!(
+            "{env_key} would be written to this session's Codex shell snapshot. \
+             Route the provider through the credential broker instead of exporting \
+             its key (see credential_broker::apply_brokered_credential)."
+        ));
     }
-    Some((env_key.to_owned(), request.api_key.clone()))
+    Ok(Some((env_key.to_owned(), request.api_key.clone())))
 }
 
 async fn spawn_server<R: tauri::Runtime>(
@@ -1312,7 +1379,7 @@ async fn spawn_server<R: tauri::Runtime>(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    if let Some((name, value)) = provider_child_env(request) {
+    if let Some((name, value)) = provider_child_env(request)? {
         command.env(name, value);
     }
     let mut child = command.spawn().context("spawn codex app-server")?;
@@ -1949,18 +2016,46 @@ async fn write_message(
     Ok(())
 }
 
+/// The four ways a session sources its provider endpoint and credential.
+/// Every start request falls into exactly one class, and both preparation
+/// paths (`lib.rs` commands and the eval driver) branch on this — nowhere
+/// else decides how a credential is handled.
+///
+/// | class        | endpoint from        | credential from        | custody |
+/// |--------------|----------------------|------------------------|---------|
+/// | `LocalLaguna`| local Laguna daemon  | loopback service token | none — the token is process-owned and only works against loopback |
+/// | `SynthCloud` | resolved backend cfg | user's Synth API key   | staged, leased at spawn |
+/// | `OpenRouter` | renderer (public URL)| user's OpenRouter key  | staged, leased at spawn |
+/// | `Direct`     | renderer             | none on the Rust side  | pass-through — renderer-supplied `api_key` is never treated as a credential Rust vouches for |
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderClass {
+    LocalLaguna,
+    SynthCloud,
+    OpenRouter,
+    Direct,
+}
+
+pub fn provider_class(provider_name: Option<&str>) -> ProviderClass {
+    match provider_name {
+        Some(name) if name.eq_ignore_ascii_case("local-laguna") => ProviderClass::LocalLaguna,
+        Some(name) if name.eq_ignore_ascii_case("synth-cloud") => ProviderClass::SynthCloud,
+        Some(name) if name.eq_ignore_ascii_case("openrouter") => ProviderClass::OpenRouter,
+        _ => ProviderClass::Direct,
+    }
+}
+
 /// Point a session start request at the Synth Cloud provider.
 ///
 /// Fail-closed when the Synth API key is missing. Always overwrites any
 /// renderer-supplied `api_key` / `base_url` / env key — credentials never
 /// originate from the renderer.
 ///
-/// The real key is handed to `broker`, not to the request: what the request —
-/// and therefore the child process, its shell snapshots, and its config — ends
-/// up carrying is a revocable loopback lease token. See `credential_broker`.
+/// The key is only *staged* here; `CodexManager::start` exchanges it for a
+/// revocable loopback lease at spawn time, so what the child process, its
+/// shell snapshots, and its config end up carrying is never the real key. See
+/// `credential_broker`.
 pub fn apply_synth_cloud_provider(
     request: &mut CodexSessionStartRequest,
-    broker: &CredentialBroker,
     backend_url: &str,
     api_key: Option<&str>,
 ) -> Result<(), String> {
@@ -1971,21 +2066,55 @@ pub fn apply_synth_cloud_provider(
     request.base_url = format!("{}/api/v1", client_base_url(backend_url));
     request.provider_name = Some("synth-cloud".into());
     request.provider_title = Some("Synth Cloud Responses".into());
-    apply_brokered_credential(request, broker, key)
+    stage_brokered_credential(request, key)
 }
 
-/// Move a remote provider's credential into native custody.
+/// Stage a user credential for native custody.
 ///
-/// The request keeps its logical endpoint path but is re-pointed at the loopback
-/// proxy, and the key it carries becomes a revocable lease token. Every provider
-/// whose credential belongs to the user — not to a local loopback service — goes
-/// through here before a child process can observe it.
+/// The request carries the real key only between preparation and spawn, and
+/// only inside this process. Deliberately no lease is minted here: preparation
+/// runs on every send, and minting for a session whose live child is about to
+/// be reused would invalidate the token that child is still presenting. The
+/// exchange happens in `CodexManager::start`, on its spawn path.
+pub fn stage_brokered_credential(
+    request: &mut CodexSessionStartRequest,
+    api_key: &str,
+) -> Result<(), String> {
+    // Surface a malformed endpoint at preparation time, where the caller can
+    // still map it to a typed provider failure for the renderer.
+    validated_provider_endpoint(request)?;
+    request.api_key = api_key.to_owned();
+    request.broker_credential = true;
+    Ok(())
+}
+
+/// Move a staged credential into native custody at spawn time.
+///
+/// The request keeps its logical endpoint path but is re-pointed at the
+/// loopback proxy, and the staged key it carries becomes a revocable lease
+/// token. Every provider whose credential belongs to the user — not to a local
+/// loopback service — goes through here before a child process can observe it.
 pub fn apply_brokered_credential(
     request: &mut CodexSessionStartRequest,
     broker: &CredentialBroker,
-    api_key: &str,
 ) -> Result<(), String> {
-    let endpoint = reqwest::Url::parse(&request.base_url).map_err(|_| {
+    let endpoint = validated_provider_endpoint(request)?;
+    let lease = broker.lease(
+        &request.session_id,
+        &endpoint.origin().ascii_serialization(),
+        &request.api_key,
+    );
+    request.base_url = format!("{}{}", lease.origin, endpoint.path().trim_end_matches('/'));
+    request.api_key = lease.token;
+    request.provider_env_key = Some(credential_broker::LEASE_ENV_KEY.into());
+    request.broker_credential = false;
+    Ok(())
+}
+
+fn validated_provider_endpoint(
+    request: &CodexSessionStartRequest,
+) -> Result<reqwest::Url, String> {
+    reqwest::Url::parse(&request.base_url).map_err(|_| {
         format!(
             "{} could not start because its endpoint is invalid: {}. Update it in Settings → Account → Backend API.",
             request
@@ -1995,16 +2124,7 @@ pub fn apply_brokered_credential(
                 .unwrap_or("Selected provider"),
             safe_endpoint_label(&request.base_url)
         )
-    })?;
-    let lease = broker.lease(
-        &request.session_id,
-        &endpoint.origin().ascii_serialization(),
-        api_key,
-    );
-    request.base_url = format!("{}{}", lease.origin, endpoint.path().trim_end_matches('/'));
-    request.api_key = lease.token;
-    request.provider_env_key = Some(credential_broker::LEASE_ENV_KEY.into());
-    Ok(())
+    })
 }
 
 /// Local services often advertise `0.0.0.0` as their bind address. That is
@@ -2433,6 +2553,7 @@ mod tests {
             multi_agent_version: Some(MultiAgentVersion::None),
             auto_compact_token_limit: None,
             writable_roots: Vec::new(),
+            broker_credential: false,
         }
     }
 
@@ -3470,11 +3591,11 @@ mod tests {
         let mut request = test_request(&workspace, "synth-cloud-config");
         apply_synth_cloud_provider(
             &mut request,
-            &broker,
             "http://127.0.0.1:41209",
             Some("sk_dev_00000000000000000000000000000001"),
         )
         .unwrap();
+        apply_brokered_credential(&mut request, &broker).unwrap();
         request.model = "openrouter/poolside/laguna-s-2.1".into();
         ensure_home(&home, &request).unwrap();
         let config = fs::read_to_string(home.join("config.toml")).unwrap();
@@ -3507,16 +3628,15 @@ mod tests {
     #[test]
     fn synth_cloud_provider_fails_closed_without_api_key() {
         let temp = tempdir().unwrap();
-        let (broker, _listener) = CredentialBroker::bind().unwrap();
         let mut request = test_request(temp.path(), "synth-cloud-missing-key");
         request.api_key = "renderer-supplied-should-not-matter".into();
         request.provider_name = Some("synth-cloud".into());
-        let error =
-            apply_synth_cloud_provider(&mut request, &broker, "http://127.0.0.1:41209", None)
-                .expect_err("missing Synth API key must fail closed");
+        let error = apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", None)
+            .expect_err("missing Synth API key must fail closed");
         assert!(error.contains("Synth API key not configured"));
         assert!(error.contains("Settings → Account"));
         assert_eq!(request.api_key, "renderer-supplied-should-not-matter");
+        assert!(!request.broker_credential);
     }
 
     #[test]
@@ -3587,15 +3707,14 @@ mod tests {
         let mut request = test_request(temp.path(), "synth-cloud-overwrite");
         request.api_key = "renderer-leaked-key".into();
         request.base_url = "https://evil.example/v1".into();
-        apply_synth_cloud_provider(
-            &mut request,
-            &broker,
-            "http://127.0.0.1:41209/",
-            Some("sk_dev_real_key"),
-        )
-        .unwrap();
-        // The renderer's value is discarded, and the real key is replaced by a
-        // lease rather than being carried on the request.
+        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209/", Some("sk_dev_real_key"))
+            .unwrap();
+        // Staging discards the renderer's value and endpoint outright.
+        assert_eq!(request.api_key, "sk_dev_real_key");
+        assert!(request.broker_credential);
+        apply_brokered_credential(&mut request, &broker).unwrap();
+        // At spawn the staged key is replaced by a lease rather than being
+        // carried on the request.
         assert_ne!(request.api_key, "renderer-leaked-key");
         assert_ne!(request.api_key, "sk_dev_real_key");
         assert!(request.api_key.starts_with("sdl_"));
@@ -3618,11 +3737,11 @@ mod tests {
         let mut request = test_request(temp.path(), "synth-cloud-loopback");
         apply_synth_cloud_provider(
             &mut request,
-            &broker,
             "http://0.0.0.0:41209/",
             Some("sk_dev_00000000000000000000000000000001"),
         )
         .unwrap();
+        apply_brokered_credential(&mut request, &broker).unwrap();
         validate_start(&request).unwrap();
         assert_eq!(request.base_url, format!("{}/api/v1", broker.origin()));
         // `0.0.0.0` is a bind address, not a destination; the proxy's upstream
@@ -3631,6 +3750,116 @@ mod tests {
             broker.upstream_for(&request.api_key).as_deref(),
             Some("http://127.0.0.1:41209")
         );
+    }
+
+    /// The CUA-found 401: preparing a send re-ran provider setup for a live
+    /// session, minted a fresh lease, and thereby killed the token the reused
+    /// child was still presenting. Preparing the same binding again must leave
+    /// the live child's lease untouched.
+    #[tokio::test]
+    async fn reusing_a_live_child_leaves_its_lease_untouched() {
+        let temp = tempdir().unwrap();
+        let manager = CodexManager::with_paths(None, temp.path().join("codex"), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut request = test_request(temp.path(), "lease-live-reuse");
+        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some("sk_dev_reuse"))
+            .unwrap();
+
+        manager
+            .start(app_handle.clone(), request.clone())
+            .await
+            .unwrap();
+        let broker = credential_broker::shared().unwrap();
+        let token = broker
+            .token_for("lease-live-reuse")
+            .expect("spawning the child mints its lease");
+
+        // Second send: same staged binding, live child gets reused.
+        manager.start(app_handle, request.clone()).await.unwrap();
+        assert_eq!(
+            broker.token_for("lease-live-reuse").as_deref(),
+            Some(token.as_str())
+        );
+        assert!(broker.resolves(&token));
+
+        manager.close("lease-live-reuse").await.unwrap();
+        assert!(!broker.resolves(&token));
+    }
+
+    /// Rebind (for example a model switch) closes the old child, which revokes
+    /// its lease. The replacement child must be spawned with a lease minted
+    /// *after* that revocation — leasing during preparation handed it a token
+    /// `close()` had already deleted.
+    #[tokio::test]
+    async fn rebinding_a_session_spawns_the_new_child_with_a_live_lease() {
+        let temp = tempdir().unwrap();
+        let manager = CodexManager::with_paths(None, temp.path().join("codex"), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut request = test_request(temp.path(), "lease-rebind");
+        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some("sk_dev_rebind"))
+            .unwrap();
+        manager
+            .start(app_handle.clone(), request.clone())
+            .await
+            .unwrap();
+        let broker = credential_broker::shared().unwrap();
+        let before = broker.token_for("lease-rebind").unwrap();
+
+        let mut switched = request.clone();
+        switched.model = "openrouter/poolside/laguna-s-2.1".into();
+        manager.start(app_handle, switched).await.unwrap();
+        let after = broker
+            .token_for("lease-rebind")
+            .expect("the respawned child must hold a lease that survived close()");
+        assert_ne!(before, after);
+        assert!(!broker.resolves(&before));
+        assert!(broker.resolves(&after));
+    }
+
+    /// A changed credential or endpoint is part of the reuse comparison: the
+    /// old child was spawned against the old binding, so rotation must respawn
+    /// it rather than leave it talking through the stale credential.
+    #[tokio::test]
+    async fn a_rotated_credential_respawns_the_child_with_a_fresh_lease() {
+        let temp = tempdir().unwrap();
+        let manager = CodexManager::with_paths(None, temp.path().join("codex"), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut request = test_request(temp.path(), "lease-rotation");
+        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some("sk_dev_old"))
+            .unwrap();
+        manager
+            .start(app_handle.clone(), request.clone())
+            .await
+            .unwrap();
+        let broker = credential_broker::shared().unwrap();
+        let old_token = broker.token_for("lease-rotation").unwrap();
+        let old_attachment = manager
+            .sessions
+            .read()
+            .await
+            .get("lease-rotation")
+            .unwrap()
+            .attachment_id;
+
+        let mut rotated = test_request(temp.path(), "lease-rotation");
+        apply_synth_cloud_provider(&mut rotated, "http://127.0.0.1:41209", Some("sk_dev_new"))
+            .unwrap();
+        manager.start(app_handle, rotated).await.unwrap();
+        let new_attachment = manager
+            .sessions
+            .read()
+            .await
+            .get("lease-rotation")
+            .unwrap()
+            .attachment_id;
+        let new_token = broker.token_for("lease-rotation").unwrap();
+        assert_ne!(old_attachment, new_attachment);
+        assert_ne!(old_token, new_token);
+        assert!(!broker.resolves(&old_token));
+        assert!(broker.resolves(&new_token));
     }
 
     #[test]
@@ -3676,8 +3905,8 @@ mod tests {
         let secret = "sk_dev_SYNTH_CLOUD_SECRET_VALUE_DO_NOT_LEAK";
         let (broker, _listener) = CredentialBroker::bind().unwrap();
         let mut request = test_request(&workspace, "synth-cloud-redact");
-        apply_synth_cloud_provider(&mut request, &broker, "http://127.0.0.1:41209", Some(secret))
-            .unwrap();
+        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some(secret)).unwrap();
+        apply_brokered_credential(&mut request, &broker).unwrap();
         request.model = "openrouter/poolside/laguna-s-2.1".into();
         ensure_home(&home, &request).unwrap();
         let config = fs::read_to_string(home.join("config.toml")).unwrap();
@@ -3709,8 +3938,8 @@ mod tests {
 
         let (broker, _listener) = CredentialBroker::bind().unwrap();
         let mut request = test_request(&workspace, "session-sentinel");
-        apply_synth_cloud_provider(&mut request, &broker, "http://127.0.0.1:41209", Some(SENTINEL))
-            .unwrap();
+        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some(SENTINEL)).unwrap();
+        apply_brokered_credential(&mut request, &broker).unwrap();
         validate_start(&request).unwrap();
         ensure_home(&home, &request).unwrap();
 
@@ -3719,6 +3948,7 @@ mod tests {
         let snapshots = home.join("shell_snapshots");
         fs::create_dir_all(&snapshots).unwrap();
         let exported = provider_child_env(&request)
+            .expect("the brokered lease is allowed across the spawn boundary")
             .map(|(name, value)| format!("export {name}={value}\n"))
             .unwrap_or_default();
         fs::write(snapshots.join("snapshot.sh"), format!("#!/bin/sh\n{exported}")).unwrap();
@@ -3778,16 +4008,21 @@ mod tests {
         request.api_key = "sk_live_should_never_be_exported".into();
         for name in CREDENTIAL_ENV_NAMES {
             request.provider_env_key = Some((*name).into());
-            assert_eq!(
-                provider_child_env(&request),
-                None,
-                "{name} must never be exported to a Codex child"
+            let error = provider_child_env(&request)
+                .expect_err(&format!("{name} must never be exported to a Codex child"))
+                .to_string();
+            // The refusal names the variable and the way out of it.
+            assert!(error.contains(name), "{error}");
+            assert!(error.contains("credential broker"), "{error}");
+            assert!(
+                !error.contains("sk_live_should_never_be_exported"),
+                "the refusal must not quote the credential: {error}"
             );
         }
         // The broker lease, and the local loopback token, still cross.
         request.provider_env_key = Some(credential_broker::LEASE_ENV_KEY.into());
         assert_eq!(
-            provider_child_env(&request),
+            provider_child_env(&request).unwrap(),
             Some((
                 credential_broker::LEASE_ENV_KEY.to_owned(),
                 "sk_live_should_never_be_exported".to_owned()
@@ -3795,7 +4030,7 @@ mod tests {
         );
         request.provider_env_key = None;
         request.api_key = String::new();
-        assert_eq!(provider_child_env(&request), None);
+        assert_eq!(provider_child_env(&request).unwrap(), None);
     }
 
     #[test]
