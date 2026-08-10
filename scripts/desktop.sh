@@ -14,6 +14,7 @@ BUNDLE_EXE="$BUNDLE_APP/Contents/MacOS/synth-desktop"
 DEBUG_EXE="$ROOT/apps/synth_desktop/src-tauri/target/debug/synth-desktop"
 BACKUP_ROOT="${SYNTH_DESKTOP_BACKUP_ROOT:-$HOME/.synth-desktop/backups/app-builds}"
 INSTALL_STAGE=""
+LAGUNA_PID_FILE="$HOME/.synth-desktop/laguna/sidecar.pid"
 
 enable_rust_cache() {
 	if command -v sccache >/dev/null 2>&1; then
@@ -85,6 +86,33 @@ stop_desktop() {
     # shellcheck disable=SC2086
     kill -KILL $pids 2>/dev/null || true
   fi
+}
+
+stop_managed_laguna() {
+  local pid command
+  [[ -f "$LAGUNA_PID_FILE" ]] || return 0
+  pid="$(tr -d '[:space:]' < "$LAGUNA_PID_FILE")"
+  if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[desktop] ignoring invalid Laguna pid file: $LAGUNA_PID_FILE" >&2
+    return
+  fi
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  if [[ "$command" != *"-m laguna_daemon"* ]]; then
+    echo "[desktop] stale Laguna pid $pid is not our managed daemon"
+    /bin/rm -f "$LAGUNA_PID_FILE"
+    return
+  fi
+  echo "[desktop] stopping managed Laguna sidecar $pid"
+  kill -TERM "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.25
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "[desktop] force stopping managed Laguna sidecar $pid"
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  /bin/rm -f "$LAGUNA_PID_FILE"
 }
 
 status_desktop() {
@@ -179,6 +207,15 @@ install_desktop() {
 	if [[ "$verification" == "release" ]]; then
 		verify_desktop
 	fi
+	# Codex resolves the MCP noun adapters next to the app executable with a
+	# build-tree fallback; keep the release copies fresh so installed sessions
+	# get working synth_* MCP servers on this machine.
+	cargo build \
+		--manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
+		--release \
+		--bin synth-containers-mcp \
+		--bin synth-visuals-mcp \
+		--bin synth-optimizers-mcp
 	build_desktop
   [[ -d "$BUNDLE_APP" && -x "$BUNDLE_EXE" ]] || {
     echo "[desktop] build did not produce $BUNDLE_APP" >&2
@@ -186,6 +223,7 @@ install_desktop() {
   }
 
   stop_desktop
+  stop_managed_laguna
   timestamp="$(date '+%Y%m%d-%H%M%S')"
   stage="/Applications/.Synth Desktop.stage-$timestamp.app"
   INSTALL_STAGE="$stage"
@@ -195,6 +233,11 @@ install_desktop() {
     return 1
   fi
   /usr/bin/ditto "$BUNDLE_APP" "$stage"
+  for adapter in synth-containers-mcp synth-visuals-mcp synth-optimizers-mcp; do
+    /usr/bin/ditto \
+      "$ROOT/apps/synth_desktop/src-tauri/target/release/$adapter" \
+      "$stage/Contents/MacOS/$adapter"
+  done
   # The generated release bundle is not a supported launch target. Removing it
   # after staging makes stale Dock/Finder entries fail closed instead of opening
   # a second app with a different environment and state directory.

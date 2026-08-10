@@ -50,6 +50,17 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 	await search.getByRole("option", { name: /Craftax rollout review/ }).click();
 	await expect(page.getByTestId("conversation-search")).toHaveCount(0);
 	await expect(page.getByTestId("chat-transcript")).toBeVisible();
+	const outputsTrigger = page.getByTestId("resource-shelf-trigger");
+	const outputsPanel = page.getByTestId("resource-shelf");
+	await expect(outputsTrigger).toBeVisible();
+	await expect(outputsTrigger).toHaveAttribute("aria-expanded", "true");
+	await expect(outputsPanel).toBeVisible();
+	await expect(outputsPanel.getByTestId("resource-shelf-empty")).toContainText("No outputs yet");
+	await outputsPanel.getByRole("button", { name: "Close outputs panel" }).click();
+	await expect(outputsPanel).toHaveCount(0);
+	await expect(outputsTrigger).toHaveAttribute("aria-expanded", "false");
+	await outputsTrigger.click();
+	await expect(outputsPanel).toBeVisible();
 
 	await page.getByTestId("open-search").click();
 	await expect(page.getByTestId("conversation-search")).toBeVisible();
@@ -170,8 +181,18 @@ test("sidebar starts compact while retaining a working conversation and a revers
 	});
 	await page.reload();
 	await page.getByTestId("runtime-status").waitFor();
+	await expect(page.getByTestId("chat-list").locator(".chat-item .item-icon")).toHaveCount(0);
 	await expect(page.getByTestId("local-chat-sidebar-chat-13")).toBeVisible();
-	await expect(page.getByTestId("chat-working-sidebar-chat-13")).toBeVisible();
+	const working = page.getByTestId("chat-working-sidebar-chat-13");
+	await expect(working).toBeVisible();
+	await expect(working).toHaveAccessibleName("Working");
+	const markerGeometry = await working.evaluate((marker) => {
+		const row = marker.closest<HTMLElement>(".chat-item")!.getBoundingClientRect();
+		const rect = marker.getBoundingClientRect();
+		const style = getComputedStyle(marker);
+		return { width: style.width, height: style.height, contained: rect.left >= row.left && rect.right <= row.right - 8 };
+	});
+	expect(markerGeometry).toEqual({ width: "15px", height: "15px", contained: true });
 	await expect(page.locator('[data-testid^="local-chat-sidebar-chat-"]')).toHaveCount(10);
 	await expect(page.getByTestId("sidebar-show-all-chats")).toContainText("Show 4 more");
 
@@ -182,6 +203,78 @@ test("sidebar starts compact while retaining a working conversation and a revers
 	await expect(page.getByTestId("local-chat-sidebar-chat-13")).toBeVisible();
 });
 
+test("a daemon-reported decode rate stays with its one active local conversation", async ({ page }) => {
+	await page.addInitScript(() => {
+		const snapshot = {
+			model: "poolside/Laguna-XS-2.1-NVFP4-mlx",
+			resident: true,
+			residentBytes: 21_000_000_000,
+			queueDepth: 0,
+			queueCapacity: 8,
+			active: {
+				generationId: "active-generation",
+				phase: "decode",
+				queuedAt: 1,
+				startedAt: 2,
+				firstTokenAt: 3,
+				lastTokenAt: 4,
+				promptTokens: 12,
+				cachedTokens: 0,
+				outputTokens: 8,
+				cacheHitRatio: 0,
+				prefillTokensPerSecond: null,
+				decodeTokensPerSecond: 31.7,
+				elapsedMs: 1200
+			},
+			rolling: {
+				requestsCompleted: 0, requestsFailed: 0, requestsCancelled: 0,
+				inputTokens: 0, outputTokens: 0, cachedTokens: 0,
+				ttftP50Ms: null, ttftP95Ms: null, decodeTpsP50: null,
+				decodeTpsP95: null, latencyP50Ms: null, latencyP95Ms: null
+			}
+		};
+		(window as typeof window & { __SYNTH_TEST_INFERENCE_TRANSPORT__?: unknown }).__SYNTH_TEST_INFERENCE_TRANSPORT__ = {
+			snapshot: async () => snapshot,
+			subscribe: () => () => undefined,
+			unload: async () => ({ released: true, conflict: false, detail: null })
+		};
+		const session = {
+			id: "decoded-local-chat", title: "Measured local generation",
+			target: { kind: "local", model: "laguna-xs-2.1", adapter: null },
+			createdAt: "2026-08-09T12:00:00.000Z", updatedAt: "2026-08-09T12:00:00.000Z",
+			status: "running", latestCursor: 0, metadata: {}
+		};
+		(window as typeof window & { synthRuntime?: unknown }).synthRuntime = {
+			async request(path: string) {
+				if (path === "/v1/health") return {
+					runtimeId: "renderer-test", local: { mode: "mlx", modelPath: "/models/laguna" },
+					intern: { mode: "demo" }, openrouter: { mode: "unconfigured" },
+					inventory: { containers: 0, traces: 0, visuals: 0 }
+				};
+				if (path === "/v1/sessions") return { sessions: [session] };
+				if (path === "/v1/projects") return { projects: [] };
+				if (path.includes("/events")) return { events: [], nextCursor: 0, hasMore: false };
+				throw new Error(`Unexpected renderer test request: ${path}`);
+			},
+			async subscribe() { return { close() {} }; }
+		};
+	});
+	await page.reload();
+	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("local-chat-decoded-local-chat").click();
+
+	const status = page.getByTestId("chat-working-decoded-local-chat");
+	const rate = page.getByTestId("chat-working-rate-decoded-local-chat");
+	await expect(status).toHaveAccessibleName("Working · 31.7 tok/s");
+	await expect(rate).toHaveText("31.7 tok/s");
+	const geometry = await status.evaluate((element) => {
+		const row = element.closest<HTMLElement>(".chat-item")!.getBoundingClientRect();
+		const rect = element.getBoundingClientRect();
+		return { contained: rect.left >= row.left && rect.right <= row.right };
+	});
+	expect(geometry).toEqual({ contained: true });
+});
+
 test("reversible navigation does not retain abandoned DOM", async ({ page }) => {
 	const baseline = await page.evaluate(() => document.querySelectorAll("*").length);
 
@@ -190,6 +283,7 @@ test("reversible navigation does not retain abandoned DOM", async ({ page }) => 
 		await page.keyboard.press("Escape");
 		await expect(page.getByTestId("conversation-search")).toHaveCount(0);
 
+		await page.getByTestId("account-footer-trigger").click();
 		await page.getByTestId("settings").click();
 		await page.getByTestId("settings-page").getByRole("button", { name: "← Back" }).click();
 		await expect(page.getByTestId("landing-page")).toBeVisible();

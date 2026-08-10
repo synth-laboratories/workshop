@@ -341,6 +341,12 @@ function isTauri(): boolean {
 }
 
 export function defaultInferenceTransport(): InferenceTransport {
+	// A narrow browser-test seam. Production has no such global and therefore
+	// always uses the Tauri daemon transport below.
+	const testTransport = (globalThis as typeof globalThis & {
+		__SYNTH_TEST_INFERENCE_TRANSPORT__?: InferenceTransport;
+	}).__SYNTH_TEST_INFERENCE_TRANSPORT__;
+	if (testTransport) return testTransport;
 	if (!isTauri()) return unavailableTransport;
 	tauriTransport ??= {
 		snapshot: () => invoke<InferenceSnapshot>("laguna_inference_snapshot"),

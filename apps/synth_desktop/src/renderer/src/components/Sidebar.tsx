@@ -84,18 +84,6 @@ function IconSearch() {
 	);
 }
 
-function IconGlobe() {
-	return (
-		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.25" />
-			<path
-				d="M2.5 8h11M8 2.5c1.8 1.8 2.7 3.6 2.7 5.5S9.8 11.7 8 13.5C6.2 11.7 5.3 9.9 5.3 8S6.2 4.3 8 2.5z"
-				stroke="currentColor"
-				strokeWidth="1.15"
-			/>
-		</svg>
-	);
-}
 
 
 
@@ -338,7 +326,6 @@ export function Sidebar({
 											aria-haspopup="menu"
 											data-testid={`local-chat-${chat.id}`}
 										>
-											<IconGlobe />
 											<span className="item-label">{title}</span>
 											{pinned ? <span className="chat-pin-marker" aria-label="Pinned" title="Pinned" data-testid={`chat-pinned-${chat.id}`}>Pinned</span> : null}
 											{working ? (

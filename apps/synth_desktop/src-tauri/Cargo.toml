@@ -7,7 +7,9 @@ default-run = "synth-desktop"
 
 [lib]
 name = "synth_desktop_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Desktop-only app: the bin links the rlib. staticlib/cdylib are mobile-template
+# artifacts and each forces a full extra codegen+link pass of the whole lib.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -49,3 +51,9 @@ path = "src/bin/synth_optimizers_mcp.rs"
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
 tempfile = "3"
+
+# Local installs rebuild the whole app crate for any one-line change; release
+# incremental turns that ~35s codegen pass into a few seconds. Cargo applies
+# incremental only to workspace crates, so registry deps stay sccache-cached.
+[profile.release]
+incremental = true

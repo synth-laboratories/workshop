@@ -256,7 +256,8 @@ dev_instance() {
   cargo build \
     --manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
     --bin synth-containers-mcp \
-    --bin synth-visuals-mcp
+    --bin synth-visuals-mcp \
+    --bin synth-optimizers-mcp
 
   echo "[desktop:$NAME] launching $APP_TITLE"
   echo "[desktop:$NAME] data=$DATA_ROOT vite=$VITE_PORT laguna=$SYNTH_LAGUNA_BASE_URL"

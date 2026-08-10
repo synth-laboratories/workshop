@@ -21,6 +21,7 @@ mod visuals_ipc;
 mod whisper;
 mod workspace_scope;
 
+use base64::Engine as _;
 use codex::{
     CodexApprovalDecisionRequest, CodexManager, CodexSessionInfo, CodexSessionRecord,
     CodexSessionRequest, CodexSessionStartRequest, CodexSteerRequest, CodexTurnFailure,
@@ -44,7 +45,7 @@ use optimizers::{
 };
 use serde_json::Value;
 use std::sync::Arc;
-use storage::{AppEvent, CoreDiagnostics};
+use storage::{AppEvent, CoreDiagnostics, ModelPerformanceRepository, ModelPerformanceSummary};
 use synth_config::{
     BackendSettings, BackendSettingsUpdate, ModelMultiAgentSetting, ModelMultiAgentUpdate,
     WorkspaceAccessSettings, WorkspaceAccessUpdate,
@@ -68,6 +69,34 @@ fn core_diagnostics(state: State<'_, Arc<CoreRuntime>>) -> Result<CoreDiagnostic
 #[tauri::command]
 fn desktop_instance_diagnostics() -> InstanceDiagnostics {
     instance::diagnostics()
+}
+
+#[tauri::command]
+fn desktop_image_preview(path: String) -> Result<String, String> {
+    let path = std::path::Path::new(&path)
+        .canonicalize()
+        .map_err(|_| "Screenshot is unavailable".to_string())?;
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| "Screenshot has no supported format".to_string())?;
+    let mime = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => return Err("Screenshot format is unsupported".into()),
+    };
+    let metadata = std::fs::metadata(&path).map_err(|_| "Screenshot is unavailable".to_string())?;
+    if !metadata.is_file() || metadata.len() > 20 * 1024 * 1024 {
+        return Err("Screenshot must be a file smaller than 20 MB".into());
+    }
+    let bytes = std::fs::read(path).map_err(|_| "Screenshot could not be read".to_string())?;
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
 }
 
 #[tauri::command]
@@ -408,6 +437,16 @@ async fn inventory_usage_list(
     state
         .inventory()
         .list_usage(limit.unwrap_or(100))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn model_performance_summary(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<Vec<ModelPerformanceSummary>, String> {
+    ModelPerformanceRepository::new(state.storage().database().clone())
+        .summaries()
         .await
         .map_err(|error| error.to_string())
 }
@@ -1640,6 +1679,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             desktop_instance_diagnostics,
+            desktop_image_preview,
             core_diagnostics,
             core_events_after,
             core_session_events_after,
@@ -1657,6 +1697,7 @@ pub fn run() {
             inventory_traces_ingest,
             inventory_trace_projection_resolve,
             inventory_usage_list,
+            model_performance_summary,
             inventory_counts,
             optimizers_algorithms_list,
             optimizers_recipes_list,
@@ -1729,6 +1770,8 @@ pub fn run() {
             whisper::whisper_model_download,
             whisper::whisper_models_set_selected,
             whisper::whisper_models_clear,
+            whisper::whisper_runtime_status,
+            whisper::whisper_runtime_warm,
             whisper::whisper_transcribe,
             whisper::whisper_transcribe_base64,
             skills::skills_list,

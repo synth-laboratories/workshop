@@ -295,6 +295,55 @@ Pick from debt flags or CUA; log when done.
 - **Tests:** Focused Playwright approval-mode and terminal-lifecycle regressions pass. Rust auto-approval unit coverage is present but the workspace-wide Rust compile remains blocked by unrelated concurrent `sft_recipes.rs` type errors.
 - **Refs:** `src-tauri/src/codex.rs`, `src/renderer/src/App.tsx`, `tests/playwright/runtime-regressions.spec.ts`.
 
+### 2026-08-09 — Reasoning disclosure composition
+
+- **CUA reference:** Poolside presents reasoning as a compact `··· Thought` disclosure with one chevron and unboxed prose only after expansion. It does not reserve a large outlined card for idle/streaming thought, nor repeat provider metadata in the visual label.
+- **Shipped:** Workshop reasoning is now the same restrained disclosure pattern: no card chrome, no giant placeholder wave, one clear chevron, and readable proportional prose when opened. `Thought` remains reserved for local full reasoning; closed-model output remains labeled `Reasoning summary` in the control's accessible name.
+- **Tests:** Playwright verifies collapsed/expanded local thought, closed-model summary disclosure, and absence of card chrome. Bombadil fuzzes the three responsive viewports and asserts a closed disclosure is compact, transcript-contained, card-free, composer-clear when expanded, and overflow-free.
+- **Refs:** `components/ChatTranscript.tsx`, `styles/app.css`, `tests/playwright/runtime-regressions.spec.ts`, `tests/bombadil/reasoning-disclosure.spec.ts`.
+
+### 2026-08-09 — Conversation activity marker
+
+- **Shipped:** A running conversation has a clearly visible, Codex-style trailing activity ring in the sidebar; it stays present when the row is not selected and yields to the orange finished/unviewed dot once the turn terminates.
+- **Tests:** Playwright asserts that an active conversation remains in the compact sidebar, exposes the semantic `Working` marker, and keeps the 15px ring contained at the trailing edge of its row.
+- **Refs:** `styles/app.css`, `tests/playwright/sidebar-navigation.spec.ts`.
+
+### 2026-08-09 — Live local conversation throughput
+
+- **Shipped:** A currently decoding local Laguna conversation now carries its daemon-reported decode rate beside the Codex-style active ring in the sidebar (for example, `31.7 tok/s`). The rate is rendered only while one local running chat can be unambiguously matched to the daemon's single active generation; unavailable, implausible, queued, and ambiguous values remain absent rather than becoming a fabricated metric. Narrow sidebars retain the ring and hide only the supplementary rate.
+- **Model capability check:** OpenRouter's live model metadata confirms that `poolside/laguna-s-2.1` accepts a `reasoning` object, but does not publish an effort enum. Poolside's own S 2.1 model card documents a binary `enable_thinking` control. The existing `Off` / `On` choice is therefore intentional and more accurate than presenting unverified `Low` / `Max` levels; the adapter maps that binary choice to its supported `none` / `max` transport values.
+- **Tests:** A Playwright integration test supplies a real-shaped inference snapshot and asserts `Working · 31.7 tok/s`, the visible rate, and row containment. Bombadil adds invariants that any live-rate label has a working ring, a valid rate format, and remains inside its chat row.
+- **Verification:** `npm run typecheck`, focused Playwright (2) and Vite production build pass. The focused 12-second Bombadil layout run exercised the new invariants without violating them; it still finds two pre-existing layout failures (`composerClearsInference` / transcript-composer centerline) in the inference-rail fuzz path, which remain separate follow-up work.
+- **Refs:** `App.tsx`, `components/Sidebar.tsx`, `components/InferencePanel.tsx`, `runtime/modelCapabilities.ts`, `tests/playwright/sidebar-navigation.spec.ts`, `tests/bombadil/layout.spec.ts`.
+
+### 2026-08-09 — Laguna S reasoning labels
+
+- **Shipped:** The compact selector beside **Laguna S 2.1** now presents the exact supported adapter values, **None** and **Max**, instead of the ambiguous On/Off aliases. This applies consistently to both OpenRouter and Synth Cloud Laguna S targets; local Laguna XS keeps its separate On/Off control.
+- **Tests:** Playwright opens the Laguna S picker, asserts its default is `Thinking: Max`, selects `None`, and confirms that the request still carries `effort: none`.
+
+### 2026-08-09 — Persistent Outputs side panel
+
+- Conversation views now always expose Outputs and open the floating panel by default, including before any files, visuals, or containers exist.
+- Empty conversations show a quiet explanatory state; populated conversations retain the compact count and first-class output rows.
+- Switching conversations restores the panel, while explicit Hide and reopen remain reversible.
+- Desktop layouts reserve a real right-side lane for the panel and composer, preventing the panel from covering tool-row actions; compact layouts keep the dismissible overlay.
+- Playwright covers empty, working, populated, close/reopen, ARIA state, and panel/action non-overlap behavior.
+
+### 2026-08-09 — Quiet conversation rows
+
+- Removed the repeated globe placeholder from every conversation row. Titles now align cleanly with Codex-style working rings and finished-unviewed dots as the only trailing status marks.
+- Playwright and Bombadil lock chat rows against generic decorative icons returning.
+- Fixed canonical reinstall aborting after app shutdown when no managed Laguna PID file exists; that absence is now a successful no-op.
+
+### 2026-08-10 — Sidebar account footer
+
+- Added a compact Codex-style account control to the bottom-left footer without conflating cloud authentication with local Laguna residency.
+- Signed-out state reads `Sign in to Synth · Local mode`; authenticated state reads `Synth account · Signed in` with a green presence dot. The device-auth contract does not currently return a profile name, so the UI does not invent one; the component accepts a display name when that contract grows one.
+- The account menu exposes sign-in/account management and direct logout, closes on outside click or Escape, restores keyboard focus, and stays contained inside the sidebar. Settings remains a stable one-click footer action.
+- Account changes made by browser pairing, credential save, Settings logout, or footer logout update the footer immediately through a renderer account-change event.
+- The mini popup now owns expandable usage, Settings, and Log out. Usage is derived from the Rust ledger: rolling seven-day tokens/cost plus all tracked tokens and entry count. The API does not expose account allowance or reset date, so weekly remaining is explicitly `Not reported` rather than fabricated.
+- Typecheck and focused Playwright coverage pass: account lifecycle, sidebar navigation, and Poolside polish 27/27.
+
 ### 2026-08-10 — Dev account plan, model-picker containment, release-merge repair
 
 - **Finding:** The v0.1 dev↔main merge left the tree unbuildable (missing `compact_before_model_switch` in `eval_driver.rs`, three renderer symbols whose definitions were stranded in stashes) and five Rust tests red because the `optimizer.run.v1` visual template and the pinned-smoke SKILL.md lines were never committed. The account footer was signed-out-only with `Weekly budget: Not reported`, and the landing model picker overflowed behind the composer (12:54 screenshot).

@@ -1,17 +1,23 @@
 import { expect, test } from "./browser.fixture";
+import type { Page } from "@playwright/test";
+
+async function openSettings(page: Page) {
+	await page.getByTestId("account-footer-trigger").click();
+	await page.getByTestId("settings").click();
+}
 
 test("parked Projects surface is absent while workspace access remains available", async ({ page }) => {
 	await expect(page.getByText("Projects", { exact: true })).toHaveCount(0);
 	await expect(page.getByTestId("project-list")).toHaveCount(0);
 	await expect(page.getByTestId("quick-add-project")).toHaveCount(0);
-	await page.getByTestId("settings").click();
+	await openSettings(page);
 	await page.getByRole("button", { name: "Runtime" }).click();
 	await expect(page.getByTestId("workspace-access-settings")).toBeVisible();
 });
 
 test.describe("preferences persistence", () => {
 	test("theme, fonts, tool activity, and layout survive a fresh context", async ({ page, context }) => {
-		await page.getByTestId("settings").click();
+		await openSettings(page);
 		await expect(page.getByTestId("settings-general")).toBeVisible();
 		await page.getByTestId("theme-dark").click();
 		await page.getByTestId("tool-activity-compact").click();
@@ -60,7 +66,7 @@ test.describe("preferences persistence", () => {
 	});
 
 	test("invalid font size is rejected with feedback", async ({ page }) => {
-		await page.getByTestId("settings").click();
+		await openSettings(page);
 		await page.getByTestId("chat-font-size").fill("99");
 		await page.getByTestId("chat-font-size").blur();
 		await expect(page.getByTestId("chat-font-size-error")).toBeVisible();
@@ -70,7 +76,7 @@ test.describe("preferences persistence", () => {
 
 test.describe("tool activity presentation", () => {
 	test("settings and transcript menu share the same mode labels", async ({ page }) => {
-		await page.getByTestId("settings").click();
+		await openSettings(page);
 		await expect(page.getByTestId("tool-activity-detailed")).toContainText("Detailed");
 		await expect(page.getByTestId("tool-activity-grouped")).toContainText("Grouped");
 		await expect(page.getByTestId("tool-activity-compact")).toContainText("Compact");
@@ -294,7 +300,8 @@ test.describe("steer and enqueue", () => {
 			};
 			window.localStorage.setItem("synth.preferences.v1", JSON.stringify({
 				schemaVersion: 1,
-				submission: { activeEnterAction: "steer" }
+				submission: { activeEnterAction: "steer" },
+				promptQueue: [{ id: "promote-me", conversationId: "steer-session", text: "push this through now", createdAt: "2026-08-09T12:00:00.000Z" }]
 			}));
 		});
 		await page.reload();
@@ -307,6 +314,16 @@ test.describe("steer and enqueue", () => {
 		await expect(page.getByTestId("composer-input")).toHaveValue("");
 		const calls = await page.evaluate(() => (window as typeof window & { __steerCalls?: Array<{ sessionId: string; text: string }> }).__steerCalls ?? []);
 		expect(calls).toEqual([{ sessionId: "steer-session", text: "nudge the active turn" }]);
+		const queued = page.getByRole("textbox", { name: "Queued prompt 1" });
+		await queued.press("Enter");
+		await expect(page.getByTestId("prompt-queue")).toContainText("Return again to steer now");
+		await queued.press("Enter");
+		await expect(page.getByTestId("prompt-queue")).toBeHidden();
+		const promotedCalls = await page.evaluate(() => (window as typeof window & { __steerCalls?: Array<{ sessionId: string; text: string }> }).__steerCalls ?? []);
+		expect(promotedCalls).toEqual([
+			{ sessionId: "steer-session", text: "nudge the active turn" },
+			{ sessionId: "steer-session", text: "push this through now" }
+		]);
 	});
 });
 
@@ -366,12 +383,27 @@ test.describe("conversation management", () => {
 		await page.getByTestId("local-chat-manage-chat").click({ button: "right" });
 		await page.getByRole("menuitem", { name: "Archive" }).click();
 		await expect(page.getByTestId("local-chat-manage-chat")).toHaveCount(0);
-		await page.getByTestId("settings").click();
+		await openSettings(page);
 		await expect(page.getByTestId("archived-chat-manage-chat")).toBeVisible();
 	});
 });
 
 test.describe("layout persistence", () => {
+	test("sidebar divider drags against the full app width and persists", async ({ page }) => {
+		const handle = page.getByRole("separator", { name: "Resize sidebar" });
+		const box = await handle.boundingBox();
+		expect(box).not.toBeNull();
+		await page.mouse.move(box!.x + box!.width / 2, box!.y + 120);
+		await page.mouse.down();
+		await page.mouse.move(box!.x + box!.width / 2 + 72, box!.y + 120, { steps: 5 });
+		await page.mouse.up();
+		const draggedWidth = await page.getByTestId("sidebar").evaluate((node) => node.getBoundingClientRect().width);
+		expect(draggedWidth).toBeGreaterThanOrEqual(320);
+		await page.reload();
+		await page.getByTestId("runtime-status").waitFor();
+		await expect(page.getByTestId("sidebar")).toHaveCSS("width", `${draggedWidth}px`);
+	});
+
 	test("sidebar width and terminal visibility persist through reload", async ({ page }) => {
 		await page.evaluate(() => {
 			(window as typeof window & { __synthPreferences?: { set(raw: unknown): unknown } }).__synthPreferences?.set({
@@ -412,7 +444,7 @@ test.describe("layout persistence", () => {
 			const prefs = adapter.get();
 			adapter.set({ ...prefs, layout: { ...prefs.layout, last: { ...prefs.layout.last, sidebarWidth: 310 } } });
 		});
-		await page.getByTestId("settings").click();
+		await openSettings(page);
 		await page.getByTestId("save-layout-default").click();
 		await page.evaluate(() => {
 			const adapter = (window as typeof window & { __synthPreferences?: { get(): any; set(raw: unknown): unknown } }).__synthPreferences!;
@@ -432,6 +464,7 @@ test.describe("layout persistence", () => {
 });
 
 test("keyboard-only settings navigation reaches General anchors", async ({ page }) => {
+	await page.getByTestId("account-footer-trigger").click();
 	await page.getByTestId("settings").focus();
 	await page.keyboard.press("Enter");
 	await expect(page.getByTestId("settings-general")).toBeVisible();

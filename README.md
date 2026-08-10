@@ -118,6 +118,8 @@ Core loop: **observe → understand → modify → evaluate → fine-tune → de
 
 ## Docs
 
+- [`WORKSHOP_QUALITY_STYLE_GUIDE.md`](./WORKSHOP_QUALITY_STYLE_GUIDE.md) — unified visual, interaction, runtime-honesty, accessibility, and test quality bar
+- [`workshop_style.md`](./workshop_style.md) — provisional categorical triage: unacceptable, fix-before-review, and expected-fail debt
 - [`HANDOFF_RUST_CORE_VISUALS_AND_INTERN.md`](./HANDOFF_RUST_CORE_VISUALS_AND_INTERN.md) — current Rust core / visuals / Intern SDK handoff
 - [`testing.md`](./testing.md) — Playwright, Bombadil, Rust, and runtime coverage map
 - [`HANDOFF.md`](./HANDOFF.md) — full product + architecture

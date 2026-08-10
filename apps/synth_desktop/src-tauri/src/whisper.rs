@@ -9,16 +9,100 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     env, fs,
-    io::Read,
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{Mutex, OnceLock},
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
 
 const SELECTED_FILE: &str = "selected";
 const COMPLETE_FILE: &str = ".synth-download-complete";
+
+struct WhisperWorker {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl Drop for WhisperWorker {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+const WHISPER_IDLE_UNLOAD_SECONDS: u64 = 15 * 60;
+
+#[derive(Default)]
+struct WhisperRuntime {
+    worker: Option<WhisperWorker>,
+    loaded_model: Option<String>,
+    last_used_at: Option<u64>,
+    generation: u64,
+}
+
+static WHISPER_RUNTIME: OnceLock<Mutex<WhisperRuntime>> = OnceLock::new();
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhisperRuntimeStatus {
+    pub phase: String,
+    pub loaded_model: Option<String>,
+    pub idle_seconds: Option<u64>,
+    pub idle_unload_after_seconds: u64,
+    pub last_used_at: Option<u64>,
+    pub free_at: Option<u64>,
+    pub updated_at: u64,
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn runtime_status() -> Result<WhisperRuntimeStatus> {
+    let now = now_millis();
+    let runtime = WHISPER_RUNTIME
+        .get_or_init(|| Mutex::new(WhisperRuntime::default()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Whisper runtime lock was poisoned"))?;
+    let loaded = runtime.worker.is_some() && runtime.loaded_model.is_some();
+    Ok(WhisperRuntimeStatus {
+        phase: if loaded { "ready" } else { "unloaded" }.into(),
+        loaded_model: runtime.loaded_model.clone(),
+        idle_seconds: runtime
+            .last_used_at
+            .map(|last| now.saturating_sub(last) / 1_000),
+        idle_unload_after_seconds: WHISPER_IDLE_UNLOAD_SECONDS,
+        last_used_at: runtime.last_used_at,
+        free_at: runtime
+            .last_used_at
+            .map(|last| last + WHISPER_IDLE_UNLOAD_SECONDS * 1_000),
+        updated_at: now,
+    })
+}
+
+fn emit_runtime(app: &AppHandle, phase: &str, model: Option<&str>) {
+    let mut payload = runtime_status().unwrap_or(WhisperRuntimeStatus {
+        phase: phase.into(),
+        loaded_model: model.map(str::to_owned),
+        idle_seconds: None,
+        idle_unload_after_seconds: WHISPER_IDLE_UNLOAD_SECONDS,
+        last_used_at: None,
+        free_at: None,
+        updated_at: now_millis(),
+    });
+    payload.phase = phase.into();
+    if payload.loaded_model.is_none() {
+        payload.loaded_model = model.map(str::to_owned);
+    }
+    let _ = app.emit("whisper:runtime", payload);
+}
 
 #[derive(Debug)]
 struct WhisperCatalogEntry {
@@ -417,6 +501,197 @@ pub fn clear_model(id: &str) -> Result<()> {
     Ok(())
 }
 
+fn spawn_whisper_worker(python: &Path) -> Result<WhisperWorker> {
+    let script = r#"
+import json, sys, zlib
+import mlx_whisper
+import mlx.core as mx
+from mlx_whisper.transcribe import ModelHolder
+
+for line in sys.stdin:
+    try:
+        request = json.loads(line)
+        if request.get("action") == "warm":
+            # `mlx_whisper.transcribe` defaults to fp16. ModelHolder is keyed by
+            # path only, so warming with a different dtype poisons the cache.
+            ModelHolder.get_model(request["model_dir"], mx.float16)
+            response = {"ready": True}
+        else:
+            result = mlx_whisper.transcribe(
+                request["audio_path"],
+                path_or_hf_repo=request["model_dir"],
+                verbose=None,
+                condition_on_previous_text=False,
+                language="en",
+            )
+            text = result.get("text", "").strip()
+            encoded = text.encode("utf-8")
+            compression_ratio = len(encoded) / max(1, len(zlib.compress(encoded)))
+            if compression_ratio > 2.4:
+                response = {"error": "I couldn't understand that recording. Please try again."}
+            else:
+                response = {"text": text}
+    except Exception as exc:
+        response = {"error": f"mlx_whisper: {exc}"}
+    print(json.dumps(response), flush=True)
+"#;
+    let mut child = Command::new(python)
+        .args(["-u", "-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("start the persistent Whisper transcription worker")?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Whisper worker stdin was unavailable"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .map(BufReader::new)
+        .ok_or_else(|| anyhow::anyhow!("Whisper worker stdout was unavailable"))?;
+    Ok(WhisperWorker {
+        child,
+        stdin,
+        stdout,
+    })
+}
+
+impl WhisperWorker {
+    fn send_request(&mut self, request: serde_json::Value) -> Result<serde_json::Value> {
+        if self.child.try_wait()?.is_some() {
+            return Err(anyhow::anyhow!("Whisper worker exited unexpectedly"));
+        }
+        serde_json::to_writer(&mut self.stdin, &request)?;
+        self.stdin.write_all(b"\n")?;
+        self.stdin.flush()?;
+
+        let mut line = String::new();
+        if self.stdout.read_line(&mut line)? == 0 {
+            return Err(anyhow::anyhow!("Whisper worker returned no response"));
+        }
+        let parsed: serde_json::Value = serde_json::from_str(line.trim()).with_context(|| {
+            format!(
+                "Whisper worker returned an unreadable payload: {}",
+                line.trim().chars().take(300).collect::<String>()
+            )
+        })?;
+        if let Some(error) = parsed.get("error").and_then(|value| value.as_str()) {
+            return Err(anyhow::anyhow!("Whisper runtime failed: {error}"));
+        }
+        Ok(parsed)
+    }
+
+    fn warm(&mut self, model_dir: &Path) -> Result<()> {
+        self.send_request(serde_json::json!({"action":"warm", "model_dir":model_dir}))?;
+        Ok(())
+    }
+
+    fn request(&mut self, audio_path: &str, model_dir: &Path) -> Result<WhisperTranscription> {
+        let parsed = self.send_request(serde_json::json!({"action":"transcribe", "audio_path":audio_path, "model_dir":model_dir}))?;
+        let text = parsed
+            .get("text")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Whisper transcription returned no text"))?
+            .to_string();
+        Ok(WhisperTranscription { text })
+    }
+}
+
+fn selected_runtime() -> Result<(PathBuf, PathBuf, String)> {
+    let selected = read_selected().ok_or_else(|| {
+        anyhow::anyhow!("No Whisper model is selected. Download and select a model first.")
+    })?;
+    let entry = catalog_entry(&selected)?;
+    let dir = model_dir(entry.id);
+    if !is_installed(&dir) {
+        return Err(anyhow::anyhow!(
+            "Selected Whisper model `{}` is not downloaded. Download it again.",
+            entry.id
+        ));
+    }
+    let python = python_bin();
+    validate_python(&python)
+        .context("Whisper needs its managed runtime. Download a Whisper model first.")?;
+    Ok((python, dir, selected))
+}
+
+fn schedule_idle_unload(generation: u64) {
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(WHISPER_IDLE_UNLOAD_SECONDS));
+        if let Ok(mut runtime) = WHISPER_RUNTIME
+            .get_or_init(|| Mutex::new(WhisperRuntime::default()))
+            .lock()
+        {
+            if runtime.generation == generation {
+                runtime.worker = None;
+                runtime.loaded_model = None;
+                runtime.last_used_at = None;
+            }
+        }
+    });
+}
+
+fn warm_runtime(python: &Path, model_dir: &Path, model_id: &str) -> Result<()> {
+    let slot = WHISPER_RUNTIME.get_or_init(|| Mutex::new(WhisperRuntime::default()));
+    let mut runtime = slot
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Whisper runtime lock was poisoned"))?;
+    if runtime.loaded_model.as_deref() != Some(model_id) {
+        runtime.worker = None;
+        runtime.loaded_model = None;
+    }
+    if runtime.worker.is_none() {
+        runtime.worker = Some(spawn_whisper_worker(python)?);
+        runtime
+            .worker
+            .as_mut()
+            .expect("worker initialized")
+            .warm(model_dir)?;
+        runtime.loaded_model = Some(model_id.to_owned());
+    }
+    runtime.last_used_at = Some(now_millis());
+    runtime.generation = runtime.generation.wrapping_add(1);
+    let generation = runtime.generation;
+    drop(runtime);
+    schedule_idle_unload(generation);
+    Ok(())
+}
+
+fn transcribe_with_worker(
+    python: &Path,
+    audio_path: &str,
+    model_dir: &Path,
+) -> Result<WhisperTranscription> {
+    warm_runtime(
+        python,
+        model_dir,
+        model_dir
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or("whisper"),
+    )?;
+    let worker_slot = WHISPER_RUNTIME.get_or_init(|| Mutex::new(WhisperRuntime::default()));
+    let mut runtime = worker_slot
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Whisper worker lock was poisoned"))?;
+    let result = runtime
+        .worker
+        .as_mut()
+        .expect("worker warmed")
+        .request(audio_path, model_dir);
+    if result.is_err() {
+        runtime.worker = None;
+        runtime.loaded_model = None;
+    } else {
+        runtime.last_used_at = Some(now_millis());
+        runtime.generation = runtime.generation.wrapping_add(1);
+        schedule_idle_unload(runtime.generation);
+    }
+    result
+}
+
 /// Transcribes an audio file already on disk (renderer writes the recorded
 /// clip to a temp `.wav`/`.webm` path and passes that path here; no base64
 /// audio crosses the IPC boundary).
@@ -440,60 +715,7 @@ pub fn transcribe(audio_path: &str) -> Result<WhisperTranscription> {
     validate_python(&python).context(
         "Whisper transcription needs the same Python environment as model downloads. Download a Whisper model first.",
     )?;
-    // The downloaded checkpoint is Hugging Face/Transformers format and is
-    // consumed directly by mlx-whisper. Keeping one backend avoids silently
-    // downloading a second, incompatible openai-whisper `.pt` checkpoint.
-    let script = r#"
-import sys, json
-
-audio_path = sys.argv[1]
-model_dir = sys.argv[2]
-try:
-    import mlx_whisper
-    result = mlx_whisper.transcribe(audio_path, path_or_hf_repo=model_dir)
-    text = result.get("text", "")
-except Exception as exc:
-    print(json.dumps({"error": f"mlx_whisper: {exc}"}))
-    sys.exit(1)
-
-print(json.dumps({"text": text}))
-"#;
-    let output = Command::new(&python)
-        .arg("-c")
-        .arg(script)
-        .arg(audio_path)
-        .arg(&dir)
-        .stdin(Stdio::null())
-        .output()
-        .context("run Whisper transcription")?;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    if !output.status.success() {
-        let detail = if stdout.trim().is_empty() {
-            stderr.trim()
-        } else {
-            stdout.trim()
-        };
-        return Err(anyhow::anyhow!(
-            "Whisper transcription failed: {}",
-            detail.chars().take(500).collect::<String>()
-        ));
-    }
-    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).with_context(|| {
-        format!(
-            "Whisper transcription returned an unreadable payload: {}",
-            stdout.trim().chars().take(300).collect::<String>()
-        )
-    })?;
-    if let Some(error) = parsed.get("error").and_then(|value| value.as_str()) {
-        return Err(anyhow::anyhow!("Whisper transcription failed: {error}"));
-    }
-    let text = parsed
-        .get("text")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Whisper transcription returned no text"))?
-        .to_string();
-    Ok(WhisperTranscription { text })
+    transcribe_with_worker(&python, audio_path, &dir)
 }
 
 /// Maps a `MediaRecorder` mime type to a file extension Whisper's loaders can
@@ -585,24 +807,71 @@ pub fn whisper_models_clear(id: String) -> std::result::Result<(), String> {
 }
 
 #[tauri::command]
+pub fn whisper_runtime_status() -> std::result::Result<WhisperRuntimeStatus, String> {
+    runtime_status().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn whisper_runtime_warm(
+    app: AppHandle,
+) -> std::result::Result<WhisperRuntimeStatus, String> {
+    let (_, _, model) = selected_runtime().map_err(|error| error.to_string())?;
+    emit_runtime(&app, "warming", Some(&model));
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let (python, dir, model) = selected_runtime()?;
+        warm_runtime(&python, &dir, &model)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error: anyhow::Error| error.to_string());
+    match result {
+        Ok(()) => {
+            emit_runtime(&app, "ready", Some(&model));
+            runtime_status().map_err(|error| error.to_string())
+        }
+        Err(error) => {
+            emit_runtime(&app, "error", Some(&model));
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
 pub async fn whisper_transcribe(
+    app: AppHandle,
     audio_path: String,
 ) -> std::result::Result<WhisperTranscription, String> {
-    tauri::async_runtime::spawn_blocking(move || transcribe(&audio_path))
+    emit_runtime(&app, "transcribing", read_selected().as_deref());
+    let result = tauri::async_runtime::spawn_blocking(move || transcribe(&audio_path))
         .await
         .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string());
+    emit_runtime(
+        &app,
+        if result.is_ok() { "ready" } else { "error" },
+        read_selected().as_deref(),
+    );
+    result
 }
 
 #[tauri::command]
 pub async fn whisper_transcribe_base64(
+    app: AppHandle,
     audio_base64: String,
     mime_type: String,
 ) -> std::result::Result<WhisperTranscription, String> {
-    tauri::async_runtime::spawn_blocking(move || transcribe_base64(&audio_base64, &mime_type))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
+    emit_runtime(&app, "transcribing", read_selected().as_deref());
+    let result =
+        tauri::async_runtime::spawn_blocking(move || transcribe_base64(&audio_base64, &mime_type))
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string());
+    emit_runtime(
+        &app,
+        if result.is_ok() { "ready" } else { "error" },
+        read_selected().as_deref(),
+    );
+    result
 }
 
 #[cfg(test)]

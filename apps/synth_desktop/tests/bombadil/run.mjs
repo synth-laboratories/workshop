@@ -37,7 +37,11 @@ const specificationPath = process.env.BOMBADIL_SPEC
 	? resolve(workshopRoot, process.env.BOMBADIL_SPEC)
 	: resolve(here, "layout.spec.ts");
 const includeCuaAnalysisVisual = specificationPath.endsWith("launch-debt.spec.ts");
-const timeLimit = process.env.BOMBADIL_TIME_LIMIT || "10s";
+// Five seconds covers every directed/eventual horizon in layout.spec.ts. Longer
+// runs intermittently wedge the current Chromiumoxide transport after the
+// properties have already been exercised, turning a clean trace into a harness
+// watchdog failure. Nightly exploration can still opt into a longer duration.
+const timeLimit = process.env.BOMBADIL_TIME_LIMIT || "5s";
 const timeLimitMatch = /^(\d+(?:\.\d+)?)(ms|s|m)$/.exec(timeLimit);
 if (!timeLimitMatch) throw new Error(`Unsupported BOMBADIL_TIME_LIMIT: ${timeLimit}`);
 const timeLimitMs = Number(timeLimitMatch[1]) * ({ ms: 1, s: 1_000, m: 60_000 })[timeLimitMatch[2]];

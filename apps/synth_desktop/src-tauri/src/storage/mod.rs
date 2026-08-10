@@ -6,6 +6,7 @@ mod event_journal;
 #[path = "../migration/mod.rs"]
 pub mod legacy_migration;
 mod migrations;
+mod model_performance;
 mod models;
 
 #[cfg(test)]
@@ -16,6 +17,9 @@ pub use content_store::ContentStore;
 pub use database::{app_data_root, Database, Storage};
 pub(crate) use event_journal::append_event;
 pub use event_journal::{EventAppend, EventJournal};
+pub use model_performance::{
+    MeasurementKind, ModelPerformanceRepository, ModelPerformanceSample, ModelPerformanceSummary,
+};
 pub use models::{
     AppEvent, CommandReceiptRecord, CoreDiagnostics, EventSource, RunRecord, SessionRecord,
     APP_EVENT_SCHEMA_VERSION,

@@ -11,18 +11,19 @@ import type { ApprovalPolicy, SandboxMode } from "../runtime/nativeCodex";
 import {
 	modelCapabilitiesForTarget,
 	modelKnobValue,
+	modelSupportsImageInput,
 	type ModelKnobSpec,
 	type ModelKnobValue,
 	type ModelKnobValues
 } from "../runtime/modelCapabilities";
 import { IconSparkle, SlashCommandMenu, type SlashCommandId, type SlashCommandMenuHandle } from "./SlashCommandMenu";
 import type { Skill } from "../runtime/skills";
-import type { ConversationWorkspaceScope } from "../env";
+import type { ComposerImageAttachment, ConversationWorkspaceScope } from "../env";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
 
 type Props = {
 	state: LandingState;
-	onSend: (text: string) => void;
+	onSend: (text: string, images?: ComposerImageAttachment[]) => void | Promise<void>;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
 	approvalPolicy: ApprovalPolicy;
@@ -30,7 +31,10 @@ type Props = {
 	onSelectPermissions: (approvalPolicy: ApprovalPolicy, sandboxMode: SandboxMode) => void;
 	modelKnobValues: ModelKnobValues;
 	onSelectModelKnob: (targetId: string, knobId: string, value: ModelKnobValue) => void;
+	/** Rolling median decode speed for the currently selected model. */
 	modelMedianTpsLabel?: string | null;
+	/** Cross-session aggregate speeds keyed by model target id. */
+	aggregateModelTpsLabels?: Readonly<Record<string, string>>;
 	/** True while the active conversation has a non-terminal run. */
 	agentWorking?: boolean;
 	/** Preferred Enter action while working. */
@@ -40,6 +44,7 @@ type Props = {
 	queuedPrompts?: Array<{ id: string; text: string }>;
 	onEditQueuedPrompt?: (id: string, text: string) => void;
 	onRemoveQueuedPrompt?: (id: string) => void;
+	onPromoteQueuedPrompt?: (id: string, text: string) => void | Promise<void>;
 	/** After stop, offer send-next / keep / remove for leftover queue items. */
 	queueAfterStop?: boolean;
 	onSendNextQueued?: () => void;
@@ -211,6 +216,53 @@ function blobToBase64(blob: Blob): Promise<string> {
 	});
 }
 
+async function recordingToWhisperWav(blob: Blob): Promise<Blob> {
+	const context = new AudioContext();
+	try {
+		const decoded = await context.decodeAudioData(await blob.arrayBuffer());
+		const targetRate = 16_000;
+		const outputLength = Math.max(1, Math.round(decoded.duration * targetRate));
+		const pcm = new Float32Array(outputLength);
+		for (let outputIndex = 0; outputIndex < outputLength; outputIndex += 1) {
+			const sourceIndex = Math.min(
+				decoded.length - 1,
+				Math.floor((outputIndex * decoded.sampleRate) / targetRate)
+			);
+			let sample = 0;
+			for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+				sample += decoded.getChannelData(channel)[sourceIndex] ?? 0;
+			}
+			pcm[outputIndex] = sample / decoded.numberOfChannels;
+		}
+
+		const wav = new ArrayBuffer(44 + pcm.length * 2);
+		const view = new DataView(wav);
+		const writeAscii = (offset: number, value: string) => {
+			for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index));
+		};
+		writeAscii(0, "RIFF");
+		view.setUint32(4, 36 + pcm.length * 2, true);
+		writeAscii(8, "WAVE");
+		writeAscii(12, "fmt ");
+		view.setUint32(16, 16, true);
+		view.setUint16(20, 1, true);
+		view.setUint16(22, 1, true);
+		view.setUint32(24, targetRate, true);
+		view.setUint32(28, targetRate * 2, true);
+		view.setUint16(32, 2, true);
+		view.setUint16(34, 16, true);
+		writeAscii(36, "data");
+		view.setUint32(40, pcm.length * 2, true);
+		for (let index = 0; index < pcm.length; index += 1) {
+			const sample = Math.max(-1, Math.min(1, pcm[index]));
+			view.setInt16(44 + index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+		}
+		return new Blob([wav], { type: "audio/wav" });
+	} finally {
+		await context.close();
+	}
+}
+
 function IconSend() {
 	return (
 		<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
@@ -222,6 +274,32 @@ function IconSend() {
 				strokeLinejoin="round"
 			/>
 		</svg>
+	);
+}
+
+function IconImage() {
+	return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden><rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" strokeWidth="1.3"/><circle cx="5.2" cy="5.7" r="1.15" fill="currentColor"/><path d="m3.5 11 3-3 2.2 2.1 1.7-1.7 2.1 2.6" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+}
+
+function IconImageUnsupported() {
+	return <svg className="composer-image-unsupported" width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden data-testid="composer-image-unsupported"><circle cx="7" cy="7" r="6" fill="currentColor"/><path d="M7 3.5v4.1M7 10.3v.2" stroke="white" strokeWidth="1.45" strokeLinecap="round"/></svg>;
+}
+
+function formatContextWindow(tokens: number): string {
+	return `${Math.round(tokens / 1_000)}K context`;
+}
+
+function ModelCapabilityBadges({ targetId }: { targetId: string }) {
+	const capability = modelCapabilitiesForTarget(targetId);
+	if (!capability) return null;
+	const supportsImages = capability.inputModalities.includes("image");
+	return (
+		<span className="composer-model-capabilities">
+			<span className={supportsImages ? "supports-images" : "text-only"}>
+				<IconImage /> {supportsImages ? "Images" : "Text only"}
+			</span>
+			<span>{formatContextWindow(capability.maxContextTokens)}</span>
+		</span>
 	);
 }
 
@@ -290,12 +368,16 @@ function formatSkillMention(skill: Skill): string {
 
 function ModelMenu({
 	state,
+	modelMedianTpsLabel,
+	aggregateModelTpsLabels,
 	onSelectTarget,
 	onConfigureAccount,
 	open,
 	onOpenChange
 }: {
 	state: LandingState;
+	modelMedianTpsLabel?: string | null;
+	aggregateModelTpsLabels?: Readonly<Record<string, string>>;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
 	open: boolean;
@@ -346,6 +428,7 @@ function ModelMenu({
 					className={`model-chip-logo model-chip-logo-${providerMarkForTarget(state.selectedTargetId)}`}
 				/>
 				<span className="model-chip-label">{modelLabel}</span>
+				{modelMedianTpsLabel ? <span className="model-chip-throughput">{modelMedianTpsLabel}</span> : null}
 				<IconChevron />
 			</button>
 			{open ? (
@@ -376,6 +459,7 @@ function ModelMenu({
 														: null
 											: null;
 									const selectedHere = target.id === state.selectedTargetId;
+									const aggregateTps = aggregateModelTpsLabels?.[target.id] ?? null;
 									if (needsSynthKey) {
 										return (
 											<div
@@ -389,8 +473,9 @@ function ModelMenu({
 													aria-selected={false}
 													aria-disabled="true"
 												>
-													<span className="composer-model-option-label">{target.label}</span>
-													<span className="composer-model-option-desc">Synth API key required</span>
+												<span className="composer-model-option-label">{target.label}</span>
+												<span className="composer-model-option-desc">Synth API key required</span>
+												<ModelCapabilityBadges targetId={target.id} />
 												</span>
 												<button
 													type="button"
@@ -419,9 +504,11 @@ function ModelMenu({
 										>
 											<span className="composer-model-option-main">
 												<span className="composer-model-option-label">{target.label}</span>
-												<span className="composer-model-option-desc">
-													{localProgress ?? target.description}
-												</span>
+											<span className="composer-model-option-desc">
+												{localProgress ?? target.description}
+											</span>
+											<ModelCapabilityBadges targetId={target.id} />
+											{aggregateTps ? <span className="composer-model-aggregate-tps">{aggregateTps}</span> : null}
 											</span>
 											{selectedHere ? (
 												<span className="composer-model-check" aria-hidden>
@@ -459,6 +546,8 @@ export function Composer({
 	onSelectPermissions,
 	modelKnobValues,
 	onSelectModelKnob,
+	modelMedianTpsLabel,
+	aggregateModelTpsLabels,
 	agentWorking = false,
 	activeEnterAction = "enqueue",
 	onSteer,
@@ -466,6 +555,7 @@ export function Composer({
 	queuedPrompts = [],
 	onEditQueuedPrompt,
 	onRemoveQueuedPrompt,
+	onPromoteQueuedPrompt,
 	queueAfterStop = false,
 	onSendNextQueued,
 	onKeepQueued,
@@ -490,11 +580,19 @@ export function Composer({
 	const [submitting, setSubmitting] = useState(false);
 	const [recording, setRecording] = useState(false);
 	const [transcribing, setTranscribing] = useState(false);
+	const [whisperRuntime, setWhisperRuntime] = useState<import("../env").WhisperRuntimeStatus | null>(null);
 	const [voiceError, setVoiceError] = useState<string | null>(null);
+	const [imageAttachments, setImageAttachments] = useState<ComposerImageAttachment[]>([]);
+	const [attachmentError, setAttachmentError] = useState<string | null>(null);
+	const [imageDragActive, setImageDragActive] = useState(false);
 	const [slashDismissed, setSlashDismissed] = useState(false);
 	const [skillChip, setSkillChip] = useState<Skill | null>(null);
 	const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
 	const [modelMenuOpen, setModelMenuOpen] = useState(false);
+	const [armedQueuedPromptId, setArmedQueuedPromptId] = useState<string | null>(null);
+	const [promotingQueuedPromptId, setPromotingQueuedPromptId] = useState<string | null>(null);
+	const queuedEnterRef = useRef<{ id: string; at: number } | null>(null);
+	const queuedEnterTimerRef = useRef<number | null>(null);
 	const [workspaceMenuSignal, setWorkspaceMenuSignal] = useState(0);
 	const dockRef = useRef<HTMLDivElement>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -519,7 +617,39 @@ export function Composer({
 		setValue("");
 		setSkillChip(null);
 		setSlashDismissed(false);
+		setImageAttachments([]);
+		setAttachmentError(null);
 	}, [state.id]);
+
+	useEffect(() => {
+		const handleImageDrag = (rawEvent: Event) => {
+			const event = rawEvent as CustomEvent<{
+				phase: "enter" | "over" | "drop" | "leave";
+				position: { x: number; y: number } | null;
+				images: ComposerImageAttachment[];
+			}>;
+			if (event.detail.phase === "leave") {
+				setImageDragActive(false);
+				return;
+			}
+			if (event.detail.phase === "enter") {
+				setImageDragActive(event.detail.images.length > 0);
+				return;
+			}
+			if (event.detail.phase === "over") return;
+			if (event.detail.phase !== "drop") return;
+			setImageDragActive(false);
+			if (!event.detail.images.length) {
+				setAttachmentError("Drop PNG, JPEG, WebP, or GIF screenshots here.");
+				return;
+			}
+			setImageAttachments((current) => [...current, ...event.detail.images.filter((image) => !current.some((item) => item.path === image.path))].slice(0, 4));
+			setAttachmentError(!modelSupportsImageInput(state.selectedTargetId) ? "This model does not support image input. Choose a multimodal model or remove the screenshots before sending." : null);
+			textareaRef.current?.focus();
+		};
+		window.addEventListener("synth:image-drag", handleImageDrag);
+		return () => window.removeEventListener("synth:image-drag", handleImageDrag);
+	}, [state.selectedTargetId]);
 
 	useEffect(() => {
 		if (!slashMenuVisible) return;
@@ -593,6 +723,11 @@ export function Composer({
 		};
 	}, []);
 
+	useEffect(() => {
+		void window.synthWhisper?.getRuntimeStatus?.().then(setWhisperRuntime).catch(() => undefined);
+		return window.synthWhisper?.onRuntimeStatus?.(setWhisperRuntime);
+	}, []);
+
 	const stopMicStream = () => {
 		streamRef.current?.getTracks().forEach((track) => track.stop());
 		streamRef.current = null;
@@ -606,9 +741,10 @@ export function Composer({
 		setTranscribing(true);
 		setVoiceError(null);
 		try {
-			const blob = new Blob(chunks, { type: mimeType });
-			const base64 = await blobToBase64(blob);
-			const text = await window.synthWhisper?.transcribeAudio?.(base64, mimeType);
+			const recordedBlob = new Blob(chunks, { type: mimeType });
+			const wavBlob = await recordingToWhisperWav(recordedBlob);
+			const base64 = await blobToBase64(wavBlob);
+			const text = await window.synthWhisper?.transcribeAudio?.(base64, "audio/wav");
 			if (text?.trim()) {
 				setValue((current) => (current.trim().length ? `${current.trim()} ${text.trim()}` : text.trim()));
 			}
@@ -630,7 +766,7 @@ export function Composer({
 			}
 			const stream = await getUserMedia({ audio: true });
 			streamRef.current = stream;
-			const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
+			const mimeType = ["audio/mp4", "audio/webm"].find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? "";
 			const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
 			audioChunksRef.current = [];
 			recorder.ondataavailable = (event) => {
@@ -671,6 +807,11 @@ export function Composer({
 			onOpenVoiceSettings?.();
 			return;
 		}
+		// Load the model while the user is speaking, just like Laguna warms its
+		// inference model before the first token is needed.
+		void window.synthWhisper?.warmSelected?.().catch((reason) => {
+			setVoiceError(reason instanceof Error ? reason.message : String(reason));
+		});
 		await startRecording();
 	};
 
@@ -730,6 +871,14 @@ export function Composer({
 
 	const perform = async (intent: "submit" | "steer" | "enqueue") => {
 		if (!enabled || !value.trim() || submitting) return;
+		if (imageAttachments.length && !modelSupportsImageInput(state.selectedTargetId)) {
+			setAttachmentError("This model does not support image input. Choose a multimodal model or remove the screenshots before sending.");
+			return;
+		}
+		if (imageAttachments.length && intent !== "submit") {
+			setAttachmentError("Screenshots can start a new turn, but cannot be queued or used to steer an active turn yet.");
+			return;
+		}
 		const trimmed = value.trim();
 		const text = skillChip ? `${formatSkillMention(skillChip)} ${trimmed}` : trimmed;
 		setSubmitting(true);
@@ -751,9 +900,11 @@ export function Composer({
 				setSkillChip(null);
 				return;
 			}
-			onSend(text);
+			await onSend(text, imageAttachments);
 			setValue("");
 			setSkillChip(null);
+			setImageAttachments([]);
+			setAttachmentError(null);
 		} finally {
 			setSubmitting(false);
 		}
@@ -766,6 +917,28 @@ export function Composer({
 	const submitAlternate = () => {
 		if (!alternateAction) return;
 		void perform(alternateAction);
+	};
+
+	const handleQueuedPromptEnter = (id: string, text: string) => {
+		if (!agentWorking || !steerSupported || promotingQueuedPromptId || !text.trim()) return;
+		const now = Date.now();
+		const prior = queuedEnterRef.current;
+		if (prior?.id === id && now - prior.at <= 700) {
+			queuedEnterRef.current = null;
+			if (queuedEnterTimerRef.current !== null) window.clearTimeout(queuedEnterTimerRef.current);
+			setArmedQueuedPromptId(null);
+			setPromotingQueuedPromptId(id);
+			void Promise.resolve(onPromoteQueuedPrompt?.(id, text.trim()))
+				.finally(() => setPromotingQueuedPromptId(null));
+			return;
+		}
+		queuedEnterRef.current = { id, at: now };
+		setArmedQueuedPromptId(id);
+		if (queuedEnterTimerRef.current !== null) window.clearTimeout(queuedEnterTimerRef.current);
+		queuedEnterTimerRef.current = window.setTimeout(() => {
+			if (queuedEnterRef.current?.id === id) queuedEnterRef.current = null;
+			setArmedQueuedPromptId((current) => current === id ? null : current);
+		}, 700);
 	};
 
 	const sendLabel = !agentWorking
@@ -788,16 +961,26 @@ export function Composer({
 				<div className="prompt-queue" data-testid="prompt-queue" aria-label="Queued prompts">
 					<div className="prompt-queue-head">
 						<div><strong>Next turns</strong><span>{queuedPrompts.length} {queuedPrompts.length === 1 ? "prompt" : "prompts"}</span></div>
-						<span>Sent in order</span>
+						<span>{armedQueuedPromptId ? "Return again to steer now" : agentWorking && steerSupported ? "Double Return to steer" : "Sent in order"}</span>
 					</div>
 					{queuedPrompts.map((item, index) => (
-						<div key={item.id} className="prompt-queue-item" data-testid={`queued-prompt-${item.id}`}>
+						<div key={item.id} className={`prompt-queue-item${armedQueuedPromptId === item.id ? " is-steer-armed" : ""}${promotingQueuedPromptId === item.id ? " is-promoting" : ""}`} data-testid={`queued-prompt-${item.id}`}>
 							<span className="prompt-queue-index" aria-hidden>{index + 1}</span>
 							<input
 								className="prompt-queue-text"
 								aria-label={`Queued prompt ${index + 1}`}
 								value={item.text}
 								onChange={(event) => onEditQueuedPrompt?.(item.id, event.target.value)}
+								disabled={promotingQueuedPromptId === item.id}
+								onBlur={() => {
+									queuedEnterRef.current = null;
+									setArmedQueuedPromptId(null);
+								}}
+								onKeyDown={(event) => {
+									if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.repeat) return;
+									event.preventDefault();
+									handleQueuedPromptEnter(item.id, item.text);
+								}}
 							/>
 							<button
 								type="button"
@@ -825,7 +1008,19 @@ export function Composer({
 			{voiceError ? (
 				<p className="composer-steer-error" role="alert" data-testid="composer-mic-error">{voiceError}</p>
 			) : null}
-			<div className={`composer${enabled ? "" : " is-disabled"}`} data-testid="composer" data-enter-action={enterAction}>
+			{attachmentError ? <p className="composer-steer-error" role="alert" data-testid="composer-attachment-error">{attachmentError}</p> : null}
+			{whisperRuntime?.phase !== "unloaded" ? (
+				<p className={`composer-whisper-status is-${whisperRuntime?.phase}`} role="status" data-testid="composer-whisper-status">
+					<span aria-hidden />
+					{whisperRuntime?.phase === "warming" ? "Warming Whisper…"
+						: whisperRuntime?.phase === "transcribing" ? "Transcribing…"
+							: whisperRuntime?.phase === "ready" ? "Whisper ready · releases after 15 min idle"
+								: "Whisper needs attention"}
+				</p>
+			) : null}
+			<div className={`composer${enabled ? "" : " is-disabled"}${imageDragActive ? " is-image-drag-active" : ""}`} data-testid="composer" data-enter-action={enterAction}>
+				{imageDragActive ? <div className="composer-image-drop-target" aria-hidden>Drop screenshots here</div> : null}
+				{imageAttachments.length ? <div className="composer-image-tray" data-testid="composer-image-tray">{imageAttachments.map((image) => <figure key={image.path} className="composer-image-chip"><img src={image.previewUrl} alt={image.name}/><button type="button" aria-label={`Remove ${image.name}`} onClick={() => { setImageAttachments((items) => items.filter((item) => item.path !== image.path)); setAttachmentError(null); }}>×</button></figure>)}</div> : null}
 				<textarea
 					ref={textareaRef}
 					className="composer-input"
@@ -865,6 +1060,10 @@ export function Composer({
 				) : null}
 				<div className="composer-toolbar">
 					<div className="composer-left">
+						<button type="button" className="composer-icon-btn composer-image-button" aria-label={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Add screenshots — selected model does not support image input"} title={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Selected model does not support image input"} data-testid="composer-add-images" disabled={!enabled || submitting} onClick={() => void window.synthDesktop.chooseImageFiles().then((images) => {
+							setImageAttachments((current) => [...current, ...images.filter((image) => !current.some((item) => item.path === image.path))].slice(0, 4));
+							setAttachmentError(images.length && !modelSupportsImageInput(state.selectedTargetId) ? "This model does not support image input. Choose a multimodal model or remove the screenshots before sending." : null);
+						})}><IconImage />{!modelSupportsImageInput(state.selectedTargetId) ? <IconImageUnsupported /> : null}</button>
 						<WorkspaceScopeChip hideTrigger openSignal={workspaceMenuSignal} sessionId={workspaceSessionId ?? null} ensureSession={onEnsureWorkspaceSession} fallbackWorkspace={workspaceFallback ?? null} scope={workspaceScope ?? null} onScopeChange={(next) => onWorkspaceScopeChange?.(next)} onError={(message) => onWorkspaceError?.(message)} />
 						<div className="slash-command-wrap">
 							<button
@@ -911,6 +1110,8 @@ export function Composer({
 					<div className="composer-right">
 						<ModelMenu
 							state={state}
+							modelMedianTpsLabel={modelMedianTpsLabel}
+							aggregateModelTpsLabels={aggregateModelTpsLabels}
 							onSelectTarget={onSelectTarget}
 							onConfigureAccount={onConfigureAccount}
 							open={modelMenuOpen}
@@ -928,7 +1129,7 @@ export function Composer({
 							type="button"
 							className={`composer-icon-btn composer-mic-btn${recording ? " recording" : ""}`}
 							disabled={!enabled || transcribing}
-							aria-label={transcribing ? "Transcribing voice input…" : recording ? "Stop recording" : "Voice input"}
+							aria-label={whisperRuntime?.phase === "warming" ? "Warming Whisper…" : transcribing ? "Transcribing voice input…" : recording ? "Stop recording" : "Voice input"}
 							aria-pressed={recording}
 							onClick={() => void onMicClick()}
 							data-testid="composer-mic"

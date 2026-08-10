@@ -57,6 +57,22 @@ pub fn apply_migrations(conn: &Connection) -> Result<i64> {
         )?;
     }
 
+    if current < 6 {
+        conn.execute_batch(MIGRATION_6)?;
+        conn.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (6, datetime('now'))",
+            [],
+        )?;
+    }
+
+    if current < 7 {
+        conn.execute_batch(MIGRATION_7)?;
+        conn.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (7, datetime('now'))",
+            [],
+        )?;
+    }
+
     let version: i64 = conn.query_row(
         "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
         [],
@@ -519,6 +535,55 @@ CREATE INDEX IF NOT EXISTS workspace_grants_session_status
 ON workspace_grant_requests(session_id, status, created_at);
 "#;
 
+const MIGRATION_6: &str = r#"
+ALTER TABLE workspace_attachments RENAME TO workspace_attachments_v5;
+CREATE TABLE workspace_attachments (
+    session_id TEXT NOT NULL REFERENCES conversation_workspace_scopes(session_id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    access TEXT NOT NULL CHECK(access IN ('read_only', 'read_write')),
+    source TEXT NOT NULL CHECK(source IN ('user_picker', 'recent_folder', 'agent_request', 'migrated_default')),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, path)
+);
+INSERT INTO workspace_attachments(session_id,path,access,source,created_at)
+SELECT session_id,path,access,source,created_at FROM workspace_attachments_v5;
+DROP TABLE workspace_attachments_v5;
+"#;
+
+const MIGRATION_7: &str = r#"
+CREATE TABLE IF NOT EXISTS model_performance_samples (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    model_revision TEXT,
+    session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+    run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+    request_id TEXT NOT NULL,
+    measurement_kind TEXT NOT NULL CHECK(measurement_kind IN ('decode', 'observed_stream', 'end_to_end', 'provider_reported')),
+    status TEXT NOT NULL CHECK(status IN ('completed', 'failed', 'interrupted')),
+    started_at_ms INTEGER NOT NULL,
+    first_output_at_ms INTEGER,
+    last_output_at_ms INTEGER,
+    completed_at_ms INTEGER NOT NULL,
+    input_tokens INTEGER,
+    cached_input_tokens INTEGER,
+    reasoning_tokens INTEGER,
+    output_tokens INTEGER,
+    ttft_ms REAL,
+    observed_output_tps REAL,
+    end_to_end_output_tps REAL,
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(provider, request_id)
+);
+
+CREATE INDEX IF NOT EXISTS model_performance_model_created
+ON model_performance_samples(provider, model_id, measurement_kind, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS model_performance_completed
+ON model_performance_samples(status, completed_at_ms DESC);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,7 +614,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 5);
+        assert_eq!(apply_migrations(&conn).unwrap(), 7);
         let updated_at: String = conn
             .query_row(
                 "SELECT updated_at FROM runs WHERE id = 'run-1'",
@@ -572,5 +637,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(trace_tables, 8);
+        let performance_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'model_performance_samples'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(performance_tables, 1);
     }
 }

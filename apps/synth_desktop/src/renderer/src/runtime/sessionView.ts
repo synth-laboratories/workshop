@@ -197,18 +197,27 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 							: typeof payload.text === "string"
 								? payload.text
 						: "";
-			if (!content) continue;
+			const images = Array.isArray(payload.images)
+				? payload.images.flatMap((entry) => {
+					if (typeof entry !== "object" || entry === null) return [];
+					const image = entry as Record<string, unknown>;
+					if (typeof image.path !== "string" || typeof image.name !== "string" || typeof image.previewUrl !== "string") return [];
+					return [{ path: image.path, name: image.name, previewUrl: image.previewUrl }];
+				})
+				: undefined;
+			if (!content && !images?.length) continue;
 			if (!byId.has(messageId)) {
 				order.push(messageId);
 				byId.set(messageId, {
 					id: messageId,
 					role: isInternAgentMessage ? "assistant" : role,
 					body: content,
-					at: event.createdAt
+					at: event.createdAt,
+					images
 				});
 				} else {
-				const existing = byId.get(messageId)!;
-				byId.set(messageId, { ...existing, role, body: content || existing.body });
+					const existing = byId.get(messageId)!;
+					byId.set(messageId, { ...existing, role, body: content || existing.body, images: images ?? existing.images });
 				}
 				if (!isInternAgentMessage && role === "assistant") {
 					activeAssistantId = messageId;
@@ -550,17 +559,32 @@ function mcpToolActivity(
 		"synth_visuals.visual_archive": ["visual_id", "instance_id"],
 	};
 	const qualified = `${server}.${tool}`;
-	const fields = allowlisted[qualified];
-	if (!fields) return undefined;
+	const fields = allowlisted[qualified] ?? [
+		"operation",
+		"path",
+		"query",
+		"pattern",
+		"glob",
+		"container_id",
+		"optimizer_run_id",
+		"recipe_id",
+		"visual_id",
+		"title",
+		"status",
+		"limit"
+	];
 	const duration = typeof item.durationMs === "number" && Number.isFinite(item.durationMs)
 		? `${Math.max(0, Math.round(item.durationMs))}ms`
 		: undefined;
-	const argsLabel = compactToolArgs(args, fields);
+	const nestedArgs = objectValue(args.arguments) ?? {};
+	const argsLabel = [compactToolArgs(args, fields), compactToolArgs(nestedArgs, fields)]
+		.filter(Boolean)
+		.join(" · ") || undefined;
 	const artifactId = server === "synth_visuals" ? visualIdForTool(item, args, tool) : undefined;
 	const containerId = server === "synth_containers" ? containerIdForTool(item, args, tool) : undefined;
 	return {
 		key: `mcp:${id}`,
-		label: qualified,
+		label: [server, tool].filter(Boolean).join(".") || "Tool call",
 		detail: [argsLabel, duration].filter(Boolean).join(" · ") || undefined,
 		kind: artifactId ? "visual" : "working",
 		artifactId,
@@ -577,8 +601,6 @@ function safeToolActivity(event: RuntimeEvent): SafeToolActivity | undefined {
 	const tool = (stringField(item, "tool", "name", "toolName", "tool_name") ?? "").toLowerCase();
 	const args = nestedObject(item, "arguments", "args", "input") ?? nestedObject(payload, "arguments", "args", "input") ?? {};
 	const id = stringField(item, "id", "callId", "call_id") ?? `${event.eventKind}-${event.sequence}`;
-	const mcp = mcpToolActivity(item, args, id, itemType, tool);
-	if (mcp) return mcp;
 
 	if (event.eventKind === "command.execution" || itemType === "commandexecution") {
 		const raw = stringField(item, "command", "cmd") ?? stringField(payload, "command", "cmd");
@@ -607,7 +629,7 @@ function safeToolActivity(event: RuntimeEvent): SafeToolActivity | undefined {
 	if (["view_image", "viewimage"].includes(tool)) {
 		return { key: `view:${id}`, label: "Viewed image", path, kind: "working" };
 	}
-	return undefined;
+	return mcpToolActivity(item, args, id, itemType, tool);
 }
 
 function compactDuration(start: string | undefined, end: string): string {
@@ -894,7 +916,7 @@ export function eventsToLocalActivity(
 			if (!supplied) continue;
 			const lines = (byMessage[current] ??= []);
 			const previous = lines.at(-1);
-			const label = reasoningDisplay === "full" ? "Thought" : "Reasoning summary";
+			const label = reasoningDisplay === "full" ? "Thought" : "Reasoned";
 			if (previous?.kind === "thought" && previous.reasoningDisplay === reasoningDisplay) {
 				const existing = previous.detail ?? "";
 				previous.detail = supplied.startsWith(existing) ? supplied : existing + supplied;

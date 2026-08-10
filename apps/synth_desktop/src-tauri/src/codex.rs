@@ -3,7 +3,9 @@ use crate::domain::{
     RunCreate, RunService, RunStatus, SessionCreate, SessionService, SessionStatus,
     SessionTitleOrigin,
 };
-use crate::storage::{EventAppend, EventSource};
+use crate::storage::{
+    EventAppend, EventSource, MeasurementKind, ModelPerformanceRepository, ModelPerformanceSample,
+};
 use crate::synth_config::MultiAgentVersion;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -203,6 +205,27 @@ struct PendingApproval {
 
 type PendingApprovals = Arc<Mutex<HashMap<String, PendingApproval>>>;
 
+#[derive(Clone, Debug, Default)]
+struct TurnTokenUsage {
+    input_tokens: Option<i64>,
+    cached_input_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
+struct TurnPerformanceTracker {
+    provider: String,
+    model_id: String,
+    turn_id: String,
+    started_at_ms: i64,
+    first_output_at_ms: Option<i64>,
+    last_output_at_ms: Option<i64>,
+    usage: TurnTokenUsage,
+}
+
+type PerformanceTrackers = Arc<Mutex<HashMap<String, TurnPerformanceTracker>>>;
+
 struct AppServer {
     child: Mutex<Child>,
     stdin: Arc<Mutex<tokio::process::ChildStdin>>,
@@ -324,6 +347,7 @@ pub struct CodexManager {
     /// UI source label (`manual` or `model_switch`). Auto token-threshold
     /// compaction leaves this empty and renders as "automatically compacted".
     pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
+    performance_trackers: PerformanceTrackers,
     root: PathBuf,
     state_path: PathBuf,
     binary: PathBuf,
@@ -349,6 +373,7 @@ impl CodexManager {
             turn_locks: Mutex::new(HashMap::new()),
             compact_waiters: Arc::new(Mutex::new(HashMap::new())),
             pending_compact_sources: Arc::new(Mutex::new(HashMap::new())),
+            performance_trackers: Arc::new(Mutex::new(HashMap::new())),
             root,
             state_path,
             binary,
@@ -400,6 +425,7 @@ impl CodexManager {
             self.sessions.clone(),
             self.compact_waiters.clone(),
             self.pending_compact_sources.clone(),
+            self.performance_trackers.clone(),
             attachment_id,
         )
         .await?;
@@ -711,9 +737,49 @@ impl CodexManager {
         if let Some(effort) = effort {
             turn_params["effort"] = Value::String(effort.to_owned());
         }
-        let result = session.server.request("turn/start", turn_params).await?;
-        let turn_id = nested_id(&result, "turnId")
-            .ok_or_else(|| anyhow!("Codex turn/start response missing turn id: {result}"))?;
+        let started_at_ms = chrono::Utc::now().timestamp_millis();
+        let provider = self
+            .records
+            .read()
+            .await
+            .get(&request.session_id)
+            .map(|record| record.provider_name.clone())
+            .unwrap_or_else(|| "custom".into());
+        let pending_turn_id = format!("pending-{}", uuid::Uuid::new_v4().simple());
+        self.performance_trackers.lock().await.insert(
+            request.session_id.clone(),
+            TurnPerformanceTracker {
+                provider,
+                model_id: session.model.clone(),
+                turn_id: pending_turn_id.clone(),
+                started_at_ms,
+                first_output_at_ms: None,
+                last_output_at_ms: None,
+                usage: TurnTokenUsage::default(),
+            },
+        );
+        let result = match session.server.request("turn/start", turn_params).await {
+            Ok(result) => result,
+            Err(error) => {
+                let mut trackers = self.performance_trackers.lock().await;
+                if trackers
+                    .get(&request.session_id)
+                    .is_some_and(|tracker| tracker.turn_id == pending_turn_id)
+                {
+                    trackers.remove(&request.session_id);
+                }
+                return Err(error);
+            }
+        };
+        let Some(turn_id) = nested_id(&result, "turnId") else {
+            self.performance_trackers.lock().await.remove(&request.session_id);
+            return Err(anyhow!("Codex turn/start response missing turn id: {result}"));
+        };
+        if let Some(tracker) = self.performance_trackers.lock().await.get_mut(&request.session_id) {
+            if tracker.turn_id == pending_turn_id {
+                tracker.turn_id = turn_id.clone();
+            }
+        }
         *session.turn_id.write().await = Some(turn_id.clone());
         self.set_automatic_title(&app, &request.session_id, &request.prompt, &session)
             .await;
@@ -1208,6 +1274,7 @@ async fn spawn_server<R: tauri::Runtime>(
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     compact_waiters: CompactWaiters,
     pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
+    performance_trackers: PerformanceTrackers,
     attachment_id: uuid::Uuid,
 ) -> Result<Arc<AppServer>> {
     let env_key = request
@@ -1260,6 +1327,7 @@ async fn spawn_server<R: tauri::Runtime>(
             sessions,
             compact_waiters,
             pending_compact_sources,
+            performance_trackers,
             attachment_id,
         },
     ));
@@ -1286,6 +1354,7 @@ struct PersistenceContext {
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     compact_waiters: CompactWaiters,
     pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
+    performance_trackers: PerformanceTrackers,
     attachment_id: uuid::Uuid,
 }
 
@@ -1399,6 +1468,16 @@ async fn read_stdout<R: tauri::Runtime>(
                 params: params.clone(),
             },
         );
+        if let Some(core) = &persistence.core {
+            track_performance_event(
+                core,
+                &persistence.performance_trackers,
+                &session_id,
+                &method,
+                &params,
+            )
+            .await;
+        }
         if method == "thread/compacted" || method == "thread/compact/completed" {
             if let Some(waiter) = persistence.compact_waiters.lock().await.remove(&session_id) {
                 let _ = waiter.send(());
@@ -1542,6 +1621,14 @@ async fn read_stdout<R: tauri::Runtime>(
             },
         );
         if let Some(core) = &persistence.core {
+            finalize_performance_tracker(
+                core,
+                &persistence.performance_trackers,
+                &session_id,
+                "interrupted",
+                None,
+            )
+            .await;
             if let Ok(Some(event)) =
                 interrupt_active_core_run(core, &session_id, "app_server_exited").await
             {
@@ -1558,6 +1645,174 @@ fn is_context_compaction_notification(method: &str, params: &Value) -> bool {
             .and_then(|item| item.get("type"))
             .and_then(Value::as_str)
             == Some("contextCompaction")
+}
+
+fn positive_i64(value: Option<i64>) -> Option<i64> {
+    value.filter(|value| *value >= 0)
+}
+
+fn integer_field(value: &Value, aliases: &[&str]) -> Option<i64> {
+    aliases
+        .iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_i64))
+}
+
+fn usage_from_object(value: &Value) -> Option<TurnTokenUsage> {
+    let output_tokens = positive_i64(integer_field(
+        value,
+        &[
+            "output_tokens",
+            "outputTokens",
+            "completion_tokens",
+            "completionTokens",
+        ],
+    ));
+    output_tokens?;
+    let details = value
+        .get("output_tokens_details")
+        .or_else(|| value.get("outputTokensDetails"));
+    Some(TurnTokenUsage {
+        input_tokens: positive_i64(integer_field(
+            value,
+            &["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"],
+        )),
+        cached_input_tokens: positive_i64(integer_field(
+            value,
+            &["cached_input_tokens", "cachedInputTokens", "cached_tokens", "cachedTokens"],
+        )),
+        reasoning_tokens: details.and_then(|details| {
+            positive_i64(integer_field(details, &["reasoning_tokens", "reasoningTokens"]))
+        }),
+        output_tokens,
+    })
+}
+
+fn extract_turn_usage(params: &Value) -> Option<TurnTokenUsage> {
+    // Prefer explicitly per-turn/last-usage objects. Thread-wide totals are
+    // excluded: after a restart they cannot produce an honest turn rate.
+    const PATHS: &[&str] = &[
+        "/lastUsage",
+        "/lastTokenUsage",
+        "/tokenUsage/last",
+        "/tokenUsage/lastUsage",
+        "/tokenUsage/lastTokenUsage",
+        "/turn/lastUsage",
+        "/turn/lastTokenUsage",
+        "/turn/tokenUsage/last",
+        "/turn/tokenUsage/lastUsage",
+        "/turn/usage",
+        "/usage",
+    ];
+    PATHS
+        .iter()
+        .find_map(|path| params.pointer(path).and_then(usage_from_object))
+}
+
+fn is_output_delta(method: &str, params: &Value) -> bool {
+    let normalized = method.to_ascii_lowercase();
+    let is_agent_delta = normalized.contains("agentmessage/delta")
+        || normalized.contains("agent_message/delta")
+        || normalized.contains("outputtext/delta")
+        || normalized.contains("output_text/delta");
+    is_agent_delta
+        && params
+            .get("delta")
+            .and_then(Value::as_str)
+            .is_some_and(|delta| !delta.is_empty())
+}
+
+async fn track_performance_event(
+    core: &Arc<CoreRuntime>,
+    trackers: &PerformanceTrackers,
+    session_id: &str,
+    method: &str,
+    params: &Value,
+) {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let terminal = matches!(method, "turn/completed" | "turn/failed" | "turn/interrupted");
+    {
+        let mut trackers = trackers.lock().await;
+        let Some(tracker) = trackers.get_mut(session_id) else {
+            return;
+        };
+        if is_output_delta(method, params) {
+            tracker.first_output_at_ms.get_or_insert(now_ms);
+            tracker.last_output_at_ms = Some(now_ms);
+        }
+        if method.to_ascii_lowercase().contains("usage") || terminal {
+            if let Some(usage) = extract_turn_usage(params) {
+                tracker.usage = usage;
+            }
+        }
+    }
+    if terminal {
+        let status = match method {
+            "turn/completed" => "completed",
+            "turn/failed" => "failed",
+            _ => "interrupted",
+        };
+        finalize_performance_tracker(core, trackers, session_id, status, Some(now_ms)).await;
+    }
+}
+
+async fn finalize_performance_tracker(
+    core: &Arc<CoreRuntime>,
+    trackers: &PerformanceTrackers,
+    session_id: &str,
+    status: &str,
+    completed_at_ms: Option<i64>,
+) {
+    let Some(tracker) = trackers.lock().await.remove(session_id) else {
+        return;
+    };
+    let completed_at_ms = completed_at_ms.unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+    let output_tokens = tracker.usage.output_tokens.filter(|tokens| *tokens > 0);
+    let stream_seconds = tracker
+        .first_output_at_ms
+        .zip(tracker.last_output_at_ms)
+        .map(|(first, last)| (last - first) as f64 / 1_000.0)
+        .filter(|seconds| *seconds > 0.0);
+    let end_to_end_seconds = ((completed_at_ms - tracker.started_at_ms) as f64 / 1_000.0).max(0.0);
+    let observed_output_tps = output_tokens
+        .zip(stream_seconds)
+        .map(|(tokens, seconds)| tokens as f64 / seconds);
+    let end_to_end_output_tps = output_tokens
+        .filter(|_| end_to_end_seconds > 0.0)
+        .map(|tokens| tokens as f64 / end_to_end_seconds);
+    let measurement_kind = if observed_output_tps.is_some() {
+        MeasurementKind::ObservedStream
+    } else {
+        MeasurementKind::EndToEnd
+    };
+    let sample = ModelPerformanceSample {
+        id: format!("perf:{}:{}", tracker.provider, tracker.turn_id),
+        provider: tracker.provider,
+        model_id: tracker.model_id,
+        model_revision: None,
+        session_id: Some(session_id.to_owned()),
+        run_id: Some(tracker.turn_id.clone()),
+        request_id: tracker.turn_id,
+        measurement_kind,
+        status: status.to_owned(),
+        started_at_ms: tracker.started_at_ms,
+        first_output_at_ms: tracker.first_output_at_ms,
+        last_output_at_ms: tracker.last_output_at_ms,
+        completed_at_ms,
+        input_tokens: tracker.usage.input_tokens,
+        cached_input_tokens: tracker.usage.cached_input_tokens,
+        reasoning_tokens: tracker.usage.reasoning_tokens,
+        output_tokens,
+        ttft_ms: tracker
+            .first_output_at_ms
+            .map(|first| (first - tracker.started_at_ms).max(0) as f64),
+        observed_output_tps,
+        end_to_end_output_tps,
+        source: "codex_app_server".into(),
+    };
+    let repository = ModelPerformanceRepository::new(core.storage().database().clone());
+    if let Err(error) = repository.record(sample).await {
+        eprintln!("model performance sample could not be persisted: {error:#}");
+    }
 }
 
 fn normalized_turn_method<'a>(method: &'a str, params: &Value) -> &'a str {
@@ -3383,5 +3638,51 @@ mod tests {
         let mut ready = "ready".to_owned();
         assert!(!reconcile_detached_status(&mut ready, false));
         assert_eq!(ready, "ready");
+    }
+
+    #[test]
+    fn extracts_only_authoritative_per_turn_usage_shapes() {
+        let snake_case = extract_turn_usage(&json!({
+            "turn": {"usage": {
+                "input_tokens": 100,
+                "output_tokens": 25,
+                "output_tokens_details": {"reasoning_tokens": 4}
+            }}
+        }))
+        .unwrap();
+        assert_eq!(snake_case.input_tokens, Some(100));
+        assert_eq!(snake_case.output_tokens, Some(25));
+        assert_eq!(snake_case.reasoning_tokens, Some(4));
+
+        let camel_case = extract_turn_usage(&json!({
+            "tokenUsage": {
+                "totalUsage": {"inputTokens": 9999, "outputTokens": 9999},
+                "lastUsage": {"inputTokens": 50, "outputTokens": 8, "cachedInputTokens": 20}
+            }
+        }))
+        .unwrap();
+        assert_eq!(camel_case.input_tokens, Some(50));
+        assert_eq!(camel_case.output_tokens, Some(8));
+        assert_eq!(camel_case.cached_input_tokens, Some(20));
+        assert!(extract_turn_usage(&json!({
+            "tokenUsage": {"totalUsage": {"inputTokens": 9999, "outputTokens": 9999}}
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn recognizes_answer_deltas_but_not_reasoning_or_empty_events() {
+        assert!(is_output_delta(
+            "item/agentMessage/delta",
+            &json!({"delta": "answer"})
+        ));
+        assert!(!is_output_delta(
+            "item/reasoning/delta",
+            &json!({"delta": "private reasoning"})
+        ));
+        assert!(!is_output_delta(
+            "item/agentMessage/delta",
+            &json!({"delta": ""})
+        ));
     }
 }

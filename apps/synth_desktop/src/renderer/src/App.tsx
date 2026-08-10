@@ -15,7 +15,13 @@ import type {
 	VisualInstanceRecord,
 	VisualRecord
 } from "@synth/runtime-protocol";
-import { EXECUTION_TARGETS, isInternTargetId } from "./types/landing";
+import {
+	EXECUTION_TARGETS,
+	OPENROUTER_LAGUNA_S_MODEL,
+	OPENROUTER_LUNA_MODEL,
+	SYNTH_CLOUD_LAGUNA_S_MODEL,
+	isInternTargetId
+} from "./types/landing";
 import type { ArtifactRef } from "./types/landing";
 import { ChatTranscript } from "./components/ChatTranscript";
 import { ContainerPane } from "./components/ContainerPane";
@@ -56,7 +62,7 @@ import {
 	planModelChipChange,
 	threadHasHistoryFromEvents
 } from "./runtime/modelSwitchPlan";
-import type { CodexBridge, CodexSessionInfo, CodexSessionStart, CodexTurnFailure, ComposerImageAttachment, ConversationWorkspaceScope, LagunaStatus, SynthAccountSummary } from "./env";
+import type { CodexBridge, CodexSessionInfo, CodexSessionStart, CodexTurnFailure, ComposerImageAttachment, ConversationWorkspaceScope, LagunaStatus, ModelPerformanceSummary, SynthAccountSummary } from "./env";
 import {
 	applyPreferencesToDocument,
 	archiveConversation,
@@ -118,6 +124,29 @@ function turnFailureMessage(failure: CodexTurnFailure): string {
 
 /** A user message that reached no app-server, kept so it can be retried. */
 type FailedSend = { sessionId: string; text: string; messageId: string; message: string };
+
+function performanceTargetId(summary: ModelPerformanceSummary): string | null {
+	if (summary.provider === "local-laguna") return "local-laguna";
+	if (summary.provider === "synth-cloud" && summary.modelId === SYNTH_CLOUD_LAGUNA_S_MODEL) return "synth-cloud-laguna-s";
+	if (summary.provider !== "openrouter") return null;
+	if (summary.modelId === OPENROUTER_LUNA_MODEL) return "openrouter-luna";
+	if (summary.modelId === OPENROUTER_LAGUNA_S_MODEL) return "openrouter-laguna-s";
+	return null;
+}
+
+function performanceKindLabel(kind: ModelPerformanceSummary["measurementKind"]): string {
+	if (kind === "decode") return "decode";
+	if (kind === "provider_reported") return "provider";
+	if (kind === "end_to_end") return "end-to-end";
+	return "observed";
+}
+
+function performancePreference(summary: ModelPerformanceSummary, targetId: string): number {
+	if (targetId === "local-laguna" && summary.measurementKind === "decode") return 4;
+	if (summary.measurementKind === "observed_stream") return 3;
+	if (summary.measurementKind === "provider_reported") return 2;
+	return 1;
+}
 
 function summarizeAccountUsage(entries: UsageLedgerEntry[]) {
 	const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -384,12 +413,53 @@ export default function App() {
 		}
 	);
 	const inferenceMonitor = useInferenceMonitor({ visible: selectedTargetId === "local-laguna" });
+	const [modelPerformance, setModelPerformance] = useState<ModelPerformanceSummary[]>([]);
+	useEffect(() => {
+		let disposed = false;
+		const refresh = async () => {
+			try {
+				const summaries = await window.synthModelPerformance?.summaries();
+				if (!disposed && summaries) setModelPerformance(summaries);
+			} catch {
+				// Optional telemetry must never block chat.
+			}
+		};
+		void refresh();
+		const timer = window.setInterval(() => void refresh(), 10_000);
+		return () => {
+			disposed = true;
+			window.clearInterval(timer);
+		};
+	}, []);
+	const persistedPerformanceByTarget = useMemo(() => {
+		const chosen = new Map<string, ModelPerformanceSummary>();
+		for (const summary of modelPerformance) {
+			if (summary.tpsP50 == null || summary.sampleCount < 1) continue;
+			const targetId = performanceTargetId(summary);
+			if (!targetId) continue;
+			const current = chosen.get(targetId);
+			if (!current || performancePreference(summary, targetId) > performancePreference(current, targetId)) chosen.set(targetId, summary);
+		}
+		return chosen;
+	}, [modelPerformance]);
 	const selectedModelMedianTps = selectedTargetId === "local-laguna"
 		? inferenceMonitor.snapshot?.rolling.decodeTpsP50 ?? null
 		: null;
+	const selectedPersistedPerformance = persistedPerformanceByTarget.get(selectedTargetId);
 	const selectedModelMedianTpsLabel = selectedModelMedianTps == null
-		? null
+		? selectedPersistedPerformance?.tpsP50 == null
+			? null
+			: `${formatTps(selectedPersistedPerformance.tpsP50)} tok/s ${performanceKindLabel(selectedPersistedPerformance.measurementKind)} p50`
 		: `${formatTps(selectedModelMedianTps)} tok/s p50`;
+	const aggregateModelTpsLabels = useMemo(() => {
+		const labels: Record<string, string> = {};
+		for (const [targetId, summary] of persistedPerformanceByTarget) {
+			if (summary.tpsP50 == null) continue;
+			labels[targetId] = `${formatTps(summary.tpsP50)} tok/s ${performanceKindLabel(summary.measurementKind)} p50 · ${summary.sampleCount} ${summary.sampleCount === 1 ? "request" : "requests"} · all sessions`;
+		}
+		if (!labels["local-laguna"] && selectedModelMedianTpsLabel) labels["local-laguna"] = `${selectedModelMedianTpsLabel} · daemon lifetime`;
+		return labels;
+	}, [persistedPerformanceByTarget, selectedModelMedianTpsLabel]);
 	const [inventoryContainerWidth, setInventoryContainerWidth] = useState(() => loadPreferences().layout.last.outputPaneWidth);
 	const [busy, setBusy] = useState(false);
 	const [bootError, setBootError] = useState<string | null>(null);
@@ -2139,6 +2209,7 @@ export default function App() {
 							modelKnobValues={modelKnobValues}
 							onSelectModelKnob={selectModelKnob}
 							modelMedianTpsLabel={selectedModelMedianTpsLabel}
+							aggregateModelTpsLabels={aggregateModelTpsLabels}
 							agentWorking={Boolean(activeChatRunning)}
 							activeEnterAction={preferences.submission.activeEnterAction}
 							steerSupported={Boolean(nativeCodex?.steerTurn)}
@@ -2172,8 +2243,21 @@ export default function App() {
 									showToast(reason instanceof Error ? reason.message : String(reason));
 								}
 							}}
-							onRemoveQueuedPrompt={(id) => setPreferences(removeQueuedPrompt(id))}
-							queueAfterStop={queueAfterStop}
+								onRemoveQueuedPrompt={(id) => setPreferences(removeQueuedPrompt(id))}
+								onPromoteQueuedPrompt={async (id, text) => {
+									if (!activeSessionId || !nativeCodex?.steerTurn) {
+										setSteerError("Steer is not supported by the current runtime. Keep the prompt queued or wait for the turn to finish.");
+										return;
+									}
+									try {
+										await nativeCodex.steerTurn(activeSessionId, text);
+										setPreferences(removeQueuedPrompt(id));
+										setSteerError(null);
+									} catch (reason) {
+										setSteerError(reason instanceof Error ? reason.message : String(reason));
+									}
+								}}
+								queueAfterStop={queueAfterStop}
 							onKeepQueued={() => setQueueAfterStop(false)}
 							onSendNextQueued={() => {
 								if (!activeSessionId) return;

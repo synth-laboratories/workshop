@@ -63,8 +63,8 @@ export function ConversationSearch({ state, onClose, onOpenChat }: Props) {
 				</label>
 				<div className="conversation-results" role="listbox" aria-label="Conversations">
 					{results.map((result, index) => (
-						<button type="button" role="option" aria-selected={index === 0} key={`${result.kind}-${result.id}`} onClick={() => open(result)}>
-							<span className="search-result-icon" aria-hidden>{result.kind === "chat" ? "◎" : "☁"}</span>
+						<button type="button" role="option" aria-selected={index === 0} key={result.id} onClick={() => open(result)}>
+							<span className="search-result-icon" aria-hidden>◎</span>
 							<span><strong>{result.title}</strong><small>{result.detail}</small></span>
 						</button>
 					))}

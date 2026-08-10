@@ -41,6 +41,11 @@ export function BackendSettings() {
 			detail: { apiKeyConfigured: next.apiKeyConfigured }
 		}));
 	};
+	const announceAccountChange = (next: SynthBackendSettings) => {
+		window.dispatchEvent(new CustomEvent("synth:account-changed", {
+			detail: { apiKeyConfigured: next.apiKeyConfigured }
+		}));
+	};
 
 	useEffect(() => {
 		void window.synthConfig?.get().then(apply).catch((error) => setStatus(String(error)));
@@ -67,7 +72,10 @@ export function BackendSettings() {
 						stopPolling();
 						setPair({ kind: "idle" });
 						setStatus("Signed in · runtime reconnected");
-						void window.synthConfig?.get().then(apply);
+						void window.synthConfig?.get().then((next) => {
+							apply(next);
+							announceAccountChange(next);
+						});
 					} else if (result.status === "expired") {
 						stopPolling();
 						setPair({ kind: "error", message: result.reason });
@@ -91,7 +99,9 @@ export function BackendSettings() {
 		setSaving(true);
 		setStatus(null);
 		try {
-			apply(await window.synthAccount.signOut());
+			const next = await window.synthAccount.signOut();
+			apply(next);
+			announceAccountChange(next);
 			setStatus("Signed out · cloud credentials removed");
 		} catch (error) {
 			setStatus(error instanceof Error ? error.message : String(error));
@@ -111,6 +121,7 @@ export function BackendSettings() {
 				openrouterApiKey: openrouterApiKey.trim() || undefined
 			});
 			apply(next);
+			announceAccountChange(next);
 			setApiKey("");
 			setOpenrouterApiKey("");
 			setStatus(next.apiKeySource === "process environment" && apiKey.trim()

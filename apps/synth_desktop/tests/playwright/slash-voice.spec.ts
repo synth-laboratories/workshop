@@ -1,6 +1,11 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./browser.fixture";
 
+async function openSettings(page: Page) {
+	await page.getByTestId("account-footer-trigger").click();
+	await page.getByTestId("settings").click();
+}
+
 async function enableComposer(page: Page): Promise<void> {
 	await page.addInitScript(() => {
 		(window as typeof window & { synthLaguna?: unknown }).synthLaguna = {
@@ -110,7 +115,7 @@ test("Settings Voice lists Whisper models and download selects one", async ({ pa
 	await page.reload();
 	await page.getByTestId("runtime-status").waitFor();
 
-	await page.getByRole("button", { name: "Settings" }).click();
+	await openSettings(page);
 	await page.getByRole("button", { name: "Voice", exact: true }).click();
 	const voice = page.getByTestId("voice-recognition-settings");
 	await expect(voice).toBeVisible();

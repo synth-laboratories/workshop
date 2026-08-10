@@ -23,31 +23,66 @@ export function useLiveEvalStream(options: {
 
     if (sseUrl && typeof EventSource !== "undefined") {
       setLive(true);
-      const es = new EventSource(sseUrl);
-      es.onmessage = (msg) => {
+      let es: EventSource | undefined;
+      const abort = new AbortController();
+      const receive = (msg: MessageEvent<string>) => {
         try {
           const parsed = JSON.parse(msg.data) as LiveEvalEvent;
           setEvents((prev) => [...prev, parsed]);
           if (
             parsed.kind === "run_finished" ||
-            parsed.kind === "eval.stream.terminal"
+            parsed.kind === "eval.stream.terminal" || parsed.kind === "eval.run.terminal"
           ) {
             setLive(false);
-            es.close();
+            es?.close();
+            abort.abort();
           }
         } catch (e) {
           setError(e instanceof Error ? e.message : "SSE parse error");
         }
       };
-      es.onerror = () => {
-        // EventSource reports an error after a server cleanly closes. Preserve
-        // the completed visual instead of replacing it with a false failure.
-        if (es.readyState !== EventSource.CLOSED) {
-          setError("SSE connection error");
+      try {
+        es = new EventSource(sseUrl);
+        es.onmessage = receive;
+        for (const kind of ["snapshot", "eval.run.terminal", "rollout.progress", "rollout.frame"]) {
+          es.addEventListener(kind, receive as EventListener);
         }
-      };
+        es.onerror = () => {
+          if (es?.readyState !== EventSource.CLOSED) setError("SSE connection error");
+        };
+      } catch {
+        // WKWebView rejects EventSource from the tauri origin to loopback HTTP.
+        // Streaming fetch is allowed by the same CORS policy and preserves the
+        // standard SSE wire format, including named events.
+        void (async () => {
+          try {
+            const response = await fetch(sseUrl, { signal: abort.signal, headers: { Accept: "text/event-stream" } });
+            if (!response.ok || !response.body) throw new Error(`SSE HTTP ${response.status}`);
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            while (!abort.signal.aborted) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+              let boundary = buffer.indexOf("\n\n");
+              while (boundary >= 0) {
+                const block = buffer.slice(0, boundary);
+                buffer = buffer.slice(boundary + 2);
+                const data = block.split("\n").filter((line) => line.startsWith("data:"))
+                  .map((line) => line.slice(5).trimStart()).join("\n");
+                if (data) receive(new MessageEvent("message", { data }));
+                boundary = buffer.indexOf("\n\n");
+              }
+            }
+          } catch (e) {
+            if (!abort.signal.aborted) setError(e instanceof Error ? e.message : "SSE connection error");
+          }
+        })();
+      }
       return () => {
-        es.close();
+        es?.close();
+        abort.abort();
         setLive(false);
       };
     }
