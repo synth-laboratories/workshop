@@ -2051,8 +2051,13 @@ a,
 	align-items: stretch;
 }
 
-.local-bubble-user {
+.local-user-message {
+	position: relative;
 	max-width: 78%;
+}
+
+.local-bubble-user {
+	max-width: 100%;
 	padding: 10px 14px;
 	border-radius: 18px;
 	background: var(--color-blue);
@@ -2067,6 +2072,52 @@ a,
 	overflow-wrap: anywhere;
 	white-space: pre-wrap;
 }
+
+.message-actions {
+	display: flex;
+	height: 18px;
+	margin-top: 2px;
+	left: 0;
+	opacity: 0;
+	pointer-events: none;
+	transform: translateY(-2px);
+	transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.local-turn:hover .message-actions,
+.local-turn:focus-within .message-actions {
+	opacity: 1;
+	pointer-events: auto;
+	transform: translateY(0);
+}
+
+.message-copy {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	height: 18px;
+	padding: 0;
+	border-radius: 6px;
+	color: var(--color-text-muted);
+	font-size: 11px;
+	font-weight: 600;
+	line-height: 1;
+}
+
+.message-copy svg { width: 13px; height: 13px; flex: 0 0 auto; }
+.message-copy span { display: none; }
+
+.message-copy:hover,
+.message-copy:focus-visible {
+	background: rgba(0, 0, 0, 0.06);
+	color: var(--color-text);
+}
+
+.message-actions-user { justify-content: flex-end; }
+.message-actions-user .message-copy { color: var(--color-text-muted); }
+.message-actions-user .message-copy:hover,
+.message-actions-user .message-copy:focus-visible { background: rgba(0, 0, 0, 0.06); color: var(--color-text); }
 
 .local-bubble-user.is-collapsed p {
 	display: -webkit-box;
@@ -2097,6 +2148,7 @@ a,
 	font-size: 15px;
 	line-height: 1.55;
 	letter-spacing: -0.015em;
+	position: relative;
 }
 
 .local-assistant p {
@@ -2119,7 +2171,10 @@ a,
 	margin: 0;
 	font-size: 13px;
 	color: var(--color-text-muted);
+	position: relative;
 }
+
+.local-system p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .local-activity {
 	display: flex;

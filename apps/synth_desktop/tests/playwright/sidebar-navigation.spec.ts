@@ -1,16 +1,7 @@
 import { expect, test } from "./browser.fixture";
 
-test("Connectors opens a searchable MCP catalog", async ({ page }) => {
-	await page.getByTestId("open-connectors").click();
-
-	const catalog = page.getByTestId("connectors-page");
-	await expect(catalog).toBeVisible();
-	await expect(catalog).toContainText("MCP servers available to your agents");
-	await expect(catalog.getByRole("button", { name: "Synth Containers, bundled" })).toBeVisible();
-
-	await catalog.getByRole("searchbox", { name: "Search connectors" }).fill("github");
-	await expect(catalog.getByRole("button", { name: "Configure GitHub" })).toBeVisible();
-	await expect(catalog.getByRole("button", { name: "Configure Notion" })).toHaveCount(0);
+test("sidebar omits the deprecated Connectors catalog", async ({ page }) => {
+	await expect(page.getByTestId("open-connectors")).toHaveCount(0);
 });
 
 test("Search and the Command-K shortcut find and open conversations", async ({ page }) => {
@@ -194,9 +185,6 @@ test("reversible navigation does not retain abandoned DOM", async ({ page }) => 
 		await page.getByTestId("settings-page").getByRole("button", { name: "← Back" }).click();
 		await expect(page.getByTestId("landing-page")).toBeVisible();
 
-		await page.getByTestId("open-connectors").click();
-		await page.getByTestId("connectors-page").getByRole("button", { name: "← Back" }).click();
-		await expect(page.getByTestId("landing-page")).toBeVisible();
 	}
 
 	const after = await page.evaluate(() => document.querySelectorAll("*").length);

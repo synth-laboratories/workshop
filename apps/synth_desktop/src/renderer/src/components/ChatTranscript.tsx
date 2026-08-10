@@ -344,6 +344,54 @@ function ActivityGroup({
 const COLLAPSE_USER_MESSAGE_AT = 1_000;
 const COLLAPSE_USER_MESSAGE_LINES = 12;
 
+function IconCopy() {
+	return (
+		<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="5.25" y="2.25" width="8.5" height="9.5" rx="1.5" stroke="currentColor" strokeWidth="1.25" />
+			<path d="M10.75 12.25v.5A1.5 1.5 0 019.25 14.25h-6a1.5 1.5 0 01-1.5-1.5v-6a1.5 1.5 0 011.5-1.5h.5" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+		</svg>
+	);
+}
+
+function copyText(value: string): Promise<void> {
+	if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
+	return new Promise((resolve, reject) => {
+		const textarea = document.createElement("textarea");
+		textarea.value = value;
+		textarea.style.position = "fixed";
+		textarea.style.opacity = "0";
+		document.body.append(textarea);
+		textarea.select();
+		const copied = document.execCommand("copy");
+		textarea.remove();
+		if (copied) resolve();
+		else reject(new Error("Clipboard access is unavailable"));
+	});
+}
+
+function CopyMessageButton({ body }: { body: string }) {
+	const [copied, setCopied] = useState(false);
+	const [failed, setFailed] = useState(false);
+	return (
+		<button
+			type="button"
+			className="message-copy"
+			aria-label="Copy message"
+			title={failed ? "Clipboard unavailable" : copied ? "Copied" : "Copy message"}
+			onClick={() => {
+				void copyText(body).then(() => {
+					setFailed(false);
+					setCopied(true);
+					window.setTimeout(() => setCopied(false), 1_600);
+				}).catch(() => setFailed(true));
+			}}
+		>
+			<IconCopy />
+			<span>{copied ? "Copied" : "Copy"}</span>
+		</button>
+	);
+}
+
 /**
  * A pasted brief can be important, but it must not turn the current turn into
  * a screen-height blue wall. Keep the full value in the DOM and make expansion
@@ -354,25 +402,28 @@ function UserMessage({ id, body, onExpansionChange }: { id: string; body: string
 	const collapsible = body.length > COLLAPSE_USER_MESSAGE_AT || body.split(/\r?\n/).length > COLLAPSE_USER_MESSAGE_LINES;
 	const bodyId = `user-message-body-${id}`;
 	return (
-		<div
-			className={`local-bubble local-bubble-user${collapsible && !expanded ? " is-collapsed" : ""}`}
-			data-testid={`user-message-${id}`}
-		>
-			<p id={bodyId}>{body}</p>
-			{collapsible ? (
-				<button
-					type="button"
-					className="local-bubble-expand"
-					aria-expanded={expanded}
-					aria-controls={bodyId}
-					onClick={() => {
-						setExpanded((value) => !value);
-						onExpansionChange();
-					}}
-				>
-					{expanded ? "Show less" : "Show full message"}
-				</button>
-			) : null}
+		<div className="local-user-message">
+			<div
+				className={`local-bubble local-bubble-user${collapsible && !expanded ? " is-collapsed" : ""}`}
+				data-testid={`user-message-${id}`}
+			>
+				<p id={bodyId}>{body}</p>
+				{collapsible ? (
+					<button
+						type="button"
+						className="local-bubble-expand"
+						aria-expanded={expanded}
+						aria-controls={bodyId}
+						onClick={() => {
+							setExpanded((value) => !value);
+							onExpansionChange();
+						}}
+					>
+						{expanded ? "Show less" : "Show full message"}
+					</button>
+				) : null}
+			</div>
+			<div className="message-actions message-actions-user"><CopyMessageButton body={body} /></div>
 		</div>
 	);
 }
@@ -639,10 +690,11 @@ export function ChatTranscript({
 								{m.role === "user" ? (
 									<UserMessage id={m.id} body={m.body} onExpansionChange={keepTailVisible} />
 								) : m.role === "system" ? (
-									<p className="local-system">{m.body}</p>
+									<div className="local-system"><p>{m.body}</p><div className="message-actions"><CopyMessageButton body={m.body} /></div></div>
 								) : (
 									<div className="local-assistant">
 										<p>{m.body}</p>
+										<div className="message-actions"><CopyMessageButton body={m.body} /></div>
 									</div>
 								)}
 								{m.role === "assistant" ? renderPresented(presentedAfter, [], false, running) : null}

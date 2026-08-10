@@ -1565,7 +1565,6 @@ export default function App() {
 					inventoryActive={view.kind === "inventory"}
 					visualsActive={view.kind === "visuals"}
 					optimizersActive={view.kind === "optimizers"}
-					connectorsActive={view.kind === "connectors"}
 					workingChatIds={workingChatIds}
 					unreadChatIds={unreadChatIds}
 					pinnedChatIds={pinnedChatIds}
@@ -1619,7 +1618,6 @@ export default function App() {
 					onOpenInventory={() => setView({ kind: "inventory" })}
 					onOpenVisuals={() => setView({ kind: "visuals" })}
 					onOpenOptimizers={() => setView({ kind: "optimizers" })}
-					onOpenConnectors={() => setView({ kind: "connectors" })}
 					onSearch={openSearch}
 					onSettings={() => setView({ kind: "settings" })}
 					onPauseToggle={() => setDownloadPaused((v) => !v)}
