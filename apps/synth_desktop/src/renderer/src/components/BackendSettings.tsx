@@ -127,7 +127,7 @@ export function AccountSignIn() {
 	);
 }
 
-/** Advanced connection: endpoint, secrets file, and key material. */
+/** Advanced connection: endpoint and native-host credential references. */
 export function BackendSettings() {
 	const PROFILE_ENDPOINTS: Record<string, string> = {
 		prod: "https://api.usesynth.ai",
@@ -139,8 +139,6 @@ export function BackendSettings() {
 	const [backendUrl, setBackendUrl] = useState("");
 	const [envFile, setEnvFile] = useState("");
 	const [apiKeyEnv, setApiKeyEnv] = useState("SYNTH_API_KEY");
-	const [apiKey, setApiKey] = useState("");
-	const [openrouterApiKey, setOpenrouterApiKey] = useState("");
 	const [status, setStatus] = useState<string | null>(null);
 	const [saving, setSaving] = useState(false);
 	const selectProfile = (nextProfile: string) => {
@@ -180,17 +178,11 @@ export function BackendSettings() {
 		setStatus(null);
 		try {
 			const next = await window.synthConfig.update({
-				profile, backendUrl, envFile, apiKeyEnv,
-				apiKey: apiKey.trim() || undefined,
-				openrouterApiKey: openrouterApiKey.trim() || undefined
+				profile, backendUrl, envFile, apiKeyEnv
 			});
 			apply(next);
 			announceAccountChange(next);
-			setApiKey("");
-			setOpenrouterApiKey("");
-			setStatus(next.apiKeySource === "process environment" && apiKey.trim()
-				? "Saved · process environment still overrides the env file"
-				: "Saved · runtime restarted with this backend");
+			setStatus("Saved · runtime restarted with this backend");
 		} catch (error) {
 			setStatus(error instanceof Error ? error.message : String(error));
 		} finally {
@@ -201,7 +193,7 @@ export function BackendSettings() {
 	return (
 		<div className="settings-finetunes backend-settings" data-testid="backend-settings">
 			<header className="settings-section-head">
-				<div><h2>Synth API</h2><p>Routing is stored in TOML. Credentials stay in a private env file read only by the native host.</p></div>
+				<div><h2>Synth API</h2><p>Routing is stored in TOML. Credentials must already exist in a private env file read only by the native host.</p></div>
 				<span className="finetune-badge">{settings?.apiKeyConfigured ? "Authenticated" : "API key required"}</span>
 			</header>
 			<div className="backend-settings-grid">
@@ -212,14 +204,12 @@ export function BackendSettings() {
 				<label className="backend-settings-wide"><span>Backend API</span><input value={backendUrl} onChange={(event) => setBackendUrl(event.target.value)} placeholder="http://127.0.0.1:8000" spellCheck={false} /></label>
 				<label className="backend-settings-wide"><span>Secrets env file</span><input value={envFile} onChange={(event) => setEnvFile(event.target.value)} placeholder="~/.synth-desktop/.env" spellCheck={false} /></label>
 				<label><span>API key variable</span><input value={apiKeyEnv} onChange={(event) => setApiKeyEnv(event.target.value)} spellCheck={false} /></label>
-				<label><span>{settings?.apiKeyConfigured ? "Replace API key" : "API key"}</span><input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={settings?.apiKeyConfigured ? "Leave blank to keep current key" : "Paste API key"} autoComplete="off" /></label>
-				<label className="backend-settings-wide"><span>{settings?.openrouterApiKeyConfigured ? "Replace OpenRouter API key" : "OpenRouter API key"}</span><input type="password" value={openrouterApiKey} onChange={(event) => setOpenrouterApiKey(event.target.value)} placeholder={settings?.openrouterApiKeyConfigured ? "Configured — leave blank to keep current key" : "Required for GPT 5.6 Luna and Laguna S"} autoComplete="off" /></label>
 			</div>
 			<div className="backend-config-facts">
 				<div><span>Config</span><code>{settings?.configPath ?? "Loading…"}</code></div>
-				<div><span>Credential</span><code>{settings?.apiKeyConfigured ? `${settings.apiKeyFingerprint} · ${settings.apiKeySource}` : "Not configured"}</code></div>
+				<div><span>Credential</span><code>{settings?.apiKeyConfigured ? `${settings.apiKeyFingerprint} · ${settings.apiKeySource}` : `Set ${apiKeyEnv} in the secrets env file`}</code></div>
 				<div><span>Internal activity</span><code>{settings?.workerKeyConfigured ? "Worker credential available" : "Public mailbox only"}</code></div>
-				<div><span>OpenRouter</span><code>{settings?.openrouterApiKeyConfigured ? `${settings.openrouterApiKeyFingerprint} · ${settings.openrouterApiKeySource}` : "Not configured — remote models disabled"}</code></div>
+				<div><span>OpenRouter</span><code>{settings?.openrouterApiKeyConfigured ? `${settings.openrouterApiKeyFingerprint} · ${settings.openrouterApiKeySource}` : "Set OPENROUTER_API_KEY in the secrets env file"}</code></div>
 			</div>
 			<div className="backend-settings-actions"><span role="status" className="finetune-meta">{status}</span><button type="button" className="settings-secondary-btn" disabled={saving || !backendUrl.trim() || !envFile.trim()} onClick={() => void save()}>{saving ? "Saving…" : "Save and reconnect"}</button></div>
 		</div>

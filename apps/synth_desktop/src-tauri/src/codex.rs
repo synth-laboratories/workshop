@@ -1,4 +1,5 @@
 use crate::core_runtime::CoreRuntime;
+use crate::credential_broker::{self, CredentialBroker};
 use crate::domain::{
     RunCreate, RunService, RunStatus, SessionCreate, SessionService, SessionStatus,
     SessionTitleOrigin,
@@ -992,6 +993,8 @@ impl CodexManager {
         if let Some(session) = session {
             session.server.stop().await?;
         }
+        // The child is gone; its loopback lease must not outlive it.
+        credential_broker::revoke_shared(session_id);
         self.set_status(session_id, "closed").await?;
         Ok(())
     }
@@ -1262,6 +1265,28 @@ async fn interrupt_active_core_run(
     Ok(mutation.event)
 }
 
+/// Environment variables ending up in a Codex child are not private: Codex
+/// writes its inherited environment to `CODEX_HOME/shell_snapshots` as plain
+/// `export NAME=value`. These names are the ones a provider credential lives
+/// under, so a value under any of them is refused at the spawn boundary — the
+/// broker lease is the only thing that may cross it.
+const CREDENTIAL_ENV_NAMES: &[&str] = &["SYNTH_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"];
+
+/// The single provider variable the Codex child is allowed to receive, if any.
+fn provider_child_env(request: &CodexSessionStartRequest) -> Option<(String, String)> {
+    if request.api_key.is_empty() {
+        return None;
+    }
+    let env_key = request
+        .provider_env_key
+        .as_deref()
+        .unwrap_or("SYNTH_LAGUNA_API_KEY");
+    if CREDENTIAL_ENV_NAMES.contains(&env_key) {
+        return None;
+    }
+    Some((env_key.to_owned(), request.api_key.clone()))
+}
+
 async fn spawn_server<R: tauri::Runtime>(
     app: AppHandle<R>,
     binary: &Path,
@@ -1277,10 +1302,6 @@ async fn spawn_server<R: tauri::Runtime>(
     performance_trackers: PerformanceTrackers,
     attachment_id: uuid::Uuid,
 ) -> Result<Arc<AppServer>> {
-    let env_key = request
-        .provider_env_key
-        .as_deref()
-        .unwrap_or("SYNTH_LAGUNA_API_KEY");
     let mut command = Command::new(binary);
     command
         .args(["app-server", "--listen", "stdio://"])
@@ -1290,8 +1311,8 @@ async fn spawn_server<R: tauri::Runtime>(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    if !request.api_key.is_empty() {
-        command.env(env_key, &request.api_key);
+    if let Some((name, value)) = provider_child_env(request) {
+        command.env(name, value);
     }
     let mut child = command.spawn().context("spawn codex app-server")?;
     let stdin = Arc::new(Mutex::new(
@@ -1927,13 +1948,18 @@ async fn write_message(
     Ok(())
 }
 
-/// Inject Synth Cloud billing fields into a session start request.
+/// Point a session start request at the Synth Cloud provider.
 ///
 /// Fail-closed when the Synth API key is missing. Always overwrites any
 /// renderer-supplied `api_key` / `base_url` / env key — credentials never
 /// originate from the renderer.
+///
+/// The real key is handed to `broker`, not to the request: what the request (and
+/// therefore the child process, its shell snapshots, and its config) carries is
+/// a revocable loopback lease token. See `credential_broker`.
 pub fn apply_synth_cloud_provider(
     request: &mut CodexSessionStartRequest,
+    broker: &CredentialBroker,
     backend_url: &str,
     api_key: Option<&str>,
 ) -> Result<(), String> {
@@ -1941,11 +1967,12 @@ pub fn apply_synth_cloud_provider(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Synth API key not configured — Settings → Account".to_string())?;
-    request.api_key = key.to_owned();
-    request.base_url = format!("{}/api/v1", client_base_url(backend_url));
+    let lease = broker.lease(&request.session_id, &client_base_url(backend_url), key);
+    request.api_key = lease.token;
+    request.base_url = format!("{}/api/v1", lease.origin);
     request.provider_name = Some("synth-cloud".into());
     request.provider_title = Some("Synth Cloud Responses".into());
-    request.provider_env_key = Some("SYNTH_API_KEY".into());
+    request.provider_env_key = Some(credential_broker::LEASE_ENV_KEY.into());
     Ok(())
 }
 
@@ -2206,7 +2233,7 @@ async fn session_info(id: &str, session: &Session) -> CodexSessionInfo {
     }
 }
 
-fn codex_root() -> PathBuf {
+pub fn codex_root() -> PathBuf {
     env::var_os("SYNTH_CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::instance::state_root().join("codex"))

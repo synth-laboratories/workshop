@@ -641,17 +641,24 @@ test("native Codex deltas form one readable message with working and stop state"
 
 	const transcript = page.getByTestId("chat-transcript");
 	await expect(transcript.locator(".local-assistant")).toHaveCount(1);
-	await expect(transcript.locator(".local-assistant")).toHaveText("Fragmented draft\nstill streaming. One response.");
-	await expect(transcript.locator(".local-assistant p")).toHaveCSS("white-space", "pre-wrap");
+	const assistantText = transcript.locator(".local-assistant p");
+	await expect(assistantText).toHaveText("Fragmented draft\nstill streaming. One response.");
+	await expect(assistantText).toHaveCSS("white-space", "pre-wrap");
 	await expect(page.getByTestId("model-working")).toContainText("Working…");
 	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
 	const thought = transcript.getByRole("button", { name: /Thought/ });
 	await expect(thought).toBeVisible();
 	await expect(thought).toHaveAttribute("aria-expanded", "false");
+	const thoughtDisclosure = thought.locator("..");
+	await expect(thoughtDisclosure).toHaveCSS("border-top-width", "0px");
+	await expect(thoughtDisclosure).toHaveCSS("padding-top", "0px");
+	await expect(thoughtDisclosure.locator(".local-activity-wave")).toHaveCount(0);
+	expect((await thoughtDisclosure.boundingBox())?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(48);
 	await expect(transcript.getByTestId(/activity-detail-/)).toHaveCount(0);
 	await thought.click();
 	await expect(thought).toHaveAttribute("aria-expanded", "true");
 	await expect(transcript).toContainText("Checking the relevant renderer state.");
+	await expect(thoughtDisclosure.locator(".local-activity-detail")).toHaveCSS("font-family", /-apple-system|BlinkMacSystemFont|system-ui/);
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitConversationCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitConversationCodex;
@@ -670,7 +677,7 @@ test("native Codex deltas form one readable message with working and stop state"
 		});
 	});
 	await expect(transcript.locator(".local-assistant")).toHaveCount(1);
-	await expect(transcript.locator(".local-assistant")).toHaveText("One correct final answer.\nWith preserved spacing.");
+	await expect(assistantText).toHaveText("One correct final answer.\nWith preserved spacing.");
 	await expect(transcript).not.toContainText("Fragmented draft");
 	await expect(transcript).not.toContainText("remoteControl/status/changed");
 	await expect(transcript).not.toContainText("model-metadata");
@@ -720,7 +727,7 @@ test("native Codex deltas form one readable message with working and stop state"
 		send("Replacement stream with one paragraph.");
 	});
 	await expect(transcript.locator(".local-assistant")).toHaveCount(2);
-	await expect(transcript.locator(".local-assistant").last()).toHaveText("Replacement stream with one paragraph.");
+	await expect(transcript.locator(".local-assistant p").last()).toHaveText("Replacement stream with one paragraph.");
 	const finalTurnOrder = await transcript.locator(".local-turn").evaluateAll((turns) => turns.slice(-2).map((turn) => ({
 		role: turn.classList.contains("local-turn-user") ? "user" : turn.classList.contains("local-turn-assistant") ? "assistant" : "system",
 		text: turn.textContent ?? ""

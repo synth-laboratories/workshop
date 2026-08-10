@@ -507,6 +507,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_different_backend_never_reads_another_origins_cache_for_the_same_key() {
+        let (first_origin, _) = spawn_backend(vec![(200, snapshot_body("pro", 20_000))]);
+        let (second_origin, _) = spawn_backend(vec![(503, r#"{"detail":"down"}"#.into())]);
+        let client = AccountCloudClient::new();
+        client
+            .read(&first_origin, Some("sk_same"), false, now())
+            .await;
+
+        let other = client
+            .read(&second_origin, Some("sk_same"), false, now())
+            .await;
+        assert!(other.snapshot.is_none());
+        assert!(!other.stale);
+        assert!(other.error.unwrap().contains("unavailable"));
+    }
+
+    #[tokio::test]
     async fn an_unauthorized_snapshot_explains_itself_without_leaking_the_key() {
         let (origin, _) = spawn_backend(vec![(401, r#"{"detail":"bad key"}"#.into())]);
         let client = AccountCloudClient::new();
@@ -514,6 +531,18 @@ mod tests {
         let error = read.error.expect("error surfaced");
         assert!(error.contains("sign in again"));
         assert!(!error.contains("sk_dead"));
+    }
+
+    #[tokio::test]
+    async fn a_backend_without_the_snapshot_endpoint_gets_the_specific_update_copy() {
+        let (origin, _) = spawn_backend(vec![(404, r#"{"detail":"missing"}"#.into())]);
+        let client = AccountCloudClient::new();
+        let read = client.read(&origin, Some("sk_test"), false, now()).await;
+        assert!(read.snapshot.is_none());
+        assert_eq!(
+            read.error.as_deref(),
+            Some("This Synth backend does not serve the desktop account snapshot yet")
+        );
     }
 
     #[tokio::test]

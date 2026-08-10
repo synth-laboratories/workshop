@@ -2606,30 +2606,51 @@ a,
 }
 
 .reasoning-disclosure {
-	width: min(100%, 680px);
-	margin: 5px 0 8px;
-	padding: 8px 10px;
-	border: 1px solid #e1e4e8;
-	border-radius: 10px;
-	background: linear-gradient(135deg, rgba(248, 249, 251, 0.98), rgba(255, 255, 255, 0.98));
+	width: fit-content;
+	max-width: 100%;
+	margin: 3px 0 6px;
+	padding: 0;
 }
 
 .reasoning-disclosure .local-activity-toggle {
-	width: 100%;
+	width: auto;
 	min-height: 24px;
-	gap: 8px;
+	gap: 5px;
 }
 
 .reasoning-disclosure .local-activity-label {
-	color: #747a84;
+	color: var(--color-text-muted);
 	font-weight: 550;
 }
 
 .reasoning-disclosure .local-activity-label::before {
 	content: "···";
-	margin-right: 7px;
-	color: #a9afb8;
+	margin-right: 6px;
+	color: var(--color-text-faint);
 	letter-spacing: 1px;
+}
+
+.reasoning-disclosure-chevron {
+	width: 11px;
+	height: 11px;
+	flex: 0 0 11px;
+	color: var(--color-text-faint);
+	transition: transform 0.15s ease;
+}
+
+.reasoning-disclosure-chevron path {
+	stroke: currentColor;
+	stroke-width: 1.4;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.reasoning-disclosure.open {
+	width: min(100%, 680px);
+}
+
+.reasoning-disclosure.open .reasoning-disclosure-chevron {
+	transform: rotate(180deg);
 }
 
 .reasoning-disclosure-meta {
@@ -2644,20 +2665,17 @@ a,
 	margin-left: auto;
 }
 
-.reasoning-disclosure .local-activity-wave {
-	width: min(100%, 480px);
-	margin-left: 4px;
-}
-
 .reasoning-disclosure .local-activity-detail {
 	max-width: none;
 	max-height: 360px;
-	margin: 7px 0 0;
-	padding: 12px 13px;
-	border-color: #e0e4e8;
-	background: #fff;
-	color: #3f454d;
-	font-size: 12px;
+	margin: 5px 0 0 22px;
+	padding: 0;
+	border: 0;
+	border-radius: 0;
+	background: transparent;
+	color: var(--color-text);
+	font-family: inherit;
+	font-size: 13px;
 	line-height: 1.55;
 }
 

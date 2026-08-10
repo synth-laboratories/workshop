@@ -130,6 +130,13 @@ openrouter/poolside/laguna-s-2.1
 
 (`SYNTH_CLOUD_LAGUNA_S_MODEL` in `types/landing.ts`). Rust rewrites the Codex provider to `synth-cloud` and `base_url = {backend}/api/v1` from `synth_config` (`SYNTH_BACKEND_URL` / `[intern.endpoints].{profile}`).
 
+The bundled third-party Codex client does not currently send
+`max_output_tokens` on Responses requests. The governed backend therefore
+defaults a missing value to the smaller of the execution-policy ceiling and
+the pinned model-route ceiling, and injects that exact value into the provider
+request. Explicit client values remain validated and values above either
+ceiling are refused.
+
 ### Local-slot Laguna S smoke (working path for live topology)
 
 Use a **synth-dev slot** as the Synth Cloud Responses host — this is what provider-parity `--slot-provider synth-cloud` / `--slot-base-url` exercises.

@@ -19,6 +19,8 @@ writeFileSync(compiled, transformSync(readFileSync(source, "utf8"), {
 }).code);
 
 const { buildAccountView, resolveAccountState, formatUsd } = await import(pathToFileURL(compiled).href);
+const backendSettingsSource = readFileSync(join(appRoot, "src/renderer/src/components/BackendSettings.tsx"), "utf8");
+const nativeCodexSource = readFileSync(join(appRoot, "src/renderer/src/runtime/nativeCodex.ts"), "utf8");
 
 const cloudSummary = (overrides = {}) => ({
 	signedIn: true,
@@ -84,6 +86,39 @@ test("an active cloud account renders its own identity, plan, and manage action"
 	assert.equal(view.planHasDollars, true);
 	assert.equal(view.cloudBlockedReason, null);
 	assert.deepEqual(view.primaryAction, { kind: "manage", label: "Manage billing" });
+});
+
+test("active free and starter accounts offer the backend-issued upgrade path", () => {
+	for (const [tier, upgradeTier] of [["free", "starter"], ["starter", "pro"]]) {
+		const view = buildAccountView(
+			cloudSummary({
+				plan: {
+					name: tier === "free" ? "Free" : "Starter",
+					tier,
+					state: "active",
+					metered: true,
+					monthlyAllowanceUsd: tier === "free" ? 0 : 20,
+					usedUsd: 0,
+					remainingUsd: tier === "free" ? 0 : 20,
+					source: "cloud"
+				},
+				billing: {
+					checkoutUrl: `https://example.test/usage?upgrade=${upgradeTier}`,
+					portalUrl: "https://example.test/usage",
+					upgradeTier
+				}
+			}),
+			true
+		);
+		assert.deepEqual(view.primaryAction, { kind: "upgrade", label: "Upgrade" });
+	}
+});
+
+test("the renderer never accepts API-key material", () => {
+	assert.doesNotMatch(backendSettingsSource, /type=["']password["']/);
+	assert.doesNotMatch(backendSettingsSource, /\bapiKey\s*:/);
+	assert.doesNotMatch(backendSettingsSource, /\bopenrouterApiKey\s*:/);
+	assert.doesNotMatch(nativeCodexSource, /\bapiKey\s*:/);
 });
 
 test("an exhausted allowance blocks cloud spend and offers upgrade, never blocking local", () => {

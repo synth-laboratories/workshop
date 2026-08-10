@@ -78,6 +78,7 @@ export function AccountPage({
 	const cloudUsage = summary?.cloudUsage ?? null;
 	const lastUpdated = formatTimestamp(summary?.lastUpdated);
 	const environment = summary?.environment ?? null;
+	const showDollarFigures = view.planHasDollars;
 
 	return (
 		<div className="settings-finetunes account-page" data-testid="settings-account">
@@ -163,7 +164,7 @@ export function AccountPage({
 					<p className="account-page-note">Sign in to see your plan and allowance.</p>
 				)}
 
-				{summary?.catalog?.length ? (
+				{showDollarFigures && summary?.catalog?.length ? (
 					<div className="account-page-catalog" data-testid="account-page-catalog">
 						{summary.catalog.map((option) => (
 							<div key={option.tier} className={option.tier === plan?.tier ? "is-current" : undefined}>
@@ -206,9 +207,9 @@ export function AccountPage({
 				<h4 className="account-page-subhead">Synth Cloud</h4>
 				{cloudUsage ? (
 					<div className="account-page-windows">
-						<div><span>Today</span><strong data-testid="account-page-today">{formatUsd(cloudUsage.today.costUsd)}</strong><small>{cloudUsage.today.events} events</small></div>
-						<div><span>7 days</span><strong data-testid="account-page-7d">{formatUsd(cloudUsage.sevenDays.costUsd)}</strong><small>{cloudUsage.sevenDays.events} events</small></div>
-						<div><span>30 days</span><strong data-testid="account-page-30d">{formatUsd(cloudUsage.thirtyDays.costUsd)}</strong><small>{cloudUsage.thirtyDays.events} events</small></div>
+						<div><span>Today</span>{showDollarFigures ? <strong data-testid="account-page-today">{formatUsd(cloudUsage.today.costUsd)}</strong> : null}<small>{cloudUsage.today.events} events</small></div>
+						<div><span>7 days</span>{showDollarFigures ? <strong data-testid="account-page-7d">{formatUsd(cloudUsage.sevenDays.costUsd)}</strong> : null}<small>{cloudUsage.sevenDays.events} events</small></div>
+						<div><span>30 days</span>{showDollarFigures ? <strong data-testid="account-page-30d">{formatUsd(cloudUsage.thirtyDays.costUsd)}</strong> : null}<small>{cloudUsage.thirtyDays.events} events</small></div>
 					</div>
 				) : (
 					<p className="account-page-note" data-testid="account-page-no-cloud-usage">
@@ -218,7 +219,7 @@ export function AccountPage({
 
 				<h4 className="account-page-subhead">This device</h4>
 				<Row label="Tokens this week" value={formatTokens(deviceUsage?.weeklyTokens)} testId="account-page-device-weekly" />
-				<Row label="Estimated cost this week" value={formatUsd(deviceUsage?.weeklyCostUsd)} />
+				{showDollarFigures ? <Row label="Estimated cost this week" value={formatUsd(deviceUsage?.weeklyCostUsd)} /> : null}
 				<Row label="All tracked tokens" value={formatTokens(deviceUsage?.totalTokens)} />
 				<Row label="Tracked runs" value={formatTokens(deviceUsage?.entries)} />
 				<p className="account-page-note">Device totals are local runs on this Mac — not your Synth Cloud allowance.</p>
@@ -242,7 +243,7 @@ export function AccountPage({
 						: "Not configured"}
 					testId="account-page-credential"
 				/>
-				<Row label="Backend" value={connection?.backendUrl ?? "Loading…"} />
+				<Row label="Backend" value={connection?.backendUrl ?? "Loading…"} testId="account-page-backend" />
 				<p className="account-page-note">
 					The key is held by the native host and never reaches this window. Signing out clears
 					it; local history and the device ledger stay.
@@ -252,8 +253,8 @@ export function AccountPage({
 			<details className="account-page-advanced" data-testid="account-page-advanced">
 				<summary>Advanced connection</summary>
 				<p className="account-page-note">
-					Endpoint, secrets file, and key material for development profiles. Changing these
-					reconnects the runtime.
+					Endpoint and native-host credential references for development profiles. Changing
+					these reconnects the runtime.
 				</p>
 				<BackendSettings />
 			</details>

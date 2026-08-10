@@ -81,11 +81,9 @@ pub struct BackendSettingsUpdate {
     pub backend_url: String,
     pub env_file: String,
     pub api_key_env: String,
-    pub api_key: Option<String>,
-    pub openrouter_api_key: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ResolvedBackend {
     pub config_path: PathBuf,
     pub env_file: PathBuf,
@@ -168,21 +166,6 @@ pub fn update(request: BackendSettingsUpdate) -> Result<BackendSettings> {
     endpoints.insert(profile, toml::Value::String(backend_url));
     write_toml(&config_path, &document)?;
 
-    if let Some(secret) = request.api_key {
-        let secret = secret.trim();
-        if !secret.is_empty() {
-            if secret.contains(['\r', '\n']) {
-                return Err(anyhow!("API key cannot contain a newline"));
-            }
-            write_env_secret(&env_file, &api_key_env, secret)?;
-        }
-    }
-    if let Some(secret) = request.openrouter_api_key {
-        let secret = secret.trim();
-        if !secret.is_empty() {
-            write_env_secret(&env_file, OPENROUTER_API_KEY_ENV, secret)?;
-        }
-    }
     get()
 }
 
@@ -701,6 +684,23 @@ fn secret_fingerprint(secret: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backend_settings_update_ignores_legacy_renderer_key_fields() {
+        let request: BackendSettingsUpdate = serde_json::from_value(serde_json::json!({
+            "profile": "local",
+            "backendUrl": "http://127.0.0.1:8000",
+            "envFile": "/tmp/.env",
+            "apiKeyEnv": "SYNTH_API_KEY",
+            "apiKey": "renderer-secret",
+            "openrouterApiKey": "renderer-openrouter-secret"
+        }))
+        .unwrap();
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("renderer-secret"));
+        assert!(!debug.contains("renderer-openrouter-secret"));
+    }
+
     #[test]
     fn reads_quoted_env_values() {
         let path = env::temp_dir().join(format!("synth-env-{}", uuid::Uuid::new_v4()));

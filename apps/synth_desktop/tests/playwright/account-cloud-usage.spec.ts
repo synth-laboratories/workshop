@@ -13,12 +13,22 @@ type StubOptions = {
 	state: "active" | "limited";
 	remainingUsd: number;
 	usedUsd: number;
+	tier?: "free" | "starter" | "pro";
+	metered?: boolean;
 };
 
 async function stubCloudAccount(page: import("@playwright/test").Page, options: StubOptions) {
 	await page.addInitScript((stub) => {
 		const opened: string[] = [];
 		(window as unknown as { __billingOpened: string[] }).__billingOpened = opened;
+		const tier = stub.tier ?? "pro";
+		const upgradeTier = stub.state === "limited"
+			? "pro"
+			: tier === "free"
+				? "starter"
+				: tier === "starter"
+					? "pro"
+					: null;
 		const summary = {
 			signedIn: true,
 			state: stub.state,
@@ -29,10 +39,10 @@ async function stubCloudAccount(page: import("@playwright/test").Page, options: 
 			email: "ada@example.com",
 			organization: { id: "org_1", displayName: "Ada Labs", role: "owner" },
 			plan: {
-				name: "Pro",
-				tier: "pro",
+				name: tier === "free" ? "Free" : tier === "starter" ? "Starter" : "Pro",
+				tier,
 				state: "active",
-				metered: true,
+				metered: stub.metered ?? true,
 				monthlyAllowanceUsd: 200,
 				usedUsd: stub.usedUsd,
 				remainingUsd: stub.remainingUsd,
@@ -45,9 +55,9 @@ async function stubCloudAccount(page: import("@playwright/test").Page, options: 
 				thirtyDays: { events: 40, costUsd: 13 }
 			},
 			billing: {
-				checkoutUrl: "https://example.test/usage?upgrade=pro",
+				checkoutUrl: upgradeTier ? `https://example.test/usage?upgrade=${upgradeTier}` : null,
 				portalUrl: "https://example.test/usage",
-				upgradeTier: "pro"
+				upgradeTier
 			},
 			catalog: [
 				{ tier: "starter", displayName: "Starter", priceUsd: 20, monthlyAllowanceUsd: 20 },
@@ -80,7 +90,10 @@ async function stubCloudAccount(page: import("@playwright/test").Page, options: 
 		};
 		window.synthConfig = {
 			get: async () => base,
-			update: async () => { throw new Error("unused"); },
+			update: async (request) => {
+				Object.assign(base, request);
+				return { ...base };
+			},
 			listModelMultiAgent: async () => [],
 			updateModelMultiAgent: async () => [],
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
@@ -124,6 +137,46 @@ test("the usage sheet separates Synth Cloud from this device", async ({ page }) 
 	await expect(sheet).toBeHidden();
 });
 
+test("the account menu supports keyboard traversal and restores trigger focus", async ({ page }) => {
+	await stubCloudAccount(page, { state: "active", remainingUsd: 157.5, usedUsd: 42.5 });
+	const trigger = page.getByTestId("account-menu-trigger");
+	await trigger.focus();
+	await page.keyboard.press("Enter");
+	await expect(page.getByTestId("account-open-usage")).toBeFocused();
+	await page.keyboard.press("ArrowDown");
+	await expect(page.getByTestId("account-primary-action")).toBeFocused();
+	await page.keyboard.press("Escape");
+	await expect(page.getByTestId("account-menu")).toBeHidden();
+	await expect(trigger).toBeFocused();
+});
+
+test("the usage sheet closes by Escape, backdrop, and button and restores focus", async ({ page }) => {
+	await stubCloudAccount(page, { state: "active", remainingUsd: 157.5, usedUsd: 42.5 });
+	const trigger = page.getByTestId("account-menu-trigger");
+	const sheet = page.getByTestId("usage-sheet");
+	const openUsage = async () => {
+		await trigger.click();
+		await page.getByTestId("account-open-usage").click();
+		await expect(sheet).toBeVisible();
+		await expect(page.getByTestId("usage-sheet-close")).toBeFocused();
+	};
+
+	await openUsage();
+	await page.keyboard.press("Escape");
+	await expect(sheet).toBeHidden();
+	await expect(trigger).toBeFocused();
+
+	await openUsage();
+	await sheet.dispatchEvent("mousedown");
+	await expect(sheet).toBeHidden();
+	await expect(trigger).toBeFocused();
+
+	await openUsage();
+	await page.getByTestId("usage-sheet-close").click();
+	await expect(sheet).toBeHidden();
+	await expect(trigger).toBeFocused();
+});
+
 test("manage billing opens a hosted URL through the host, never in-app", async ({ page }) => {
 	await stubCloudAccount(page, { state: "active", remainingUsd: 157.5, usedUsd: 42.5 });
 	await page.getByTestId("account-menu-trigger").click();
@@ -131,6 +184,39 @@ test("manage billing opens a hosted URL through the host, never in-app", async (
 	await expect
 		.poll(async () => page.evaluate(() => (window as unknown as { __billingOpened: string[] }).__billingOpened))
 		.toEqual(["manage"]);
+});
+
+test("an active free account offers the backend-issued upgrade action", async ({ page }) => {
+	await stubCloudAccount(page, { state: "active", remainingUsd: 0, usedUsd: 0, tier: "free" });
+	await page.getByTestId("account-menu-trigger").click();
+	await expect(page.getByTestId("account-primary-action")).toContainText("Upgrade");
+	await page.getByTestId("account-primary-action").click();
+	await expect
+		.poll(async () => page.evaluate(() => (window as unknown as { __billingOpened: string[] }).__billingOpened))
+		.toEqual(["upgrade"]);
+});
+
+test("an unmetered account renders no dollar figures on account or usage surfaces", async ({ page }) => {
+	await stubCloudAccount(page, {
+		state: "active",
+		remainingUsd: 0,
+		usedUsd: 0,
+		tier: "pro",
+		metered: false
+	});
+
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-open-usage").click();
+	const sheet = page.getByTestId("usage-sheet");
+	await expect(sheet).toContainText("not metered in monthly dollars");
+	await expect(sheet).not.toContainText("$");
+	await page.getByTestId("usage-sheet-close").click();
+
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("open-account-settings").click();
+	const account = page.getByTestId("settings-account");
+	await expect(account).toContainText("not metered in monthly dollars");
+	await expect(account).not.toContainText("$");
 });
 
 test("an exhausted allowance blocks the cloud model and offers upgrade; local stays open", async ({ page }) => {
@@ -186,6 +272,29 @@ test("Settings \u2192 Account leads with account facts and demotes connection co
 	await expect
 		.poll(async () => page.evaluate(() => (window as unknown as { __billingOpened: string[] }).__billingOpened))
 		.toEqual(["manage"]);
+});
+
+test("saving Advanced connection refreshes the Devices summary without a relaunch", async ({ page }) => {
+	await stubCloudAccount(page, { state: "active", remainingUsd: 157.5, usedUsd: 42.5 });
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("open-account-settings").click();
+	await expect(page.getByTestId("account-page-backend")).toHaveText("https://api.usesynth.ai");
+
+	await page.getByTestId("account-page-advanced").getByText("Advanced connection").click();
+	await page.getByLabel("Backend API").fill("http://127.0.0.1:8000");
+	await page.getByRole("button", { name: "Save and reconnect" }).click();
+
+	await expect(page.getByTestId("account-page-backend")).toHaveText("http://127.0.0.1:8000");
+});
+
+test("the Account page does not overflow at a narrow desktop width", async ({ page }) => {
+	await page.setViewportSize({ width: 640, height: 800 });
+	await stubCloudAccount(page, { state: "active", remainingUsd: 157.5, usedUsd: 42.5 });
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("open-account-settings").click();
+	const account = page.getByTestId("settings-account");
+	await expect(account).toBeVisible();
+	expect(await account.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
 });
 
 test("a limited account shows the block and an upgrade path on the Account page", async ({ page }) => {

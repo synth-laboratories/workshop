@@ -162,10 +162,15 @@ export function buildAccountView(
 			case "error":
 			case "unknown":
 				return { kind: "retry" as const, label: "Retry" };
-			default:
+			default: {
+				const tierCanUpgrade = summary?.plan?.tier === "free" || summary?.plan?.tier === "starter";
+				if (tierCanUpgrade && (summary?.billing?.checkoutUrl || summary?.billing?.upgradeTier)) {
+					return { kind: "upgrade" as const, label: "Upgrade" };
+				}
 				return summary?.billing?.portalUrl
 					? { kind: "manage" as const, label: "Manage billing" }
 					: null;
+			}
 		}
 	})();
 

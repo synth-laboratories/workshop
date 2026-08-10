@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { SynthAccountSummary } from "../env";
 import {
 	type AccountViewModel,
@@ -68,25 +68,36 @@ export function UsageSheet({
 	onOpenDeviceUsage
 }: Props) {
 	const closeRef = useRef<HTMLButtonElement>(null);
+	const returnFocusRef = useRef<HTMLElement | null>(null);
+	const closeSheet = useCallback(() => {
+		onClose();
+		requestAnimationFrame(() => {
+			const previous = returnFocusRef.current;
+			if (previous?.isConnected && previous !== document.body) previous.focus();
+			else document.querySelector<HTMLElement>('[data-testid="account-menu-trigger"]')?.focus();
+		});
+	}, [onClose]);
 
 	useEffect(() => {
 		if (!open) return;
+		returnFocusRef.current = document.activeElement as HTMLElement | null;
 		const onKey = (event: KeyboardEvent) => {
 			if (event.key === "Escape") {
 				event.preventDefault();
-				onClose();
+				closeSheet();
 			}
 		};
 		document.addEventListener("keydown", onKey);
 		requestAnimationFrame(() => closeRef.current?.focus());
 		return () => document.removeEventListener("keydown", onKey);
-	}, [onClose, open]);
+	}, [closeSheet, open]);
 
 	if (!open) return null;
 
 	const plan = view.plan;
 	const cloudUsage = summary?.cloudUsage ?? null;
 	const lastUpdated = formatTimestamp(summary?.lastUpdated);
+	const showDollarFigures = view.planHasDollars;
 
 	return (
 		<div
@@ -96,7 +107,7 @@ export function UsageSheet({
 			aria-labelledby="usage-sheet-title"
 			data-testid="usage-sheet"
 			onMouseDown={(event) => {
-				if (event.target === event.currentTarget) onClose();
+				if (event.target === event.currentTarget) closeSheet();
 			}}
 		>
 			<div className="usage-sheet-card">
@@ -106,7 +117,7 @@ export function UsageSheet({
 						ref={closeRef}
 						type="button"
 						className="ghost-button"
-						onClick={onClose}
+						onClick={closeSheet}
 						aria-label="Close usage"
 						data-testid="usage-sheet-close"
 					>
@@ -192,17 +203,17 @@ export function UsageSheet({
 								<div className="usage-sheet-windows" data-testid="usage-sheet-windows">
 									<div>
 										<span>Today</span>
-										<strong data-testid="usage-sheet-today">{formatUsd(cloudUsage.today.costUsd)}</strong>
+										{showDollarFigures ? <strong data-testid="usage-sheet-today">{formatUsd(cloudUsage.today.costUsd)}</strong> : null}
 										<small>{cloudUsage.today.events} events</small>
 									</div>
 									<div>
 										<span>7 days</span>
-										<strong data-testid="usage-sheet-7d">{formatUsd(cloudUsage.sevenDays.costUsd)}</strong>
+										{showDollarFigures ? <strong data-testid="usage-sheet-7d">{formatUsd(cloudUsage.sevenDays.costUsd)}</strong> : null}
 										<small>{cloudUsage.sevenDays.events} events</small>
 									</div>
 									<div>
 										<span>30 days</span>
-										<strong data-testid="usage-sheet-30d">{formatUsd(cloudUsage.thirtyDays.costUsd)}</strong>
+										{showDollarFigures ? <strong data-testid="usage-sheet-30d">{formatUsd(cloudUsage.thirtyDays.costUsd)}</strong> : null}
 										<small>{cloudUsage.thirtyDays.events} events</small>
 									</div>
 								</div>
@@ -258,10 +269,12 @@ export function UsageSheet({
 						value={formatTokens(deviceUsage?.weeklyTokens)}
 						testId="usage-sheet-device-weekly-tokens"
 					/>
-					<UsageRow
-						label="Estimated cost this week"
-						value={formatUsd(deviceUsage?.weeklyCostUsd)}
-					/>
+					{showDollarFigures ? (
+						<UsageRow
+							label="Estimated cost this week"
+							value={formatUsd(deviceUsage?.weeklyCostUsd)}
+						/>
+					) : null}
 					<UsageRow
 						label="All tracked tokens"
 						value={formatTokens(deviceUsage?.totalTokens)}

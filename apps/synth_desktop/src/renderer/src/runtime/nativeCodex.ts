@@ -40,7 +40,7 @@ export function codexStartRequest(
 	if (target.kind === "local") {
 		const autoCompactTokenLimit = autoCompactTokenLimits.lagunaXs ?? 150_000;
 		return {
-			sessionId, workspace, baseUrl: localBaseUrl, apiKey: "",
+			sessionId, workspace, baseUrl: localBaseUrl,
 			model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
 			providerTitle: "Laguna XS Responses", providerEnvKey: "SYNTH_LAGUNA_API_KEY",
 			autoCompactTokenLimit, ...approval
@@ -53,13 +53,13 @@ export function codexStartRequest(
 	if (target.provider === "synth-cloud") {
 		return {
 			// baseUrl is overwritten by the Rust host from synth_config; placeholder satisfies types.
-			sessionId, workspace, baseUrl: "https://api.usesynth.ai/api/v1", apiKey: "",
+			sessionId, workspace, baseUrl: "https://api.usesynth.ai/api/v1",
 			model: target.model, providerName: "synth-cloud", providerTitle: "Synth Cloud Responses",
 			providerEnvKey: "SYNTH_API_KEY", autoCompactTokenLimit, ...approval
 		};
 	}
 	return {
-		sessionId, workspace, baseUrl: "https://openrouter.ai/api/v1", apiKey: "",
+		sessionId, workspace, baseUrl: "https://openrouter.ai/api/v1",
 		model: target.model, providerName: "openrouter", providerTitle: "OpenRouter Responses",
 		providerEnvKey: "OPENROUTER_API_KEY", autoCompactTokenLimit, ...approval
 	};
