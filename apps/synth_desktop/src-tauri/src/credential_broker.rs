@@ -21,18 +21,21 @@ use std::collections::HashMap;
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use serde_json::Value;
 use uuid::Uuid;
 
 /// The environment variable Codex reads for the loopback provider. It is
@@ -60,6 +63,9 @@ struct Lease {
     /// forwarded to this origin and nowhere else.
     upstream_origin: String,
     api_key: String,
+    /// The Desktop session this lease was minted for. Responses relayed under
+    /// the lease attribute their settled accounting to this session.
+    session_id: String,
 }
 
 impl fmt::Debug for Lease {
@@ -69,6 +75,7 @@ impl fmt::Debug for Lease {
         f.debug_struct("Lease")
             .field("upstream_origin", &self.upstream_origin)
             .field("api_key", &"<redacted>")
+            .field("session_id", &self.session_id)
             .finish()
     }
 }
@@ -193,6 +200,7 @@ impl CredentialBroker {
         let lease = Arc::new(Lease {
             upstream_origin: upstream_origin.to_owned(),
             api_key: api_key.to_owned(),
+            session_id: session_id.to_owned(),
         });
         let previous = self
             .state
@@ -211,12 +219,15 @@ impl CredentialBroker {
         }
     }
 
-    /// Drop the session's lease. After this the token is inert.
+    /// Drop the session's lease. After this the token is inert. Settled
+    /// receipts the session never drained are dropped with it — a closed
+    /// session has no later finalize that could truthfully absorb them.
     pub fn revoke(&self, session_id: &str) {
         let token = self.state.by_session.write().unwrap().remove(session_id);
         if let Some(token) = token {
             self.state.leases.write().unwrap().remove(&token);
         }
+        discard_settled_receipts(session_id);
     }
 
     /// The origin a lease is bound to, for tests that assert routing.
@@ -262,6 +273,347 @@ pub fn shared() -> Result<Arc<CredentialBroker>> {
 pub fn revoke_shared(session_id: &str) {
     if let Some(broker) = SHARED.get().and_then(|slot| slot.lock().unwrap().clone()) {
         broker.revoke(session_id);
+    }
+    // Receipts exist independently of the broker instance; drop them even if
+    // the broker itself was never started in this process.
+    discard_settled_receipts(session_id);
+}
+
+/// Settled provider accounting for one relayed upstream response, extracted
+/// from the bytes that streamed through the proxy. Everything here was already
+/// visible to the child process except the attribution to a Desktop session.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettledReceipt {
+    pub session_id: String,
+    pub provider_response_id: String,
+    pub model: Option<String>,
+    pub prompt_tokens: Option<i64>,
+    pub completion_tokens: Option<i64>,
+    pub cached_tokens: Option<i64>,
+    pub reasoning_tokens: Option<i64>,
+    /// The provider's settled charge. `None` when the response reported token
+    /// usage without money — real tokens, no invented dollars.
+    pub cost_usd: Option<f64>,
+    pub completed_at_ms: i64,
+}
+
+/// Receipts waiting to be drained by their session's turn finalizer.
+///
+/// Deliberately module-level rather than broker-owned: the finalizer must be
+/// able to drain (and find nothing) without ever starting a broker, and the
+/// broker restarting must not orphan receipts already captured.
+static RECEIPTS: OnceLock<Mutex<HashMap<String, Vec<SettledReceipt>>>> = OnceLock::new();
+
+fn receipts_store() -> &'static Mutex<HashMap<String, Vec<SettledReceipt>>> {
+    RECEIPTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Take every settled receipt queued for the session, removing them.
+///
+/// Contract with the finalizer: draining is the only consumption path, the
+/// caller's `(provider, request_id)` upsert key makes replays idempotent, and
+/// a receipt that arrives *after* a drain (cancellation race) stays queued no
+/// longer than the session's next finalize — `revoke` drops leftovers when
+/// the session closes instead of inventing a row for them.
+pub fn drain_settled_receipts(session_id: &str) -> Vec<SettledReceipt> {
+    receipts_store()
+        .lock()
+        .unwrap()
+        .remove(session_id)
+        .unwrap_or_default()
+}
+
+/// Queue one settled receipt for its session. `pub(crate)` only so finalizer
+/// tests can stage receipts; production receipts are all born in the relay.
+pub(crate) fn push_settled_receipt(receipt: SettledReceipt) {
+    let mut store = receipts_store().lock().unwrap();
+    let queue = store.entry(receipt.session_id.clone()).or_default();
+    // A replayed response (duplicate terminal frame relayed as a retry, or a
+    // response observed twice) must not double-count its money.
+    if queue
+        .iter()
+        .any(|queued| queued.provider_response_id == receipt.provider_response_id)
+    {
+        return;
+    }
+    queue.push(receipt);
+}
+
+fn discard_settled_receipts(session_id: &str) {
+    let dropped = receipts_store().lock().unwrap().remove(session_id);
+    if let Some(dropped) = dropped {
+        if !dropped.is_empty() {
+            eprintln!(
+                "synth-desktop: dropped {} settled receipt(s) undrained at close of session {session_id}",
+                dropped.len()
+            );
+        }
+    }
+}
+
+/// Accounting parsed out of one usage-bearing provider payload.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ResponseAccounting {
+    response_id: Option<String>,
+    model: Option<String>,
+    prompt_tokens: Option<i64>,
+    completion_tokens: Option<i64>,
+    cached_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
+    cost_usd: Option<f64>,
+}
+
+impl ResponseAccounting {
+    fn into_receipt(self, session_id: &str) -> SettledReceipt {
+        SettledReceipt {
+            session_id: session_id.to_owned(),
+            // A response object without an id still settles once: the fallback
+            // id is unique, so insert-time dedupe simply never collapses it.
+            provider_response_id: self
+                .response_id
+                .unwrap_or_else(|| format!("unidentified-{}", Uuid::new_v4().simple())),
+            model: self.model,
+            prompt_tokens: self.prompt_tokens,
+            completion_tokens: self.completion_tokens,
+            cached_tokens: self.cached_tokens,
+            reasoning_tokens: self.reasoning_tokens,
+            cost_usd: self.cost_usd,
+            completed_at_ms: chrono::Utc::now().timestamp_millis(),
+        }
+    }
+}
+
+/// Extract accounting from one JSON payload if it carries a `usage` object.
+///
+/// Covers both upstream shapes: the usage-bearing object is either the payload
+/// itself (chat completions, non-streamed Responses) or the `response` field
+/// of a Responses API terminal event. Token field names differ per shape;
+/// settled money is `usage.cost` (OpenRouter) with `usage.cost_usd` accepted
+/// as a known backend variant.
+fn accounting_from_json(value: &Value) -> Option<ResponseAccounting> {
+    let nested = value.get("response");
+    let object = [Some(value), nested]
+        .into_iter()
+        .flatten()
+        .find(|candidate| candidate.get("usage").is_some_and(Value::is_object))?;
+    let usage = object.get("usage")?;
+    let int = |keys: &[&str]| keys.iter().find_map(|key| usage.get(*key)?.as_i64());
+    let detail = |outer: &[&str], inner: &str| {
+        outer
+            .iter()
+            .find_map(|key| usage.get(*key)?.get(inner)?.as_i64())
+    };
+    Some(ResponseAccounting {
+        response_id: object
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        model: object
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        prompt_tokens: int(&["prompt_tokens", "input_tokens"]),
+        completion_tokens: int(&["completion_tokens", "output_tokens"]),
+        cached_tokens: detail(&["prompt_tokens_details", "input_tokens_details"], "cached_tokens")
+            .or_else(|| int(&["cached_tokens"])),
+        reasoning_tokens: detail(
+            &["completion_tokens_details", "output_tokens_details"],
+            "reasoning_tokens",
+        )
+        .or_else(|| int(&["reasoning_tokens"])),
+        cost_usd: ["cost", "cost_usd"]
+            .iter()
+            .find_map(|key| usage.get(*key)?.as_f64()),
+    })
+}
+
+/// Incremental server-sent-events reader. Chunk boundaries fall anywhere —
+/// mid-line, mid-event — so lines are reassembled byte-wise and events on
+/// blank-line separators. Only the *last* usage-bearing event counts, which
+/// also collapses duplicated terminal frames into one receipt.
+#[derive(Default)]
+struct SseAccountingScanner {
+    partial_line: Vec<u8>,
+    event_data: Vec<u8>,
+    last: Option<ResponseAccounting>,
+}
+
+impl SseAccountingScanner {
+    fn observe(&mut self, chunk: &[u8]) {
+        for byte in chunk {
+            if *byte == b'\n' {
+                let line = std::mem::take(&mut self.partial_line);
+                self.take_line(&line);
+            } else {
+                self.partial_line.push(*byte);
+            }
+        }
+    }
+
+    fn take_line(&mut self, line: &[u8]) {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if line.is_empty() {
+            self.complete_event();
+            return;
+        }
+        if let Some(data) = line.strip_prefix(b"data:") {
+            let data = data.strip_prefix(b" ").unwrap_or(data);
+            // Multi-line data fields join with a newline, per the SSE spec.
+            if !self.event_data.is_empty() {
+                self.event_data.push(b'\n');
+            }
+            self.event_data.extend_from_slice(data);
+        }
+        // `event:`/`id:`/`retry:` fields and comments carry no accounting.
+    }
+
+    fn complete_event(&mut self) {
+        let data = std::mem::take(&mut self.event_data);
+        if data.is_empty() || data.as_slice() == b"[DONE]" {
+            return;
+        }
+        if let Ok(value) = serde_json::from_slice::<Value>(&data) {
+            if let Some(accounting) = accounting_from_json(&value) {
+                self.last = Some(accounting);
+            }
+        }
+    }
+
+    fn finish(mut self) -> Option<ResponseAccounting> {
+        // Tolerate a stream that ends without its final newline or blank line.
+        let line = std::mem::take(&mut self.partial_line);
+        if !line.is_empty() {
+            self.take_line(&line);
+        }
+        self.complete_event();
+        self.last
+    }
+}
+
+/// A JSON body larger than this is relayed unread: buffering it for
+/// accounting would let a hostile upstream balloon Desktop memory.
+const JSON_ACCOUNTING_CAP: usize = 16 * 1024 * 1024;
+
+struct JsonAccountingScanner {
+    buffer: Vec<u8>,
+    overflowed: bool,
+}
+
+impl JsonAccountingScanner {
+    fn observe(&mut self, chunk: &[u8]) {
+        if self.overflowed {
+            return;
+        }
+        if self.buffer.len() + chunk.len() > JSON_ACCOUNTING_CAP {
+            self.overflowed = true;
+            self.buffer = Vec::new();
+            return;
+        }
+        self.buffer.extend_from_slice(chunk);
+    }
+
+    fn finish(self) -> Option<ResponseAccounting> {
+        if self.overflowed {
+            return None;
+        }
+        // `from_slice` accepts trailing whitespace, so a body with or without
+        // a final newline parses the same.
+        let value = serde_json::from_slice::<Value>(&self.buffer).ok()?;
+        accounting_from_json(&value)
+    }
+}
+
+enum AccountingScanner {
+    Sse(SseAccountingScanner),
+    Json(JsonAccountingScanner),
+}
+
+impl AccountingScanner {
+    /// A scanner for the response, or `None` when it cannot carry a receipt:
+    /// non-2xx responses settle nothing, and content types that are neither
+    /// SSE nor JSON have no accounting to read.
+    fn for_response(status: StatusCode, content_type: Option<&str>) -> Option<Self> {
+        if !status.is_success() {
+            return None;
+        }
+        let content_type = content_type.unwrap_or("").to_ascii_lowercase();
+        if content_type.starts_with("text/event-stream") {
+            Some(Self::Sse(SseAccountingScanner::default()))
+        } else if content_type.contains("json") {
+            Some(Self::Json(JsonAccountingScanner {
+                buffer: Vec::new(),
+                overflowed: false,
+            }))
+        } else {
+            None
+        }
+    }
+
+    fn observe(&mut self, chunk: &[u8]) {
+        match self {
+            Self::Sse(scanner) => scanner.observe(chunk),
+            Self::Json(scanner) => scanner.observe(chunk),
+        }
+    }
+
+    fn finish(self) -> Option<ResponseAccounting> {
+        match self {
+            Self::Sse(scanner) => scanner.finish(),
+            Self::Json(scanner) => scanner.finish(),
+        }
+    }
+}
+
+/// The relayed response body: bytes pass through untouched while the scanner
+/// reads settled accounting off to the side. The receipt is emitted exactly
+/// once — on clean end of stream, or on drop for a body the client abandoned
+/// after the terminal frame had already passed.
+/// `hyper`'s boxed body requires `Sync`, which `futures_util`'s `BoxStream`
+/// alias deliberately drops; the reqwest byte stream itself is `Sync`.
+type RelayedBytes = Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send + Sync>>;
+
+struct MeteredRelay {
+    inner: RelayedBytes,
+    accounting: Option<(AccountingScanner, String)>,
+}
+
+impl MeteredRelay {
+    fn settle(&mut self) {
+        if let Some((scanner, session_id)) = self.accounting.take() {
+            if let Some(accounting) = scanner.finish() {
+                push_settled_receipt(accounting.into_receipt(&session_id));
+            }
+        }
+    }
+}
+
+impl Stream for MeteredRelay {
+    type Item = std::result::Result<Frame<Bytes>, std::io::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match this.inner.poll_next_unpin(cx) {
+            Poll::Ready(Some(Ok(bytes))) => {
+                if let Some((scanner, _)) = this.accounting.as_mut() {
+                    scanner.observe(&bytes);
+                }
+                Poll::Ready(Some(Ok(Frame::data(bytes))))
+            }
+            Poll::Ready(Some(Err(_))) => Poll::Ready(Some(Err(std::io::Error::other(
+                "Synth Cloud ended the response early.",
+            )))),
+            Poll::Ready(None) => {
+                this.settle();
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for MeteredRelay {
+    fn drop(&mut self) {
+        self.settle();
     }
 }
 
@@ -394,20 +746,29 @@ async fn proxy(
         }
     };
 
-    let mut response = Response::builder().status(upstream.status().as_u16());
+    let status = upstream.status();
+    let mut response = Response::builder().status(status.as_u16());
     for (name, value) in upstream.headers().iter() {
         if is_hop_by_hop(name.as_str()) {
             continue;
         }
         response = response.header(name.as_str(), value.as_bytes());
     }
+    // Settled accounting rides the same bytes the child receives; the scanner
+    // reads them in passing and never delays, reorders, or rewrites them.
+    let content_type = upstream
+        .headers()
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let accounting = AccountingScanner::for_response(status, content_type.as_deref())
+        .map(|scanner| (scanner, lease.session_id.clone()));
     // Stream rather than buffer: a governed Responses call is server-sent events
     // and must reach the agent token by token.
-    let stream = upstream.bytes_stream().map(|chunk| {
-        chunk
-            .map(Frame::data)
-            .map_err(|_| std::io::Error::other("Synth Cloud ended the response early."))
-    });
+    let stream = MeteredRelay {
+        inner: Box::pin(upstream.bytes_stream()),
+        accounting,
+    };
     Ok(response
         .body(BodyExt::boxed(StreamBody::new(stream)))
         .unwrap_or_else(|_| {
@@ -536,6 +897,16 @@ mod tests {
 
     /// Minimal upstream that records the `Authorization` it was given.
     fn spawn_upstream(body: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
+        spawn_upstream_as("200 OK", "application/json", body)
+    }
+
+    /// Upstream with a caller-chosen status line and content type, so tests
+    /// can exercise the SSE scanner and the non-2xx no-receipt rule.
+    fn spawn_upstream_as(
+        status: &'static str,
+        content_type: &'static str,
+        body: &'static str,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -549,7 +920,7 @@ mod tests {
                     .unwrap()
                     .push(String::from_utf8_lossy(&buf[..read]).into_owned());
                 let payload = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 let _ = stream.write_all(payload.as_bytes());
@@ -792,5 +1163,240 @@ mod tests {
         broker.revoke("session-a");
         assert!(!broker.resolves(&a.token));
         assert!(broker.resolves(&b.token));
+    }
+
+    // ---- settled accounting capture ----
+    // Receipt tests use unique session ids: the receipt store is deliberately
+    // process-wide and these tests run in parallel.
+
+    const RESPONSES_COMPLETED: &str = r#"{"type":"response.completed","response":{"id":"resp_settled","model":"openrouter/poolside/laguna-s-2.1","usage":{"input_tokens":1000,"output_tokens":200,"input_tokens_details":{"cached_tokens":400},"output_tokens_details":{"reasoning_tokens":50},"cost":0.0123}}}"#;
+
+    fn scan_sse(chunks: &[&[u8]]) -> Option<ResponseAccounting> {
+        let mut scanner = SseAccountingScanner::default();
+        for chunk in chunks {
+            scanner.observe(chunk);
+        }
+        scanner.finish()
+    }
+
+    #[test]
+    fn sse_accounting_survives_chunk_splits_mid_line_and_mid_event() {
+        let body = format!(
+            "event: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}}\n\nevent: response.completed\ndata: {RESPONSES_COMPLETED}\n\n"
+        );
+        // Feed the same stream byte by byte: every line and event boundary is
+        // split across chunk boundaries somewhere.
+        let bytes = body.as_bytes();
+        let single: Vec<&[u8]> = vec![bytes];
+        let shredded: Vec<&[u8]> = bytes.chunks(1).collect();
+        for chunks in [single, shredded] {
+            let accounting = scan_sse(&chunks).expect("the terminal frame carries usage");
+            assert_eq!(accounting.response_id.as_deref(), Some("resp_settled"));
+            assert_eq!(
+                accounting.model.as_deref(),
+                Some("openrouter/poolside/laguna-s-2.1")
+            );
+            assert_eq!(accounting.prompt_tokens, Some(1000));
+            assert_eq!(accounting.completion_tokens, Some(200));
+            assert_eq!(accounting.cached_tokens, Some(400));
+            assert_eq!(accounting.reasoning_tokens, Some(50));
+            assert_eq!(accounting.cost_usd, Some(0.0123));
+        }
+    }
+
+    #[test]
+    fn sse_accounting_reads_the_last_usage_frame_and_tolerates_a_missing_final_newline() {
+        // An interim usage frame is superseded by the terminal one, [DONE] is
+        // ignored, and a stream cut off without its final blank line still
+        // settles the frame that already arrived.
+        let body = format!(
+            "data: {{\"id\":\"resp_interim\",\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}\n\ndata: {RESPONSES_COMPLETED}\n\ndata: [DONE]"
+        );
+        let accounting = scan_sse(&[body.as_bytes()]).expect("usage frames arrived");
+        assert_eq!(accounting.response_id.as_deref(), Some("resp_settled"));
+        assert_eq!(accounting.cost_usd, Some(0.0123));
+    }
+
+    #[test]
+    fn a_duplicated_terminal_usage_frame_settles_exactly_once() {
+        let body = format!("data: {RESPONSES_COMPLETED}\n\ndata: {RESPONSES_COMPLETED}\n\n");
+        let accounting = scan_sse(&[body.as_bytes()]).expect("usage frames arrived");
+        push_settled_receipt(accounting.clone().into_receipt("session-dup-frame"));
+        // Even a receipt replayed at insert (retry path) collapses on its
+        // provider response id.
+        push_settled_receipt(accounting.into_receipt("session-dup-frame"));
+        let receipts = drain_settled_receipts("session-dup-frame");
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].cost_usd, Some(0.0123));
+        assert!(drain_settled_receipts("session-dup-frame").is_empty());
+    }
+
+    #[test]
+    fn json_accounting_parses_with_and_without_a_trailing_newline() {
+        let body = r#"{"id":"gen_1","model":"laguna-s","usage":{"prompt_tokens":10,"completion_tokens":5,"cost":0.001}}"#;
+        for variant in [body.to_owned(), format!("{body}\n")] {
+            let mut scanner = JsonAccountingScanner {
+                buffer: Vec::new(),
+                overflowed: false,
+            };
+            scanner.observe(variant.as_bytes());
+            let accounting = scanner.finish().expect("the body carries usage");
+            assert_eq!(accounting.response_id.as_deref(), Some("gen_1"));
+            assert_eq!(accounting.prompt_tokens, Some(10));
+            assert_eq!(accounting.completion_tokens, Some(5));
+            assert_eq!(accounting.cost_usd, Some(0.001));
+        }
+    }
+
+    #[test]
+    fn settled_money_reads_usage_cost_with_cost_usd_as_the_known_variant() {
+        let with_cost: Value =
+            serde_json::from_str(r#"{"id":"a","usage":{"prompt_tokens":1,"cost":0.5}}"#).unwrap();
+        let with_cost_usd: Value =
+            serde_json::from_str(r#"{"id":"b","usage":{"prompt_tokens":1,"cost_usd":0.7}}"#)
+                .unwrap();
+        let with_both: Value = serde_json::from_str(
+            r#"{"id":"c","usage":{"prompt_tokens":1,"cost":0.5,"cost_usd":0.7}}"#,
+        )
+        .unwrap();
+        let with_neither: Value =
+            serde_json::from_str(r#"{"id":"d","usage":{"prompt_tokens":9,"completion_tokens":3}}"#)
+                .unwrap();
+        assert_eq!(accounting_from_json(&with_cost).unwrap().cost_usd, Some(0.5));
+        assert_eq!(
+            accounting_from_json(&with_cost_usd).unwrap().cost_usd,
+            Some(0.7)
+        );
+        assert_eq!(accounting_from_json(&with_both).unwrap().cost_usd, Some(0.5));
+        // Usage without money is still a receipt: tokens are real, cost stays
+        // None rather than an invented zero.
+        let tokens_only = accounting_from_json(&with_neither).unwrap();
+        assert_eq!(tokens_only.cost_usd, None);
+        assert_eq!(tokens_only.prompt_tokens, Some(9));
+    }
+
+    #[test]
+    fn only_successful_sse_or_json_responses_are_scanned() {
+        assert!(AccountingScanner::for_response(
+            StatusCode::BAD_GATEWAY,
+            Some("application/json")
+        )
+        .is_none());
+        assert!(
+            AccountingScanner::for_response(StatusCode::UNAUTHORIZED, Some("text/event-stream"))
+                .is_none()
+        );
+        assert!(AccountingScanner::for_response(StatusCode::OK, Some("application/octet-stream"))
+            .is_none());
+        assert!(AccountingScanner::for_response(StatusCode::OK, None).is_none());
+        assert!(matches!(
+            AccountingScanner::for_response(StatusCode::OK, Some("text/event-stream; charset=utf-8")),
+            Some(AccountingScanner::Sse(_))
+        ));
+        assert!(matches!(
+            AccountingScanner::for_response(StatusCode::OK, Some("application/json; charset=utf-8")),
+            Some(AccountingScanner::Json(_))
+        ));
+    }
+
+    #[test]
+    fn an_oversized_json_body_is_relayed_without_a_receipt() {
+        let mut scanner = JsonAccountingScanner {
+            buffer: Vec::new(),
+            overflowed: false,
+        };
+        scanner.observe(&vec![b'x'; JSON_ACCOUNTING_CAP]);
+        scanner.observe(b"y");
+        assert!(scanner.finish().is_none());
+    }
+
+    #[tokio::test]
+    async fn the_proxy_relays_json_bytes_untouched_while_capturing_a_settled_receipt() {
+        let body = r#"{"id":"resp_json_e2e","model":"openrouter/poolside/laguna-s-2.1","status":"completed","usage":{"input_tokens":120,"output_tokens":30,"cost":0.004}}"#;
+        let (upstream, _seen) = spawn_upstream(body);
+        let broker = CredentialBroker::start().unwrap();
+        let handle = broker.lease("session-json-e2e", &upstream, SENTINEL);
+
+        let response = reqwest::Client::new()
+            .post(format!("{}/api/v1/responses", handle.origin))
+            .bearer_auth(&handle.token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        // The relayed bytes are exactly the upstream's bytes.
+        assert_eq!(response.text().await.unwrap(), body);
+
+        let receipts = drain_settled_receipts("session-json-e2e");
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].provider_response_id, "resp_json_e2e");
+        assert_eq!(receipts[0].session_id, "session-json-e2e");
+        assert_eq!(receipts[0].prompt_tokens, Some(120));
+        assert_eq!(receipts[0].completion_tokens, Some(30));
+        assert_eq!(receipts[0].cost_usd, Some(0.004));
+        assert!(receipts[0].completed_at_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn the_proxy_relays_sse_bytes_untouched_while_capturing_a_settled_receipt() {
+        let body = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_sse_e2e\",\"model\":\"openrouter/poolside/laguna-s-2.1\",\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"cost\":0.002}}}\n\n";
+        let (upstream, _seen) = spawn_upstream_as("200 OK", "text/event-stream", body);
+        let broker = CredentialBroker::start().unwrap();
+        let handle = broker.lease("session-sse-e2e", &upstream, SENTINEL);
+
+        let response = reqwest::Client::new()
+            .post(format!("{}/api/v1/responses", handle.origin))
+            .bearer_auth(&handle.token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.text().await.unwrap(), body);
+
+        let receipts = drain_settled_receipts("session-sse-e2e");
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].provider_response_id, "resp_sse_e2e");
+        assert_eq!(receipts[0].cost_usd, Some(0.002));
+    }
+
+    #[tokio::test]
+    async fn a_failing_upstream_response_settles_nothing() {
+        // The body even carries a plausible usage object; a non-2xx response
+        // must still produce no receipt.
+        let body = r#"{"id":"resp_err","error":{"message":"overloaded"},"usage":{"input_tokens":5,"cost":0.9}}"#;
+        let (upstream, _seen) = spawn_upstream_as("503 Service Unavailable", "application/json", body);
+        let broker = CredentialBroker::start().unwrap();
+        let handle = broker.lease("session-non2xx", &upstream, SENTINEL);
+
+        let response = reqwest::Client::new()
+            .post(format!("{}/api/v1/responses", handle.origin))
+            .bearer_auth(&handle.token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 503);
+        assert_eq!(response.text().await.unwrap(), body);
+        assert!(drain_settled_receipts("session-non2xx").is_empty());
+    }
+
+    #[test]
+    fn revoking_a_session_drops_its_undrained_receipts() {
+        let (broker, _listener) = CredentialBroker::bind().unwrap();
+        broker.lease("session-undrained", "http://127.0.0.1:1", SENTINEL);
+        push_settled_receipt(SettledReceipt {
+            session_id: "session-undrained".into(),
+            provider_response_id: "resp_orphan".into(),
+            model: None,
+            prompt_tokens: Some(5),
+            completion_tokens: Some(1),
+            cached_tokens: None,
+            reasoning_tokens: None,
+            cost_usd: Some(0.01),
+            completed_at_ms: 1,
+        });
+        broker.revoke("session-undrained");
+        // Dropped, not re-queued: a closed session has no finalize left that
+        // could truthfully absorb the money.
+        assert!(drain_settled_receipts("session-undrained").is_empty());
     }
 }
