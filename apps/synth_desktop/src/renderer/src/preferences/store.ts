@@ -9,7 +9,8 @@ import {
 	type QueuedPrompt,
 	type ToolActivityMode,
 	type ActiveEnterAction,
-	type ThemePreference
+	type ThemePreference,
+	type CompactContextModel
 } from "./schema";
 
 type Listener = (prefs: DesktopPreferences) => void;
@@ -85,10 +86,15 @@ export function setToolActivityMode(mode: ToolActivityMode): DesktopPreferences 
 	}));
 }
 
-export function setAutoCompactTokenLimit(autoCompactTokenLimit: number): DesktopPreferences {
+export function setAutoCompactTokenLimit(model: CompactContextModel, autoCompactTokenLimit: number): DesktopPreferences {
 	return updatePreferences((current) => ({
 		...current,
-		agentContext: { autoCompactTokenLimit }
+		agentContext: {
+			autoCompactTokenLimits: {
+				...current.agentContext.autoCompactTokenLimits,
+				[model]: autoCompactTokenLimit
+			}
+		}
 	}));
 }
 

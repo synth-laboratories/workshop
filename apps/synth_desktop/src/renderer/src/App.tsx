@@ -1020,7 +1020,7 @@ export default function App() {
 					const id = crypto.randomUUID();
 					// Every local/configured-provider task starts in the configured safe workspace.
 					const workspace = await nativeCodex.defaultWorkspace();
-					await nativeCodex.start(codexStartRequest(id, workspace, target, approvalMode, preferences.agentContext.autoCompactTokenLimit));
+					await nativeCodex.start(codexStartRequest(id, workspace, target, approvalMode, preferences.agentContext.autoCompactTokenLimits));
 					const session = createCodexSession(id, target, null, workspace, title, approvalMode);
 					sessionsRef.current = [session, ...sessionsRef.current.filter((item) => item.id !== session.id)];
 					setSessions(sessionsRef.current);
@@ -1046,7 +1046,7 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[approvalMode, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimit, refreshSessions, selectedTargetId, showToast]
+		[approvalMode, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
 	);
 
 	const ensureActiveSession = useCallback(async (objective: string): Promise<{ sessionId: string; objectiveConsumed: boolean } | null> => {
@@ -1079,7 +1079,7 @@ export default function App() {
 						);
 					const storedApproval = approvalModeConfig(storedApprovalMode);
 					const startRequest = {
-						...codexStartRequest(sessionId, workspace, session.target, "ask", preferences.agentContext.autoCompactTokenLimit),
+						...codexStartRequest(sessionId, workspace, session.target, "ask", preferences.agentContext.autoCompactTokenLimits),
 						// Restored pre-policy sessions can carry only the human mode. Never
 						// turn that into an undefined request which Rust then treats as Ask.
 						approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : storedApproval.approvalPolicy,
@@ -1137,7 +1137,7 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[allocateNativeSequence, failTurnStart, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimit, refreshSessions, showToast]
+		[allocateNativeSequence, failTurnStart, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, showToast]
 	);
 	sendToSessionRef.current = sendToSession;
 

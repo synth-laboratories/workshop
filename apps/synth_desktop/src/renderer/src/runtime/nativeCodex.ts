@@ -20,11 +20,12 @@ export function approvalModeConfig(mode: ApprovalMode): Pick<CodexSessionStart, 
 
 export function codexStartRequest(
 	sessionId: string, workspace: string, target: ExecutionTarget, approvalMode: ApprovalMode = "ask",
-	autoCompactTokenLimit = 196_000
+	autoCompactTokenLimits: Record<string, number> = { lagunaXs: 209_715, lagunaS: 840_000, luna: 840_000 }
 ): CodexSessionStart {
 	const approval = approvalModeConfig(approvalMode);
 	if (target.kind === "intern") throw new Error("Intern sessions are owned by Synth Cloud");
 	if (target.kind === "local") {
+		const autoCompactTokenLimit = autoCompactTokenLimits.lagunaXs ?? 209_715;
 		return {
 			sessionId, workspace, baseUrl: "http://127.0.0.1:7333", apiKey: "",
 			model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
@@ -33,6 +34,9 @@ export function codexStartRequest(
 		};
 	}
 	if (target.kind !== "remote") throw new Error("Unsupported Codex execution target");
+	const autoCompactTokenLimit = target.model.includes("gpt-5.6-luna")
+		? autoCompactTokenLimits.luna ?? 840_000
+		: autoCompactTokenLimits.lagunaS ?? 840_000;
 	if (target.provider === "synth-cloud") {
 		return {
 			// baseUrl is overwritten by the Rust host from synth_config; placeholder satisfies types.

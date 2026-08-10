@@ -11,6 +11,14 @@ export const PREFERENCES_SCHEMA_VERSION = 1 as const;
 export type ThemePreference = "system" | "light" | "dark";
 export type ToolActivityMode = "detailed" | "grouped" | "compact";
 export type ActiveEnterAction = "steer" | "enqueue";
+export type CompactContextModel = "lagunaXs" | "lagunaS" | "luna";
+export type AutoCompactTokenLimits = Record<CompactContextModel, number>;
+
+export const DEFAULT_AUTO_COMPACT_TOKEN_LIMITS: AutoCompactTokenLimits = {
+	lagunaXs: 209_715,
+	lagunaS: 840_000,
+	luna: 840_000
+};
 
 export type LayoutSnapshot = {
 	sidebarVisible: boolean;
@@ -56,8 +64,8 @@ export type DesktopPreferences = {
 		mode: ToolActivityMode;
 	};
 	agentContext: {
-		/** Start local context summarization when the estimated thread reaches this size. */
-		autoCompactTokenLimit: number;
+		/** Per-model local summarization thresholds; defaults are 80% of each context window. */
+		autoCompactTokenLimits: AutoCompactTokenLimits;
 	};
 	layout: {
 		last: LayoutSnapshot;
@@ -99,7 +107,7 @@ export const DEFAULT_PREFERENCES: DesktopPreferences = {
 		mode: "grouped"
 	},
 	agentContext: {
-		autoCompactTokenLimit: 196_000
+		autoCompactTokenLimits: { ...DEFAULT_AUTO_COMPACT_TOKEN_LIMITS }
 	},
 	layout: {
 		last: { ...DEFAULT_LAYOUT },
@@ -188,6 +196,13 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 	const agentContext = source.agentContext && typeof source.agentContext === "object"
 		? (source.agentContext as Record<string, unknown>)
 		: {};
+	const compactLimits = agentContext.autoCompactTokenLimits && typeof agentContext.autoCompactTokenLimits === "object"
+		? (agentContext.autoCompactTokenLimits as Record<string, unknown>)
+		: {};
+	const legacyCompactLimit = Number(agentContext.autoCompactTokenLimit);
+	const legacyOverride = Number.isFinite(legacyCompactLimit) && legacyCompactLimit !== 196_000
+		? legacyCompactLimit
+		: null;
 	const layout = source.layout && typeof source.layout === "object"
 		? (source.layout as Record<string, unknown>)
 		: {};
@@ -234,12 +249,11 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 		submission: { activeEnterAction: enter },
 		toolActivity: { mode },
 		agentContext: {
-			autoCompactTokenLimit: clampNumber(
-				agentContext.autoCompactTokenLimit,
-				16_000,
-				235_000,
-				DEFAULT_PREFERENCES.agentContext.autoCompactTokenLimit
-			)
+			autoCompactTokenLimits: {
+				lagunaXs: clampNumber(compactLimits.lagunaXs ?? legacyOverride, 16_000, 235_929, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaXs),
+				lagunaS: clampNumber(compactLimits.lagunaS ?? legacyOverride, 16_000, 945_000, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaS),
+				luna: clampNumber(compactLimits.luna ?? legacyOverride, 16_000, 945_000, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.luna)
+			}
 		},
 		layout: {
 			last: normalizeLayoutSnapshot(layout.last),

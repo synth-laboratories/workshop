@@ -200,15 +200,31 @@ export function GeneralPreferencesSettings({
 
 			<section className="pref-section" aria-labelledby="pref-agent-context" data-testid="settings-agent-context">
 				<h3 id="pref-agent-context">Agent context</h3>
-				<p className="settings-runtime-copy">When a thread reaches this estimated token count, Codex summarizes older context and keeps recent intent. Changes apply on the next turn.</p>
+				<p className="settings-runtime-copy">Defaults are 80% of each model's maximum context window. Codex summarizes older context at the selected threshold; changes apply on the next turn.</p>
 				<div className="pref-grid">
 					<NumericSetting
-						label="Compact context at"
-						value={preferences.agentContext.autoCompactTokenLimit}
+						label="Laguna XS (262,144 max)"
+						value={preferences.agentContext.autoCompactTokenLimits.lagunaXs}
 						min={16_000}
-						max={235_000}
-						testId="auto-compact-token-limit"
-						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit(limit))}
+						max={235_929}
+						testId="auto-compact-token-limit-laguna-xs"
+						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit("lagunaXs", limit))}
+					/>
+					<NumericSetting
+						label="Laguna S (1,050,000 max)"
+						value={preferences.agentContext.autoCompactTokenLimits.lagunaS}
+						min={16_000}
+						max={945_000}
+						testId="auto-compact-token-limit-laguna-s"
+						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit("lagunaS", limit))}
+					/>
+					<NumericSetting
+						label="Luna (1,050,000 max)"
+						value={preferences.agentContext.autoCompactTokenLimits.luna}
+						min={16_000}
+						max={945_000}
+						testId="auto-compact-token-limit-luna"
+						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit("luna", limit))}
 					/>
 				</div>
 			</section>
