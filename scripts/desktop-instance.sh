@@ -72,6 +72,43 @@ instance_processes() {
   '
 }
 
+instance_control_processes() {
+  ps -axo pid=,args= | awk -v config="$CONFIG" -v port="$VITE_PORT" '
+    index($0, "tauri dev --config " config) ||
+    (index($0, "vite --host 127.0.0.1 --port " port) && index($0, "--strictPort")) {
+      print $1 "\t" substr($0, index($0, $2))
+    }
+  '
+}
+
+stop_managed_pid() {
+  local pid_file="$1" expected_command="$2" expected_port="${3:-}" pid observed
+  [[ -f "$pid_file" ]] || return 0
+  pid="$(tr -d '[:space:]' <"$pid_file")"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || {
+    rm -f "$pid_file"
+    return 0
+  }
+  observed="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  if [[ "$observed" != *"$expected_command"* ]] || \
+     { [[ -n "$expected_port" ]] && [[ "$observed" != *"$expected_port"* ]]; }; then
+    rm -f "$pid_file"
+    return 0
+  fi
+  kill -TERM "$pid" 2>/dev/null || true
+  rm -f "$pid_file"
+}
+
+stop_managed_runtime() {
+  local laguna_home="${SYNTH_LAGUNA_HOME:-$DATA_ROOT/laguna}"
+  # The daemon and GGUF engine are detached so renderer hot reloads do not
+  # unload weights. A forced development-instance stop therefore has to reap
+  # the two processes it owns explicitly. PID reuse is guarded by both command
+  # identity and, for llama-server, this instance's unique engine port.
+  stop_managed_pid "$laguna_home/sidecar.pid" "laguna_daemon"
+  stop_managed_pid "$laguna_home/muse-llama.pid" "Muse-Glimmer" "$MUSE_PORT"
+}
+
 write_contract() {
 	local old_runtime="" manifest_tmp="$MANIFEST.tmp"
   mkdir -p "$DATA_ROOT" "$WORKSPACE" "$GENERATED_ROOT" "$TARGET_ROOT"
@@ -179,24 +216,34 @@ print_contract() {
 }
 
 stop_instance() {
-  local rows pids
+  local rows controls pids control_pids
   rows="$(instance_processes)"
-  if [[ -z "$rows" ]]; then
+  controls="$(instance_control_processes)"
+  if [[ -z "$rows" && -z "$controls" ]]; then
+    stop_managed_runtime
     mark_runtime "stopped"
     echo "[desktop:$NAME] stopped"
     return
   fi
   printf '%s\n' "$rows" | sed "s/^/[desktop:$NAME] stopping /"
+  [[ -z "$controls" ]] || printf '%s\n' "$controls" | sed "s/^/[desktop:$NAME] stopping controller /"
   pids="$(printf '%s\n' "$rows" | awk '{print $1}')"
+  control_pids="$(printf '%s\n' "$controls" | awk '{print $1}')"
+  # Stop the Tauri watcher first; otherwise it immediately respawns the app
+  # binary that this command just terminated.
   # shellcheck disable=SC2086
-  kill $pids 2>/dev/null || true
+  [[ -z "$control_pids" ]] || kill $control_pids 2>/dev/null || true
+  # shellcheck disable=SC2086
+  [[ -z "$pids" ]] || kill $pids 2>/dev/null || true
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if [[ -z "$(instance_processes)" ]]; then
+      stop_managed_runtime
       mark_runtime "stopped"
       return
     fi
     sleep 0.25
   done
+  stop_managed_runtime
   echo "[desktop:$NAME] process did not stop cleanly" >&2
   return 1
 }
@@ -242,6 +289,23 @@ dev_instance() {
   export SYNTH_LAGUNA_PORT="${SYNTH_LAGUNA_PORT:-$LAGUNA_PORT}"
   export SYNTH_LAGUNA_BASE_URL="${SYNTH_LAGUNA_BASE_URL:-http://127.0.0.1:$SYNTH_LAGUNA_PORT}"
   export SYNTH_MUSE_PORT="${SYNTH_MUSE_PORT:-$MUSE_PORT}"
+
+  # Separate ports make parallel apps functionally independent, but Apple
+  # unified memory is machine-wide. Do not let a secondary dev app eagerly
+  # map another 20–30 GiB model while any Synth local runtime is alive. The
+  # app-level lease is the final race-safe guard; this gives developers an
+  # early, readable warning and leaves cloud/UI work available.
+  local active_local_runtimes
+  active_local_runtimes="$(ps -axo pid=,command= | awk '
+    /[l]aguna_daemon/ || (/[l]lama-server/ && /[M]use-Glimmer/) { print }
+  ')"
+  if [[ -n "$active_local_runtimes" ]] && \
+     [[ "${SYNTH_DESKTOP_ALLOW_CONCURRENT_LOCAL_MODEL:-0}" != "1" ]]; then
+    export SYNTH_LAGUNA_AUTO_START=0
+    echo "[desktop:$NAME] local inference disabled: another Synth model runtime is active" >&2
+    printf '%s\n' "$active_local_runtimes" | sed "s/^/[desktop:$NAME] active /" >&2
+    echo "[desktop:$NAME] close/unload that runtime, then restart this instance to enable local inference" >&2
+  fi
   if [[ -z "${SYNTH_LAGUNA_API_KEY:-}" && -f "$laguna_home/api_key" ]]; then
     export SYNTH_LAGUNA_API_KEY
     SYNTH_LAGUNA_API_KEY="$(tr -d '\n' <"$laguna_home/api_key")"

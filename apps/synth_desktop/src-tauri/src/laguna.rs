@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use fs2::FileExt;
 use rand::RngCore;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -10,7 +11,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -90,6 +91,66 @@ const MODEL_UNLOAD_PATH: &str = "/v1/synth/model/unload";
 const SETTINGS_PATH: &str = "/v1/synth/settings";
 /// Guards against an SSE peer that never emits an event boundary.
 const SSE_BUFFER_LIMIT: usize = 1 << 20;
+static LOCAL_RUNTIME_LEASE: OnceLock<std::sync::Mutex<Option<fs::File>>> = OnceLock::new();
+
+fn local_runtime_lease() -> &'static std::sync::Mutex<Option<fs::File>> {
+    LOCAL_RUNTIME_LEASE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Only one Synth deployment may own local model memory at a time. Ports and
+/// data directories isolate correctness, but they do not isolate unified
+/// memory: two otherwise healthy apps can each map another 20–30 GiB model.
+/// The kernel releases this advisory lock if the owner crashes.
+fn acquire_local_runtime_lease(model_id: &str) -> Result<()> {
+    let mut lease = local_runtime_lease()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("local model runtime lease was poisoned"))?;
+    if lease.is_some() {
+        return Ok(());
+    }
+    let root = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".synth-desktop");
+    fs::create_dir_all(&root)?;
+    let path = root.join("local-model-runtime.lock");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("open local model runtime lease at {}", path.display()))?;
+    file.try_lock_exclusive().map_err(|_| {
+        let mut owner = String::new();
+        let _ = file.read_to_string(&mut owner);
+        let owner = owner.trim().replace('\n', ", ");
+        anyhow::anyhow!(
+            "Local inference is already owned by another Synth app{}; close or unload it before loading {model_id}. Only one local model may be resident on this Mac.",
+            if owner.is_empty() { String::new() } else { format!(" ({owner})") }
+        )
+    })?;
+    file.set_len(0)?;
+    file.write_all(
+        format!(
+            "pid={}\ninstance={}\nmodel={}\n",
+            std::process::id(),
+            env::var("SYNTH_DESKTOP_INSTANCE").unwrap_or_else(|_| "installed".into()),
+            model_id
+        )
+        .as_bytes(),
+    )?;
+    file.sync_data()?;
+    *lease = Some(file);
+    Ok(())
+}
+
+fn release_local_runtime_lease() {
+    if let Ok(mut lease) = local_runtime_lease().lock() {
+        if let Some(file) = lease.take() {
+            let _ = file.set_len(0);
+            let _ = FileExt::unlock(&file);
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct ModelSpec {
@@ -374,6 +435,8 @@ impl LagunaManager {
 
     pub fn clear_selected_model(&self) -> Result<()> {
         stop_muse_engine()?;
+        stop_managed_sidecar()?;
+        release_local_runtime_lease();
         match fs::remove_file(home().join(SELECTED_MODEL_FILE)) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -622,6 +685,12 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         })
         .await;
 
+        let selected_model = selected_model_id()?;
+        if let Err(error) = acquire_local_runtime_lease(&selected_model) {
+            self.set_error(error.to_string()).await;
+            return Ok(None);
+        }
+
         if let Some(status) = self.probe(&base_url, &api_key).await {
             if matches!(status.phase.as_str(), "ready" | "unloaded") {
                 self.set_status(status).await;
@@ -645,7 +714,6 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         // The Synth-managed daemon is the only local runtime: it loads the
         // weights in-process. There is no second engine to discover or proxy
         // through — Poolside's own sidecar is not ours and is never reused.
-        let selected_model = selected_model_id()?;
         let is_muse = selected_model == MUSE_GLIMMER_MODEL;
         let backend = if is_muse {
             // A GGUF engine speaks Chat Completions and has no Responses
@@ -674,6 +742,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
             // named the step rather than the problem.
             if let Err(failure) = spawn_muse_engine(&api_key) {
                 self.set_error(failure.detail).await;
+                release_local_runtime_lease();
                 return Ok(None);
             }
         } else {
@@ -681,7 +750,11 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
             // weights resident behind an MLX session that never uses them.
             stop_muse_engine()?;
         }
-        spawn_sidecar(workshop_root, &api_key, backend)?;
+        if let Err(error) = spawn_sidecar(workshop_root, &api_key, backend) {
+            let _ = stop_muse_engine();
+            release_local_runtime_lease();
+            return Err(error);
+        }
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         while tokio::time::Instant::now() < deadline {
@@ -689,6 +762,11 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
                 let done = status.phase == "ready" || status.phase == "error";
                 self.set_status(status.clone()).await;
                 if done {
+                    if status.phase == "error" {
+                        let _ = stop_managed_sidecar();
+                        let _ = stop_muse_engine();
+                        release_local_runtime_lease();
+                    }
                     return Ok((status.phase == "ready").then_some(base_url));
                 }
             }
@@ -696,6 +774,9 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         }
         self.set_error(format!("Timed out waiting for Laguna at {base_url}"))
             .await;
+        let _ = stop_managed_sidecar();
+        let _ = stop_muse_engine();
+        release_local_runtime_lease();
         Ok(None)
     }
 
@@ -1793,6 +1874,19 @@ fn stop_managed_sidecar() -> Result<bool> {
     Ok(false)
 }
 
+/// Best-effort cleanup for application shutdown. The model processes are
+/// deliberately detached so they survive a renderer reload; that also means
+/// the application must explicitly reap them when its event loop exits.
+pub(crate) fn shutdown_managed_runtime() {
+    if let Err(error) = stop_managed_sidecar() {
+        eprintln!("Failed to stop the managed Laguna daemon during shutdown: {error}");
+    }
+    if let Err(error) = stop_muse_engine() {
+        eprintln!("Failed to stop the managed Muse engine during shutdown: {error}");
+    }
+    release_local_runtime_lease();
+}
+
 fn validate_python(python: &Path) -> Result<()> {
     let status = Command::new(python)
         .arg("--version")
@@ -2020,6 +2114,43 @@ mod tests {
         )
         .unwrap();
         root
+    }
+
+    fn muse_sparse_fixture() -> PathBuf {
+        let root = env::temp_dir().join(format!(
+            "synth-muse-model-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        for (name, size) in MUSE_FILE_SIZES {
+            std::fs::File::create(root.join(name))
+                .unwrap()
+                .set_len(*size)
+                .unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn muse_requires_every_artifact_at_the_exact_pinned_size() {
+        let root = muse_sparse_fixture();
+        let hit = validate_model_dir(&root).unwrap();
+        assert_eq!(hit.model_id, MUSE_GLIMMER_MODEL);
+        assert_eq!(hit.shard_count, MUSE_FILE_SIZES.len());
+        assert_eq!(
+            hit.total_bytes,
+            MUSE_FILE_SIZES.iter().map(|(_, size)| *size).sum::<u64>()
+        );
+
+        std::fs::File::options()
+            .write(true)
+            .open(root.join(MUSE_DFLASH_GGUF))
+            .unwrap()
+            .set_len(MUSE_FILE_SIZES[2].1 - 1)
+            .unwrap();
+        let error = validate_model_dir(&root).unwrap_err().to_string();
+        assert!(error.contains("Incomplete Muse runtime artifact"));
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn settings_exchange_marks_missing_endpoint_as_unsupported() {

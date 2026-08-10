@@ -1864,6 +1864,11 @@ pub fn run() {
             terminal_resize,
             terminal_close
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Synth Desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building Synth Desktop")
+        .run(|_app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                laguna::shutdown_managed_runtime();
+            }
+        });
 }

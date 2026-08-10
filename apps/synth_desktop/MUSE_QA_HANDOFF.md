@@ -10,7 +10,7 @@ writing). Design notes and the full contract: `apps/synth_desktop/muse_sidecar.m
 
 ---
 
-## Read this first: only run one Desktop at a time
+## Read this first: only one local model runtime is permitted
 
 Instances used to share one daemon on one port. Whichever launched last owned it
 for everyone — with *its* binary's environment. That is not a hypothetical: an
@@ -19,15 +19,25 @@ instance failed with **"The provider could not produce a response: stream
 disconnected before completion"**, while that instance's own daemon log showed
 nothing but health polls.
 
-Instances now get their own port pair and data directory. Still, for QA:
+Instances now get their own port pair and data directory, and Synth takes a
+machine-wide advisory lease before starting any local model. A second app may
+run for cloud/UI work, but its local inference remains disabled until the owner
+is closed or unloaded. This is deliberate: ports isolate requests, not Apple's
+unified memory, and parallel Muse/Laguna loads can exhaust the machine.
+
+For QA:
 
 ```bash
 ps -axo pid=,command= | grep "Synth Desktop.*MacOS" | grep -v grep
 ```
 
-If more than one Desktop is running, **stop the others** before you trust a
-result. If you do run several, each is now isolated — check which port yours is
-on:
+If more than one Desktop is running, check which one owns local inference. The
+owner is recorded in `~/.synth-desktop/local-model-runtime.lock`; the kernel
+releases the lease automatically if its app crashes. Named development
+instances also detect older runtimes that predate the lease and launch with
+local auto-start disabled.
+
+Each instance remains request-isolated — check which port yours is on:
 
 ```bash
 ./scripts/desktop-instance.sh status <name>     # prints its laguna + muse ports
@@ -184,9 +194,12 @@ which almost always means a second instance or a stale build owns the port.
 
 ---
 
-## Not covered yet
+## Covered in the 2026-08-10 QA pass
 
-- Mixed soak: interleaved Chat and Responses, repeated switching, unload/reload.
-- Performance numbers (TTFT, decode tps) in the Laguna soak's shape.
-- The inference rail / monitor against Muse — it should show Muse metrics or say
-  "unavailable for this runtime", never Laguna XS numbers for a Muse session.
+- Mixed concurrent soak across Chat and Responses.
+- Muse → Laguna → Muse switching and memory release.
+- TTFT/decode/request telemetry and Muse identity in the inference rail.
+- Cancellation and slot release, including a disconnected client.
+- 8K-token prompt processing, exact artifact-size validation, missing-runtime
+  guidance, isolated ports, forced dev shutdown, and the machine-wide local
+  runtime admission guard.
