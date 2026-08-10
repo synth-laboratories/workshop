@@ -83,3 +83,22 @@ New policy:
 The committed `dev` baseline does not currently pass `npm run typecheck` due to
 unrelated component-prop drift. It should be resolved before treating the
 entire Desktop branch as release-clean.
+
+## Follow-up live deployment failure
+
+A later Desktop screenshot failed with `stream closed before
+response.completed`. The window was a dirty `aesthetic-audit` bundle built at
+`a94fda7`, before the Muse sidecar fix. It spawned
+`RemoteResponsesBackend`/`SYNTH_LAGUNA_BACKEND=external` against a Muse engine
+left by another app; the engine rejected its different API key with HTTP 401.
+A separate stale `cloudqa` bundle then reclaimed the same canonical port and
+home after the first app exited.
+
+After those two pre-fix bundles were stopped, this branch started on its named
+17726/17727 ports with `LlamaCppChatBackend`. A live Chat request returned
+`muse-works` with HTTP 200, and a streaming Responses request emitted output
+text, `response.completed`, and `[DONE]` with `responses-work`.
+
+The transcript now reports local phases explicitly: warming/loading,
+queueing, context prefill, and generation. Muse's inference rail is labeled
+"Local GGUF engine" rather than "MLX sidecar."

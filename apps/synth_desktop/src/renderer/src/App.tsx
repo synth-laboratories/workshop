@@ -1110,6 +1110,22 @@ export default function App() {
 		activeChatSession?.target.kind === "local" &&
 		(laguna?.phase === "loading" || !laguna?.loadedModel)
 	);
+	const activeInferencePhase = inferenceMonitor.snapshot?.active?.phase ?? null;
+	const activeChatProgressLabel = activeChatWarmingUp
+		? activeChatSession?.target.kind === "local" && activeChatSession.target.model.includes("Muse")
+			? "Warming up Muse…"
+			: "Warming up Laguna…"
+		: activeInferencePhase === "queued"
+			? "Queued for local inference…"
+			: activeInferencePhase === "loading"
+				? "Loading model weights…"
+				: activeInferencePhase === "compiling"
+					? "Warming up model…"
+					: activeInferencePhase === "prefill"
+						? "Reading context…"
+						: activeInferencePhase === "decode"
+							? "Generating…"
+							: "Working…";
 	const activeLocalModel = activeChatSession?.target.kind === "local";
 	/*
 	 * The rail takes a fixed-ish column out of the workbench. Below this width
@@ -2123,6 +2139,7 @@ export default function App() {
 										onReject={(approvalId) => void controlActive("reject", { approvalId })}
 										running={activeChatRunning}
 										warmingUp={activeChatWarmingUp}
+										workingLabel={activeChatProgressLabel}
 										onStop={() => {
 											setQueueAfterStop(promptsForConversation(activeChat.id).length > 0);
 											void controlActive("cancel");
@@ -2161,8 +2178,10 @@ export default function App() {
 							{showInferenceRail ? (
 								<aside className="inference-rail" data-testid="inference-rail" aria-label="Local inference monitor">
 									<div className="inference-rail-label">
-										<span>MLX sidecar</span>
-										<small>Owns local model memory, prompt caches, and the single-GPU queue.</small>
+										<span>{activeChatSession?.target.model.includes("Muse") ? "Local GGUF engine" : "MLX sidecar"}</span>
+										<small>{activeChatSession?.target.model.includes("Muse")
+											? "llama.cpp · Metal · DFlash; owns model memory, KV caches, and the GPU queue."
+											: "Owns local model memory, prompt caches, and the single-GPU queue."}</small>
 									</div>
 									{/* `visible` drives subscribe/teardown, so a closed rail
 									    costs nothing. */}
