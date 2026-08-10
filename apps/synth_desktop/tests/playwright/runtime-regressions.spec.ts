@@ -39,7 +39,7 @@ async function installLagunaFixture(page: Page, phase: LagunaPhase): Promise<voi
 		};
 	}, phase);
 	await page.reload();
-	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("titlebar").waitFor();
 }
 
 test("native Laguna readiness overrides missing legacy runtime health", async ({ page }) => {
@@ -49,8 +49,7 @@ test("native Laguna readiness overrides missing legacy runtime health", async ({
 	await expect(page.getByTestId("composer-input")).toHaveAttribute("placeholder", "Ask Laguna something…");
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName(/Laguna XS 2\.1/);
 	await expect(page.getByTestId("composer-model")).not.toHaveAccessibleName(/offline|starting/i);
-	await expect(page.getByTestId("runtime-status")).toHaveAccessibleName("Local ready");
-	await expect(page.getByTestId("runtime-status")).not.toContainText(/Laguna·|\bOR\b|Intern|\d+\/\d+/);
+	await expect(page.getByTestId("runtime-status")).toHaveCount(0);
 });
 
 for (const phase of ["starting", "loading"] as const) {

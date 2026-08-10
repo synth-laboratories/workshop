@@ -36,7 +36,7 @@ test.describe("preferences persistence", () => {
 
 		const page2 = await context.newPage();
 		await page2.goto(page.url());
-		await page2.getByTestId("runtime-status").waitFor();
+		await page2.getByTestId("titlebar").waitFor();
 		await expect(page2.locator("html")).toHaveAttribute("data-theme", "dark");
 		const restored = await page2.evaluate(() => (window as typeof window & { __synthPreferences?: { get(): { appearance: { chatFontSize: number }; toolActivity: { mode: string } } } }).__synthPreferences?.get());
 		expect(restored?.appearance.chatFontSize).toBe(18);
@@ -55,7 +55,7 @@ test.describe("preferences persistence", () => {
 			}));
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		const normalized = await page.evaluate(() => (window as typeof window & { __synthPreferences?: { get(): any } }).__synthPreferences!.get());
 		expect(["system", "light", "dark"]).toContain(normalized.appearance.theme);
 		expect(["detailed", "grouped", "compact"]).toContain(normalized.toolActivity.mode);
@@ -110,7 +110,7 @@ test.describe("tool activity presentation", () => {
 			};
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		await page.getByTestId("local-chat-activity-chat").click();
 		await expect(page.getByTestId("chat-transcript")).toHaveAttribute("data-activity-mode", "detailed");
 		await page.getByTestId("activity-mode-menu-trigger").click();
@@ -164,7 +164,7 @@ test.describe("steer and enqueue", () => {
 			};
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		await page.getByTestId("local-chat-queue-chat").click();
 		await expect(page.getByTestId("composer-input")).toBeEnabled();
 		await expect(page.getByTestId("composer-intent-hint")).toBeVisible();
@@ -357,7 +357,7 @@ test.describe("conversation management", () => {
 			};
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		await expect(page.getByTestId("chat-unread-manage-chat")).toBeVisible();
 		const chat = page.getByTestId("local-chat-manage-chat");
 		await chat.focus();
@@ -400,7 +400,7 @@ test.describe("layout persistence", () => {
 		const draggedWidth = await page.getByTestId("sidebar").evaluate((node) => node.getBoundingClientRect().width);
 		expect(draggedWidth).toBeGreaterThanOrEqual(320);
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		await expect(page.getByTestId("sidebar")).toHaveCSS("width", `${draggedWidth}px`);
 	});
 
@@ -433,7 +433,7 @@ test.describe("layout persistence", () => {
 			});
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		await expect(page.getByTestId("sidebar")).toHaveCSS("width", "300px");
 		await expect(page.getByTestId("terminal-panel")).toBeVisible();
 	});

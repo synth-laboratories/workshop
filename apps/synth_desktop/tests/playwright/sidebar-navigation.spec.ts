@@ -32,7 +32,7 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 		};
 	});
 	await page.reload();
-	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("titlebar").waitFor();
 
 	await page.keyboard.press("Meta+k");
 	const search = page.getByTestId("conversation-search");
@@ -105,7 +105,7 @@ test("dense search results scroll inside the dialog instead of clipping its last
 		};
 	});
 	await page.reload();
-	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("titlebar").waitFor();
 	await page.getByTestId("open-search").click();
 
 	const dialog = page.getByTestId("conversation-search");
@@ -171,7 +171,7 @@ test("sidebar starts compact while retaining a working conversation and a revers
 		};
 	});
 	await page.reload();
-	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("titlebar").waitFor();
 	await expect(page.getByTestId("chat-list").locator(".chat-item .item-icon")).toHaveCount(0);
 	await expect(page.getByTestId("local-chat-sidebar-chat-13")).toBeVisible();
 	const working = page.getByTestId("chat-working-sidebar-chat-13");
@@ -251,7 +251,7 @@ test("a daemon-reported decode rate stays with its one active local conversation
 		};
 	});
 	await page.reload();
-	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("titlebar").waitFor();
 	await page.getByTestId("local-chat-decoded-local-chat").click();
 
 	const status = page.getByTestId("chat-working-decoded-local-chat");

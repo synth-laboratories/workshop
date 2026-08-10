@@ -65,7 +65,7 @@ async function installVisualsFixture(page: Page, visuals: VisualRecord[] = [samp
 		};
 	}, visuals);
 	await page.reload();
-	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("titlebar").waitFor();
 }
 
 test("Visuals library lists a saved visual by visual_id", async ({ page }) => {

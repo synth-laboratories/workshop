@@ -36,7 +36,7 @@ async function enableComposer(page: Page): Promise<void> {
 		};
 	});
 	await page.reload();
-	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("titlebar").waitFor();
 	await expect(page.getByTestId("composer-input")).toBeEnabled();
 }
 
@@ -113,7 +113,7 @@ test("Settings Voice lists Whisper models and download selects one", async ({ pa
 		};
 	});
 	await page.reload();
-	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("titlebar").waitFor();
 
 	await openSettings(page);
 	await page.getByRole("button", { name: "Voice", exact: true }).click();

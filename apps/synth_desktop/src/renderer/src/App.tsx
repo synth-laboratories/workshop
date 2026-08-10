@@ -285,31 +285,21 @@ const browserRuntimeClient = {
 	}
 };
 
-function IconLayout() {
+function IconSidePanel() {
 	return (
 		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
 			<rect x="2.5" y="2.5" width="11" height="11" rx="2" stroke="currentColor" strokeWidth="1.3" />
-			<path d="M6.2 2.5v11" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M10 2.5v11" stroke="currentColor" strokeWidth="1.3" />
 		</svg>
 	);
 }
 
-function localRuntimePresentation(health: RuntimeHealth | null, laguna: LagunaStatus | null) {
-	if (laguna?.phase === "ready" || health?.local.mode === "mlx") {
-		return { label: "Local ready", visibleLabel: "Local", tone: "is-ready" } as const;
-	}
-	if (laguna?.phase === "loading" || laguna?.phase === "starting") {
-		return { label: "Local starting", visibleLabel: "Local", tone: "is-starting" } as const;
-	}
-	if (!health && !laguna) return { label: "Connecting to local runtime", visibleLabel: "Local", tone: "is-connecting" } as const;
-	return { label: "Local offline", visibleLabel: "Local", tone: "is-offline" } as const;
-}
-
-function IconPulse() {
+function IconTerminal() {
 	return (
 		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="2.5" y="3" width="11" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
 			<path
-				d="M1.5 8h2.6l1.6-4.3 2.4 8.6 1.7-4.3h2.7"
+				d="M5 6.2l2 1.8L5 9.8M8.2 10.2H11"
 				stroke="currentColor"
 				strokeWidth="1.3"
 				strokeLinecap="round"
@@ -1852,40 +1842,28 @@ export default function App() {
 							</button> : null}
 						</div>
 						<div className="titlebar-actions">
-							{(() => {
-								const runtime = localRuntimePresentation(health, laguna);
-								const diagnostic = health
-									? [
-										health.runtimeId,
-										`Laguna ${health.local.mode}`,
-										laguna?.phase ? `sidecar ${laguna.phase}` : null,
-										laguna?.backend ? `backend ${laguna.backend}` : null,
-										laguna?.loadedModel || health.local.modelPath ||
-											(laguna?.phase === "ready" ? "weights currently unloaded" : "weights not detected"),
-										`OpenRouter ${health.openrouter.mode}`,
-										health.inventory
-											? `Inventory ${health.inventory.containers} containers, ${health.inventory.traces} traces, ${health.inventory.visuals} visuals`
-											: null
-									].filter(Boolean).join(" · ")
-									: laguna?.detail || runtime.label;
-								return (
-									<span
-										className={`runtime-pill ${runtime.tone}`}
-										data-testid="runtime-status"
-										aria-label={runtime.label}
-										title={diagnostic}
-									>
-										<span className="runtime-pill-dot" aria-hidden />
-										<span className="runtime-pill-label">{runtime.visibleLabel}</span>
-									</span>
-								);
-							})()}
+							<button
+								type="button"
+								className="titlebar-icon-btn"
+								aria-label={terminalOpen ? "Hide terminal" : "Show terminal"}
+								title="Toggle terminal (⌘J)"
+								data-testid="toggle-terminal"
+								onClick={() => {
+									setTerminalOpen((current) => {
+										const next = !current;
+										persistLayoutSnapshot({ bottomPanelVisible: next });
+										return next;
+									});
+								}}
+							>
+								<IconTerminal />
+							</button>
 							{activeLocalModel ? <button
 								type="button"
 								className={`titlebar-icon-btn${inferenceRailOpen ? " active" : ""}`}
-								aria-label={inferenceRailOpen ? "Hide inference monitor" : "Show inference monitor"}
+								aria-label={inferenceRailOpen ? "Hide inference panel" : "Show inference panel"}
 								aria-pressed={inferenceRailOpen}
-								title="MLX sidecar inference stats"
+								title="MLX sidecar inference panel"
 								data-testid="toggle-inference-rail"
 								onClick={() => {
 									setInferenceRailOpen((current) => {
@@ -1895,23 +1873,8 @@ export default function App() {
 									});
 								}}
 							>
-								<IconPulse />
+								<IconSidePanel />
 							</button> : null}
-							<button
-								type="button"
-								className="titlebar-icon-btn"
-								aria-label={terminalOpen ? "Hide terminal" : "Show terminal"}
-								title="Toggle terminal (⌘J)"
-								onClick={() => {
-									setTerminalOpen((current) => {
-										const next = !current;
-										persistLayoutSnapshot({ bottomPanelVisible: next });
-										return next;
-									});
-								}}
-							>
-								<IconLayout />
-							</button>
 						</div>
 					</header>
 

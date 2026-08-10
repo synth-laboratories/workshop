@@ -77,7 +77,7 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
 			};
 		});
 		await page.goto(rendererOrigin);
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		await use(page);
 	}
 });

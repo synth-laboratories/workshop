@@ -54,7 +54,7 @@ test.describe("design locks (must pass)", () => {
 			};
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		await page.getByRole("button", { name: "Settings" }).click();
 		await page.getByRole("button", { name: "Runtime", exact: true }).click();
 		await expect(page.getByTestId("workspace-access-settings")).toContainText("/Users/joshuapurtell/Documents/GitHub");
@@ -80,7 +80,8 @@ test.describe("design locks (must pass)", () => {
 		await expect(page.getByTestId("filter-traces")).toBeVisible();
 	});
 
-	test("titlebar Account opens Account settings, not a dead control", async ({ page }) => {
+	test("sidebar account menu opens Account settings, not a dead control", async ({ page }) => {
+		await page.getByTestId("account-menu-trigger").click();
 		await page.getByTestId("open-account-settings").click();
 		await expect(page.getByTestId("settings-page")).toBeVisible();
 		await expect(page.getByTestId("backend-settings")).toBeVisible();
@@ -104,7 +105,7 @@ test.describe("design locks (must pass)", () => {
 			};
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		const permission = page.getByTestId("approval-mode-select");
 		await expect(permission).toBeEnabled();
 		await permission.click();
@@ -165,7 +166,7 @@ test.describe("design debt (expected fail until fixed)", () => {
 			} as typeof window.synthLaguna;
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		await page.getByRole("button", { name: "Settings" }).click();
 		await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
 		await page.getByRole("button", { name: "Reload" }).click();

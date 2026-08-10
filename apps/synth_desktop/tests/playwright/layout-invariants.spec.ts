@@ -85,12 +85,9 @@ test("landing shell has no horizontal overflow", async ({ page }) => {
 	await expect(page.getByTestId("titlebar")).toBeVisible();
 });
 
-test("titlebar chrome is trimmed to status and terminal controls", async ({ page }) => {
+test("titlebar chrome is trimmed to terminal controls", async ({ page }) => {
 	await expect(page.getByRole("button", { name: "Show terminal" })).toBeVisible();
-	// The runtime pill stays: it is the harness readiness signal and the only
-	// always-visible runtime diagnostic. Account and Models moved to the
-	// sidebar footer / settings, so their titlebar buttons are gone.
-	await expect(page.getByTestId("runtime-status")).toBeVisible();
+	await expect(page.getByTestId("runtime-status")).toHaveCount(0);
 	await expect(page.getByTestId("open-account-settings")).toHaveCount(0);
 	await expect(page.getByTestId("open-models-settings")).toHaveCount(0);
 });

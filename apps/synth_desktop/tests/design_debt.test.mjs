@@ -23,6 +23,7 @@ test("titlebar is trimmed; account entry lives in the sidebar footer", () => {
 	assert.doesNotMatch(app, /Account — stub/);
 	assert.doesNotMatch(app, /data-testid="open-account-settings"/);
 	assert.doesNotMatch(app, /data-testid="open-models-settings"/);
+	assert.doesNotMatch(app, /data-testid="runtime-status"/);
 	assert.doesNotMatch(app, /avatar-btn/);
 	assert.match(app, /setView\(\{ kind: "settings", section: "account" \}\)/);
 	assert.doesNotMatch(app, /Account menu — stub/);

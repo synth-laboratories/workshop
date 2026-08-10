@@ -55,8 +55,8 @@ const layout = extract((state: any) => {
 			document.querySelector('[data-testid="sidebar"]') &&
 			document.querySelector('[data-testid="titlebar"]')
 		),
-		runtimeStatusCompact: Boolean(
-			runtimeStatus && runtimeStatusRect && runtimeStatusRect.width <= 90 &&
+		runtimeStatusCompact: !runtimeStatus || Boolean(
+			runtimeStatusRect && runtimeStatusRect.width <= 90 &&
 			!/(Laguna·|\bOR\b|Intern|\d+\/\d+)/.test(runtimeStatus.textContent ?? "")
 		),
 		subagentsValid: !subagents || (

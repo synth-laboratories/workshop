@@ -23,7 +23,7 @@ test("Synth Cloud Laguna S appears under SYNTH CLOUD when api key is configured"
 		};
 	});
 	await page.reload();
-	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("titlebar").waitFor();
 
 	await page.getByTestId("composer-model").click();
 	const menu = page.getByTestId("composer-model-menu");

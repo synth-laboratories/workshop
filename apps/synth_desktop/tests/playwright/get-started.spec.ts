@@ -10,7 +10,7 @@ test.describe("first-five-minutes golden path", () => {
 	test.beforeEach(async ({ page }) => {
 		await page.addInitScript(() => window.localStorage.clear());
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 	});
 
 	test("a fresh install boots to a usable landing with an explicit account choice", async ({ page }) => {

@@ -194,7 +194,7 @@ test.describe("coverage gaps", () => {
 			} as typeof window.synthVisuals;
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		await page.getByTestId("open-inventory").click();
 		await page.getByTestId("inventory-container-rust-container").waitFor();
 		await page.getByTestId("inventory-tab-traces").click();

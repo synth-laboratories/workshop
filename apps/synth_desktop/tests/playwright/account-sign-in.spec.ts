@@ -64,7 +64,7 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 		};
 	});
 	await page.reload();
-	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("titlebar").waitFor();
 
 	await page.getByTestId("account-menu-trigger").click();
 	await page.getByTestId("account-menu").getByTestId("open-account-settings").click();
@@ -120,7 +120,7 @@ test("cancel during pairing returns to the idle sign-in affordance", async ({ pa
 		};
 	});
 	await page.reload();
-	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("titlebar").waitFor();
 	await page.getByTestId("account-menu-trigger").click();
 	await page.getByTestId("account-menu").getByTestId("open-account-settings").click();
 	await page.getByTestId("sign-in-begin").click();
