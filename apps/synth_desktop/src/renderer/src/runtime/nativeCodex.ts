@@ -129,7 +129,8 @@ export function codexEventToRuntime(event: CodexEvent, sequence: number): Runtim
 	const itemType = typeof item?.type === "string" ? item.type.toLowerCase() : "";
 	const agentMessage = lower.includes("agentmessage") || lower.includes("agent_message") || itemType === "agentmessage";
 	let eventKind = method;
-	if (agentMessage) {
+	if (lower === "thread/compacted" || itemType === "contextcompaction") eventKind = "thread/compacted";
+	else if (agentMessage) {
 		eventKind = lower.includes("delta") ? "message.delta" : lower.includes("completed") ? "message.completed" : "message.created";
 	} else if (lower.includes("reasoning") || itemType === "reasoning") eventKind = "agent.reasoning";
 	else if (lower.includes("commandexecution") || itemType === "commandexecution") eventKind = "command.execution";

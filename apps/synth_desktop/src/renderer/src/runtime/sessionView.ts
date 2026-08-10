@@ -130,12 +130,18 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 	const subagentIds = new Set(eventsToSubagents(events).map((agent) => agent.id));
 	let activeAssistantId: string | null = null;
 	let producedAssistantForTurn = false;
+	let compactedDuringTurn = false;
 
 	for (const event of events) {
 		const payload = event.payload ?? {};
 		if (event.eventKind === "run.started") {
 			activeAssistantId = null;
 			producedAssistantForTurn = false;
+			compactedDuringTurn = false;
+		}
+		if (event.eventKind === "thread/compacted") {
+			compactedDuringTurn = true;
+			continue;
 		}
 		const eventThreadId = typeof payload.threadId === "string"
 			? payload.threadId
@@ -273,7 +279,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 			event.eventKind === "run.failed" ||
 			event.eventKind === "run.cancelled"
 		) {
-			if (!producedAssistantForTurn) {
+			if (!producedAssistantForTurn && !compactedDuringTurn) {
 				const detail = terminalTurnDetail(event.payload ?? {});
 				const failureDetail = detail ? `: ${detail.replace(/[.!?]+$/, "")}.` : ".";
 				const message = event.eventKind === "run.failed"
@@ -287,6 +293,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 			}
 			activeAssistantId = null;
 			producedAssistantForTurn = false;
+			compactedDuringTurn = false;
 		}
 	}
 
@@ -760,6 +767,7 @@ export function eventsToLocalActivity(
 	const shownSubagentEnds = new Set<string>();
 	let runStartedAt: string | undefined;
 	let runActions = { commands: 0, reads: 0, writes: 0, searches: 0, tools: 0 };
+	let compactionMarkerAddedForRun = false;
 	const shownToolLines = new Map<string, LocalActivityLine>();
 	for (const event of events) {
 		if (event.eventKind === "approval.requested" && resolvedApprovalSequences.has(event.sequence)) continue;
@@ -824,6 +832,7 @@ export function eventsToLocalActivity(
 		if (event.eventKind === "run.started") {
 			runStartedAt = event.createdAt;
 			runActions = { commands: 0, reads: 0, writes: 0, searches: 0, tools: 0 };
+			compactionMarkerAddedForRun = false;
 			shownToolLines.clear();
 			continue;
 		}
@@ -848,10 +857,13 @@ export function eventsToLocalActivity(
 			continue;
 		}
 		if (event.eventKind === "thread/compacted") {
+			if (compactionMarkerAddedForRun) continue;
+			compactionMarkerAddedForRun = true;
 			const source = typeof payload.source === "string" ? payload.source.toLowerCase() : "automatic";
 			(byMessage[current] ??= []).push({
 				id: `context-compaction-${event.sequence}`,
 				label: source === "manual" ? "Context compacted" : "Context automatically compacted",
+				placement: "after",
 				kind: "context_compaction"
 			});
 			continue;

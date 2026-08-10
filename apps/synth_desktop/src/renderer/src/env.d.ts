@@ -226,8 +226,8 @@ export type CodexBridge = {
 	 */
 	sendTurn?(request: CodexSessionStart, prompt: string, effort?: string): Promise<CodexSessionInfo>;
 	interrupt(sessionId: string): Promise<void>;
-	/** Starts an ad-hoc Codex `thread/compact/start` operation. */
-	compact?(sessionId: string): Promise<void>;
+	/** Atomically attaches/resumes a Codex thread and starts ad-hoc compaction. */
+	compact?(request: CodexSessionStart): Promise<void>;
 	/** Mid-turn user input via Codex `turn/steer`. Optional on browser fixtures without a native runtime. */
 	steerTurn?(sessionId: string, text: string): Promise<void>;
 	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject"): Promise<void>;

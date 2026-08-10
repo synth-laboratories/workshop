@@ -1374,11 +1374,15 @@ async fn codex_turn_interrupt(
 
 #[tauri::command]
 async fn codex_thread_compact(
+    app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
-    request: CodexSessionRequest,
+    laguna: State<'_, Arc<LagunaManager>>,
+    core: State<'_, Arc<CoreRuntime>>,
+    request: CodexSessionStartRequest,
 ) -> Result<(), String> {
+    let request = prepare_codex_start(&laguna, &core, request).await?;
     state
-        .compact(&request.session_id)
+        .compact(app, request)
         .await
         .map_err(|error| error.to_string())
 }

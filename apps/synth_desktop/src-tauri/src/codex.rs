@@ -9,7 +9,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env, fs,
     path::{Path, PathBuf},
     process::Stdio,
@@ -311,6 +311,7 @@ pub struct CodexManager {
     /// Serializes attach + turn/start per session so no caller can observe the
     /// window between "the attachment exists" and "the turn is running".
     turn_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    manual_compactions: Arc<Mutex<HashSet<String>>>,
     root: PathBuf,
     state_path: PathBuf,
     binary: PathBuf,
@@ -334,6 +335,7 @@ impl CodexManager {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::new(RwLock::new(records)),
             turn_locks: Mutex::new(HashMap::new()),
+            manual_compactions: Arc::new(Mutex::new(HashSet::new())),
             root,
             state_path,
             binary,
@@ -383,6 +385,7 @@ impl CodexManager {
             self.state_path.clone(),
             self.core.clone(),
             self.sessions.clone(),
+            self.manual_compactions.clone(),
             attachment_id,
         )
         .await?;
@@ -735,18 +738,64 @@ impl CodexManager {
         Ok(())
     }
 
-    pub async fn compact(&self, session_id: &str) -> Result<()> {
-        let lock = self.turn_lock(session_id).await;
+    pub async fn compact<R: tauri::Runtime>(
+        &self,
+        app: AppHandle<R>,
+        request: CodexSessionStartRequest,
+    ) -> Result<()> {
+        let session_id = request.session_id.clone();
+        let lock = self.turn_lock(&session_id).await;
         let _guard = lock.lock().await;
-        let session = self.session(session_id).await?;
-        session
-            .server
-            .request(
-                "thread/compact/start",
-                json!({"threadId": session.thread_id}),
-            )
-            .await?;
-        Ok(())
+
+        let mut failure = None;
+        for attempt in 0..2u8 {
+            let attachment = match self.start(app.clone(), request.clone()).await {
+                Ok(_) => self
+                    .sessions
+                    .read()
+                    .await
+                    .get(&session_id)
+                    .map(|session| session.attachment_id),
+                Err(error) => {
+                    let detached = is_detached_failure(&error);
+                    failure = Some(error);
+                    if detached && attempt == 0 {
+                        self.discard_attachment(&session_id, None).await;
+                        continue;
+                    }
+                    break;
+                }
+            };
+            let session = self.session(&session_id).await?;
+            self.manual_compactions
+                .lock()
+                .await
+                .insert(session_id.clone());
+            match session
+                .server
+                .request(
+                    "thread/compact/start",
+                    json!({"threadId": session.thread_id}),
+                )
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(error) => {
+                    self.manual_compactions.lock().await.remove(&session_id);
+                    let detached = is_detached_failure(&error);
+                    failure = Some(error);
+                    if !detached {
+                        break;
+                    }
+                    self.discard_attachment(&session_id, attachment).await;
+                    if attempt == 0 {
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+        Err(failure.unwrap_or_else(|| anyhow!("context compaction could not be started")))
     }
 
     /// Steers an in-flight turn with additional user input. Unlike `interrupt`,
@@ -1067,6 +1116,7 @@ async fn spawn_server<R: tauri::Runtime>(
     state_path: PathBuf,
     core: Option<Arc<CoreRuntime>>,
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
+    manual_compactions: Arc<Mutex<HashSet<String>>>,
     attachment_id: uuid::Uuid,
 ) -> Result<Arc<AppServer>> {
     let env_key = request
@@ -1117,6 +1167,7 @@ async fn spawn_server<R: tauri::Runtime>(
             state_path,
             core,
             sessions,
+            manual_compactions,
             attachment_id,
         },
     ));
@@ -1141,6 +1192,7 @@ struct PersistenceContext {
     state_path: PathBuf,
     core: Option<Arc<CoreRuntime>>,
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
+    manual_compactions: Arc<Mutex<HashSet<String>>>,
     attachment_id: uuid::Uuid,
 }
 
@@ -1172,12 +1224,23 @@ async fn read_stdout<R: tauri::Runtime>(
             continue;
         }
         let raw_method = message["method"].as_str().unwrap_or_default();
-        let params = message.get("params").cloned().unwrap_or(Value::Null);
+        let mut params = message.get("params").cloned().unwrap_or(Value::Null);
         // Some Responses-compatible servers report a terminal envelope as
         // `turn/completed` even when the enclosed turn has failed. Preserve
         // the actual outcome: otherwise the transcript says “Worked” while
         // there is no answer to show.
         let method = normalized_turn_method(raw_method, &params).to_owned();
+        if is_context_compaction_notification(&method, &params)
+            && persistence
+                .manual_compactions
+                .lock()
+                .await
+                .contains(&session_id)
+        {
+            if let Some(value) = params.as_object_mut() {
+                value.insert("source".into(), Value::String("manual".into()));
+            }
+        }
         if let Some(rpc_id) = message.get("id").cloned() {
             if is_approval_method(&method) {
                 let available_decisions = params
@@ -1296,6 +1359,11 @@ async fn read_stdout<R: tauri::Runtime>(
             method.as_str(),
             "turn/completed" | "turn/failed" | "turn/interrupted"
         ) {
+            persistence
+                .manual_compactions
+                .lock()
+                .await
+                .remove(&session_id);
             let status = match method.as_str() {
                 "turn/completed" => "ready",
                 "turn/failed" => "failed",
@@ -1382,6 +1450,15 @@ async fn read_stdout<R: tauri::Runtime>(
             }
         }
     }
+}
+
+fn is_context_compaction_notification(method: &str, params: &Value) -> bool {
+    method == "thread/compacted"
+        || params
+            .get("item")
+            .and_then(|item| item.get("type"))
+            .and_then(Value::as_str)
+            == Some("contextCompaction")
 }
 
 fn normalized_turn_method<'a>(method: &'a str, params: &Value) -> &'a str {
@@ -2164,10 +2241,9 @@ mod tests {
         let request = test_request(temp.path(), "compact-me");
 
         manager
-            .start(app.handle().clone(), request.clone())
+            .compact(app.handle().clone(), request.clone())
             .await
             .unwrap();
-        manager.compact(&request.session_id).await.unwrap();
 
         let requests = fixture_requests(&codex_root, &request.session_id);
         let compact = requests

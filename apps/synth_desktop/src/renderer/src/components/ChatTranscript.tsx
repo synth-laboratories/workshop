@@ -624,7 +624,12 @@ export function ChatTranscript({
 						const primaryOpen = primaryArtifact
 							? openArtifactId === primaryArtifact.id
 							: false;
-						const presented = presentActivityLines(activityByMessageId[m.id] ?? [], activityMode, {
+						const messageActivity = activityByMessageId[m.id] ?? [];
+						const presented = presentActivityLines(messageActivity.filter((line) => line.placement !== "after"), activityMode, {
+							running: false,
+							expandedGroupIds
+						});
+						const presentedAfter = presentActivityLines(messageActivity.filter((line) => line.placement === "after"), activityMode, {
 							running: false,
 							expandedGroupIds
 						});
@@ -640,6 +645,7 @@ export function ChatTranscript({
 										<p>{m.body}</p>
 									</div>
 								)}
+								{m.role === "assistant" ? renderPresented(presentedAfter, [], false, running) : null}
 								{messageArtifacts.map((a) => (
 									<VisualCard
 										key={a.id}

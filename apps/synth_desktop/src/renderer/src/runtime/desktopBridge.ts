@@ -408,7 +408,7 @@ window.synthWorkspaceScope ??= isTauri
 			sendTurn: (start, prompt, effort) =>
 				invoke<CodexSessionInfo>("codex_turn_send", { request: { start, prompt, effort } }),
 			interrupt: (sessionId) => invoke<void>("codex_turn_interrupt", { request: { sessionId } }),
-			compact: (sessionId) => invoke<void>("codex_thread_compact", { request: { sessionId } }),
+			compact: (request) => invoke<void>("codex_thread_compact", { request }),
 			steerTurn: (sessionId, text) =>
 				invoke<void>("codex_turn_steer", { request: { sessionId, text } }),
 			resolveApproval: (sessionId, approvalId, decision) => invoke<void>("codex_approval_resolve", { request: { sessionId, approvalId, decision } }),
