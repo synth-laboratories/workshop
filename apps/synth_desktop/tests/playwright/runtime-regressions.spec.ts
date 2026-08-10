@@ -159,6 +159,12 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 			update: async () => { throw new Error("unused"); }, listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }), updateWorkspaceAccess: async () => ({ allowedRoots: [] })
 		};
+		window.synthTariffs = {
+			catalog: async () => [
+				{ provider: "openrouter", modelId: "openai/gpt-5.6-luna", inputUsdPerM: 0.20, outputUsdPerM: 1.20, cachedInputUsdPerM: 0.02, cacheWriteUsdPerM: 0.25 },
+				{ provider: "openrouter", modelId: "poolside/laguna-s-2.1", inputUsdPerM: 0.10, outputUsdPerM: 0.20, cachedInputUsdPerM: null, cacheWriteUsdPerM: null }
+			]
+		};
 	});
 	await page.reload();
 	await openSettings(page);
