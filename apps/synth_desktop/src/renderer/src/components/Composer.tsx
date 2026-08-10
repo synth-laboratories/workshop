@@ -292,20 +292,6 @@ function formatContextWindow(tokens: number): string {
 	return `${Math.round(tokens / 1_000)}K context`;
 }
 
-function ModelCapabilityBadges({ targetId }: { targetId: string }) {
-	const capability = modelCapabilitiesForTarget(targetId);
-	if (!capability) return null;
-	const supportsImages = capability.inputModalities.includes("image");
-	return (
-		<span className="composer-model-capabilities">
-			<span className={supportsImages ? "supports-images" : "text-only"}>
-				<IconImage /> {supportsImages ? "Images" : "Text only"}
-			</span>
-			<span>{formatContextWindow(capability.maxContextTokens)}</span>
-		</span>
-	);
-}
-
 function IconChevron() {
 	return (
 		<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden>
@@ -397,6 +383,9 @@ function ModelMenu({
 		state.selectedTargetId === "local-laguna" && state.model.status === "not_installed"
 	);
 	const selected = EXECUTION_TARGETS.find((t) => t.id === state.selectedTargetId);
+	const selectedCapability = modelCapabilitiesForTarget(state.selectedTargetId);
+	const selectedSupportsImages = selectedCapability?.inputModalities.includes("image") ?? false;
+	const selectedThroughput = aggregateModelTpsLabels?.[state.selectedTargetId] ?? modelMedianTpsLabel ?? null;
 
 	useEffect(() => {
 		if (!open) return;
@@ -469,7 +458,6 @@ function ModelMenu({
 														: null
 											: null;
 									const selectedHere = target.id === state.selectedTargetId;
-									const aggregateTps = aggregateModelTpsLabels?.[target.id] ?? null;
 									if (allowanceBlocked) {
 										return (
 											<div
@@ -485,7 +473,6 @@ function ModelMenu({
 												>
 													<span className="composer-model-option-label">{target.label}</span>
 													<span className="composer-model-option-desc" data-testid="composer-model-allowance-blocked">{state.cloudBlockedReason}</span>
-													<ModelCapabilityBadges targetId={target.id} />
 												</span>
 												<button
 													type="button"
@@ -514,9 +501,8 @@ function ModelMenu({
 													aria-selected={false}
 													aria-disabled="true"
 												>
-												<span className="composer-model-option-label">{target.label}</span>
-												<span className="composer-model-option-desc">Synth API key required</span>
-												<ModelCapabilityBadges targetId={target.id} />
+													<span className="composer-model-option-label">{target.label}</span>
+													<span className="composer-model-option-desc">Synth API key required</span>
 												</span>
 												<button
 													type="button"
@@ -545,11 +531,7 @@ function ModelMenu({
 										>
 											<span className="composer-model-option-main">
 												<span className="composer-model-option-label">{target.label}</span>
-											<span className="composer-model-option-desc">
-												{localProgress ?? target.description}
-											</span>
-											<ModelCapabilityBadges targetId={target.id} />
-											{aggregateTps ? <span className="composer-model-aggregate-tps">{aggregateTps}</span> : null}
+												{localProgress ? <span className="composer-model-option-desc">{localProgress}</span> : null}
 											</span>
 											{selectedHere ? (
 												<span className="composer-model-check" aria-hidden>
@@ -562,15 +544,39 @@ function ModelMenu({
 							</div>
 						);
 					})}
-					<p className="composer-model-footnote">
-						{selected?.group === "local"
-							? "Local Laguna XS · usage on daemon ledger"
-							: selected?.group === "remote"
-								? "Remote via Codex/ACP · usage tracked locally"
-								: selected?.id === "synth-cloud-laguna-s"
-									? "Synth Cloud · usage tracked"
-									: "Cloud Intern · mailbox authority"}
-					</p>
+					{selected ? (
+						<details className="composer-model-advanced" data-testid="composer-model-advanced">
+							<summary>Advanced</summary>
+							<div className="composer-model-details">
+								<div>
+									<span>Selected model</span>
+									<strong>{selected.label}</strong>
+								</div>
+								<div>
+									<span>Runtime</span>
+									<strong>{selected.description}</strong>
+								</div>
+								{selectedCapability ? (
+									<>
+										<div>
+											<span>Input</span>
+											<strong>{selectedSupportsImages ? "Text and images" : "Text only"}</strong>
+										</div>
+										<div>
+											<span>Context</span>
+											<strong>{formatContextWindow(selectedCapability.maxContextTokens)}</strong>
+										</div>
+									</>
+								) : null}
+								{selectedThroughput ? (
+									<div>
+										<span>Observed speed</span>
+										<strong>{selectedThroughput}</strong>
+									</div>
+								) : null}
+							</div>
+						</details>
+					) : null}
 				</div>
 			) : null}
 		</div>
