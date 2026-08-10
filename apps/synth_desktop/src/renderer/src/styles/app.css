@@ -5813,7 +5813,8 @@ html.sidebar-hidden .sidebar {
 	color: var(--color-text-muted);
 }
 
-.pref-field input {
+.pref-field input,
+.pref-field select {
 	min-height: 32px;
 	border: 1px solid var(--color-border);
 	border-radius: var(--radius-sm);

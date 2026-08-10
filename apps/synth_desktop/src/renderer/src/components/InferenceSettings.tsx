@@ -285,6 +285,9 @@ const REASONING_OPTIONS: Array<{ effort: string; label: string }> = [
 	{ effort: "high", label: "On" }
 ];
 
+/** Output-token choices follow 1024 × 2^k through the daemon's 32K limit. */
+export const OUTPUT_TOKEN_OPTIONS = [1024, 2048, 4096, 8192, 16384, 32768] as const;
+
 export type InferenceSettingsProps = {
 	transport?: SettingsTransport;
 	/** Supply to hoist the fetch/commit lifecycle into the caller or a test. */
@@ -436,16 +439,30 @@ export function InferenceSettings({ transport, controller }: InferenceSettingsPr
 			<section className="pref-section" aria-labelledby="inference-output" data-testid="inference-output">
 				<h3 id="inference-output">Output tokens default</h3>
 				<div className="pref-grid">
-					<SettingField
-						label="Max output tokens"
-						value={settings.default_max_output_tokens}
-						min={1}
-						max={32768}
-						step={1}
-						testId="inference-default-max-output-tokens"
-						error={fieldError("default_max_output_tokens")}
-						onCommit={(value) => control.commit("default_max_output_tokens", value)}
-					/>
+					<label className="pref-field">
+						<span>Max output tokens</span>
+						<select
+							value={settings.default_max_output_tokens}
+							data-testid="inference-default-max-output-tokens"
+							aria-invalid={Boolean(fieldError("default_max_output_tokens"))}
+							onChange={(event) => control.commit("default_max_output_tokens", Number(event.target.value))}
+						>
+							{!OUTPUT_TOKEN_OPTIONS.includes(settings.default_max_output_tokens as typeof OUTPUT_TOKEN_OPTIONS[number]) ? (
+								<option value={settings.default_max_output_tokens} disabled>
+									{settings.default_max_output_tokens.toLocaleString()} (custom)
+								</option>
+							) : null}
+							{OUTPUT_TOKEN_OPTIONS.map((tokens) => (
+								<option key={tokens} value={tokens}>{tokens.toLocaleString()}</option>
+							))}
+						</select>
+						{fieldError("default_max_output_tokens") ? (
+							<span className="pref-field-error" role="alert" data-testid="inference-default-max-output-tokens-error">
+								{fieldError("default_max_output_tokens")}
+							</span>
+						) : null}
+						<small className="pref-field-caption">1,024 × 2^k</small>
+					</label>
 				</div>
 			</section>
 

@@ -39,6 +39,7 @@ function compile(relative, outName) {
 const {
 	CALIBRATED_LOCAL_CODING_SETTINGS,
 	InferenceSettings,
+	OUTPUT_TOKEN_OPTIONS,
 	commitSettings,
 	interpretSnapshot,
 	rejectionMessage,
@@ -184,6 +185,10 @@ test("the calibrated preset is one atomic patch and preserves the output-token l
 	assert.equal("default_max_output_tokens" in CALIBRATED_LOCAL_CODING_SETTINGS, false);
 });
 
+test("output token choices are 1024 times powers of two through 32K", () => {
+	assert.deepEqual(OUTPUT_TOKEN_OPTIONS, [1024, 2048, 4096, 8192, 16384, 32768]);
+});
+
 /* ------------------------------------------------------------ rendering */
 
 test("the ready form renders every settings group with the daemon's values", () => {
@@ -197,7 +202,11 @@ test("the ready form renders every settings group with the daemon's values", () 
 	assert.match(html, /temperature 1\.0 · top_k 20 · top_p 1\.0/);
 	assert.match(html, /data-testid="inference-default-temperature"[^>]*value="1"/);
 	assert.match(html, /data-testid="inference-default-top-k"[^>]*value="20"/);
-	assert.match(html, /max="32768"[^>]*data-testid="inference-default-max-output-tokens"/);
+	assert.match(html, /<select[^>]*data-testid="inference-default-max-output-tokens"/);
+	for (const tokens of OUTPUT_TOKEN_OPTIONS) {
+		assert.match(html, new RegExp(`<option value="${tokens}"`));
+	}
+	assert.match(html, /1,024 × 2\^k/);
 	// idle_unload_after_seconds is surfaced in minutes.
 	assert.match(html, /data-testid="inference-idle-unload-minutes"[^>]*value="5"/);
 	assert.match(html, /0 = never unload/);
