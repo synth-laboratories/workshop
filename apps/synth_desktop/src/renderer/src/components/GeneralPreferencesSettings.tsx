@@ -200,7 +200,7 @@ export function GeneralPreferencesSettings({
 
 			<section className="pref-section" aria-labelledby="pref-agent-context" data-testid="settings-agent-context">
 				<h3 id="pref-agent-context">Agent context</h3>
-				<p className="settings-runtime-copy">Laguna S and Luna default to 250,000 tokens; Laguna XS defaults to 80% of its smaller context window. Codex summarizes older context at the selected threshold; changes apply on the next turn.</p>
+				<p className="settings-runtime-copy">Laguna S and Luna default to 250,000 tokens; local Laguna XS defaults to 150,000. Codex summarizes older context at the selected threshold; changes apply on the next turn.</p>
 				<div className="pref-grid">
 					<NumericSetting
 						label="Laguna XS (262,144 max)"

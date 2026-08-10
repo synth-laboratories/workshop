@@ -36,6 +36,35 @@ export function contextCompactionLabel(source: string): string {
 	}
 }
 
+/** Format a token count as a fraction of a million, e.g. `0.27M`. */
+export function formatTokensAsMillions(tokens: number): string {
+	const millions = Math.max(0, tokens) / 1_000_000;
+	const digits = millions >= 10 ? 1 : 2;
+	return `${millions.toFixed(digits)}M`;
+}
+
+/** Compact before → after summary for the compaction disclosure. */
+export function contextCompactionTokenSummary(before: number, after: number): string {
+	return `${formatTokensAsMillions(before)} → ${formatTokensAsMillions(after)}`;
+}
+
+function tokenTotalFromPayload(payload: Record<string, unknown>): number | undefined {
+	const usage = payload.tokenUsage && typeof payload.tokenUsage === "object"
+		? payload.tokenUsage as Record<string, unknown>
+		: payload.usage && typeof payload.usage === "object"
+			? payload.usage as Record<string, unknown>
+			: payload;
+	const nest = (value: unknown): Record<string, unknown> | null =>
+		value && typeof value === "object" ? value as Record<string, unknown> : null;
+	const candidates = [nest(usage.last), nest(usage.total), usage];
+	for (const candidate of candidates) {
+		if (!candidate) continue;
+		const total = candidate.totalTokens ?? candidate.total_tokens;
+		if (typeof total === "number" && Number.isFinite(total) && total >= 0) return total;
+	}
+	return undefined;
+}
+
 export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 	const adapter = null;
 
@@ -802,10 +831,32 @@ export function eventsToLocalActivity(
 	let runStartedAt: string | undefined;
 	let runActions = { commands: 0, reads: 0, writes: 0, searches: 0, tools: 0 };
 	let compactionMarkerAddedForRun = false;
+	let lastTokenTotal: number | undefined;
+	let openCompactionLine: LocalActivityLine | undefined;
 	const shownToolLines = new Map<string, LocalActivityLine>();
 	for (const event of events) {
 		if (event.eventKind === "approval.requested" && resolvedApprovalSequences.has(event.sequence)) continue;
 		const payload = event.payload ?? {};
+		if (
+			event.eventKind === "thread/tokenUsage/updated"
+			|| event.eventKind === "thread/token_usage/updated"
+			|| event.eventKind.toLowerCase() === "tokenusage/updated"
+		) {
+			const tokens = tokenTotalFromPayload(payload);
+			if (tokens != null) {
+				if (
+					openCompactionLine
+					&& openCompactionLine.tokensBefore != null
+					&& tokens < openCompactionLine.tokensBefore
+					&& (openCompactionLine.tokensAfter == null || tokens < openCompactionLine.tokensAfter)
+				) {
+					openCompactionLine.tokensAfter = tokens;
+					openCompactionLine.detail = contextCompactionTokenSummary(openCompactionLine.tokensBefore, tokens);
+				}
+				lastTokenTotal = tokens;
+			}
+			continue;
+		}
 		const item = eventItem(event);
 		const tool = collabTool(item);
 		if (tool && /spawn.?agent/.test(tool)) {
@@ -861,6 +912,7 @@ export function eventsToLocalActivity(
 				: undefined;
 			current = followingAssistant?.id ?? "__active__";
 			shownToolLines.clear();
+			openCompactionLine = undefined;
 			continue;
 		}
 		if (event.eventKind === "run.started") {
@@ -868,6 +920,8 @@ export function eventsToLocalActivity(
 			runActions = { commands: 0, reads: 0, writes: 0, searches: 0, tools: 0 };
 			compactionMarkerAddedForRun = false;
 			shownToolLines.clear();
+			// Keep openCompactionLine: model-switch compact finishes before the
+			// destination turn starts, and post-compact tokenUsage arrives after.
 			continue;
 		}
 		if (event.eventKind === "run.completed" || event.eventKind === "run.failed" || event.eventKind === "run.cancelled") {
@@ -898,12 +952,15 @@ export function eventsToLocalActivity(
 			// the owning assistant bubble. Model-switch and automatic compaction
 			// happen before the continued turn's tools/text, so they stay in the
 			// chronological before-stream (tools must render *below* the divider).
-			(byMessage[current] ??= []).push({
+			const line: LocalActivityLine = {
 				id: `context-compaction-${event.sequence}`,
 				label: contextCompactionLabel(source),
 				placement: source === "manual" ? "after" : "before",
-				kind: "context_compaction"
-			});
+				kind: "context_compaction",
+				tokensBefore: lastTokenTotal
+			};
+			(byMessage[current] ??= []).push(line);
+			openCompactionLine = line;
 			continue;
 		}
 		if (event.eventKind.startsWith("message.")) continue;

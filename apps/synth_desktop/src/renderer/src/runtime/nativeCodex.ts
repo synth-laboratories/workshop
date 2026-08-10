@@ -27,12 +27,12 @@ export function permissionConfigFromApprovalMode(mode: ApprovalMode): Permission
 
 export function codexStartRequest(
 	sessionId: string, workspace: string, target: ExecutionTarget, permissions: ApprovalMode | PermissionConfig = "ask",
-	autoCompactTokenLimits: Record<string, number> = { lagunaXs: 209_715, lagunaS: 250_000, luna: 250_000 }
+	autoCompactTokenLimits: Record<string, number> = { lagunaXs: 150_000, lagunaS: 250_000, luna: 250_000 }
 ): CodexSessionStart {
 	const approval = typeof permissions === "string" ? approvalModeConfig(permissions) : permissions;
 	if (target.kind === "intern") throw new Error("Intern sessions are owned by Synth Cloud");
 	if (target.kind === "local") {
-		const autoCompactTokenLimit = autoCompactTokenLimits.lagunaXs ?? 209_715;
+		const autoCompactTokenLimit = autoCompactTokenLimits.lagunaXs ?? 150_000;
 		return {
 			sessionId, workspace, baseUrl: "http://127.0.0.1:7333", apiKey: "",
 			model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",

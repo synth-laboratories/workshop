@@ -18,12 +18,13 @@ function read(rel) {
 	return readFileSync(join(renderer, rel), "utf8");
 }
 
-test("titlebar Account and Models are wired; Account menu and Expand chrome are gone", () => {
+test("titlebar is trimmed; account entry lives in the sidebar footer", () => {
 	const app = read("App.tsx");
 	assert.doesNotMatch(app, /Account — stub/);
-	assert.match(app, /data-testid="open-account-settings"/);
+	assert.doesNotMatch(app, /data-testid="open-account-settings"/);
+	assert.doesNotMatch(app, /data-testid="open-models-settings"/);
+	assert.doesNotMatch(app, /avatar-btn/);
 	assert.match(app, /setView\(\{ kind: "settings", section: "account" \}\)/);
-	assert.match(app, /data-testid="open-models-settings"/);
 	assert.doesNotMatch(app, /Account menu — stub/);
 	assert.doesNotMatch(app, /Downloads — stub/);
 	assert.doesNotMatch(app, /Expand — stub/);
@@ -143,9 +144,12 @@ test("Codex thread compaction uses the native app glyph and divider", () => {
 	assert.match(sessionView, /case "model_switch"/);
 	// Non-manual compact stays in the before-stream so post-switch tools render below the divider.
 	assert.match(sessionView, /placement: source === "manual" \? "after" : "before"/);
+	assert.match(sessionView, /formatTokensAsMillions/);
+	assert.match(sessionView, /contextCompactionTokenSummary/);
 	assert.match(transcript, /function IconContextCompaction/);
 	assert.match(transcript, /M12\.666 3\.50098/);
-	assert.match(transcript, /className="context-compaction-divider"/);
+	assert.match(transcript, /className="context-compaction-divider/);
+	assert.match(transcript, /context-compaction-toggle/);
 	assert.match(transcript, /line\.placement !== "after"/);
 	assert.match(transcript, /line\.placement === "after"/);
 });

@@ -128,13 +128,6 @@ test.describe("design debt (expected fail until fixed)", () => {
 		await expect(page.getByTestId("open-account-settings")).toBeVisible();
 	});
 
-	test("titlebar Models opens the models settings section", async ({ page }) => {
-		await page.getByTestId("open-models-settings").click();
-		await expect(page.getByTestId("settings-page")).toBeVisible();
-		await expect(page.getByTestId("settings-models")).toBeVisible();
-		await expect(page.getByTestId("on-device-laguna-xs")).toBeVisible();
-		await expect(page.getByText("Downloads — stub", { exact: true })).toHaveCount(0);
-	});
 
 	test("Runtime settings has no legacy Python migration surface", async ({ page }) => {
 		await page.getByRole("button", { name: "Settings" }).click();

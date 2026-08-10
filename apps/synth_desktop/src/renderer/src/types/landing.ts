@@ -109,6 +109,9 @@ export type LocalActivityLine = {
 	toolStatus?: "running" | "completed" | "failed";
 	/** Transcript placement relative to the assistant response owning this activity. */
 	placement?: "before" | "after";
+	/** Token totals surrounding a context compaction (for the disclosure). */
+	tokensBefore?: number;
+	tokensAfter?: number;
 	kind?: "thought" | "search" | "command" | "file_read" | "file_write" | "visual" | "subagent" | "run_summary" | "context_compaction" | "approval" | "working";
 };
 

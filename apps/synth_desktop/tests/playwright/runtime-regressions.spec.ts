@@ -885,7 +885,19 @@ test("model-switch compaction renders above the continued turn's tool calls", as
 		const emit = (window as typeof window & { __emitSwitchCompactCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitSwitchCompactCodex;
 		const send = (method: string, params: Record<string, unknown>) => emit({ sessionId: "switch-compact-session", method, params });
 		send("turn/started", { turn: { id: "turn-after-switch" } });
+		send("thread/tokenUsage/updated", {
+			threadId: "thread-switch-compact",
+			tokenUsage: { last: { totalTokens: 271_840 }, total: { totalTokens: 271_840 }, modelContextWindow: 258_400 }
+		});
 		send("thread/compacted", { threadId: "thread-switch-compact", source: "model_switch" });
+		send("thread/tokenUsage/updated", {
+			threadId: "thread-switch-compact",
+			tokenUsage: { last: { totalTokens: 37_492 }, total: { totalTokens: 37_492 }, modelContextWindow: 258_400 }
+		});
+		send("thread/tokenUsage/updated", {
+			threadId: "thread-switch-compact",
+			tokenUsage: { last: { totalTokens: 7_385 }, total: { totalTokens: 7_385 }, modelContextWindow: 258_400 }
+		});
 		send("item/started", {
 			item: {
 				id: "probe-1",
@@ -902,6 +914,10 @@ test("model-switch compaction renders above the continued turn's tool calls", as
 	});
 	const transcript = page.getByTestId("chat-transcript");
 	await expect(transcript).toContainText("Model switch - context compacted");
+	const compactToggle = transcript.getByTestId(/activity-toggle-context-compaction-/);
+	await expect(compactToggle).toBeVisible();
+	await compactToggle.click();
+	await expect(transcript.getByTestId(/activity-detail-context-compaction-/)).toHaveText("0.27M → 0.01M");
 	await expect(transcript.locator("code.mcp-activity-name").getByText("synth_containers.container_probe")).toBeVisible();
 	await expect(transcript).toContainText("Picking up after the model switch.");
 	const markerBox = await transcript.locator(".context-compaction-divider").boundingBox();

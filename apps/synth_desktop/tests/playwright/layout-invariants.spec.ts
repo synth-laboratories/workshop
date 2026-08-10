@@ -85,15 +85,14 @@ test("landing shell has no horizontal overflow", async ({ page }) => {
 	await expect(page.getByTestId("titlebar")).toBeVisible();
 });
 
-test("titlebar runtime status stays compact and leaves diagnostics out of visible chrome", async ({ page }) => {
-	for (const [width, height] of [[960, 640], [1280, 840], [1440, 900]] as const) {
-		await page.setViewportSize({ width, height });
-		const status = page.getByTestId("runtime-status");
-		await expect(status).toBeVisible();
-		await expect(status).not.toContainText(/Laguna·|\bOR\b|Intern|\d+\/\d+/);
-		const box = await status.boundingBox();
-		expect(box?.width ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(90);
-	}
+test("titlebar chrome is trimmed to status and terminal controls", async ({ page }) => {
+	await expect(page.getByRole("button", { name: "Show terminal" })).toBeVisible();
+	// The runtime pill stays: it is the harness readiness signal and the only
+	// always-visible runtime diagnostic. Account and Models moved to the
+	// sidebar footer / settings, so their titlebar buttons are gone.
+	await expect(page.getByTestId("runtime-status")).toBeVisible();
+	await expect(page.getByTestId("open-account-settings")).toHaveCount(0);
+	await expect(page.getByTestId("open-models-settings")).toHaveCount(0);
 });
 
 test("the window has generous drag surfaces without swallowing titlebar controls", async ({ page }) => {
@@ -106,12 +105,12 @@ test("the window has generous drag surfaces without swallowing titlebar controls
 		titlebar: getComputedStyle(document.querySelector<HTMLElement>('[data-testid="titlebar"]')!).getPropertyValue("-webkit-app-region"),
 		tab: getComputedStyle(document.querySelector<HTMLElement>('[role="tab"]')!).getPropertyValue("-webkit-app-region"),
 		close: getComputedStyle(document.querySelector<HTMLElement>('.tab-close')!).getPropertyValue("-webkit-app-region"),
-		account: getComputedStyle(document.querySelector<HTMLElement>('[data-testid="open-account-settings"]')!).getPropertyValue("-webkit-app-region")
+		terminal: getComputedStyle(document.querySelector<HTMLElement>('[aria-label="Show terminal"]')!).getPropertyValue("-webkit-app-region")
 	}));
 	expect(regions.titlebar).toBe("drag");
 	expect(regions.tab).toBe("drag");
 	expect(regions.close).toBe("no-drag");
-	expect(regions.account).toBe("no-drag");
+	expect(regions.terminal).toBe("no-drag");
 });
 
 test("terminal panel is discoverable and toggles without changing the active surface", async ({ page }) => {

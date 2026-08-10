@@ -2117,6 +2117,8 @@ fn auto_compact_token_limit(request: &CodexSessionStartRequest) -> u64 {
         let model = request.model.to_ascii_lowercase();
         if model.contains("laguna-s-2.1") || model.contains("gpt-5.6-luna") {
             250_000
+        } else if model.contains("laguna-xs") {
+            150_000
         } else {
             model_context_window(&request.model) * 4 / 5
         }
@@ -3463,7 +3465,8 @@ mod tests {
     fn defaults_luna_and_laguna_s_compaction_to_250k() {
         let temp = tempdir().unwrap();
         let mut request = test_request(temp.path(), "compact-defaults");
-        assert_eq!(auto_compact_token_limit(&request), 209_715);
+        request.model = "poolside/Laguna-XS-2.1-NVFP4-mlx".into();
+        assert_eq!(auto_compact_token_limit(&request), 150_000);
         request.model = "poolside/laguna-s-2.1".into();
         assert_eq!(auto_compact_token_limit(&request), 250_000);
         request.model = "openai/gpt-5.6-luna".into();

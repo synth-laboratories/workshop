@@ -217,17 +217,6 @@ function truncate(label: string, max = 22) {
 	return `${label.slice(0, max - 1)}…`;
 }
 
-function localRuntimePresentation(health: RuntimeHealth | null, laguna: LagunaStatus | null) {
-	if (laguna?.phase === "ready" || health?.local.mode === "mlx") {
-		return { label: "Local ready", visibleLabel: "Local", tone: "is-ready" } as const;
-	}
-	if (laguna?.phase === "loading" || laguna?.phase === "starting") {
-		return { label: "Local starting", visibleLabel: "Local", tone: "is-starting" } as const;
-	}
-	if (!health && !laguna) return { label: "Connecting to local runtime", visibleLabel: "Local", tone: "is-connecting" } as const;
-	return { label: "Local offline", visibleLabel: "Local", tone: "is-offline" } as const;
-}
-
 function appendEvent(events: RuntimeEvent[], event: RuntimeEvent): RuntimeEvent[] {
 	const payloadId = (value: RuntimeEvent) => {
 		const payload = value.payload ?? {};
@@ -296,19 +285,6 @@ const browserRuntimeClient = {
 	}
 };
 
-function IconCloud() {
-	return (
-		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<path
-				d="M5.2 12.2h6.1a2.7 2.7 0 00.2-5.4 3.5 3.5 0 00-6.7-1.1A2.5 2.5 0 005.2 12.2z"
-				stroke="currentColor"
-				strokeWidth="1.25"
-				strokeLinejoin="round"
-			/>
-		</svg>
-	);
-}
-
 function IconLayout() {
 	return (
 		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
@@ -316,6 +292,17 @@ function IconLayout() {
 			<path d="M6.2 2.5v11" stroke="currentColor" strokeWidth="1.3" />
 		</svg>
 	);
+}
+
+function localRuntimePresentation(health: RuntimeHealth | null, laguna: LagunaStatus | null) {
+	if (laguna?.phase === "ready" || health?.local.mode === "mlx") {
+		return { label: "Local ready", visibleLabel: "Local", tone: "is-ready" } as const;
+	}
+	if (laguna?.phase === "loading" || laguna?.phase === "starting") {
+		return { label: "Local starting", visibleLabel: "Local", tone: "is-starting" } as const;
+	}
+	if (!health && !laguna) return { label: "Connecting to local runtime", visibleLabel: "Local", tone: "is-connecting" } as const;
+	return { label: "Local offline", visibleLabel: "Local", tone: "is-offline" } as const;
 }
 
 function IconPulse() {
@@ -1777,7 +1764,6 @@ export default function App() {
 					inventoryActive={view.kind === "inventory"}
 					visualsActive={view.kind === "visuals"}
 					optimizersActive={view.kind === "optimizers"}
-					connectorsActive={view.kind === "connectors"}
 					workingChatIds={workingChatIds}
 					unreadChatIds={unreadChatIds}
 					pinnedChatIds={pinnedChatIds}
@@ -1814,7 +1800,6 @@ export default function App() {
 					onOpenInventory={() => setView({ kind: "inventory" })}
 					onOpenVisuals={() => setView({ kind: "visuals" })}
 					onOpenOptimizers={() => setView({ kind: "optimizers" })}
-					onOpenConnectors={() => setView({ kind: "connectors" })}
 					onSearch={openSearch}
 					onSettings={() => setView({ kind: "settings" })}
 					accountSignedIn={accountSummary?.signedIn ?? apiKeyConfigured}
@@ -1912,25 +1897,6 @@ export default function App() {
 							>
 								<IconPulse />
 							</button> : null}
-							<button
-								type="button"
-								className="avatar-btn"
-								aria-label="Account"
-								data-testid="open-account-settings"
-								onClick={() => setView({ kind: "settings", section: "account" })}
-							>
-								S
-							</button>
-							<button
-								type="button"
-								className="titlebar-icon-btn"
-								aria-label="Models"
-								title="Models"
-								data-testid="open-models-settings"
-								onClick={() => setView({ kind: "settings", section: "models" })}
-							>
-								<IconCloud />
-							</button>
 							<button
 								type="button"
 								className="titlebar-icon-btn"

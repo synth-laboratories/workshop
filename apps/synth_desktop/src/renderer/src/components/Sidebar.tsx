@@ -13,7 +13,6 @@ type Props = {
 	inventoryActive?: boolean;
 	visualsActive?: boolean;
 	optimizersActive?: boolean;
-	connectorsActive?: boolean;
 	workingChatIds?: ReadonlySet<string>;
 	unreadChatIds?: ReadonlySet<string>;
 	pinnedChatIds?: ReadonlySet<string>;
@@ -23,7 +22,6 @@ type Props = {
 	onOpenInventory: () => void;
 	onOpenVisuals: () => void;
 	onOpenOptimizers: () => void;
-	onOpenConnectors: () => void;
 	onSearch: () => void;
 	onSettings: () => void;
 	accountSignedIn?: boolean;
@@ -58,19 +56,6 @@ function IconPlusSquare({ className = "nav-icon" }: { className?: string }) {
 		<svg className={className} viewBox="0 0 16 16" fill="none" aria-hidden>
 			<rect x="2.5" y="2.5" width="11" height="11" rx="2" stroke="currentColor" strokeWidth="1.3" />
 			<path d="M8 5.5v5M5.5 8h5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-		</svg>
-	);
-}
-
-function IconConnectors() {
-	return (
-		<svg className="nav-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<path
-				d="M8 1.5l1.6 1.6L8 4.7 6.4 3.1 8 1.5zM3.2 6.3l1.6 1.6-1.6 1.6L1.6 7.9 3.2 6.3zM12.8 6.3l1.6 1.6-1.6 1.6-1.6-1.6 1.6-1.6zM8 11.1l1.6 1.6L8 14.3l-1.6-1.6L8 11.1z"
-				stroke="currentColor"
-				strokeWidth="1.15"
-				strokeLinejoin="round"
-			/>
 		</svg>
 	);
 }
@@ -141,7 +126,6 @@ export function Sidebar({
 	inventoryActive = false,
 	visualsActive = false,
 	optimizersActive = false,
-	connectorsActive = false,
 	workingChatIds = new Set<string>(),
 	unreadChatIds = new Set<string>(),
 	pinnedChatIds = new Set<string>(),
@@ -151,7 +135,6 @@ export function Sidebar({
 	onOpenInventory,
 	onOpenVisuals,
 	onOpenOptimizers,
-	onOpenConnectors,
 	onSearch,
 	onSettings,
 	accountSignedIn = false,
@@ -230,10 +213,6 @@ export function Sidebar({
 				>
 					<IconPlusSquare />
 					New conversation
-				</button>
-				<button type="button" className={`nav-item${connectorsActive ? " active" : ""}`} onClick={onOpenConnectors} data-testid="open-connectors">
-					<IconConnectors />
-					Connectors
 				</button>
 				<button type="button" className="nav-item" onClick={onSearch} data-testid="open-search" title="Search conversations (⌘K)">
 					<IconSearch />
