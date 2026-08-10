@@ -1299,8 +1299,13 @@ export default function App() {
 	);
 
 	const ensureActiveSession = useCallback(async (objective: string): Promise<{ sessionId: string; objectiveConsumed: boolean } | null> => {
-		if (activeSessionId) return { sessionId: activeSessionId, objectiveConsumed: false };
-		if (view.kind !== "landing") return null;
+		if (activeSessionId && sessionsRef.current.some((session) => session.id === activeSessionId)) {
+			return { sessionId: activeSessionId, objectiveConsumed: false };
+		}
+		// A persisted selection can outlive the underlying session record. Treat
+		// that empty Chat shell like the landing page instead of sending to a UUID
+		// that the native bridge no longer owns.
+		if (view.kind !== "landing" && view.kind !== "chat") return null;
 		const target = targetIdToExecutionTarget(selectedTargetId);
 		const objectiveConsumed = target.kind === "intern";
 		const session = await createConversation(selectedTargetId, undefined, objectiveConsumed ? objective : undefined);

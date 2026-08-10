@@ -124,3 +124,58 @@ test("a removed OpenRouter key rejects the message before creating a session", a
 	await expect(page.getByTestId("settings-account")).toBeVisible();
 	expect(await page.evaluate(() => (window as typeof window & { __openRouterSessionCreates?: number }).__openRouterSessionCreates)).toBe(0);
 });
+
+test("configured Luna replaces a stale remembered chat and sends the first message", async ({ page }) => {
+	await page.addInitScript(() => {
+		window.localStorage.setItem("synth.preferences.v1", JSON.stringify({
+			schemaVersion: 4,
+			layout: { last: { selectedConversationId: "missing-chat" } }
+		}));
+		const testWindow = window as typeof window & {
+			__lunaStarts?: number;
+			__lunaSends?: string[];
+			synthCodex?: unknown;
+		};
+		testWindow.__lunaStarts = 0;
+		testWindow.__lunaSends = [];
+		testWindow.synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [],
+			start: async (request: { sessionId: string }) => {
+				testWindow.__lunaStarts! += 1;
+				return { sessionId: request.sessionId, threadId: "luna-thread" };
+			},
+			startTurn: async () => { throw new Error("sendTurn should own the first send"); },
+			sendTurn: async (request: { sessionId: string }, prompt: string) => {
+				testWindow.__lunaSends!.push(prompt);
+				return { sessionId: request.sessionId, threadId: "luna-thread", turnId: "luna-turn" };
+			},
+			interrupt: async () => undefined, close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		window.synthConfig = {
+			get: async () => ({
+				configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod",
+				backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY",
+				apiKeyConfigured: false, workerKeyConfigured: false,
+				openrouterApiKeyConfigured: true
+			}),
+			update: async () => { throw new Error("unused"); },
+			listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
+			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
+			updateWorkspaceAccess: async () => ({ allowedRoots: [] })
+		};
+	});
+	await page.reload();
+	await expect(page.getByRole("tab", { name: /Chat/ })).toBeVisible();
+	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-option-openrouter-luna").click();
+	await page.getByTestId("composer-input").fill("first Luna message");
+	await page.getByTestId("composer-send").click();
+	await expect(page.getByTestId("model-working")).toBeVisible();
+	const calls = await page.evaluate(() => {
+		const testWindow = window as typeof window & { __lunaStarts?: number; __lunaSends?: string[] };
+		return { starts: testWindow.__lunaStarts, sends: testWindow.__lunaSends };
+	});
+	expect(calls).toEqual({ starts: 1, sends: ["first Luna message"] });
+});
