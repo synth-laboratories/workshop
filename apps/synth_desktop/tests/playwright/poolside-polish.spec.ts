@@ -375,12 +375,9 @@ test.describe("conversation management", () => {
 		await page.getByTestId("local-chat-manage-chat").click();
 		await expect(page.getByTestId("chat-unread-manage-chat")).toHaveCount(0);
 
-		await page.getByTestId("local-chat-manage-chat").click({ button: "right" });
-		await page.getByRole("menuitem", { name: "Archive" }).click();
-		await expect(page.getByTestId("local-chat-manage-chat")).toHaveCount(0);
 		await openSettings(page);
-		await page.getByRole("button", { name: "Archived Chats" }).click();
-		await expect(page.getByTestId("archived-chat-manage-chat")).toBeVisible();
+		await expect(page.getByRole("button", { name: "Keyboard Shortcuts" })).toHaveCount(0);
+		await expect(page.getByRole("button", { name: "Archived Chats" })).toHaveCount(0);
 	});
 });
 

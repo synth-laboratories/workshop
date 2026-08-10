@@ -2009,12 +2009,6 @@ export default function App() {
 								setApprovalPolicy(next.approvalPolicy);
 								setSandboxMode(next.sandboxMode);
 							}}
-							conversationTitles={conversationTitles}
-							onUnarchiveConversation={(id) => setPreferences(archiveConversation(id, false))}
-							onOpenConversation={(id) => {
-								setPreferences(archiveConversation(id, false));
-								openChat(id);
-							}}
 						/>
 					) : null}
 

@@ -269,9 +269,6 @@ export function VoiceRecognitionSettings() {
 				})}
 			</div>
 
-			<p className="model-locations-note">
-				Dictation runs fully on this device — audio never leaves your machine.
-			</p>
 		</div>
 	);
 }

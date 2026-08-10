@@ -16,11 +16,7 @@ import { VoiceRecognitionSettings } from "./VoiceRecognitionSettings";
 import { ModelObservabilitySettings } from "./ModelObservabilitySettings";
 import { AccountPage } from "./AccountPage";
 import { WorkspaceAccessSettings } from "./WorkspaceAccessSettings";
-import {
-	ArchivedChatsSettings,
-	GeneralPreferencesSettings,
-	KeyboardShortcutsSettings
-} from "./GeneralPreferencesSettings";
+import { GeneralPreferencesSettings } from "./GeneralPreferencesSettings";
 import { SettingsCard } from "./SettingsCard";
 import type { DesktopPreferences } from "../preferences";
 
@@ -34,9 +30,6 @@ type Props = {
 	initialSection?: SectionId;
 	preferences?: DesktopPreferences;
 	onPreferencesChange?: (prefs: DesktopPreferences) => void;
-	conversationTitles?: Record<string, string>;
-	onUnarchiveConversation?: (id: string) => void;
-	onOpenConversation?: (id: string) => void;
 };
 
 function IconSliders() {
@@ -95,24 +88,6 @@ function IconPerson() {
 	);
 }
 
-function IconKeyboard() {
-	return (
-		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<rect x="1.8" y="4" width="12.4" height="8" rx="1.8" stroke="currentColor" strokeWidth="1.3" />
-			<path d="M4.2 6.6h.01M6.7 6.6h.01M9.2 6.6h.01M11.7 6.6h.01M4.2 9.4h.01M5.8 9.4h4.4M11.7 9.4h.01" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-		</svg>
-	);
-}
-
-function IconArchive() {
-	return (
-		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<rect x="1.8" y="2.8" width="12.4" height="3.4" rx="1" stroke="currentColor" strokeWidth="1.3" />
-			<path d="M3 6.2v5.2a1.8 1.8 0 0 0 1.8 1.8h6.4a1.8 1.8 0 0 0 1.8-1.8V6.2M6.4 8.8h3.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-		</svg>
-	);
-}
-
 function IconInfo() {
 	return (
 		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
@@ -139,8 +114,6 @@ const SECTIONS = [
 	{ id: "voice", label: "Voice", icon: IconMic },
 	{ id: "runtime", label: "Runtime", icon: IconTerminal },
 	{ id: "account", label: "Account", icon: IconPerson },
-	{ id: "shortcuts", label: "Keyboard Shortcuts", icon: IconKeyboard },
-	{ id: "archived", label: "Archived Chats", icon: IconArchive },
 	{ id: "about", label: "About", icon: IconInfo }
 ] as const;
 
@@ -253,10 +226,7 @@ export function SettingsPage({
 	lagunaPhase,
 	initialSection = "general",
 	preferences,
-	onPreferencesChange,
-	conversationTitles,
-	onUnarchiveConversation,
-	onOpenConversation
+	onPreferencesChange
 }: Props) {
 	const [section, setSection] = useState<SectionId>(
 		SECTIONS.some((entry) => entry.id === initialSection) ? initialSection : "general"
@@ -366,16 +336,6 @@ export function SettingsPage({
 									<span className="finetune-meta">{health?.dataStore?.projects ?? 0} projects · {health?.dataStore?.usage ?? 0} usage entries</span>
 									<span className="finetune-file">{health?.dataStore?.path ?? "Runtime is connecting"}</span>
 								</div>
-								<div className="finetune-base-card" data-testid="intern-routing">
-									<span className="finetune-kicker">Intern routing · [alpha]</span>
-									<strong>Deferred to v0.2</strong>
-									<span className="finetune-meta">
-										v0.1 does not claim a live Sync/Async cloud mailbox. Proper Intern cloud
-										routing returns when public backend contracts ship; internal or unfinished
-										endpoints are not shown as connected.
-									</span>
-									<code className="finetune-file">See launch_v0p1.md · Intern [alpha] → v0.2</code>
-								</div>
 							</SettingsCard>
 							<SettingsCard className="settings-card-embed">
 								<WorkspaceAccessSettings />
@@ -391,15 +351,6 @@ export function SettingsPage({
 							onBilling={account.onBilling}
 							onRefresh={account.onRefresh}
 							onOpenDeviceUsage={account.onOpenDeviceUsage}
-						/>
-					) : null}
-					{section === "shortcuts" ? <KeyboardShortcutsSettings /> : null}
-					{section === "archived" && preferences ? (
-						<ArchivedChatsSettings
-							preferences={preferences}
-							conversationTitles={conversationTitles}
-							onUnarchive={onUnarchiveConversation}
-							onOpenConversation={onOpenConversation}
 						/>
 					) : null}
 					{section === "about" ? (
