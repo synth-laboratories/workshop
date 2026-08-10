@@ -130,3 +130,13 @@ test("intended design: Playwright workers use isolated renderer ports", () => {
 	assert.match(fixture, /reserveLoopbackPort/);
 	assert.match(fixture, /--strictPort/);
 });
+
+test("Codex thread compaction uses the native app glyph and divider", () => {
+	const transcript = read("components/ChatTranscript.tsx");
+	const sessionView = read("runtime/sessionView.ts");
+	assert.match(sessionView, /event\.eventKind === "thread\/compacted"/);
+	assert.match(sessionView, /kind: "context_compaction"/);
+	assert.match(transcript, /function IconContextCompaction/);
+	assert.match(transcript, /M12\.666 3\.50098/);
+	assert.match(transcript, /className="context-compaction-divider"/);
+});

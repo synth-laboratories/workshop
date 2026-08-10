@@ -847,6 +847,15 @@ export function eventsToLocalActivity(
 			runStartedAt = undefined;
 			continue;
 		}
+		if (event.eventKind === "thread/compacted") {
+			const source = typeof payload.source === "string" ? payload.source.toLowerCase() : "automatic";
+			(byMessage[current] ??= []).push({
+				id: `context-compaction-${event.sequence}`,
+				label: source === "manual" ? "Context compacted" : "Context automatically compacted",
+				kind: "context_compaction"
+			});
+			continue;
+		}
 		if (event.eventKind.startsWith("message.")) continue;
 		if (reasoningDisplay !== "none" && (event.eventKind === "agent.reasoning" || event.eventKind.startsWith("thought."))) {
 			const supplied =

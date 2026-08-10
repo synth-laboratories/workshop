@@ -106,7 +106,7 @@ export type LocalActivityLine = {
 	path?: string;
 	/** Sanitized lifecycle status for an allowlisted tool call. */
 	toolStatus?: "running" | "completed" | "failed";
-	kind?: "thought" | "search" | "command" | "file_read" | "file_write" | "visual" | "subagent" | "run_summary" | "approval" | "working";
+	kind?: "thought" | "search" | "command" | "file_read" | "file_write" | "visual" | "subagent" | "run_summary" | "context_compaction" | "approval" | "working";
 };
 
 export type LocalChat = {
