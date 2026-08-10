@@ -18,3 +18,4 @@ apps/_ref_first_pass/
 work/bombadil-src/
 .env
 .env.*
+.turbo/

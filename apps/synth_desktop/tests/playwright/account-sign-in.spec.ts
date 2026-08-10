@@ -24,7 +24,22 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 			signOut: async () => {
 				paired = false;
 				return { ...base, apiKeyConfigured: false };
-			}
+			},
+			getSummary: async () => (paired
+				? {
+					signedIn: true,
+					accountId: "dev-local",
+					displayName: "Synth Dev",
+					environment: "dev" as const,
+					plan: {
+						name: "Synth Dev",
+						monthlyAllowanceUsd: 200,
+						usedUsd: 12.5,
+						remainingUsd: 187.5,
+						resetsAt: "2026-09-01T00:00:00+00:00"
+					}
+				}
+				: { signedIn: false, environment: "dev" as const })
 		};
 		const base = {
 			configPath: "/tmp/config.toml",
@@ -51,7 +66,8 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 	await page.reload();
 	await page.getByTestId("runtime-status").waitFor();
 
-	await page.getByTestId("open-account-settings").click();
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-menu").getByTestId("open-account-settings").click();
 	const signIn = page.getByTestId("account-sign-in");
 	await expect(signIn.getByTestId("sign-in-begin")).toContainText("Sign in with browser");
 	await expect(signIn).toContainText("creates your Synth account");
@@ -62,6 +78,18 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 	// Two 4s poll ticks flip the stub to paired.
 	await expect(page.getByTestId("backend-settings")).toContainText("Authenticated", { timeout: 15_000 });
 	await expect(signIn.getByTestId("sign-in-status")).toContainText("Connected to Synth");
+	await page.getByTestId("account-menu-trigger").click();
+	await expect(page.getByTestId("account-menu")).toContainText("Synth Dev");
+	await expect(page.getByTestId("account-menu")).toContainText("Usage remaining");
+	await expect(page.getByTestId("account-menu")).toContainText("Settings");
+	await expect(page.getByTestId("account-menu")).toContainText("Log out");
+	await page.getByTestId("account-usage-toggle").click();
+	await expect(page.getByTestId("account-plan-allowance")).toHaveText("$200.00 monthly");
+	await expect(page.getByTestId("account-plan-used")).toHaveText("$12.50");
+	await expect(page.getByTestId("account-plan-remaining")).toHaveText("$187.50");
+	await expect(page.getByTestId("account-plan-resets")).not.toBeEmpty();
+	await expect(page.getByTestId("account-usage")).toContainText("Tracked this week");
+	await page.getByTestId("account-menu-trigger").click();
 
 	await signIn.getByTestId("account-sign-out").click();
 	await expect(page.getByTestId("backend-settings")).toContainText("API key required");
@@ -87,12 +115,14 @@ test("cancel during pairing returns to the idle sign-in affordance", async ({ pa
 			}),
 			pollSignIn: async () => ({ status: "pending" as const }),
 			cancelSignIn: async () => undefined,
-			signOut: async () => { throw new Error("unused"); }
+			signOut: async () => { throw new Error("unused"); },
+			getSummary: async () => ({ signedIn: false, environment: "dev" as const })
 		};
 	});
 	await page.reload();
 	await page.getByTestId("runtime-status").waitFor();
-	await page.getByTestId("open-account-settings").click();
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-menu").getByTestId("open-account-settings").click();
 	await page.getByTestId("sign-in-begin").click();
 	await page.getByTestId("sign-in-cancel").click();
 	await expect(page.getByTestId("sign-in-begin")).toBeVisible();

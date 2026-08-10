@@ -46,9 +46,12 @@ jq -e '.identifier == "com.synth.desktop.dev.alpha" and .productName == "Synth D
 
 # Canonical lifecycle commands must never stop an arbitrary copied app or a
 # named development instance. Exact executable paths are the process authority.
+# The stand-in binary must be compiled locally: copies of Apple-signed system
+# binaries (e.g. /bin/sleep) are SIGKILLed by AMFI on Apple Silicon.
 UNRELATED_APP="$TEST_ROOT/Unrelated/Synth Desktop.app"
 mkdir -p "$UNRELATED_APP/Contents/MacOS"
-cp /bin/sleep "$UNRELATED_APP/Contents/MacOS/synth-desktop"
+printf '#include <unistd.h>\n#include <stdlib.h>\nint main(int argc, char **argv) { sleep(argc > 1 ? (unsigned)atoi(argv[1]) : 30); return 0; }\n' > "$TEST_ROOT/unrelated_sleep.c"
+cc -o "$UNRELATED_APP/Contents/MacOS/synth-desktop" "$TEST_ROOT/unrelated_sleep.c"
 "$UNRELATED_APP/Contents/MacOS/synth-desktop" 30 &
 UNRELATED_PID="$!"
 SYNTH_DESKTOP_APP_PATH="$TEST_ROOT/Canonical.app" "$ROOT/scripts/desktop.sh" stop >/dev/null

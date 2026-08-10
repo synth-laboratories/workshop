@@ -56,7 +56,7 @@ import {
 	planModelChipChange,
 	threadHasHistoryFromEvents
 } from "./runtime/modelSwitchPlan";
-import type { CodexBridge, CodexSessionInfo, CodexSessionStart, CodexTurnFailure, ComposerImageAttachment, ConversationWorkspaceScope, LagunaStatus } from "./env";
+import type { CodexBridge, CodexSessionInfo, CodexSessionStart, CodexTurnFailure, ComposerImageAttachment, ConversationWorkspaceScope, LagunaStatus, SynthAccountSummary } from "./env";
 import {
 	applyPreferencesToDocument,
 	archiveConversation,
@@ -322,11 +322,23 @@ export default function App() {
 	}, [selectedTargetId]);
 	const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
 	const [accountUsage, setAccountUsage] = useState<ReturnType<typeof summarizeAccountUsage> | null>(null);
+	const [accountSummary, setAccountSummary] = useState<SynthAccountSummary | null>(null);
+	const refreshAccountSummary = useCallback(() => {
+		const bridge = window.synthAccount;
+		if (typeof bridge?.getSummary !== "function") {
+			setAccountSummary(null);
+			return;
+		}
+		void bridge.getSummary()
+			.then(setAccountSummary)
+			.catch(() => setAccountSummary(null));
+	}, []);
 	useEffect(() => {
+		refreshAccountSummary();
 		void window.synthInventory?.listUsage(2000)
 			.then((entries) => setAccountUsage(summarizeAccountUsage(entries)))
 			.catch(() => setAccountUsage(null));
-	}, []);
+	}, [refreshAccountSummary]);
 	const [preferences, setPreferences] = useState<DesktopPreferences>(() => loadPreferences());
 	const [, setApprovalMode] = useState<ApprovalMode>(() => loadPreferences().approvalMode);
 	const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>(() => loadPreferences().approvalPolicy);
@@ -556,10 +568,11 @@ export default function App() {
 			const configured = (event as CustomEvent<{ apiKeyConfigured?: boolean }>).detail?.apiKeyConfigured;
 			if (typeof configured === "boolean") setApiKeyConfigured(configured);
 			else void refreshHealth().catch(() => undefined);
+			refreshAccountSummary();
 		};
 		window.addEventListener("synth:account-changed", onAccountChanged);
 		return () => window.removeEventListener("synth:account-changed", onAccountChanged);
-	}, [refreshHealth]);
+	}, [refreshAccountSummary, refreshHealth]);
 
 	useEffect(() => {
 		void window.synthCodex?.defaultWorkspace().then(setDefaultWorkspace).catch(() => undefined);
@@ -1757,7 +1770,9 @@ export default function App() {
 					onOpenConnectors={() => setView({ kind: "connectors" })}
 					onSearch={openSearch}
 					onSettings={() => setView({ kind: "settings" })}
-					accountSignedIn={apiKeyConfigured}
+					accountSignedIn={accountSummary?.signedIn ?? apiKeyConfigured}
+					accountDisplayName={accountSummary?.displayName ?? null}
+					accountPlan={accountSummary?.plan ?? null}
 					accountUsage={accountUsage}
 					onOpenAccount={() => setView({ kind: "settings", section: "account" })}
 					onSignOut={async () => {
@@ -1768,6 +1783,7 @@ export default function App() {
 						try {
 							const next = await window.synthAccount.signOut();
 							setApiKeyConfigured(next.apiKeyConfigured);
+							refreshAccountSummary();
 							showToast("Signed out of Synth");
 						} catch (reason) {
 							showToast(reason instanceof Error ? reason.message : String(reason));

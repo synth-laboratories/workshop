@@ -1,3 +1,4 @@
+mod account;
 mod cloud;
 mod codex;
 pub mod core_runtime;
@@ -990,6 +991,24 @@ fn account_cancel_sign_in(
     Ok(())
 }
 
+/// Authoritative account summary: identity, environment, and the seeded
+/// local/dev $200 monthly plan charged from the durable usage ledger. The
+/// renderer renders this verbatim; it never derives plan or identity itself.
+#[tauri::command]
+async fn account_get_summary(
+    core: State<'_, Arc<CoreRuntime>>,
+) -> Result<account::AccountSummary, String> {
+    let settings = synth_config::get().map_err(|error| error.to_string())?;
+    let origin = device_auth::workshop_origin();
+    account::summary(
+        core.storage(),
+        &origin,
+        settings.api_key_configured,
+        chrono::Utc::now(),
+    )
+    .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 async fn account_sign_out(core: State<'_, Arc<CoreRuntime>>) -> Result<BackendSettings, String> {
     synth_config::remove_api_key().map_err(|error| error.to_string())?;
@@ -1669,6 +1688,7 @@ pub fn run() {
             synth_config_update,
             model_performance_get,
             account_begin_sign_in,
+            account_get_summary,
             account_poll_sign_in,
             account_cancel_sign_in,
             account_sign_out,

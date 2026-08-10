@@ -221,3 +221,68 @@ test("a long prompt never hides the active turn beneath the composer", async ({ 
 	await page.getByRole("button", { name: "Show full message" }).click();
 	await expect.poll(tailGeometry).toEqual({ collapsed: false, atTail: true, workingClearsComposer: true });
 });
+
+// Model-picker containment (12:54 screenshot regression): while open, the
+// dropdown must stay inside the viewport with an 8px inset, never overlap the
+// composer, scroll internally when tall, and flip above a low trigger.
+async function readPickerLayout(page: import("@playwright/test").Page) {
+	return page.evaluate(() => {
+		const picker = document.querySelector('[data-testid="model-dropdown"]');
+		const composer = document.querySelector('[data-testid="composer"]');
+		if (!picker) return { open: false as const };
+		const p = picker.getBoundingClientRect();
+		const c = composer?.getBoundingClientRect() ?? null;
+		const selected = picker.querySelector(".model-option.selected");
+		const s = selected?.getBoundingClientRect() ?? null;
+		return {
+			open: true as const,
+			rect: { left: p.left, top: p.top, right: p.right, bottom: p.bottom },
+			viewport: { width: window.innerWidth, height: window.innerHeight },
+			overlapsComposer: Boolean(
+				c && !(p.right <= c.left || p.left >= c.right || p.bottom <= c.top || p.top >= c.bottom)
+			),
+			scrollsInternally: picker.scrollHeight > picker.clientHeight
+				? getComputedStyle(picker).overflowY === "auto"
+				: true,
+			selectedVisible: Boolean(s && s.top >= p.top - 1 && s.bottom <= p.bottom + 1),
+			bodyOverflowX: document.documentElement.scrollWidth > window.innerWidth,
+			placement: picker.getAttribute("data-placement")
+		};
+	});
+}
+
+test("model picker stays contained at normal and short window sizes", async ({ page }) => {
+	for (const [width, height] of [[1728, 1117], [1100, 700], [960, 640]] as const) {
+		await page.setViewportSize({ width, height });
+		await page.getByTestId("model-picker").click();
+		await expect(page.getByTestId("model-dropdown")).toBeVisible();
+		const layout = await readPickerLayout(page);
+		if (!layout.open) throw new Error("model dropdown did not open");
+		expect(layout.rect.left, `left inset at ${width}x${height}`).toBeGreaterThanOrEqual(8);
+		expect(layout.rect.top, `top inset at ${width}x${height}`).toBeGreaterThanOrEqual(8);
+		expect(layout.rect.right, `right inset at ${width}x${height}`).toBeLessThanOrEqual(width - 8);
+		expect(layout.rect.bottom, `bottom inset at ${width}x${height}`).toBeLessThanOrEqual(height - 8);
+		expect(layout.overlapsComposer, `composer overlap at ${width}x${height}`).toBe(false);
+		expect(layout.scrollsInternally, `internal scroll at ${width}x${height}`).toBe(true);
+		expect(layout.selectedVisible, `selected visible at ${width}x${height}`).toBe(true);
+		expect(layout.bodyOverflowX, `horizontal overflow at ${width}x${height}`).toBe(false);
+		// All three provider groups stay reachable inside the scrollable dropdown.
+		await expect(page.getByTestId("model-dropdown")).toContainText("Local");
+		await expect(page.getByTestId("model-option-local-laguna")).toBeVisible();
+		await page.keyboard.press("Escape");
+		await expect(page.getByTestId("model-dropdown")).not.toBeVisible();
+	}
+});
+
+test("opening and closing the model picker never moves the composer", async ({ page }) => {
+	await page.setViewportSize({ width: 1280, height: 840 });
+	const before = await readLayout(page);
+	await page.getByTestId("model-picker").click();
+	await expect(page.getByTestId("model-dropdown")).toBeVisible();
+	const during = await readLayout(page);
+	await page.keyboard.press("Escape");
+	const after = await readLayout(page);
+	expect(during.composer.top).toBeCloseTo(before.composer.top, 0);
+	expect(after.composer.top).toBeCloseTo(before.composer.top, 0);
+	expect(after.composer.left).toBeCloseTo(before.composer.left, 0);
+});

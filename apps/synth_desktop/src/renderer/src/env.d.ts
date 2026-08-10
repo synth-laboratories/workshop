@@ -425,11 +425,28 @@ export type SynthSignInPoll =
 	| { status: "active" }
 	| { status: "expired"; reason: string };
 
+export type SynthAccountPlan = {
+	name: string;
+	monthlyAllowanceUsd: number;
+	usedUsd: number;
+	remainingUsd: number;
+	resetsAt: string;
+};
+
+export type SynthAccountSummary = {
+	signedIn: boolean;
+	accountId?: string;
+	displayName?: string;
+	environment: "local" | "dev" | "prod";
+	plan?: SynthAccountPlan;
+};
+
 export type SynthAccountBridge = {
 	beginSignIn(): Promise<SynthSignInBegin>;
 	pollSignIn(): Promise<SynthSignInPoll>;
 	cancelSignIn(): Promise<void>;
 	signOut(): Promise<SynthBackendSettings>;
+	getSummary(): Promise<SynthAccountSummary>;
 };
 
 declare global {

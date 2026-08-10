@@ -1310,6 +1310,8 @@ a,
 	left: 50%;
 	transform: translateX(-50%);
 	min-width: 292px;
+	overflow-y: auto;
+	overscroll-behavior: contain;
 	padding: 5px;
 	border-radius: 12px;
 	border: 1px solid var(--color-border);

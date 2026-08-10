@@ -587,3 +587,60 @@ export const renderer_has_no_uncaught_errors = always(() =>
 export const renderer_has_no_console_errors = always(() =>
 	runtimeErrors.current.consoleErrors === 0
 );
+
+/* Landing model-picker containment (12:54 screenshot regression): while the
+ * dropdown is open it must stay inside the viewport with an 8px inset, never
+ * cover the composer, scroll internally instead of growing past its slot, and
+ * keep the selected option visible. */
+const landingPickerLayout = extract((state: any) => {
+	const document = state.document;
+	const viewport = state.window;
+	const trigger = document.querySelector<HTMLElement>('[data-testid="model-picker"]');
+	const picker = document.querySelector<HTMLElement>('[data-testid="model-dropdown"]');
+	const composer = document.querySelector<HTMLElement>('[data-testid="composer"]');
+	const triggerRect = trigger?.getBoundingClientRect();
+	const triggerPoint = triggerRect
+		? { x: triggerRect.left + triggerRect.width / 2, y: triggerRect.top + triggerRect.height / 2 }
+		: null;
+	if (!picker) return { open: false, triggerPoint, insideViewport: true, avoidsComposer: true, scrollsInternally: true, selectedVisible: true, bodyOverflowX: false };
+	const p = picker.getBoundingClientRect();
+	const c = composer?.getBoundingClientRect() ?? null;
+	const selected = picker.querySelector<HTMLElement>(".model-option.selected");
+	const s = selected?.getBoundingClientRect() ?? null;
+	return {
+		open: true,
+		triggerPoint,
+		insideViewport:
+			p.left >= 8 && p.top >= 8 &&
+			p.right <= viewport.innerWidth - 8 && p.bottom <= viewport.innerHeight - 8,
+		avoidsComposer: Boolean(
+			!c || p.right <= c.left || p.left >= c.right || p.bottom <= c.top || p.top >= c.bottom
+		),
+		scrollsInternally: picker.scrollHeight <= picker.clientHeight ||
+			getComputedStyle(picker).overflowY === "auto",
+		selectedVisible: Boolean(!s || (s.top >= p.top - 1 && s.bottom <= p.bottom + 1)),
+		bodyOverflowX: document.documentElement.scrollWidth > viewport.innerWidth + 1
+	};
+});
+
+/** Open the landing picker, then let the viewport fuzzer squeeze it. */
+export const exercise_landing_model_picker = actions(() => {
+	if (!landingPickerLayout.current.open && landingPickerLayout.current.triggerPoint) {
+		return [{ Click: { name: "Open landing model picker for containment fuzz", point: landingPickerLayout.current.triggerPoint } }];
+	}
+	return ["Wait"];
+});
+
+export const landing_model_picker_is_exercised = eventually(() =>
+	landingPickerLayout.current.open
+).within(5, "seconds");
+
+export const landing_model_picker_stays_contained = always(() =>
+	!landingPickerLayout.current.open || (
+		landingPickerLayout.current.insideViewport &&
+		landingPickerLayout.current.avoidsComposer &&
+		landingPickerLayout.current.scrollsInternally &&
+		landingPickerLayout.current.selectedVisible &&
+		!landingPickerLayout.current.bodyOverflowX
+	)
+);

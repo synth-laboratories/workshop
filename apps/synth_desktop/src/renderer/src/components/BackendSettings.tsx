@@ -37,6 +37,9 @@ export function BackendSettings() {
 		setBackendUrl(next.backendUrl);
 		setEnvFile(next.envFile);
 		setApiKeyEnv(next.apiKeyEnv);
+		window.dispatchEvent(new CustomEvent("synth:account-changed", {
+			detail: { apiKeyConfigured: next.apiKeyConfigured }
+		}));
 	};
 
 	useEffect(() => {

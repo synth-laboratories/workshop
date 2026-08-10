@@ -37,6 +37,13 @@ type Props = {
 	onSettings: () => void;
 	accountSignedIn?: boolean;
 	accountDisplayName?: string | null;
+	accountPlan?: {
+		name: string;
+		monthlyAllowanceUsd: number;
+		usedUsd: number;
+		remainingUsd: number;
+		resetsAt: string;
+	} | null;
 	accountUsage?: {
 		weeklyTokens: number;
 		weeklyCostUsd: number;
@@ -199,6 +206,7 @@ export function Sidebar({
 	onSettings,
 	accountSignedIn = false,
 	accountDisplayName = null,
+	accountPlan = null,
 	accountUsage = null,
 	onOpenAccount,
 	onSignOut,
@@ -558,11 +566,20 @@ export function Sidebar({
 							</button>
 							{usageOpen ? (
 								<div className="account-usage" data-testid="account-usage">
-									<div><span>Weekly budget</span><strong>Not reported</strong></div>
+									{accountPlan ? (
+										<>
+											<div><span>{accountPlan.name} plan</span><strong data-testid="account-plan-allowance">${accountPlan.monthlyAllowanceUsd.toFixed(2)} monthly</strong></div>
+											<div><span>Used this month</span><strong data-testid="account-plan-used">${accountPlan.usedUsd.toFixed(2)}</strong></div>
+											<div><span>Remaining</span><strong data-testid="account-plan-remaining">${accountPlan.remainingUsd.toFixed(2)}</strong></div>
+											<div><span>Resets</span><strong data-testid="account-plan-resets">{new Date(accountPlan.resetsAt).toLocaleDateString()}</strong></div>
+										</>
+									) : (
+										<div><span>Weekly budget</span><strong>Not reported</strong></div>
+									)}
 									<div><span>Tracked this week</span><strong>{(accountUsage?.weeklyTokens ?? 0).toLocaleString()} tokens</strong></div>
 									{(accountUsage?.weeklyCostUsd ?? 0) > 0 ? <div><span>Estimated cost</span><strong>${accountUsage!.weeklyCostUsd.toFixed(2)}</strong></div> : null}
 									<div><span>All tracked usage</span><strong>{(accountUsage?.totalTokens ?? 0).toLocaleString()} tokens · {accountUsage?.entries ?? 0} runs</strong></div>
-									<p>Synth does not currently report a cloud allowance or reset date.</p>
+									{accountPlan ? null : <p>Synth does not currently report a cloud allowance or reset date.</p>}
 								</div>
 							) : null}
 							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); (onOpenAccount ?? onSettings)(); }} data-testid="open-account-settings" role="menuitem">

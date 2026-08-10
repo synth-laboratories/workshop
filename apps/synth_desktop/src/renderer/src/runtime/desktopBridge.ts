@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TerminalEvent, TerminalInfo, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../env";
+import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TerminalEvent, TerminalInfo, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../env";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry } from "@synth/runtime-protocol";
 
@@ -273,13 +273,15 @@ export function installDesktopBridge(): void {
 			beginSignIn: () => invoke<SynthSignInBegin>("account_begin_sign_in"),
 			pollSignIn: () => invoke<SynthSignInPoll>("account_poll_sign_in"),
 			cancelSignIn: () => invoke<void>("account_cancel_sign_in"),
-			signOut: () => invoke<SynthBackendSettings>("account_sign_out")
+			signOut: () => invoke<SynthBackendSettings>("account_sign_out"),
+			getSummary: () => invoke<SynthAccountSummary>("account_get_summary")
 		}
 		: {
 			beginSignIn: async () => { throw new Error("Browser sign-in requires Synth Desktop"); },
 			pollSignIn: async () => ({ status: "expired", reason: "Browser sign-in requires Synth Desktop" }),
 			cancelSignIn: async () => undefined,
-			signOut: async () => { throw new Error("Sign out requires Synth Desktop"); }
+			signOut: async () => { throw new Error("Sign out requires Synth Desktop"); },
+			getSummary: async () => ({ signedIn: false, environment: "local" })
 		};
 window.synthConfig ??= isTauri
 		? {
