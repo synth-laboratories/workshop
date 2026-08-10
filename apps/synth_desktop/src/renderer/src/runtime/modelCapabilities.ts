@@ -55,8 +55,8 @@ const BINARY_THINKING_OPTIONS: ModelKnobOption[] = [
 ];
 
 const LOCAL_THINKING_OPTIONS: ModelKnobOption[] = [
-	{ id: "none", label: "Off" },
-	{ id: "high", label: "On" }
+	{ id: "none", label: "Minimal" },
+	{ id: "high", label: "Max" }
 ];
 
 export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [

@@ -132,6 +132,7 @@ test.describe("design locks (must pass)", () => {
 		await expect(permission).toHaveText("RiskyFull");
 		await expect(permission).toHaveAttribute("aria-label", "Permissions: Ask for risky actions; Full system access");
 		await expect(permission).toHaveCSS("white-space", "nowrap");
+		expect((await permission.boundingBox())?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(32);
 	});
 });
 

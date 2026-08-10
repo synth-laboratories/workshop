@@ -396,10 +396,10 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 	await installLagunaFixture(page, "ready");
 	await page.getByTestId("local-chat-bound-local").click();
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName("Model: Laguna XS 2.1");
-	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Thinking: On");
+	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Thinking: Max");
 	await page.getByTestId("reasoning-effort-select").click();
 	await expect(page.getByTestId("reasoning-effort-menu").getByRole("option")).toHaveCount(2);
-	await page.getByTestId("reasoning-effort-menu").getByRole("option", { name: "Off", exact: true }).click();
+	await page.getByTestId("reasoning-effort-menu").getByRole("option", { name: "Minimal", exact: true }).click();
 	await page.getByTestId("composer-input").fill("hello Laguna");
 	await page.getByTestId("composer-send").click();
 	await expect.poll(() => page.evaluate(() =>
@@ -435,9 +435,9 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 	await page.getByTestId("composer-model-option-openrouter-laguna-s").click();
 	await expect(page.getByTestId("chat-transcript")).toBeVisible();
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName("Model: Laguna S 2.1");
-	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Thinking: On");
+	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Thinking: Max");
 	await page.getByTestId("reasoning-effort-select").click();
-	await page.getByTestId("reasoning-effort-menu").getByRole("option", { name: "Off", exact: true }).click();
+	await page.getByTestId("reasoning-effort-menu").getByRole("option", { name: "None", exact: true }).click();
 	await page.getByTestId("composer-input").fill("hello Laguna S");
 	await page.getByTestId("composer-send").click();
 	const lagunaStarts = await page.evaluate(() => (window as typeof window & { __providerStarts: Array<Record<string, unknown>> }).__providerStarts);
