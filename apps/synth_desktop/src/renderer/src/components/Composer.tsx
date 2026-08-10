@@ -540,6 +540,29 @@ export function Composer({
 			frame = 0;
 			const clearance = Math.ceil(window.innerHeight - dock.getBoundingClientRect().top + 16);
 			mainPane.style.setProperty("--composer-clearance", `${clearance}px`);
+
+			/*
+			 * Horizontal geometry has the same problem as vertical clearance: the
+			 * dock is an overlay, so it cannot inherit the transcript column from
+			 * the workbench grid. Measure the scroller's *content* box — clientLeft
+			 * and clientWidth exclude a classic scrollbar gutter, which the raw
+			 * rect would fold into the centerline — and inset by the same 24px the
+			 * scroller uses. This keeps the composer on the transcript's centerline
+			 * and clear of the visual, container, and inference panes in every
+			 * combination, including ones no static rule enumerated.
+			 */
+			const scroller = mainPane.querySelector<HTMLElement>(".chat-transcript-scroll");
+			if (!scroller) {
+				mainPane.style.removeProperty("--composer-dock-left");
+				mainPane.style.removeProperty("--composer-dock-right");
+				return;
+			}
+			const paneRect = mainPane.getBoundingClientRect();
+			const scrollerRect = scroller.getBoundingClientRect();
+			const contentLeft = scrollerRect.left + scroller.clientLeft;
+			const contentRight = contentLeft + scroller.clientWidth;
+			mainPane.style.setProperty("--composer-dock-left", `${Math.round(contentLeft - paneRect.left + 24)}px`);
+			mainPane.style.setProperty("--composer-dock-right", `${Math.round(paneRect.right - contentRight + 24)}px`);
 		};
 		const scheduleClearanceUpdate = () => {
 			if (frame) cancelAnimationFrame(frame);
@@ -558,6 +581,8 @@ export function Composer({
 			mutationObserver.disconnect();
 			window.removeEventListener("resize", scheduleClearanceUpdate);
 			mainPane.style.removeProperty("--composer-clearance");
+			mainPane.style.removeProperty("--composer-dock-left");
+			mainPane.style.removeProperty("--composer-dock-right");
 		};
 	}, []);
 
@@ -849,6 +874,7 @@ export function Composer({
 								aria-label="Slash commands"
 								aria-haspopup="listbox"
 								aria-expanded={slashMenuVisible}
+								aria-controls="composer-slash-menu"
 								data-testid="composer-slash-btn"
 								onClick={openSlashMenuFromButton}
 							>

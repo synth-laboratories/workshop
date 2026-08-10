@@ -1162,7 +1162,10 @@ async fn workspace_scope_attach_recent(
     let scope = workspace_scope::attach_recent(core.storage().database(), &session_id, &path)
         .await
         .map_err(|error| error.to_string())?;
-    codex.close(&session_id).await.map_err(|error| error.to_string())?;
+    codex
+        .close(&session_id)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(scope)
 }
 
@@ -1719,6 +1722,7 @@ pub fn run() {
             laguna::laguna_inference_stream_stop,
             laguna::laguna_model_unload,
             laguna::laguna_model_download,
+            laguna::laguna_model_delete,
             laguna::laguna_settings_snapshot,
             laguna::laguna_settings_update,
             whisper::whisper_models_list,

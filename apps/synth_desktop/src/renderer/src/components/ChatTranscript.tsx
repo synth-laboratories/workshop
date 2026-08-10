@@ -425,33 +425,12 @@ export function ChatTranscript({
 	}, [chat.id]);
 
 	/*
-	 * The dock is an overlay, and it can grow for queued prompts or move above
-	 * the terminal. Measure its actual footprint instead of relying on a stale
-	 * CSS constant; the transcript can then always scroll its final turn above it.
+	 * --composer-clearance is published by Composer.tsx onto .main-pane and
+	 * inherited here. A second writer used to set it on this scroller, which won
+	 * on specificity while only observing the dock's *size*: moving the dock
+	 * (terminal open/close, pane changes) left a stale value and the last turn
+	 * scrolled under the composer. One owner, measured from the dock itself.
 	 */
-	useLayoutEffect(() => {
-		const scroller = scrollRef.current;
-		const dock = document.querySelector<HTMLElement>("[data-testid=\"composer-dock\"]");
-		if (!scroller || !dock) return;
-		let frame = 0;
-		const updateClearance = () => {
-			cancelAnimationFrame(frame);
-			frame = requestAnimationFrame(() => {
-				const dockTop = dock.getBoundingClientRect().top;
-				const clearance = Math.max(148, Math.ceil(window.innerHeight - dockTop + 16));
-				scroller.style.setProperty("--composer-clearance", `${clearance}px`);
-			});
-		};
-		const observer = new ResizeObserver(updateClearance);
-		observer.observe(dock);
-		window.addEventListener("resize", updateClearance);
-		updateClearance();
-		return () => {
-			cancelAnimationFrame(frame);
-			observer.disconnect();
-			window.removeEventListener("resize", updateClearance);
-		};
-	}, [chat.id]);
 
 	useLayoutEffect(() => {
 		if (!followsTailRef.current) return;

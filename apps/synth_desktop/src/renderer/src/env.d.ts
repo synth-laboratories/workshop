@@ -69,6 +69,16 @@ export type LagunaModelHit = {
 	shardCount: number;
 	totalBytes: number;
 	selected: boolean;
+	runtimeReady: boolean;
+	companionBytes: number;
+};
+
+export type LagunaDownloadProgress = {
+	modelId: string;
+	phase: "preparing" | "provisioning" | "downloading" | "ready" | "error";
+	detail: string;
+	downloadedBytes?: number;
+	totalBytes?: number;
 };
 
 export type LagunaBridge = {
@@ -79,7 +89,9 @@ export type LagunaBridge = {
 	chooseModelDirectory(): Promise<string | null>;
 	setModelDirectory(path: string): Promise<LagunaModelHit>;
 	clearModelDirectory(): Promise<void>;
-	downloadModel(): Promise<LagunaModelHit>;
+	downloadModel(modelId: string): Promise<LagunaModelHit>;
+	deleteModel(modelId: string): Promise<void>;
+	onDownloadProgress?(listener: (progress: LagunaDownloadProgress) => void): () => void;
 };
 
 export type WhisperModelHit = {

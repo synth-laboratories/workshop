@@ -86,7 +86,11 @@ fn used_cents_since(storage: &Storage, since: DateTime<Utc>) -> Result<i64> {
 }
 
 /// Load the seeded dev plan, seeding it on first read. Never seeds for prod.
-fn load_or_seed_plan(storage: &Storage, environment: &str, now: DateTime<Utc>) -> Result<Option<StoredPlan>> {
+fn load_or_seed_plan(
+    storage: &Storage,
+    environment: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<StoredPlan>> {
     let existing: Option<String> = storage.database().with_conn(|conn| {
         let mut statement =
             conn.prepare("SELECT value_json FROM runtime_settings WHERE key = ?1")?;
@@ -119,7 +123,12 @@ fn load_or_seed_plan(storage: &Storage, environment: &str, now: DateTime<Utc>) -
     Ok(Some(seeded))
 }
 
-pub fn summary(storage: &Storage, origin: &str, signed_in: bool, now: DateTime<Utc>) -> Result<AccountSummary> {
+pub fn summary(
+    storage: &Storage,
+    origin: &str,
+    signed_in: bool,
+    now: DateTime<Utc>,
+) -> Result<AccountSummary> {
     let environment = environment_from_origin(origin);
     if !signed_in {
         return Ok(AccountSummary {
@@ -222,7 +231,10 @@ mod tests {
         storage
             .database()
             .with_conn(|conn| {
-                conn.execute("UPDATE usage_ledger SET cost_usd = NULL WHERE id = 'untracked'", [])?;
+                conn.execute(
+                    "UPDATE usage_ledger SET cost_usd = NULL WHERE id = 'untracked'",
+                    [],
+                )?;
                 Ok(())
             })
             .unwrap();
@@ -265,7 +277,10 @@ mod tests {
         let summary = summary(&storage, "https://www.usesynth.ai", true, now()).unwrap();
         assert!(summary.signed_in);
         assert_eq!(summary.environment, "prod");
-        assert!(summary.plan.is_none(), "prod must not be seeded with the dev plan");
+        assert!(
+            summary.plan.is_none(),
+            "prod must not be seeded with the dev plan"
+        );
         assert!(summary.account_id.is_none());
         // And the seed row must not exist afterwards.
         let count: i64 = storage

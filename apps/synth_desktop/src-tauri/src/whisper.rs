@@ -186,9 +186,7 @@ fn is_installed(dir: &Path) -> bool {
     // huggingface_hub only moves these files out of its temporary cache after
     // each transfer finishes, so requiring the weights plus runtime metadata
     // distinguishes a complete legacy snapshot from an interrupted download.
-    ["weights.safetensors", "config.json"]
-    .iter()
-    .all(|name| {
+    ["weights.safetensors", "config.json"].iter().all(|name| {
         fs::metadata(dir.join(name))
             .map(|metadata| metadata.is_file() && metadata.len() > 0)
             .unwrap_or(false)

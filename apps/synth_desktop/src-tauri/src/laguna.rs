@@ -7,10 +7,11 @@ use std::{
     collections::HashSet,
     env,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Arc,
+    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, State};
@@ -29,7 +30,13 @@ const UPSTREAM_ENV_VARS: [&str; 5] = [
 ];
 const DEFAULT_MODEL: &str = "poolside/Laguna-XS-2.1-NVFP4-mlx";
 const DEFAULT_MODEL_REVISION: &str = "841778bda563a36104dd521e37d99218e46f4f25";
-const MIN_DOWNLOAD_DISK_BYTES: u64 = 24 * 1024 * 1024 * 1024;
+const MUSE_GLIMMER_MODEL: &str = "meta-models/Muse-Glimmer-30B-GGUF";
+const MUSE_GLIMMER_REVISION: &str = "93769bc7ab5ad1e9cd22d857e3138cf5d977ae81";
+const MUSE_MAIN_GGUF: &str = "muse-glimmer-30B-kquant-17gb.gguf";
+const MUSE_MMPROJ_GGUF: &str = "mmproj-kquant.gguf";
+const MUSE_DFLASH_GGUF: &str = "dflash-kquant.gguf";
+const MUSE_FILES: &[&str] = &[MUSE_MAIN_GGUF, MUSE_MMPROJ_GGUF, MUSE_DFLASH_GGUF];
+const LLAMA_CPP_RELEASE: &str = "b10342";
 const MODEL_INDEX: &str = "model.safetensors.index.json";
 const SELECTED_MODEL_FILE: &str = "selected_model_path";
 /// The daemon at `DEFAULT_PORT` is the only local runtime: it owns the weights,
@@ -41,6 +48,46 @@ const SETTINGS_PATH: &str = "/v1/synth/settings";
 /// Guards against an SSE peer that never emits an event boundary.
 const SSE_BUFFER_LIMIT: usize = 1 << 20;
 
+#[derive(Clone, Copy)]
+struct ModelSpec {
+    id: &'static str,
+    revision: &'static str,
+    title: &'static str,
+    min_disk_bytes: u64,
+    companion: Option<(&'static str, &'static str)>,
+    download_bytes: u64,
+    allow_patterns: Option<&'static [&'static str]>,
+}
+
+const MODEL_CATALOG: [ModelSpec; 2] = [
+    ModelSpec {
+        id: DEFAULT_MODEL,
+        revision: DEFAULT_MODEL_REVISION,
+        title: "Laguna XS 2.1",
+        min_disk_bytes: 24 * 1024 * 1024 * 1024,
+        companion: None,
+        download_bytes: 21_600_000_000,
+        allow_patterns: None,
+    },
+    ModelSpec {
+        id: MUSE_GLIMMER_MODEL,
+        revision: MUSE_GLIMMER_REVISION,
+        title: "Muse Glimmer 30B",
+        min_disk_bytes: 24 * 1024 * 1024 * 1024,
+        companion: None,
+        download_bytes: 19_788_215_296,
+        allow_patterns: Some(MUSE_FILES),
+    },
+];
+
+fn model_spec(model_id: &str) -> Result<ModelSpec> {
+    MODEL_CATALOG
+        .iter()
+        .copied()
+        .find(|spec| spec.id == model_id)
+        .ok_or_else(|| anyhow::anyhow!("Unknown on-device model `{model_id}`"))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LagunaModelHit {
@@ -50,6 +97,8 @@ pub struct LagunaModelHit {
     pub shard_count: usize,
     pub total_bytes: u64,
     pub selected: bool,
+    pub runtime_ready: bool,
+    pub companion_bytes: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -282,44 +331,218 @@ impl LagunaManager {
         }
     }
 
-    pub fn download_model(&self) -> Result<LagunaModelHit> {
-        let python = home().join(".venv/bin/python");
-        validate_python(&python)?;
+    pub fn download_model_with_progress<F>(
+        &self,
+        model_id: &str,
+        mut progress: F,
+    ) -> Result<LagunaModelHit>
+    where
+        F: FnMut(&str, &str, u64, u64),
+    {
+        let spec = model_spec(model_id)?;
+        progress(
+            "preparing",
+            "Preparing the managed model runtime…",
+            0,
+            spec.download_bytes,
+        );
+        if spec.id == MUSE_GLIMMER_MODEL {
+            ensure_muse_runtime(|detail| progress("provisioning", detail, 0, spec.download_bytes))?;
+        }
         let models_root = dirs::home_dir()
             .unwrap_or_default()
             .join(".synth-desktop/models");
         fs::create_dir_all(&models_root)?;
         if let Some(available) = available_disk_bytes(&models_root) {
-            if available < MIN_DOWNLOAD_DISK_BYTES {
+            if available < spec.min_disk_bytes {
                 return Err(anyhow::anyhow!(
-                    "Laguna XS needs at least 24 GiB of free disk space; only {:.1} GiB is available.",
+                    "{} needs at least {:.0} GiB of free disk space; only {:.1} GiB is available.",
+                    spec.title,
+                    spec.min_disk_bytes as f64 / 1024f64.powi(3),
                     available as f64 / 1024f64.powi(3)
                 ));
             }
         }
-        let model_dir = models_root.join(DEFAULT_MODEL);
+        let model_dir = models_root.join(spec.id);
         fs::create_dir_all(&model_dir)?;
+        if spec.id == MUSE_GLIMMER_MODEL {
+            for file in MUSE_FILES {
+                let destination = model_dir.join(file);
+                let url = format!(
+                    "https://huggingface.co/{}/resolve/{}/{}",
+                    spec.id, spec.revision, file
+                );
+                progress(
+                    "downloading",
+                    &format!("Downloading {file}…"),
+                    dir_size(&model_dir),
+                    spec.download_bytes,
+                );
+                let mut child = Command::new("/usr/bin/curl")
+                    .args(["--location", "--fail", "--continue-at", "-"])
+                    .arg("--output")
+                    .arg(&destination)
+                    .arg(url)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .with_context(|| format!("download {file}"))?;
+                let status = loop {
+                    if let Some(status) = child.try_wait()? {
+                        break status;
+                    }
+                    progress(
+                        "downloading",
+                        &format!("Downloading {file}…"),
+                        dir_size(&model_dir),
+                        spec.download_bytes,
+                    );
+                    thread::sleep(Duration::from_millis(500));
+                };
+                if !status.success() {
+                    return Err(anyhow::anyhow!("Muse artifact download failed for {file}"));
+                }
+            }
+            let hit = self.select_model(&model_dir)?;
+            progress(
+                "ready",
+                "Model and runtime are ready.",
+                spec.download_bytes,
+                spec.download_bytes,
+            );
+            return Ok(hit);
+        }
+        let python = home().join(".venv/bin/python");
+        validate_python(&python)?;
         let script = r#"from huggingface_hub import snapshot_download
-import sys
-snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[3])
+import json, sys
+patterns = json.loads(sys.argv[4])
+snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[3], allow_patterns=patterns or None)
 "#;
-        let output = Command::new(&python)
+        progress(
+            "downloading",
+            "Downloading model weights…",
+            dir_size(&model_dir),
+            spec.download_bytes,
+        );
+        let mut child = Command::new(&python)
             .arg("-c")
             .arg(script)
-            .arg(DEFAULT_MODEL)
-            .arg(DEFAULT_MODEL_REVISION)
+            .arg(spec.id)
+            .arg(spec.revision)
             .arg(&model_dir)
+            .arg(serde_json::to_string(&spec.allow_patterns.unwrap_or(&[]))?)
             .stdin(Stdio::null())
-            .output()
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
             .context("download Laguna XS from Hugging Face")?;
-        if !output.status.success() {
-            let detail = String::from_utf8_lossy(&output.stderr);
+        let status = loop {
+            if let Some(status) = child.try_wait().context("check model download")? {
+                break status;
+            }
+            progress(
+                "downloading",
+                "Downloading model weights…",
+                dir_size(&model_dir),
+                spec.download_bytes,
+            );
+            thread::sleep(Duration::from_millis(500));
+        };
+        let mut stderr = String::new();
+        if let Some(mut pipe) = child.stderr.take() {
+            let _ = pipe.read_to_string(&mut stderr);
+        }
+        if !status.success() {
             return Err(anyhow::anyhow!(
                 "Laguna download failed: {}",
-                detail.trim().chars().take(500).collect::<String>()
+                stderr.trim().chars().take(500).collect::<String>()
             ));
         }
-        self.select_model(&model_dir)
+        if let Some((companion_id, companion_revision)) = spec.companion {
+            let companion_dir = models_root.join(companion_id);
+            fs::create_dir_all(&companion_dir)?;
+            progress(
+                "downloading",
+                "Downloading the DFlash speculator…",
+                dir_size(&model_dir),
+                spec.download_bytes,
+            );
+            let mut child = Command::new(&python)
+                .arg("-c")
+                .arg(script)
+                .arg(companion_id)
+                .arg(companion_revision)
+                .arg(&companion_dir)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .context("download Muse Glimmer DFlash assistant from Hugging Face")?;
+            let status = loop {
+                if let Some(status) = child.try_wait().context("check DFlash download")? {
+                    break status;
+                }
+                progress(
+                    "downloading",
+                    "Downloading the DFlash speculator…",
+                    dir_size(&model_dir) + dir_size(&companion_dir),
+                    spec.download_bytes,
+                );
+                thread::sleep(Duration::from_millis(500));
+            };
+            let mut stderr = String::new();
+            if let Some(mut pipe) = child.stderr.take() {
+                let _ = pipe.read_to_string(&mut stderr);
+            }
+            if !status.success() {
+                return Err(anyhow::anyhow!(
+                    "Muse DFlash download failed: {}",
+                    stderr.trim().chars().take(500).collect::<String>()
+                ));
+            }
+        }
+        let hit = self.select_model(&model_dir)?;
+        progress(
+            "ready",
+            "Model and runtime are ready.",
+            spec.download_bytes,
+            spec.download_bytes,
+        );
+        Ok(hit)
+    }
+
+    pub fn delete_model(&self, model_id: &str) -> Result<()> {
+        let spec = model_spec(model_id)?;
+        let models_root = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".synth-desktop/models");
+        let model_dir = models_root.join(spec.id);
+        let selected = read_selected_model_path()?.and_then(|path| path.canonicalize().ok());
+        if selected.as_ref().is_some_and(|path| {
+            path == &model_dir
+                .canonicalize()
+                .unwrap_or_else(|_| model_dir.clone())
+        }) {
+            stop_managed_sidecar()?;
+            if spec.id == MUSE_GLIMMER_MODEL {
+                stop_muse_engine()?;
+            }
+            self.clear_selected_model()?;
+        }
+        if model_dir.exists() {
+            fs::remove_dir_all(&model_dir)
+                .with_context(|| format!("remove {}", model_dir.display()))?;
+        }
+        if let Some((companion, _)) = spec.companion {
+            let companion_dir = models_root.join(companion);
+            if companion_dir.exists() {
+                fs::remove_dir_all(&companion_dir)
+                    .with_context(|| format!("remove {}", companion_dir.display()))?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn ensure(&self, workshop_root: &Path) -> Result<Option<String>> {
@@ -375,7 +598,10 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         // The Synth-managed daemon is the only local runtime: it loads the
         // weights in-process. There is no second engine to discover or proxy
         // through — Poolside's own sidecar is not ours and is never reused.
-        let backend = if cfg!(target_os = "macos") {
+        let selected_model = selected_model_id()?;
+        let backend = if selected_model == MUSE_GLIMMER_MODEL {
+            "external"
+        } else if cfg!(target_os = "macos") {
             "mlx_lm"
         } else {
             "auto"
@@ -386,6 +612,9 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         status.detail = Some("Starting Laguna sidecar…".into());
         self.set_status(status).await;
         write_env_sh(&api_key, &base_url)?;
+        if selected_model == MUSE_GLIMMER_MODEL {
+            spawn_muse_engine(workshop_root)?;
+        }
         spawn_sidecar(workshop_root, &api_key, backend)?;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
@@ -784,24 +1013,52 @@ pub async fn laguna_settings_update(
 pub async fn laguna_model_download(
     app: AppHandle,
     state: State<'_, Arc<LagunaManager>>,
+    model_id: String,
 ) -> std::result::Result<LagunaModelHit, String> {
+    let spec = model_spec(&model_id).map_err(|error| error.to_string())?;
     let _ = app.emit(
         "laguna:download",
-        serde_json::json!({"phase":"downloading","detail":"Downloading Laguna XS 2.1 from Hugging Face…"}),
+        serde_json::json!({"phase":"downloading","detail":format!("Downloading {} from Hugging Face…", spec.title), "modelId":model_id}),
     );
     let manager = state.inner().clone();
-    let result = tauri::async_runtime::spawn_blocking(move || manager.download_model())
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string());
+    let progress_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        manager.download_model_with_progress(spec.id, |phase, detail, downloaded, total| {
+            let _ = progress_app.emit(
+                "laguna:download",
+                serde_json::json!({
+                    "phase": phase,
+                    "detail": detail,
+                    "modelId": spec.id,
+                    "downloadedBytes": downloaded,
+                    "totalBytes": total,
+                }),
+            );
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string());
     let payload = match &result {
         Ok(hit) => {
-            serde_json::json!({"phase":"ready","detail":"Laguna XS download complete.","path":hit.path})
+            serde_json::json!({"phase":"ready","detail":format!("{} download complete.", spec.title),"path":hit.path,"modelId":spec.id})
         }
         Err(error) => serde_json::json!({"phase":"error","detail":error}),
     };
     let _ = app.emit("laguna:download", payload);
     result
+}
+
+#[tauri::command]
+pub async fn laguna_model_delete(
+    state: State<'_, Arc<LagunaManager>>,
+    model_id: String,
+) -> std::result::Result<(), String> {
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || manager.delete_model(&model_id))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -869,6 +1126,13 @@ fn models_dir() -> Result<PathBuf> {
     }
 }
 
+fn selected_model_id() -> Result<String> {
+    if let Some(selected) = read_selected_model_path()? {
+        return Ok(validate_model_input(&selected)?.model_id);
+    }
+    Ok(DEFAULT_MODEL.into())
+}
+
 fn read_selected_model_path() -> Result<Option<PathBuf>> {
     match fs::read_to_string(home().join(SELECTED_MODEL_FILE)) {
         Ok(value) if !value.trim().is_empty() => Ok(Some(PathBuf::from(value.trim()))),
@@ -879,20 +1143,50 @@ fn read_selected_model_path() -> Result<Option<PathBuf>> {
 }
 
 fn validate_model_input(input: &Path) -> Result<LagunaModelHit> {
-    let model_dir = if input.join("config.json").is_file() {
+    let model_dir = if input.join("config.json").is_file() || input.join(MUSE_MAIN_GGUF).is_file() {
         input.to_owned()
     } else {
-        let nested = input.join(DEFAULT_MODEL);
-        if nested.join("config.json").is_file() {
-            nested
-        } else {
-            return Err(anyhow::anyhow!("{} is neither a Laguna model directory nor a models root containing {DEFAULT_MODEL}", input.display()));
-        }
+        MODEL_CATALOG
+            .iter()
+            .map(|spec| input.join(spec.id))
+            .find(|candidate| {
+                candidate.join("config.json").is_file() || candidate.join(MUSE_MAIN_GGUF).is_file()
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{} is neither a supported model directory nor a models root",
+                    input.display()
+                )
+            })?
     };
     validate_model_dir(&model_dir)
 }
 
 fn validate_model_dir(model_dir: &Path) -> Result<LagunaModelHit> {
+    if model_dir.join(MUSE_MAIN_GGUF).is_file() {
+        let canonical = model_dir.canonicalize()?;
+        let mut total_bytes = 0;
+        for file in MUSE_FILES {
+            total_bytes += fs::metadata(canonical.join(file))
+                .with_context(|| format!("Missing Muse runtime artifact {file}"))?
+                .len();
+        }
+        let suffix_depth = Path::new(MUSE_GLIMMER_MODEL).components().count();
+        let models_root = canonical
+            .ancestors()
+            .nth(suffix_depth)
+            .unwrap_or(&canonical);
+        return Ok(LagunaModelHit {
+            path: canonical.to_string_lossy().into_owned(),
+            models_root: models_root.to_string_lossy().into_owned(),
+            model_id: MUSE_GLIMMER_MODEL.into(),
+            shard_count: MUSE_FILES.len(),
+            total_bytes,
+            selected: false,
+            runtime_ready: muse_runtime_ready(),
+            companion_bytes: fs::metadata(canonical.join(MUSE_DFLASH_GGUF))?.len(),
+        });
+    }
     let config = model_dir.join("config.json");
     if !config.is_file() {
         return Err(anyhow::anyhow!("Missing {}", config.display()));
@@ -930,8 +1224,23 @@ fn validate_model_dir(model_dir: &Path) -> Result<LagunaModelHit> {
     let canonical = model_dir
         .canonicalize()
         .with_context(|| format!("Resolve model directory {}", model_dir.display()))?;
-    let suffix_depth = Path::new(DEFAULT_MODEL).components().count();
-    let models_root = if canonical.ends_with(DEFAULT_MODEL) {
+    let spec = MODEL_CATALOG
+        .iter()
+        .find(|spec| canonical.ends_with(spec.id))
+        .copied()
+        .or_else(|| {
+            let config: Value = serde_json::from_str(&fs::read_to_string(&config).ok()?).ok()?;
+            match config.get("model_type").and_then(Value::as_str) {
+                Some("muse_glimmer") => model_spec(MUSE_GLIMMER_MODEL).ok(),
+                Some("laguna") => model_spec(DEFAULT_MODEL).ok(),
+                _ => None,
+            }
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("{} is not a supported Workshop model", canonical.display())
+        })?;
+    let suffix_depth = Path::new(spec.id).components().count();
+    let models_root = if canonical.ends_with(spec.id) {
         canonical
             .ancestors()
             .nth(suffix_depth)
@@ -944,25 +1253,43 @@ fn validate_model_dir(model_dir: &Path) -> Result<LagunaModelHit> {
     Ok(LagunaModelHit {
         path: canonical.to_string_lossy().into_owned(),
         models_root: models_root.to_string_lossy().into_owned(),
-        model_id: DEFAULT_MODEL.into(),
+        model_id: spec.id.into(),
         shard_count: shards.len(),
         total_bytes,
         selected: false,
+        runtime_ready: spec.id != MUSE_GLIMMER_MODEL || muse_runtime_ready(),
+        companion_bytes: spec
+            .companion
+            .map(|(id, _)| {
+                dir_size(
+                    &dirs::home_dir()
+                        .unwrap_or_default()
+                        .join(".synth-desktop/models")
+                        .join(id),
+                )
+            })
+            .unwrap_or(0),
     })
 }
 
 fn discover_models() -> Result<Vec<LagunaModelHit>> {
     let user = dirs::home_dir().unwrap_or_default();
-    let mut candidates = vec![
-        user.join(".config/poolside/models").join(DEFAULT_MODEL),
-        user.join(".synth-desktop/models").join(DEFAULT_MODEL),
-    ];
+    let mut candidates = vec![user.join(".config/poolside/models").join(DEFAULT_MODEL)];
+    candidates.extend(
+        MODEL_CATALOG
+            .iter()
+            .map(|spec| user.join(".synth-desktop/models").join(spec.id)),
+    );
     if let Ok(repositories) = fs::read_dir(user.join(".cache/huggingface/hub")) {
         for repository in repositories.flatten().filter(|entry| {
             entry
                 .file_name()
                 .to_string_lossy()
                 .starts_with("models--poolside--Laguna")
+                || entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("models--meta-models--Muse-Glimmer")
         }) {
             if let Ok(snapshots) = fs::read_dir(repository.path().join("snapshots")) {
                 candidates.extend(snapshots.flatten().map(|entry| entry.path()));
@@ -1045,7 +1372,8 @@ fn write_secret(path: &Path, value: &str) -> Result<()> {
 
 fn write_env_sh(api_key: &str, base_url: &str) -> Result<()> {
     fs::create_dir_all(home())?;
-    let body = format!("export SYNTH_LAGUNA_HOST=\"127.0.0.1\"\nexport SYNTH_LAGUNA_BASE_URL=\"{base_url}\"\nexport SYNTH_LAGUNA_API_KEY=\"{api_key}\"\nexport SYNTH_LAGUNA_BACKEND=\"{}\"\nexport SYNTH_LAGUNA_DEFAULT_MODEL=\"{DEFAULT_MODEL}\"\nexport SYNTH_LAGUNA_MODELS_DIR=\"{}\"\nexport SYNTH_LAGUNA_AUTO_LOAD=\"1\"\nexport PATH=\"$HOME/.synth-desktop/laguna/.venv/bin:$PATH\"\n", env::var("SYNTH_LAGUNA_BACKEND").unwrap_or_else(|_| "auto".into()), models_dir()?.display());
+    let model_id = selected_model_id()?;
+    let body = format!("export SYNTH_LAGUNA_HOST=\"127.0.0.1\"\nexport SYNTH_LAGUNA_BASE_URL=\"{base_url}\"\nexport SYNTH_LAGUNA_API_KEY=\"{api_key}\"\nexport SYNTH_LAGUNA_BACKEND=\"{}\"\nexport SYNTH_LAGUNA_DEFAULT_MODEL=\"{model_id}\"\nexport SYNTH_LAGUNA_MODELS_DIR=\"{}\"\nexport SYNTH_LAGUNA_AUTO_LOAD=\"1\"\nexport PATH=\"$HOME/.synth-desktop/laguna/.venv/bin:$PATH\"\n", env::var("SYNTH_LAGUNA_BACKEND").unwrap_or_else(|_| "auto".into()), models_dir()?.display());
     fs::write(home().join("env.sh"), body)?;
     Ok(())
 }
@@ -1084,25 +1412,118 @@ fn spawn_sidecar(root: &Path, api_key: &str, backend: &str) -> Result<()> {
     Ok(())
 }
 
+fn spawn_muse_engine(root: &Path) -> Result<()> {
+    let pid_path = home().join("muse-llama.pid");
+    if let Ok(raw) = fs::read_to_string(&pid_path) {
+        if let Ok(pid) = raw.trim().parse::<u32>() {
+            let output = Command::new("/bin/ps")
+                .args(["-p", &pid.to_string(), "-o", "command="])
+                .output();
+            if output.is_ok_and(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("Muse-Glimmer")
+            }) {
+                return Ok(());
+            }
+        }
+        let _ = fs::remove_file(&pid_path);
+    }
+    let llama_server = dirs::home_dir().unwrap_or_default().join(format!(
+        ".synth-desktop/muse/runtime/llama-{LLAMA_CPP_RELEASE}/llama-server"
+    ));
+    if !llama_server.is_file() {
+        return Err(anyhow::anyhow!(
+            "Muse Glimmer's managed llama.cpp Metal runtime is not installed. Download or repair it from Settings → Models."
+        ));
+    }
+    let model_root = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".synth-desktop/models/meta-models");
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(home().join("muse-llama.log"))?;
+    let script = root.join("scripts/muse/serve.sh");
+    let mut command = Command::new(script);
+    command
+        .env(
+            "SYNTH_MUSE_MODEL_PATH",
+            model_root.join("Muse-Glimmer-30B-GGUF"),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log));
+    detach(&mut command);
+    let child = command
+        .spawn()
+        .context("start Muse Glimmer 4-bit llama.cpp Metal engine")?;
+    fs::write(pid_path, child.id().to_string())?;
+    Ok(())
+}
+
+fn stop_muse_engine() -> Result<bool> {
+    let path = home().join("muse-llama.pid");
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return Ok(false);
+    };
+    let pid: u32 = raw
+        .trim()
+        .parse()
+        .context("invalid managed Muse engine pid")?;
+    if pid == 0 {
+        return Ok(false);
+    }
+    #[cfg(unix)]
+    {
+        let command = Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+            .context("inspect managed Muse engine")?;
+        if !String::from_utf8_lossy(&command.stdout).contains("Muse-Glimmer") {
+            let _ = fs::remove_file(path);
+            return Ok(false);
+        }
+        let status = Command::new("/bin/kill")
+            .args(["-TERM", &pid.to_string()])
+            .status()
+            .context("stop managed Muse engine")?;
+        if status.success() {
+            let _ = fs::remove_file(path);
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Environment for the Synth-managed daemon. The upstream/external variables are
 /// actively cleared: an inherited `SYNTH_LAGUNA_EXTERNAL_URL` (or the legacy
 /// `:7334` upstream port) would otherwise make the daemon proxy to a second
 /// engine instead of owning the weights itself.
 fn apply_daemon_env(command: &mut Command, api_key: &str, backend: &str, models_dir: &Path) {
+    let model_id = selected_model_id().unwrap_or_else(|_| DEFAULT_MODEL.into());
     command.envs([
         ("SYNTH_LAGUNA_HOST", "127.0.0.1"),
         ("SYNTH_LAGUNA_PORT", DEFAULT_PORT_STR),
         ("SYNTH_LAGUNA_API_KEY", api_key),
         ("SYNTH_LAGUNA_BACKEND", backend),
-        ("SYNTH_LAGUNA_DEFAULT_MODEL", DEFAULT_MODEL),
+        ("SYNTH_LAGUNA_DEFAULT_MODEL", model_id.as_str()),
         ("SYNTH_LAGUNA_AUTO_LOAD", "1"),
         ("SYNTH_LAGUNA_REQUIRE_AUTH", "1"),
     ]);
     command
         .env("SYNTH_LAGUNA_MODELS_DIR", models_dir)
         .env("SYNTH_LAGUNA_DATA_DIR", home());
-    for legacy in UPSTREAM_ENV_VARS {
-        command.env_remove(legacy);
+    if model_id == MUSE_GLIMMER_MODEL {
+        command
+            .env("SYNTH_LAGUNA_EXTERNAL_URL", "http://127.0.0.1:7334")
+            .env_remove("SYNTH_LAGUNA_EXTERNAL_API_KEY");
+        for legacy in &UPSTREAM_ENV_VARS[2..] {
+            command.env_remove(legacy);
+        }
+    } else {
+        for legacy in UPSTREAM_ENV_VARS {
+            command.env_remove(legacy);
+        }
     }
 }
 
@@ -1193,6 +1614,93 @@ fn available_disk_bytes(path: &Path) -> Option<u64> {
         .then(|| parse_df_available_bytes(&String::from_utf8_lossy(&output.stdout)))
         .flatten()
 }
+
+fn dir_size(path: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| match entry.metadata() {
+            Ok(metadata) if metadata.is_dir() => dir_size(&entry.path()),
+            Ok(metadata) => metadata.len(),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
+fn muse_runtime_ready() -> bool {
+    let server = dirs::home_dir().unwrap_or_default().join(format!(
+        ".synth-desktop/muse/runtime/llama-{LLAMA_CPP_RELEASE}/llama-server"
+    ));
+    Command::new(server)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn ensure_muse_runtime<F>(mut progress: F) -> Result<()>
+where
+    F: FnMut(&str),
+{
+    if muse_runtime_ready() {
+        return Ok(());
+    }
+    let muse_home = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".synth-desktop/muse");
+    let archive = muse_home.join(format!("llama-{LLAMA_CPP_RELEASE}-macos-arm64.tar.gz"));
+    let archive_arg = archive.to_string_lossy().into_owned();
+    let runtime = muse_home.join("runtime");
+    let runtime_arg = runtime.to_string_lossy().into_owned();
+    fs::create_dir_all(&muse_home)?;
+    fs::create_dir_all(&runtime)?;
+    progress("Downloading the official llama.cpp Metal runtime…");
+    run_managed_command(
+        "/usr/bin/curl",
+        &[
+            "--fail", "--location", "--retry", "3", "--output", &archive_arg,
+            "https://github.com/ggml-org/llama.cpp/releases/download/b10342/llama-b10342-bin-macos-arm64.tar.gz",
+        ],
+        &muse_home.join("install.log"),
+    )?;
+    run_managed_command(
+        "/usr/bin/tar",
+        &["-xzf", &archive_arg, "-C", &runtime_arg],
+        &muse_home.join("install.log"),
+    )?;
+    if !muse_runtime_ready() {
+        return Err(anyhow::anyhow!(
+            "The managed llama.cpp runtime installed, but llama-server could not start. See {}",
+            muse_home.join("install.log").display()
+        ));
+    }
+    Ok(())
+}
+
+fn run_managed_command(program: &str, args: &[&str], log_path: &Path) -> Result<()> {
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+    let status = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log))
+        .status()
+        .with_context(|| format!("run managed command `{program}`"))?;
+    if !status.success() {
+        return Err(anyhow::anyhow!(
+            "Managed runtime setup failed; see {}",
+            log_path.display()
+        ));
+    }
+    Ok(())
+}
 #[cfg(unix)]
 fn detach(command: &mut Command) {
     use std::os::unix::process::CommandExt;
@@ -1232,7 +1740,7 @@ mod tests {
             env::temp_dir().join(format!("synth-laguna-model-test-{}", uuid::Uuid::new_v4()));
         let model = root.join(DEFAULT_MODEL);
         fs::create_dir_all(&model).unwrap();
-        fs::write(model.join("config.json"), "{}").unwrap();
+        fs::write(model.join("config.json"), r#"{"model_type":"laguna"}"#).unwrap();
         fs::write(model.join("a.safetensors"), b"abc").unwrap();
         fs::write(model.join("b.safetensors"), b"12345").unwrap();
         fs::write(
@@ -1268,10 +1776,7 @@ mod tests {
         assert!(exchange.supported);
         assert_eq!(exchange.status, 400);
         assert_eq!(exchange.body["error"]["code"], "invalid_setting");
-        assert_eq!(
-            exchange.body["error"]["details"]["field"],
-            "default_top_k"
-        );
+        assert_eq!(exchange.body["error"]["details"]["field"], "default_top_k");
     }
 
     #[test]

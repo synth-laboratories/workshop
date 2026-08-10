@@ -52,7 +52,8 @@
     "laguna:mock": "SYNTH_LAGUNA_BACKEND=mock ./scripts/laguna/serve.sh",
     "compose:up": "docker compose --env-file .env.compose.example up --build -d",
     "compose:down": "docker compose down",
-    "laguna:test": "./scripts/laguna/test.sh"
+    "laguna:test": "./scripts/laguna/test.sh",
+    "muse:serve": "./scripts/muse/serve.sh"
   },
   "engines": {
     "node": ">=20",

@@ -852,6 +852,68 @@ test("manual XS compaction resumes the thread and renders success without an emp
 	expect(markerBox!.y).toBeGreaterThan(responseBox!.y + responseBox!.height - 1);
 });
 
+test("model-switch compaction renders above the continued turn's tool calls", async ({ page }) => {
+	await page.addInitScript(() => {
+		let listener: ((event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) | undefined;
+		const testWindow = window as typeof window & {
+			__emitSwitchCompactCodex?: typeof listener;
+			synthCodex?: unknown;
+		};
+		testWindow.synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId: "switch-compact-session", threadId: "thread-switch-compact", workspace: "/workspaces/default",
+				model: "poolside/laguna-s-2.1", providerName: "openrouter",
+				providerTitle: "Laguna S", baseUrl: "https://openrouter.ai/api/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId: "switch-compact-session", threadId: "thread-switch-compact" }),
+			startTurn: async () => ({ sessionId: "switch-compact-session", threadId: "thread-switch-compact", turnId: "turn-after-switch" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: (next: typeof listener) => {
+				listener = next;
+				testWindow.__emitSwitchCompactCodex = next;
+				return () => { listener = undefined; };
+			}
+		};
+	});
+	await installLagunaFixture(page, "ready");
+	await page.getByTestId("local-chat-switch-compact-session").click();
+	await page.getByTestId("activity-mode-menu-trigger").click();
+	await page.getByTestId("activity-mode-option-detailed").click();
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitSwitchCompactCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitSwitchCompactCodex;
+		const send = (method: string, params: Record<string, unknown>) => emit({ sessionId: "switch-compact-session", method, params });
+		send("turn/started", { turn: { id: "turn-after-switch" } });
+		send("thread/compacted", { threadId: "thread-switch-compact", source: "model_switch" });
+		send("item/started", {
+			item: {
+				id: "probe-1",
+				type: "mcpToolCall",
+				server: "synth_containers",
+				tool: "container_probe",
+				status: "inProgress",
+				arguments: { container_id: "craftax-local" }
+			}
+		});
+		send("item/completed", {
+			item: { id: "answer-after-switch", type: "agentMessage", text: "Picking up after the model switch." }
+		});
+	});
+	const transcript = page.getByTestId("chat-transcript");
+	await expect(transcript).toContainText("Model switch - context compacted");
+	await expect(transcript.locator("code.mcp-activity-name").getByText("synth_containers.container_probe")).toBeVisible();
+	await expect(transcript).toContainText("Picking up after the model switch.");
+	const markerBox = await transcript.locator(".context-compaction-divider").boundingBox();
+	const toolBox = await transcript.locator("code.mcp-activity-name").getByText("synth_containers.container_probe").boundingBox();
+	const responseBox = await transcript.locator(".local-assistant", { hasText: "Picking up after the model switch." }).boundingBox();
+	expect(markerBox).not.toBeNull();
+	expect(toolBox).not.toBeNull();
+	expect(responseBox).not.toBeNull();
+	expect(toolBox!.y).toBeGreaterThan(markerBox!.y + markerBox!.height - 1);
+	expect(responseBox!.y).toBeGreaterThan(toolBox!.y);
+});
+
 test("native Codex tool use renders safe Poolside-style rows and a compact run summary", async ({ page }) => {
 	await page.addInitScript(() => {
 		let listener: ((event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) | undefined;

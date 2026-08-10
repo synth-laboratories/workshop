@@ -197,7 +197,7 @@ export function SettingsPage({
 							<section className="models-half" data-testid="models-on-device">
 								<header className="models-half-head">
 									<h3>On-device</h3>
-									<p>Local MLX models for Workshop coding agents.</p>
+									<p>Managed local models and inference runtimes for Workshop coding agents.</p>
 								</header>
 								<OnDeviceModelsSettings lagunaPhase={lagunaPhase} onReloadLaguna={onReloadLaguna} />
 							</section>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { LagunaModelHit, LagunaStatus } from "../env";
+import type { LagunaDownloadProgress, LagunaModelHit, LagunaStatus } from "../env";
 import { ProviderMark } from "./ProviderMark";
 
 function formatBytes(bytes: number): string {
@@ -9,6 +9,7 @@ function formatBytes(bytes: number): string {
 }
 
 const LAGUNA_XS = {
+	modelId: "poolside/Laguna-XS-2.1-NVFP4-mlx",
 	id: "laguna-xs-2.1",
 	title: "Laguna XS 2.1 NVFP4",
 	description: "Poolside Laguna XS 2.1 33B/3B-active coding MoE, NVFP4 quantized.",
@@ -21,6 +22,22 @@ const LAGUNA_XS = {
 	fit: "High" as const
 };
 
+const MUSE_GLIMMER = {
+	modelId: "meta-models/Muse-Glimmer-30B-GGUF",
+	id: "muse-glimmer-30b",
+	title: "Muse Glimmer 30B",
+	description: "Meta's dense agentic model with controllable reasoning, tool use, and image understanding.",
+	provider: "Meta",
+	quantization: "K-Quant 4-bit",
+	context: "131k context",
+	parameters: "29.6B dense",
+	estMemory: "24–32 GB",
+	downloadSize: "19.8 GB incl. vision + DFlash",
+	fit: "High" as const
+};
+
+const MODEL_CATALOG = [LAGUNA_XS, MUSE_GLIMMER];
+
 type Props = {
 	lagunaPhase?: string | null;
 	onReloadLaguna: () => Promise<LagunaStatus>;
@@ -32,6 +49,7 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 	const [error, setError] = useState<string | null>(null);
 	const [reloadState, setReloadState] = useState<"idle" | "reloading" | "ready" | "error">("idle");
 	const [reloadDetail, setReloadDetail] = useState<string | null>(null);
+	const [downloadProgress, setDownloadProgress] = useState<LagunaDownloadProgress | null>(null);
 
 	const refresh = useCallback(async () => {
 		setBusy(true);
@@ -49,28 +67,38 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 		void refresh();
 	}, [refresh]);
 
-	const installed = hits.find((hit) => hit.selected) ?? hits[0] ?? null;
-	const modelsRoot = installed?.modelsRoot ?? hits[0]?.modelsRoot ?? "~/.synth/models";
-	const alternates = hits.filter((hit) => hit.path !== installed?.path);
+	useEffect(() => window.synthLaguna?.onDownloadProgress?.(setDownloadProgress), []);
 
-	const download = useCallback(async () => {
+	const selected = hits.find((hit) => hit.selected) ?? null;
+	const modelsRoot = selected?.modelsRoot ?? hits[0]?.modelsRoot ?? "~/.synth-desktop/models";
+	const catalogPaths = new Set(MODEL_CATALOG.map((model) => model.modelId));
+	const alternates = hits.filter((hit) => !catalogPaths.has(hit.modelId) || (hit.modelId === selected?.modelId && hit.path !== selected.path));
+
+	const download = useCallback(async (modelId: string) => {
 		setBusy(true);
 		setError(null);
 		try {
-			await window.synthLaguna?.downloadModel();
+			await window.synthLaguna?.downloadModel(modelId);
 			setHits((await window.synthLaguna?.listModels()) ?? []);
+			setReloadState("reloading");
+			setReloadDetail("Starting the selected model…");
+			const status = await onReloadLaguna();
+			setReloadState("ready");
+			setReloadDetail(status.detail ?? "Model is ready.");
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
 		} finally {
 			setBusy(false);
 		}
-	}, []);
+	}, [onReloadLaguna]);
 
-	const clear = useCallback(async () => {
+	const deleteModel = useCallback(async (modelId: string) => {
+		const model = MODEL_CATALOG.find((candidate) => candidate.modelId === modelId);
+		if (!window.confirm(`Delete ${model?.title ?? "this model"} and its managed weights from this Mac?`)) return;
 		setBusy(true);
 		setError(null);
 		try {
-			await window.synthLaguna?.clearModelDirectory();
+			await window.synthLaguna?.deleteModel(modelId);
 			setHits((await window.synthLaguna?.listModels()) ?? []);
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
@@ -157,8 +185,28 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 				</p>
 			) : null}
 
+			<section className="model-download-guide" aria-labelledby="model-download-guide-title">
+				<div>
+					<strong id="model-download-guide-title">Managed downloads</strong>
+					<p>Choose Download and keep Workshop open. Runtime setup, verified model artifacts, selection, and startup happen automatically.</p>
+				</div>
+				<ul>
+					<li>Laguna XS: 20.1 GB download · about 30 GB memory</li>
+					<li>Muse Glimmer: 19.8 GB download · 24–32 GB+ memory · includes vision and DFlash</li>
+				</ul>
+				<p className="model-download-guide-status">Live progress appears on the model card. Interrupted downloads resume when you choose Download again.</p>
+			</section>
+
 			<div className="on-device-grid" data-testid="on-device-recommended">
-				<article className={`on-device-card${installed ? " installed" : ""}`} data-testid="on-device-laguna-xs">
+				{MODEL_CATALOG.map((model) => {
+					const installed = hits.find((hit) => hit.modelId === model.modelId) ?? null;
+					const inUse = installed?.selected ?? false;
+					const progress = downloadProgress?.modelId === model.modelId ? downloadProgress : null;
+					const modelBusy = busy && (!downloadProgress || progress !== null);
+					const pct = progress?.totalBytes && progress.downloadedBytes != null
+						? Math.min(100, Math.round(progress.downloadedBytes / progress.totalBytes * 100))
+						: null;
+					return <article key={model.modelId} className={`on-device-card${installed ? " installed" : ""}`} data-testid={`on-device-${model.id}`}>
 					<header className="on-device-card-top">
 						<div className="on-device-card-identity">
 							<span className="on-device-card-mark" aria-hidden>
@@ -166,32 +214,36 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 							</span>
 							<div>
 								<div className="on-device-card-title-row">
-									<strong>{LAGUNA_XS.title}</strong>
-									<span className="on-device-fit">Fit: {LAGUNA_XS.fit}</span>
-									{installed ? <span className="model-location-badge">In use</span> : null}
+									<strong>{model.title}</strong>
+									<span className="on-device-fit">Fit: {model.fit}</span>
+									{inUse ? <span className="model-location-badge">In use</span> : null}
 								</div>
-								<p>{LAGUNA_XS.description}</p>
+								<p>{model.description}</p>
 							</div>
 						</div>
-						{installed ? (
+						{inUse ? (
 							<button
 								type="button"
 								className="on-device-delete"
-								disabled={busy}
-								onClick={() => void clear()}
-								data-testid="clear-laguna-model"
+								disabled={modelBusy}
+								onClick={() => void deleteModel(model.modelId)}
+								data-testid={`delete-${model.id}`}
 							>
 								Delete
+							</button>
+						) : installed ? (
+							<button type="button" className="on-device-download" disabled={modelBusy} onClick={() => void selectHit(installed.path)}>
+								Use
 							</button>
 						) : (
 							<button
 								type="button"
 								className="on-device-download"
-								disabled={busy}
-								onClick={() => void download()}
-								data-testid="download-laguna-model"
+								disabled={modelBusy}
+								onClick={() => void download(model.modelId)}
+								data-testid={`download-${model.id}`}
 							>
-								{busy ? "Downloading…" : "Download"}
+								{modelBusy ? (progress?.phase === "provisioning" ? "Installing…" : "Downloading…") : "Download"}
 							</button>
 						)}
 					</header>
@@ -199,42 +251,56 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 					<dl className="on-device-specs">
 						<div>
 							<dt>Provider</dt>
-							<dd>{LAGUNA_XS.provider}</dd>
+							<dd>{model.provider}</dd>
 						</div>
 						<div>
 							<dt>Quantization</dt>
-							<dd>{LAGUNA_XS.quantization}</dd>
+							<dd>{model.quantization}</dd>
 						</div>
 						<div>
 							<dt>Context</dt>
-							<dd>{LAGUNA_XS.context}</dd>
+							<dd>{model.context}</dd>
 						</div>
 						<div>
 							<dt>Parameters</dt>
-							<dd>{LAGUNA_XS.parameters}</dd>
+							<dd>{model.parameters}</dd>
 						</div>
 						<div>
 							<dt>Est. memory</dt>
-							<dd>{LAGUNA_XS.estMemory}</dd>
+							<dd>{model.estMemory}</dd>
 						</div>
 						<div>
 							<dt>Download size</dt>
-							<dd>{installed ? formatBytes(installed.totalBytes) : LAGUNA_XS.downloadSize}</dd>
+							<dd>{installed ? formatBytes(installed.totalBytes) : model.downloadSize}</dd>
 						</div>
 					</dl>
 
 					{installed ? (
 						<p className="on-device-installed">
-							Installed · {installed.shardCount} weight shards · <code>{installed.path}</code>
+							Installed · {installed.shardCount} weight shards
+							{installed.companionBytes > 0 ? ` · DFlash ${formatBytes(installed.companionBytes)}` : ""}
+							{!installed.runtimeReady ? " · Runtime needs repair" : ""} · <code>{installed.path}</code>
 						</p>
 					) : (
 						<p className="on-device-installed muted">
-							{busy
-								? "Downloading and verifying Laguna XS…"
+							{modelBusy
+								? (progress?.detail ?? `Preparing ${model.title}…`)
 								: "Not installed yet. Download the weights or choose an existing folder."}
 						</p>
 					)}
-				</article>
+					{modelBusy ? (
+						<div className="model-managed-progress" data-testid={`progress-${model.id}`}>
+							<div className={`progress-track${pct == null ? " is-indeterminate" : ""}`} role="progressbar" aria-valuenow={pct ?? undefined} aria-valuemin={0} aria-valuemax={100} aria-label={progress?.detail ?? `Preparing ${model.title}`}>
+								<div className={`progress-fill${pct == null ? " progress-indeterminate" : ""}`} style={pct == null ? undefined : { width: `${pct}%` }} />
+							</div>
+							<span>
+								{progress?.detail ?? `Preparing ${model.title}…`}
+								{pct != null ? ` · ${formatBytes(progress?.downloadedBytes ?? 0)} of ${formatBytes(progress?.totalBytes ?? 0)} · ${pct}%` : ""}
+							</span>
+						</div>
+					) : null}
+				</article>;
+				})}
 			</div>
 
 			{alternates.length ? (
@@ -262,7 +328,7 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 				</div>
 			) : null}
 
-			<p className="model-locations-note">A newly selected location is used the next time Laguna starts.</p>
+			<p className="model-locations-note">Downloads, runtime setup, selection, startup, and removal are managed here. Muse includes its 17 GB 4-bit K-quant, vision projector, and DFlash speculator.</p>
 		</div>
 	);
 }

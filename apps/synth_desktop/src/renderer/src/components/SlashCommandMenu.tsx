@@ -149,7 +149,7 @@ export const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, Props>(functi
 	let runningIndex = -1;
 
 	return (
-		<div className="slash-command-menu" role="listbox" aria-label="Slash commands" data-testid="slash-command-menu">
+		<div id="composer-slash-menu" className="slash-command-menu" role="listbox" aria-label="Slash commands" data-testid="slash-command-menu">
 			{flatItems.length === 0 ? <div className="slash-command-empty">No matches</div> : null}
 			{sections.map((section) => (
 				<div key={section.id} className="slash-command-section">

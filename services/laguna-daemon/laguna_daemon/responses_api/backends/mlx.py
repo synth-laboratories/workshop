@@ -611,7 +611,7 @@ class NativeMlxBackend:
                     required_gib = required_memory / 1024**3
                     raise ResponsesError(
                         "insufficient_system_memory",
-                        "Laguna XS was not loaded because this Mac has "
+                        f"{self.model_path.name} was not loaded because this Mac has "
                         f"{available_gib:.1f} GiB of unified memory; "
                         f"at least {required_gib:.1f} GiB is required.",
                         503,

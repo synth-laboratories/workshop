@@ -299,7 +299,11 @@ pub async fn attach_recent(
     raw: &str,
 ) -> Result<ConversationWorkspaceScope> {
     let canonical = canonical_directory(raw)?.to_string_lossy().into_owned();
-    if !recent_folders(db).await?.iter().any(|path| path == &canonical) {
+    if !recent_folders(db)
+        .await?
+        .iter()
+        .any(|path| path == &canonical)
+    {
         return Err(anyhow!("folder is not in recent workspace history"));
     }
     attach(

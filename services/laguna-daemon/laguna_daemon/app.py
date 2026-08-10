@@ -126,6 +126,23 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
     def models_payload() -> dict[str, Any]:
         mid = model_id()
         name = mid.split("/")[-1].replace("-", " ")
+        is_muse = mid == "meta-models/Muse-Glimmer-30B-GGUF"
+        runtime_description = (
+            "Local Muse Glimmer 4-bit K-quant served through llama.cpp Metal with DFlash."
+            if is_muse
+            else "Native local MLX model served by Synth Laguna."
+        )
+        reasoning_levels = (
+            [
+                {"effort": effort, "description": f"Use Muse Glimmer's {effort} reasoning strength."}
+                for effort in ("low", "medium", "high", "xhigh")
+            ]
+            if is_muse
+            else [
+                {"effort": "none", "description": "Answer without a reasoning phase."},
+                {"effort": "high", "description": "Use Laguna's reasoning mode."},
+            ]
+        )
         item = {
             "id": mid,
             "object": "model",
@@ -133,11 +150,11 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
             "root": mid,
             "name": name,
             "display_name": name,
-            "description": "Native local MLX model served by Synth Laguna.",
+            "description": runtime_description,
             "created": int(time.time()),
             "context_length": cfg.context_length,
             "details": {
-                "family": "poolside",
+                "family": "muse_glimmer" if is_muse else "poolside",
                 "format": "safetensors",
                 "context_length": cfg.context_length,
             },
@@ -145,14 +162,11 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
         codex_item = {
             "slug": mid,
             "display_name": name,
-            "description": "Native local MLX model served by Synth Laguna.",
+            "description": runtime_description,
             # Derived from runtime settings so the advertised default always
             # matches what an absent reasoning field actually does.
             "default_reasoning_level": settings_store.sampling.reasoning_effort,
-            "supported_reasoning_levels": [
-                {"effort": "none", "description": "Answer without a reasoning phase."},
-                {"effort": "high", "description": "Use Laguna's reasoning mode."},
-            ],
+            "supported_reasoning_levels": reasoning_levels,
             "shell_type": "unified_exec",
             "visibility": "list",
             "supported_in_api": True,

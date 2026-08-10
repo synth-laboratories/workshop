@@ -24,6 +24,18 @@ import {
 } from "../types/landing";
 import { modelCapabilitiesForExecutionTarget } from "./modelCapabilities";
 
+/** Transcript divider copy for `thread/compacted` events. */
+export function contextCompactionLabel(source: string): string {
+	switch (source.toLowerCase()) {
+		case "manual":
+			return "Context compacted";
+		case "model_switch":
+			return "Model switch - context compacted";
+		default:
+			return "Context automatically compacted";
+	}
+}
+
 export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 	const adapter = null;
 
@@ -860,10 +872,14 @@ export function eventsToLocalActivity(
 			if (compactionMarkerAddedForRun) continue;
 			compactionMarkerAddedForRun = true;
 			const source = typeof payload.source === "string" ? payload.source.toLowerCase() : "automatic";
+			// Manual `/compact` is a discrete post-response action → render after
+			// the owning assistant bubble. Model-switch and automatic compaction
+			// happen before the continued turn's tools/text, so they stay in the
+			// chronological before-stream (tools must render *below* the divider).
 			(byMessage[current] ??= []).push({
 				id: `context-compaction-${event.sequence}`,
-				label: source === "manual" ? "Context compacted" : "Context automatically compacted",
-				placement: "after",
+				label: contextCompactionLabel(source),
+				placement: source === "manual" ? "after" : "before",
 				kind: "context_compaction"
 			});
 			continue;

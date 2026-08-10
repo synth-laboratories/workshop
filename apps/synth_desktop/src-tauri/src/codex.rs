@@ -9,7 +9,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     env, fs,
     path::{Path, PathBuf},
     process::Stdio,
@@ -320,7 +320,10 @@ pub struct CodexManager {
     /// window between "the attachment exists" and "the turn is running".
     turn_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     compact_waiters: CompactWaiters,
-    manual_compactions: Arc<Mutex<HashSet<String>>>,
+    /// Session ids awaiting a `thread/compacted` notification, mapped to the
+    /// UI source label (`manual` or `model_switch`). Auto token-threshold
+    /// compaction leaves this empty and renders as "automatically compacted".
+    pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
     root: PathBuf,
     state_path: PathBuf,
     binary: PathBuf,
@@ -345,7 +348,7 @@ impl CodexManager {
             records: Arc::new(RwLock::new(records)),
             turn_locks: Mutex::new(HashMap::new()),
             compact_waiters: Arc::new(Mutex::new(HashMap::new())),
-            manual_compactions: Arc::new(Mutex::new(HashSet::new())),
+            pending_compact_sources: Arc::new(Mutex::new(HashMap::new())),
             root,
             state_path,
             binary,
@@ -396,7 +399,7 @@ impl CodexManager {
             self.core.clone(),
             self.sessions.clone(),
             self.compact_waiters.clone(),
-            self.manual_compactions.clone(),
+            self.pending_compact_sources.clone(),
             attachment_id,
         )
         .await?;
@@ -763,6 +766,10 @@ impl CodexManager {
     }
 
     async fn compact_thread(&self, session_id: &str, session: &Session) -> Result<()> {
+        self.pending_compact_sources
+            .lock()
+            .await
+            .insert(session_id.to_owned(), "model_switch".into());
         let (tx, rx) = oneshot::channel();
         {
             let mut waiters = self.compact_waiters.lock().await;
@@ -771,21 +778,22 @@ impl CodexManager {
             }
         }
         let params = json!({ "threadId": session.thread_id });
-        if let Err(error) = session
-            .server
-            .request("thread/compact/start", params)
-            .await
-        {
+        if let Err(error) = session.server.request("thread/compact/start", params).await {
             self.compact_waiters.lock().await.remove(session_id);
+            self.pending_compact_sources.lock().await.remove(session_id);
             return Err(error.context("thread/compact/start failed; staying on the current model"));
         }
         match tokio::time::timeout(Duration::from_secs(120), rx).await {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(_)) => Err(anyhow!(
-                "compaction waiter dropped before thread/compacted; staying on the current model"
-            )),
+            Ok(Err(_)) => {
+                self.pending_compact_sources.lock().await.remove(session_id);
+                Err(anyhow!(
+                    "compaction waiter dropped before thread/compacted; staying on the current model"
+                ))
+            }
             Err(_) => {
                 self.compact_waiters.lock().await.remove(session_id);
+                self.pending_compact_sources.lock().await.remove(session_id);
                 Err(anyhow!(
                     "timed out waiting for thread/compacted; staying on the current model"
                 ))
@@ -843,10 +851,10 @@ impl CodexManager {
                 }
             };
             let session = self.session(&session_id).await?;
-            self.manual_compactions
+            self.pending_compact_sources
                 .lock()
                 .await
-                .insert(session_id.clone());
+                .insert(session_id.clone(), "manual".into());
             match session
                 .server
                 .request(
@@ -857,7 +865,10 @@ impl CodexManager {
             {
                 Ok(_) => return Ok(()),
                 Err(error) => {
-                    self.manual_compactions.lock().await.remove(&session_id);
+                    self.pending_compact_sources
+                        .lock()
+                        .await
+                        .remove(&session_id);
                     let detached = is_detached_failure(&error);
                     failure = Some(error);
                     if !detached {
@@ -889,7 +900,10 @@ impl CodexManager {
         }
         let session = self.session(&request.session_id).await?;
         let Some(turn_id) = session.turn_id.read().await.clone() else {
-            return Err(anyhow!("session {} has no active turn to steer", request.session_id));
+            return Err(anyhow!(
+                "session {} has no active turn to steer",
+                request.session_id
+            ));
         };
         self.record_user_prompt(&app, &request.session_id, &request.text)
             .await;
@@ -1193,7 +1207,7 @@ async fn spawn_server<R: tauri::Runtime>(
     core: Option<Arc<CoreRuntime>>,
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     compact_waiters: CompactWaiters,
-    manual_compactions: Arc<Mutex<HashSet<String>>>,
+    pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
     attachment_id: uuid::Uuid,
 ) -> Result<Arc<AppServer>> {
     let env_key = request
@@ -1245,7 +1259,7 @@ async fn spawn_server<R: tauri::Runtime>(
             core,
             sessions,
             compact_waiters,
-            manual_compactions,
+            pending_compact_sources,
             attachment_id,
         },
     ));
@@ -1271,7 +1285,7 @@ struct PersistenceContext {
     core: Option<Arc<CoreRuntime>>,
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     compact_waiters: CompactWaiters,
-    manual_compactions: Arc<Mutex<HashSet<String>>>,
+    pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
     attachment_id: uuid::Uuid,
 }
 
@@ -1309,15 +1323,16 @@ async fn read_stdout<R: tauri::Runtime>(
         // the actual outcome: otherwise the transcript says “Worked” while
         // there is no answer to show.
         let method = normalized_turn_method(raw_method, &params).to_owned();
-        if is_context_compaction_notification(&method, &params)
-            && persistence
-                .manual_compactions
+        if is_context_compaction_notification(&method, &params) {
+            if let Some(source) = persistence
+                .pending_compact_sources
                 .lock()
                 .await
-                .contains(&session_id)
-        {
-            if let Some(value) = params.as_object_mut() {
-                value.insert("source".into(), Value::String("manual".into()));
+                .remove(&session_id)
+            {
+                if let Some(value) = params.as_object_mut() {
+                    value.insert("source".into(), Value::String(source));
+                }
             }
         }
         if let Some(rpc_id) = message.get("id").cloned() {
@@ -1331,7 +1346,7 @@ async fn read_stdout<R: tauri::Runtime>(
                             .filter_map(Value::as_str)
                             .map(str::to_owned)
                             .collect::<Vec<_>>()
-                })
+                    })
                     .unwrap_or_default();
                 if approval_policy == "never" {
                     // “Allow all” is an explicit session policy. A provider
@@ -1444,7 +1459,7 @@ async fn read_stdout<R: tauri::Runtime>(
             "turn/completed" | "turn/failed" | "turn/interrupted"
         ) {
             persistence
-                .manual_compactions
+                .pending_compact_sources
                 .lock()
                 .await
                 .remove(&session_id);
@@ -1581,7 +1596,9 @@ fn automatic_approval_response(available: &[String], id: Value) -> Value {
         .or_else(|_| select_approval_decision(available, "once"))
     {
         Ok(decision) => json!({"jsonrpc":"2.0","id":id,"result":{"decision":decision}}),
-        Err(error) => json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":format!("Cannot automatically approve this request: {error}")}}),
+        Err(error) => {
+            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":format!("Cannot automatically approve this request: {error}")}})
+        }
     }
 }
 
@@ -1841,16 +1858,14 @@ fn model_context_window(model: &str) -> u64 {
 }
 
 fn auto_compact_token_limit(request: &CodexSessionStartRequest) -> u64 {
-    request
-        .auto_compact_token_limit
-        .unwrap_or_else(|| {
-            let model = request.model.to_ascii_lowercase();
-            if model.contains("laguna-s-2.1") || model.contains("gpt-5.6-luna") {
-                250_000
-            } else {
-                model_context_window(&request.model) * 4 / 5
-            }
-        })
+    request.auto_compact_token_limit.unwrap_or_else(|| {
+        let model = request.model.to_ascii_lowercase();
+        if model.contains("laguna-s-2.1") || model.contains("gpt-5.6-luna") {
+            250_000
+        } else {
+            model_context_window(&request.model) * 4 / 5
+        }
+    })
 }
 
 fn supports_provider_compaction(request: &CodexSessionStartRequest) -> bool {
@@ -1883,11 +1898,7 @@ fn supports_provider_compaction(request: &CodexSessionStartRequest) -> bool {
 /// Produces an endpoint label that is useful in UI errors without exposing a
 /// query-string token or credentials embedded in the URL authority.
 fn safe_endpoint_label(endpoint: &str) -> String {
-    let without_query = endpoint
-        .trim()
-        .split(['?', '#'])
-        .next()
-        .unwrap_or_default();
+    let without_query = endpoint.trim().split(['?', '#']).next().unwrap_or_default();
     let redacted = match without_query.split_once("://") {
         Some((scheme, remainder)) => match remainder.split_once('@') {
             Some((_, host_and_path)) => format!("{scheme}://[credentials]@{host_and_path}"),
@@ -1901,7 +1912,10 @@ fn safe_endpoint_label(endpoint: &str) -> String {
     } else {
         format!(
             "{}…",
-            redacted.chars().take(MAX_CHARS.saturating_sub(1)).collect::<String>()
+            redacted
+                .chars()
+                .take(MAX_CHARS.saturating_sub(1))
+                .collect::<String>()
         )
     }
 }
@@ -2902,7 +2916,9 @@ mod tests {
             .filter_map(|message| message.get("method").and_then(Value::as_str))
             .collect();
         assert!(
-            methods.iter().any(|method| *method == "thread/compact/start"),
+            methods
+                .iter()
+                .any(|method| *method == "thread/compact/start"),
             "expected compact before rebind, got {methods:?}"
         );
         let compact_idx = methods
@@ -2925,6 +2941,31 @@ mod tests {
                 .get(&request.session_id)
                 .map(|record| record.model.as_str()),
             Some("openai/gpt-5.6-luna")
+        );
+        assert!(
+            manager
+                .pending_compact_sources
+                .lock()
+                .await
+                .get(&request.session_id)
+                .is_none(),
+            "model-switch compact source should be consumed when thread/compacted arrives"
+        );
+        let events = core
+            .journal()
+            .session_events_after(request.session_id.clone(), 0, 200)
+            .await
+            .expect("session events");
+        assert!(
+            events.iter().any(|event| {
+                event.kind == "thread/compacted"
+                    && event.payload.get("source").and_then(Value::as_str) == Some("model_switch")
+            }),
+            "expected persisted thread/compacted with source=model_switch, got {:?}",
+            events
+                .iter()
+                .map(|event| (&event.kind, event.payload.get("source")))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3247,7 +3288,10 @@ mod tests {
                 "error": {"message": "provider disconnected"}
             }
         });
-        assert_eq!(normalized_turn_method("turn/completed", &failed), "turn/failed");
+        assert_eq!(
+            normalized_turn_method("turn/completed", &failed),
+            "turn/failed"
+        );
         assert_eq!(
             normalized_turn_method("turn/completed", &json!({"turn": {"status": "completed"}})),
             "turn/completed"

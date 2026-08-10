@@ -59,10 +59,13 @@ test("design debt: CloudDesk leave-safe is projection-driven from AsyncInternPin
 	assert.ok(!desk.includes("const leaveSafe = !isSync"));
 });
 
-test("CloudDesk unknown actions report unavailable without theater copy", () => {
+test("App carries no stub copy and no mounted CloudDesk route", () => {
 	const app = read("App.tsx");
-	assert.match(app, /showToast\(`\$\{label\} is not available`\)/);
 	assert.ok(!/\bstub\b/i.test(app));
+	// v0.1 removal contract: CloudDesk is the Intern surface and stays unmounted.
+	// Its unknown-action honesty was App's `onCloudAction` toast; that handler
+	// goes with the route and returns with it in v0.2, so nothing asserts it now.
+	assert.ok(!/<CloudDesk\b/.test(app));
 });
 
 test("Async Intern Respond opens an intervention control instead of a stub toast", () => {
@@ -136,7 +139,13 @@ test("Codex thread compaction uses the native app glyph and divider", () => {
 	const sessionView = read("runtime/sessionView.ts");
 	assert.match(sessionView, /event\.eventKind === "thread\/compacted"/);
 	assert.match(sessionView, /kind: "context_compaction"/);
+	assert.match(sessionView, /Model switch - context compacted/);
+	assert.match(sessionView, /case "model_switch"/);
+	// Non-manual compact stays in the before-stream so post-switch tools render below the divider.
+	assert.match(sessionView, /placement: source === "manual" \? "after" : "before"/);
 	assert.match(transcript, /function IconContextCompaction/);
 	assert.match(transcript, /M12\.666 3\.50098/);
 	assert.match(transcript, /className="context-compaction-divider"/);
+	assert.match(transcript, /line\.placement !== "after"/);
+	assert.match(transcript, /line\.placement === "after"/);
 });

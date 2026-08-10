@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TerminalEvent, TerminalInfo, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../env";
+import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TerminalEvent, TerminalInfo, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../env";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry } from "@synth/runtime-protocol";
 
@@ -168,7 +168,17 @@ export function installDesktopBridge(): void {
 			},
 			setModelDirectory: (path) => invoke<LagunaModelHit>("laguna_models_set_directory", { path }),
 			clearModelDirectory: () => invoke<void>("laguna_models_clear_directory"),
-			downloadModel: () => invoke<LagunaModelHit>("laguna_model_download"),
+			downloadModel: (modelId) => invoke<LagunaModelHit>("laguna_model_download", { modelId }),
+			deleteModel: (modelId) => invoke<void>("laguna_model_delete", { modelId }),
+			onDownloadProgress(listener) {
+				let disposed = false;
+				let unlisten: (() => void) | undefined;
+				void listen<LagunaDownloadProgress>("laguna:download", ({ payload }) => listener(payload)).then((next) => {
+					if (disposed) next();
+					else unlisten = next;
+				});
+				return () => { disposed = true; unlisten?.(); };
+			},
 			onStatus(listener) {
 				let disposed = false;
 				let unlisten: (() => void) | undefined;
@@ -190,6 +200,7 @@ export function installDesktopBridge(): void {
 			reload: async () => unavailableLaguna,
 			listModels: async () => [],
 			downloadModel: async () => { throw new Error("Model downloads require Synth Desktop"); },
+			deleteModel: async () => { throw new Error("Model deletion requires Synth Desktop"); },
 			chooseModelDirectory: async () => null,
 			setModelDirectory: async () => { throw new Error("Model folders require the desktop app"); },
 			clearModelDirectory: async () => undefined,

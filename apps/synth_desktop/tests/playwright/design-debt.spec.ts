@@ -216,7 +216,7 @@ test.describe("design debt (expected fail until fixed)", () => {
 		expect(source).toMatch(/props\.intern\.leaveSafe === true/);
 	});
 
-	test("a needs-input Async Intern opens a real intervention control", async ({ page }) => {
+	test("a needs-input Async Intern is unreachable in v0.1", async ({ page }) => {
 		const asyncSession = {
 			id: "async-needs-input",
 			title: "Async Intern",
@@ -245,10 +245,19 @@ test.describe("design debt (expected fail until fixed)", () => {
 			};
 		}, asyncSession);
 		await page.reload();
-		await page.getByTestId("async-intern-pin").click();
-		await page.getByRole("button", { name: "Respond" }).click();
-		await expect(page.getByTestId("intern-intervention-input")).toBeVisible();
-		await expect(page.getByText("Provide input — stub", { exact: true })).toHaveCount(0);
+		/*
+		 * v0.1 removal contract: even with a needs-input Async Intern session
+		 * present in the runtime, no surface may expose it. The dormant
+		 * CloudDesk intervention control keeps its own honesty assertion in
+		 * design_debt.test.mjs so v0.2 re-entry stays covered.
+		 */
+		await expect(page.getByTestId("sidebar")).toBeVisible();
+		await expect(page.getByTestId("async-intern-pin")).toHaveCount(0);
+		await expect(page.getByTestId("cloud-list")).toHaveCount(0);
+		await expect(page.getByTestId("new-sync-session")).toHaveCount(0);
+		await page.getByTestId("open-search").click();
+		await expect(page.getByTestId("conversation-search")).toBeVisible();
+		await expect(page.getByText("Background Intern", { exact: true })).toHaveCount(0);
 	});
 
 	test("agent-authored analysis visuals render the persisted type-block payload from CUA", async ({ page }) => {

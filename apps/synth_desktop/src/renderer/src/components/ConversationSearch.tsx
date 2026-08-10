@@ -1,36 +1,35 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { LandingState } from "../types/landing";
 
-type Result = { id: string; title: string; detail: string; haystack: string; kind: "chat" | "sync" | "async" };
+/*
+ * v0.1 removal contract: Intern sync/async sessions are de-scoped, so search
+ * indexes local conversations only. Re-adding a kind here re-exposes Intern.
+ */
+type Result = { id: string; title: string; detail: string; haystack: string; kind: "chat" };
 
 type Props = {
 	state: LandingState;
 	onClose: (options?: { restoreFocus?: boolean }) => void;
 	onOpenChat: (id: string) => void;
-	onOpenSync: (id: string) => void;
-	onOpenAsync: () => void;
 };
 
-export function ConversationSearch({ state, onClose, onOpenChat, onOpenSync, onOpenAsync }: Props) {
+export function ConversationSearch({ state, onClose, onOpenChat }: Props) {
 	const [query, setQuery] = useState("");
 	const inputRef = useRef<HTMLInputElement>(null);
 	useEffect(() => inputRef.current?.focus(), []);
 
 	const results = useMemo<Result[]>(() => {
-		const all: Result[] = [
-			...state.chats.map((chat) => ({ id: chat.id, title: chat.title, detail: "Local chat", kind: "chat" as const, haystack: `${chat.title} ${chat.messages.map((message) => message.body).join(" ")}` })),
-			...state.syncSessions.map((session) => ({ id: session.id, title: session.title, detail: `Live Intern · ${session.status}`, kind: "sync" as const, haystack: `${session.title} ${session.messages.map((message) => message.body).join(" ")}` })),
-			...(state.asyncIntern ? [{ id: "async-intern", title: "Background Intern", detail: state.asyncIntern.summary, kind: "async" as const, haystack: `Background Intern ${state.asyncIntern.summary} ${state.asyncIntern.messages.map((message) => message.body).join(" ")}` }] : [])
-		];
+		const all: Result[] = state.chats.map((chat) => ({
+			id: chat.id, title: chat.title, detail: "Local chat", kind: "chat" as const,
+			haystack: `${chat.title} ${chat.messages.map((message) => message.body).join(" ")}`
+		}));
 		const normalized = query.trim().toLowerCase();
 		return normalized ? all.filter((result) => result.haystack.toLowerCase().includes(normalized)) : all;
 	}, [query, state]);
 
 	const open = (result: Result) => {
 		onClose({ restoreFocus: false });
-		if (result.kind === "chat") onOpenChat(result.id);
-		else if (result.kind === "sync") onOpenSync(result.id);
-		else onOpenAsync();
+		onOpenChat(result.id);
 	};
 
 	return (

@@ -922,6 +922,36 @@ a,
 	animation: synth-progress-slide 1.1s ease-in-out infinite;
 }
 
+.model-managed-progress {
+	display: grid;
+	gap: 6px;
+	margin-top: 12px;
+}
+
+.model-managed-progress .progress-track { height: 5px; }
+.model-managed-progress span { color: var(--color-text-muted); font-size: 12px; }
+
+.model-download-guide {
+	display: grid;
+	grid-template-columns: minmax(0, 1.25fr) minmax(260px, 1fr);
+	gap: 10px 24px;
+	margin: 16px 0;
+	padding: 14px 16px;
+	border: 1px solid #dce6f7;
+	border-radius: 12px;
+	background: #f7faff;
+}
+
+.model-download-guide strong { color: var(--color-text); font-size: 13px; }
+.model-download-guide p { margin: 4px 0 0; color: var(--color-text-muted); font-size: 12px; line-height: 1.45; }
+.model-download-guide ul { margin: 0; padding-left: 18px; color: var(--color-text); font-size: 12px; line-height: 1.6; }
+.model-download-guide-status { grid-column: 1 / -1; padding-top: 8px; border-top: 1px solid #e3eaf5; }
+
+@media (max-width: 800px) {
+	.model-download-guide { grid-template-columns: 1fr; }
+	.model-download-guide-status { grid-column: 1; }
+}
+
 @keyframes synth-progress-slide {
 	0% {
 		transform: translateX(-120%);
@@ -1489,10 +1519,19 @@ a,
 }
 
 /* ── Composer ── */
+/*
+ * The dock is an overlay, so it cannot inherit the transcript column's width
+ * from the grid. Composer.tsx measures the transcript scroller's content box
+ * and publishes these offsets; the fallbacks cover the landing page and any
+ * surface without a transcript. Never re-derive these from column guesses
+ * (`50%`, `min(380px, 33vw)`) — every pane combination resolves differently
+ * and the composer then overlaps the visual/container/inference panes and
+ * loses its shared centerline with the transcript.
+ */
 .composer-dock {
 	position: absolute;
-	left: 24px;
-	right: 24px;
+	left: var(--composer-dock-left, 24px);
+	right: var(--composer-dock-right, 24px);
 	bottom: 20px;
 	display: flex;
 	flex-direction: column;
@@ -2985,9 +3024,16 @@ a,
 	display: grid;
 }
 
-.workbench.with-visual { grid-template-columns: minmax(0, 1fr) minmax(340px, 1.05fr); }
-.workbench.with-container { grid-template-columns: minmax(0, 1fr) minmax(340px, 420px); }
-.workbench.with-container.container-expanded { grid-template-columns: minmax(0, .8fr) minmax(520px, 1.2fr); }
+/*
+ * The transcript column carries the composer, whose usable floor is 320px plus
+ * 24px gutters. Side panes therefore yield (min 0) while the transcript holds a
+ * 380px floor: at a 960px window with a pane open the old split left a 293px
+ * composer. Never give a side pane a hard min here — its min plus the
+ * transcript floor overflows the workbench and breaks horizontal containment.
+ */
+.workbench.with-visual { grid-template-columns: minmax(380px, 1fr) minmax(0, 1.05fr); }
+.workbench.with-container { grid-template-columns: minmax(380px, 1fr) minmax(0, 420px); }
+.workbench.with-container.container-expanded { grid-template-columns: minmax(380px, .8fr) minmax(0, 1.2fr); }
 
 .workbench.with-visual .chat-transcript,
 .workbench.with-container .chat-transcript {
@@ -2999,8 +3045,6 @@ a,
 .main-pane:has(.workbench.with-visual) .composer-dock,
 .workbench.with-container ~ .composer-dock,
 .main-pane:has(.workbench.with-container) .composer-dock {
-	left: 24px;
-	right: calc(50% + 12px);
 	justify-content: center;
 }
 
@@ -3662,10 +3706,6 @@ a,
 		max-height: 48%;
 	}
 
-	.main-pane:has(.workbench.with-visual) .composer-dock,
-	.main-pane:has(.workbench.with-container) .composer-dock {
-		right: 24px;
-	}
 }
 
 /* ── Settings · Finetunes / LoRAs ── */
@@ -6099,14 +6139,14 @@ html.sidebar-hidden .sidebar {
    its own container query. */
 .workbench.with-inference {
 	display: grid;
-	grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+	grid-template-columns: minmax(380px, 1fr) minmax(0, 380px);
 }
 
 /* When a visual or container pane is already docked, the rail takes a third
    column rather than fighting the existing two-column rules. */
 .workbench.with-inference.with-visual,
 .workbench.with-inference.with-container {
-	grid-template-columns: minmax(0, 1fr) minmax(320px, 1fr) minmax(300px, 360px);
+	grid-template-columns: minmax(380px, 1fr) minmax(0, 1fr) minmax(0, 360px);
 }
 
 .inference-rail {
@@ -6137,7 +6177,11 @@ html.sidebar-hidden .sidebar {
 	.workbench.with-inference.with-container {
 		grid-template-columns: minmax(0, 1fr);
 	}
-	.inference-rail { display: none; }
+	/*
+	 * No `.inference-rail { display: none }` here: App.tsx unmounts the rail
+	 * once the workbench cannot host it. A hidden-but-present rail keeps a
+	 * zero-sized rect, which reads as a rail whose panel has lost its inset.
+	 */
 }
 
 /* ── Final composition pass: queue tray + inference inspector ───────────── */
@@ -6314,20 +6358,9 @@ html.sidebar-hidden .sidebar {
 .inference-rail-label span { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .inference-rail-label small { max-width: 330px; color: #7b838e; font-size: 10px; line-height: 1.35; }
 
-/* Keep the floating composer in the transcript column while the inspector is
-   open. The rail owns the right edge; letting the composer span beneath it
-   makes a short error card look like a floating overlay and hides metrics
-   once the ready view grows. Visual/container panes already have their own
-   narrower composer rules above. */
-.main-pane:has(.workbench.with-inference:not(.with-visual):not(.with-container)) .composer-dock {
-	right: calc(min(380px, 33vw) + 24px);
-}
-
-@media (max-width: 900px) {
-	.main-pane:has(.workbench.with-inference) .composer-dock {
-		right: 24px;
-	}
-}
+/* The composer stays inside the transcript column while the inspector is open;
+   the rail owns the right edge. That inset is measured in Composer.tsx and
+   published as --composer-dock-left/right, so no rail-width guess lives here. */
 
 .inference-panel {
 	width: 100%;

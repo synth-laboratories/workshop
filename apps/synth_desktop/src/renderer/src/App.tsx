@@ -19,7 +19,7 @@ import { EXECUTION_TARGETS, isInternTargetId } from "./types/landing";
 import type { ArtifactRef } from "./types/landing";
 import { ChatTranscript } from "./components/ChatTranscript";
 import { ContainerPane } from "./components/ContainerPane";
-import { CloudDesk } from "./components/CloudDesk";
+// CloudDesk stays dormant for v0.2; see the removal contract at its route site.
 import { Composer } from "./components/Composer";
 import { ConnectorsPage } from "./components/ConnectorsPage";
 import { ConversationSearch } from "./components/ConversationSearch";
@@ -395,6 +395,12 @@ export default function App() {
 	const [bootError, setBootError] = useState<string | null>(null);
 	const [terminalOpen, setTerminalOpen] = useState(() => loadPreferences().layout.last.bottomPanelVisible);
 	const [sidebarVisible, setSidebarVisible] = useState(() => loadPreferences().layout.last.sidebarVisible);
+	const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+	useEffect(() => {
+		const onResize = () => setViewportWidth(window.innerWidth);
+		window.addEventListener("resize", onResize);
+		return () => window.removeEventListener("resize", onResize);
+	}, []);
 	const [sidebarWidth, setSidebarWidth] = useState(() => loadPreferences().layout.last.sidebarWidth);
 	const [steerError, setSteerError] = useState<string | null>(null);
 	const [composerSkills, setComposerSkills] = useState<Array<{ id: string; name: string; description: string }>>([]);
@@ -1005,13 +1011,21 @@ export default function App() {
 		(laguna?.phase === "loading" || !laguna?.loadedModel)
 	);
 	const activeLocalModel = activeChatSession?.target.kind === "local";
-	const showInferenceRail = activeLocalModel && inferenceRailOpen;
+	/*
+	 * The rail takes a fixed-ish column out of the workbench. Below this width
+	 * it squeezed the transcript until the composer fell under its 320px usable
+	 * floor and slid beneath the rail. Unmount rather than `display: none` so
+	 * the pane genuinely does not exist for layout, measurement, or a11y.
+	 * 368px = the composer's 320px floor plus the transcript's 24px gutters;
+	 * 300px = the rail's own minimum column.
+	 */
+	const workbenchWidth = viewportWidth - (sidebarVisible ? sidebarWidth : 0);
+	const inferenceRailFits = workbenchWidth >= 368 + 300;
+	const showInferenceRail = activeLocalModel && inferenceRailOpen && inferenceRailFits;
 	const activeSync =
 		view.kind === "sync"
 			? (state.syncSessions.find((s) => s.id === view.sessionId) ?? null)
 			: null;
-	const asyncSession =
-		view.kind === "async" ? (sessions.find((s) => s.id === view.sessionId) ?? null) : null;
 
 	const openArtifact =
 		standaloneVisual && openArtifactId === standaloneVisual.id
@@ -1357,19 +1371,6 @@ export default function App() {
 		[activeSessionId, nativeCodex, nativeIntern, refreshSessions, sessions, showToast]
 	);
 
-	const onCloudAction = useCallback(
-		(label: string) => {
-			const lower = label.toLowerCase();
-			if (lower === "pause") void controlActive("pause");
-			else if (lower === "resume") void controlActive("resume");
-			else if (lower === "close") void controlActive("close");
-			else if (lower === "cancel") void controlActive("cancel");
-			else if (lower === "checkpoint") void controlActive("request_checkpoint");
-			else showToast(`${label} is not available`);
-		},
-		[controlActive, showToast]
-	);
-
 	const onSelectTarget = useCallback((id: string) => {
 		if (isInternTargetId(id)) return;
 		// Model chip change only updates pendingTarget. Compact/rebind happen
@@ -1462,14 +1463,6 @@ export default function App() {
 		}
 		return status;
 	}, [refreshHealth]);
-
-	const onNewSyncSession = useCallback(() => {
-		setSelectedTargetId("intern-sync");
-		setView({ kind: "landing" });
-		setOpenArtifactId(null);
-		setStandaloneVisual(null);
-		showToast("Enter an objective to start Live Intern");
-	}, [showToast]);
 
 	const openSearch = useCallback(() => {
 		if (!searchOpen && document.activeElement instanceof HTMLElement) {
@@ -1711,8 +1704,6 @@ export default function App() {
 						state={state}
 						lagunaStatus={laguna}
 					activeChatId={view.kind === "chat" ? view.chatId : null}
-					activeSyncId={view.kind === "sync" ? view.sessionId : null}
-					asyncActive={view.kind === "async"}
 					inventoryActive={view.kind === "inventory"}
 					visualsActive={view.kind === "visuals"}
 					optimizersActive={view.kind === "optimizers"}
@@ -1728,12 +1719,10 @@ export default function App() {
 						persistLayoutSnapshot({ sidebarWidth: width });
 					}}
 					onNewConversation={onNewConversation}
-					onNewSyncSession={onNewSyncSession}
 					onOpenChat={(id) => {
 						openChat(id);
 						persistLayoutSnapshot({ selectedConversationId: id });
 					}}
-					onOpenSyncSession={(id) => setView({ kind: "sync", sessionId: id })}
 					onRenameChat={(id, title) => {
 						try {
 							setPreferences(renameConversation(id, title));
@@ -1751,21 +1740,6 @@ export default function App() {
 						if (archived && view.kind === "chat" && view.chatId === id) {
 							setView({ kind: "landing" });
 						}
-					}}
-					onOpenAsync={() => {
-						const pinned = sessions.find((session) =>
-							sessionIsAsync(session) &&
-							(!nativeIntern || session.metadata.runtime === "rust-intern")
-						);
-						if (!pinned || !state.asyncIntern) {
-							setSelectedTargetId("intern-async");
-							setView({ kind: "landing" });
-							setOpenArtifactId(null);
-							setStandaloneVisual(null);
-							showToast("Enter an objective to start Background Intern");
-							return;
-						}
-						setView({ kind: "async", sessionId: pinned.id });
 					}}
 					onOpenInventory={() => setView({ kind: "inventory" })}
 					onOpenVisuals={() => setView({ kind: "visuals" })}
@@ -1833,7 +1807,6 @@ export default function App() {
 										laguna?.backend ? `backend ${laguna.backend}` : null,
 										laguna?.loadedModel || health.local.modelPath ||
 											(laguna?.phase === "ready" ? "weights currently unloaded" : "weights not detected"),
-										`Intern ${health.intern.mode}`,
 										`OpenRouter ${health.openrouter.mode}`,
 										health.inventory
 											? `Inventory ${health.inventory.containers} containers, ${health.inventory.traces} traces, ${health.inventory.visuals} visuals`
@@ -2130,27 +2103,12 @@ export default function App() {
 						</div>
 					) : null}
 
-					{view.kind === "sync" && activeSync ? (
-						<CloudDesk
-							kind="sync"
-							session={activeSync}
-							openArtifactId={openArtifactId}
-							onOpenArtifact={toggleArtifact}
-							onBack={() => setView({ kind: "landing" })}
-							onAction={onCloudAction}
-							onSendMessage={(text) => void sendToSession(activeSync.id, text)}
-						/>
-					) : null}
-
-					{view.kind === "async" && state.asyncIntern && asyncSession ? (
-						<CloudDesk
-							kind="async"
-							intern={state.asyncIntern}
-							onBack={() => setView({ kind: "landing" })}
-							onAction={onCloudAction}
-							onSendMessage={(text) => void sendToSession(asyncSession.id, text)}
-						/>
-					) : null}
+					{/*
+					 * v0.1 removal contract: the CloudDesk sync/async routes are the
+					 * Intern surface and stay unmounted. components/CloudDesk.tsx is
+					 * retained dormant so v0.2 re-entry is a routing change, not a
+					 * rewrite.
+					 */}
 
 					{showComposer ? (
 						<Composer
@@ -2244,11 +2202,6 @@ export default function App() {
 			state={state}
 			onClose={closeSearch}
 			onOpenChat={(id) => openChat(id)}
-			onOpenSync={(id) => setView({ kind: "sync", sessionId: id })}
-			onOpenAsync={() => {
-				const pinned = sessions.find((session) => sessionIsAsync(session));
-				if (pinned) setView({ kind: "async", sessionId: pinned.id });
-			}}
 		/>
 	) : null}
 

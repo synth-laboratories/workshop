@@ -35,6 +35,13 @@ npm run dev --workspace @synth/synth-desktop
 
 Desktop probes `http://127.0.0.1:7333` automatically. Details: [`services/laguna-daemon/README.md`](./services/laguna-daemon/README.md).
 
+### Local Muse Glimmer 30B 4-bit
+
+Download Muse Glimmer from **Settings → Models**. Workshop provisions a pinned
+llama.cpp Metal runtime and downloads Meta's 17 GB K-quant, quantized vision
+projector, and DFlash draft (~19.8 GB total). Progress, selection, startup,
+runtime repair, and removal are managed from that screen.
+
 ### Desktop development and acceptance
 
 Use the repository-owned lifecycle commands instead of opening a build-tree
