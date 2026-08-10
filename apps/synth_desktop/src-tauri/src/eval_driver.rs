@@ -17,6 +17,7 @@ use crate::visuals_ipc;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 use tauri::AppHandle;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -795,6 +796,11 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
     let mut calls = 0usize;
     let started = std::time::Instant::now();
     let mut actions_taken = Vec::new();
+    let mut correlated_model_response_id = None;
+    let mut correlated_model_event_id = None;
+    let mut correlated_model_name = None;
+    let mut correlated_action = None;
+    let mut correlated_step = None;
 
     for _ in 0..max_calls {
         if state
@@ -822,7 +828,31 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         )
         .await?;
         calls += 1;
-        for action in planned {
+        let model_event = core
+            .append_and_broadcast(EventAppend {
+                event_id: None,
+                session_id: None,
+                // Craftax rollout ids are external identities, not rows in the
+                // Workshop `runs` table. Bind them in payload to avoid the FK.
+                run_id: None,
+                source: EventSource::System,
+                kind: "eval.policy_model.response".into(),
+                payload: json!({
+                    "containerId": container_id,
+                    "rolloutId": rollout_id,
+                    "taskInstanceId": task_instance_id,
+                    "provider": "openrouter",
+                    "providerResponseId": &planned.response_id,
+                    "model": &planned.response_model,
+                    "plannedActions": &planned.actions,
+                    "call": calls,
+                }),
+                remote_sequence: None,
+                command_id: None,
+                created_at: None,
+            })
+            .await?;
+        for action in planned.actions {
             if actions_taken.len() >= max_steps {
                 break;
             }
@@ -834,6 +864,15 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
                 .error_for_status()?
                 .json::<Value>()
                 .await?;
+            let step = state
+                .pointer("/progress/env_steps")
+                .and_then(Value::as_u64)
+                .unwrap_or(actions_taken.len() as u64 + 1);
+            correlated_model_response_id = Some(planned.response_id.clone());
+            correlated_model_event_id = Some(model_event.event_id.clone());
+            correlated_model_name = Some(planned.response_model.clone());
+            correlated_action = Some(action.clone());
+            correlated_step = Some(step);
             actions_taken.push(action);
             if state
                 .get("terminated")
@@ -858,6 +897,23 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         .await
         .unwrap_or(json!({}));
 
+    let trace_correlation = build_trace_correlation(
+        &client,
+        &base,
+        container_id,
+        &rollout_id,
+        &task_instance_id,
+        seed,
+        &model,
+        correlated_model_name.as_deref(),
+        &state,
+        correlated_action.as_deref(),
+        correlated_step,
+        correlated_model_response_id.as_deref(),
+        correlated_model_event_id.as_deref(),
+    )
+    .await?;
+
     let reward = state.get("reward").cloned().unwrap_or(json!(0.0));
     let achievements = state
         .pointer("/readout/observation/achievements")
@@ -873,7 +929,7 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         .append_and_broadcast(EventAppend {
             event_id: None,
             session_id: None,
-            run_id: Some(rollout_id.clone()),
+            run_id: None,
             source: EventSource::System,
             kind: "eval.policy_rollout.completed".into(),
             payload: json!({
@@ -911,6 +967,7 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         "truncated": state.get("truncated").and_then(Value::as_bool).unwrap_or(false),
         "state": state,
         "eventLog": event_log,
+        "traceCorrelation": trace_correlation,
         "stream": stream,
         "usage": {
             "promptTokens": usage_total.prompt,
@@ -930,6 +987,141 @@ struct UsageAcc {
     cost_usd: f64,
 }
 
+struct PolicyPlan {
+    actions: Vec<String>,
+    response_id: String,
+    response_model: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_trace_correlation(
+    client: &reqwest::Client,
+    base: &str,
+    container_id: &str,
+    rollout_id: &str,
+    task_instance_id: &str,
+    seed: i64,
+    requested_model: &str,
+    model: Option<&str>,
+    state: &Value,
+    action: Option<&str>,
+    step: Option<u64>,
+    model_response_id: Option<&str>,
+    model_event_id: Option<&str>,
+) -> Result<Value> {
+    let step = step.context("policy rollout took no action to correlate")?;
+    let action = action.context("policy rollout omitted the correlated action")?;
+    let model_response_id =
+        model_response_id.context("policy rollout omitted the correlated model response id")?;
+    let model_event_id =
+        model_event_id.context("policy rollout omitted the correlated journal event id")?;
+    let model = model.context("policy rollout omitted the provider-returned model identity")?;
+    let observation_text = state
+        .pointer("/readout/observation_text")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let ascii = state
+        .pointer("/readout/ascii")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let (observation_source, observation) = observation_text
+        .map(|value| ("state.readout.observation_text", value))
+        .or_else(|| ascii.map(|value| ("state.readout.ascii", value)))
+        .context("policy rollout omitted a non-empty observation")?;
+    let excerpt = observation.chars().take(512).collect::<String>();
+    let reward = state
+        .get("reward")
+        .cloned()
+        .context("policy rollout omitted reward evidence")?;
+    if !reward.is_number() {
+        bail!("policy rollout reward evidence is not numeric");
+    }
+
+    // The immutable step route snapshots the current frame on demand even when
+    // replay persistence is disabled. Hash the exact bytes referenced by the proof.
+    let frame_url = format!("{base}/rollouts/{rollout_id}/frames/{step}.png");
+    let frame_bytes = client
+        .get(&frame_url)
+        .send()
+        .await?
+        .error_for_status()
+        .context("fetch correlated Craftax frame")?
+        .bytes()
+        .await?;
+    if frame_bytes.is_empty() {
+        bail!("correlated Craftax frame is empty");
+    }
+    let frame_sha256 = format!("{:x}", Sha256::digest(&frame_bytes));
+
+    trace_correlation_payload(
+        container_id,
+        rollout_id,
+        task_instance_id,
+        seed,
+        requested_model,
+        model,
+        step,
+        action,
+        observation_source,
+        &excerpt,
+        reward,
+        model_event_id,
+        model_response_id,
+        &frame_url,
+        &frame_sha256,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn trace_correlation_payload(
+    container_id: &str,
+    rollout_id: &str,
+    task_instance_id: &str,
+    seed: i64,
+    requested_model: &str,
+    model: &str,
+    step: u64,
+    action: &str,
+    observation_source: &str,
+    observation_excerpt: &str,
+    reward: Value,
+    model_event_id: &str,
+    model_response_id: &str,
+    frame_url: &str,
+    frame_sha256: &str,
+) -> Result<Value> {
+    let mut correlation = json!({
+        "schemaVersion": "synth.trace-correlation.v1",
+        "containerId": container_id,
+        "rolloutId": rollout_id,
+        "seed": seed,
+        "taskInstanceId": task_instance_id,
+        "observation": {
+            "step": step,
+            "source": observation_source,
+            "excerpt": observation_excerpt,
+        },
+        "action": {"step": step, "name": action},
+        "reward": {"step": step, "value": reward},
+        "frame": {"step": step, "url": frame_url, "sha256": frame_sha256},
+        "modelEvent": {
+            "kind": "eval.policy_model.response",
+            "id": model_event_id,
+            "providerResponseId": model_response_id,
+            "provider": "openrouter",
+            "requestedModel": requested_model,
+            "model": model,
+            "boundRolloutId": rollout_id,
+        },
+    });
+    let trace_digest = format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_json::to_vec(&correlation)?)
+    );
+    correlation["traceDigest"] = json!(trace_digest);
+    Ok(correlation)
+}
+
 async fn policy_actions_from_model(
     client: &reqwest::Client,
     api_key: &str,
@@ -937,7 +1129,7 @@ async fn policy_actions_from_model(
     reasoning_effort: &str,
     readout: &Value,
     usage: &mut UsageAcc,
-) -> Result<Vec<String>> {
+) -> Result<PolicyPlan> {
     let valid = readout
         .get("valid_actions")
         .and_then(Value::as_array)
@@ -985,6 +1177,18 @@ async fn policy_actions_from_model(
         .error_for_status()?
         .json::<Value>()
         .await?;
+    let response_id = response
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .context("OpenRouter omitted the model response id required for trace correlation")?
+        .to_string();
+    let response_model = response
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .context("OpenRouter omitted the model identity required for trace correlation")?
+        .to_string();
     if let Some(u) = response.get("usage") {
         usage.prompt += u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
         usage.completion += u
@@ -1004,7 +1208,11 @@ async fn policy_actions_from_model(
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
         .unwrap_or("");
-    Ok(extract_actions(content, &valid))
+    Ok(PolicyPlan {
+        actions: extract_actions(content, &valid),
+        response_id,
+        response_model,
+    })
 }
 
 fn extract_actions(text: &str, valid: &[String]) -> Vec<String> {
@@ -1116,5 +1324,39 @@ mod tests {
         assert!(validated_loopback_base("http://127.0.0.1:8098").is_ok());
         assert!(validated_loopback_base("http://example.com:8098").is_err());
         assert!(validated_loopback_base("https://127.0.0.1:8098").is_err());
+    }
+
+    #[test]
+    fn trace_correlation_payload_binds_every_evidence_kind() {
+        let value = trace_correlation_payload(
+            "container-1",
+            "rollout-1",
+            "craftax:test:2001",
+            2001,
+            "openai/gpt-5.6-luna",
+            "openai/gpt-5.6-luna",
+            7,
+            "left",
+            "state.readout.observation_text",
+            "player at 1,2",
+            json!(0.25),
+            "event-1",
+            "generation-1",
+            "http://127.0.0.1:8098/rollouts/rollout-1/frames/7.png",
+            &"a".repeat(64),
+        )
+        .unwrap();
+
+        assert_eq!(value["schemaVersion"], "synth.trace-correlation.v1");
+        assert_eq!(value["rolloutId"], "rollout-1");
+        assert_eq!(value["observation"]["step"], 7);
+        assert_eq!(value["action"]["step"], 7);
+        assert_eq!(value["reward"]["step"], 7);
+        assert_eq!(value["frame"]["step"], 7);
+        assert_eq!(value["modelEvent"]["boundRolloutId"], "rollout-1");
+        assert!(value["traceDigest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
     }
 }

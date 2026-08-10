@@ -87,6 +87,15 @@ Scores and achievements come from the container episode record. The OpenRouter
 key never leaves the host process and must never appear in case files, compose
 env, results, or traces.
 
+Successful policy rollouts also return `traceCorrelation` using
+`synth.trace-correlation.v1`. It is a fail-closed proof for one actual action:
+the final observation, action, reward, immutable frame, and OpenRouter response
+all carry the same rollout identity and environment step. `frame.sha256` hashes
+the bytes at `frame.url`; `modelEvent.id` is the durable Workshop journal event
+and `modelEvent.providerResponseId` is the real provider response id.
+`modelEvent.boundRolloutId` must equal the top-level `rolloutId`. The driver fails
+the request rather than emitting a partial or synthetic correlation.
+
 ## Cross-repo contract
 
 The **evals** repo owns cases, runner, graders, compose, and results under
