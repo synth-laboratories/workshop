@@ -5,7 +5,8 @@ import type {
 	ModelMultiAgentSetting,
 	MultiAgentVersion,
 	SynthAccountSummary,
-	SynthBackendSettings
+	SynthBackendSettings,
+	TariffCard
 } from "../env";
 import type { AccountViewModel } from "../runtime/accountView";
 import type { DeviceUsageSummary } from "./UsageSheet";
@@ -168,35 +169,50 @@ type AuthorizedModel = {
 	provider: string;
 	providerMark: "openai" | "laguna" | "synth";
 	modelId: string;
-	inputPrice: string;
-	outputPrice: string;
-	cachedReadPrice?: string;
-	cacheWritePrice?: string;
+	tariffProvider?: string;
 	planMetered?: boolean;
 };
 
+function formatPerMillion(rate: number): string {
+	const rounded = rate.toFixed(2);
+	return `$${Number(rounded) === rate ? rounded : String(rate)}`;
+}
+
 function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSettings | null }) {
+	// Prices come from the native tariff catalog — the same numbers cost
+	// estimation uses — never from strings kept in the renderer.
+	const [tariffs, setTariffs] = useState<TariffCard[]>([]);
+	useEffect(() => {
+		void window.synthTariffs?.catalog()
+			.then(setTariffs)
+			.catch(() => setTariffs([]));
+	}, []);
 	const models: AuthorizedModel[] = [];
 	if (connection?.openrouterApiKeyConfigured) {
 		models.push(
-			{ id: "openrouter-luna", name: "GPT 5.6 Luna", provider: "OpenRouter · OpenAI", providerMark: "openai", modelId: "openai/gpt-5.6-luna", inputPrice: "$0.20", outputPrice: "$1.20", cachedReadPrice: "$0.02", cacheWritePrice: "$0.25" },
-			{ id: "openrouter-laguna-s", name: "Laguna S 2.1", provider: "OpenRouter · Poolside", providerMark: "laguna", modelId: "poolside/laguna-s-2.1", inputPrice: "$0.10", outputPrice: "$0.20" }
+			{ id: "openrouter-luna", name: "GPT 5.6 Luna", provider: "OpenRouter · OpenAI", providerMark: "openai", modelId: "openai/gpt-5.6-luna", tariffProvider: "openrouter" },
+			{ id: "openrouter-laguna-s", name: "Laguna S 2.1", provider: "OpenRouter · Poolside", providerMark: "laguna", modelId: "poolside/laguna-s-2.1", tariffProvider: "openrouter" }
 		);
 	}
 	if (connection?.apiKeyConfigured) {
-		models.push({ id: "synth-cloud-laguna-s", name: "Laguna S 2.1", provider: "Synth Cloud", providerMark: "synth", modelId: "openrouter/poolside/laguna-s-2.1", inputPrice: "", outputPrice: "", planMetered: true });
+		models.push({ id: "synth-cloud-laguna-s", name: "Laguna S 2.1", provider: "Synth Cloud", providerMark: "synth", modelId: "openrouter/poolside/laguna-s-2.1", planMetered: true });
 	}
 	if (!models.length) return null;
+	const tariffFor = (model: AuthorizedModel) =>
+		tariffs.find((card) => card.provider === model.tariffProvider && card.modelId === model.modelId);
 	return (
 		<SettingsCard title="Authorized providers" testId="authorized-models" className="settings-card-embed">
 			<div className="authorized-model-list">
-				{models.map((model) => (
-					<article className="authorized-model-row" key={model.id} data-testid={`authorized-model-${model.id}`}>
-						<ProviderMark kind={model.providerMark} className="authorized-model-mark" />
-						<div className="authorized-model-identity"><strong>{model.name}</strong><span>{model.provider}</span><code>{model.modelId}</code></div>
-						{model.planMetered ? <dl><div><dt>Pricing</dt><dd>Plan metered</dd></div></dl> : <dl><div><dt>Input / 1M</dt><dd>{model.inputPrice}</dd></div><div><dt>Output / 1M</dt><dd>{model.outputPrice}</dd></div>{model.cachedReadPrice ? <div><dt>Cached read / 1M</dt><dd>{model.cachedReadPrice}</dd></div> : null}{model.cacheWritePrice ? <div><dt>Cache write / 1M</dt><dd>{model.cacheWritePrice}</dd></div> : null}</dl>}
-					</article>
-				))}
+				{models.map((model) => {
+					const tariff = tariffFor(model);
+					return (
+						<article className="authorized-model-row" key={model.id} data-testid={`authorized-model-${model.id}`}>
+							<ProviderMark kind={model.providerMark} className="authorized-model-mark" />
+							<div className="authorized-model-identity"><strong>{model.name}</strong><span>{model.provider}</span><code>{model.modelId}</code></div>
+							{model.planMetered ? <dl><div><dt>Pricing</dt><dd>Plan metered</dd></div></dl> : tariff ? <dl><div><dt>Input / 1M</dt><dd>{formatPerMillion(tariff.inputUsdPerM)}</dd></div><div><dt>Output / 1M</dt><dd>{formatPerMillion(tariff.outputUsdPerM)}</dd></div>{tariff.cachedInputUsdPerM != null ? <div><dt>Cached read / 1M</dt><dd>{formatPerMillion(tariff.cachedInputUsdPerM)}</dd></div> : null}{tariff.cacheWriteUsdPerM != null ? <div><dt>Cache write / 1M</dt><dd>{formatPerMillion(tariff.cacheWriteUsdPerM)}</dd></div> : null}</dl> : null}
+						</article>
+					);
+				})}
 			</div>
 		</SettingsCard>
 	);

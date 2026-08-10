@@ -326,6 +326,21 @@ export type UsageBridge = {
 	summary(window: UsageWindow): Promise<UsageSummary>;
 };
 
+/** One provider price card, served from the native tariff catalog — the same
+ * numbers the cost estimator prices with. */
+export type TariffCard = {
+	provider: string;
+	modelId: string;
+	inputUsdPerM: number;
+	outputUsdPerM: number;
+	cachedInputUsdPerM: number | null;
+	cacheWriteUsdPerM: number | null;
+};
+
+export type TariffsBridge = {
+	catalog(): Promise<TariffCard[]>;
+};
+
 export type VisualTemplateMeta = {
 	id: string;
 	title: string;
@@ -581,6 +596,7 @@ declare global {
 		synthInventory?: InventoryBridge;
 		synthModelPerformance?: ModelPerformanceBridge;
 		synthUsage?: UsageBridge;
+		synthTariffs?: TariffsBridge;
 		synthVisuals?: VisualsBridge;
 		synthOptimizers?: OptimizersBridge;
 		synthTerminal: TerminalBridge;

@@ -54,6 +54,45 @@ const CATALOG: &[Tariff] = &[
     },
 ];
 
+/// One catalog entry as the renderer receives it — the same numbers the
+/// estimator prices with, so Settings can never drift from billing.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TariffCard {
+    pub provider: &'static str,
+    pub model_id: &'static str,
+    pub input_usd_per_m: f64,
+    pub output_usd_per_m: f64,
+    pub cached_input_usd_per_m: Option<f64>,
+    pub cache_write_usd_per_m: Option<f64>,
+}
+
+/// The tariffs in force at `at_ms`, one card per (provider, model).
+pub fn cards_in_force(at_ms: i64) -> Vec<TariffCard> {
+    CATALOG
+        .iter()
+        .filter_map(|entry| tariff_for(entry.provider, entry.model_id, at_ms))
+        .map(|tariff| TariffCard {
+            provider: tariff.provider,
+            model_id: tariff.model_id,
+            input_usd_per_m: tariff.input_usd_per_m,
+            output_usd_per_m: tariff.output_usd_per_m,
+            cached_input_usd_per_m: tariff.cached_input_usd_per_m,
+            cache_write_usd_per_m: tariff.cache_write_usd_per_m,
+        })
+        .fold(Vec::new(), |mut cards, card| {
+            // `tariff_for` already resolved superseded entries; folding by key
+            // keeps one card even when the catalog holds historic revisions.
+            if !cards
+                .iter()
+                .any(|kept: &TariffCard| kept.provider == card.provider && kept.model_id == card.model_id)
+            {
+                cards.push(card);
+            }
+            cards
+        })
+}
+
 /// The tariff in force for a request completed at `at_ms`, if any.
 pub fn tariff_for(provider: &str, model_id: &str, at_ms: i64) -> Option<&'static Tariff> {
     CATALOG
@@ -175,6 +214,29 @@ mod tests {
             BillableTokens::default()
         )
         .is_none());
+    }
+
+    #[test]
+    fn the_served_catalog_carries_the_estimators_own_numbers_once_per_model() {
+        let cards = cards_in_force(AUG_2026_MS);
+        assert_eq!(cards.len(), 2);
+        let luna = cards
+            .iter()
+            .find(|card| card.model_id == "openai/gpt-5.6-luna")
+            .unwrap();
+        assert_eq!(luna.provider, "openrouter");
+        assert_eq!(luna.input_usd_per_m, 0.20);
+        assert_eq!(luna.output_usd_per_m, 1.20);
+        assert_eq!(luna.cached_input_usd_per_m, Some(0.02));
+        assert_eq!(luna.cache_write_usd_per_m, Some(0.25));
+        let laguna = cards
+            .iter()
+            .find(|card| card.model_id == "poolside/laguna-s-2.1")
+            .unwrap();
+        assert_eq!(laguna.cached_input_usd_per_m, None);
+        // Before any card is in force there is nothing to serve — the UI
+        // shows nothing rather than a stale or invented rate.
+        assert!(cards_in_force(AUG_2026_MS - 1).is_empty());
     }
 
     #[test]

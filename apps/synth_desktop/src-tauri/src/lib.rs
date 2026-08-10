@@ -471,6 +471,13 @@ async fn usage_summary(
         .map_err(|error| error.to_string())
 }
 
+/// The provider price cards currently in force. Settings renders these
+/// numbers; the renderer never carries its own copy of a rate.
+#[tauri::command]
+fn tariff_catalog() -> Vec<tariffs::TariffCard> {
+    tariffs::cards_in_force(chrono::Utc::now().timestamp_millis())
+}
+
 #[tauri::command]
 async fn inventory_counts(state: State<'_, Arc<CoreRuntime>>) -> Result<InventoryCounts, String> {
     state
@@ -1817,6 +1824,7 @@ pub fn run() {
             inventory_usage_list,
             model_performance_summary,
             usage_summary,
+            tariff_catalog,
             inventory_counts,
             optimizers_algorithms_list,
             optimizers_recipes_list,
