@@ -9,18 +9,21 @@ type Props = {
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
+	museReady?: boolean;
 };
 
 export function ModelPicker({
 	selectedTargetId,
 	apiKeyConfigured,
 	onSelectTarget,
-	onConfigureAccount
+	onConfigureAccount,
+	museReady = false
 }: {
 	selectedTargetId: string;
 	apiKeyConfigured?: boolean;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
+	museReady?: boolean;
 }) {
 	const [open, setOpen] = useState(false);
 	const ref = useRef<HTMLDivElement>(null);
@@ -112,7 +115,7 @@ export function ModelPicker({
 						: undefined}
 				>
 					{(["local", "remote", "cloud"] as const).map((group) => {
-						const items = LAUNCH_PICKER_TARGETS.filter((t) => t.group === group);
+						const items = LAUNCH_PICKER_TARGETS.filter((t) => t.group === group && (t.id !== "local-muse-glimmer" || museReady));
 						if (!items.length) return null;
 						return (
 							<div key={group} className="model-dropdown-group">
@@ -181,7 +184,8 @@ export function LandingPage({
 	state,
 	selectedTargetId,
 	onSelectTarget,
-	onConfigureAccount
+	onConfigureAccount,
+	museReady
 }: Props) {
 	const [accountChoiceMade, setAccountChoiceMade] = useState(
 		() => window.localStorage.getItem("synth.accountChoiceMade") === "1"
@@ -212,6 +216,7 @@ export function LandingPage({
 						apiKeyConfigured={state.apiKeyConfigured}
 						onSelectTarget={onSelectTarget}
 						onConfigureAccount={onConfigureAccount}
+						museReady={museReady}
 					/>
 				</div>
 			</div>

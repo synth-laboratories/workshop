@@ -317,6 +317,7 @@ export default function App() {
 	const nativeIntern = nativeCodex ? window.synthIntern : undefined;
 	const [health, setHealth] = useState<RuntimeHealth | null>(null);
 	const [laguna, setLaguna] = useState<LagunaStatus | null>(null);
+	const [museReady, setMuseReady] = useState(false);
 	const [sessions, setSessions] = useState<Session[]>([]);
 	const sessionsRef = useRef<Session[]>([]);
 	const [eventsBySession, setEventsBySession] = useState<Record<string, RuntimeEvent[]>>({});
@@ -765,6 +766,18 @@ export default function App() {
 			disposed = true;
 			unsubscribe();
 		};
+	}, []);
+
+	useEffect(() => {
+		let disposed = false;
+		const refresh = () => void window.synthLaguna?.listModels().then((models) => {
+			if (!disposed) setMuseReady(models.some((model) =>
+				model.modelId === "meta-models/Muse-Glimmer-30B-GGUF" && model.runtimeReady
+			));
+		}).catch(() => { if (!disposed) setMuseReady(false); });
+		refresh();
+		const interval = window.setInterval(refresh, 5_000);
+		return () => { disposed = true; window.clearInterval(interval); };
 	}, []);
 
 	useEffect(() => {
@@ -1420,11 +1433,23 @@ export default function App() {
 
 	const onSelectTarget = useCallback((id: string) => {
 		if (isInternTargetId(id)) return;
+		if (id === "local-muse-glimmer" && !museReady) return;
 		// Model chip change only updates pendingTarget. Compact/rebind happen
 		// on the next send when pending ≠ session.target (modelSwitchPlan.ts).
 		const plan = planModelChipChange({ nextTargetId: id });
 		setSelectedTargetId(plan.pendingTargetId);
-	}, []);
+		if (id.startsWith("local-")) {
+			void window.synthLaguna?.listModels().then(async (models) => {
+				const modelId = id === "local-muse-glimmer"
+					? "meta-models/Muse-Glimmer-30B-GGUF"
+					: "poolside/Laguna-XS-2.1-NVFP4-mlx";
+				const hit = models.find((model) => model.modelId === modelId);
+				if (!hit) throw new Error(`${modelId} is not installed`);
+				await window.synthLaguna?.setModelDirectory(hit.path);
+				setLaguna(await window.synthLaguna!.reload());
+			}).catch((reason) => showToast(reason instanceof Error ? reason.message : String(reason)));
+		}
+	}, [museReady, showToast]);
 
 	const onNewConversation = useCallback(() => {
 		setView({ kind: "landing" });
@@ -2028,7 +2053,8 @@ export default function App() {
 							state={state}
 							selectedTargetId={selectedTargetId}
 							onSelectTarget={onSelectTarget}
-							onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
+								onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
+								museReady={museReady}
 						/>
 					) : null}
 
@@ -2126,6 +2152,7 @@ export default function App() {
 							onSend={(text) => void onComposerSend(text)}
 							onSelectTarget={onSelectTarget}
 							onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
+							museReady={museReady}
 							onOpenVoiceSettings={() => setView({ kind: "settings", section: "voice" })}
 							skills={composerSkills}
 							onSlashNew={onNewConversation}

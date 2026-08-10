@@ -26,6 +26,7 @@ type Props = {
 	onSend: (text: string, images?: ComposerImageAttachment[]) => void | Promise<void>;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
+	museReady?: boolean;
 	approvalPolicy: ApprovalPolicy;
 	sandboxMode: SandboxMode;
 	onSelectPermissions: (approvalPolicy: ApprovalPolicy, sandboxMode: SandboxMode) => void;
@@ -372,6 +373,7 @@ function ModelMenu({
 	aggregateModelTpsLabels,
 	onSelectTarget,
 	onConfigureAccount,
+	museReady = false,
 	open,
 	onOpenChange
 }: {
@@ -380,6 +382,7 @@ function ModelMenu({
 	aggregateModelTpsLabels?: Readonly<Record<string, string>>;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
+	museReady?: boolean;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }) {
@@ -434,7 +437,7 @@ function ModelMenu({
 			{open ? (
 				<div id="composer-model-menu" className="composer-model-menu" role="listbox" data-testid="composer-model-menu">
 					{GROUP_ORDER.map((group) => {
-						const items = LAUNCH_PICKER_TARGETS.filter((t) => t.group === group);
+						const items = LAUNCH_PICKER_TARGETS.filter((t) => t.group === group && (t.id !== "local-muse-glimmer" || museReady));
 						if (!items.length) return null;
 						return (
 							<div key={group} className="composer-model-group">
@@ -541,6 +544,7 @@ export function Composer({
 	onSend,
 	onSelectTarget,
 	onConfigureAccount,
+	museReady = false,
 	approvalPolicy,
 	sandboxMode,
 	onSelectPermissions,
@@ -1114,6 +1118,7 @@ export function Composer({
 							aggregateModelTpsLabels={aggregateModelTpsLabels}
 							onSelectTarget={onSelectTarget}
 							onConfigureAccount={onConfigureAccount}
+							museReady={museReady}
 							open={modelMenuOpen}
 							onOpenChange={setModelMenuOpen}
 						/>

@@ -175,12 +175,19 @@ export const OPENROUTER_LUNA_MODEL = "openai/gpt-5.6-luna";
 export const OPENROUTER_LAGUNA_S_MODEL = "poolside/laguna-s-2.1";
 /** Fully qualified — bare `laguna-s-2.1` resolves to a different catalog entry server-side. */
 export const SYNTH_CLOUD_LAGUNA_S_MODEL = "openrouter/poolside/laguna-s-2.1";
+export const MUSE_GLIMMER_MODEL = "meta-models/Muse-Glimmer-30B-GGUF";
 
 export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 	{
 		id: "local-laguna",
 		label: "Laguna XS 2.1",
 		description: "Local · MLX · Metal · usage tracked",
+		group: "local"
+	},
+	{
+		id: "local-muse-glimmer",
+		label: "Muse Glimmer 30B",
+		description: "Local · GGUF · Metal · vision · DFlash",
 		group: "local"
 	},
 	{
