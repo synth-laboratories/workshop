@@ -2,7 +2,6 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "./browser.fixture";
 
 async function openSettings(page: Page) {
-	await page.getByTestId("account-footer-trigger").click();
 	await page.getByTestId("settings").click();
 }
 
@@ -1124,7 +1123,7 @@ test("a recent folder can create and attach to a conversation from the landing c
 	await installLagunaFixture(page, "ready");
 
 	await page.getByTestId("composer-slash-btn").click();
-	await page.getByRole("option", { name: /Workspace/ }).click();
+	await page.getByTestId("slash-command-item-workspace").click();
 	const addFolder = page.getByTestId("workspace-scope-menu").getByRole("menuitem", { name: "Add folder…" });
 	await expect(addFolder).toBeEnabled();
 	const recentFolder = page.getByRole("menuitem", { name: /Documents\/GitHub/ });

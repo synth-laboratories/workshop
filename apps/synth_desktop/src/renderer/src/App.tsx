@@ -335,7 +335,8 @@ export default function App() {
 	}, []);
 	useEffect(() => {
 		refreshAccountSummary();
-		void window.synthInventory?.listUsage(2000)
+		if (typeof window.synthInventory?.listUsage !== "function") return;
+		void window.synthInventory.listUsage(2000)
 			.then((entries) => setAccountUsage(summarizeAccountUsage(entries)))
 			.catch(() => setAccountUsage(null));
 	}, [refreshAccountSummary]);
@@ -522,7 +523,9 @@ export default function App() {
 				window.synthConfig.get(),
 				window.synthInventory.counts(),
 				window.synthLaguna?.getStatus() ?? Promise.resolve(null),
-				window.synthInventory.listUsage(2000).catch(() => [])
+				typeof window.synthInventory.listUsage === "function"
+					? window.synthInventory.listUsage(2000).catch((): UsageLedgerEntry[] => [])
+					: Promise.resolve<UsageLedgerEntry[]>([])
 			]);
 			const next: RuntimeHealth = {
 				status: "ok",

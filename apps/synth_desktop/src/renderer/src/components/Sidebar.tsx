@@ -585,7 +585,7 @@ export function Sidebar({
 							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); (onOpenAccount ?? onSettings)(); }} data-testid="open-account-settings" role="menuitem">
 								<span className="account-menu-glyph" aria-hidden>◎</span><span>{accountSignedIn ? "Manage account" : "Sign in to Synth"}</span>
 							</button>
-							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); onSettings(); }} data-testid="settings" role="menuitem">
+							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); onSettings(); }} data-testid="account-menu-settings" role="menuitem">
 								<IconSettings /><span>Settings</span><kbd>⌘,</kbd>
 							</button>
 							{accountSignedIn ? <button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); void onSignOut?.(); }} data-testid="account-log-out" role="menuitem"><span className="account-menu-glyph" aria-hidden>↪</span><span>Log out</span></button> : null}
@@ -597,6 +597,16 @@ export function Sidebar({
 						<span className="account-help" aria-hidden>?</span>
 					</button>
 				</div>
+				<button
+					type="button"
+					className="settings-btn"
+					onClick={onSettings}
+					data-testid="settings"
+					aria-label="Settings"
+				>
+					<IconSettings />
+					Settings
+				</button>
 			</div>
 			{onSidebarWidthChange ? (
 				<PaneResizeHandle

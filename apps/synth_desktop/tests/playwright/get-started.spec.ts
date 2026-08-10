@@ -70,7 +70,7 @@ test.describe("first-five-minutes golden path", () => {
 		// Signed out: no Log out, no stale plan data.
 		await expect(menu.getByTestId("account-log-out")).toHaveCount(0);
 		await expect(menu).not.toContainText("$200");
-		await menu.getByTestId("settings").click();
+		await menu.getByTestId("account-menu-settings").click();
 		await expect(page.getByTestId("settings-page")).toBeVisible();
 	});
 });
