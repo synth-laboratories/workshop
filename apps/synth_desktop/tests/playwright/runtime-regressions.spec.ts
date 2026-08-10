@@ -171,6 +171,17 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 	await expect(luna).toContainText("Cache write / 1M$0.25");
 	await expect(models.getByTestId("authorized-model-openrouter-laguna-s")).toContainText("$0.20");
 	await expect(models.getByTestId("authorized-model-synth-cloud-laguna-s")).toContainText("Plan");
+	const marks = models.locator(".authorized-model-mark");
+	await expect(marks).toHaveCount(3);
+	const markBoxes = await marks.evaluateAll((elements) => elements.map((element) => {
+		const box = element.getBoundingClientRect();
+		return { width: box.width, height: box.height, centerX: box.left + box.width / 2 };
+	}));
+	for (const box of markBoxes) {
+		expect(box.width, "authorized-provider logos stay visually quiet").toBeLessThanOrEqual(22);
+		expect(box.height, "authorized-provider logos stay visually quiet").toBeLessThanOrEqual(22);
+	}
+	expect(Math.max(...markBoxes.map((box) => box.centerX)) - Math.min(...markBoxes.map((box) => box.centerX)), "provider marks share one centerline").toBeLessThanOrEqual(1);
 });
 
 test("Settings can force and reset a model multi-agent preset", async ({ page }) => {
