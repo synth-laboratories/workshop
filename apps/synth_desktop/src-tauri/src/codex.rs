@@ -37,9 +37,10 @@ const COMPACT_PROMPT: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionStartRequest {
     pub session_id: String,
-    pub workspace: String,
-    pub base_url: String,
-    pub api_key: String,
+	pub workspace: String,
+	pub base_url: String,
+	#[serde(default)]
+	pub api_key: String,
     pub model: String,
     pub provider_name: Option<String>,
     pub provider_title: Option<String>,
