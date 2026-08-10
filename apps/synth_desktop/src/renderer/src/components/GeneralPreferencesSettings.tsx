@@ -7,6 +7,7 @@ import {
 	resetPreferences,
 	saveLayoutAsDefault,
 	setActiveEnterAction,
+	setAutoCompactTokenLimit,
 	setAppearanceFonts,
 	setTheme,
 	setToolActivityMode
@@ -194,6 +195,21 @@ export function GeneralPreferencesSettings({
 							<small>{option.description}</small>
 						</button>
 					))}
+				</div>
+			</section>
+
+			<section className="pref-section" aria-labelledby="pref-agent-context" data-testid="settings-agent-context">
+				<h3 id="pref-agent-context">Agent context</h3>
+				<p className="settings-runtime-copy">When a thread reaches this estimated token count, Codex summarizes older context and keeps recent intent. Changes apply on the next turn.</p>
+				<div className="pref-grid">
+					<NumericSetting
+						label="Compact context at"
+						value={preferences.agentContext.autoCompactTokenLimit}
+						min={16_000}
+						max={235_000}
+						testId="auto-compact-token-limit"
+						onChange={(limit) => onPreferencesChange(setAutoCompactTokenLimit(limit))}
+					/>
 				</div>
 			</section>
 

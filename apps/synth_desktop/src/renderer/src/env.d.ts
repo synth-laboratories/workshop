@@ -188,6 +188,7 @@ export type CodexSessionStart = {
 	sandbox?: string;
 	threadId?: string;
 	multiAgentVersion?: MultiAgentVersion;
+	autoCompactTokenLimit: number;
 };
 
 export type CodexSessionInfo = { sessionId: string; threadId: string; turnId?: string | null };

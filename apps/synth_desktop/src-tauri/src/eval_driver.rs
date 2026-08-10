@@ -460,6 +460,10 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
         ),
         thread_id: None,
         multi_agent_version: None,
+        auto_compact_token_limit: body
+            .get("autoCompactTokenLimit")
+            .and_then(Value::as_u64)
+            .unwrap_or(196_000),
         writable_roots: Vec::new(),
     };
     start = prepare_start(&deps.laguna, start).await?;
@@ -561,6 +565,10 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
         sandbox: Some("workspace-write".into()),
         thread_id: None,
         multi_agent_version: None,
+        auto_compact_token_limit: body
+            .get("autoCompactTokenLimit")
+            .and_then(Value::as_u64)
+            .unwrap_or(196_000),
         writable_roots: Vec::new(),
     };
     start = prepare_start(&deps.laguna, start).await?;

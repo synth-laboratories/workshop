@@ -85,6 +85,13 @@ export function setToolActivityMode(mode: ToolActivityMode): DesktopPreferences 
 	}));
 }
 
+export function setAutoCompactTokenLimit(autoCompactTokenLimit: number): DesktopPreferences {
+	return updatePreferences((current) => ({
+		...current,
+		agentContext: { autoCompactTokenLimit }
+	}));
+}
+
 export function setActiveEnterAction(action: ActiveEnterAction): DesktopPreferences {
 	return updatePreferences((current) => ({
 		...current,

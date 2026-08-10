@@ -55,6 +55,10 @@ export type DesktopPreferences = {
 	toolActivity: {
 		mode: ToolActivityMode;
 	};
+	agentContext: {
+		/** Start local context summarization when the estimated thread reaches this size. */
+		autoCompactTokenLimit: number;
+	};
 	layout: {
 		last: LayoutSnapshot;
 		default: LayoutSnapshot;
@@ -93,6 +97,9 @@ export const DEFAULT_PREFERENCES: DesktopPreferences = {
 	},
 	toolActivity: {
 		mode: "grouped"
+	},
+	agentContext: {
+		autoCompactTokenLimit: 196_000
 	},
 	layout: {
 		last: { ...DEFAULT_LAYOUT },
@@ -178,6 +185,9 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 	const toolActivity = source.toolActivity && typeof source.toolActivity === "object"
 		? (source.toolActivity as Record<string, unknown>)
 		: {};
+	const agentContext = source.agentContext && typeof source.agentContext === "object"
+		? (source.agentContext as Record<string, unknown>)
+		: {};
 	const layout = source.layout && typeof source.layout === "object"
 		? (source.layout as Record<string, unknown>)
 		: {};
@@ -223,6 +233,14 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 		},
 		submission: { activeEnterAction: enter },
 		toolActivity: { mode },
+		agentContext: {
+			autoCompactTokenLimit: clampNumber(
+				agentContext.autoCompactTokenLimit,
+				16_000,
+				235_000,
+				DEFAULT_PREFERENCES.agentContext.autoCompactTokenLimit
+			)
+		},
 		layout: {
 			last: normalizeLayoutSnapshot(layout.last),
 			default: normalizeLayoutSnapshot(layout.default)

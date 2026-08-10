@@ -19,7 +19,8 @@ export function approvalModeConfig(mode: ApprovalMode): Pick<CodexSessionStart, 
 }
 
 export function codexStartRequest(
-	sessionId: string, workspace: string, target: ExecutionTarget, approvalMode: ApprovalMode = "ask"
+	sessionId: string, workspace: string, target: ExecutionTarget, approvalMode: ApprovalMode = "ask",
+	autoCompactTokenLimit = 196_000
 ): CodexSessionStart {
 	const approval = approvalModeConfig(approvalMode);
 	if (target.kind === "intern") throw new Error("Intern sessions are owned by Synth Cloud");
@@ -28,7 +29,7 @@ export function codexStartRequest(
 			sessionId, workspace, baseUrl: "http://127.0.0.1:7333", apiKey: "",
 			model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
 			providerTitle: "Laguna XS Responses", providerEnvKey: "SYNTH_LAGUNA_API_KEY",
-			...approval
+			autoCompactTokenLimit, ...approval
 		};
 	}
 	if (target.kind !== "remote") throw new Error("Unsupported Codex execution target");
@@ -37,13 +38,13 @@ export function codexStartRequest(
 			// baseUrl is overwritten by the Rust host from synth_config; placeholder satisfies types.
 			sessionId, workspace, baseUrl: "https://api.usesynth.ai/api/v1", apiKey: "",
 			model: target.model, providerName: "synth-cloud", providerTitle: "Synth Cloud Responses",
-			providerEnvKey: "SYNTH_API_KEY", ...approval
+			providerEnvKey: "SYNTH_API_KEY", autoCompactTokenLimit, ...approval
 		};
 	}
 	return {
 		sessionId, workspace, baseUrl: "https://openrouter.ai/api/v1", apiKey: "",
 		model: target.model, providerName: "openrouter", providerTitle: "OpenRouter Responses",
-		providerEnvKey: "OPENROUTER_API_KEY", ...approval
+		providerEnvKey: "OPENROUTER_API_KEY", autoCompactTokenLimit, ...approval
 	};
 }
 

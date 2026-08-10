@@ -24,6 +24,7 @@ export {
 	subscribePreferences,
 	setTheme,
 	setToolActivityMode,
+	setAutoCompactTokenLimit,
 	setActiveEnterAction,
 	setAppearanceFonts,
 	saveLayout,

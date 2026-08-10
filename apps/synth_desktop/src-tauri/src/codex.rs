@@ -27,6 +27,10 @@ use tokio::{
 };
 
 const EVENT_NAME: &str = "codex:event";
+const MIN_AUTO_COMPACT_TOKEN_LIMIT: u64 = 16_000;
+const MAX_AUTO_COMPACT_TOKEN_LIMIT: u64 = 235_000;
+const DEFAULT_AUTO_COMPACT_TOKEN_LIMIT: u64 = 196_000;
+const COMPACT_PROMPT: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION for a coding agent.\nWrite a handoff for another LLM that will continue the same workspace task.\nInclude:\n- Goal and acceptance criteria\n- Files read/changed (paths + one-line why)\n- Commands/tests run and outcomes\n- Decisions and constraints\n- Open bugs / next concrete steps\n- Any secrets-safe identifiers (branch names, ticket ids) needed to continue\nOmit raw file dumps, full command logs, and superseded plans.\nBe concise and structured (bullets).";
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +47,8 @@ pub struct CodexSessionStartRequest {
     pub sandbox: Option<String>,
     pub thread_id: Option<String>,
     pub multi_agent_version: Option<MultiAgentVersion>,
+    #[serde(default = "default_auto_compact_token_limit")]
+    pub auto_compact_token_limit: u64,
     /// Rust-populated exact roots for this conversation. Renderer input is
     /// discarded by `prepare_codex_start` before launch.
     #[serde(default)]
@@ -1551,8 +1557,8 @@ fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Result<()> {
     writable_roots.dedup();
     let workspace_write_config = workspace_write_config(&writable_roots);
     let config = format!(
-        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"default\"\n\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\nenv_key = \"{}\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
-        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), workspace_write_config, toml_key(provider), toml_string(title), toml_string(&responses_base_url(&request.base_url)), toml_string(env_key), agents_enabled, multi_agent_v1, multi_agent_v2
+        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"default\"\nmodel_auto_compact_token_limit = {}\ntool_output_token_limit = 12000\ncompact_prompt = \"{}\"\n\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\nenv_key = \"{}\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n# Custom Workshop providers use Codex local summarization. Do not call /responses/compact.\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
+        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), request.auto_compact_token_limit, toml_string(COMPACT_PROMPT), workspace_write_config, toml_key(provider), toml_string(title), toml_string(&responses_base_url(&request.base_url)), toml_string(env_key), agents_enabled, multi_agent_v1, multi_agent_v2
     );
     fs::write(home.join("config.toml"), config)?;
     let auth = home.join("auth.json");
@@ -1610,6 +1616,13 @@ fn validate_start(request: &CodexSessionStartRequest) -> Result<()> {
     if !Path::new(&request.workspace).is_dir() {
         return Err(anyhow!("workspace must be an existing directory"));
     }
+    if !(MIN_AUTO_COMPACT_TOKEN_LIMIT..=MAX_AUTO_COMPACT_TOKEN_LIMIT)
+        .contains(&request.auto_compact_token_limit)
+    {
+        return Err(anyhow!(
+            "autoCompactTokenLimit must be between {MIN_AUTO_COMPACT_TOKEN_LIMIT} and {MAX_AUTO_COMPACT_TOKEN_LIMIT}"
+        ));
+    }
     if !(request.base_url.starts_with("http://127.0.0.1:")
         || request.base_url.starts_with("http://localhost:")
         || request.base_url.starts_with("https://"))
@@ -1625,6 +1638,10 @@ fn validate_start(request: &CodexSessionStartRequest) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn default_auto_compact_token_limit() -> u64 {
+    DEFAULT_AUTO_COMPACT_TOKEN_LIMIT
 }
 
 /// Produces an endpoint label that is useful in UI errors without exposing a
@@ -1849,6 +1866,7 @@ mod tests {
             sandbox: Some("workspace-write".into()),
             thread_id: None,
             multi_agent_version: Some(MultiAgentVersion::None),
+            auto_compact_token_limit: DEFAULT_AUTO_COMPACT_TOKEN_LIMIT,
             writable_roots: Vec::new(),
         }
     }
@@ -2777,9 +2795,12 @@ mod tests {
         assert!(config.contains("base_url = \"http://127.0.0.1:41209/api/v1\""));
         assert!(config.contains("wire_api = \"responses\""));
         assert!(config.contains("env_key = \"SYNTH_API_KEY\""));
+        assert!(config.contains("model_auto_compact_token_limit = 196000"));
+        assert!(config.contains("tool_output_token_limit = 12000"));
+        assert!(config.contains("CONTEXT CHECKPOINT COMPACTION for a coding agent"));
         let optimizer_skill =
             fs::read_to_string(home.join("skills/use-synth-optimizers/SKILL.md")).unwrap();
-        assert!(optimizer_skill.contains("gepa.banking77.smoke.v1"));
+        assert!(optimizer_skill.contains("optimizer_manage"));
     }
 
     #[test]
@@ -2793,6 +2814,22 @@ mod tests {
         assert!(error.contains("Synth API key not configured"));
         assert!(error.contains("Settings → Account"));
         assert_eq!(request.api_key, "renderer-supplied-should-not-matter");
+    }
+
+    #[test]
+    fn rejects_auto_compact_limits_outside_the_desktop_range() {
+        let temp = tempdir().unwrap();
+        let mut request = test_request(temp.path(), "compact-limit");
+        request.auto_compact_token_limit = MIN_AUTO_COMPACT_TOKEN_LIMIT - 1;
+        assert!(validate_start(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("autoCompactTokenLimit"));
+        request.auto_compact_token_limit = MAX_AUTO_COMPACT_TOKEN_LIMIT + 1;
+        assert!(validate_start(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("autoCompactTokenLimit"));
     }
 
     #[test]
