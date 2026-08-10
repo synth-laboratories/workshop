@@ -14,10 +14,10 @@ export type ActivityPresentationItem =
 		expanded: boolean;
 	};
 
-// Reasoning is an authored disclosure, not tool noise. It must remain adjacent
-// to the assistant answer in every activity density, rather than disappearing
-// into a generic "Activity" group.
-const GROUPABLE = new Set(["command", "search", "file_read", "file_write", "working"]);
+// Grouped mode mirrors Codex's activity disclosures: a run of concrete tool
+// calls is one scannable row, while expansion restores every call and the
+// reasoning updates that occurred between them in their original order.
+const CONNECTIVE_KINDS = new Set(["thought", "working"]);
 
 type ActivityStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted" | "unhealthy" | "mixed";
 
@@ -31,8 +31,18 @@ function lineStatus(line: LocalActivityLine): ActivityStatus {
 	return "mixed";
 }
 
-function summarizeGroup(lines: LocalActivityLine[]): { label: string; summary: string; status: ActivityStatus } {
-	const statuses = lines.map(lineStatus);
+function toolCategory(line: LocalActivityLine): string | null {
+	if (line.kind === "file_write") return "edited files";
+	if (line.kind === "file_read") return "read files";
+	if (line.kind === "command") return "ran commands";
+	if (line.kind === "search") return "searched";
+	if (line.toolStatus) return "used tools";
+	return null;
+}
+
+function summarizeGroup(lines: LocalActivityLine[]): { label: string; summary: string; status: ActivityStatus; toolCount: number } {
+	const tools = lines.filter((line) => toolCategory(line));
+	const statuses = (tools.length > 0 ? tools : lines).map(lineStatus);
 	const status = statuses.includes("running")
 		? "running"
 		: statuses.includes("failed")
@@ -46,20 +56,14 @@ function summarizeGroup(lines: LocalActivityLine[]): { label: string; summary: s
 						: statuses.every((s) => s === "completed")
 							? "completed"
 							: "mixed";
-	const commands = lines.filter((line) => line.kind === "command" || line.toolStatus).length;
-	const label = status === "running"
-		? "Working"
-		: status === "failed"
-			? "Failed"
-			: status === "cancelled"
-				? "Cancelled"
-				: status === "interrupted"
-					? "Interrupted"
-					: status === "unhealthy"
-						? "Unhealthy"
-						: "Activity";
-	const summary = `${lines.length} step${lines.length === 1 ? "" : "s"}${commands ? ` · ${commands} tool${commands === 1 ? "" : "s"}` : ""}`;
-	return { label, summary, status };
+	const categories = [...new Set(tools.map(toolCategory).filter((category): category is string => Boolean(category)))];
+	const actionLabel = categories.length > 0 ? categories.join(", ") : status === "running" ? "working" : "activity";
+	const label = actionLabel.charAt(0).toUpperCase() + actionLabel.slice(1);
+	const toolCount = tools.length;
+	const summary = toolCount > 0
+		? `${toolCount} call${toolCount === 1 ? "" : "s"}`
+		: `${lines.length} update${lines.length === 1 ? "" : "s"}`;
+	return { label, summary, status, toolCount };
 }
 
 /**
@@ -117,71 +121,44 @@ export function presentActivityLines(
 		}];
 	}
 
-	// grouped
+	// grouped: fold consecutive tool calls together, including the short
+	// reasoning/working updates between them. Approval, visual, summary, and
+	// other authored rows are hard boundaries.
 	const items: ActivityPresentationItem[] = [];
 	let buffer: LocalActivityLine[] = [];
 	const flush = () => {
 		if (buffer.length === 0) return;
-		if (buffer.length === 1 && !running) {
-			items.push({ kind: "line", line: buffer[0]! });
+		const { label, summary, status, toolCount } = summarizeGroup(buffer);
+		const shouldGroup = toolCount >= 2 || (toolCount === 0 && buffer.length >= 2);
+		if (!shouldGroup) {
+			items.push(...buffer.map((line) => ({ kind: "line" as const, line })));
 			buffer = [];
 			return;
 		}
 		const groupId = `group-${buffer[0]!.id}`;
-		const { label, summary, status } = summarizeGroup(buffer);
-		const shouldExpand = running || expanded.has(groupId);
-		if (running && !expanded.has(groupId)) {
-			// While running, show current activity plus a count of prior adjacent tools.
-			const current = buffer[buffer.length - 1]!;
-			const prior = buffer.slice(0, -1);
-			if (prior.length > 0) {
-				const priorId = `group-prior-${prior[0]!.id}`;
-				const priorSummary = summarizeGroup(prior);
-				items.push({
-					kind: "group",
-					id: priorId,
-					label: priorSummary.label,
-					summary: priorSummary.summary,
-					count: prior.length,
-					status: priorSummary.status,
-					lines: prior,
-					expanded: expanded.has(priorId)
-				});
-			}
-			items.push({ kind: "line", line: current });
-		} else {
-			items.push({
-				kind: "group",
-				id: groupId,
-				label,
-				summary,
-				count: buffer.length,
-				status,
-				lines: buffer,
-				expanded: shouldExpand && expanded.has(groupId)
-			});
-		}
+		items.push({
+			kind: "group",
+			id: groupId,
+			label,
+			summary,
+			count: toolCount || buffer.length,
+			status,
+			lines: buffer,
+			expanded: expanded.has(groupId)
+		});
 		buffer = [];
 	};
 
 	for (const line of lines) {
-		const isAgentMessageLike = line.kind === "approval" || line.kind === "visual" || line.kind === "subagent" || line.kind === "run_summary";
-		if (isAgentMessageLike || !GROUPABLE.has(line.kind ?? "") && !line.toolStatus) {
+		const isTool = Boolean(toolCategory(line));
+		const isConnective = CONNECTIVE_KINDS.has(line.kind ?? "");
+		if (isTool || isConnective) buffer.push(line);
+		else {
 			flush();
 			items.push({ kind: "line", line });
-			continue;
 		}
-		buffer.push(line);
 	}
 	flush();
-
-	if (!running) {
-		// After finish, collapse groupable runs into concise summaries unless expanded.
-		return items.map((item) => {
-			if (item.kind !== "group") return item;
-			return { ...item, expanded: expanded.has(item.id) };
-		});
-	}
 	return items;
 }
 

@@ -297,10 +297,10 @@ function ActivityGroup({
 				onClick={onToggle}
 				data-testid={`activity-group-toggle-${id}`}
 			>
+				<span className="activity-group-chevron" aria-hidden="true">›</span>
 				<span className="activity-group-label">{label}</span>
 				<span className="activity-group-summary">{summary}</span>
-				<span className="activity-group-count" aria-label={`${count} events`}>{count}</span>
-				<span className="activity-group-hint">{expanded ? "Hide" : "Expand"}</span>
+				<span className="sr-only">{count} tool {count === 1 ? "call" : "calls"}</span>
 			</button>
 			{expanded ? (
 				<div id={`activity-group-body-${id}`} className="activity-group-body" data-testid={`activity-group-body-${id}`}>

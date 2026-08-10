@@ -5630,9 +5630,7 @@ html.sidebar-hidden .sidebar {
 .settings-content select { max-width: 100%; }
 
 .activity-group {
-	margin: 4px 0;
-	border: 1px solid var(--color-border);
-	border-radius: var(--radius-sm);
+	margin: 2px 0;
 	overflow: hidden;
 }
 
@@ -5640,28 +5638,43 @@ html.sidebar-hidden .sidebar {
 	width: 100%;
 	display: flex;
 	align-items: center;
-	gap: 8px;
-	padding: 8px 10px;
+	gap: 7px;
+	padding: 7px 0;
 	border: 0;
-	background: var(--color-bg-subtle);
+	background: transparent;
 	color: var(--color-text);
 	text-align: left;
+	justify-content: flex-start;
 }
 
-.activity-group-summary,
-.activity-group-hint {
+.activity-group-toggle:hover .activity-group-label {
+	color: var(--color-text);
+}
+
+.activity-group-chevron {
+	display: inline-block;
+	color: var(--color-text-muted);
+	font-size: 19px;
+	line-height: 1;
+	transform: rotate(0deg);
+	transition: transform 120ms ease;
+}
+
+.activity-group-toggle[aria-expanded="true"] .activity-group-chevron {
+	transform: rotate(90deg);
+}
+
+.activity-group-label {
+	font-weight: 500;
+}
+
+.activity-group-summary {
 	color: var(--color-text-muted);
 	font-size: 12px;
 }
 
-.activity-group-count {
-	margin-left: auto;
-	font-variant-numeric: tabular-nums;
-	color: var(--color-text-faint);
-}
-
 .activity-group-body {
-	padding: 6px 10px 10px;
+	padding: 4px 0 8px 22px;
 	display: grid;
 	gap: 4px;
 	max-width: 100%;
