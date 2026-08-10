@@ -30,6 +30,18 @@ class RemoteResponsesBackend:
     ) -> CompiledTurn:
         return compile_turn(request, context_items, generation_id)
 
+    async def compile_messages(self, **kwargs: Any) -> CompiledTurn:
+        raise ResponsesError(
+            "chat_requires_local_backend",
+            "This daemon is configured with a remote native Responses provider. "
+            "The remote passthrough forwards the original Responses body upstream, "
+            "so it cannot serve the Chat Completions surface without fabricating "
+            "one. Use the native Responses surface, or configure the local MLX "
+            "backend.",
+            501,
+            error_type="server_error",
+        )
+
     async def count_tokens(self, turn: CompiledTurn) -> TokenUsageEstimate:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
         async with httpx.AsyncClient(timeout=30) as client:

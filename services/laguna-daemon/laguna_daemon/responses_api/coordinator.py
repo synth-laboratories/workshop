@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from contextlib import aclosing
 from copy import deepcopy
 from typing import Any
 
@@ -11,6 +10,7 @@ from .capabilities import validate_capabilities
 from .errors import ResponsesError
 from .events import EventSink, ResponseEventAssembler
 from .ids import new_id
+from .runner import TurnRunner
 from .storage import SQLiteResponseStore, StoredResponse
 from .validation import validate_tool_outputs
 
@@ -61,10 +61,24 @@ def response_shell(request: dict[str, Any], response_id: str | None = None) -> d
 
 
 class ResponseCoordinator:
+    """The Responses-specific half of running a turn.
+
+    Everything here is about Responses semantics — the item/context graph,
+    `previous_response_id`, truncation of items, and persistence. The neutral
+    execution of a compiled turn lives in `TurnRunner`, which the Chat surface
+    drives the same way.
+    """
+
     def __init__(self, backend: ModelBackend, store: SQLiteResponseStore) -> None:
         self.backend = backend
         self.store = store
-        self.active: dict[str, tuple[str, asyncio.Task[Any] | None]] = {}
+        self.runner = TurnRunner(backend)
+
+    @property
+    def active(self) -> dict[str, tuple[str, asyncio.Task[Any] | None]]:
+        """In-flight responses. The runner owns the registry; this is the view
+        the service and its tests have always read."""
+        return self.runner.active
 
     async def resolve_context(
         self,
@@ -101,49 +115,30 @@ class ResponseCoordinator:
     ) -> dict[str, Any]:
         response = response_shell(request, response_id)
         generation_id = new_id("generation")
-        task = asyncio.current_task()
-        self.active[response["id"]] = (generation_id, task)
         assembler: ResponseEventAssembler | None = None
         context: list[dict[str, Any]] = []
-        try:
-            capabilities = await self.backend.capabilities(request["model"])
-            validate_capabilities(request, capabilities)
-            context = await self.resolve_context(request, connection_cache=connection_cache)
-            turn = await self.backend.compile(request, context, generation_id)
-            estimate = await self.backend.count_tokens(turn)
-            if estimate.input_tokens > capabilities.context_length:
-                if request.get("truncation") != "auto":
-                    raise ResponsesError(
-                        "context_length_exceeded",
-                        f"Compiled input has {estimate.input_tokens} tokens; model limit is {capabilities.context_length}.",
-                        400,
-                        "input",
-                    )
-                context, turn = await self._truncate(request, context, generation_id, capabilities.context_length)
-            assembler = ResponseEventAssembler(response, turn.bindings, sink)
-            await assembler.start()
-            finish_reason = "stop"
-            # A backend stream owns scarce generation resources (the native
-            # MLX implementation holds the single GPU admission slot).  An
-            # exception in the event sink/assembler does not automatically
-            # close an async iterator, which can strand that slot after the
-            # worker itself has already gone idle.  Always close the stream at
-            # this ownership boundary.
-            async with aclosing(self.backend.stream(turn)) as model_events:
-                async for model_event in model_events:
-                    observed = await assembler.consume(model_event)
-                    if observed is not None:
-                        finish_reason = observed
-            final = await assembler.complete(finish_reason)
-        except asyncio.CancelledError:
-            await self.backend.cancel(generation_id)
-            raise
-        except ResponsesError as error:
-            if assembler is None:
-                raise
-            final = await assembler.fail(error)
-        finally:
-            self.active.pop(response["id"], None)
+        async with self.runner.slot(response["id"], generation_id):
+            try:
+                capabilities = await self.backend.capabilities(request["model"])
+                validate_capabilities(request, capabilities)
+                context = await self.resolve_context(request, connection_cache=connection_cache)
+                turn = await self.backend.compile(request, context, generation_id)
+                estimate = await self.backend.count_tokens(turn)
+                if estimate.input_tokens > capabilities.context_length:
+                    if request.get("truncation") != "auto":
+                        raise ResponsesError(
+                            "context_length_exceeded",
+                            f"Compiled input has {estimate.input_tokens} tokens; model limit is {capabilities.context_length}.",
+                            400,
+                            "input",
+                        )
+                    context, turn = await self._truncate(request, context, generation_id, capabilities.context_length)
+                assembler = ResponseEventAssembler(response, turn.bindings, sink)
+                final = await self.runner.drive(turn, assembler)
+            except ResponsesError as error:
+                if assembler is None:
+                    raise
+                final = await assembler.fail(error)
         if request.get("store"):
             await self.store.put(final, request, context)
         elif connection_cache is not None and final["status"] == "completed":
@@ -187,12 +182,7 @@ class ResponseCoordinator:
         )
 
     async def cancel(self, response_id: str) -> bool:
-        active = self.active.get(response_id)
-        if active is None:
+        if not self.runner.is_active(response_id):
             stored = await self.store.get(response_id)
             return bool(stored and stored.response.get("status") == "cancelled")
-        generation_id, task = active
-        await self.backend.cancel(generation_id)
-        if task is not None:
-            task.cancel()
-        return True
+        return await self.runner.cancel(response_id)
