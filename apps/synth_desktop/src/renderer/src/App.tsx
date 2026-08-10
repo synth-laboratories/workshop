@@ -58,7 +58,7 @@ import {
 	modelKnobForTarget,
 	modelKnobKey,
 	turnStartEffortForExecutionTarget,
-	type ModelKnobValue
+	type ModelKnobTransportValue
 } from "./runtime/modelCapabilities";
 import {
 	planComposerSend,
@@ -366,9 +366,9 @@ export default function App() {
 	const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>(() => loadPreferences().approvalPolicy);
 	const [sandboxMode, setSandboxMode] = useState<SandboxMode>(() => loadPreferences().sandboxMode);
 	const [modelKnobValues, setModelKnobValues] = useState(() => loadModelKnobValues(window.localStorage));
-	const selectModelKnob = useCallback((targetId: string, knobId: string, value: ModelKnobValue) => {
+	const selectModelKnob = useCallback((targetId: string, knobId: string, value: ModelKnobTransportValue) => {
 		const knob = modelKnobForTarget(targetId, knobId);
-		if (!knob || !knob.options.some((option) => option.id === value)) return;
+		if (!knob || !knob.options.some((option) => option.transportValue === value)) return;
 		setModelKnobValues((current) => ({
 			...current,
 			[modelKnobKey(targetId, knobId)]: value

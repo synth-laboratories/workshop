@@ -6459,7 +6459,6 @@ html.sidebar-hidden .sidebar {
 .workbench-side-panel-content { min-width: 0; min-height: 0; flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 14px; }
 
 .resource-shelf.resource-shelf-docked { position: static; inset: auto; z-index: auto; width: 100%; max-height: none; align-self: stretch; padding: 2px; overflow: visible; border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; }
-
 /* The composer stays inside the transcript column while the inspector is open;
    the rail owns the right edge. That inset is measured in Composer.tsx and
    published as --composer-dock-left/right, so no rail-width guess lives here. */

@@ -13,7 +13,7 @@ import {
 	modelKnobValue,
 	modelSupportsImageInput,
 	type ModelKnobSpec,
-	type ModelKnobValue,
+	type ModelKnobTransportValue,
 	type ModelKnobValues
 } from "../runtime/modelCapabilities";
 import { IconSparkle, SlashCommandMenu, type SlashCommandId, type SlashCommandMenuHandle } from "./SlashCommandMenu";
@@ -32,7 +32,7 @@ type Props = {
 	sandboxMode: SandboxMode;
 	onSelectPermissions: (approvalPolicy: ApprovalPolicy, sandboxMode: SandboxMode) => void;
 	modelKnobValues: ModelKnobValues;
-	onSelectModelKnob: (targetId: string, knobId: string, value: ModelKnobValue) => void;
+	onSelectModelKnob: (targetId: string, knobId: string, value: ModelKnobTransportValue) => void;
 	/** Rolling median decode speed for the currently selected model. */
 	modelMedianTpsLabel?: string | null;
 	/** Cross-session aggregate speeds keyed by model target id. */
@@ -121,13 +121,13 @@ function PermissionMenu({ approvalPolicy, sandboxMode, onSelect, disabled, open,
 }
 
 function ModelKnobMenu({ value, onSelect, knob }: {
-	value: ModelKnobValue;
-	onSelect: (value: ModelKnobValue) => void;
+	value: ModelKnobTransportValue;
+	onSelect: (value: ModelKnobTransportValue) => void;
 	knob: ModelKnobSpec;
 }) {
 	const [open, setOpen] = useState(false);
 	const ref = useRef<HTMLDivElement>(null);
-	const selected = knob.options.find((option) => option.id === value) ?? knob.options[0];
+	const selected = knob.options.find((option) => option.transportValue === value) ?? knob.options[0];
 	useEffect(() => {
 		if (!open) return;
 		const close = (event: MouseEvent) => { if (!ref.current?.contains(event.target as Node)) setOpen(false); };
@@ -140,24 +140,24 @@ function ModelKnobMenu({ value, onSelect, knob }: {
 			type="button"
 			className={`reasoning-effort-chip${open ? " open" : ""}`}
 			onClick={() => setOpen((value) => !value)}
-			aria-label={`${knob.label}: ${selected.label}`}
+			aria-label={`${knob.label}: ${selected.displayValue}`}
 			aria-expanded={open}
 			aria-controls={`${knob.testId}-menu`}
 			aria-haspopup="listbox"
 			data-testid={`${knob.testId}-select`}
 		>
-			<span>{selected.label}</span><IconChevron />
+			<span>{selected.displayValue}</span><IconChevron />
 		</button>
 		{open ? <div id={`${knob.testId}-menu`} className="reasoning-effort-menu" role="listbox" aria-label={knob.label} data-testid={`${knob.testId}-menu`}>
 			{knob.options.map((option) => <button
-				key={option.id}
+				key={option.transportValue}
 				type="button"
 				role="option"
-				aria-selected={option.id === value}
-				className={option.id === value ? "selected" : ""}
-				onClick={() => { onSelect(option.id); setOpen(false); }}
+				aria-selected={option.transportValue === value}
+				className={option.transportValue === value ? "selected" : ""}
+				onClick={() => { onSelect(option.transportValue); setOpen(false); }}
 			>
-				<span>{option.label}</span>{option.id === value ? <b aria-hidden>✓</b> : null}
+				<span>{option.displayValue}</span>{option.transportValue === value ? <b aria-hidden>✓</b> : null}
 			</button>)}
 		</div> : null}
 	</div>;
