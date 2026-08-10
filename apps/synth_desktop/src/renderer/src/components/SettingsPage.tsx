@@ -5,7 +5,8 @@ import type {
 	ModelMultiAgentSetting,
 	MultiAgentVersion,
 	SynthAccountSummary,
-	SynthBackendSettings
+	SynthBackendSettings,
+	TariffCard
 } from "../env";
 import type { AccountViewModel } from "../runtime/accountView";
 import type { DeviceUsageSummary } from "./UsageSheet";
@@ -175,13 +176,47 @@ type AuthorizedModel = {
 	planMetered?: boolean;
 };
 
+const OPENROUTER_DISPLAY: Record<string, { id: string; name: string; provider: string; providerMark: "openai" | "laguna" }> = {
+	"openai/gpt-5.6-luna": { id: "openrouter-luna", name: "GPT 5.6 Luna", provider: "OpenRouter · OpenAI", providerMark: "openai" },
+	"poolside/laguna-s-2.1": { id: "openrouter-laguna-s", name: "Laguna S 2.1", provider: "OpenRouter · Poolside", providerMark: "laguna" }
+};
+
+function formatUsdPerM(value: number): string {
+	return `$${value.toFixed(2)}`;
+}
+
+function authorizedModelFromTariff(card: TariffCard): AuthorizedModel | null {
+	if (card.provider !== "openrouter") return null;
+	const display = OPENROUTER_DISPLAY[card.modelId] ?? {
+		id: `openrouter-${card.modelId.replace(/[^a-z0-9]+/gi, "-")}`,
+		name: card.modelId,
+		provider: "OpenRouter",
+		providerMark: "openai" as const
+	};
+	return {
+		id: display.id,
+		name: display.name,
+		provider: display.provider,
+		providerMark: display.providerMark,
+		modelId: card.modelId,
+		inputPrice: formatUsdPerM(card.inputUsdPerM),
+		outputPrice: formatUsdPerM(card.outputUsdPerM),
+		cachedReadPrice: card.cachedInputUsdPerM == null ? undefined : formatUsdPerM(card.cachedInputUsdPerM),
+		cacheWritePrice: card.cacheWriteUsdPerM == null ? undefined : formatUsdPerM(card.cacheWriteUsdPerM)
+	};
+}
+
 function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSettings | null }) {
+	const [tariffs, setTariffs] = useState<TariffCard[]>([]);
+	useEffect(() => {
+		void window.synthConfig?.listTariffs().then(setTariffs).catch(() => setTariffs([]));
+	}, []);
 	const models: AuthorizedModel[] = [];
 	if (connection?.openrouterApiKeyConfigured) {
-		models.push(
-			{ id: "openrouter-luna", name: "GPT 5.6 Luna", provider: "OpenRouter · OpenAI", providerMark: "openai", modelId: "openai/gpt-5.6-luna", inputPrice: "$0.20", outputPrice: "$1.20", cachedReadPrice: "$0.02", cacheWritePrice: "$0.25" },
-			{ id: "openrouter-laguna-s", name: "Laguna S 2.1", provider: "OpenRouter · Poolside", providerMark: "laguna", modelId: "poolside/laguna-s-2.1", inputPrice: "$0.10", outputPrice: "$0.20" }
-		);
+		for (const card of tariffs) {
+			const model = authorizedModelFromTariff(card);
+			if (model) models.push(model);
+		}
 	}
 	if (connection?.apiKeyConfigured) {
 		models.push({ id: "synth-cloud-laguna-s", name: "Laguna S 2.1", provider: "Synth Cloud", providerMark: "synth", modelId: "openrouter/poolside/laguna-s-2.1", inputPrice: "", outputPrice: "", planMetered: true });

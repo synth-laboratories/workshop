@@ -913,6 +913,11 @@ fn synth_config_get() -> Result<BackendSettings, String> {
     synth_config::get().map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn tariff_catalog() -> Vec<crate::tariffs::TariffCard> {
+    crate::tariffs::catalog()
+}
+
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
 struct ModelPerformanceMetric {
@@ -1849,6 +1854,7 @@ pub fn run() {
             visuals_show,
             synth_config_get,
             synth_config_update,
+            tariff_catalog,
             model_performance_get,
             account_begin_sign_in,
             account_get_summary,

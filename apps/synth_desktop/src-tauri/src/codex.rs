@@ -1914,6 +1914,8 @@ async fn finalize_performance_tracker(
     } else {
         CostSource::None
     };
+    let provider = tracker.provider.clone();
+    let request_id = tracker.turn_id.clone();
     let record = UsageRecord {
         id: format!("perf:{}:{}", tracker.provider, tracker.turn_id),
         provider: tracker.provider,
@@ -1946,6 +1948,35 @@ async fn finalize_performance_tracker(
     let repository = UsageRecordsRepository::new(core.storage().database().clone());
     if let Err(error) = repository.record(record).await {
         eprintln!("usage record could not be persisted: {error:#}");
+    }
+    apply_broker_settlements(&repository, session_id, &provider, &request_id).await;
+}
+
+async fn apply_broker_settlements(
+    repository: &UsageRecordsRepository,
+    session_id: &str,
+    provider: &str,
+    request_id: &str,
+) {
+    let settlements = credential_broker::take_shared_settlements(session_id);
+    let billed: f64 = settlements
+        .iter()
+        .map(|item| item.billed_cost_usd)
+        .filter(|cost| cost.is_finite() && *cost > 0.0)
+        .sum();
+    if billed <= 0.0 {
+        return;
+    }
+    if let Err(error) = repository
+        .record_billed_cost(
+            provider.to_owned(),
+            request_id.to_owned(),
+            billed,
+            CostSource::ProviderReported,
+        )
+        .await
+    {
+        eprintln!("settled provider cost could not be persisted: {error:#}");
     }
 }
 

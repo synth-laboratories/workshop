@@ -11,6 +11,8 @@
 //! `tariff_estimate`, and any provider-reported settled charge always
 //! replaces them (see `storage::usage_records`).
 
+use serde::Serialize;
+
 /// A provider price card effective from a given instant. Newer entries for
 /// the same (provider, model) supersede older ones at their effective time,
 /// so historic requests keep being priced by the tariff of their day.
@@ -53,6 +55,35 @@ const CATALOG: &[Tariff] = &[
         cache_write_usd_per_m: None,
     },
 ];
+
+/// Renderer-safe catalog. Settings renders these rates and never hard-codes them.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TariffCard {
+    pub provider: &'static str,
+    pub model_id: &'static str,
+    pub effective_from_ms: i64,
+    pub input_usd_per_m: f64,
+    pub output_usd_per_m: f64,
+    pub cached_input_usd_per_m: Option<f64>,
+    pub cache_write_usd_per_m: Option<f64>,
+}
+
+/// Every currently published device-payer tariff, newest-first per model.
+pub fn catalog() -> Vec<TariffCard> {
+    CATALOG
+        .iter()
+        .map(|tariff| TariffCard {
+            provider: tariff.provider,
+            model_id: tariff.model_id,
+            effective_from_ms: tariff.effective_from_ms,
+            input_usd_per_m: tariff.input_usd_per_m,
+            output_usd_per_m: tariff.output_usd_per_m,
+            cached_input_usd_per_m: tariff.cached_input_usd_per_m,
+            cache_write_usd_per_m: tariff.cache_write_usd_per_m,
+        })
+        .collect()
+}
 
 /// The tariff in force for a request completed at `at_ms`, if any.
 pub fn tariff_for(provider: &str, model_id: &str, at_ms: i64) -> Option<&'static Tariff> {
@@ -181,5 +212,29 @@ mod tests {
     fn requests_before_a_tariffs_effective_date_are_not_priced_by_it() {
         assert!(tariff_for("openrouter", "openai/gpt-5.6-luna", AUG_2026_MS - 1).is_none());
         assert!(tariff_for("openrouter", "openai/gpt-5.6-luna", AUG_2026_MS).is_some());
+    }
+
+    #[test]
+    fn catalog_exposes_every_device_payer_card_and_never_invents_cloud_or_local() {
+        let cards = catalog();
+        assert_eq!(cards.len(), 2);
+        assert!(cards.iter().any(|card| {
+            card.provider == "openrouter"
+                && card.model_id == "openai/gpt-5.6-luna"
+                && (card.input_usd_per_m - 0.20).abs() < 1e-9
+                && (card.output_usd_per_m - 1.20).abs() < 1e-9
+                && card.cached_input_usd_per_m == Some(0.02)
+                && card.cache_write_usd_per_m == Some(0.25)
+        }));
+        assert!(cards.iter().any(|card| {
+            card.provider == "openrouter"
+                && card.model_id == "poolside/laguna-s-2.1"
+                && (card.input_usd_per_m - 0.10).abs() < 1e-9
+                && (card.output_usd_per_m - 0.20).abs() < 1e-9
+                && card.cached_input_usd_per_m.is_none()
+                && card.cache_write_usd_per_m.is_none()
+        }));
+        assert!(!cards.iter().any(|card| card.provider == "synth-cloud"
+            || card.provider == "local-laguna"));
     }
 }

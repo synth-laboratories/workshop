@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TerminalEvent, TerminalInfo, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../env";
+import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../env";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 
@@ -304,6 +304,7 @@ window.synthConfig ??= isTauri
 		? {
 			get: () => invoke<SynthBackendSettings>("synth_config_get"),
 			update: (request) => invoke<SynthBackendSettings>("synth_config_update", { request }),
+			listTariffs: () => invoke<TariffCard[]>("tariff_catalog"),
 			listModelMultiAgent: () => invoke<ModelMultiAgentSetting[]>("model_multi_agent_list"),
 			updateModelMultiAgent: (request) => invoke<ModelMultiAgentSetting[]>("model_multi_agent_update", { request }),
 			getWorkspaceAccess: () => invoke<WorkspaceAccessSettings>("workspace_access_get"),
@@ -321,6 +322,7 @@ window.synthConfig ??= isTauri
 				openrouterApiKeyConfigured: false
 			}),
 			update: async () => { throw new Error("Backend settings require Synth Desktop"); },
+			listTariffs: async () => [],
 			listModelMultiAgent: async () => [
 				{ modelId: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", preset: "v2", effective: "v2", overridden: false },
 				{ modelId: "gpt-5.6-terra", displayName: "GPT-5.6 Terra", preset: "v2", effective: "v2", overridden: false },

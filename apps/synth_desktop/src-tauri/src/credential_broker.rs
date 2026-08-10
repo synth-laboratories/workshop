@@ -60,6 +60,7 @@ struct Lease {
     /// forwarded to this origin and nowhere else.
     upstream_origin: String,
     api_key: String,
+    session_id: String,
 }
 
 impl fmt::Debug for Lease {
@@ -91,18 +92,49 @@ impl fmt::Debug for LeaseHandle {
     }
 }
 
+/// Provider-reported settlement captured from a proxied Responses body.
+/// Desktop usage records prefer this over a tariff estimate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettledUsage {
+    pub request_id: String,
+    pub billed_cost_usd: f64,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cached_input_tokens: Option<i64>,
+    pub cache_write_tokens: Option<i64>,
+}
+
 struct BrokerState {
     /// session id -> lease token. Keying by session means a restart replaces
     /// rather than accumulates tokens, and closing a session revokes exactly one.
     by_session: RwLock<HashMap<String, String>>,
     /// lease token -> lease.
     leases: RwLock<HashMap<String, Arc<Lease>>>,
+    /// session id -> provider settlements observed on the proxy tap.
+    /// Survives revoke so a completing turn can still attach billed cost.
+    settlements: Mutex<HashMap<String, Vec<SettledUsage>>>,
     http: reqwest::Client,
 }
 
 impl BrokerState {
     fn lookup(&self, token: &str) -> Option<Arc<Lease>> {
         self.leases.read().unwrap().get(token).cloned()
+    }
+
+    fn record_settlement(&self, session_id: &str, usage: SettledUsage) {
+        if !usage.billed_cost_usd.is_finite() || usage.billed_cost_usd <= 0.0 {
+            return;
+        }
+        let mut map = self.settlements.lock().unwrap();
+        let list = map.entry(session_id.to_owned()).or_default();
+        if let Some(existing) = list
+            .iter_mut()
+            .find(|item| item.request_id == usage.request_id)
+        {
+            *existing = usage;
+        } else {
+            list.push(usage);
+        }
     }
 }
 
@@ -136,6 +168,7 @@ impl CredentialBroker {
         let state = Arc::new(BrokerState {
             by_session: RwLock::new(HashMap::new()),
             leases: RwLock::new(HashMap::new()),
+            settlements: Mutex::new(HashMap::new()),
             http: reqwest::Client::builder()
                 .timeout(UPSTREAM_TIMEOUT)
                 .build()
@@ -193,6 +226,7 @@ impl CredentialBroker {
         let lease = Arc::new(Lease {
             upstream_origin: upstream_origin.to_owned(),
             api_key: api_key.to_owned(),
+            session_id: session_id.to_owned(),
         });
         let previous = self
             .state
@@ -212,11 +246,23 @@ impl CredentialBroker {
     }
 
     /// Drop the session's lease. After this the token is inert.
+    /// Settlements stay until `take_settlements` so a completing turn can
+    /// still attach the provider-reported charge.
     pub fn revoke(&self, session_id: &str) {
         let token = self.state.by_session.write().unwrap().remove(session_id);
         if let Some(token) = token {
             self.state.leases.write().unwrap().remove(&token);
         }
+    }
+
+    /// Drain provider settlements captured for this session.
+    pub fn take_settlements(&self, session_id: &str) -> Vec<SettledUsage> {
+        self.state
+            .settlements
+            .lock()
+            .unwrap()
+            .remove(session_id)
+            .unwrap_or_default()
     }
 
     /// The origin a lease is bound to, for tests that assert routing.
@@ -263,6 +309,15 @@ pub fn revoke_shared(session_id: &str) {
     if let Some(broker) = SHARED.get().and_then(|slot| slot.lock().unwrap().clone()) {
         broker.revoke(session_id);
     }
+}
+
+/// Drain proxy-captured provider settlements for a session, if the broker ran.
+pub fn take_shared_settlements(session_id: &str) -> Vec<SettledUsage> {
+    SHARED
+        .get()
+        .and_then(|slot| slot.lock().unwrap().clone())
+        .map(|broker| broker.take_settlements(session_id))
+        .unwrap_or_default()
 }
 
 async fn serve(state: Arc<BrokerState>, listener: tokio::net::TcpListener) -> Result<()> {
@@ -402,8 +457,18 @@ async fn proxy(
         response = response.header(name.as_str(), value.as_bytes());
     }
     // Stream rather than buffer: a governed Responses call is server-sent events
-    // and must reach the agent token by token.
-    let stream = upstream.bytes_stream().map(|chunk| {
+    // and must reach the agent token by token. Tap a copy for provider settlement.
+    let session_id = lease.session_id.clone();
+    let tap_state = state.clone();
+    let tap_buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let stream = upstream.bytes_stream().map(move |chunk| {
+        if let Ok(bytes) = &chunk {
+            let mut buffer = tap_buf.lock().unwrap();
+            buffer.extend_from_slice(bytes);
+            if let Some(usage) = extract_settled_usage(&buffer) {
+                tap_state.record_settlement(&session_id, usage);
+            }
+        }
         chunk
             .map(Frame::data)
             .map_err(|_| std::io::Error::other("Synth Cloud ended the response early."))
@@ -527,6 +592,73 @@ pub fn restrict_to_owner(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn json_i64(value: &serde_json::Value, keys: &[&str]) -> Option<i64> {
+    for key in keys {
+        if let Some(number) = value.get(*key).and_then(serde_json::Value::as_i64) {
+            return Some(number);
+        }
+        if let Some(number) = value.get(*key).and_then(serde_json::Value::as_f64) {
+            return Some(number.round() as i64);
+        }
+    }
+    None
+}
+
+fn usage_from_value(value: &serde_json::Value) -> Option<SettledUsage> {
+    let usage = value
+        .get("usage")
+        .or_else(|| value.pointer("/response/usage"))?;
+    let cost = usage
+        .get("cost")
+        .or_else(|| usage.get("total_cost"))
+        .and_then(serde_json::Value::as_f64)
+        .filter(|cost| cost.is_finite() && *cost > 0.0)?;
+    let request_id = value
+        .get("id")
+        .or_else(|| value.pointer("/response/id"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+        .unwrap_or("unknown")
+        .to_owned();
+    Some(SettledUsage {
+        request_id,
+        billed_cost_usd: cost,
+        input_tokens: json_i64(usage, &["prompt_tokens", "input_tokens"]),
+        output_tokens: json_i64(usage, &["completion_tokens", "output_tokens"]),
+        cached_input_tokens: json_i64(usage, &["cached_tokens", "cached_input_tokens"]),
+        cache_write_tokens: json_i64(
+            usage,
+            &["cache_write_tokens", "cache_creation_input_tokens"],
+        ),
+    })
+}
+
+fn extract_settled_usage(buffer: &[u8]) -> Option<SettledUsage> {
+    let text = std::str::from_utf8(buffer).ok()?;
+    let mut best: Option<SettledUsage> = None;
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Some(usage) = usage_from_value(&value) {
+            best = Some(usage);
+        }
+    }
+    for line in text.lines() {
+        let data = line
+            .trim()
+            .strip_prefix("data:")
+            .map(str::trim)
+            .unwrap_or(line.trim());
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+            if let Some(usage) = usage_from_value(&value) {
+                best = Some(usage);
+            }
+        }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,6 +765,44 @@ mod tests {
             "the lease token must not be forwarded upstream"
         );
         assert!(request.starts_with("POST /api/v1/responses "));
+    }
+
+    #[tokio::test]
+    async fn the_proxy_captures_provider_settled_cost() {
+        let (upstream, _seen) = spawn_upstream(
+            r#"{"id":"resp_settled","usage":{"cost":0.0123,"prompt_tokens":10,"completion_tokens":20,"cached_tokens":2}}"#,
+        );
+        let broker = CredentialBroker::start().unwrap();
+        let handle = broker.lease("session-a", &upstream, SENTINEL);
+        let response = reqwest::Client::new()
+            .post(format!("{}/api/v1/responses", handle.origin))
+            .bearer_auth(&handle.token)
+            .json(&serde_json::json!({"model": "laguna-s", "input": "hi"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let _ = response.text().await.unwrap();
+        let settlements = broker.take_settlements("session-a");
+        assert_eq!(settlements.len(), 1);
+        assert_eq!(settlements[0].request_id, "resp_settled");
+        assert!((settlements[0].billed_cost_usd - 0.0123).abs() < 1e-9);
+        assert_eq!(settlements[0].input_tokens, Some(10));
+        assert_eq!(settlements[0].output_tokens, Some(20));
+        assert_eq!(settlements[0].cached_input_tokens, Some(2));
+    }
+
+    #[test]
+    fn extract_settled_usage_reads_sse_data_lines() {
+        let body = concat!(
+            "data: {\"id\":\"resp_1\",\"usage\":{\"cost\":1.5,\"prompt_tokens\":3,\"completion_tokens\":4}}\n\n",
+            "data: [DONE]\n"
+        );
+        let usage = extract_settled_usage(body.as_bytes()).expect("sse usage");
+        assert_eq!(usage.request_id, "resp_1");
+        assert!((usage.billed_cost_usd - 1.5).abs() < 1e-9);
+        assert_eq!(usage.input_tokens, Some(3));
+        assert_eq!(usage.output_tokens, Some(4));
     }
 
     #[tokio::test]

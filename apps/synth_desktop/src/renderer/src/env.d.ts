@@ -182,6 +182,16 @@ export type WorkspaceAccessSettings = {
 	allowedRoots: string[];
 };
 
+export type TariffCard = {
+	provider: string;
+	modelId: string;
+	effectiveFromMs: number;
+	inputUsdPerM: number;
+	outputUsdPerM: number;
+	cachedInputUsdPerM: number | null;
+	cacheWriteUsdPerM: number | null;
+};
+
 export type SynthConfigBridge = {
 	get(): Promise<SynthBackendSettings>;
 	update(request: {
@@ -197,6 +207,7 @@ export type SynthConfigBridge = {
 		apiKey?: string;
 		openrouterApiKey?: string;
 	}): Promise<SynthBackendSettings>;
+	listTariffs(): Promise<TariffCard[]>;
 	listModelMultiAgent(): Promise<ModelMultiAgentSetting[]>;
 	updateModelMultiAgent(request: {
 		modelId: string;
