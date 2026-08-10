@@ -4,6 +4,15 @@
 
 Synth Desktop / Local Agent Workbench — a local-first agent research and development workbench where agents can run locally (Laguna XS 2.1) or in Synth Cloud (Intern sync/async), and where every run produces inspectable, replayable, quantitative, version-linked artifacts.
 
+## Branching
+
+| Branch | Role |
+| --- | --- |
+| **`dev`** | Day-to-day integration branch. Open PRs against `dev`. Keep `dev` current. |
+| **`main`** | Release branch. Merge `dev` → `main` only for cut releases (for example v0.1). |
+
+Do not land feature work directly on `main`. After a release merge, fast-forward `dev` to `main` so they match again. Alignment checklist for the next cut: [`HANDOFF_DEV_MAIN.md`](./HANDOFF_DEV_MAIN.md).
+
 ## Status — v0 ready for review
 
 | Surface | Path | Role |
