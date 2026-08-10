@@ -288,6 +288,21 @@ export type InventoryBridge = {
 	counts(): Promise<InventoryCounts>;
 };
 
+export type ModelPerformanceSummary = {
+	provider: string;
+	modelId: string;
+	measurementKind: "decode" | "observed_stream" | "end_to_end" | "provider_reported";
+	sampleCount: number;
+	tpsP50: number | null;
+	tpsP95: number | null;
+	ttftP50Ms: number | null;
+	lastObservedAt: string;
+};
+
+export type ModelPerformanceBridge = {
+	summaries(): Promise<ModelPerformanceSummary[]>;
+};
+
 export type VisualTemplateMeta = {
 	id: string;
 	title: string;
@@ -469,6 +484,7 @@ declare global {
 		synthCore?: CoreBridge;
 		synthIntern?: InternBridge;
 		synthInventory?: InventoryBridge;
+		synthModelPerformance?: ModelPerformanceBridge;
 		synthVisuals?: VisualsBridge;
 		synthOptimizers?: OptimizersBridge;
 		synthTerminal: TerminalBridge;

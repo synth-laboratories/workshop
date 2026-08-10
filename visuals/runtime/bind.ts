@@ -45,6 +45,7 @@ export type BindContext = {
   loadTraceV5?: TraceV5Loader;
   loadLocalCas?: LocalCasLoader;
   loadRun?: (runId: string) => Promise<unknown> | unknown;
+  loadOptimizerRun?: (optimizerRunId: string) => Promise<unknown> | unknown;
   /** When true, missing optional slots are ignored. */
   skipOptional?: boolean;
 };
@@ -88,6 +89,13 @@ async function resolveBinding(
     case "run_ref": {
       if (!ctx.loadRun) throw new Error(`No run loader for slot "${binding.slot}"`);
       return dig(await ctx.loadRun(binding.source!), binding.path);
+    }
+    case "optimizer_run": {
+      if (binding.data !== undefined) return dig(binding.data, binding.path);
+      if (!ctx.loadOptimizerRun) {
+        throw new Error(`No optimizer run loader for slot "${binding.slot}"`);
+      }
+      return dig(await ctx.loadOptimizerRun(binding.source!), binding.path);
     }
     case "live_sse": {
       // Live slots bind the URL; consumers subscribe via subscribeLiveSlot.
@@ -172,6 +180,11 @@ export function propsFromBindings(value: unknown): { props: Record<string, unkno
       props[binding.slot] = {
         sse_url: binding.source,
         schema: binding.schema ?? "evals.event-stream.v1"
+      };
+    } else if (binding.kind === "optimizer_run" && binding.source) {
+      props[binding.slot] = {
+        optimizer_run_id: binding.source,
+        schema: binding.schema ?? "optimizer_run.v1"
       };
     } else if ("data" in binding) props[binding.slot] = binding.data;
     else errors.push(`Slot "${binding.slot}" (${binding.kind}) has not been resolved by the Rust runtime`);

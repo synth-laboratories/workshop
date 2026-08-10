@@ -16,6 +16,7 @@ const reasoning = extract((state: any) => {
 	const detail = disclosure?.querySelector<HTMLElement>(".local-activity-detail") ?? null;
 	const disclosureRect = disclosure?.getBoundingClientRect() ?? null;
 	const composerRect = composer?.getBoundingClientRect() ?? null;
+	const style = disclosure ? getComputedStyle(disclosure) : null;
 	const inTranscript = !disclosureRect || !transcript || (() => {
 		const rect = transcript.getBoundingClientRect();
 		return disclosureRect.left >= rect.left && disclosureRect.right <= rect.right + 1;
@@ -24,6 +25,8 @@ const reasoning = extract((state: any) => {
 		hasDisclosure: Boolean(disclosure),
 		disclosureIsAButton: Boolean(toggle && toggle.getAttribute("aria-expanded") !== null),
 		inTranscript,
+		collapsedDisclosureIsCompact: !disclosure || toggle?.getAttribute("aria-expanded") === "true" || disclosureRect!.height <= 48,
+		disclosureIsNotACard: !style || (style.borderTopWidth === "0px" && style.paddingTop === "0px" && style.backgroundImage === "none"),
 		detailClearsComposer: !detail || !composerRect || detail.getBoundingClientRect().bottom <= composerRect.top - 12,
 		noHorizontalOverflow: document.documentElement.scrollWidth <= viewport.innerWidth + 1
 	};
@@ -46,6 +49,14 @@ export const reasoning_disclosure_is_semantic = always(() =>
 
 export const reasoning_disclosure_stays_in_the_transcript = always(() =>
 	!reasoning.current.hasDisclosure || reasoning.current.inTranscript
+);
+
+export const collapsed_reasoning_is_a_compact_dropdown_not_a_card = always(() =>
+	!reasoning.current.hasDisclosure || reasoning.current.collapsedDisclosureIsCompact
+);
+
+export const reasoning_disclosure_has_no_card_chrome = always(() =>
+	!reasoning.current.hasDisclosure || reasoning.current.disclosureIsNotACard
 );
 
 export const expanded_reasoning_never_covers_the_composer = always(() =>

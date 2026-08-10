@@ -5,7 +5,7 @@
 
 /** How a template slot is fed at runtime. */
 export const VISUAL_BINDINGS_SCHEMA_VERSION = "synth.visual-bindings.v1" as const;
-export type VisualBindingKind = "inline" | "trace_v5" | "local_cas" | "run_ref" | "live_sse" | "fixture";
+export type VisualBindingKind = "inline" | "trace_v5" | "local_cas" | "run_ref" | "live_sse" | "fixture" | "optimizer_run";
 
 export type VisualBinding = {
   /** Slot name declared in template.json `slots`. */
@@ -17,6 +17,7 @@ export type VisualBinding = {
    * - local_cas → content-addressed blob digest / path
    * - live_sse → absolute SSE URL
    * - fixture → relative path under visuals/fixtures/ or template examples/
+   * - optimizer_run → cloud/local optimizer_run_id
    */
   source?: string;
   /** Resolved payload. Required for inline bindings. */

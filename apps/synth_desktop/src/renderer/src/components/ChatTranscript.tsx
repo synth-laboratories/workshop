@@ -72,7 +72,7 @@ function ActivityLine({
 	onApprove,
 	onAlwaysAllow,
 	onReject,
-	live = false
+	live: _live = false
 }: {
 	line: LocalActivityLine;
 	visualOpen?: boolean;
@@ -233,12 +233,16 @@ function ActivityLine({
 				className="local-activity-toggle"
 				aria-expanded={open}
 				aria-controls={`activity-detail-${line.id}`}
+				aria-label={isReasoning ? `${open ? "Hide" : "Show"} ${line.reasoningDisplay === "summary" ? "Reasoned" : "Thought"}` : undefined}
 				onClick={() => setOpen((v) => !v)}
 				data-testid={`activity-${line.id}`}
 			>
 				<span className="local-activity-label">{line.label}</span>
-				{isReasoning ? <span className="reasoning-disclosure-meta">{line.reasoningDisplay === "summary" ? "Provider summary" : live ? "Streaming" : "Local model"}</span> : null}
-				<span className="local-activity-hint">{open ? "Hide" : "Show"}</span>
+				{isReasoning ? (
+					<svg className="reasoning-disclosure-chevron" viewBox="0 0 12 12" fill="none" aria-hidden>
+						<path d="m3 4.75 3 3 3-3" />
+					</svg>
+				) : <span className="local-activity-hint">{open ? "Hide" : "Show"}</span>}
 			</button>
 			{open ? (
 				<pre id={`activity-detail-${line.id}`} className="local-activity-detail" data-testid={`activity-detail-${line.id}`}>
@@ -349,7 +353,7 @@ const COLLAPSE_USER_MESSAGE_LINES = 12;
  * a screen-height blue wall. Keep the full value in the DOM and make expansion
  * an explicit, reversible choice.
  */
-function UserMessage({ id, body, onExpansionChange }: { id: string; body: string; onExpansionChange: () => void }) {
+function UserMessage({ id, body, images, onExpansionChange }: { id: string; body: string; images?: Array<{ path: string; name: string; previewUrl: string }>; onExpansionChange: () => void }) {
 	const [expanded, setExpanded] = useState(false);
 	const collapsible = body.length > COLLAPSE_USER_MESSAGE_AT || body.split(/\r?\n/).length > COLLAPSE_USER_MESSAGE_LINES;
 	const bodyId = `user-message-body-${id}`;
@@ -358,7 +362,17 @@ function UserMessage({ id, body, onExpansionChange }: { id: string; body: string
 			className={`local-bubble local-bubble-user${collapsible && !expanded ? " is-collapsed" : ""}`}
 			data-testid={`user-message-${id}`}
 		>
-			<p id={bodyId}>{body}</p>
+			{body ? <p id={bodyId}>{body}</p> : null}
+			{images?.length ? (
+				<div className="local-user-images" aria-label="Attached screenshots">
+					{images.map((image) => (
+						<figure key={image.path}>
+							<img src={image.previewUrl} alt={image.name} />
+							<figcaption>{image.name}</figcaption>
+						</figure>
+					))}
+				</div>
+			) : null}
 			{collapsible ? (
 				<button
 					type="button"
@@ -392,9 +406,10 @@ export function ChatTranscript({
 	activityMode = "grouped",
 	onActivityModeChange
 }: Props) {
-	// Keep newly discovered resources discoverable through the Outputs badge without
-	// opening a floating panel over transcript controls while a turn is running.
-	const [resourcesOpen, setResourcesOpen] = useState(false);
+	// Outputs is a permanent conversation affordance, like the Codex side panel.
+	// Start it open even before the first resource exists so the layout never
+	// appears or shifts only after a tool happens to produce an output.
+	const [resourcesOpen, setResourcesOpen] = useState(true);
 	const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
 	const [modeMenuOpen, setModeMenuOpen] = useState(false);
 	const modeMenuRef = useRef<HTMLDivElement>(null);
@@ -420,7 +435,10 @@ export function ChatTranscript({
 	].join("\u001e"), [activeLines, chat.id, chat.messages, running]);
 
 	useEffect(() => {
-		if (previousChatIdRef.current !== chat.id) followsTailRef.current = true;
+		if (previousChatIdRef.current !== chat.id) {
+			followsTailRef.current = true;
+			setResourcesOpen(true);
+		}
 		previousChatIdRef.current = chat.id;
 	}, [chat.id]);
 
@@ -545,7 +563,7 @@ export function ChatTranscript({
 	});
 
 	return (
-		<div className="chat-transcript" data-testid="chat-transcript" data-activity-mode={activityMode}>
+		<div className={`chat-transcript${resourcesOpen ? " resources-open" : ""}`} data-testid="chat-transcript" data-activity-mode={activityMode}>
 			<div className="transcript-toolbar" data-testid="transcript-toolbar">
 			<div className="activity-mode-bar" ref={modeMenuRef}>
 				<button
@@ -580,11 +598,12 @@ export function ChatTranscript({
 					</div>
 				) : null}
 			</div>
-			{hasResources ? <button type="button" className={`resource-shelf-trigger${resourcesOpen ? " active" : ""}`} onClick={() => setResourcesOpen((open) => !open)} aria-expanded={resourcesOpen} aria-controls="chat-resource-shelf" data-testid="resource-shelf-trigger"><span aria-hidden>☷</span> Outputs <strong>{containerIds.length + artifacts.length}</strong></button> : null}
+			<button type="button" className={`resource-shelf-trigger${resourcesOpen ? " active" : ""}`} onClick={() => setResourcesOpen((open) => !open)} aria-expanded={resourcesOpen} aria-controls="chat-resource-shelf" data-testid="resource-shelf-trigger"><span aria-hidden>☷</span> Outputs {hasResources ? <strong>{containerIds.length + artifacts.length}</strong> : null}</button>
 			</div>
 			<div className="sr-only" role="status" aria-live="polite" data-testid="activity-live-region">{liveAnnouncement}</div>
-			{hasResources && resourcesOpen ? <aside id="chat-resource-shelf" className="resource-shelf" aria-label="Outputs" data-testid="resource-shelf">
+			{resourcesOpen ? <aside id="chat-resource-shelf" className="resource-shelf" aria-label="Outputs" data-testid="resource-shelf">
 				<header><span>Outputs</span><button type="button" onClick={() => setResourcesOpen(false)} aria-label="Close outputs panel">×</button></header>
+				{!hasResources ? <div className="resource-shelf-empty" data-testid="resource-shelf-empty"><strong>No outputs yet</strong><span>Files, visuals, and containers from this conversation will appear here.</span></div> : null}
 				{containerIds.length > 0 ? <section className="containers-rail" data-testid="containers-rail"><h3>Containers</h3>{containerIds.map((id) => (
 					<button key={id} type="button" className={`resource-shelf-row container-rail-btn${openContainerId === id ? " active" : ""}`} onClick={() => { setResourcesOpen(false); onOpenContainer?.(openContainerId === id ? null : id); }} aria-pressed={openContainerId === id} aria-label={openContainerId === id ? "Hide container inspector" : "Open container inspector"} data-testid={`container-icon-${id}`}>
 						<span className="resource-shelf-icon"><ContainerIcon /></span><span><strong>Container</strong><code>{id}</code></span><span aria-hidden>›</span>
@@ -637,7 +656,7 @@ export function ChatTranscript({
 							<div key={m.id} className={`local-turn local-turn-${m.role}`}>
 								{m.role === "assistant" ? renderPresented(presented, messageArtifacts, primaryOpen, running) : null}
 								{m.role === "user" ? (
-									<UserMessage id={m.id} body={m.body} onExpansionChange={keepTailVisible} />
+									<UserMessage id={m.id} body={m.body} images={m.images} onExpansionChange={keepTailVisible} />
 								) : m.role === "system" ? (
 									<p className="local-system">{m.body}</p>
 								) : (

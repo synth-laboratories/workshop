@@ -1268,10 +1268,7 @@ mod tests {
         assert!(exchange.supported);
         assert_eq!(exchange.status, 400);
         assert_eq!(exchange.body["error"]["code"], "invalid_setting");
-        assert_eq!(
-            exchange.body["error"]["details"]["field"],
-            "default_top_k"
-        );
+        assert_eq!(exchange.body["error"]["details"]["field"], "default_top_k");
     }
 
     #[test]

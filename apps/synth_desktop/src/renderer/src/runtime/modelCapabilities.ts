@@ -35,6 +35,10 @@ export type ModelCapabilitySpec = {
 	 * a reasoning effort without ever returning displayable reasoning.
 	 */
 	reasoningDisplay: "none" | "full" | "summary";
+	/** Input kinds accepted by the provider/model before a turn is attempted. */
+	inputModalities: readonly ("text" | "image")[];
+	/** Provider-advertised maximum combined input/output context window. */
+	maxContextTokens: number;
 };
 
 const LUNA_EFFORT_OPTIONS: ModelKnobOption[] = [
@@ -46,8 +50,8 @@ const LUNA_EFFORT_OPTIONS: ModelKnobOption[] = [
 ];
 
 const BINARY_THINKING_OPTIONS: ModelKnobOption[] = [
-	{ id: "none", label: "Off" },
-	{ id: "max", label: "On" }
+	{ id: "none", label: "None" },
+	{ id: "max", label: "Max" }
 ];
 
 const LOCAL_THINKING_OPTIONS: ModelKnobOption[] = [
@@ -71,7 +75,9 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 		}],
 		// The owned MLX Responses bridge separates its <think> span from the
 		// answer stream, so this is the one target allowed to show that text.
-		reasoningDisplay: "full"
+		reasoningDisplay: "full",
+		inputModalities: ["text"],
+		maxContextTokens: 262_144
 	},
 	{
 		targetId: "openrouter-luna",
@@ -87,7 +93,9 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 		}],
 		// Closed/remote providers expose a provider-authored summary, not their
 		// private chain of thought. Render only that safe payload when present.
-		reasoningDisplay: "summary"
+		reasoningDisplay: "summary",
+		inputModalities: ["text", "image"],
+		maxContextTokens: 272_000
 	},
 	{
 		targetId: "openrouter-laguna-s",
@@ -102,7 +110,13 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 			options: BINARY_THINKING_OPTIONS,
 			turnStartField: "effort"
 		}],
-		reasoningDisplay: "summary"
+		// Poolside's S 2.1 model card documents a per-request
+		// `enable_thinking` switch rather than graded low/max budgets. Our
+		// Responses adapter carries this binary choice as none/max, so present
+		// the exact provider vocabulary to people: None / Max.
+		reasoningDisplay: "summary",
+		inputModalities: ["text"],
+		maxContextTokens: 262_144
 	},
 	{
 		targetId: "synth-cloud-laguna-s",
@@ -117,7 +131,9 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 			options: BINARY_THINKING_OPTIONS,
 			turnStartField: "effort"
 		}],
-		reasoningDisplay: "summary"
+		reasoningDisplay: "summary",
+		inputModalities: ["text"],
+		maxContextTokens: 262_144
 	}
 ];
 
@@ -125,6 +141,10 @@ export type ModelKnobValues = Record<string, ModelKnobValue>;
 
 export function modelKnobKey(targetId: string, knobId: string): string {
 	return `${targetId}:${knobId}`;
+}
+
+export function modelSupportsImageInput(targetId: string): boolean {
+	return modelCapabilitiesForTarget(targetId)?.inputModalities.includes("image") ?? false;
 }
 
 export function modelCapabilitiesForTarget(targetId: string): ModelCapabilitySpec | undefined {

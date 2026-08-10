@@ -7,6 +7,7 @@ mod event_journal;
 pub mod legacy_migration;
 mod migrations;
 mod models;
+mod model_performance;
 
 #[cfg(test)]
 #[path = "contract_tests.rs"]
@@ -19,4 +20,8 @@ pub use event_journal::{EventAppend, EventJournal};
 pub use models::{
     AppEvent, CommandReceiptRecord, CoreDiagnostics, EventSource, RunRecord, SessionRecord,
     APP_EVENT_SCHEMA_VERSION,
+};
+pub use model_performance::{
+    MeasurementKind, ModelPerformanceRepository, ModelPerformanceSample,
+    ModelPerformanceSummary,
 };

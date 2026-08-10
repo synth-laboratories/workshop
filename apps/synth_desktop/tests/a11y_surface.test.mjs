@@ -142,13 +142,15 @@ test("Intern agent messages are projected into transcript and removed from activ
   assert.ok(sessionView.includes('event.eventKind === "intern.agent_message"'));
 });
 
-test("unconfigured Intern has explicit boot guidance and a disabled composer", () => {
-  const composer = read("components/Composer.tsx");
-  const settings = read("components/SettingsPage.tsx");
-  assert.ok(composer.includes("Configure Synth Cloud in Settings → Account"));
-  assert.ok(composer.includes('state.internMode !== "unconfigured"'));
-  assert.ok(settings.includes("Settings → Account → Synth backend"));
-  assert.ok(settings.includes("SYNTH_INTERN_DEMO=1 npm run dev:desktop"));
+test("v0.1 navigation and setup expose no Intern surface", () => {
+  const sidebar = read("components/Sidebar.tsx");
+  const search = read("components/ConversationSearch.tsx");
+  const landing = read("components/LandingPage.tsx");
+  assert.ok(!sidebar.includes("async-intern-pin"));
+  assert.ok(!sidebar.includes("new-sync-session"));
+  assert.ok(!search.includes("Live Intern"));
+  assert.ok(!search.includes("Background Intern"));
+  assert.ok(!landing.includes("Intern"));
 });
 
 test("Synth API settings keep routing in TOML and secrets in an env file", () => {
@@ -162,14 +164,12 @@ test("Synth API settings keep routing in TOML and secrets in an env file", () =>
   assert.ok(settings.includes("Preserve explicitly customized endpoints"));
 });
 
-test("native Intern defers creation until a nonempty objective is submitted", () => {
+test("dormant native Intern cannot be selected from v0.1 App routes", () => {
   const app = read("App.tsx");
-  assert.ok(app.includes('throw new Error("Enter an objective to start an Intern session")'));
-  assert.ok(app.includes("objective: internObjective!"));
-  assert.ok(app.includes("objectiveConsumed"));
-  assert.ok(app.includes("if (!ensured.objectiveConsumed)"));
-  assert.ok(app.includes('setSelectedTargetId("intern-sync")'));
-  assert.ok(app.includes('setSelectedTargetId("intern-async")'));
+  assert.ok(app.includes('if (target.kind === "intern") throw new Error("Intern is deferred to v0.2")'));
+  assert.ok(!app.includes('setSelectedTargetId("intern-sync")'));
+  assert.ok(!app.includes('setSelectedTargetId("intern-async")'));
+  assert.ok(!app.includes("<CloudDesk"));
 });
 
 test("native Intern projection changes refresh the renderer session cache", () => {
@@ -179,10 +179,12 @@ test("native Intern projection changes refresh the renderer session cache", () =
   assert.ok(app.includes('event.eventKind === "command.resolved"'));
 });
 
-test("migrated demo async pins cannot mask the Rust singleton", () => {
+test("migrated demo async pins remain dormant and cannot surface in v0.1", () => {
   const app = read("App.tsx");
   const sessionView = read("runtime/sessionView.ts");
-  assert.ok(app.includes('session.metadata.runtime === "rust-intern"'));
+  const sidebar = read("components/Sidebar.tsx");
+  assert.ok(!app.includes("<CloudDesk"));
+  assert.ok(!sidebar.includes("async-intern-pin"));
   assert.ok(sessionView.includes('const isRustIntern = session.metadata.runtime === "rust-intern"'));
   assert.ok(sessionView.includes("if (asyncIntern && !isRustIntern) continue"));
 });
@@ -204,7 +206,7 @@ test("Runtime Settings projects the persisted Rust run count", () => {
   assert.ok(!app.includes("runs: 0"));
 });
 
-test("desktop Intern uses the typed Rust session bridge with journal replay", () => {
+test("v0.2 Intern bridge remains typed while v0.1 creation stays unreachable", () => {
   const bridge = read("runtime/desktopBridge.ts");
   const app = read("App.tsx");
   for (const command of [
@@ -215,7 +217,7 @@ test("desktop Intern uses the typed Rust session bridge with journal replay", ()
     "intern_session_events_after",
   ]) assert.ok(bridge.includes(`"${command}"`), command);
   assert.ok(bridge.includes('listen<AppEvent>("runtime:event"'));
-  assert.ok(app.includes("nativeIntern.createSession"));
+	assert.ok(!app.includes("nativeIntern.createSession"));
   assert.ok(app.includes("nativeIntern.eventsAfter"));
   assert.ok(app.includes("appEventToRuntimeEvent"));
 });

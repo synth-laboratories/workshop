@@ -59,9 +59,10 @@ test("design debt: CloudDesk leave-safe is projection-driven from AsyncInternPin
 	assert.ok(!desk.includes("const leaveSafe = !isSync"));
 });
 
-test("CloudDesk unknown actions report unavailable without theater copy", () => {
+test("CloudDesk has no reachable v0.1 render route", () => {
 	const app = read("App.tsx");
-	assert.match(app, /showToast\(`\$\{label\} is not available`\)/);
+	assert.ok(!app.includes('import { CloudDesk }'));
+	assert.ok(!app.includes("<CloudDesk"));
 	assert.ok(!/\bstub\b/i.test(app));
 });
 

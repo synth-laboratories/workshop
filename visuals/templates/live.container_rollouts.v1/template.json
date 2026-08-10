@@ -11,10 +11,10 @@
   "slots": [
     {
       "name": "stream",
-      "description": "An evals.event-stream.v1 SSE endpoint or replay fixture",
+      "description": "A synth.rollout.event.v1 or evals.event-stream.v1 SSE endpoint or replay fixture",
       "accepts": ["live_sse", "fixture", "inline"],
       "required": true,
-      "schema": "evals.event-stream.v1"
+      "schema": "synth.rollout.event.v1"
     }
   ]
 }

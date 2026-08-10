@@ -30,6 +30,7 @@ export type ChatMessage = {
 	role: "user" | "assistant" | "system";
 	body: string;
 	at: string;
+	images?: Array<{ path: string; name: string; previewUrl: string }>;
 };
 
 /**
