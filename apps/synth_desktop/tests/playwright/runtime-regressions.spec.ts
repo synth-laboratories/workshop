@@ -668,6 +668,9 @@ test("native Codex deltas form one readable message with working and stop state"
 		// Those ids must not turn one assistant response into many block rows.
 		send("item/agentMessage/delta", { itemId: "token-envelope-1", delta: " One" });
 		send("item/agentMessage/delta", { itemId: "token-envelope-2", delta: " response." });
+		// Commentary is a preamble: a tool that follows it must render below it,
+		// never be hoisted above the text when activity is grouped.
+		send("item/started", { item: { id: "post-preamble-command", type: "commandExecution", command: "pwd" } });
 		send("item/reasoning/delta", { delta: "Checking the relevant " });
 		send("item/reasoning/delta", { delta: "renderer state." });
 		send("remoteControl/status/changed", { status: "connected" });
@@ -682,6 +685,9 @@ test("native Codex deltas form one readable message with working and stop state"
 	await expect(assistantText).toHaveCSS("white-space", "pre-wrap");
 	await expect(page.getByTestId("model-working")).toContainText("Working…");
 	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
+	const postPreambleCommand = transcript.locator(".command-activity").filter({ hasText: "pwd" });
+	await expect(postPreambleCommand).toBeVisible();
+	expect((await postPreambleCommand.boundingBox())!.y).toBeGreaterThan((await assistantText.boundingBox())!.y);
 	const thought = transcript.getByRole("button", { name: /Thought/ });
 	await expect(thought).toBeVisible();
 	await expect(thought).toHaveAttribute("aria-expanded", "false");
@@ -1083,6 +1089,7 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 		const emit = (window as typeof window & { __emitToolCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitToolCodex;
 		const send = (method: string, params: Record<string, unknown>) => emit({ sessionId: "tool-session", method, params });
 		send("item/agentMessage/delta", { delta: "I inspected the relevant files." });
+		send("item/reasoning/delta", { delta: "Checking the first command." });
 		send("item/completed", { item: { id: "container-1", type: "mcpToolCall", server: "synth_containers", tool: "container_probe", status: "completed", durationMs: 14, arguments: { container_id: "craftax-local" }, result: { secret: "RAW_RESULT_SECRET" } } });
 		send("item/started", { item: { id: "visual-1", type: "dynamicToolCall", server: "synth_visuals", tool: "visual_create", status: "inProgress", arguments: { template_id: "craftax.rollout.v1", title: "Craftax rollout", props: { token: "HIDDEN_PROP" } } } });
 		send("item/completed", { item: { id: "visual-1", type: "dynamicToolCall", server: "synth_visuals", tool: "visual_create", status: "failed", durationMs: 2, arguments: { template_id: "craftax.rollout.v1", title: "Craftax rollout" }, error: "RAW_ERROR_SECRET" } });
@@ -1097,6 +1104,10 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	});
 
 	await expect(transcript.getByText("Run Shell Command")).toBeVisible();
+	const preamble = transcript.locator(".local-assistant p").filter({ hasText: "I inspected the relevant files." });
+	const preambleTurn = preamble.locator("xpath=ancestor::div[contains(@class, 'local-turn')]");
+	const postPreambleTool = preambleTurn.locator(".command-activity").filter({ hasText: "OPENROUTER_API_KEY=[redacted]" });
+	expect((await postPreambleTool.boundingBox())!.y).toBeGreaterThan((await preamble.boundingBox())!.y);
 	await expect(transcript.getByText(/OPENROUTER_API_KEY=\[redacted\] rg/)).toBeVisible();
 	await expect(transcript.getByText("App.tsx")).toBeVisible();
 	await expect(transcript.getByText("Searched the web")).toBeVisible();
@@ -1120,6 +1131,11 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(visualPane.getByTestId("visual-craftax-eval-matrix")).toBeVisible();
 	await page.getByTestId("activity-mode-menu-trigger").click();
 	await page.getByTestId("activity-mode-option-grouped").click();
+	const groupedWithContext = transcript.locator(".activity-group").first();
+	await groupedWithContext.locator(".activity-group-toggle").click();
+	const contextualStep = groupedWithContext.locator(".activity-group-step.has-context").first();
+	expect((await contextualStep.locator(".activity-group-action").boundingBox())!.y)
+		.toBeGreaterThanOrEqual((await contextualStep.locator(".activity-group-context").boundingBox())!.y);
 	await expect(transcript.getByText(/Worked .*ran 1 command, read 1 file, searched once, used 4 tools/)).toBeVisible();
 	await expect(transcript).not.toContainText("super-secret-value");
 	await expect(transcript).not.toContainText("raw command output");

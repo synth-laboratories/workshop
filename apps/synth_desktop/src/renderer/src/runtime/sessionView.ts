@@ -894,10 +894,24 @@ export function eventsToLocalActivity(
 			continue;
 		}
 		const explicit = typeof payload.messageId === "string" ? payload.messageId : null;
+		const messageText = event.eventKind.startsWith("message.")
+			? (typeof payload.delta === "string" ? payload.delta
+				: typeof payload.content === "string" ? payload.content
+					: typeof payload.text === "string" ? payload.text : "")
+			: "";
+		// Streaming adapters frequently rotate or omit message ids, and the
+		// aggregate message timestamp can be later than its first preamble delta.
+		// Resolve that delta by content before falling back to timestamps so tools
+		// emitted after the preamble attach *after* its bubble.
+		const contentMatchedAssistant = messageText
+			? messages.filter((message) => message.role === "assistant" && message.body.includes(messageText)).at(-1)?.id
+			: undefined;
 		const chronologicalAssistant = event.eventKind.startsWith("message.")
 			? messages.filter((message) => message.role === "assistant" && message.at <= event.createdAt).at(-1)?.id
 			: undefined;
-		const resolvedAssistant = explicit && assistantIds.includes(explicit) ? explicit : chronologicalAssistant;
+		const resolvedAssistant = explicit && assistantIds.includes(explicit)
+			? explicit
+			: contentMatchedAssistant ?? chronologicalAssistant;
 		if (resolvedAssistant) {
 			if (current === "__active__" && byMessage.__active__?.length) {
 				(byMessage[resolvedAssistant] ??= []).push(...byMessage.__active__);
@@ -982,6 +996,7 @@ export function eventsToLocalActivity(
 					id: `activity-${event.sequence}`,
 					label,
 					detail: supplied,
+					placement: current === "__active__" ? undefined : "after",
 					kind: "thought",
 					reasoningDisplay
 				});
@@ -1010,6 +1025,7 @@ export function eventsToLocalActivity(
 					label: safeTool.label,
 					detail: safeTool.detail,
 					path: safeTool.path,
+					placement: current === "__active__" ? undefined : "after",
 					kind: safeTool.kind,
 					artifactId: safeTool.artifactId,
 					containerId: safeTool.containerId,
@@ -1033,6 +1049,7 @@ export function eventsToLocalActivity(
 		(byMessage[current] ??= []).push({
 			id: `activity-${event.sequence}`,
 			label,
+			placement: current === "__active__" ? undefined : "after",
 			approvalId: event.eventKind === "approval.requested"
 				? approvalKey(event) ?? `approval-${event.sequence}`
 				: undefined,
