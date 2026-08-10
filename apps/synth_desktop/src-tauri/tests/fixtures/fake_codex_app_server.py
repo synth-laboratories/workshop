@@ -60,6 +60,8 @@ for raw in sys.stdin:
         result = {}
     elif method == "turn/steer":
         result = {"turnId": params.get("expectedTurnId")}
+    elif method == "thread/compact/start":
+        result = {}
     else:
         send({
             "jsonrpc": "2.0",
@@ -69,6 +71,15 @@ for raw in sys.stdin:
         continue
 
     send({"jsonrpc": "2.0", "id": request_id, "result": result})
+    if method == "thread/compact/start":
+        send({
+            "jsonrpc": "2.0",
+            "method": "thread/compacted",
+            "params": {
+                "threadId": params.get("threadId"),
+                "turnId": "compact-fixture-1",
+            },
+        })
     if method == "turn/interrupt":
         send({
             "jsonrpc": "2.0",

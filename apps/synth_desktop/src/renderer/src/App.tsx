@@ -332,6 +332,8 @@ export default function App() {
 	// Sessions whose last turn start was rejected. A late `run.started` from the
 	// process that just died must not resurrect Working for them.
 	const staleRunFenceRef = useRef(new Set<string>());
+	const manualCompactionPendingRef = useRef(new Set<string>());
+	const queuedCompactionRef = useRef(new Set<string>());
 	const sendToSessionRef = useRef<(sessionId: string, text: string, options?: { messageId?: string }) => Promise<boolean>>(async () => false);
 	const queueDrainStatusesRef = useRef(new Map<string, Session["status"]>());
 	const queueDrainingRef = useRef(new Set<string>());
@@ -551,8 +553,13 @@ export default function App() {
 	useEffect(() => {
 		if (!nativeCodex) return;
 		return nativeCodex.onEvent((event) => {
+			const manualCompaction = event.method === "thread/compacted"
+				&& manualCompactionPendingRef.current.delete(event.sessionId);
+			const normalizedEvent = manualCompaction
+				? { ...event, params: { ...event.params, source: "manual" } }
+				: event;
 			const sequence = allocateNativeSequence(event.sessionId);
-			const runtimeEvent = codexEventToRuntime(event, sequence);
+			const runtimeEvent = codexEventToRuntime(normalizedEvent, sequence);
 			const updatedThreadName = event.method === "thread/name/updated"
 				&& typeof event.params.threadName === "string"
 				? event.params.threadName.trim()
@@ -561,6 +568,22 @@ export default function App() {
 			// process that emitted this run.started is the one that just died.
 			const fenced = runtimeEvent.eventKind === "run.started"
 				&& staleRunFenceRef.current.has(event.sessionId);
+			if (runtimeEvent.eventKind === "run.failed" || runtimeEvent.eventKind === "run.cancelled") {
+				manualCompactionPendingRef.current.delete(event.sessionId);
+			}
+			if (
+				(runtimeEvent.eventKind === "run.completed" || runtimeEvent.eventKind === "run.failed" || runtimeEvent.eventKind === "run.cancelled")
+				&& queuedCompactionRef.current.delete(event.sessionId)
+				&& nativeCodex.compact
+			) {
+				manualCompactionPendingRef.current.add(event.sessionId);
+				void nativeCodex.compact(event.sessionId)
+					.then(() => showToast("Compacting context…"))
+					.catch((reason) => {
+						manualCompactionPendingRef.current.delete(event.sessionId);
+						showToast(reason instanceof Error ? reason.message : String(reason));
+					});
+			}
 			setEventsBySession((current) => ({
 				...current,
 				[event.sessionId]: appendEvent(current[event.sessionId] ?? [], runtimeEvent)
@@ -577,7 +600,7 @@ export default function App() {
 						: session.status }
 				: session));
 		});
-	}, [allocateNativeSequence, nativeCodex]);
+	}, [allocateNativeSequence, nativeCodex, showToast]);
 
 	useEffect(() => {
 		const bridge = window.synthLaguna;
@@ -1262,6 +1285,29 @@ export default function App() {
 		}
 		setPreferences(renameConversation(activeSessionId, trimmed));
 	}, [activeSessionId, showToast]);
+
+	const onSlashCompact = useCallback(async () => {
+		if (!activeSessionId || !nativeCodex?.compact) {
+			showToast("Context compaction requires an active Codex conversation");
+			return;
+		}
+		if (activeChatRunning) {
+			queuedCompactionRef.current.add(activeSessionId);
+			showToast("Compaction queued for after the current response");
+			return;
+		}
+		setBusy(true);
+		manualCompactionPendingRef.current.add(activeSessionId);
+		try {
+			await nativeCodex.compact(activeSessionId);
+			showToast("Compacting context…");
+		} catch (reason) {
+			manualCompactionPendingRef.current.delete(activeSessionId);
+			showToast(reason instanceof Error ? reason.message : String(reason));
+		} finally {
+			setBusy(false);
+		}
+	}, [activeChatRunning, activeSessionId, nativeCodex, showToast]);
 
 	const onReloadLaguna = useCallback(async () => {
 		const bridge = window.synthLaguna;
@@ -1964,6 +2010,7 @@ export default function App() {
 							onSlashNew={onNewConversation}
 							onSlashMcp={() => setView({ kind: "connectors" })}
 							onSlashRename={onSlashRename}
+							onSlashCompact={onSlashCompact}
 							approvalMode={approvalMode}
 							onSelectApprovalMode={selectActiveApprovalMode}
 							modelKnobValues={modelKnobValues}

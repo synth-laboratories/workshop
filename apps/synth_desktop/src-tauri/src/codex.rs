@@ -735,6 +735,20 @@ impl CodexManager {
         Ok(())
     }
 
+    pub async fn compact(&self, session_id: &str) -> Result<()> {
+        let lock = self.turn_lock(session_id).await;
+        let _guard = lock.lock().await;
+        let session = self.session(session_id).await?;
+        session
+            .server
+            .request(
+                "thread/compact/start",
+                json!({"threadId": session.thread_id}),
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Steers an in-flight turn with additional user input. Unlike `interrupt`,
     /// this requires an attached session with an active turn: there is
     /// nothing sensible to steer once the app-server has detached or the turn
@@ -2136,6 +2150,31 @@ mod tests {
             "actually, focus on the tests first"
         );
         assert_eq!(steer["params"]["input"][0]["type"], "text");
+
+        manager.close(&request.session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn compact_sends_thread_compact_start_for_the_attached_thread() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let manager = CodexManager::with_paths(Some(core), codex_root.clone(), fixture_binary());
+        let app = tauri::test::mock_app();
+        let request = test_request(temp.path(), "compact-me");
+
+        manager
+            .start(app.handle().clone(), request.clone())
+            .await
+            .unwrap();
+        manager.compact(&request.session_id).await.unwrap();
+
+        let requests = fixture_requests(&codex_root, &request.session_id);
+        let compact = requests
+            .iter()
+            .find(|message| message["method"] == "thread/compact/start")
+            .expect("fixture did not see thread/compact/start");
+        assert_eq!(compact["params"]["threadId"], "thread-fixture");
 
         manager.close(&request.session_id).await.unwrap();
     }

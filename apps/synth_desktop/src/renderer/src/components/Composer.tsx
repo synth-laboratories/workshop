@@ -53,6 +53,7 @@ type Props = {
 	onSlashModel?: () => void;
 	onSlashMcp?: () => void;
 	onSlashRename?: () => void;
+	onSlashCompact?: () => void | Promise<void>;
 	workspaceSessionId?: string | null;
 	onEnsureWorkspaceSession?: () => Promise<string | null>;
 	workspaceFallback?: string | null;
@@ -464,6 +465,7 @@ export function Composer({
 	onSlashModel,
 	onSlashMcp,
 	onSlashRename,
+	onSlashCompact,
 	workspaceSessionId,
 	onEnsureWorkspaceSession,
 	workspaceFallback,
@@ -675,6 +677,9 @@ export function Composer({
 				break;
 			case "rename":
 				onSlashRename?.();
+				break;
+			case "compact":
+				void onSlashCompact?.();
 				break;
 		}
 		clearSlashInput();
