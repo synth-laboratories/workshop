@@ -1159,6 +1159,7 @@ a,
 /* ── Main pane ── */
 .main-pane {
 	flex: 1;
+	min-height: 0;
 	display: flex;
 	flex-direction: column;
 	min-width: 0;
@@ -1300,6 +1301,7 @@ a,
 /* ── Landing ── */
 .landing {
 	flex: 1;
+	min-height: 0;
 	display: flex;
 	flex-direction: column;
 	align-items: center;

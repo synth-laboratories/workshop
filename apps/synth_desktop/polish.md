@@ -18,6 +18,14 @@ Owner handoff: [`HANDOFF_POLISH_CUA_TESTS.md`](./HANDOFF_POLISH_CUA_TESTS.md).
 
 ## Sessions
 
+### 2026-08-10 — Muse residency Memory unavailable CUA locks
+
+- **Shipped:** (none — deliberate red debt) Bombadil fixture + honesty suite for the sidebar Muse-Glimmer card that paints green-ready chrome with `Memory unavailable` and `Free scheduled … · awaiting unload`.
+- **Tests:** Added `tests/bombadil/muse-residency-honesty.spec.ts` (11 red always-properties on the CUA fixture + reachability); wired `run.mjs` seed (`memoryBytes: null`, past `freeAt`), `test:bombadil:muse-residency`, and `desktop-ui-gates.sh` catalog. Confirmed exit 2 with 11 distinct honesty violations.
+- **Flagged:** Product still renders `formatMemory(null)` as `Memory unavailable` under a ready dot and will claim awaiting unload after `freeAt` elapses even when resident bytes are unknown.
+- **CUA notes:** 1:20 PM capture — Muse-Glimmer-30B-GGUF Memory unavailable / awaiting unload, Laguna-XS-2.1 ready underneath, MLX sidecar Monitor paused.
+- **Refs:** `LocalModelResidency.tsx`, `muse-residency-honesty.spec.ts`, screenshots in session assets.
+
 ### 2026-08-09 — Bootstrap (prior work)
 
 - **Shipped:** Removed stub LoRA / Finetunes UI (Composer + Settings); Settings shows Adapters · Not wired; Inventory Attach defaults to Craftax `http://127.0.0.1:8098`.
@@ -281,6 +289,25 @@ Pick from debt flags or CUA; log when done.
 - **Tests:** Rust regression test asserts the provider label and corrective path are present and that URL user-info and query tokens never enter the error text.
 - **Refs:** `src-tauri/src/codex.rs`.
 
+### 2026-08-10 — Bombadil catches blank “Worked” completed turns
+
+- **CUA finding:** Synth Cloud Laguna S finished a turn as `Worked 11s` with a blank answer surface, a `Reasoned` marker, and composer chip text `Unavailable tok/s observed p50`.
+- **Tests:** Added deliberately-red Bombadil fixture `empty-completed-turn.spec.ts` that seeds that transcript/chip state. Invariants:
+  - `completed_turns_never_look_successful_when_blank`
+  - `composer_never_advertises_unavailable_tok_s`
+- **Confirmed:** Focused run exits non-zero with both property violations against the injected fixture (`blankSuccessfulTurn: true`, `unavailableThroughputChip: true`).
+- **Harness:** Bombadil Laguna stub now includes `listModels` (App boot was crashing the headless renderer); runtime python prefers `SYNTH_PYTHON` / Laguna venv / 3.12.
+- **Refs:** `tests/bombadil/empty-completed-turn.spec.ts`, `tests/bombadil/run.mjs`, `package.json` `test:bombadil:empty-turn`.
+
+### 2026-08-10 — Bombadil catches composer toolbar wrap + throughput/Max overlap
+
+- **CUA finding:** Toolbar showed `Never ask · Full system` with `access` stacked on a second line, and `Unavailable tok/s observed p50` colliding with the Thinking `Max` chip.
+- **Tests:** Deliberately-red `composer-toolbar.spec.ts` seeds allow-all permissions + implausible throughput, selects OpenRouter Laguna S (Max), and fuzzes widths. Invariants:
+  - `permission_control_never_stacks_full_system_access`
+  - `throughput_never_overlaps_thinking_chip`
+- **Confirmed:** Focused run reports both violations (`permissionStacksVertically: true` height 44, `modelOverlapsReasoning: true`).
+- **Refs:** `tests/bombadil/composer-toolbar.spec.ts`, `package.json` `test:bombadil:composer-toolbar`, `scripts/desktop-ui-gates.sh`.
+
 ### 2026-08-09 — Terminal failure truthfulness
 
 - **Finding:** A Responses-compatible provider can send a `turn/completed` envelope whose nested turn is actually failed. Workshop treated the envelope name as authoritative, displayed `Worked`, and left the transcript with no answer.
@@ -352,3 +379,10 @@ Pick from debt flags or CUA; log when done.
 - **Tests:** 174 Rust lib tests green (6 new account tests). New `get-started.spec.ts` covers the external-download first-five-minutes path. Picker containment asserted in Playwright at 1728×1117 / 1100×700 / 960×640 and as Bombadil `always` invariants. `test-desktop-instance.sh` now compiles its unrelated-app stand-in locally (AMFI SIGKILLs copied Apple-signed binaries on Apple Silicon).
 - **Open:** CUA confirmation of the installed app (signed-in footer, real plan, picker at short sizes) not yet run; hosted/prod account identity is still local-derived pending a backend identity endpoint.
 - **Refs:** `src-tauri/src/account.rs`, `src/renderer/src/components/{Sidebar,LandingPage,BackendSettings}.tsx`, `tests/playwright/{get-started,account-sign-in,layout-invariants}.spec.ts`, `tests/bombadil/layout.spec.ts`.
+
+### 2026-08-10 — Progressive-disclosure model picker
+
+- **Shipped:** Simplified ordinary composer model rows to the user-facing model name and a fixed trailing checkmark. Removed runtime, provider id, usage, modality, context, and throughput from the default catalog scan. A collapsed Advanced section now exposes labeled details for the selected model; blocked cloud choices retain only the explanation and action needed to unblock them. The menu is narrower, shorter, sentence-case, and uses a quiet neutral selected state.
+- **Tests:** Typecheck passes. Focused Synth Cloud and layout Playwright coverage passes 12/12, including short-window containment, terminal layering, names-only cloud rows, Advanced metadata, and the current Account destination for API-key setup. The broader static accessibility slice has one unrelated existing failure because `App.tsx` currently contains reachable `nativeIntern.createSession` code.
+- **CUA notes:** The already-running `aesthetic-audit` native app is an installed debug bundle rather than an HMR process, so it continued to display its pre-change model menu. Browser-built Playwright exercised the updated renderer; a new native build/install is required for installed-app visual confirmation.
+- **Refs:** `components/Composer.tsx`, `styles/app.css`, `tests/playwright/synth-cloud-provider.spec.ts`, `visual_style_guide_v0p1.md`.
