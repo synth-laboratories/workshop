@@ -1259,6 +1259,7 @@ export function buildLandingState(args: {
 		loadedModel?: string | null;
 	} | null;
 	apiKeyConfigured?: boolean;
+	openrouterApiKeyConfigured?: boolean;
 	cloudBlockedReason?: string | null;
 }): LandingState {
 	const model = healthToModelStatus(args.health, args.laguna);
@@ -1353,6 +1354,7 @@ export function buildLandingState(args: {
 		selectedTargetId: args.selectedTargetId,
 		internMode: args.health?.intern.mode,
 		apiKeyConfigured: args.apiKeyConfigured,
+		openrouterApiKeyConfigured: args.openrouterApiKeyConfigured ?? args.health?.openrouter.mode === "ready",
 		cloudBlockedReason: args.cloudBlockedReason ?? null,
 		composerEnabled: model.composerEnabled,
 		composerPlaceholder: model.composerPlaceholder

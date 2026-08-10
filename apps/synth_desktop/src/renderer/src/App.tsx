@@ -977,6 +977,7 @@ export default function App() {
 			selectedTargetId,
 			laguna,
 			apiKeyConfigured,
+			openrouterApiKeyConfigured: backendSettings?.openrouterApiKeyConfigured,
 			cloudBlockedReason: accountView.cloudBlockedReason
 		});
 		const archived = new Set(
@@ -999,6 +1000,7 @@ export default function App() {
 	}, [
 		accountView.cloudBlockedReason,
 		apiKeyConfigured,
+		backendSettings?.openrouterApiKeyConfigured,
 		downloadPaused,
 		eventsBySession,
 		codexActivityBySession,
@@ -1085,13 +1087,19 @@ export default function App() {
 		? sessions.find((candidate) => candidate.id === activeChat.id)
 		: undefined;
 	const activeChatRunning = activeChat ? (() => {
-		// A restored session record is authoritative. In particular, a stale
-		// run.started event must not resurrect Working after the app-server that
-		// owned that turn has exited or the desktop app has restarted.
-		if (activeChatSession) return activeChatSession.status === "running";
 		const latestRunEvent = [...(eventsBySession[activeChat.id] ?? [])]
 			.reverse()
 			.find((event) => event.eventKind.startsWith("run."));
+		if (
+			latestRunEvent?.eventKind === "run.completed" ||
+			latestRunEvent?.eventKind === "run.failed" ||
+			latestRunEvent?.eventKind === "run.cancelled"
+		) return false;
+		// A restored session record is authoritative. In particular, a stale
+		// run.started event must not resurrect Working after the app-server that
+		// owned that turn has exited or the desktop app has restarted. A terminal
+		// event is newer evidence and must clear a lagging running record.
+		if (activeChatSession) return activeChatSession.status === "running";
 		return latestRunEvent?.eventKind === "run.started";
 	})() : false;
 	const activeChatWarmingUp = Boolean(
@@ -1234,6 +1242,19 @@ export default function App() {
 		return () => unlisten?.();
 	}, [openVisualRecord, showToast]);
 
+	const ensureOpenRouterReady = useCallback(async (targetId: string): Promise<boolean> => {
+		if (!targetId.startsWith("openrouter-")) return true;
+		const config = await window.synthConfig?.get().catch(() => null);
+		const configured = config?.openrouterApiKeyConfigured ?? health?.openrouter.mode === "ready";
+		if (configured) {
+			if (config) setBackendSettings(config);
+			return true;
+		}
+		showToast("OpenRouter API key required — message was not sent");
+		setView({ kind: "settings", section: "account" });
+		return false;
+	}, [health?.openrouter.mode, showToast]);
+
 	const createConversation = useCallback(
 		async (targetId: string = selectedTargetId, title?: string, objective?: string) => {
 			setBusy(true);
@@ -1288,16 +1309,17 @@ export default function App() {
 
 	const sendToSession = useCallback(
 		async (sessionId: string, text: string, options?: { messageId?: string; images?: ComposerImageAttachment[] }) => {
-			setBusy(true);
 			try {
 				const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
+				const sessionTargetId = session ? executionTargetToUiId(session.target) : selectedTargetId;
+				const pendingTargetId = isInternTargetId(selectedTargetId) ? sessionTargetId : selectedTargetId;
+				if (!await ensureOpenRouterReady(pendingTargetId)) return false;
+				setBusy(true);
 				if (nativeCodex && (!session || session.target.kind !== "intern")) {
 					if (!session) throw new Error(`Native Codex session is not registered: ${sessionId}`);
 					if (session.metadata.runtime !== "codex-app-server") {
 						throw new Error(`Session ${sessionId} is not owned by Codex app-server`);
 					}
-					const sessionTargetId = executionTargetToUiId(session.target);
-					const pendingTargetId = isInternTargetId(selectedTargetId) ? sessionTargetId : selectedTargetId;
 					const sendPlan = planComposerSend({
 						pendingTargetId,
 						sessionTargetId,
@@ -1393,7 +1415,7 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[allocateNativeSequence, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
+		[allocateNativeSequence, ensureOpenRouterReady, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
 	);
 	sendToSessionRef.current = sendToSession;
 
@@ -1407,6 +1429,7 @@ export default function App() {
 	const onComposerSend = useCallback(
 		async (text: string, images: ComposerImageAttachment[] = []) => {
 			try {
+				if (!await ensureOpenRouterReady(selectedTargetId)) return;
 				const ensured = await ensureActiveSession(text);
 				if (!ensured) {
 					showToast("No active session");
@@ -1421,7 +1444,7 @@ export default function App() {
 				/* toast already shown */
 			}
 		},
-		[ensureActiveSession, sendToSession, showToast]
+		[ensureActiveSession, ensureOpenRouterReady, selectedTargetId, sendToSession, showToast]
 	);
 
 	const controlActive = useCallback(

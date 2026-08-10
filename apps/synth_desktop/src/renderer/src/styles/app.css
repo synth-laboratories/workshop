@@ -1599,6 +1599,42 @@ a,
 	pointer-events: auto;
 }
 
+.composer-configuration-required {
+	width: 100%;
+	max-width: 720px;
+	margin-bottom: 8px;
+	padding: 10px 12px;
+	border: 1px solid #f0c36a;
+	border-radius: 12px;
+	background: #fff9e8;
+	color: #6b4f12;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+	font-size: 13px;
+	pointer-events: auto;
+}
+
+.composer-configuration-required span {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.composer-configuration-required button {
+	appearance: none;
+	border: 1px solid #d7a842;
+	border-radius: 8px;
+	background: #fff;
+	padding: 7px 10px;
+	color: #6b4f12;
+	font: inherit;
+	font-weight: 600;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
 .composer.is-disabled {
 	background: #fbfbfc;
 }
