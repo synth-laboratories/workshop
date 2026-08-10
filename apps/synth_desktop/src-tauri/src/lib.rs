@@ -1833,6 +1833,7 @@ pub fn run() {
             laguna::laguna_inference_stream_start,
             laguna::laguna_inference_stream_stop,
             laguna::laguna_model_unload,
+            laguna::laguna_free_memory,
             laguna::laguna_model_download,
             laguna::laguna_model_delete,
             laguna::laguna_settings_snapshot,

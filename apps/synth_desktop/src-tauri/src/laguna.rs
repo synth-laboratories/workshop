@@ -1033,6 +1033,74 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         Ok(outcome)
     }
 
+    /// Release every process and lease owned by the selected local runtime.
+    ///
+    /// This is intentionally stronger than the daemon's model-unload endpoint:
+    /// a detached Muse engine owns the GGUF mappings itself, and a still-live
+    /// daemon could load its model again after this app has released the
+    /// machine-wide admission lease. The sidebar's "Free memory" action must
+    /// therefore stop both managed processes before another Synth deployment
+    /// is allowed to acquire local model memory.
+    pub async fn free_memory(&self) -> Result<LagunaUnloadOutcome> {
+        let _ensure_guard = self.ensure_lock.lock().await;
+        let current = self.status().await;
+
+        if let Ok(snapshot) = self.inference_snapshot().await {
+            if snapshot.active.is_some() || snapshot.queue_depth.unwrap_or_default() > 0 {
+                return Ok(LagunaUnloadOutcome {
+                    released: false,
+                    conflict: true,
+                    detail: Some(
+                        "A local response is active or queued. Stop it before freeing model memory."
+                            .into(),
+                    ),
+                });
+            }
+        }
+
+        self.stop_inference_stream().await;
+        let stopped_sidecar = stop_managed_sidecar()?;
+        let stopped_muse = stop_muse_engine()?;
+        release_local_runtime_lease();
+
+        let had_loaded_model = current.loaded_model.is_some();
+        let model = current.loaded_model.clone();
+        self.record_inference(LagunaInference {
+            model,
+            resident: false,
+            ..LagunaInference::default()
+        })
+        .await;
+        self.set_status(LagunaStatus {
+            phase: "unloaded".into(),
+            // The daemon was just terminated. Keeping its URL here lets an
+            // immediate renderer refresh race the TERM signal, observe one
+            // final stale /health response, and resurrect a fake "loaded"
+            // card after the weights are already gone. Reload establishes a
+            // fresh URL when the user deliberately warms the model again.
+            base_url: None,
+            backend: current.backend,
+            loaded_model: None,
+            detail: Some(
+                "Local model memory freed. Reload the model before sending another local prompt."
+                    .into(),
+            ),
+            memory_bytes: Some(0),
+            idle_seconds: None,
+            idle_unload_after_seconds: None,
+            last_used_at: current.last_used_at,
+            free_at: None,
+            updated_at: now_ms(),
+        })
+        .await;
+
+        Ok(LagunaUnloadOutcome {
+            released: stopped_sidecar || stopped_muse || had_loaded_model,
+            conflict: false,
+            detail: Some("Local model memory freed.".into()),
+        })
+    }
+
     /// One-shot `GET /v1/synth/settings`.
     pub async fn settings_snapshot(&self) -> Result<LagunaSettingsExchange> {
         let base_url = self.inference_base_url().await;
@@ -1248,6 +1316,16 @@ pub async fn laguna_model_unload(
 ) -> std::result::Result<LagunaUnloadOutcome, String> {
     state
         .unload_model()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn laguna_free_memory(
+    state: State<'_, Arc<LagunaManager>>,
+) -> std::result::Result<LagunaUnloadOutcome, String> {
+    state
+        .free_memory()
         .await
         .map_err(|error| error.to_string())
 }

@@ -81,9 +81,16 @@ export type LagunaDownloadProgress = {
 	totalBytes?: number;
 };
 
+export type LagunaUnloadOutcome = {
+	released: boolean;
+	conflict: boolean;
+	detail: string | null;
+};
+
 export type LagunaBridge = {
 	getStatus(): Promise<LagunaStatus>;
 	reload(): Promise<LagunaStatus>;
+	freeMemory?(): Promise<LagunaUnloadOutcome>;
 	onStatus(listener: (status: LagunaStatus) => void): () => void;
 	listModels(): Promise<LagunaModelHit[]>;
 	chooseModelDirectory(): Promise<string | null>;

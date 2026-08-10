@@ -332,7 +332,7 @@ export default function App() {
 	}, [selectedTargetId]);
 	const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
 	/** Connection facts for the Account page's Devices and Advanced sections. */
-	const [backendSettings, setBackendSettings] = useState<SynthBackendSettings | null>(null);
+	const [, setBackendSettings] = useState<SynthBackendSettings | null>(null);
 	const [accountUsage, setAccountUsage] = useState<ReturnType<typeof summarizeAccountUsage> | null>(null);
 	const [accountSummary, setAccountSummary] = useState<SynthAccountSummary | null>(null);
 	const [usageSheetOpen, setUsageSheetOpen] = useState(false);
@@ -1594,6 +1594,17 @@ export default function App() {
 		return status;
 	}, [refreshHealth]);
 
+	const onFreeLocalMemory = useCallback(async () => {
+		const bridge = window.synthLaguna;
+		if (!bridge?.freeMemory) throw new Error("Local model controls are unavailable in this build");
+		const outcome = await bridge.freeMemory();
+		if (outcome.conflict || !outcome.released) {
+			throw new Error(outcome.detail ?? "Local model memory could not be freed");
+		}
+		setLaguna(await bridge.getStatus());
+		showToast(outcome.detail ?? "Local model memory freed");
+	}, [showToast]);
+
 	const openSearch = useCallback(() => {
 		if (!searchOpen && document.activeElement instanceof HTMLElement) {
 			searchRestoreFocusRef.current = document.activeElement;
@@ -1896,6 +1907,7 @@ export default function App() {
 						}
 					}}
 					onPauseToggle={() => setDownloadPaused((v) => !v)}
+					onFreeLocalMemory={onFreeLocalMemory}
 				/>
 
 				<main className="main-pane">
@@ -1970,15 +1982,6 @@ export default function App() {
 
 					{view.kind === "settings" ? (
 						<SettingsPage
-							account={{
-								view: accountView,
-								summary: accountSummary,
-								deviceUsage: accountUsage,
-								connection: backendSettings,
-								onBilling: (action) => void openBilling(action),
-								onRefresh: () => refreshAccountSummary(true),
-								onOpenDeviceUsage: () => setView({ kind: "inventory" })
-							}}
 							key={view.section ?? "general"}
 							onBack={() => setView({ kind: "landing" })}
 							onReloadLaguna={onReloadLaguna}
@@ -2179,8 +2182,8 @@ export default function App() {
 							{showInferenceRail ? (
 								<aside className="inference-rail" data-testid="inference-rail" aria-label="Local inference monitor">
 									<div className="inference-rail-label">
-										<span>{activeChatSession?.target.model.includes("Muse") ? "Local GGUF engine" : "MLX sidecar"}</span>
-										<small>{activeChatSession?.target.model.includes("Muse")
+										<span>{activeChatSession?.target.kind === "local" && activeChatSession.target.model.includes("Muse") ? "Local GGUF engine" : "MLX sidecar"}</span>
+										<small>{activeChatSession?.target.kind === "local" && activeChatSession.target.model.includes("Muse")
 											? "llama.cpp · Metal · DFlash; owns model memory, KV caches, and the GPU queue."
 											: "Owns local model memory, prompt caches, and the single-GPU queue."}</small>
 									</div>
@@ -2302,14 +2305,10 @@ export default function App() {
 						open={terminalOpen}
 						workspaceId={terminalWorkspaceId}
 						workspaceRoot={terminalWorkspaceRoot}
-						height={preferences.layout.last.bottomPanelHeight}
-						fontFamily={preferences.appearance.terminalFontFamily}
-						fontSize={preferences.appearance.terminalFontSize}
 						onOpenChange={(open) => {
 							setTerminalOpen(open);
 							persistLayoutSnapshot({ bottomPanelVisible: open });
 						}}
-						onHeightChange={(height) => persistLayoutSnapshot({ bottomPanelHeight: height })}
 			/>
 		</main>
 	</div>

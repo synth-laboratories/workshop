@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TerminalEvent, TerminalInfo, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../env";
+import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, LagunaUnloadOutcome, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TerminalEvent, TerminalInfo, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../env";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry } from "@synth/runtime-protocol";
 
@@ -161,6 +161,7 @@ export function installDesktopBridge(): void {
 		? {
 			getStatus: () => invoke<LagunaStatus>("laguna_get_status"),
 			reload: () => invoke<LagunaStatus>("laguna_reload"),
+			freeMemory: () => invoke<LagunaUnloadOutcome>("laguna_free_memory"),
 			listModels: () => invoke<LagunaModelHit[]>("laguna_models_list"),
 			chooseModelDirectory: async () => {
 				const selection = await open({ directory: true, multiple: false, title: "Choose a Laguna model folder" });
@@ -198,6 +199,7 @@ export function installDesktopBridge(): void {
 		: {
 			getStatus: async () => unavailableLaguna,
 			reload: async () => unavailableLaguna,
+			freeMemory: async () => ({ released: false, conflict: false, detail: "Local model controls require Synth Desktop" }),
 			listModels: async () => [],
 			downloadModel: async () => { throw new Error("Model downloads require Synth Desktop"); },
 			deleteModel: async () => { throw new Error("Model deletion requires Synth Desktop"); },
