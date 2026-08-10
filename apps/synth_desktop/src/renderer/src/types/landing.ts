@@ -193,7 +193,7 @@ export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 	{
 		id: "local-muse-glimmer",
 		label: "Muse Glimmer 30B",
-		description: "Local · GGUF · Metal · vision · DFlash",
+		description: "Local · GGUF · Metal · DFlash",
 		group: "local"
 	},
 	{

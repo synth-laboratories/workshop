@@ -22,6 +22,7 @@ type Props = {
 	onReject?: (approvalId: string) => void;
 	running?: boolean;
 	warmingUp?: boolean;
+	workingLabel?: string;
 	onStop?: () => void;
 	activityMode?: ToolActivityMode;
 	onActivityModeChange?: (mode: ToolActivityMode) => void;
@@ -482,6 +483,7 @@ export function ChatTranscript({
 	onReject,
 	running = false,
 	warmingUp = false,
+	workingLabel,
 	onStop,
 	activityMode = "grouped",
 	onActivityModeChange
@@ -740,7 +742,7 @@ export function ChatTranscript({
 						{running ? (
 							<div className="model-working" role="status" aria-live="polite" data-testid="model-working">
 								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>
-								<span>{warmingUp ? "Warming up…" : "Working…"}</span>
+								<span>{workingLabel ?? (warmingUp ? "Warming up…" : "Working…")}</span>
 								<button type="button" onClick={onStop} aria-label="Stop generating">Stop</button>
 							</div>
 						) : null}

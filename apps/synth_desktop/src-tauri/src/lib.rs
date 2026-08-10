@@ -1833,6 +1833,7 @@ pub fn run() {
             laguna::laguna_inference_stream_start,
             laguna::laguna_inference_stream_stop,
             laguna::laguna_model_unload,
+            laguna::laguna_free_memory,
             laguna::laguna_model_download,
             laguna::laguna_model_delete,
             laguna::laguna_settings_snapshot,
@@ -1864,6 +1865,11 @@ pub fn run() {
             terminal_resize,
             terminal_close
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Synth Desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building Synth Desktop")
+        .run(|_app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                laguna::shutdown_managed_runtime();
+            }
+        });
 }

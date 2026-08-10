@@ -523,6 +523,52 @@ test("expired local model free schedule reports its time and waits for Laguna un
 	await expect(summary).not.toHaveAccessibleName(/Freeing memory/i);
 });
 
+test("sidebar can explicitly free the resident local model", async ({ page }) => {
+	await page.addInitScript(() => {
+		let unloaded = false;
+		const testWindow = window as typeof window & {
+			synthLaguna?: unknown;
+			__freeMemoryCalls?: number;
+		};
+		testWindow.__freeMemoryCalls = 0;
+		testWindow.synthLaguna = {
+			getStatus: async () => ({
+				phase: unloaded ? "unloaded" : "ready",
+				baseUrl: "http://127.0.0.1:7333",
+				backend: "llama_cpp",
+				loadedModel: unloaded ? null : "meta-models/Muse-Glimmer-30B-GGUF",
+				detail: unloaded ? "Local model memory freed." : "Muse Glimmer ready",
+				memoryBytes: unloaded ? 0 : 24 * 1024 ** 3,
+				idleSeconds: 8,
+				freeAt: null,
+				updatedAt: Date.now()
+			}),
+			freeMemory: async () => {
+				testWindow.__freeMemoryCalls = (testWindow.__freeMemoryCalls ?? 0) + 1;
+				unloaded = true;
+				return { released: true, conflict: false, detail: "Local model memory freed." };
+			},
+			onStatus: () => () => undefined,
+			listModels: async () => [],
+			chooseModelDirectory: async () => null,
+			setModelDirectory: async () => { throw new Error("not used"); },
+			clearModelDirectory: async () => undefined
+		};
+	});
+	await page.reload();
+
+	await page.getByTestId("model-residency").getByRole("button").click();
+	const free = page.getByTestId("free-local-model-memory");
+	await expect(free).toBeVisible();
+	await expect(free).toHaveText("Free memory");
+	await free.click();
+
+	await expect(page.getByTestId("model-residency")).toBeHidden();
+	await expect.poll(() => page.evaluate(() => (
+		window as typeof window & { __freeMemoryCalls?: number }
+	).__freeMemoryCalls)).toBe(1);
+});
+
 test("resident model disappears immediately when Laguna reports automatic unload", async ({ page }) => {
 	await page.addInitScript(() => {
 		let listener: ((status: Record<string, unknown>) => void) | undefined;

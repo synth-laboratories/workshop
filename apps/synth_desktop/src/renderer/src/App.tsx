@@ -332,7 +332,7 @@ export default function App() {
 	}, [selectedTargetId]);
 	const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
 	/** Connection facts for the Account page's Devices and Advanced sections. */
-	const [backendSettings, setBackendSettings] = useState<SynthBackendSettings | null>(null);
+	const [, setBackendSettings] = useState<SynthBackendSettings | null>(null);
 	const [accountUsage, setAccountUsage] = useState<ReturnType<typeof summarizeAccountUsage> | null>(null);
 	const [accountSummary, setAccountSummary] = useState<SynthAccountSummary | null>(null);
 	const [usageSheetOpen, setUsageSheetOpen] = useState(false);
@@ -404,7 +404,8 @@ export default function App() {
 			return window.localStorage.getItem("synth.inferenceRailOpen") !== "0";
 		}
 	);
-	const inferenceMonitor = useInferenceMonitor({ visible: selectedTargetId === "local-laguna" });
+	const selectedTargetIsLocal = selectedTargetId === "local-laguna" || selectedTargetId === "local-muse-glimmer";
+	const inferenceMonitor = useInferenceMonitor({ visible: selectedTargetIsLocal });
 	const [modelPerformance, setModelPerformance] = useState<ModelPerformanceSummary[]>([]);
 	useEffect(() => {
 		let disposed = false;
@@ -434,7 +435,7 @@ export default function App() {
 		}
 		return chosen;
 	}, [modelPerformance]);
-	const selectedModelMedianTps = selectedTargetId === "local-laguna"
+	const selectedModelMedianTps = selectedTargetIsLocal
 		? inferenceMonitor.snapshot?.rolling.decodeTpsP50 ?? null
 		: null;
 	const selectedPersistedPerformance = persistedPerformanceByTarget.get(selectedTargetId);
@@ -1110,6 +1111,22 @@ export default function App() {
 		activeChatSession?.target.kind === "local" &&
 		(laguna?.phase === "loading" || !laguna?.loadedModel)
 	);
+	const activeInferencePhase = inferenceMonitor.snapshot?.active?.phase ?? null;
+	const activeChatProgressLabel = activeChatWarmingUp
+		? activeChatSession?.target.kind === "local" && activeChatSession.target.model.includes("Muse")
+			? "Warming up Muse…"
+			: "Warming up Laguna…"
+		: activeInferencePhase === "queued"
+			? "Queued for local inference…"
+			: activeInferencePhase === "loading"
+				? "Loading model weights…"
+				: activeInferencePhase === "compiling"
+					? "Warming up model…"
+					: activeInferencePhase === "prefill"
+						? "Reading context…"
+						: activeInferencePhase === "decode"
+							? "Generating…"
+							: "Working…";
 	const activeLocalModel = activeChatSession?.target.kind === "local";
 	/*
 	 * The rail takes a fixed-ish column out of the workbench. Below this width
@@ -1577,6 +1594,17 @@ export default function App() {
 		return status;
 	}, [refreshHealth]);
 
+	const onFreeLocalMemory = useCallback(async () => {
+		const bridge = window.synthLaguna;
+		if (!bridge?.freeMemory) throw new Error("Local model controls are unavailable in this build");
+		const outcome = await bridge.freeMemory();
+		if (outcome.conflict || !outcome.released) {
+			throw new Error(outcome.detail ?? "Local model memory could not be freed");
+		}
+		setLaguna(await bridge.getStatus());
+		showToast(outcome.detail ?? "Local model memory freed");
+	}, [showToast]);
+
 	const openSearch = useCallback(() => {
 		if (!searchOpen && document.activeElement instanceof HTMLElement) {
 			searchRestoreFocusRef.current = document.activeElement;
@@ -1878,6 +1906,7 @@ export default function App() {
 						}
 					}}
 					onPauseToggle={() => setDownloadPaused((v) => !v)}
+					onFreeLocalMemory={onFreeLocalMemory}
 				/>
 
 				<main className="main-pane">
@@ -1952,15 +1981,6 @@ export default function App() {
 
 					{view.kind === "settings" ? (
 						<SettingsPage
-							account={{
-								view: accountView,
-								summary: accountSummary,
-								deviceUsage: accountUsage,
-								connection: backendSettings,
-								onBilling: (action) => void openBilling(action),
-								onRefresh: () => refreshAccountSummary(true),
-								onOpenDeviceUsage: () => setView({ kind: "inventory" })
-							}}
 							key={view.section ?? "general"}
 							onBack={() => setView({ kind: "landing" })}
 							onReloadLaguna={onReloadLaguna}
@@ -2122,6 +2142,7 @@ export default function App() {
 										onReject={(approvalId) => void controlActive("reject", { approvalId })}
 										running={activeChatRunning}
 										warmingUp={activeChatWarmingUp}
+										workingLabel={activeChatProgressLabel}
 										onStop={() => {
 											setQueueAfterStop(promptsForConversation(activeChat.id).length > 0);
 											void controlActive("cancel");
@@ -2160,8 +2181,10 @@ export default function App() {
 							{showInferenceRail ? (
 								<aside className="inference-rail" data-testid="inference-rail" aria-label="Local inference monitor">
 									<div className="inference-rail-label">
-										<span>MLX sidecar</span>
-										<small>Owns local model memory, prompt caches, and the single-GPU queue.</small>
+										<span>{activeChatSession?.target.kind === "local" && activeChatSession.target.model.includes("Muse") ? "Local GGUF engine" : "MLX sidecar"}</span>
+										<small>{activeChatSession?.target.kind === "local" && activeChatSession.target.model.includes("Muse")
+											? "llama.cpp · Metal · DFlash; owns model memory, KV caches, and the GPU queue."
+											: "Owns local model memory, prompt caches, and the single-GPU queue."}</small>
 									</div>
 									{/* `visible` drives subscribe/teardown, so a closed rail
 									    costs nothing. */}
@@ -2281,14 +2304,10 @@ export default function App() {
 						open={terminalOpen}
 						workspaceId={terminalWorkspaceId}
 						workspaceRoot={terminalWorkspaceRoot}
-						height={preferences.layout.last.bottomPanelHeight}
-						fontFamily={preferences.appearance.terminalFontFamily}
-						fontSize={preferences.appearance.terminalFontSize}
 						onOpenChange={(open) => {
 							setTerminalOpen(open);
 							persistLayoutSnapshot({ bottomPanelVisible: open });
 						}}
-						onHeightChange={(height) => persistLayoutSnapshot({ bottomPanelHeight: height })}
 			/>
 		</main>
 	</div>
