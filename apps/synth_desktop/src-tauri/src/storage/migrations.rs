@@ -1,7 +1,19 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-/// Ordered embedded migrations. Version N applies only after 1..=N-1.
+/// Every embedded migration, in order. Version N applies only after 1..=N-1.
+const MIGRATIONS: &[&str] = &[
+    MIGRATION_1,
+    MIGRATION_2,
+    MIGRATION_3,
+    MIGRATION_4,
+    MIGRATION_5,
+    MIGRATION_6,
+    MIGRATION_7,
+    MIGRATION_8,
+];
+
+/// Apply every migration the database has not reached yet.
 pub fn apply_migrations(conn: &Connection) -> Result<i64> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -17,68 +29,11 @@ pub fn apply_migrations(conn: &Connection) -> Result<i64> {
         )
         .unwrap_or(0);
 
-    if current < 1 {
-        conn.execute_batch(MIGRATION_1)?;
-        conn.execute(
-            "INSERT INTO schema_migrations(version, applied_at) VALUES (1, datetime('now'))",
-            [],
-        )?;
-    }
-
-    if current < 2 {
-        conn.execute_batch(MIGRATION_2)?;
-        conn.execute(
-            "INSERT INTO schema_migrations(version, applied_at) VALUES (2, datetime('now'))",
-            [],
-        )?;
-    }
-
-    if current < 3 {
-        conn.execute_batch(MIGRATION_3)?;
-        conn.execute(
-            "INSERT INTO schema_migrations(version, applied_at) VALUES (3, datetime('now'))",
-            [],
-        )?;
-    }
-
-    if current < 4 {
-        conn.execute_batch(MIGRATION_4)?;
-        conn.execute(
-            "INSERT INTO schema_migrations(version, applied_at) VALUES (4, datetime('now'))",
-            [],
-        )?;
-    }
-
-    if current < 5 {
-        conn.execute_batch(MIGRATION_5)?;
-        conn.execute(
-            "INSERT INTO schema_migrations(version, applied_at) VALUES (5, datetime('now'))",
-            [],
-        )?;
-    }
-
-    if current < 6 {
-        conn.execute_batch(MIGRATION_6)?;
-        conn.execute(
-            "INSERT INTO schema_migrations(version, applied_at) VALUES (6, datetime('now'))",
-            [],
-        )?;
-    }
-
-    if current < 7 {
-        conn.execute_batch(MIGRATION_7)?;
-        conn.execute(
-            "INSERT INTO schema_migrations(version, applied_at) VALUES (7, datetime('now'))",
-            [],
-        )?;
-    }
-
-    if current < 8 {
-        conn.execute_batch(MIGRATION_8)?;
-        conn.execute(
-            "INSERT INTO schema_migrations(version, applied_at) VALUES (8, datetime('now'))",
-            [],
-        )?;
+    for (index, migration) in MIGRATIONS.iter().enumerate() {
+        let version = index as i64 + 1;
+        if current < version {
+            apply_one(conn, version, migration)?;
+        }
     }
 
     let version: i64 = conn.query_row(
@@ -87,6 +42,25 @@ pub fn apply_migrations(conn: &Connection) -> Result<i64> {
         |row| row.get(0),
     )?;
     Ok(version)
+}
+
+/// One migration and its version stamp commit as a single transaction: a
+/// crash leaves the database entirely before or entirely after a version,
+/// never between. Half-applying a data-moving migration (6 renames a table,
+/// 8 copies one) while the stamp stays behind would make every relaunch
+/// replay the move into already-moved data and wedge the app at open.
+fn apply_one(conn: &Connection, version: i64, sql: &str) -> Result<()> {
+    let batch = format!(
+        "BEGIN IMMEDIATE;\n{sql}\nINSERT INTO schema_migrations(version, applied_at) VALUES ({version}, datetime('now'));\nCOMMIT;"
+    );
+    if let Err(error) = conn.execute_batch(&batch) {
+        // A failed batch can leave its transaction open on the shared
+        // connection; roll it back so the caller's error path still works.
+        let _ = conn.execute_batch("ROLLBACK;");
+        return Err(anyhow::Error::from(error)
+            .context(format!("apply schema migration {version}")));
+    }
+    Ok(())
 }
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -638,7 +612,10 @@ CREATE TABLE IF NOT EXISTS usage_records (
     UNIQUE(provider, request_id)
 );
 
-INSERT INTO usage_records (
+-- OR IGNORE: recovery for databases wedged by a pre-transactional build that
+-- crashed after this copy committed but before the version stamp did —
+-- replaying the copy must skip rows that already arrived, not fail the open.
+INSERT OR IGNORE INTO usage_records (
     id, provider, model_id, model_revision, session_id, run_id, request_id,
     measurement_kind, status, started_at_ms, first_output_at_ms, last_output_at_ms,
     completed_at_ms, input_tokens, cached_input_tokens, reasoning_tokens,
@@ -668,6 +645,25 @@ ON usage_records(completed_at_ms DESC);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A database stamped `version` with migrations 1..=version applied, as a
+    /// real installation of that era would have shipped it.
+    fn seed_at_version(version: usize) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);",
+        )
+        .unwrap();
+        for (index, migration) in MIGRATIONS.iter().take(version).enumerate() {
+            conn.execute_batch(migration).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, datetime('now'))",
+                [index as i64 + 1],
+            )
+            .unwrap();
+        }
+        conn
+    }
 
     #[test]
     fn upgrades_v1_database_without_losing_runs() {
@@ -741,30 +737,7 @@ mod tests {
     /// performance samples all come across into `usage_records` verbatim.
     #[test]
     fn migration_8_preserves_ledger_rows_and_imports_performance_samples() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);",
-        )
-        .unwrap();
-        for (version, migration) in [
-            MIGRATION_1,
-            MIGRATION_2,
-            MIGRATION_3,
-            MIGRATION_4,
-            MIGRATION_5,
-            MIGRATION_6,
-            MIGRATION_7,
-        ]
-        .iter()
-        .enumerate()
-        {
-            conn.execute_batch(migration).unwrap();
-            conn.execute(
-                "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, datetime('now'))",
-                [version as i64 + 1],
-            )
-            .unwrap();
-        }
+        let conn = seed_at_version(7);
         conn.execute(
             "INSERT INTO usage_ledger(id,provider,model,prompt_tokens,completion_tokens,total_tokens,cost_usd,created_at)
              VALUES('ledger-1','openrouter','luna',10,20,30,0.5,'2026-08-01T00:00:00Z')",
@@ -799,5 +772,126 @@ mod tests {
             .unwrap();
         assert_eq!((input, cached, total), (100, 40, 150));
         assert_eq!(cost_source, "none");
+    }
+
+    /// A realistic v7 history — a large sample backlog and samples with
+    /// unreported token counts — comes across whole: every row imported (no
+    /// retention trim), unreported counters stay NULL (no silent zeroes), and
+    /// generated totals equal input + output where both exist.
+    #[test]
+    fn migration_8_imports_every_sample_and_never_zeroes_unreported_tokens() {
+        let conn = seed_at_version(7);
+        conn.execute(
+            "INSERT INTO usage_ledger(id,provider,model,prompt_tokens,completion_tokens,total_tokens,cost_usd,created_at)
+             VALUES('ledger-1','openrouter','luna',10,20,30,0.5,'2026-08-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        // A sample whose provider never reported token counts at all.
+        conn.execute(
+            "INSERT INTO model_performance_samples(id,provider,model_id,request_id,measurement_kind,status,started_at_ms,completed_at_ms,source,created_at)
+             VALUES('perf-null','openrouter','openai/gpt-5.6-luna','req-null','end_to_end','failed',1000,1500,'codex_app_server','2026-08-01T00:00:01Z')",
+            [],
+        )
+        .unwrap();
+        for index in 0..1_200 {
+            conn.execute(
+                "INSERT INTO model_performance_samples(id,provider,model_id,request_id,measurement_kind,status,started_at_ms,completed_at_ms,input_tokens,output_tokens,source,created_at)
+                 VALUES(?1,'openrouter','openai/gpt-5.6-luna',?2,'observed_stream','completed',1000,2000,100,50,'codex_app_server','2026-08-01T00:00:02Z')",
+                rusqlite::params![format!("perf-{index}"), format!("req-{index}")],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(apply_migrations(&conn).unwrap(), 8);
+
+        let imported: i64 = conn
+            .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(imported, 1_201, "history must never be silently trimmed");
+        let (null_total, billed, estimated, cost_source): (
+            Option<i64>,
+            Option<f64>,
+            Option<f64>,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT total_tokens, billed_cost_usd, estimated_cost_usd, cost_source
+                 FROM usage_records WHERE request_id='req-null'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(null_total, None, "unreported tokens must not become zero");
+        assert_eq!((billed, estimated), (None, None));
+        assert_eq!(cost_source, "none");
+        let (totals_ok, ledger_rows): (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM usage_records WHERE request_id LIKE 'req-%' AND request_id != 'req-null' AND total_tokens = 150),
+                        (SELECT COUNT(*) FROM usage_ledger)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(totals_ok, 1_200);
+        assert_eq!(ledger_rows, 1, "legacy ledger rows are preserved verbatim");
+    }
+
+    /// Recovery from the pre-transactional failure mode: a crash landed after
+    /// migration 8's data copy but before its version stamp, so the app
+    /// relaunches at version 7 with `usage_records` already populated.
+    /// Replaying the migration must recover — not fail `Database::open`
+    /// forever on the copy's primary key.
+    #[test]
+    fn a_partially_applied_migration_8_recovers_instead_of_wedging_open() {
+        let conn = seed_at_version(7);
+        conn.execute(
+            "INSERT INTO model_performance_samples(id,provider,model_id,request_id,measurement_kind,status,started_at_ms,completed_at_ms,input_tokens,output_tokens,source,created_at)
+             VALUES('perf-1','openrouter','openai/gpt-5.6-luna','req-1','observed_stream','completed',1000,2000,100,50,'codex_app_server','2026-08-01T00:00:01Z')",
+            [],
+        )
+        .unwrap();
+        // Everything up to (but excluding) the DROP: the create and the copy
+        // committed, the version stamp did not.
+        let partial = MIGRATION_8
+            .split("DROP TABLE")
+            .next()
+            .expect("migration 8 drops the samples table");
+        conn.execute_batch(partial).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 7);
+
+        assert_eq!(apply_migrations(&conn).unwrap(), 8);
+        let (copies, leftovers): (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM usage_records WHERE request_id='req-1'),
+                        (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='model_performance_samples')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(copies, 1, "the replayed copy must not duplicate rows");
+        assert_eq!(leftovers, 0);
+    }
+
+    /// A migration that fails mid-flight must leave no half-applied state
+    /// behind: its statements and its version stamp commit atomically.
+    #[test]
+    fn a_failing_migration_leaves_neither_data_nor_version_behind() {
+        let conn = seed_at_version(7);
+        let poison = "CREATE TABLE wp4_atomicity_probe (id TEXT PRIMARY KEY);\nTHIS IS NOT SQL;";
+        let error = apply_one(&conn, 8, poison).expect_err("the batch must fail");
+        assert!(error.to_string().contains("apply schema migration 8"));
+        let (probe, version): (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM sqlite_master WHERE name='wp4_atomicity_probe'),
+                        (SELECT COALESCE(MAX(version),0) FROM schema_migrations)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(probe, 0, "the failed migration's table must roll back");
+        assert_eq!(version, 7);
+        // The connection stays usable and the real migration still applies.
+        assert_eq!(apply_migrations(&conn).unwrap(), 8);
     }
 }
