@@ -15,6 +15,7 @@ type Props = {
 	visualsActive?: boolean;
 	optimizersActive?: boolean;
 	workingChatIds?: ReadonlySet<string>;
+	activeLocalDecodeTps?: string | null;
 	unreadChatIds?: ReadonlySet<string>;
 	pinnedChatIds?: ReadonlySet<string>;
 	conversationTitles?: Record<string, string>;
@@ -118,6 +119,7 @@ export function Sidebar({
 	visualsActive = false,
 	optimizersActive = false,
 	workingChatIds = new Set<string>(),
+	activeLocalDecodeTps = null,
 	unreadChatIds = new Set<string>(),
 	pinnedChatIds = new Set<string>(),
 	conversationTitles = {},
@@ -318,7 +320,17 @@ export function Sidebar({
 											<span className="item-label">{title}</span>
 											{pinned ? <span className="chat-pin-marker" aria-label="Pinned" title="Pinned" data-testid={`chat-pinned-${chat.id}`}>Pinned</span> : null}
 											{working ? (
-												<span className="chat-working-indicator" aria-label="Working" title="Working" data-testid={`chat-working-${chat.id}`} />
+												<>
+													<span
+														className="chat-working-indicator"
+														aria-label={activeChatId === chat.id && activeLocalDecodeTps ? `Working · ${activeLocalDecodeTps}` : "Working"}
+														title={activeChatId === chat.id && activeLocalDecodeTps ? `Working · ${activeLocalDecodeTps}` : "Working"}
+														data-testid={`chat-working-${chat.id}`}
+													/>
+													{activeChatId === chat.id && activeLocalDecodeTps ? (
+														<span className="chat-working-rate" data-testid={`chat-working-rate-${chat.id}`}>{activeLocalDecodeTps}</span>
+													) : null}
+												</>
 											) : unreadChatIds.has(chat.id) ? (
 												<span className="chat-unread-indicator" aria-label="Finished, unviewed" title="Finished, unviewed" data-testid={`chat-unread-${chat.id}`} />
 											) : null}

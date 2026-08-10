@@ -82,6 +82,7 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 	// Two 4s poll ticks flip the stub to paired.
 	await expect(page.getByTestId("backend-settings")).toContainText("Authenticated", { timeout: 15_000 });
 	await expect(signIn.getByTestId("sign-in-status")).toContainText("Connected to Synth");
+	await page.getByRole("button", { name: /Back/ }).click();
 	await page.getByTestId("account-menu-trigger").click();
 	await expect(page.getByTestId("account-menu")).toContainText("Synth Dev");
 	await expect(page.getByTestId("account-open-usage")).toContainText("Usage");
@@ -98,9 +99,12 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 	await expect(page.getByTestId("usage-sheet-dev-seed")).toContainText("Dev stand-in");
 	await page.getByTestId("usage-sheet-close").click();
 
-	await signIn.getByTestId("account-sign-out").click();
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-menu").getByTestId("open-account-settings").click();
+	const signedInSettings = page.getByTestId("account-sign-in");
+	await signedInSettings.getByTestId("account-sign-out").click();
 	await expect(page.getByTestId("backend-settings")).toContainText("API key required");
-	await expect(signIn.getByTestId("sign-in-status")).toContainText("creates your Synth account");
+	await expect(signedInSettings.getByTestId("sign-in-status")).toContainText("creates your Synth account");
 });
 
 test("first run offers local use and Synth sign-in as equal choices", async ({ page }) => {

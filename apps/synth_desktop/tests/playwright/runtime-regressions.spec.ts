@@ -43,6 +43,23 @@ async function installLagunaFixture(page: Page, phase: LagunaPhase): Promise<voi
 	await page.getByTestId("titlebar").waitFor();
 }
 
+async function installConfiguredOpenRouter(page: Page): Promise<void> {
+	await page.addInitScript(() => {
+		window.synthConfig = {
+			get: async () => ({
+				configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod",
+				backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY",
+				apiKeyConfigured: false, workerKeyConfigured: false,
+				openrouterApiKeyConfigured: true
+			}),
+			update: async () => { throw new Error("unused"); },
+			listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
+			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
+			updateWorkspaceAccess: async () => ({ allowedRoots: [] })
+		};
+	});
+}
+
 test("native Laguna readiness overrides missing legacy runtime health", async ({ page }) => {
 	await installLagunaFixture(page, "ready");
 
@@ -66,6 +83,7 @@ for (const phase of ["starting", "loading"] as const) {
 }
 
 test("a blocked local startup does not trap remote or cloud target selection", async ({ page }) => {
+	await installConfiguredOpenRouter(page);
 	await installLagunaFixture(page, "starting");
 	await page.getByTestId("composer-model").click();
 
@@ -119,7 +137,7 @@ test("Settings offers and completes a real model-download bridge when weights ar
 	await page.reload();
 	await openSettings(page);
 	await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
-	await page.getByTestId("download-laguna-model").click();
+	await page.getByTestId("settings-page").getByRole("button", { name: "Download", exact: true }).click();
 	const locations = page.getByTestId("laguna-model-locations");
 	await expect(locations).toContainText("/models/poolside/Laguna-XS-2.1-NVFP4-mlx");
 	await expect(locations.getByText("In use")).toBeVisible();
@@ -359,6 +377,7 @@ test("Rust Inventory navigation never replaces native Codex sessions with legacy
 });
 
 test("changing providers mid-chat stays in the thread and switches on send", async ({ page }) => {
+	await installConfiguredOpenRouter(page);
 	await page.addInitScript(() => {
 		const starts: Array<Record<string, unknown>> = [];
 		const turns: Array<{ sessionId: string; prompt: string; effort?: string }> = [];
@@ -378,11 +397,11 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 			},
 			startTurn: async (sessionId: string, prompt: string, effort?: string) => {
 				turns.push({ sessionId, prompt, effort });
-				queueMicrotask(() => {
+				setTimeout(() => {
 					for (const listener of listeners) {
 						listener({ sessionId, method: "turn/completed", params: { turn: { status: "completed" } } });
 					}
-				});
+				}, 0);
 				return { sessionId, threadId: "local-thread", turnId: `turn-${turns.length}` };
 			},
 			interrupt: async () => undefined,
@@ -405,6 +424,7 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 	await expect.poll(() => page.evaluate(() =>
 		(window as typeof window & { __providerTurns: Array<{ effort?: string }> }).__providerTurns.at(-1)?.effort
 	)).toBe("none");
+	await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0);
 	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.models.local-laguna.reasoning"))).toBe("none");
 	await page.getByTestId("composer-model").click();
 	await page.getByTestId("composer-model-option-openrouter-luna").click();
@@ -420,15 +440,13 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Reasoning effort: High");
 	await page.getByTestId("composer-input").fill("hello Luna");
 	await page.getByTestId("composer-send").click();
-	const starts = await page.evaluate(() => (window as typeof window & { __providerStarts: Array<Record<string, unknown>> }).__providerStarts);
-	const turns = await page.evaluate(() => (window as typeof window & { __providerTurns: Array<{ sessionId: string; prompt: string; effort?: string }> }).__providerTurns);
-	expect(starts.at(-1)).toMatchObject({
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __providerStarts: Array<Record<string, unknown>> }).__providerStarts.at(-1))).toMatchObject({
 		sessionId: "bound-local",
 		providerName: "openrouter",
 		model: "openai/gpt-5.6-luna",
 		threadId: "local-thread"
 	});
-	expect(turns.at(-1)).toMatchObject({ sessionId: "bound-local", prompt: "hello Luna", effort: "high" });
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __providerTurns: Array<{ sessionId: string; prompt: string; effort?: string }> }).__providerTurns.at(-1))).toMatchObject({ sessionId: "bound-local", prompt: "hello Luna", effort: "high" });
 	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.reasoningEffort"))).toBe("high");
 
 	await page.getByTestId("composer-model").click();
@@ -440,14 +458,12 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 	await page.getByTestId("reasoning-effort-menu").getByRole("option", { name: "None", exact: true }).click();
 	await page.getByTestId("composer-input").fill("hello Laguna S");
 	await page.getByTestId("composer-send").click();
-	const lagunaStarts = await page.evaluate(() => (window as typeof window & { __providerStarts: Array<Record<string, unknown>> }).__providerStarts);
-	const lagunaTurns = await page.evaluate(() => (window as typeof window & { __providerTurns: Array<{ prompt: string; effort?: string }> }).__providerTurns);
-	expect(lagunaStarts.at(-1)).toMatchObject({
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __providerStarts: Array<Record<string, unknown>> }).__providerStarts.at(-1))).toMatchObject({
 		sessionId: "bound-local",
 		providerName: "openrouter",
 		model: "poolside/laguna-s-2.1"
 	});
-	expect(lagunaTurns.at(-1)).toMatchObject({ prompt: "hello Laguna S", effort: "none" });
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __providerTurns: Array<{ prompt: string; effort?: string }> }).__providerTurns.at(-1))).toMatchObject({ prompt: "hello Laguna S", effort: "none" });
 	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.models.openrouter-laguna-s.reasoning"))).toBe("none");
 });
 
@@ -796,7 +812,7 @@ test("closed-model reasoning renders only a provider summary disclosure", async 
 	const transcript = page.getByTestId("chat-transcript");
 	const summary = transcript.getByRole("button", { name: /Reasoning summary/ });
 	await expect(summary).toBeVisible();
-	await expect(summary).toContainText("Provider summary");
+	await expect(summary).toContainText("Reasoning summary");
 	await expect(transcript.getByRole("button", { name: /Thought/ })).toHaveCount(0);
 	await expect(transcript.getByTestId(/activity-detail-/)).toHaveCount(0);
 	await summary.click();
@@ -1082,7 +1098,9 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(visualPane).toBeVisible();
 	await expect(visualPane).toContainText("Reward comparison");
 	await expect(visualPane.getByTestId("visual-craftax-eval-matrix")).toBeVisible();
-	await expect(transcript.getByText(/Worked .*ran 1 command, read 1 file, searched once, used 3 tools/)).toBeVisible();
+	await page.getByTestId("activity-mode-menu-trigger").click();
+	await page.getByTestId("activity-mode-option-grouped").click();
+	await expect(transcript.getByText(/Worked .*ran 1 command, read 1 file, searched once, used 4 tools/)).toBeVisible();
 	await expect(transcript).not.toContainText("super-secret-value");
 	await expect(transcript).not.toContainText("raw command output");
 	await expect(transcript).not.toContainText("file contents must stay hidden");

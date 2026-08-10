@@ -1094,7 +1094,18 @@ export default function App() {
 			latestRunEvent?.eventKind === "run.completed" ||
 			latestRunEvent?.eventKind === "run.failed" ||
 			latestRunEvent?.eventKind === "run.cancelled"
-		) return false;
+		) {
+			// A new turn can be accepted before a provider emits run.started. Do not
+			// let the preceding turn's terminal event hide Stop for that new turn.
+			// Sequence, unlike restored wall-clock timestamps, proves the user event
+			// belongs to a later turn.
+			const hasNewerUserTurn = (eventsBySession[activeChat.id] ?? []).some((event) =>
+				event.sequence > latestRunEvent.sequence &&
+				event.eventKind === "message.created" &&
+				event.payload?.role === "user"
+			);
+			if (activeChatSession?.status !== "running" || !hasNewerUserTurn) return false;
+		}
 		// A restored session record is authoritative. In particular, a stale
 		// run.started event must not resurrect Working after the app-server that
 		// owned that turn has exited or the desktop app has restarted. A terminal
@@ -1837,6 +1848,9 @@ export default function App() {
 					visualsActive={view.kind === "visuals"}
 					optimizersActive={view.kind === "optimizers"}
 					workingChatIds={workingChatIds}
+					activeLocalDecodeTps={inferenceMonitor.snapshot?.active?.decodeTokensPerSecond == null
+						? null
+						: `${formatTps(inferenceMonitor.snapshot.active.decodeTokensPerSecond)} tok/s`}
 					unreadChatIds={unreadChatIds}
 					pinnedChatIds={pinnedChatIds}
 					conversationTitles={conversationTitles}

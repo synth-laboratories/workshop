@@ -774,10 +774,20 @@ a,
 }
 
 .chat-working-indicator {
+	width: 15px;
+	height: 15px;
+	flex-basis: 15px;
 	border: 1.5px solid #8d929a;
 	border-top-color: transparent;
 	border-radius: 50%;
 	animation: chat-working-spin 0.85s linear infinite;
+}
+
+.chat-working-rate {
+	color: var(--color-text-faint);
+	font-size: 10px;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
 }
 
 .chat-unread-indicator {

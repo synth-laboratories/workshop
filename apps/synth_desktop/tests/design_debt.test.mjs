@@ -86,12 +86,9 @@ test("design debt: agent-authored analysis shell normalizes persisted type-block
 test("composer approval policy control is wired and test-addressable", () => {
 	const composer = read("components/Composer.tsx");
 	assert.match(composer, /className="permission-select"/);
-	const block = composer.slice(
-		composer.indexOf('className="permission-select"'),
-		composer.indexOf('className="permission-select"') + 320
-	);
-	assert.ok(block.includes("onClick"));
-	assert.ok(block.includes('data-testid="approval-mode-select"'));
+	const triggerLine = composer.split("\n").find((line) => line.includes('className="permission-select"')) ?? "";
+	assert.ok(triggerLine.includes("onClick="));
+	assert.ok(triggerLine.includes('data-testid="approval-mode-select"'));
 	assert.match(composer, /data-testid="approval-mode-menu"/);
 });
 

@@ -973,7 +973,7 @@ export function eventsToLocalActivity(
 			if (!supplied) continue;
 			const lines = (byMessage[current] ??= []);
 			const previous = lines.at(-1);
-			const label = reasoningDisplay === "full" ? "Thought" : "Reasoned";
+			const label = reasoningDisplay === "full" ? "Thought" : "Reasoning summary";
 			if (previous?.kind === "thought" && previous.reasoningDisplay === reasoningDisplay) {
 				const existing = previous.detail ?? "";
 				previous.detail = supplied.startsWith(existing) ? supplied : existing + supplied;

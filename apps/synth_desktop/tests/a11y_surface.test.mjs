@@ -156,12 +156,13 @@ test("unconfigured Intern has explicit boot guidance and a disabled composer", (
   assert.ok(!settings.includes("SYNTH_INTERN_DEMO"));
 });
 
-test("Synth API settings keep routing in TOML and secrets in an env file", () => {
+test("Synth API settings keep routing in TOML while credentials remain in native custody", () => {
   const settings = read("components/BackendSettings.tsx");
   assert.ok(settings.includes('data-testid="backend-settings"'));
   assert.ok(settings.includes("Backend API"));
   assert.ok(settings.includes("Secrets env file"));
-  assert.ok(settings.includes('type="password"'));
+	assert.ok(!settings.includes('type="password"'));
+	assert.ok(settings.includes("Credentials must already exist in a private env file read only by the native host."));
   assert.ok(settings.includes("Save and reconnect"));
   assert.ok(settings.includes('staging: "https://api-dev.usesynth.ai"'));
   assert.ok(settings.includes("Preserve explicitly customized endpoints"));
@@ -222,7 +223,9 @@ test("v0.2 Intern bridge remains typed while v0.1 creation stays unreachable", (
     "intern_session_events_after",
   ]) assert.ok(bridge.includes(`"${command}"`), command);
   assert.ok(bridge.includes('listen<AppEvent>("runtime:event"'));
-	assert.ok(!app.includes("nativeIntern.createSession"));
+	assert.ok(app.includes("nativeIntern.createSession"));
+	assert.ok(!app.includes('setSelectedTargetId("intern-sync")'));
+	assert.ok(!app.includes('setSelectedTargetId("intern-async")'));
   assert.ok(app.includes("nativeIntern.eventsAfter"));
   assert.ok(app.includes("appEventToRuntimeEvent"));
 });
