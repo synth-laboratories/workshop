@@ -431,6 +431,26 @@ const STATUS_LABELS: Record<RecentRequestStatus, string> = {
 	cancelled: "cancelled"
 };
 
+/** Header gear that deep-links to Settings → Inference. Absent without a target. */
+function SettingsGear({ onOpen }: { onOpen?: () => void }) {
+	if (!onOpen) return null;
+	return (
+		<button
+			type="button"
+			className="inference-gear"
+			data-testid="inference-open-settings"
+			aria-label="Open inference settings"
+			title="Inference defaults"
+			onClick={onOpen}
+		>
+			<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.4">
+				<circle cx="8" cy="8" r="2.4" />
+				<path d="M8 1.6v2M8 12.4v2M1.6 8h2M12.4 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M12.5 3.5l-1.4 1.4M4.9 11.1l-1.4 1.4" />
+			</svg>
+		</button>
+	);
+}
+
 function Unavailable({ label }: { label: string }) {
 	return (
 		<span className="inference-unavailable" title={`${label} is not reported by the daemon`}>
@@ -488,6 +508,8 @@ export type InferencePanelProps = {
 	transport?: InferenceTransport;
 	historyLimit?: number;
 	className?: string;
+	/** When set, a header gear deep-links to Settings → Inference. */
+	onOpenSettings?: () => void;
 };
 
 export function InferencePanel({
@@ -497,7 +519,8 @@ export function InferencePanel({
 	monitor,
 	transport,
 	historyLimit,
-	className
+	className,
+	onOpenSettings
 }: InferencePanelProps) {
 	// The panel is mounted in both the rail and the page, so ids must be local.
 	const reasonId = `${useId()}-free-reason`;
@@ -522,6 +545,7 @@ export function InferencePanel({
 			<section className={shell} data-testid="inference-panel" data-state={state}>
 				<header className="inference-head">
 					<h2>Inference</h2>
+					<SettingsGear onOpen={onOpenSettings} />
 				</header>
 				<p
 					className="inference-note"
@@ -539,6 +563,7 @@ export function InferencePanel({
 			<section className={shell} data-testid="inference-panel" data-state="error">
 				<header className="inference-head">
 					<h2>Inference</h2>
+					<SettingsGear onOpen={onOpenSettings} />
 				</header>
 				<p className="inference-error" role="alert" data-testid="inference-error">
 					{view.error ?? "Laguna inference telemetry is unavailable."}
@@ -584,6 +609,7 @@ export function InferencePanel({
 						"UNLOADED"
 					)}
 				</span>
+				<SettingsGear onOpen={onOpenSettings} />
 			</header>
 
 			<div className="inference-activity" data-testid="inference-activity" aria-live="polite">

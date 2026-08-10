@@ -5083,6 +5083,19 @@ a,
 	color: var(--color-text-faint);
 }
 
+.inference-gear {
+	border: none;
+	background: none;
+	padding: 2px;
+	color: var(--color-text-faint);
+	cursor: pointer;
+	line-height: 0;
+}
+
+.inference-gear:hover {
+	color: var(--color-text);
+}
+
 .inference-activity {
 	display: grid;
 	grid-template-columns: auto 1fr;
@@ -5812,6 +5825,11 @@ html.sidebar-hidden .sidebar {
 .pref-field-error {
 	color: #b42318;
 	font-size: 12px;
+}
+
+.pref-field-caption {
+	color: var(--color-text-faint);
+	font-size: 11px;
 }
 
 .pref-option-list {

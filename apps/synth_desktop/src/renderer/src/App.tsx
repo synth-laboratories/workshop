@@ -118,7 +118,7 @@ type MainView =
 	| { kind: "chat"; chatId: string }
 	| { kind: "sync"; sessionId: string }
 	| { kind: "async"; sessionId: string }
-	| { kind: "settings"; section?: "general" | "models" | "voice" | "runtime" | "account" | "about" }
+	| { kind: "settings"; section?: "general" | "models" | "inference" | "voice" | "runtime" | "account" | "about" }
 	| { kind: "connectors" }
 	| { kind: "inventory" }
 	| { kind: "visuals" }
@@ -1910,6 +1910,7 @@ export default function App() {
 											activeChatRunning && activeChatSession?.target.kind === "local"
 										)}
 										warmingUp={activeChatWarmingUp}
+										onOpenSettings={() => setView({ kind: "settings", section: "inference" })}
 									/>
 								</aside>
 							) : null}

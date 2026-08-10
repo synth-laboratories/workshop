@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { RuntimeHealth } from "@synth/runtime-protocol";
 import type { DesktopInstanceDiagnostics, LagunaStatus, ModelMultiAgentSetting, MultiAgentVersion } from "../env";
 import { OnDeviceModelsSettings } from "./OnDeviceModelsSettings";
+import { InferenceSettings } from "./InferenceSettings";
 import { VoiceRecognitionSettings } from "./VoiceRecognitionSettings";
 import { ModelObservabilitySettings } from "./ModelObservabilitySettings";
 import { BackendSettings } from "./BackendSettings";
@@ -26,6 +27,7 @@ type Props = {
 const SECTIONS = [
 	{ id: "general", label: "General" },
 	{ id: "models", label: "Models" },
+	{ id: "inference", label: "Inference" },
 	{ id: "voice", label: "Voice" },
 	{ id: "runtime", label: "Runtime" },
 	{ id: "account", label: "Account" },
@@ -140,6 +142,12 @@ export function SettingsPage({
 	);
 	const [desktopIdentity, setDesktopIdentity] = useState<DesktopInstanceDiagnostics | null>(null);
 
+	// Deep links (e.g. the inference panel's gear) retarget an already-open
+	// Settings view; internal nav clicks never change the prop, so they win.
+	useEffect(() => {
+		if (SECTIONS.some((entry) => entry.id === initialSection)) setSection(initialSection);
+	}, [initialSection]);
+
 	useEffect(() => {
 		void window.synthDesktop.getInstanceDiagnostics().then(setDesktopIdentity).catch(() => undefined);
 	}, []);
@@ -201,6 +209,18 @@ export function SettingsPage({
 								<ModelObservabilitySettings />
 								<MultiAgentModelSettings />
 							</section>
+						</div>
+					) : null}
+					{section === "inference" ? (
+						<div className="settings-finetunes" data-testid="settings-inference">
+							<header className="settings-section-head">
+								<div>
+									<p className="settings-breadcrumb">Settings → Inference</p>
+									<h2>Inference</h2>
+									<p>Daemon-side defaults for sampling, reasoning, and runtime residency.</p>
+								</div>
+							</header>
+							<InferenceSettings />
 						</div>
 					) : null}
 					{section === "voice" ? (
