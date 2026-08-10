@@ -15,6 +15,19 @@ DEBUG_EXE="$ROOT/apps/synth_desktop/src-tauri/target/debug/synth-desktop"
 BACKUP_ROOT="${SYNTH_DESKTOP_BACKUP_ROOT:-$HOME/.synth-desktop/backups/app-builds}"
 INSTALL_STAGE=""
 
+enable_rust_cache() {
+	if command -v sccache >/dev/null 2>&1; then
+		export RUSTC_WRAPPER="${RUSTC_WRAPPER:-$(command -v sccache)}"
+		export SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/synth-workshop/sccache}"
+		mkdir -p "$SCCACHE_DIR"
+	fi
+}
+
+run_renderer_typecheck() {
+	cd "$ROOT"
+	npx turbo run typecheck --filter=@synth/synth-desktop
+}
+
 cleanup_stage() {
   if [[ -n "$INSTALL_STAGE" && -d "$INSTALL_STAGE" ]]; then
     /bin/rm -rf "$INSTALL_STAGE"
@@ -28,9 +41,10 @@ usage() {
 Usage: ./scripts/desktop.sh <command>
 
   dev [name] Run an isolated named Tauri/Vite development instance (default: codex)
-  verify-fast Run the fast local type and Rust compile checks
+  check     Run the fast local type and Rust compile checks
+  build     Typecheck and build the signed-app input bundle (no tests)
   verify    Run the full desktop type, Rust, and renderer release gates
-  install   Fast-check, build, install, sign, and launch /Applications
+  install   Build, install, sign, and launch /Applications (no tests)
   install-release Run full release gates, then install /Applications
   restart   Restart the already-installed canonical app
   stop      Stop only the canonical installed/debug Synth Desktop process
@@ -129,7 +143,8 @@ launch_installed() {
 
 verify_desktop() {
   cd "$ROOT"
-  npm run typecheck --workspace @synth/synth-desktop
+	enable_rust_cache
+	run_renderer_typecheck
   cargo test --manifest-path apps/synth_desktop/src-tauri/Cargo.toml
   ./scripts/test-desktop-instance.sh
   npm run test:playwright --workspace @synth/synth-desktop
@@ -137,19 +152,34 @@ verify_desktop() {
 
 verify_desktop_fast() {
   cd "$ROOT"
-  npm run typecheck --workspace @synth/synth-desktop
-  cargo check --manifest-path apps/synth_desktop/src-tauri/Cargo.toml
+	enable_rust_cache
+	local type_pid type_status=0 rust_status=0
+	run_renderer_typecheck &
+	type_pid=$!
+	cargo check --manifest-path apps/synth_desktop/src-tauri/Cargo.toml || rust_status=$?
+	wait "$type_pid" || type_status=$?
+	[[ "$type_status" -eq 0 && "$rust_status" -eq 0 ]]
+}
+
+build_desktop() {
+	cd "$ROOT"
+	enable_rust_cache
+	local type_pid type_status=0 build_status=0
+	# TypeScript checking is read-only and independent of the Tauri/Rust build,
+	# so overlap it with the real packaging compilation instead of serializing it.
+	run_renderer_typecheck &
+	type_pid=$!
+	(cd "$ROOT/apps/synth_desktop" && npx tauri build --bundles app) || build_status=$?
+	wait "$type_pid" || type_status=$?
+	[[ "$type_status" -eq 0 && "$build_status" -eq 0 ]]
 }
 
 install_desktop() {
 	local verification="${1:-fast}" timestamp stage backup=""
 	if [[ "$verification" == "release" ]]; then
 		verify_desktop
-	else
-		verify_desktop_fast
 	fi
-  cd "$ROOT/apps/synth_desktop"
-  npx tauri build --bundles app
+	build_desktop
   [[ -d "$BUNDLE_APP" && -x "$BUNDLE_EXE" ]] || {
     echo "[desktop] build did not produce $BUNDLE_APP" >&2
     return 1
@@ -200,6 +230,12 @@ case "$command" in
   verify-fast)
     verify_desktop_fast
     ;;
+	check)
+		verify_desktop_fast
+		;;
+	build)
+		build_desktop
+		;;
   install)
 		install_desktop fast
 		;;

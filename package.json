@@ -2,6 +2,7 @@
   "name": "synth-workshop",
   "private": true,
   "version": "0.1.0",
+  "packageManager": "npm@11.17.0",
   "workspaces": [
     "apps/*",
     "packages/*",
@@ -10,18 +11,23 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dev:desktop": "npm run dev --workspace @synth/synth-desktop",
-		"desktop:dev": "./scripts/desktop-instance.sh dev codex",
-		"desktop:codex:status": "./scripts/desktop-instance.sh status codex",
-		"desktop:codex:stop": "./scripts/desktop-instance.sh stop codex",
+    "desktop:dev": "./scripts/desktop-instance.sh dev codex",
+    "desktop:codex:status": "./scripts/desktop-instance.sh status codex",
+    "desktop:codex:stop": "./scripts/desktop-instance.sh stop codex",
     "desktop:instance": "./scripts/desktop-instance.sh dev",
     "desktop:instance:status": "./scripts/desktop-instance.sh status",
     "desktop:instance:stop": "./scripts/desktop-instance.sh stop",
     "desktop:instance:clean": "./scripts/desktop-instance.sh clean",
     "desktop:instance:test": "./scripts/test-desktop-instance.sh",
+    "desktop:check": "./scripts/desktop.sh check",
+		"desktop:build": "./scripts/desktop.sh build",
+		"build:graph": "turbo run frontend:build --filter=@synth/synth-desktop",
+		"check:graph": "turbo run typecheck",
+		"cache:rust:stats": "sccache --show-stats",
     "desktop:verify": "./scripts/desktop.sh verify",
-		"desktop:verify:fast": "./scripts/desktop.sh verify-fast",
+    "desktop:verify:fast": "./scripts/desktop.sh check",
     "desktop:install": "./scripts/desktop.sh install",
-		"desktop:install:release": "./scripts/desktop.sh install-release",
+    "desktop:install:release": "./scripts/desktop.sh install-release",
     "desktop:restart": "./scripts/desktop.sh restart",
     "desktop:stop": "./scripts/desktop.sh stop",
     "desktop:status": "./scripts/desktop.sh status",
@@ -55,5 +61,8 @@
   "allowScripts": {
     "electron@37.10.3": true,
     "electron@35.7.5": true
+  },
+  "devDependencies": {
+    "turbo": "^2.10.9"
   }
 }

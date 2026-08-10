@@ -44,9 +44,11 @@ Use the repository-owned lifecycle commands instead of opening a build-tree
 npm run desktop:dev      # primary hot-reload loop; isolated instance "codex"
 npm run desktop:codex:status
 npm run desktop:codex:stop
-npm run desktop:verify:fast # typecheck + cargo check; normal local checkpoint
+npm run desktop:check   # parallel typecheck + cargo check; normal checkpoint
+npm run desktop:build   # parallel typecheck + Tauri release build; no tests
+npm run cache:rust:stats # inspect Rust compiler-cache effectiveness
 npm run desktop:verify   # full Rust + renderer acceptance battery; release/CI gate
-npm run desktop:install  # fast checks → atomic local /Applications install → launch
+npm run desktop:install  # standard build → atomic local /Applications install → launch
 npm run desktop:install:release # full release gate → install → launch
 npm run desktop:restart  # restart the installed canonical app
 npm run desktop:status   # verify the one allowed process and install path
@@ -63,10 +65,12 @@ Use the test batteries according to the scope of the change:
 | Battery | Command | Run it when |
 | --- | --- | --- |
 | Focused | The relevant `npm`, Playwright, or Cargo test directly | During iteration and after a localized UI/runtime change. |
-| Fast | `npm run desktop:verify:fast` | Before a local install or handoff; catches TypeScript and Rust compilation errors. |
+| Check | `npm run desktop:check` | Before handoff or when renderer/native contracts changed; parallel TypeScript and Rust compile checks. |
+| Build | `npm run desktop:build` | Produce a local release bundle. It overlaps typechecking with the real Tauri build and runs no tests. |
 | Full release | `npm run desktop:verify` | Before merging a release PR, cutting a release, or after broad runtime/integration changes. |
 
-`desktop:install` runs only the fast battery, then signs and verifies the staged bundle, backs up the previous
+`desktop:install` runs the standard build (with no separate `cargo check` or test
+battery), then signs and verifies the staged bundle, backs up the previous
 install under `~/.synth-desktop/backups/app-builds`, and launches only
 `/Applications/Synth Desktop.app`. Use `desktop:install:release` when the full
 release battery must pass before installation. Acceptance testing and Computer Use must
@@ -77,6 +81,12 @@ arbitrary copied apps. Do not launch
 lifecycle commands never use a generic process-name match. Use the Runtime
 identity receipt or the named instance manifest for CUA rather than relying on
 whichever generic Synth window is focused.
+
+Build acceleration is layered: Turborepo owns the npm-workspace task graph and
+caches deterministic renderer tasks; Cargo remains authoritative for Rust;
+`sccache` is detected automatically and caches eligible `rustc` invocations
+under `~/.cache/synth-workshop/sccache`. The final macOS bundle, signing,
+backup, and installation remain uncached and explicit.
 
 
 ### Dogfood gates (verified)
