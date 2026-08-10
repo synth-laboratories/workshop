@@ -1170,12 +1170,26 @@ export function visualRecordToArtifact(visual: VisualInstanceRecord): ArtifactRe
 	};
 }
 
+/** The model the local daemon is actually serving, named as the residency card names it.
+ *
+ * Weights load lazily, so before the first turn there is no loaded model to
+ * read. The bound backend still identifies it: only a GGUF selection runs on
+ * llama.cpp. Without this the sidebar reported "Laguna-XS-2.1 ready" directly
+ * under a resident Muse Glimmer — two models named for one session.
+ */
+function localModelName(laguna?: { backend?: string | null; loadedModel?: string | null } | null): string {
+	const loaded = laguna?.loadedModel;
+	if (loaded) return loaded.split("/").at(-1)?.replace(/-mlx$/i, "") ?? loaded;
+	return laguna?.backend === "llama_cpp" ? "Muse-Glimmer-30B-GGUF" : "Laguna-XS-2.1";
+}
+
 export function healthToModelStatus(
 	health: RuntimeHealth | null,
 	laguna?: {
 		phase: string;
 		detail?: string | null;
 		loadedModel?: string | null;
+		backend?: string | null;
 	} | null
 ): {
 	status: ModelStatus;
@@ -1184,14 +1198,18 @@ export function healthToModelStatus(
 	composerPlaceholder: string;
 	detail?: string;
 } {
-	const name = "Laguna-XS-2.1";
+	const name = localModelName(laguna);
+	// Muse is the only local model that is not Laguna; the Laguna wording is
+	// left exactly as it was so a Laguna session reads identically.
+	const isMuse = name.startsWith("Muse");
+	const label = isMuse ? "Muse Glimmer" : "Laguna";
 	if (laguna?.phase === "starting") {
 		return {
 			status: "starting",
 			name,
 			composerEnabled: health?.openrouter.mode === "ready",
-			composerPlaceholder: "Starting Laguna XS…",
-			detail: laguna.detail || "Starting Laguna sidecar…"
+			composerPlaceholder: isMuse ? "Starting Muse Glimmer…" : "Starting Laguna XS…",
+			detail: laguna.detail || `Starting the ${label} sidecar…`
 		};
 	}
 	if (laguna?.phase === "loading") {
@@ -1199,7 +1217,7 @@ export function healthToModelStatus(
 			status: "loading",
 			name,
 			composerEnabled: health?.openrouter.mode === "ready",
-			composerPlaceholder: "Loading Laguna XS…",
+			composerPlaceholder: isMuse ? "Loading Muse Glimmer…" : "Loading Laguna XS…",
 			detail: laguna.detail || "Loading model weights…"
 		};
 	}
@@ -1208,8 +1226,8 @@ export function healthToModelStatus(
 			status: "error",
 			name,
 			composerEnabled: health?.openrouter.mode === "ready",
-			composerPlaceholder: "Laguna unavailable — pick OpenRouter or retry",
-			detail: laguna.detail || "Laguna sidecar error"
+			composerPlaceholder: `${label} unavailable — pick OpenRouter or retry`,
+			detail: laguna.detail || `${label} sidecar error`
 		};
 	}
 	// Native Tauri sessions do not require the legacy Python runtime health
@@ -1219,8 +1237,8 @@ export function healthToModelStatus(
 			status: "ready",
 			name,
 			composerEnabled: true,
-			composerPlaceholder: "Ask Laguna something…",
-			detail: "Laguna XS ready"
+			composerPlaceholder: isMuse ? "Ask Muse something…" : "Ask Laguna something…",
+			detail: `${name} ready`
 		};
 	}
 	if (!health) {
@@ -1237,8 +1255,8 @@ export function healthToModelStatus(
 			status: "not_installed",
 			name,
 			composerEnabled: health.openrouter.mode === "ready",
-			composerPlaceholder: "Local Laguna not ready — use OpenRouter or wait…",
-			detail: "Local Laguna sidecar not connected"
+			composerPlaceholder: `Local ${label} not ready — use OpenRouter or wait…`,
+			detail: `Local ${label} sidecar not connected`
 		};
 	}
 	return {
@@ -1246,7 +1264,7 @@ export function healthToModelStatus(
 		name,
 		composerEnabled: health.openrouter.mode === "ready",
 		composerPlaceholder: "Select a model…",
-		detail: "Laguna not available"
+		detail: `${label} not available`
 	};
 }
 
@@ -1260,6 +1278,7 @@ export function buildLandingState(args: {
 		phase: string;
 		detail?: string | null;
 		loadedModel?: string | null;
+		backend?: string | null;
 	} | null;
 	apiKeyConfigured?: boolean;
 	cloudBlockedReason?: string | null;
