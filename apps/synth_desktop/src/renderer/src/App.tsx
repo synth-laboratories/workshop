@@ -127,9 +127,7 @@ type FailedSend = { sessionId: string; text: string; messageId: string; message:
 
 function performanceTargetId(summary: ModelPerformanceSummary): string | null {
 	if (summary.provider === "local-laguna") return "local-laguna";
-	if (summary.provider === "synth-cloud" && summary.modelId === SYNTH_CLOUD_LAGUNA_S_MODEL) {
-		return "synth-cloud-laguna-s";
-	}
+	if (summary.provider === "synth-cloud" && summary.modelId === SYNTH_CLOUD_LAGUNA_S_MODEL) return "synth-cloud-laguna-s";
 	if (summary.provider !== "openrouter") return null;
 	if (summary.modelId === OPENROUTER_LUNA_MODEL) return "openrouter-luna";
 	if (summary.modelId === OPENROUTER_LAGUNA_S_MODEL) return "openrouter-laguna-s";
@@ -423,7 +421,7 @@ export default function App() {
 				const summaries = await window.synthModelPerformance?.summaries();
 				if (!disposed && summaries) setModelPerformance(summaries);
 			} catch {
-				// Performance telemetry is optional and must never block chat.
+				// Optional telemetry must never block chat.
 			}
 		};
 		void refresh();
@@ -440,9 +438,7 @@ export default function App() {
 			const targetId = performanceTargetId(summary);
 			if (!targetId) continue;
 			const current = chosen.get(targetId);
-			if (!current || performancePreference(summary, targetId) > performancePreference(current, targetId)) {
-				chosen.set(targetId, summary);
-			}
+			if (!current || performancePreference(summary, targetId) > performancePreference(current, targetId)) chosen.set(targetId, summary);
 		}
 		return chosen;
 	}, [modelPerformance]);
@@ -461,9 +457,7 @@ export default function App() {
 			if (summary.tpsP50 == null) continue;
 			labels[targetId] = `${formatTps(summary.tpsP50)} tok/s ${performanceKindLabel(summary.measurementKind)} p50 · ${summary.sampleCount} ${summary.sampleCount === 1 ? "request" : "requests"} · all sessions`;
 		}
-		if (!labels["local-laguna"] && selectedModelMedianTpsLabel) {
-			labels["local-laguna"] = `${selectedModelMedianTpsLabel} · daemon lifetime`;
-		}
+		if (!labels["local-laguna"] && selectedModelMedianTpsLabel) labels["local-laguna"] = `${selectedModelMedianTpsLabel} · daemon lifetime`;
 		return labels;
 	}, [persistedPerformanceByTarget, selectedModelMedianTpsLabel]);
 	const [inventoryContainerWidth, setInventoryContainerWidth] = useState(() => loadPreferences().layout.last.outputPaneWidth);

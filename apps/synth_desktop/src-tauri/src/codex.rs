@@ -4,8 +4,7 @@ use crate::domain::{
     SessionTitleOrigin,
 };
 use crate::storage::{
-    EventAppend, EventSource, MeasurementKind, ModelPerformanceRepository,
-    ModelPerformanceSample,
+    EventAppend, EventSource, MeasurementKind, ModelPerformanceRepository, ModelPerformanceSample,
 };
 use crate::synth_config::MultiAgentVersion;
 use anyhow::{anyhow, Context, Result};
@@ -736,9 +735,6 @@ impl CodexManager {
             turn_params["effort"] = Value::String(effort.to_owned());
         }
         let started_at_ms = chrono::Utc::now().timestamp_millis();
-        let result = session.server.request("turn/start", turn_params).await?;
-        let turn_id = nested_id(&result, "turnId")
-            .ok_or_else(|| anyhow!("Codex turn/start response missing turn id: {result}"))?;
         let provider = self
             .records
             .read()
@@ -746,18 +742,41 @@ impl CodexManager {
             .get(&request.session_id)
             .map(|record| record.provider_name.clone())
             .unwrap_or_else(|| "custom".into());
+        let pending_turn_id = format!("pending-{}", uuid::Uuid::new_v4().simple());
         self.performance_trackers.lock().await.insert(
             request.session_id.clone(),
             TurnPerformanceTracker {
                 provider,
                 model_id: session.model.clone(),
-                turn_id: turn_id.clone(),
+                turn_id: pending_turn_id.clone(),
                 started_at_ms,
                 first_output_at_ms: None,
                 last_output_at_ms: None,
                 usage: TurnTokenUsage::default(),
             },
         );
+        let result = match session.server.request("turn/start", turn_params).await {
+            Ok(result) => result,
+            Err(error) => {
+                let mut trackers = self.performance_trackers.lock().await;
+                if trackers
+                    .get(&request.session_id)
+                    .is_some_and(|tracker| tracker.turn_id == pending_turn_id)
+                {
+                    trackers.remove(&request.session_id);
+                }
+                return Err(error);
+            }
+        };
+        let Some(turn_id) = nested_id(&result, "turnId") else {
+            self.performance_trackers.lock().await.remove(&request.session_id);
+            return Err(anyhow!("Codex turn/start response missing turn id: {result}"));
+        };
+        if let Some(tracker) = self.performance_trackers.lock().await.get_mut(&request.session_id) {
+            if tracker.turn_id == pending_turn_id {
+                tracker.turn_id = turn_id.clone();
+            }
+        }
         *session.turn_id.write().await = Some(turn_id.clone());
         self.set_automatic_title(&app, &request.session_id, &request.prompt, &session)
             .await;
@@ -1626,11 +1645,14 @@ fn integer_field(value: &Value, aliases: &[&str]) -> Option<i64> {
 fn usage_from_object(value: &Value) -> Option<TurnTokenUsage> {
     let output_tokens = positive_i64(integer_field(
         value,
-        &["output_tokens", "outputTokens", "completion_tokens", "completionTokens"],
+        &[
+            "output_tokens",
+            "outputTokens",
+            "completion_tokens",
+            "completionTokens",
+        ],
     ));
-    if output_tokens.is_none() {
-        return None;
-    }
+    output_tokens?;
     let details = value
         .get("output_tokens_details")
         .or_else(|| value.get("outputTokensDetails"));
@@ -1644,10 +1666,7 @@ fn usage_from_object(value: &Value) -> Option<TurnTokenUsage> {
             &["cached_input_tokens", "cachedInputTokens", "cached_tokens", "cachedTokens"],
         )),
         reasoning_tokens: details.and_then(|details| {
-            positive_i64(integer_field(
-                details,
-                &["reasoning_tokens", "reasoningTokens"],
-            ))
+            positive_i64(integer_field(details, &["reasoning_tokens", "reasoningTokens"]))
         }),
         output_tokens,
     })
@@ -1655,8 +1674,7 @@ fn usage_from_object(value: &Value) -> Option<TurnTokenUsage> {
 
 fn extract_turn_usage(params: &Value) -> Option<TurnTokenUsage> {
     // Prefer explicitly per-turn/last-usage objects. Thread-wide totals are
-    // intentionally excluded: subtracting them after a restart would invent a
-    // rate for the current request.
+    // excluded: after a restart they cannot produce an honest turn rate.
     const PATHS: &[&str] = &[
         "/lastUsage",
         "/lastTokenUsage",
@@ -1696,10 +1714,7 @@ async fn track_performance_event(
     params: &Value,
 ) {
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let terminal = matches!(
-        method,
-        "turn/completed" | "turn/failed" | "turn/interrupted"
-    );
+    let terminal = matches!(method, "turn/completed" | "turn/failed" | "turn/interrupted");
     {
         let mut trackers = trackers.lock().await;
         let Some(tracker) = trackers.get_mut(session_id) else {
@@ -1742,8 +1757,7 @@ async fn finalize_performance_tracker(
         .zip(tracker.last_output_at_ms)
         .map(|(first, last)| (last - first) as f64 / 1_000.0)
         .filter(|seconds| *seconds > 0.0);
-    let end_to_end_seconds = ((completed_at_ms - tracker.started_at_ms) as f64 / 1_000.0)
-        .max(0.0);
+    let end_to_end_seconds = ((completed_at_ms - tracker.started_at_ms) as f64 / 1_000.0).max(0.0);
     let observed_output_tps = output_tokens
         .zip(stream_seconds)
         .map(|(tokens, seconds)| tokens as f64 / seconds);
@@ -3606,8 +3620,6 @@ mod tests {
         assert_eq!(camel_case.input_tokens, Some(50));
         assert_eq!(camel_case.output_tokens, Some(8));
         assert_eq!(camel_case.cached_input_tokens, Some(20));
-
-        // Cumulative thread totals are not a valid numerator for this turn.
         assert!(extract_turn_usage(&json!({
             "tokenUsage": {"totalUsage": {"inputTokens": 9999, "outputTokens": 9999}}
         }))

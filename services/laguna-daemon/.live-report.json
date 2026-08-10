@@ -1,0 +1,80 @@
+{
+  "chat_non_stream": {
+    "completion_tokens": 72,
+    "latency_s": 1.915,
+    "prompt_tokens": 49
+  },
+  "chat_tool_loop_reasoning": {
+    "first_reasoning_chars": 153,
+    "second_reasoning_chars": 0
+  },
+  "cold_reload_s": {
+    "seconds": 9.973
+  },
+  "concurrency_3": {
+    "total_s": 7.379
+  },
+  "daemon_rolling": {
+    "decode_tps_p50": 41.43,
+    "latency_p50_ms": 4717.863,
+    "resident_gb": 20.08,
+    "ttft_p50_ms": 222.566
+  },
+  "prompt_cache": {
+    "cold_cached_tokens": 0,
+    "cold_latency_s": 3.086,
+    "prompt_tokens": 5552,
+    "speedup": 6.554,
+    "warm_cached_tokens": 5545,
+    "warm_latency_s": 0.471
+  },
+  "reasoning_effort_tool_matrix": {
+    "high_with_tools": {
+      "attempts": 2,
+      "reasoning_chars": 881,
+      "reasoning_frames": 147,
+      "terminal": "response.incomplete"
+    },
+    "high_without_tools": {
+      "attempts": 1,
+      "reasoning_chars": 1859,
+      "reasoning_frames": 317,
+      "terminal": "response.incomplete"
+    },
+    "max_alias_without_tools": {
+      "attempts": 1,
+      "reasoning_chars": 1809,
+      "reasoning_frames": 386,
+      "terminal": "response.incomplete"
+    },
+    "none_without_tools": {
+      "attempts": 1,
+      "reasoning_chars": 0,
+      "reasoning_frames": 0,
+      "terminal": "response.completed"
+    }
+  },
+  "responses_non_stream": {
+    "input_tokens": 51,
+    "latency_s": 2.69,
+    "output_tokens": 91
+  },
+  "streaming_incrementality": {
+    "first_frame_s": 0.258,
+    "frames": 314,
+    "last_frame_s": 15.032,
+    "span_s": 14.774
+  },
+  "streaming_throughput": {
+    "client_decode_s": 5.624,
+    "client_decode_tps": 35.56,
+    "client_ttft_s": 0.242,
+    "daemon_decode_tps_p50": 41.43,
+    "daemon_ttft_p50_ms": 232.758,
+    "output_tokens": 200
+  },
+  "tool_advertised_answer_streaming": {
+    "frames": 85,
+    "span_s": 2.247
+  }
+}
