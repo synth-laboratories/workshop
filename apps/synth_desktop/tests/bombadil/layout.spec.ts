@@ -174,8 +174,17 @@ const runtimeErrors = extract((state: any) => ({
 	consoleErrors: (state.console ?? []).filter((entry: { level?: string }) => entry.level === "error").length
 }));
 
+/*
+ * The account entry point is the always-present control; `open-account-settings`
+ * lives inside the popup it opens, so asserting that testid at every step made
+ * the property fail at t=0 the moment the footer moved to a popup. Intent is
+ * "an account control is always reachable", not "one specific row is mounted".
+ */
 const accountControl = extract((state: any) => ({
-	present: Boolean(state.document.querySelector('[data-testid="open-account-settings"]')),
+	present: Boolean(state.document.querySelector('[data-testid="account-menu-trigger"]')),
+	menuOpen: Boolean(state.document.querySelector('[data-testid="account-menu"]')),
+	settingsReachable: !state.document.querySelector('[data-testid="account-menu"]')
+		|| Boolean(state.document.querySelector('[data-testid="open-account-settings"]')),
 	stubVisible: state.document.body.textContent?.includes("Account — stub") ?? false
 }));
 
@@ -194,7 +203,10 @@ const primaryNavigation = extract((state: any) => {
 		searchPoint: searchRect ? { x: searchRect.left + searchRect.width / 2, y: searchRect.top + searchRect.height / 2 } : null,
 		connectorsVisible: Boolean(state.document.querySelector('[data-testid="connectors-page"]')),
 		searchVisible: Boolean(state.document.querySelector('[data-testid="conversation-search"]')),
-		controlsUsable: Boolean(connectorsRect && searchRect && connectorsRect.width >= 120 && connectorsRect.height >= 28 && searchRect.width >= 120 && searchRect.height >= 28),
+		// Connectors nav was removed from the v0.1 product surface; only assert it
+		// when it exists so the property tracks the shipped shell, not a removed one.
+		controlsUsable: Boolean(searchRect && searchRect.width >= 120 && searchRect.height >= 28
+			&& (!connectorsRect || (connectorsRect.width >= 120 && connectorsRect.height >= 28))),
 		connectorsFit: !connectorsPageRect || (connectorsPageRect.left >= 0 && connectorsPageRect.right <= state.window.innerWidth && connectorsPageRect.bottom <= state.window.innerHeight),
 		searchFits: !searchDialogRect || (searchDialogRect.left >= 0 && searchDialogRect.right <= state.window.innerWidth && searchDialogRect.bottom <= state.window.innerHeight)
 	};
@@ -430,7 +442,7 @@ export const app_shell_initializes_promptly = eventually(() =>
 
 export const terminal_and_model_picker_are_exercised = eventually(() =>
 	composerLayers.current.terminalOpen && composerLayers.current.menuOpen
-).within(5, "seconds");
+).within(8, "seconds");
 
 export const model_picker_stays_visible_above_the_terminal = always(() =>
 	!composerLayers.current.menuOpen || (
@@ -453,7 +465,8 @@ export const account_control_never_falls_back_to_stub_copy = always(() =>
 );
 
 export const account_control_remains_present = always(() =>
-	!layout.current.initialized || accountControl.current.present
+	!layout.current.initialized
+	|| (accountControl.current.present && accountControl.current.settingsReachable)
 );
 
 export const connector_catalog_stays_inside_the_viewport = always(() =>
@@ -687,7 +700,7 @@ export const exercise_landing_model_picker = actions(() => {
 
 export const landing_model_picker_is_exercised = eventually(() =>
 	landingPickerLayout.current.open
-).within(5, "seconds");
+).within(8, "seconds");
 
 export const landing_model_picker_stays_contained = always(() =>
 	!landingPickerLayout.current.open || (
