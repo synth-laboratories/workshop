@@ -39,14 +39,9 @@ APP_TITLE="Synth Desktop · $NAME"
 BUNDLE_ID="com.synth.desktop.dev.$NAME"
 CHECKSUM="$(printf '%s' "$NAME" | cksum | awk '{print $1}')"
 VITE_PORT=$((14200 + CHECKSUM % 1000))
-# Every instance owns a port pair, derived from its name so it is stable across
-# runs: the Laguna daemon and, beside it, the GGUF engine that daemon drives.
-# Instances share one models directory of read-only weights and nothing else —
-# two Desktops on one daemon means one instance's build serves the other's
-# turns, which is exactly how a stale binary bound Muse to the wrong backend
-# and made every local turn fail.
-LAGUNA_PORT=$((17300 + (CHECKSUM % 300) * 2))
-MUSE_PORT=$((LAGUNA_PORT + 1))
+# Every instance owns a stable Laguna port derived from its name. Instances
+# share one models directory of read-only weights and nothing else.
+LAGUNA_PORT=$((17300 + CHECKSUM % 600))
 SOURCE_REVISION="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
 if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
   SOURCE_REVISION="$SOURCE_REVISION-dirty"
@@ -221,7 +216,7 @@ status_instance() {
   echo "[desktop:$NAME] data $DATA_ROOT"
   echo "[desktop:$NAME] workspace $WORKSPACE"
   echo "[desktop:$NAME] vite http://127.0.0.1:$VITE_PORT"
-  echo "[desktop:$NAME] laguna http://127.0.0.1:$LAGUNA_PORT · muse engine :$MUSE_PORT"
+  echo "[desktop:$NAME] laguna http://127.0.0.1:$LAGUNA_PORT"
   echo "[desktop:$NAME] identity $APP_TITLE · badge $ICON_LABEL · $BUNDLE_ID"
   echo "[desktop:$NAME] executable $EXE"
   echo "[desktop:$NAME] manifest $MANIFEST"
@@ -241,7 +236,6 @@ dev_instance() {
   export SYNTH_LAGUNA_HOME="$laguna_home"
   export SYNTH_LAGUNA_PORT="${SYNTH_LAGUNA_PORT:-$LAGUNA_PORT}"
   export SYNTH_LAGUNA_BASE_URL="${SYNTH_LAGUNA_BASE_URL:-http://127.0.0.1:$SYNTH_LAGUNA_PORT}"
-  export SYNTH_MUSE_PORT="${SYNTH_MUSE_PORT:-$MUSE_PORT}"
   if [[ -z "${SYNTH_LAGUNA_API_KEY:-}" && -f "$laguna_home/api_key" ]]; then
     export SYNTH_LAGUNA_API_KEY
     SYNTH_LAGUNA_API_KEY="$(tr -d '\n' <"$laguna_home/api_key")"
@@ -286,7 +280,7 @@ dev_instance() {
     --bin synth-optimizers-mcp
 
   echo "[desktop:$NAME] launching $APP_TITLE"
-  echo "[desktop:$NAME] data=$DATA_ROOT vite=$VITE_PORT laguna=$SYNTH_LAGUNA_BASE_URL muse=$SYNTH_MUSE_PORT home=$laguna_home"
+  echo "[desktop:$NAME] data=$DATA_ROOT vite=$VITE_PORT laguna=$SYNTH_LAGUNA_BASE_URL home=$laguna_home"
   cd "$ROOT/apps/synth_desktop"
   exec npx tauri dev --config "$CONFIG"
 }

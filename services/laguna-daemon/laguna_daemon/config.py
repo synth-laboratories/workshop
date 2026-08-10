@@ -7,7 +7,6 @@ from pathlib import Path
 
 
 DEFAULT_MODEL = "poolside/Laguna-XS-2.1-NVFP4-mlx"
-MUSE_GLIMMER_MODEL = "meta-models/Muse-Glimmer-30B"
 DEFAULT_CONTEXT_LENGTH = 262_144
 
 
@@ -171,7 +170,7 @@ class LagunaConfig:
             ),
             context_length=int(
                 os.getenv("SYNTH_LAGUNA_CONTEXT_LENGTH")
-                or ("131072" if default_model == MUSE_GLIMMER_MODEL else str(DEFAULT_CONTEXT_LENGTH))
+                or str(DEFAULT_CONTEXT_LENGTH)
             ),
             started_at=time.time(),
         )

@@ -57,7 +57,6 @@ const includeTraceCatalogLayout = specificationPath.endsWith("trace-catalog-layo
 const includeShellContainment = specificationPath.endsWith("shell-containment.spec.ts");
 const includeInferenceHonesty = specificationPath.endsWith("inference-state-honesty.spec.ts");
 const includeRunSummarySanity = specificationPath.endsWith("run-summary-sanity.spec.ts");
-const includeMuseResidencyHonesty = specificationPath.endsWith("muse-residency-honesty.spec.ts");
 // Five seconds covers every directed/eventual horizon in layout.spec.ts. Longer
 // runs intermittently wedge the current Chromiumoxide transport after the
 // properties have already been exercised, turning a clean trace into a harness
@@ -337,32 +336,14 @@ window.synthLaguna = {
   onStatus: () => () => {}
 };
 ${includeShellContainment ? `window.synthLaguna.getStatus = async () => ({
-  phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "llama_cpp",
-  loadedModel: "/models/Muse-Glimmer-30B-GGUF", detail: "Ready", memoryBytes: null,
+  phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm",
+  loadedModel: "/models/Laguna-XS-2.1-NVFP4-mlx", detail: "Ready", memoryBytes: null,
   updatedAt: Date.now(), lastUsedAt: Date.now() - 60_000,
   idleSeconds: 60, idleUnloadAfterSeconds: 900, freeAt: Date.now() + 840_000
 });` : ""}
-${includeMuseResidencyHonesty ? `// CUA 2026-08-10 1:20 PM: Muse card with green ready chrome, Memory unavailable,
-// and "Free scheduled … · awaiting unload" after freeAt elapsed — while Laguna-XS
-// still paints ready underneath.
-window.synthLaguna.getStatus = async () => ({
-  phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "llama_cpp",
-  loadedModel: "/models/Muse-Glimmer-30B-GGUF", detail: "Ready", memoryBytes: null,
-  updatedAt: Date.now() - 25 * 60_000, lastUsedAt: Date.now() - 25 * 60_000,
-  idleSeconds: 25 * 60, idleUnloadAfterSeconds: 900, freeAt: Date.now() - 60_000
-});
-window.synthLaguna.onStatus = (handler) => {
-  handler({
-    phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "llama_cpp",
-    loadedModel: "/models/Muse-Glimmer-30B-GGUF", detail: "Ready", memoryBytes: null,
-    updatedAt: Date.now() - 25 * 60_000, lastUsedAt: Date.now() - 25 * 60_000,
-    idleSeconds: 25 * 60, idleUnloadAfterSeconds: 900, freeAt: Date.now() - 60_000
-  });
-  return () => {};
-};` : ""}
 ${includeInferenceHonesty ? `globalThis.__SYNTH_TEST_INFERENCE_TRANSPORT__ = {
   snapshot: async () => ({
-    model: "/models/Muse-Glimmer-30B-GGUF", resident: true, residentBytes: null,
+    model: "/models/Laguna-XS-2.1-NVFP4-mlx", resident: true, residentBytes: null,
     queueDepth: 0, queueCapacity: 9, active: null,
     rolling: {
       requestsCompleted: 1, requestsFailed: 0, requestsCancelled: 0,

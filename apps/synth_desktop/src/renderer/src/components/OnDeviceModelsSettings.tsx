@@ -22,21 +22,7 @@ const LAGUNA_XS = {
 	fit: "High" as const
 };
 
-const MUSE_GLIMMER = {
-	modelId: "meta-models/Muse-Glimmer-30B-GGUF",
-	id: "muse-glimmer-30b",
-	title: "Muse Glimmer 30B",
-	description: "Meta's dense agentic model with controllable reasoning, tool use, and image understanding.",
-	provider: "Meta",
-	quantization: "K-Quant 4-bit",
-	context: "131k context",
-	parameters: "29.6B dense",
-	estMemory: "24–32 GB",
-	downloadSize: "19.8 GB incl. vision + DFlash",
-	fit: "High" as const
-};
-
-const MODEL_CATALOG = [LAGUNA_XS, MUSE_GLIMMER];
+const MODEL_CATALOG = [LAGUNA_XS];
 
 type Props = {
 	lagunaPhase?: string | null;
@@ -192,7 +178,6 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 				</div>
 				<ul>
 					<li>Laguna XS: 20.1 GB download · about 30 GB memory</li>
-					<li>Muse Glimmer: 19.8 GB download · 24–32 GB+ memory · includes vision and DFlash</li>
 				</ul>
 				<p className="model-download-guide-status">Live progress appears on the model card. Interrupted downloads resume when you choose Download again.</p>
 			</section>
@@ -278,7 +263,6 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 					{installed ? (
 						<p className="on-device-installed">
 							Installed · {installed.shardCount} weight shards
-							{installed.companionBytes > 0 ? ` · DFlash ${formatBytes(installed.companionBytes)}` : ""}
 							{!installed.runtimeReady ? " · Runtime needs repair" : ""} · <code>{installed.path}</code>
 						</p>
 					) : (
@@ -328,7 +312,7 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 				</div>
 			) : null}
 
-			<p className="model-locations-note">Downloads, runtime setup, selection, startup, and removal are managed here. Muse includes its 17 GB 4-bit K-quant, vision projector, and DFlash speculator.</p>
+			<p className="model-locations-note">Downloads, runtime setup, selection, startup, and removal are managed here.</p>
 		</div>
 	);
 }
