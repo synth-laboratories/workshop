@@ -26,20 +26,24 @@ export function ModelDownloadBar({ state, onPauseToggle }: Props) {
 	const { model } = state;
 
 	if (model.status === "not_installed") {
+		const detail = model.detail || `${model.name} not connected`;
 		return (
 			<div className="download-bar is-warning" data-testid="model-status-missing">
 				<div className="download-label">
-					<span>{model.detail || `${model.name} not connected`}</span>
+					{/* The title carries the whole message; the row clamps to
+					    three lines rather than ellipsing away the fix. */}
+					<span title={detail}>{detail}</span>
 				</div>
 			</div>
 		);
 	}
 
 	if (model.status === "error") {
+		const detail = model.detail || `${model.name} failed to start`;
 		return (
 			<div className="download-bar is-error" data-testid="model-status-error">
 				<div className="download-label">
-					<span>{model.detail || `${model.name} failed to start`}</span>
+					<span title={detail}>{detail}</span>
 				</div>
 			</div>
 		);

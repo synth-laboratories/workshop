@@ -7,8 +7,21 @@ from pathlib import Path
 
 
 DEFAULT_MODEL = "poolside/Laguna-XS-2.1-NVFP4-mlx"
-MUSE_GLIMMER_MODEL = "meta-models/Muse-Glimmer-30B"
+#: The one canonical Muse id. It matches the Hugging Face artifact, the Desktop
+#: catalog, the `--alias` the engine advertises, and `selected_model_path`. The
+#: pre-GGUF spelling below is accepted on input only, and normalized away at
+#: config load, so a stale selection cannot fork the identity again.
+MUSE_GLIMMER_MODEL = "meta-models/Muse-Glimmer-30B-GGUF"
+MUSE_GLIMMER_LEGACY_MODEL = "meta-models/Muse-Glimmer-30B"
 DEFAULT_CONTEXT_LENGTH = 262_144
+#: The Muse engine's serve default. Kept here so the context window Codex is
+#: told about, the compaction limit, and the engine's own `--ctx-size` agree.
+MUSE_CONTEXT_LENGTH = 131_072
+
+#: Backends that serve both wire surfaces from one turn core. `external` is the
+#: native-Responses passthrough and is deliberately absent: it cannot serve
+#: Chat, so it is never a local model's backend.
+LOCAL_BACKENDS = frozenset({"mock", "mlx_lm", "llama_cpp"})
 
 
 def _truthy(value: str | None, default: bool = False) -> bool:
@@ -23,7 +36,7 @@ class LagunaConfig:
 
     host: str
     port: int
-    backend: str  # mock | mlx_lm | external
+    backend: str  # mock | mlx_lm | llama_cpp | external
     api_key: str | None
     models_dir: Path
     default_model: str
@@ -38,6 +51,14 @@ class LagunaConfig:
     idle_unload_after_seconds: int
     context_length: int
     started_at: float
+    #: Loopback address of a supervisor-owned GGUF engine. Defaulted because
+    #: only a llama.cpp selection has one, and it is supplied by the process
+    #: that started that engine.
+    engine_url: str | None = None
+    #: Bearer token the engine itself requires. Desktop gives the engine the
+    #: same token that guards the daemon, so the weights are not reachable by
+    #: any other local process through the engine's own port.
+    engine_api_key: str | None = None
 
     @property
     def upstream_url(self) -> str:
@@ -54,6 +75,29 @@ class LagunaConfig:
         )
 
     @property
+    def engine_base_url(self) -> str:
+        """Loopback base of the supervisor-owned GGUF engine.
+
+        This is *not* an upstream in the `external` sense: no client request is
+        forwarded to it, and it has no Responses surface. It is the transport
+        the local llama.cpp backend uses to reach weights that live in another
+        process because a GGUF runtime cannot be loaded in-process. Both wire
+        surfaces are still compiled, admitted, cancelled, and accounted for
+        here. The daemon never starts, restarts, or discovers this process; the
+        Desktop supervisor owns its lifecycle and passes the address in.
+        """
+        if self.engine_url:
+            return self.engine_url.rstrip("/")
+        raise RuntimeError(
+            "No engine address is configured. Set SYNTH_LAGUNA_ENGINE_URL to the "
+            "loopback address of the supervisor-owned GGUF engine."
+        )
+
+    @property
+    def is_muse(self) -> bool:
+        return self.default_model == MUSE_GLIMMER_MODEL
+
+    @property
     def public_url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
@@ -65,6 +109,8 @@ class LagunaConfig:
             "laguna-xs-2.1": self.default_model,
             "synth/Laguna-XS-2.1": self.default_model,
             "synth/Laguna-XS-2.1-NVFP4": self.default_model,
+            MUSE_GLIMMER_LEGACY_MODEL: MUSE_GLIMMER_MODEL,
+            "muse-glimmer": MUSE_GLIMMER_MODEL,
         }
         mid = aliases.get(mid, mid)
         candidate = self.models_dir / mid
@@ -90,6 +136,11 @@ class LagunaConfig:
         return None
 
     @classmethod
+    def normalize_model_id(cls, model_id: str) -> str:
+        """Collapse the accepted spellings of a model onto its canonical id."""
+        return MUSE_GLIMMER_MODEL if model_id == MUSE_GLIMMER_LEGACY_MODEL else model_id
+
+    @classmethod
     def from_env(cls) -> "LagunaConfig":
         backend = (os.getenv("SYNTH_LAGUNA_BACKEND") or "auto").strip().lower()
         models_dir = Path(
@@ -104,14 +155,6 @@ class LagunaConfig:
         ).exists():
             models_dir = poolside_models
 
-        if backend == "auto":
-            if os.getenv("SYNTH_LAGUNA_EXTERNAL_URL"):
-                backend = "external"
-            elif os.uname().sysname == "Darwin" and os.uname().machine == "arm64":
-                backend = "mlx_lm"
-            else:
-                backend = "mock"
-
         data_dir = Path(
             os.getenv("SYNTH_LAGUNA_DATA_DIR")
             or (Path.home() / ".synth-desktop" / "laguna")
@@ -119,11 +162,40 @@ class LagunaConfig:
         data_dir.mkdir(parents=True, exist_ok=True)
         models_dir.mkdir(parents=True, exist_ok=True)
 
-        default_model = (
-            os.getenv("SYNTH_LAGUNA_DEFAULT_MODEL")
-            or os.getenv("SYNTH_LAGUNA_MODEL")
-            or DEFAULT_MODEL
-        ).strip()
+        default_model = cls.normalize_model_id(
+            (
+                os.getenv("SYNTH_LAGUNA_DEFAULT_MODEL")
+                or os.getenv("SYNTH_LAGUNA_MODEL")
+                or DEFAULT_MODEL
+            ).strip()
+        )
+        is_muse = default_model == MUSE_GLIMMER_MODEL
+        external_url = (os.getenv("SYNTH_LAGUNA_EXTERNAL_URL") or "").rstrip("/") or None
+        engine_url = (os.getenv("SYNTH_LAGUNA_ENGINE_URL") or "").rstrip("/") or None
+        if is_muse and engine_url is None and external_url is not None:
+            # A Desktop build from before the llama.cpp backend existed passes
+            # the engine address as an `external` upstream. That address never
+            # had a Responses surface, so honoring the old spelling as a
+            # passthrough is the bug this backend replaces: read it as the
+            # engine address instead, and drop the passthrough reading.
+            engine_url = external_url
+            external_url = None
+
+        if backend == "auto":
+            if is_muse or engine_url:
+                backend = "llama_cpp"
+            elif external_url:
+                backend = "external"
+            elif os.uname().sysname == "Darwin" and os.uname().machine == "arm64":
+                backend = "mlx_lm"
+            else:
+                backend = "mock"
+        elif is_muse and backend not in {"llama_cpp", "mock"}:
+            # Fail closed on the historical mis-binding rather than serving a
+            # surface that cannot answer: a GGUF engine speaks Chat
+            # Completions, so neither the MLX loader nor the native-Responses
+            # passthrough can drive it.
+            backend = "llama_cpp"
 
         api_key = (os.getenv("SYNTH_LAGUNA_API_KEY") or "").strip() or None
         # Generate a stable-ish local key file if none set (independent of Poolside)
@@ -152,13 +224,15 @@ class LagunaConfig:
             revision=(os.getenv("SYNTH_LAGUNA_REVISION") or "").strip() or None,
             draft_model=(os.getenv("SYNTH_LAGUNA_DRAFT_MODEL") or "").strip() or None,
             adapter=(os.getenv("SYNTH_LAGUNA_ADAPTER") or "").strip() or None,
-            external_url=(os.getenv("SYNTH_LAGUNA_EXTERNAL_URL") or "").rstrip("/")
-            or None,
+            external_url=external_url,
             upstream_api_key=(
                 os.getenv("SYNTH_LAGUNA_UPSTREAM_API_KEY")
                 or os.getenv("SYNTH_LAGUNA_EXTERNAL_API_KEY")
                 or ""
             ).strip()
+            or None,
+            engine_url=engine_url,
+            engine_api_key=(os.getenv("SYNTH_LAGUNA_ENGINE_API_KEY") or "").strip()
             or None,
             data_dir=data_dir,
             auto_load=_truthy(os.getenv("SYNTH_LAGUNA_AUTO_LOAD"), default=True),
@@ -171,7 +245,7 @@ class LagunaConfig:
             ),
             context_length=int(
                 os.getenv("SYNTH_LAGUNA_CONTEXT_LENGTH")
-                or ("131072" if default_model == MUSE_GLIMMER_MODEL else str(DEFAULT_CONTEXT_LENGTH))
+                or (MUSE_CONTEXT_LENGTH if is_muse else DEFAULT_CONTEXT_LENGTH)
             ),
             started_at=time.time(),
         )

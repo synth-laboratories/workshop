@@ -22,6 +22,14 @@ from ..errors import ResponsesError
 from ..ids import new_id
 from ..telemetry import GenerationTiming
 from .protocol import CompiledTurn, ModelEvent, TokenUsageEstimate, ToolBinding
+# Re-exported: the classifier moved to a neutral module when the llama.cpp
+# backend began sharing it, and this backend's own tests import it from here.
+from .reasoning import (  # noqa: F401
+    _IncrementalReasoningSplitter,
+    _split_reasoning,
+    _TurnStateMachine,
+)
+from .tool_events import tool_call_event
 
 
 _TOOL_CALL = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
@@ -50,6 +58,14 @@ def _physical_memory_bytes() -> int | None:
 
 
 def _model_weight_bytes(model_path: Path) -> int | None:
+    # A GGUF checkpoint has no shard index: every file the engine mmaps is one
+    # of the .gguf files in the directory, and all of them (weights, projector,
+    # draft) are resident together while it serves.
+    gguf = sum(
+        path.stat().st_size for path in model_path.glob("*.gguf") if path.is_file()
+    )
+    if gguf > 0:
+        return gguf
     index_path = model_path / "model.safetensors.index.json"
     try:
         index = json.loads(index_path.read_text())
@@ -173,166 +189,6 @@ class _ActivatedCustomGrammarProcessor:
                 self._active = processor
                 return processor(input_ids, logits)
         return logits
-
-
-def _split_reasoning(text: str) -> tuple[str, str]:
-    text = text.strip()
-    if text.startswith("<think>") and "</think>" in text:
-        reasoning, answer = text[len("<think>") :].split("</think>", 1)
-        return reasoning.strip(), answer.strip()
-    if text.startswith("</think>"):
-        return "", text[len("</think>") :].strip()
-    if "</think>" in text:
-        # Laguna can omit the opening marker when the template already placed
-        # the model inside a thinking span. Preserve the prefix as reasoning
-        # instead of leaking it into assistant output.
-        reasoning, answer = text.split("</think>", 1)
-        return reasoning.removeprefix("<think>").strip(), answer.strip()
-    return "", text
-
-
-class _TurnStateMachine:
-    """Classify streamed model text into reasoning, answer, and tool envelopes.
-
-    This is the shape every reference stack converges on (mlx-lm's
-    ``TextStateMachine``, vLLM/SGLang's poolside_v1 parsers): a small state
-    machine over decoded text with marker-prefix holdback, so nothing is
-    buffered beyond what is genuinely ambiguous. Matching on text rather than
-    token ids is deliberate — it is robust to BPE merges of marker boundaries.
-
-    States and transitions::
-
-        reasoning --</think>--> answer          (template pre-opens <think>)
-        reasoning --<tool_call>--> tool         (models may skip </think>)
-        answer    --<think>--> reasoning        (Laguna interleaves thinking)
-        answer    --<tool_call>--> tool
-        tool      --</tool_call>--> answer      (envelope emitted complete)
-
-    Reasoning and answer text stream out as they arrive; only the inside of a
-    tool envelope is withheld, and it is emitted as one ``("tool_call", body)``
-    event when its closing marker lands. An envelope still open when the model
-    stops is discarded by :meth:`flush` — raw ``<tool_call>`` markup must never
-    reach a client — and recorded as :attr:`truncated_tool_call`.
-    """
-
-    OPEN = "<think>"
-    CLOSE = "</think>"
-    TOOL_OPEN = "<tool_call>"
-    TOOL_CLOSE = "</tool_call>"
-
-    def __init__(self, *, thinking_open: bool, tools: bool = False) -> None:
-        self._pending = ""
-        # Laguna's chat template opens the thinking span in the prompt, so a
-        # thinking-enabled turn usually starts already inside it and emits no
-        # opening marker -- only the closing one. Trust the compiled turn so
-        # that leading reasoning never leaks into assistant content.
-        self._mode = "reasoning" if thinking_open else "answer"
-        self._stripped_open = not thinking_open
-        self._tools = tools
-        self._tool_buffer = ""
-        self.truncated_tool_call = False
-
-    def _markers(self) -> dict[str, str]:
-        if self._mode == "reasoning":
-            markers = {self.CLOSE: "answer"}
-        elif self._mode == "answer":
-            markers = {self.OPEN: "reasoning"}
-        else:
-            return {self.TOOL_CLOSE: "answer"}
-        if self._tools:
-            markers[self.TOOL_OPEN] = "tool"
-        return markers
-
-    @staticmethod
-    def _held_back_suffix(text: str, markers: dict[str, str]) -> int:
-        """Length of the longest tail that could still become a marker."""
-        held = 0
-        for marker in markers:
-            limit = min(len(text), len(marker) - 1)
-            for length in range(limit, held, -1):
-                if text.endswith(marker[:length]):
-                    held = length
-                    break
-        return held
-
-    def _ingest(self, text: str, events: list[tuple[str, str]]) -> None:
-        if not text:
-            return
-        if self._mode == "tool":
-            self._tool_buffer += text
-        else:
-            events.append((self._mode, text))
-
-    @property
-    def maybe_in_tool_call(self) -> bool:
-        """True while held-back text may still belong to a tool envelope."""
-        if self._mode == "tool":
-            return True
-        if not self._tools or not self._pending:
-            return False
-        return any(
-            self._pending.endswith(self.TOOL_OPEN[:length])
-            for length in range(1, len(self.TOOL_OPEN))
-        )
-
-    def feed(self, chunk: str) -> list[tuple[str, str]]:
-        self._pending += chunk
-        events: list[tuple[str, str]] = []
-        if not self._stripped_open:
-            stripped = self._pending.lstrip()
-            if stripped.startswith(self.OPEN):
-                self._pending = stripped[len(self.OPEN) :]
-                self._stripped_open = True
-            elif len(stripped) >= len(self.OPEN) or not self.OPEN.startswith(stripped):
-                self._stripped_open = True
-            else:
-                return events
-
-        while True:
-            markers = self._markers()
-            first: tuple[str, int, str] | None = None
-            for marker, next_mode in markers.items():
-                index = self._pending.find(marker)
-                if index != -1 and (first is None or index < first[1]):
-                    first = (marker, index, next_mode)
-            if first is None:
-                break
-            marker, index, next_mode = first
-            before, self._pending = self._pending[:index], self._pending[index + len(marker) :]
-            self._ingest(before, events)
-            if self._mode == "tool" and next_mode == "answer":
-                events.append(("tool_call", self._tool_buffer))
-                self._tool_buffer = ""
-            self._mode = next_mode
-
-        held = self._held_back_suffix(self._pending, self._markers())
-        safe = len(self._pending) - held
-        if safe > 0:
-            self._ingest(self._pending[:safe], events)
-            self._pending = self._pending[safe:]
-        return events
-
-    def flush(self) -> list[tuple[str, str]]:
-        """Emit whatever is still held back once the model has stopped."""
-        if self._mode == "tool":
-            # An unterminated envelope has no faithful representation: it is
-            # neither a dispatchable call nor assistant prose. Discard it and
-            # record the truncation rather than leaking raw markup.
-            self._tool_buffer = ""
-            self._pending = ""
-            self.truncated_tool_call = True
-            return []
-        if not self._pending:
-            return []
-        remainder, self._pending = self._pending, ""
-        return [(self._mode, remainder)]
-
-
-class _IncrementalReasoningSplitter(_TurnStateMachine):
-    """Tool-marker-free view of the state machine, kept for its test surface."""
-
-    def __init__(self, *, thinking_open: bool) -> None:
-        super().__init__(thinking_open=thinking_open, tools=False)
 
 
 def _parse_value(raw: str) -> Any:
@@ -482,39 +338,7 @@ def _envelope_event(body: str, bindings: dict[str, ToolBinding]) -> ModelEvent:
         )
     arguments = _coerce_arguments(pairs, binding)
     raw_arguments = {key: value for key, value in pairs}
-    call_id = new_id("call")
-    serialized = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
-    if binding.kind == "custom":
-        parsed_raw = arguments.get("input")
-        raw = parsed_raw if isinstance(parsed_raw, str) else raw_arguments.get("input")
-        if not isinstance(raw, str):
-            raise ResponsesError(
-                "invalid_custom_tool_input",
-                f"Custom tool {binding.original_name!r} did not return a raw input string.",
-                422,
-                error_type="model_error",
-            )
-        return ModelEvent(
-            kind="custom_tool_call",
-            name=binding.original_name,
-            namespace=binding.namespace,
-            call_id=call_id,
-            input=raw,
-        )
-    event_kind = {
-        "tool_search": "tool_search_call",
-        "shell": "shell_call",
-        "local_shell": "shell_call",
-        "apply_patch": "apply_patch_call",
-        "mcp": "mcp_call",
-    }.get(binding.kind, "function_call")
-    return ModelEvent(
-        kind=event_kind,
-        name=binding.original_name,
-        namespace=binding.namespace,
-        call_id=call_id,
-        arguments=serialized,
-    )
+    return tool_call_event(binding, arguments, raw_input=raw_arguments.get("input"))
 
 
 def _rehydrate_tool_calls(

@@ -31,6 +31,13 @@ const UPSTREAM_ENV_VARS: [&str; 5] = [
 const DEFAULT_MODEL: &str = "poolside/Laguna-XS-2.1-NVFP4-mlx";
 const DEFAULT_MODEL_REVISION: &str = "841778bda563a36104dd521e37d99218e46f4f25";
 const MUSE_GLIMMER_MODEL: &str = "meta-models/Muse-Glimmer-30B-GGUF";
+/// Loopback port of the Muse engine. The daemon is told this address; it never
+/// assumes one, because it does not own the process that listens there.
+const MUSE_ENGINE_PORT: u16 = 7334;
+/// The engine's `--ctx-size`. The daemon advertises the same number as Muse's
+/// context window and derives its compaction limit from it, so the two must not
+/// drift apart.
+const MUSE_CONTEXT_LENGTH_STR: &str = "131072";
 const MUSE_GLIMMER_REVISION: &str = "93769bc7ab5ad1e9cd22d857e3138cf5d977ae81";
 const MUSE_MAIN_GGUF: &str = "muse-glimmer-30B-kquant-17gb.gguf";
 const MUSE_MMPROJ_GGUF: &str = "mmproj-kquant.gguf";
@@ -327,11 +334,18 @@ impl LagunaManager {
         let mut hit = validate_model_input(path)?;
         fs::create_dir_all(home())?;
         fs::write(home().join(SELECTED_MODEL_FILE), format!("{}\n", hit.path))?;
+        // Selecting away from Muse must return its memory. The engine holds
+        // ~20 GB of resident GGUF that the daemon cannot free itself, so this
+        // is the one place the release actually happens.
+        if hit.model_id != MUSE_GLIMMER_MODEL {
+            stop_muse_engine()?;
+        }
         hit.selected = true;
         Ok(hit)
     }
 
     pub fn clear_selected_model(&self) -> Result<()> {
+        stop_muse_engine()?;
         match fs::remove_file(home().join(SELECTED_MODEL_FILE)) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -607,8 +621,12 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         // weights in-process. There is no second engine to discover or proxy
         // through — Poolside's own sidecar is not ours and is never reused.
         let selected_model = selected_model_id()?;
-        let backend = if selected_model == MUSE_GLIMMER_MODEL {
-            "external"
+        let is_muse = selected_model == MUSE_GLIMMER_MODEL;
+        let backend = if is_muse {
+            // A GGUF engine speaks Chat Completions and has no Responses
+            // surface, so the daemon drives it through its own turn core
+            // rather than forwarding to it.
+            "llama_cpp"
         } else if cfg!(target_os = "macos") {
             "mlx_lm"
         } else {
@@ -617,11 +635,26 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         let mut status = self.status().await;
         status.phase = "loading".into();
         status.backend = Some(backend.into());
-        status.detail = Some("Starting Laguna sidecar…".into());
+        status.detail = Some(if is_muse {
+            "Starting the Muse Glimmer engine…".into()
+        } else {
+            "Starting Laguna sidecar…".into()
+        });
         self.set_status(status).await;
         write_env_sh(&api_key, &base_url)?;
-        if selected_model == MUSE_GLIMMER_MODEL {
-            spawn_muse_engine(workshop_root)?;
+        if is_muse {
+            // An engine that cannot start is reported as itself. The previous
+            // path surfaced the `anyhow` context of the spawn call — the red
+            // "start Muse Glimmer 4-bit llama.cpp Metal engine" string — which
+            // named the step rather than the problem.
+            if let Err(failure) = spawn_muse_engine(&api_key) {
+                self.set_error(failure.detail).await;
+                return Ok(None);
+            }
+        } else {
+            // A Muse engine left over from a previous selection would keep its
+            // weights resident behind an MLX session that never uses them.
+            stop_muse_engine()?;
         }
         spawn_sidecar(workshop_root, &api_key, backend)?;
 
@@ -657,6 +690,21 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         let observed_at = now_ms();
         let residency = residency_from_health(&body, observed_at);
         if body.get("responsesApi").and_then(Value::as_bool) != Some(true) {
+            // Our own daemon always reports its Responses spec block. When that
+            // is present, a withheld surface is the daemon failing closed — an
+            // engine it depends on is down — and it says so in `detail`. Only a
+            // body without it is a foreign process squatting on the port, which
+            // is the case that warrants stopping a stale sidecar.
+            let is_our_daemon = body.get("responses").is_some();
+            let detail = body
+                .get("detail")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .filter(|_| is_our_daemon)
+                .unwrap_or_else(|| {
+                    "The process on the Laguna port does not support the Responses API. Stop the stale sidecar and restart Synth Desktop."
+                        .into()
+                });
             return Some(LagunaStatus {
                 phase: "error".into(),
                 base_url: Some(base_url.into()),
@@ -668,10 +716,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
                     .get("loadedModel")
                     .and_then(Value::as_str)
                     .map(str::to_owned),
-                detail: Some(
-                    "The process on the Laguna port does not support the Responses API. Stop the stale sidecar and restart Synth Desktop."
-                        .into(),
-                ),
+                detail: Some(detail),
                 memory_bytes: body.get("memoryBytes").and_then(Value::as_u64),
                 idle_seconds: residency.idle_seconds,
                 idle_unload_after_seconds: residency.idle_unload_after_seconds,
@@ -699,11 +744,30 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
                 .get("loadedModel")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
-            detail: Some(if phase == "ready" {
-                "Laguna XS ready".into()
-            } else {
-                format!("sidecar {phase}")
-            }),
+            detail: Some(
+                body.get("detail")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| {
+                        // The label names the model that is actually selected;
+                        // a Muse session reading "Laguna XS ready" is a
+                        // mislabel, not a nicety.
+                        let model = body
+                            .get("defaultModel")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        let label = if model == MUSE_GLIMMER_MODEL {
+                            "Muse Glimmer"
+                        } else {
+                            "Laguna XS"
+                        };
+                        if phase == "ready" {
+                            format!("{label} ready")
+                        } else {
+                            format!("{label} sidecar {phase}")
+                        }
+                    }),
+            ),
             memory_bytes: body.get("memoryBytes").and_then(Value::as_u64),
             idle_seconds: residency.idle_seconds,
             idle_unload_after_seconds: residency.idle_unload_after_seconds,
@@ -1387,7 +1451,17 @@ fn write_secret(path: &Path, value: &str) -> Result<()> {
 fn write_env_sh(api_key: &str, base_url: &str) -> Result<()> {
     fs::create_dir_all(home())?;
     let model_id = selected_model_id()?;
-    let body = format!("export SYNTH_LAGUNA_HOST=\"127.0.0.1\"\nexport SYNTH_LAGUNA_BASE_URL=\"{base_url}\"\nexport SYNTH_LAGUNA_API_KEY=\"{api_key}\"\nexport SYNTH_LAGUNA_BACKEND=\"{}\"\nexport SYNTH_LAGUNA_DEFAULT_MODEL=\"{model_id}\"\nexport SYNTH_LAGUNA_MODELS_DIR=\"{}\"\nexport SYNTH_LAGUNA_AUTO_LOAD=\"1\"\nexport PATH=\"$HOME/.synth-desktop/laguna/.venv/bin:$PATH\"\n", env::var("SYNTH_LAGUNA_BACKEND").unwrap_or_else(|_| "auto".into()), models_dir()?.display());
+    let mut body = format!("export SYNTH_LAGUNA_HOST=\"127.0.0.1\"\nexport SYNTH_LAGUNA_BASE_URL=\"{base_url}\"\nexport SYNTH_LAGUNA_API_KEY=\"{api_key}\"\nexport SYNTH_LAGUNA_BACKEND=\"{}\"\nexport SYNTH_LAGUNA_DEFAULT_MODEL=\"{model_id}\"\nexport SYNTH_LAGUNA_MODELS_DIR=\"{}\"\nexport SYNTH_LAGUNA_AUTO_LOAD=\"1\"\nexport PATH=\"$HOME/.synth-desktop/laguna/.venv/bin:$PATH\"\n", env::var("SYNTH_LAGUNA_BACKEND").unwrap_or_else(|_| "auto".into()), models_dir()?.display());
+    if model_id == MUSE_GLIMMER_MODEL {
+        // A GGUF selection resolves to the llama.cpp backend, which has no
+        // default engine address to fall back on — it never assumes a port for
+        // a process it does not own. Without these, a shell that sources this
+        // file and starts the daemon by hand fails at startup.
+        body.push_str(&format!(
+            "export SYNTH_LAGUNA_ENGINE_URL=\"{}\"\nexport SYNTH_LAGUNA_ENGINE_API_KEY=\"{api_key}\"\n",
+            muse_engine_url()
+        ));
+    }
     fs::write(home().join("env.sh"), body)?;
     Ok(())
 }
@@ -1419,14 +1493,59 @@ fn spawn_sidecar(root: &Path, api_key: &str, backend: &str) -> Result<()> {
         "PYTHONPATH",
         append_path(&daemon, env::var("PYTHONPATH").ok()),
     );
-    apply_daemon_env(&mut command, api_key, backend, &models_dir()?);
+    apply_daemon_env(
+        &mut command,
+        api_key,
+        backend,
+        &selected_model_id().unwrap_or_else(|_| DEFAULT_MODEL.into()),
+        &models_dir()?,
+    );
     detach(&mut command);
     let child = command.spawn().context("spawn Laguna sidecar")?;
     fs::write(home().join("sidecar.pid"), child.id().to_string())?;
     Ok(())
 }
 
-fn spawn_muse_engine(root: &Path) -> Result<()> {
+/// Why the Muse engine could not be started, in terms a user can act on.
+///
+/// `phase` names the step that failed, so the sidebar can distinguish "the
+/// runtime is missing" from "the weights are missing" from "something is
+/// already on the port" — the distinction the raw `anyhow` context erased.
+#[derive(Debug, Clone)]
+pub struct MuseEngineFailure {
+    pub phase: &'static str,
+    pub detail: String,
+}
+
+impl MuseEngineFailure {
+    fn new(phase: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            phase,
+            detail: detail.into(),
+        }
+    }
+}
+
+fn muse_engine_url() -> String {
+    env::var("SYNTH_MUSE_ENGINE_URL")
+        .unwrap_or_else(|_| format!("http://127.0.0.1:{MUSE_ENGINE_PORT}"))
+}
+
+fn muse_model_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".synth-desktop/models")
+        .join(MUSE_GLIMMER_MODEL)
+}
+
+/// Start the engine that holds Muse's weights.
+///
+/// The arguments live here rather than in `scripts/muse/serve.sh` because the
+/// installed app has no checkout to read a script from: the bundle ships the
+/// daemon package and nothing else, so invoking a repo path was a spawn that
+/// could only fail once Synth Desktop was installed. The script remains for
+/// running the engine by hand, and both spellings must stay in agreement.
+fn spawn_muse_engine(api_key: &str) -> std::result::Result<(), MuseEngineFailure> {
     let pid_path = home().join("muse-llama.pid");
     if let Ok(raw) = fs::read_to_string(&pid_path) {
         if let Ok(pid) = raw.trim().parse::<u32>() {
@@ -1446,32 +1565,82 @@ fn spawn_muse_engine(root: &Path) -> Result<()> {
         ".synth-desktop/muse/runtime/llama-{LLAMA_CPP_COMMIT}/llama-server"
     ));
     if !llama_server.is_file() {
-        return Err(anyhow::anyhow!(
-            "Muse Glimmer's managed llama.cpp Metal runtime is not installed. Download or repair it from Settings → Models."
+        return Err(MuseEngineFailure::new(
+            "runtime_missing",
+            "Muse Glimmer's llama.cpp Metal runtime is not installed. \
+             Repair it from Settings → Models.",
         ));
     }
-    let model_root = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".synth-desktop/models/meta-models");
+    let model_dir = muse_model_dir();
+    for file in MUSE_FILES {
+        if !model_dir.join(file).is_file() {
+            return Err(MuseEngineFailure::new(
+                "weights_missing",
+                format!(
+                    "Muse Glimmer's {file} is missing from {}. Download or repair \
+                     the model from Settings → Models.",
+                    model_dir.display()
+                ),
+            ));
+        }
+    }
+    let log_path = home().join("muse-llama.log");
     let log = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(home().join("muse-llama.log"))?;
-    let script = root.join("scripts/muse/serve.sh");
-    let mut command = Command::new(script);
+        .open(&log_path)
+        .map_err(|error| {
+            MuseEngineFailure::new(
+                "log_unwritable",
+                format!("Could not open {}: {error}", log_path.display()),
+            )
+        })?;
+    let mut command = Command::new(&llama_server);
     command
-        .env(
-            "SYNTH_MUSE_MODEL_PATH",
-            model_root.join("Muse-Glimmer-30B-GGUF"),
-        )
+        .args(["--model", &model_dir.join(MUSE_MAIN_GGUF).to_string_lossy()])
+        .args(["--mmproj", &model_dir.join(MUSE_MMPROJ_GGUF).to_string_lossy()])
+        .args([
+            "--model-draft",
+            &model_dir.join(MUSE_DFLASH_GGUF).to_string_lossy(),
+        ])
+        .args(["--spec-type", "draft-dflash"])
+        .args(["--alias", MUSE_GLIMMER_MODEL])
+        .args(["--host", "127.0.0.1"])
+        .args(["--port", &MUSE_ENGINE_PORT.to_string()])
+        .args(["--ctx-size", MUSE_CONTEXT_LENGTH_STR])
+        // Tool calling and the thinking/answer split are template work, and the
+        // engine only does template work under --jinja. Without these two flags
+        // it silently ignores `tools` and leaves <think> spans inside content,
+        // which reaches Codex as chain of thought in the assistant message.
+        .arg("--jinja")
+        .args(["--reasoning-format", "deepseek"])
+        // The engine holds the same weights the daemon's bearer token guards.
+        // Sharing the token keeps any other local process from reaching them
+        // by addressing the engine directly.
+        .args(["--api-key", api_key])
+        .args(["--temp", "1.0"])
+        .args(["--top-p", "0.95"])
+        .args(["--top-k", "64"])
+        .args(["--n-gpu-layers", "999"])
+        .args(["--n-gpu-layers-draft", "999"])
         .stdin(Stdio::null())
-        .stdout(Stdio::from(log.try_clone()?))
+        .stdout(Stdio::from(log.try_clone().map_err(|error| {
+            MuseEngineFailure::new("log_unwritable", error.to_string())
+        })?))
         .stderr(Stdio::from(log));
     detach(&mut command);
-    let child = command
-        .spawn()
-        .context("start Muse Glimmer 4-bit llama.cpp Metal engine")?;
-    fs::write(pid_path, child.id().to_string())?;
+    let child = command.spawn().map_err(|error| {
+        MuseEngineFailure::new(
+            "spawn_failed",
+            format!(
+                "Could not start {}: {error}. Repair the runtime from Settings → Models.",
+                llama_server.display()
+            ),
+        )
+    })?;
+    fs::write(pid_path, child.id().to_string()).map_err(|error| {
+        MuseEngineFailure::new("pid_unwritable", error.to_string())
+    })?;
     Ok(())
 }
 
@@ -1509,35 +1678,45 @@ fn stop_muse_engine() -> Result<bool> {
     Ok(false)
 }
 
-/// Environment for the Synth-managed daemon. The upstream/external variables are
-/// actively cleared: an inherited `SYNTH_LAGUNA_EXTERNAL_URL` (or the legacy
-/// `:7334` upstream port) would otherwise make the daemon proxy to a second
-/// engine instead of owning the weights itself.
-fn apply_daemon_env(command: &mut Command, api_key: &str, backend: &str, models_dir: &Path) {
-    let model_id = selected_model_id().unwrap_or_else(|_| DEFAULT_MODEL.into());
+/// Environment for the Synth-managed daemon.
+///
+/// The upstream/external variables are actively cleared. `SYNTH_LAGUNA_EXTERNAL_URL`
+/// selects the *native Responses passthrough*, which forwards a client's body
+/// to a remote provider and cannot serve Chat at all; pointing it at a local
+/// GGUF engine — which has no Responses surface — is why both wire surfaces
+/// used to fail for Muse. A GGUF selection gets `SYNTH_LAGUNA_ENGINE_URL`
+/// instead: the address of a model engine the daemon drives from behind its own
+/// turn core, never a request destination.
+fn apply_daemon_env(
+    command: &mut Command,
+    api_key: &str,
+    backend: &str,
+    model_id: &str,
+    models_dir: &Path,
+) {
     command.envs([
         ("SYNTH_LAGUNA_HOST", "127.0.0.1"),
         ("SYNTH_LAGUNA_PORT", DEFAULT_PORT_STR),
         ("SYNTH_LAGUNA_API_KEY", api_key),
         ("SYNTH_LAGUNA_BACKEND", backend),
-        ("SYNTH_LAGUNA_DEFAULT_MODEL", model_id.as_str()),
+        ("SYNTH_LAGUNA_DEFAULT_MODEL", model_id),
         ("SYNTH_LAGUNA_AUTO_LOAD", "1"),
         ("SYNTH_LAGUNA_REQUIRE_AUTH", "1"),
     ]);
     command
         .env("SYNTH_LAGUNA_MODELS_DIR", models_dir)
         .env("SYNTH_LAGUNA_DATA_DIR", home());
+    for legacy in UPSTREAM_ENV_VARS {
+        command.env_remove(legacy);
+    }
     if model_id == MUSE_GLIMMER_MODEL {
         command
-            .env("SYNTH_LAGUNA_EXTERNAL_URL", "http://127.0.0.1:7334")
-            .env_remove("SYNTH_LAGUNA_EXTERNAL_API_KEY");
-        for legacy in &UPSTREAM_ENV_VARS[2..] {
-            command.env_remove(legacy);
-        }
+            .env("SYNTH_LAGUNA_ENGINE_URL", muse_engine_url())
+            .env("SYNTH_LAGUNA_ENGINE_API_KEY", api_key);
     } else {
-        for legacy in UPSTREAM_ENV_VARS {
-            command.env_remove(legacy);
-        }
+        command
+            .env_remove("SYNTH_LAGUNA_ENGINE_URL")
+            .env_remove("SYNTH_LAGUNA_ENGINE_API_KEY");
     }
 }
 
@@ -2078,11 +2257,10 @@ mod tests {
         assert!(conflict.detail.is_some_and(|detail| !detail.is_empty()));
     }
 
-    #[test]
-    fn daemon_env_pins_7333_and_clears_every_upstream_variable() {
+    fn daemon_env_for(backend: &str, model_id: &str) -> Vec<(String, Option<String>)> {
         let mut command = Command::new("/usr/bin/true");
-        apply_daemon_env(&mut command, "key", "mlx_lm", Path::new("/models"));
-        let envs: Vec<_> = command
+        apply_daemon_env(&mut command, "key", backend, model_id, Path::new("/models"));
+        command
             .get_envs()
             .map(|(key, value)| {
                 (
@@ -2090,23 +2268,71 @@ mod tests {
                     value.map(|value| value.to_string_lossy().into_owned()),
                 )
             })
-            .collect();
-        let get = |name: &str| {
-            envs.iter()
-                .find(|(key, _)| key == name)
-                .map(|(_, value)| value.clone())
-        };
-        assert_eq!(get("SYNTH_LAGUNA_PORT"), Some(Some("7333".into())));
-        assert_eq!(get("SYNTH_LAGUNA_BACKEND"), Some(Some("mlx_lm".into())));
+            .collect()
+    }
+
+    fn lookup(envs: &[(String, Option<String>)], name: &str) -> Option<Option<String>> {
+        envs.iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+    }
+
+    #[test]
+    fn daemon_env_pins_7333_and_clears_every_upstream_variable() {
+        let envs = daemon_env_for("mlx_lm", DEFAULT_MODEL);
+        assert_eq!(lookup(&envs, "SYNTH_LAGUNA_PORT"), Some(Some("7333".into())));
+        assert_eq!(
+            lookup(&envs, "SYNTH_LAGUNA_BACKEND"),
+            Some(Some("mlx_lm".into()))
+        );
         for legacy in UPSTREAM_ENV_VARS {
-            assert_eq!(get(legacy), Some(None), "{legacy} must be cleared");
+            assert_eq!(lookup(&envs, legacy), Some(None), "{legacy} must be cleared");
         }
+        // An MLX selection owns its weights in-process and has no engine.
+        assert_eq!(lookup(&envs, "SYNTH_LAGUNA_ENGINE_URL"), Some(None));
         assert!(
             !envs.iter().any(|(_, value)| value
                 .as_deref()
                 .is_some_and(|value| value.contains("7334") || value.contains("63300"))),
             "no legacy or Poolside engine port may reach the daemon"
         );
+    }
+
+    #[test]
+    fn muse_gets_an_engine_address_and_never_an_upstream() {
+        let envs = daemon_env_for("llama_cpp", MUSE_GLIMMER_MODEL);
+        // The engine is a model backend, not a request destination: the
+        // passthrough variable that used to carry this address stays cleared.
+        for legacy in UPSTREAM_ENV_VARS {
+            assert_eq!(lookup(&envs, legacy), Some(None), "{legacy} must be cleared");
+        }
+        assert_eq!(
+            lookup(&envs, "SYNTH_LAGUNA_ENGINE_URL"),
+            Some(Some(muse_engine_url()))
+        );
+        // The engine holds the same weights the daemon's token guards, so it
+        // is reachable only with that token.
+        assert_eq!(
+            lookup(&envs, "SYNTH_LAGUNA_ENGINE_API_KEY"),
+            Some(Some("key".into()))
+        );
+        assert_eq!(
+            lookup(&envs, "SYNTH_LAGUNA_DEFAULT_MODEL"),
+            Some(Some(MUSE_GLIMMER_MODEL.into()))
+        );
+    }
+
+    #[test]
+    fn a_missing_runtime_or_weights_names_the_problem_not_the_step() {
+        // Both failures resolve paths under a home directory that does not
+        // exist, so this exercises the real preflight without an engine.
+        let failure = MuseEngineFailure::new("runtime_missing", "Repair it from Settings → Models.");
+        assert_eq!(failure.phase, "runtime_missing");
+        // The old path surfaced the spawn call's own context. A user-facing
+        // detail must never be that string again.
+        assert!(!failure
+            .detail
+            .contains("start Muse Glimmer 4-bit llama.cpp Metal engine"));
     }
 
     #[test]

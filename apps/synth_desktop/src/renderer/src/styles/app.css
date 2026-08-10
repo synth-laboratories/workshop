@@ -150,40 +150,96 @@ a,
 }
 
 .terminal-panel {
-	flex: 0 0 clamp(180px, 32vh, 360px);
-	min-height: 160px;
+	flex: 0 0 clamp(120px, var(--bottom-panel-height, 220px), calc(100dvh - 280px));
+	min-height: 120px;
 	display: flex;
 	flex-direction: column;
-	background: #17191d;
-	border-top: 1px solid var(--color-border);
+	position: relative;
+	background: #111318;
+	border-top: 1px solid #343a45;
+	box-shadow: 0 -12px 30px rgba(14, 17, 23, 0.16);
 	z-index: 12;
 }
 
+.terminal-resize-handle {
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: -4px;
+	height: 8px;
+	z-index: 2;
+	cursor: row-resize;
+	-webkit-app-region: no-drag;
+}
+
+.terminal-resize-handle::after {
+	content: "";
+	position: absolute;
+	left: 50%;
+	top: 2px;
+	width: 40px;
+	height: 2px;
+	border-radius: 999px;
+	background: #5c6471;
+	opacity: 0;
+	transform: translateX(-50%);
+	transition: opacity 120ms var(--ease-out), background 120ms var(--ease-out), width 120ms var(--ease-out);
+}
+
+.terminal-panel:hover .terminal-resize-handle::after,
+.terminal-resize-handle:focus-visible::after {
+	width: 52px;
+	background: #ff8656;
+	opacity: 1;
+}
+
 .terminal-head {
-	height: 34px;
+	height: 40px;
 	flex-shrink: 0;
 	display: flex;
 	align-items: center;
-	gap: 4px;
-	padding: 0 8px;
-	background: #202329;
-	border-color: #30343b;
-	border-bottom: 1px solid var(--color-border);
+	gap: 8px;
+	padding: 0 10px 0 12px;
+	background: linear-gradient(180deg, #21252d 0%, #1a1d24 100%);
+	border-bottom: 1px solid #303640;
 }
 
-.terminal-tabs { display: flex; align-self: stretch; align-items: center; gap: 3px; flex: 1; min-width: 0; overflow-x: auto; }
-.terminal-tab { height: 27px; padding: 0 9px; border-radius: 6px; color: var(--color-text-muted); font-size: 12px; white-space: nowrap; }
-.terminal-tab.is-active { background: #2a2e35; color: #f3f4f6; box-shadow: 0 0 0 1px #3a3f48; }
-.terminal-dot { display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: #2ba84a; }
-.terminal-dot.exited, .terminal-dot.failed { background: #999; }
-.terminal-action { width: 27px; height: 27px; border-radius: 6px; color: var(--color-text-muted); font-size: 17px; line-height: 1; }
-.terminal-action:hover { background: rgba(255, 255, 255, 0.08); color: #f3f4f6; }
-.terminal-viewport { flex: 1; min-height: 0; padding: 8px 10px 6px; user-select: text; overflow: hidden; }
+.terminal-identity { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: #f1f4f8; font-size: 11px; font-weight: 650; letter-spacing: .01em; white-space: nowrap; }
+.terminal-glyph { color: #ff8656; font: 700 12px/1 var(--font-mono); letter-spacing: -1px; }
+.terminal-session-count { min-width: 17px; padding: 1px 5px; border: 1px solid #4a5362; border-radius: var(--radius-pill); color: #b6c0ce; font-size: 9px; font-variant-numeric: tabular-nums; text-align: center; }
+.terminal-tabs { display: flex; align-self: stretch; align-items: center; gap: 4px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.terminal-tabs::-webkit-scrollbar { display: none; }
+.terminal-tab { display: inline-flex; align-items: center; min-width: 0; max-width: 190px; height: 28px; padding: 0 9px; border: 1px solid transparent; border-radius: 7px; color: #9ea8b6; font-size: 11.5px; white-space: nowrap; transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out), color 120ms var(--ease-out); }
+.terminal-tab:hover { background: rgba(255, 255, 255, .055); color: #dce2ea; }
+.terminal-tab.is-active { background: #2d333e; border-color: #414b59; color: #f6f8fb; box-shadow: inset 0 1px rgba(255, 255, 255, .035), 0 1px 2px rgba(0, 0, 0, .18); }
+.terminal-tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.terminal-dot { display: inline-block; width: 6px; height: 6px; flex: 0 0 6px; margin-right: 6px; border-radius: 50%; background: #52ca83; box-shadow: 0 0 0 3px rgba(82, 202, 131, .12); }
+.terminal-dot.exited { background: #8f99a8; box-shadow: none; }
+.terminal-dot.failed { background: #ef7d8e; box-shadow: 0 0 0 3px rgba(239, 125, 142, .12); }
+.terminal-actions { display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; padding-left: 6px; border-left: 1px solid #363d48; }
+.terminal-action { display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid transparent; border-radius: 7px; color: #9fa9b7; font-size: 17px; line-height: 1; transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out), color 120ms var(--ease-out); }
+.terminal-action:hover:not(:disabled) { background: #2d333e; border-color: #414b59; color: #f5f7fa; }
+.terminal-action:disabled { cursor: default; opacity: .38; }
+.terminal-close-action { font-size: 19px; }
+.terminal-hide-action { color: #c8d0db; font-size: 20px; transform: translateY(-1px); }
+.terminal-viewport { flex: 1; min-height: 0; padding: 10px 14px 10px; user-select: text; overflow: hidden; background: radial-gradient(circle at 50% 0, rgba(61, 73, 94, .14), transparent 38%), #111318; }
 .terminal-viewport .xterm { height: 100%; }
-.terminal-empty { display: grid; place-items: center; flex: 1; color: #949ba7; font-size: 13px; }
+.terminal-empty { display: grid; place-items: center; flex: 1; padding: 18px; color: #9da7b5; font-size: 12px; text-align: center; background: radial-gradient(circle at 50% 0, rgba(61, 73, 94, .14), transparent 38%), #111318; }
 
 .main-pane:has(.terminal-panel) .composer-dock {
-	bottom: calc(clamp(180px, 32vh, 360px) + 20px);
+	bottom: calc(clamp(120px, var(--bottom-panel-height, 220px), calc(100dvh - 280px)) + 20px);
+}
+
+@media (max-width: 620px) {
+	.terminal-head { height: 38px; gap: 5px; padding: 0 7px 0 9px; }
+	.terminal-label { display: none; }
+	.terminal-identity { gap: 4px; }
+	.terminal-session-count { min-width: 15px; padding-inline: 4px; }
+	.terminal-tabs { gap: 2px; }
+	.terminal-tab { max-width: 118px; padding-inline: 7px; }
+	.terminal-actions { gap: 0; padding-left: 4px; }
+	.terminal-action { width: 26px; height: 26px; }
+	.terminal-viewport { padding: 8px 10px; }
 }
 
 /* ── Dev scenario chip (bottom-left so top chrome stays draggable) ── */
@@ -909,6 +965,21 @@ a,
 
 .download-bar.is-warning .download-label {
 	color: #a15c00;
+}
+
+/* A status line is short enough for one row; a failure has to say what broke
+   and what to do about it. Single-line truncation turned those into a red
+   fragment ending mid-word, so let them wrap — bounded, with the full text on
+   hover — instead of ellipsing away the actionable half. */
+.download-bar.is-error .download-label span,
+.download-bar.is-warning .download-label span {
+	white-space: normal;
+	display: -webkit-box;
+	-webkit-line-clamp: 3;
+	line-clamp: 3;
+	-webkit-box-orient: vertical;
+	text-overflow: clip;
+	line-height: 1.35;
 }
 
 .progress-track.is-indeterminate {
