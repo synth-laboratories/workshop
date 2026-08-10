@@ -453,6 +453,10 @@ mod tests {
                     [&session],
                 )?;
                 conn.execute(
+                    "INSERT INTO conversation_workspace_scopes(session_id,workspace,created_at,updated_at) VALUES(?1,'/tmp','now','now')",
+                    [&session],
+                )?;
+                conn.execute(
                     "INSERT INTO workspace_attachments(session_id,path,access,source,created_at) VALUES(?1,?2,'read_write','user_picker',?3)",
                     params![session, path, format!("2026-01-0{}", index + 1)],
                 )?;
