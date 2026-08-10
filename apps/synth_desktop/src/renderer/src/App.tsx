@@ -2157,22 +2157,6 @@ export default function App() {
 										setSidePanelOpen(next);
 									}}
 							/>
-							{failedSend && failedSend.sessionId === activeChat.id ? (
-								<div
-									role="status"
-									data-testid="send-retry"
-									style={{
-										display: "flex", alignItems: "center", justifyContent: "space-between",
-										gap: 12, margin: "0 16px 8px", padding: "8px 12px", borderRadius: 10,
-										border: "1px solid currentColor", opacity: 0.9, fontSize: 13
-									}}
-								>
-									<span>{failedSend.message}</span>
-									<button type="button" data-testid="send-retry-button" onClick={retryFailedSend}>
-										Retry
-									</button>
-								</div>
-							) : null}
 							{openArtifact ? (
 								<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
 							) : null}
@@ -2250,6 +2234,9 @@ export default function App() {
 							activeEnterAction={preferences.submission.activeEnterAction}
 							steerSupported={Boolean(nativeCodex?.steerTurn)}
 							steerError={steerError}
+							sendFailure={failedSend && failedSend.sessionId === activeChat?.id
+								? { message: failedSend.message, onRetry: retryFailedSend }
+								: null}
 							onSteer={async (text) => {
 								if (!activeSessionId || !nativeCodex?.steerTurn) {
 									setSteerError("Steer is not supported by the current runtime. Queue the prompt or wait for the turn to finish.");

@@ -53,6 +53,8 @@ type Props = {
 	onKeepQueued?: () => void;
 	steerSupported?: boolean;
 	steerError?: string | null;
+	/** Recoverable turn-start failure, rendered above the input inside its dock. */
+	sendFailure?: { message: string; onRetry: () => void } | null;
 	/** Opens Settings → Voice so the user can pick/download a Whisper model. */
 	onOpenVoiceSettings?: () => void;
 	/** Skills selectable from the "/" menu; each attaches as a removable chip. */
@@ -622,6 +624,7 @@ export function Composer({
 	onKeepQueued,
 	steerSupported = false,
 	steerError = null,
+	sendFailure = null,
 	onOpenVoiceSettings,
 	skills = [],
 	onSlashNew,
@@ -1058,6 +1061,12 @@ export function Composer({
 			) : null}
 			{steerError ? (
 				<p className="composer-steer-error" role="alert" data-testid="steer-error">{steerError}</p>
+			) : null}
+			{sendFailure ? (
+				<div className="composer-send-retry" role="status" data-testid="send-retry">
+					<span>{sendFailure.message}</span>
+					<button type="button" data-testid="send-retry-button" onClick={sendFailure.onRetry}>Retry</button>
+				</div>
 			) : null}
 			{voiceError ? (
 				<p className="composer-steer-error" role="alert" data-testid="composer-mic-error">{voiceError}</p>

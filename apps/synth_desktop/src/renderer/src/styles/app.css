@@ -1627,6 +1627,40 @@ a,
 	pointer-events: auto;
 }
 
+.composer-send-retry {
+	width: 100%;
+	max-width: 720px;
+	margin-bottom: 8px;
+	padding: 9px 12px;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	border: 1px solid #e1b9b9;
+	border-radius: 12px;
+	background: #fff8f8;
+	color: #7a3434;
+	font-size: 13px;
+	pointer-events: auto;
+}
+
+.composer-send-retry span {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.composer-send-retry button {
+	flex: 0 0 auto;
+	padding: 6px 10px;
+	border: 1px solid #d7b0b0;
+	border-radius: 8px;
+	background: #fff;
+	color: inherit;
+	font: inherit;
+	font-weight: 600;
+	cursor: pointer;
+}
+
 .composer-configuration-required span {
 	display: flex;
 	flex-direction: column;

@@ -194,6 +194,17 @@ test("a rejected turn start clears Working, keeps the typed text and retries", a
 	await expect(retry).toBeVisible();
 	await expect(retry).toContainText("The local agent process disconnected before the turn started. Retry to reconnect.");
 	await expect(retry).not.toContainText("922c25f7");
+	const retryGeometry = await retry.boundingBox();
+	const composerGeometry = await page.getByTestId("composer").boundingBox();
+	expect(retryGeometry, "retry status has measurable geometry").not.toBeNull();
+	expect(composerGeometry, "composer has measurable geometry").not.toBeNull();
+	const retryBottom = retryGeometry!.y + retryGeometry!.height;
+	const retryRight = retryGeometry!.x + retryGeometry!.width;
+	const composerRight = composerGeometry!.x + composerGeometry!.width;
+	expect(retryBottom, "retry status is above the composer").toBeLessThanOrEqual(composerGeometry!.y);
+	expect(retryGeometry!.x).toBeGreaterThanOrEqual(composerGeometry!.x);
+	expect(retryRight).toBeLessThanOrEqual(composerRight);
+	expect(retryBottom).toBeLessThanOrEqual((await page.viewportSize())!.height);
 
 	// The typed text survived and is still in the transcript.
 	await expect(page.getByTestId("chat-transcript")).toContainText("summarize the lifecycle handoff");
