@@ -456,10 +456,6 @@ mod tests {
                     "INSERT INTO sessions(id,title,target_json,status,metadata_json,created_at,updated_at) VALUES(?1,?1,'{}','ready','{}','now','now')",
                     [&session],
                 )?;
-				conn.execute(
-					"INSERT INTO conversation_workspace_scopes(session_id,workspace,created_at,updated_at) VALUES(?1,'/tmp','now','now')",
-					[&session],
-				)?;
                 conn.execute(
                     "INSERT INTO conversation_workspace_scopes(session_id,workspace,created_at,updated_at) VALUES(?1,'/tmp','now','now')",
                     [&session],
