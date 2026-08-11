@@ -20,6 +20,10 @@ const visualContracts = extract((state: any) => {
 	const cardBox = providerCard?.getBoundingClientRect();
 	const sidebar = document.querySelector<HTMLElement>('[data-testid="sidebar"]');
 	const sidebarBox = sidebar?.getBoundingClientRect();
+	const sidebarHandle = document.querySelector<HTMLElement>('[data-testid="sidebar-resize-handle"]');
+	const sidebarHandleBox = sidebarHandle?.getBoundingClientRect();
+	const sidebarStyle = sidebar ? getComputedStyle(sidebar) : null;
+	const sidebarHandleLine = sidebarHandle ? getComputedStyle(sidebarHandle, "::after") : null;
 	const newConversation = document.querySelector<HTMLElement>('[data-testid="new-conversation"]');
 	const search = document.querySelector<HTMLElement>('[data-testid="open-search"]');
 	const newIcon = newConversation?.querySelector<HTMLElement>("svg");
@@ -64,6 +68,13 @@ const visualContracts = extract((state: any) => {
 		sidebarContained: !sidebarBox || (sidebarBox.left === 0 &&
 			sidebarBox.top === 0 && sidebarBox.bottom <= state.window.innerHeight + 1 &&
 			sidebarBox.width >= 220 && sidebarBox.width <= 420),
+		sidebarSeamIsSingle: !sidebarBox || Boolean(
+			sidebarHandleBox && sidebarStyle && sidebarHandleLine &&
+			Number.parseFloat(sidebarStyle.borderRightWidth) === 1 &&
+			sidebarStyle.borderRightStyle === "solid" &&
+			sidebarHandleLine.backgroundColor === "rgba(0, 0, 0, 0)" &&
+			sidebarBox.right >= sidebarHandleBox.left && sidebarBox.right <= sidebarHandleBox.right
+		),
 		navigationIconsAligned: !sidebarBox || (newCenter !== null && searchCenter !== null &&
 			Math.abs(newCenter - searchCenter) <= 0.5),
 		navigationIconsMatchTrafficLights: !sidebarBox || (
@@ -133,6 +144,10 @@ export const authorized_provider_card_never_overflows = always(() =>
 
 export const sidebar_stays_inside_the_window = always(() =>
 	visualContracts.current.sidebarContained
+);
+
+export const sidebar_and_resize_target_never_double_paint_the_seam = always(() =>
+	visualContracts.current.sidebarSeamIsSingle
 );
 
 export const primary_navigation_icons_share_one_native_anchor = always(() =>

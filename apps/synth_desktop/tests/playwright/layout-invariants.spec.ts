@@ -104,6 +104,30 @@ test("sidebar account and settings footer stays anchored to the bottom edge", as
 	}
 });
 
+test("sidebar seam is one hairline with an invisible resize hit target", async ({ page }) => {
+	const seam = await page.evaluate(() => {
+		const sidebar = document.querySelector<HTMLElement>('[data-testid="sidebar"]');
+		const handle = document.querySelector<HTMLElement>('[data-testid="sidebar-resize-handle"]');
+		if (!sidebar || !handle) throw new Error("Sidebar seam targets are absent");
+		const sidebarBox = sidebar.getBoundingClientRect();
+		const handleBox = handle.getBoundingClientRect();
+		const sidebarStyle = getComputedStyle(sidebar);
+		const handleLine = getComputedStyle(handle, "::after");
+		return {
+			borderWidth: Number.parseFloat(sidebarStyle.borderRightWidth),
+			borderStyle: sidebarStyle.borderRightStyle,
+			handleLineBackground: handleLine.backgroundColor,
+			seamInsideHandle: sidebarBox.right >= handleBox.left && sidebarBox.right <= handleBox.right,
+			handleWidth: handleBox.width
+		};
+	});
+	expect(seam.borderWidth).toBe(1);
+	expect(seam.borderStyle).toBe("solid");
+	expect(seam.handleLineBackground).toBe("rgba(0, 0, 0, 0)");
+	expect(seam.seamInsideHandle).toBe(true);
+	expect(seam.handleWidth).toBeGreaterThanOrEqual(6);
+});
+
 test("titlebar chrome is trimmed to terminal controls", async ({ page }) => {
 	await expect(page.getByRole("button", { name: "Show terminal" })).toBeVisible();
 	await expect(page.getByTestId("runtime-status")).toHaveCount(0);
