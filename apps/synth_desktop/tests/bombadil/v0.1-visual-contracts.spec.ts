@@ -33,6 +33,9 @@ const visualContracts = extract((state: any) => {
 	const iconCenter = (box?: DOMRect) => box ? box.left + box.width / 2 : null;
 	const newCenter = iconCenter(newIconBox);
 	const searchCenter = iconCenter(searchIconBox);
+	// Tauri's x:20 anchor places the 15px native light's center at 27.5
+	// logical pixels. Keep the renderer navigation axis on that same line.
+	const nativeTrafficLightCenterX = 27.5;
 	return {
 		accountPoint: point(account),
 		accountSettingsPoint: point(accountSettings),
@@ -63,9 +66,11 @@ const visualContracts = extract((state: any) => {
 			sidebarBox.width >= 220 && sidebarBox.width <= 420),
 		navigationIconsAligned: !sidebarBox || (newCenter !== null && searchCenter !== null &&
 			Math.abs(newCenter - searchCenter) <= 0.5),
-		navigationIconsInset: !sidebarBox || (newCenter !== null
-			? newCenter - sidebarBox.left >= 20 && newCenter - sidebarBox.left <= 36
-			: false),
+		navigationIconsMatchTrafficLights: !sidebarBox || (
+			newCenter !== null && searchCenter !== null &&
+			Math.abs((newCenter - sidebarBox.left) - nativeTrafficLightCenterX) <= 1.5 &&
+			Math.abs((searchCenter - sidebarBox.left) - nativeTrafficLightCenterX) <= 1.5
+		),
 		navigationRowsContained: !sidebarBox || (Boolean(newConversation && search) &&
 			[newConversation!, search!].every((row) => {
 				const box = row.getBoundingClientRect();
@@ -131,7 +136,7 @@ export const sidebar_stays_inside_the_window = always(() =>
 );
 
 export const primary_navigation_icons_share_one_native_anchor = always(() =>
-	visualContracts.current.navigationIconsAligned && visualContracts.current.navigationIconsInset
+	visualContracts.current.navigationIconsAligned && visualContracts.current.navigationIconsMatchTrafficLights
 );
 
 export const primary_navigation_rows_stay_inside_the_sidebar = always(() =>
