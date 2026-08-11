@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 
@@ -105,6 +106,19 @@ class SidecarApiCompatTests(unittest.TestCase):
         self.assertEqual(health["status"], "ok")
         self.assertIsNone(health["loadedModel"])
         self.assertEqual(health["memoryBytes"], 0)
+
+    def test_native_health_reports_missing_weights_as_not_installed(self) -> None:
+        """A live HTTP server is not inference-ready without its local model."""
+        with tempfile.TemporaryDirectory(prefix="synth-laguna-missing-") as tmp:
+            config = replace(
+                _config(Path(tmp), api_key=self.api_key), backend="mlx_lm"
+            )
+            with TestClient(build_app(config)) as client:
+                health = client.get(
+                    "/health", headers={"Authorization": f"Bearer {self.api_key}"}
+                ).json()
+        self.assertEqual(health["status"], "not_installed")
+        self.assertIsNone(health["loadedModel"])
 
     def test_chat_completion_over_the_native_core(self) -> None:
         headers = {"Authorization": f"Bearer {self.api_key}"}
