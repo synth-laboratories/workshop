@@ -160,6 +160,12 @@ pub enum BillingAction {
 #[derive(Deserialize)]
 struct HostedBillingSession {
     url: String,
+    /// `provider` = Autumn/Stripe hosted checkout. `hosted_web` = web-app
+    /// fallback. Upgrade must be provider-resolved for Gate F.
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -437,6 +443,30 @@ impl AccountCloudClient {
             }
             .public_message())
         })?;
+        if matches!(action, BillingAction::Upgrade) {
+            let mode = session.mode.as_deref().unwrap_or("");
+            if mode != "provider" {
+                return Err(anyhow!(
+                    "Synth Cloud could not open provider checkout for this upgrade. Try again in a moment, or manage billing on the web."
+                ));
+            }
+            if session.url.trim().is_empty() {
+                return Err(anyhow!(
+                    "Synth Cloud returned an empty checkout URL for this upgrade."
+                ));
+            }
+            if session
+                .session_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .is_none()
+            {
+                return Err(anyhow!(
+                    "Synth Cloud returned a checkout URL without a session id."
+                ));
+            }
+        }
         Ok(session.url)
     }
 
@@ -807,6 +837,56 @@ mod tests {
         client.read(&origin, Some("sk_test"), false, now()).await;
         let url = client
             .billing_url(&origin, Some("sk_test"), BillingAction::Manage, None)
+            .await
+            .unwrap();
+        assert_eq!(url, "https://checkout.test/session/abc");
+    }
+
+    #[tokio::test]
+    async fn upgrade_refuses_hosted_web_fallback() {
+        let (origin, _) = spawn_backend(vec![
+            (200, snapshot_body("free", 0)),
+            (
+                200,
+                r#"{"url":"https://app.test/usage?upgrade=starter","mode":"hosted_web"}"#.into(),
+            ),
+        ]);
+        let client = AccountCloudClient::new();
+        client.read(&origin, Some("sk_test"), false, now()).await;
+        let error = client
+            .billing_url(
+                &origin,
+                Some("sk_test"),
+                BillingAction::Upgrade,
+                Some("starter"),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("provider checkout"),
+            "unexpected copy: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn upgrade_requires_provider_session_id() {
+        let (origin, _) = spawn_backend(vec![
+            (200, snapshot_body("free", 0)),
+            (
+                200,
+                r#"{"url":"https://checkout.test/session/abc","mode":"provider","session_id":"cs_test_1"}"#.into(),
+            ),
+        ]);
+        let client = AccountCloudClient::new();
+        client.read(&origin, Some("sk_test"), false, now()).await;
+        let url = client
+            .billing_url(
+                &origin,
+                Some("sk_test"),
+                BillingAction::Upgrade,
+                Some("starter"),
+            )
             .await
             .unwrap();
         assert_eq!(url, "https://checkout.test/session/abc");
