@@ -110,7 +110,10 @@ write_contract() {
     }]
   },
   "bundle": {
-    "icon": ["$ICON_PNG", "$ICON_ICNS"]
+    "icon": ["$ICON_PNG", "$ICON_ICNS"],
+    "macOS": {
+      "minimumSystemVersion": "14.0"
+    }
   }
 }
 EOF

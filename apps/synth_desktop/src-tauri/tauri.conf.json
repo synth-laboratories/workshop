@@ -33,6 +33,9 @@
     "active": true,
     "targets": "all",
     "icon": ["../resources/icon.png", "../resources/icon.icns"],
+    "macOS": {
+      "minimumSystemVersion": "14.0"
+    },
     "resources": {
       "../../../services/laguna-daemon/laguna_daemon": "services/laguna-daemon/laguna_daemon",
       "../../../visuals": "visuals"

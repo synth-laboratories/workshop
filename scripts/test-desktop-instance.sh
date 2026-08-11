@@ -41,8 +41,15 @@ if "$ROOT/scripts/desktop-instance.sh" print '../unsafe' >/dev/null 2>&1; then
   exit 1
 fi
 
-jq -e '.identifier == "com.synth.desktop.dev.alpha" and .productName == "Synth Desktop · alpha" and (.bundle.icon | length) == 2' \
+jq -e '
+  .identifier == "com.synth.desktop.dev.alpha" and
+  .productName == "Synth Desktop · alpha" and
+  (.bundle.icon | length) == 2 and
+  .bundle.macOS.minimumSystemVersion == "14.0"
+' \
   "$TEST_ROOT/instances/alpha/generated/tauri.instance.json" >/dev/null
+jq -e '.bundle.macOS.minimumSystemVersion == "14.0"' \
+  "$ROOT/apps/synth_desktop/src-tauri/tauri.conf.json" >/dev/null
 
 # Canonical lifecycle commands must never stop an arbitrary copied app or a
 # named development instance. Exact executable paths are the process authority.
