@@ -2,9 +2,9 @@
 # Copy to ~/.synth-desktop/config.toml. Secrets default to the adjacent .env
 # file (created mode 0600 when saved from Desktop Settings).
 #
-# Workshop v0.2 instances should prefer an explicit lane profile with both a
-# backend endpoint and a dedicated Responses gateway. Missing gateways fail
-# closed for synth-cloud traffic rather than silently reusing the backend.
+# Workshop v0.2 instances should use an explicit lane profile. The dedicated
+# Responses gateway is selected from checked-in Rust code and cannot be
+# overridden here; unknown profiles fail closed for synth-cloud traffic.
 
 [intern]
 profile = "local-slot1" # local-slot1 | staging | production | local | prod
@@ -19,11 +19,6 @@ production = "https://mcp.usesynth.ai"
 # Legacy aliases still accepted:
 prod = "https://api.usesynth.ai"
 local = "http://127.0.0.1:8000"
-
-[intern.gateways]
-local-slot1 = "http://127.0.0.1:41124"
-staging = "https://synth-responses-gateway-staging-dev.up.railway.app"
-production = "https://synth-responses-gateway-prod-production.up.railway.app"
 
 # The first folder is the default cwd for new Codex conversations. All listed
 # folders are available to Codex sessions using workspace-write.
