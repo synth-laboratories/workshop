@@ -21,7 +21,24 @@ fi
 
 if [[ -n "${BACKEND}" && -d "${BACKEND}/tests/units" ]]; then
   echo "== backend fake-Autumn + settlement units =="
-  (cd "$BACKEND" && python -m pytest -m units \
+  # Prefer the sibling backend/.venv (shared deps), then BACKEND/.venv, then PATH.
+  PY="${BACKEND_PYTHON:-}"
+  if [[ -z "$PY" ]]; then
+    for candidate in \
+      "$ROOT/../backend/.venv/bin/python" \
+      "$BACKEND/.venv/bin/python" \
+      "$(command -v python3 || true)"; do
+      if [[ -n "$candidate" && -x "$candidate" ]]; then
+        PY="$candidate"
+        break
+      fi
+    done
+  fi
+  if [[ -z "$PY" ]]; then
+    echo "no python for backend units; set BACKEND_PYTHON" >&2
+    exit 1
+  fi
+  (cd "$BACKEND" && "$PY" -m pytest -m units \
     tests/units/test_fake_autumn_checkout.py \
     tests/units/test_desktop_account_snapshot.py \
     tests/units/test_public_inference_gateway_settlement.py)
@@ -29,9 +46,9 @@ else
   echo "backend snapshot not found at ${BACKEND:-unset}; skip"
 fi
 
-echo "== desktop rust units (tariffs + credential broker) =="
+echo "== desktop rust units (tariffs + credential broker + migration 8) =="
 # cargo test takes a single TESTNAME filter, so run one module per invocation.
-for module in tariffs credential_broker; do
+for module in tariffs credential_broker "storage::migrations"; do
   (cd "$ROOT/apps/synth_desktop/src-tauri" && cargo test --lib "$module" -- --nocapture)
 done
 

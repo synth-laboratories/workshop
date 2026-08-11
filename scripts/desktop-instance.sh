@@ -149,19 +149,72 @@ EOF
   mv "$manifest_tmp" "$MANIFEST"
 }
 
+executable_digest() {
+  if [[ -f "$EXE" ]]; then
+    shasum -a 256 "$EXE" | awk '{print "sha256:" $1}'
+  else
+    printf ''
+  fi
+}
+
+# Capture rev+dirty before a build, revalidate after, and record the executable
+# digest so eval manifests can bind app provenance without stale pointers.
+revalidate_provenance() {
+  local phase="${1:-post-build}" expected="${2:-$SOURCE_REVISION}"
+  local current digest manifest_tmp="$MANIFEST.provenance.tmp"
+  local expected_base current_base
+  current="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
+  if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+    current="$current-dirty"
+  fi
+  expected_base="${expected%-dirty}"
+  current_base="${current%-dirty}"
+  if [[ "$current_base" != "$expected_base" ]]; then
+    echo "[desktop:$NAME] ERROR provenance drift ($phase): expected $expected got $current" >&2
+    return 1
+  fi
+  if [[ "$current" != "$expected" ]]; then
+    echo "[desktop:$NAME] provenance dirty-bit changed during $phase ($expected -> $current); recording latest" >&2
+  fi
+  SOURCE_REVISION="$current"
+  digest="$(executable_digest)"
+  [[ -f "$MANIFEST" ]] || write_contract
+  jq \
+    --arg sourceRevision "$SOURCE_REVISION" \
+    --arg executable "$EXE" \
+    --arg executableDigest "$digest" \
+    --arg validatedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    --arg phase "$phase" \
+    '.provenance = ((.provenance // {}) + {
+      sourceRevision: $sourceRevision,
+      executable: $executable,
+      executableDigest: (if $executableDigest == "" then null else $executableDigest end),
+      validatedAt: $validatedAt,
+      phase: $phase
+    })
+    | .sourceRevision = $sourceRevision
+    | .executableDigest = (if $executableDigest == "" then null else $executableDigest end)' \
+    "$MANIFEST" >"$manifest_tmp"
+  mv "$manifest_tmp" "$MANIFEST"
+}
+
 mark_runtime() {
   local status="$1" pid="${2:-}" manifest_tmp="$MANIFEST.runtime.tmp"
+  local digest
   [[ -f "$MANIFEST" ]] || write_contract
+  digest="$(executable_digest)"
   jq \
     --arg status "$status" \
     --arg pid "$pid" \
     --arg executable "$EXE" \
+    --arg executableDigest "$digest" \
     --arg sourceRevision "$SOURCE_REVISION" \
     --arg checkedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     '.runtime = ((.runtime // {}) + {
       status: $status,
       pid: (if $pid == "" then null else ($pid | tonumber) end),
       executable: $executable,
+      executableDigest: (if $executableDigest == "" then null else $executableDigest end),
       sourceRevision: $sourceRevision,
       checkedAt: $checkedAt
     })' "$MANIFEST" >"$manifest_tmp"
@@ -229,6 +282,10 @@ dev_instance() {
     exit 1
   fi
 
+  # Capture provenance before any compile so a mid-build dirty tree fails closed.
+  local pre_build_revision="$SOURCE_REVISION"
+  revalidate_provenance "pre-build" "$pre_build_revision"
+
   # The daemon's data directory holds its api key, pid files, response store,
   # logs, and selected model. Sharing it across instances shares all of those.
   local laguna_home="${SYNTH_LAGUNA_HOME:-$DATA_ROOT/laguna}"
@@ -279,8 +336,12 @@ dev_instance() {
     --bin synth-visuals-mcp \
     --bin synth-optimizers-mcp
 
+  revalidate_provenance "post-build" "$pre_build_revision"
+  export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
+
   echo "[desktop:$NAME] launching $APP_TITLE"
   echo "[desktop:$NAME] data=$DATA_ROOT vite=$VITE_PORT laguna=$SYNTH_LAGUNA_BASE_URL home=$laguna_home"
+  echo "[desktop:$NAME] provenance $SOURCE_REVISION digest=$(executable_digest)"
   cd "$ROOT/apps/synth_desktop"
   exec npx tauri dev --config "$CONFIG"
 }
