@@ -54,6 +54,9 @@ test.describe("design locks (must pass)", () => {
 		await expect(changelog).toContainText("New");
 		await expect(changelog).toContainText("Improved");
 		await expect(changelog).toContainText("Fixed");
+		await expect(changelog).toContainText("Muse Spark");
+		await expect(changelog).toContainText("passive stable-channel update check");
+		await expect(changelog).toContainText("build provenance");
 	});
 
 	test("Inventory exposes Attach container defaulting to Craftax Rust :8098", async ({ page }) => {

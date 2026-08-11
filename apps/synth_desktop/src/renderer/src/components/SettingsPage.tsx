@@ -134,16 +134,18 @@ const CHANGELOG = [
 				label: "New",
 				items: [
 					"Local Laguna XS inference with managed model downloads and memory controls.",
-					"A first-class right panel for conversation outputs and inference activity.",
-					"Credential-aware cloud models with provider and pricing details."
+					"Remote Luna, Laguna, Muse Spark, and Synth Cloud models with credentials kept in native custody.",
+					"Trace V5 imports, Craftax rollout inspection, and a first-class visual library.",
+					"Optional Synth account sign-in with clear cloud allowance and device-usage views."
 				]
 			},
 			{
 				label: "Improved",
 				items: [
-					"A quieter, more consistent Settings experience across models, voice, inference, and account.",
+					"A quieter, more consistent Settings experience across models, voice, inference, account, and release information.",
 					"Compact composer controls for permissions, model choice, and thinking level.",
-					"Clearer local inference throughput, latency, cache, and request telemetry."
+					"Clearer local inference throughput, latency, cache, request telemetry, and provider-specific billing authority.",
+					"A passive stable-channel update check that stays silent when offline and always uses the official download page."
 				]
 			},
 			{
@@ -151,7 +153,8 @@ const CHANGELOG = [
 				items: [
 					"Thinking streams now render at their content height without oversized empty cards.",
 					"Auto-compaction preserves model-aware defaults and never falls back to a 16k limit.",
-					"Restored memory release controls and removed unfinished navigation and agent stubs."
+					"Model menus remain inside the window at compact desktop sizes.",
+					"Cloud checkout, provider requests, data migrations, and build provenance now fail closed when their release invariants are not met."
 				]
 			}
 		]
