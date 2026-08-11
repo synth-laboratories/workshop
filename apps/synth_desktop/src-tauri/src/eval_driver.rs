@@ -7,12 +7,13 @@
 //! debug/dev builds and only spawned for named development instances. Production /
 //! release builds never listen.
 
-use crate::codex::{CodexManager, CodexSessionStartRequest, CodexTurnSendRequest};
+use crate::codex::{self, CodexManager, CodexSessionStartRequest, CodexTurnSendRequest};
 use crate::core_runtime::CoreRuntime;
 use crate::laguna::LagunaManager;
 use crate::storage::{EventAppend, EventSource};
 use crate::synth_config;
-use crate::visuals::VisualCreateRequest;
+use crate::trace_ingest::TraceBundleIngestRequest;
+use crate::visuals::{VisualCreateRequest, VisualUpdateRequest};
 use crate::visuals_ipc;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -377,7 +378,7 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
                 .trim_start_matches("/v1/containers/")
                 .trim_end_matches("/policy_rollouts")
                 .trim_end_matches('/');
-            run_policy_rollout(core, id, body).await
+            run_policy_rollout(deps, id, body).await
         }
         ("POST", "/v1/container_register") => {
             visuals_ipc::dispatch("POST", "/v1/containers", body, core).await
@@ -396,9 +397,18 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
             .await
         }
         ("POST", "/v1/open_visual") => open_visual(core, body).await,
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/update") => {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/update")
+                .trim_end_matches('/');
+            update_visual(core, id, body).await
+        }
         ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/show") => {
             visuals_ipc::dispatch(method, path, body, core).await
         }
+        ("POST", "/v1/traces/ingest") => ingest_trace_bundle(core, body).await,
+        ("POST", "/v1/policy_preflight") => policy_preflight(deps, body).await,
         _ => bail!("unsupported eval driver route {method} {path}"),
     }
 }
@@ -708,7 +718,11 @@ async fn open_visual(core: &CoreRuntime, body: Value) -> Result<Value> {
         metadata: body.get("metadata").cloned(),
     };
     let (visual, event) = core.visuals().create(create).await?;
-    let (shown, show_event) = core.visuals().show(visual.id.clone(), session_id).await?;
+    let (shown, show_event) = core
+        .visuals()
+        .show(visual.id.clone(), session_id)
+        .await?;
+    core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
     core.broadcast_committed(Some(serde_json::from_value(show_event.clone())?));
     Ok(json!({
         "opened": true,
@@ -718,7 +732,219 @@ async fn open_visual(core: &CoreRuntime, body: Value) -> Result<Value> {
     }))
 }
 
-async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value) -> Result<Value> {
+async fn update_visual(core: &CoreRuntime, visual_id: &str, body: Value) -> Result<Value> {
+    let request = VisualUpdateRequest {
+        title: body
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        bindings: body.get("bindings").cloned(),
+        status: None,
+        renderer_kind: None,
+        message_id: None,
+        run_id: None,
+        trace_id: body
+            .get("traceId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        content: None,
+        metadata: body.get("metadata").cloned(),
+        bump_revision: Some(true),
+    };
+    let (visual, event) = core
+        .visuals()
+        .update(visual_id.to_string(), request)
+        .await?;
+    core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
+    Ok(json!({ "ok": true, "visual": visual, "event": event }))
+}
+
+async fn ingest_trace_bundle(core: &CoreRuntime, body: Value) -> Result<Value> {
+    let source_path = body
+        .get("sourcePath")
+        .or_else(|| body.get("source_path"))
+        .and_then(Value::as_str)
+        .context("traces/ingest requires sourcePath")?
+        .to_string();
+    let request = TraceBundleIngestRequest {
+        source_path,
+        source_kind: body
+            .get("sourceKind")
+            .or_else(|| body.get("source_kind"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        title: body
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        source_uri: body
+            .get("sourceUri")
+            .or_else(|| body.get("source_uri"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    };
+    let (result, event) = core.inventory().ingest_trace_bundle(request).await?;
+    core.broadcast_committed(event);
+    Ok(serde_json::to_value(result)?)
+}
+
+async fn policy_preflight(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
+    let provider = body
+        .get("provider")
+        .and_then(Value::as_str)
+        .unwrap_or("openrouter");
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    match resolve_policy_target(deps, provider, &model).await {
+        Ok(target) => match probe_policy_endpoint(&target).await {
+            Ok(()) => Ok(json!({
+                "ok": true,
+                "provider": target.provider,
+                "model": model,
+                "chatUrl": target.chat_url,
+            })),
+            Err(error) => Ok(json!({
+                "ok": false,
+                "provider": target.provider,
+                "model": model,
+                "chatUrl": target.chat_url,
+                "detail": error.to_string(),
+            })),
+        },
+        Err(error) => Ok(json!({
+            "ok": false,
+            "provider": provider,
+            "model": model,
+            "detail": error.to_string(),
+        })),
+    }
+}
+
+async fn probe_policy_endpoint(target: &PolicyTarget) -> Result<()> {
+    // Fail closed on unreachable provider endpoints before any paid rollout batch.
+    // Deliberately no completion request — connectivity only.
+    let url = reqwest::Url::parse(&target.chat_url)
+        .with_context(|| format!("invalid provider chat URL: {}", target.chat_url))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("provider chat URL missing host: {}", target.chat_url))?;
+    let port = url.port_or_known_default().unwrap_or(443);
+    let addr = format!("{host}:{port}");
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        tokio::net::TcpStream::connect(&addr),
+    )
+    .await
+    .with_context(|| format!("provider endpoint timed out: {addr}"))?
+    .with_context(|| format!("provider endpoint unreachable: {addr}"))?;
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct PolicyTarget {
+    provider: String,
+    chat_url: String,
+    api_key: String,
+    /// `chat` = OpenAI chat completions; `responses` = OpenAI Responses API.
+    wire: &'static str,
+}
+
+fn policy_chat_url(provider: &str, base: &str) -> (String, &'static str) {
+    let trimmed = base.trim_end_matches('/');
+    match provider {
+        "openrouter" => {
+            if trimmed.ends_with("/chat/completions") {
+                (trimmed.to_string(), "chat")
+            } else if trimmed.ends_with("/v1") || trimmed.ends_with("/api/v1") {
+                (format!("{trimmed}/chat/completions"), "chat")
+            } else {
+                (OPENROUTER_CHAT_URL.to_string(), "chat")
+            }
+        }
+        "synth-cloud" => {
+            // Synth Cloud Codex path is Responses (`{backend}/api/v1` + /responses).
+            if trimmed.ends_with("/responses") {
+                (trimmed.to_string(), "responses")
+            } else if trimmed.ends_with("/api/v1") {
+                (format!("{trimmed}/responses"), "responses")
+            } else {
+                (format!("{trimmed}/api/v1/responses"), "responses")
+            }
+        }
+        "local-laguna" => {
+            if trimmed.ends_with("/chat/completions") {
+                (trimmed.to_string(), "chat")
+            } else if trimmed.ends_with("/v1") {
+                (format!("{trimmed}/chat/completions"), "chat")
+            } else {
+                (format!("{trimmed}/v1/chat/completions"), "chat")
+            }
+        }
+        _ => (format!("{trimmed}/v1/chat/completions"), "chat"),
+    }
+}
+
+async fn resolve_policy_target(
+    deps: &EvalDriverDeps,
+    provider: &str,
+    _model: &str,
+) -> Result<PolicyTarget> {
+    match codex::provider_class(Some(provider)) {
+        codex::ProviderClass::OpenRouter => {
+            let api_key = synth_config::openrouter_api_key()?
+                .ok_or_else(|| anyhow!("OpenRouter API key is not configured on the Workshop host"))?;
+            let (chat_url, wire) = policy_chat_url("openrouter", OPENROUTER_CHAT_URL);
+            Ok(PolicyTarget {
+                provider: "openrouter".into(),
+                chat_url,
+                api_key,
+                wire,
+            })
+        }
+        codex::ProviderClass::SynthCloud => {
+            let resolved = synth_config::resolve()?;
+            let api_key = resolved
+                .api_key
+                .clone()
+                .ok_or_else(|| anyhow!("Synth Cloud API key is not configured on the Workshop host"))?;
+            let (chat_url, wire) = policy_chat_url("synth-cloud", &resolved.backend_url);
+            Ok(PolicyTarget {
+                provider: "synth-cloud".into(),
+                chat_url,
+                api_key,
+                wire,
+            })
+        }
+        codex::ProviderClass::LocalLaguna => {
+            let root = crate::runtime::workshop_root()?;
+            let base_url = deps
+                .laguna
+                .ensure(&root)
+                .await?
+                .ok_or_else(|| anyhow!("local Laguna daemon is unavailable"))?;
+            let api_key = deps
+                .laguna
+                .api_key()
+                .unwrap_or_else(|| "local-laguna".into());
+            let (chat_url, wire) = policy_chat_url("local-laguna", &base_url);
+            Ok(PolicyTarget {
+                provider: "local-laguna".into(),
+                chat_url,
+                api_key,
+                wire,
+            })
+        }
+        codex::ProviderClass::Direct => {
+            bail!("policy_rollouts require provider=openrouter|synth-cloud|local-laguna")
+        }
+    }
+}
+
+async fn run_policy_rollout(deps: &EvalDriverDeps, container_id: &str, body: Value) -> Result<Value> {
+    let core = &deps.core;
     let container = core
         .inventory()
         .get_container(container_id.to_string())
@@ -738,14 +964,12 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         .get("provider")
         .and_then(Value::as_str)
         .unwrap_or("openrouter");
-    if provider != "openrouter" {
-        bail!("policy_rollouts currently support provider=openrouter only");
-    }
     let model = body
         .get("model")
         .and_then(Value::as_str)
         .context("policy_rollouts require model")?
         .to_string();
+    let target = resolve_policy_target(deps, provider, &model).await?;
     let reasoning_effort = body
         .get("reasoningEffort")
         .or_else(|| body.get("reasoning_effort"))
@@ -776,9 +1000,6 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         "detail": "standard",
         "frame": {"enabled": false}
     }));
-
-    let api_key = synth_config::openrouter_api_key()?
-        .ok_or_else(|| anyhow!("OpenRouter API key is not configured on the Workshop host"))?;
 
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -833,7 +1054,7 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         let readout = state.get("readout").cloned().unwrap_or_else(|| json!({}));
         let planned = policy_actions_from_model(
             &client,
-            &api_key,
+            &target,
             &model,
             &reasoning_effort,
             &readout,
@@ -854,7 +1075,7 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
                     "containerId": container_id,
                     "rolloutId": rollout_id,
                     "taskInstanceId": task_instance_id,
-                    "provider": "openrouter",
+                    "provider": target.provider,
                     "providerResponseId": &planned.response_id,
                     "model": &planned.response_model,
                     "plannedActions": &planned.actions,
@@ -917,6 +1138,7 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         &rollout_id,
         &task_instance_id,
         seed,
+        &target.provider,
         &model,
         correlated_model_name.as_deref(),
         &state,
@@ -937,6 +1159,19 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
     core.update_container_last_rollout(container_id.to_string(), rollout_id.clone())
         .await?;
 
+    let env_terminated = state
+        .get("terminated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let env_truncated = state
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // Driver-side step/call caps are an honest lane completion even when the
+    // environment never flipped its own truncated bit.
+    let budget_exhausted = actions_taken.len() >= max_steps || calls >= max_calls;
+    let truncated = env_truncated || (!env_terminated && budget_exhausted);
+
     // Journal a durable lifecycle breadcrumb for cross-check (no secrets).
     let _ = core
         .append_and_broadcast(EventAppend {
@@ -949,11 +1184,14 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
                 "containerId": container_id,
                 "rolloutId": rollout_id,
                 "taskInstanceId": task_instance_id,
+                "provider": target.provider,
                 "model": model,
                 "reasoningEffort": reasoning_effort,
                 "reward": reward,
                 "actionCount": actions_taken.len(),
                 "calls": calls,
+                "terminated": env_terminated,
+                "truncated": truncated,
             }),
             remote_sequence: None,
             command_id: None,
@@ -968,6 +1206,7 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         "rolloutId": rollout_id,
         "taskInstanceId": task_instance_id,
         "seed": seed,
+        "provider": target.provider,
         "model": model,
         "reasoningEffort": reasoning_effort,
         "actions": actions_taken,
@@ -976,8 +1215,8 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         "score": reward,
         "reward": reward,
         "achievements": achievements,
-        "terminated": state.get("terminated").and_then(Value::as_bool).unwrap_or(false),
-        "truncated": state.get("truncated").and_then(Value::as_bool).unwrap_or(false),
+        "terminated": env_terminated,
+        "truncated": truncated,
         "state": state,
         "eventLog": event_log,
         "traceCorrelation": trace_correlation,
@@ -1014,6 +1253,7 @@ async fn build_trace_correlation(
     rollout_id: &str,
     task_instance_id: &str,
     seed: i64,
+    provider: &str,
     requested_model: &str,
     model: Option<&str>,
     state: &Value,
@@ -1071,6 +1311,7 @@ async fn build_trace_correlation(
         rollout_id,
         task_instance_id,
         seed,
+        provider,
         requested_model,
         model,
         step,
@@ -1091,6 +1332,7 @@ fn trace_correlation_payload(
     rollout_id: &str,
     task_instance_id: &str,
     seed: i64,
+    provider: &str,
     requested_model: &str,
     model: &str,
     step: u64,
@@ -1121,7 +1363,7 @@ fn trace_correlation_payload(
             "kind": "eval.policy_model.response",
             "id": model_event_id,
             "providerResponseId": model_response_id,
-            "provider": "openrouter",
+            "provider": provider,
             "requestedModel": requested_model,
             "model": model,
             "boundRolloutId": rollout_id,
@@ -1137,7 +1379,7 @@ fn trace_correlation_payload(
 
 async fn policy_actions_from_model(
     client: &reqwest::Client,
-    api_key: &str,
+    target: &PolicyTarget,
     model: &str,
     reasoning_effort: &str,
     readout: &Value,
@@ -1167,45 +1409,92 @@ async fn policy_actions_from_model(
         valid.join(", "),
         serde_json::to_string(readout).unwrap_or_else(|_| "{}".into())
     );
-    let mut request = json!({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "Return only JSON with an actions array. No prose."},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.2,
-    });
+    let mut request = if target.wire == "responses" {
+        json!({
+            "model": model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": "Return only JSON with an actions array. No prose."}]
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": prompt}]
+                }
+            ],
+            "temperature": 0.2,
+        })
+    } else {
+        json!({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "Return only JSON with an actions array. No prose."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.2,
+        })
+    };
     if !reasoning_effort.is_empty() {
-        request["reasoning"] = json!({"effort": reasoning_effort});
-        request["reasoning_effort"] = json!(reasoning_effort);
+        if target.wire == "responses" {
+            request["reasoning"] = json!({ "effort": reasoning_effort });
+        } else {
+            request["reasoning"] = json!({ "effort": reasoning_effort });
+            request["reasoning_effort"] = json!(reasoning_effort);
+        }
     }
-    let response = client
-        .post(OPENROUTER_CHAT_URL)
-        .bearer_auth(api_key)
-        .header("HTTP-Referer", "https://synth.dev")
-        .header("X-Title", "Synth Workshop Eval Driver")
+    let mut builder = client
+        .post(&target.chat_url)
+        .bearer_auth(&target.api_key)
+        .header("X-Title", "Synth Workshop Eval Driver");
+    if target.provider == "openrouter" {
+        builder = builder.header("HTTP-Referer", "https://synth.dev");
+    }
+    let response = builder
         .json(&request)
         .send()
         .await?
-        .error_for_status()?
+        .error_for_status()
+        .with_context(|| {
+            format!(
+                "policy model call failed for provider={} url={}",
+                target.provider, target.chat_url
+            )
+        })?
         .json::<Value>()
         .await?;
     let response_id = response
         .get("id")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
-        .context("OpenRouter omitted the model response id required for trace correlation")?
+        .with_context(|| {
+            format!(
+                "{} omitted the model response id required for trace correlation",
+                target.provider
+            )
+        })?
         .to_string();
     let response_model = response
         .get("model")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
-        .context("OpenRouter omitted the model identity required for trace correlation")?
+        .or(Some(model))
+        .filter(|value| !value.trim().is_empty())
+        .with_context(|| {
+            format!(
+                "{} omitted the model identity required for trace correlation",
+                target.provider
+            )
+        })?
         .to_string();
     if let Some(u) = response.get("usage") {
-        usage.prompt += u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
+        usage.prompt += u
+            .get("prompt_tokens")
+            .or_else(|| u.get("input_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         usage.completion += u
             .get("completion_tokens")
+            .or_else(|| u.get("output_tokens"))
             .and_then(Value::as_u64)
             .unwrap_or(0);
         usage.total += u.get("total_tokens").and_then(Value::as_u64).unwrap_or(0);
@@ -1217,12 +1506,41 @@ async fn policy_actions_from_model(
             usage.cost_usd += cost;
         }
     }
-    let content = response
-        .pointer("/choices/0/message/content")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let content = if target.wire == "responses" {
+        response
+            .get("output_text")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                response.get("output").and_then(Value::as_array).and_then(|items| {
+                    for item in items {
+                        if let Some(parts) = item.get("content").and_then(Value::as_array) {
+                            for part in parts {
+                                if let Some(text) = part
+                                    .get("text")
+                                    .and_then(Value::as_str)
+                                    .or_else(|| part.pointer("/text").and_then(Value::as_str))
+                                {
+                                    if !text.trim().is_empty() {
+                                        return Some(text.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    None
+                })
+            })
+            .unwrap_or_default()
+    } else {
+        response
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
     Ok(PolicyPlan {
-        actions: extract_actions(content, &valid),
+        actions: extract_actions(&content, &valid),
         response_id,
         response_model,
     })
@@ -1361,6 +1679,7 @@ mod tests {
             "rollout-1",
             "craftax:test:2001",
             2001,
+            "openrouter",
             "openai/gpt-5.6-luna",
             "openai/gpt-5.6-luna",
             7,
@@ -1381,10 +1700,56 @@ mod tests {
         assert_eq!(value["action"]["step"], 7);
         assert_eq!(value["reward"]["step"], 7);
         assert_eq!(value["frame"]["step"], 7);
+        assert_eq!(value["modelEvent"]["provider"], "openrouter");
         assert_eq!(value["modelEvent"]["boundRolloutId"], "rollout-1");
         assert!(value["traceDigest"]
             .as_str()
             .unwrap()
             .starts_with("sha256:"));
+    }
+
+    #[test]
+    fn policy_chat_urls_normalize_per_provider() {
+        assert_eq!(
+            policy_chat_url("openrouter", "https://openrouter.ai/api/v1"),
+            (
+                "https://openrouter.ai/api/v1/chat/completions".into(),
+                "chat"
+            )
+        );
+        assert_eq!(
+            policy_chat_url("synth-cloud", "https://api.synth.dev"),
+            (
+                "https://api.synth.dev/api/v1/responses".into(),
+                "responses"
+            )
+        );
+        assert_eq!(
+            policy_chat_url("local-laguna", "http://127.0.0.1:17301"),
+            (
+                "http://127.0.0.1:17301/v1/chat/completions".into(),
+                "chat"
+            )
+        );
+    }
+
+    #[test]
+    fn policy_provider_class_rejects_direct_providers() {
+        assert!(matches!(
+            codex::provider_class(Some("openai")),
+            codex::ProviderClass::Direct
+        ));
+        assert!(matches!(
+            codex::provider_class(Some("synth-cloud")),
+            codex::ProviderClass::SynthCloud
+        ));
+        assert!(matches!(
+            codex::provider_class(Some("local-laguna")),
+            codex::ProviderClass::LocalLaguna
+        ));
+        assert!(matches!(
+            codex::provider_class(Some("openrouter")),
+            codex::ProviderClass::OpenRouter
+        ));
     }
 }

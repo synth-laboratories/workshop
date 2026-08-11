@@ -56,8 +56,11 @@ bearer → `401`.
 | `GET` | `/v1/sessions/{id}/export` | Journal-backed session export |
 | `GET/POST` | `/v1/containers…` | Register / list / probe (shared with visuals IPC) |
 | `POST` | `/v1/containers/{id}/rollouts` | Scripted transport-gate rollouts |
-| `POST` | `/v1/containers/{id}/policy_rollouts` | Class-A LLM policy rollouts (OpenRouter key from host `synth_config`) |
+| `POST` | `/v1/containers/{id}/policy_rollouts` | Class-A LLM policy rollouts (`ProviderClass` dispatch) |
+| `POST` | `/v1/policy_preflight` | Fail-closed credential/daemon check before a paid batch |
 | `POST` | `/v1/open_visual` | Create + show a visual (dogfood only; never grade from it) |
+| `POST` | `/v1/visuals/{id}/update` | Patch visual bindings/metadata (live → sealed digests) |
+| `POST` | `/v1/traces/ingest` | Generic Trace V5 import via `inventory.ingest_trace_bundle` |
 
 Aliases (`/v1/create_session`, `/v1/send_message`, `/v1/wait_for_terminal`,
 `/v1/export_session`, `/v1/container_register`, `/v1/container_probe`) mirror the
@@ -83,18 +86,43 @@ semantic action names used by `window.__synthEval`.
 }
 ```
 
-Scores and achievements come from the container episode record. The OpenRouter
-key never leaves the host process and must never appear in case files, compose
-env, results, or traces.
+`provider` is one of `openrouter` | `synth-cloud` | `local-laguna` and resolves
+through the same `codex::provider_class` table as Codex session preparation:
+
+| provider | credential / daemon | chat endpoint |
+| --- | --- | --- |
+| `openrouter` | host OpenRouter key | OpenRouter `/chat/completions` |
+| `synth-cloud` | brokered Synth API key | `{backend}/api/v1/chat/completions` |
+| `local-laguna` | `LagunaManager.ensure` + local key | `{laguna}/v1/chat/completions` |
+
+Call `POST /v1/policy_preflight` before a multi-rollout batch. Missing keys or
+an unavailable Laguna daemon fail closed before any paid call. Provider secrets
+never leave the host process and must never appear in case files, compose env,
+results, or traces.
 
 Successful policy rollouts also return `traceCorrelation` using
-`synth.trace-correlation.v1`. It is a fail-closed proof for one actual action:
-the final observation, action, reward, immutable frame, and OpenRouter response
-all carry the same rollout identity and environment step. `frame.sha256` hashes
-the bytes at `frame.url`; `modelEvent.id` is the durable Workshop journal event
-and `modelEvent.providerResponseId` is the real provider response id.
-`modelEvent.boundRolloutId` must equal the top-level `rolloutId`. The driver fails
-the request rather than emitting a partial or synthetic correlation.
+`synth.trace-correlation.v1`. It is **correlation proof**, not a Trace V5
+substitute: one actual action's observation, action, reward, immutable frame,
+and provider response share the same rollout identity and environment step.
+Durable Trace V5 records are sealed by the eval runner (`synth-trace`) and
+imported through `POST /v1/traces/ingest`. `frame.sha256` hashes the bytes at
+`frame.url`; `modelEvent.id` is the durable Workshop journal event and
+`modelEvent.providerResponseId` is the real provider response id.
+`modelEvent.boundRolloutId` must equal the top-level `rolloutId`. The driver
+fails the request rather than emitting a partial or synthetic correlation.
+
+### Trace ingest body
+
+```json
+{
+  "sourcePath": "/abs/path/to/trace.zip-or-dir",
+  "sourceKind": "synth-trace-v5",
+  "title": "optional title",
+  "sourceUri": "optional://uri"
+}
+```
+
+Returns the inventory `TraceBundleIngestResult` (`trusted`, digests, traces).
 
 ## Cross-repo contract
 
