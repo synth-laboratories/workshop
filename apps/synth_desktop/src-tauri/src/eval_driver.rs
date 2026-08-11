@@ -1753,6 +1753,35 @@ mod tests {
     }
 
     #[test]
+    fn policy_chat_url_for_synth_cloud_honors_the_responses_gateway_override() {
+        // Mirrors what `resolve_policy_target`'s SynthCloud branch composes:
+        // the composer/eval "policy" path must redirect to the Responses
+        // gateway just like Codex's own session-start path does, while the
+        // resolved backend URL (what account/billing reads) stays untouched.
+        let resolved = synth_config::ResolvedBackend {
+            config_path: std::path::PathBuf::from("/tmp/config.toml"),
+            env_file: std::path::PathBuf::from("/tmp/.env"),
+            backend_url: "https://api.usesynth.ai".into(),
+            api_key: Some("sk_dev".into()),
+            worker_key: None,
+        };
+
+        std::env::remove_var("SYNTH_RESPONSES_GATEWAY_URL");
+        let (default_url, _) = policy_chat_url("synth-cloud", &synth_config::responses_gateway_url(&resolved));
+        assert_eq!(default_url, "https://api.usesynth.ai/api/v1/responses");
+
+        std::env::set_var("SYNTH_RESPONSES_GATEWAY_URL", "http://127.0.0.1:41124");
+        let (gateway_url, wire) =
+            policy_chat_url("synth-cloud", &synth_config::responses_gateway_url(&resolved));
+        assert_eq!(gateway_url, "http://127.0.0.1:41124/api/v1/responses");
+        assert_eq!(wire, "responses");
+        // Overriding the Responses gateway must never mutate the resolved
+        // backend URL account/billing calls read directly.
+        assert_eq!(resolved.backend_url, "https://api.usesynth.ai");
+        std::env::remove_var("SYNTH_RESPONSES_GATEWAY_URL");
+    }
+
+    #[test]
     fn policy_provider_class_rejects_direct_providers() {
         assert!(matches!(
             codex::provider_class(Some("openai")),
