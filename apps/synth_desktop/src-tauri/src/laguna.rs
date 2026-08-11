@@ -1256,6 +1256,7 @@ fn apply_daemon_env(command: &mut Command, api_key: &str, backend: &str, models_
     let model_id = selected_model_id().unwrap_or_else(|_| DEFAULT_MODEL.into());
     let laguna_port_string = laguna_port().to_string();
     command.envs([
+        ("PYTHONDONTWRITEBYTECODE", "1"),
         ("SYNTH_LAGUNA_HOST", "127.0.0.1"),
         ("SYNTH_LAGUNA_PORT", laguna_port_string.as_str()),
         ("SYNTH_LAGUNA_API_KEY", api_key),
@@ -1711,6 +1712,11 @@ mod tests {
         };
         assert_eq!(get("SYNTH_LAGUNA_PORT"), Some(Some("7333".into())));
         assert_eq!(get("SYNTH_LAGUNA_BACKEND"), Some(Some("mlx_lm".into())));
+        assert_eq!(
+            get("PYTHONDONTWRITEBYTECODE"),
+            Some(Some("1".into())),
+            "the bundled daemon must not mutate the signed app with __pycache__ files"
+        );
         for legacy in UPSTREAM_ENV_VARS {
             assert_eq!(get(legacy), Some(None), "{legacy} must be cleared");
         }

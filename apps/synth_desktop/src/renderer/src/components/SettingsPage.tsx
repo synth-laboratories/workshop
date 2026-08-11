@@ -154,6 +154,7 @@ const CHANGELOG = [
 					"Thinking streams now render at their content height without oversized empty cards.",
 					"Auto-compaction preserves model-aware defaults and never falls back to a 16k limit.",
 					"Model menus remain inside the window at compact desktop sizes.",
+					"Bundled local services preserve the macOS app signature after launch.",
 					"Cloud checkout, provider requests, data migrations, and build provenance now fail closed when their release invariants are not met."
 				]
 			}
