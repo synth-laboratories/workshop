@@ -1243,6 +1243,15 @@ export function healthToModelStatus(
 			detail: laguna.detail || "Laguna sidecar error"
 		};
 	}
+	if (laguna?.phase === "not_installed") {
+		return {
+			status: "not_installed",
+			name,
+			composerEnabled: health?.openrouter.mode === "ready",
+			composerPlaceholder: "Download Laguna XS in Settings → Models",
+			detail: laguna.detail || "Laguna XS is not installed"
+		};
+	}
 	// Native Tauri sessions do not require the legacy Python runtime health
 	// endpoint. A ready Laguna sidecar is authoritative on its own.
 	if (laguna?.phase === "ready" || health?.local.mode === "mlx") {

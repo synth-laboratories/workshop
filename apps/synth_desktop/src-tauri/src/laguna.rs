@@ -462,10 +462,13 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         .await;
 
         if let Some(status) = self.probe(&base_url, &api_key).await {
-            if matches!(status.phase.as_str(), "ready" | "unloaded") {
+            if matches!(
+                status.phase.as_str(),
+                "ready" | "unloaded" | "not_installed"
+            ) {
                 self.set_status(status).await;
                 write_env_sh(&api_key, &base_url)?;
-                return Ok(Some(base_url));
+                return Ok((self.status().await.phase == "ready").then_some(base_url));
             }
             if status
                 .detail
@@ -500,7 +503,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         while tokio::time::Instant::now() < deadline {
             if let Some(status) = self.probe(&base_url, &api_key).await {
-                let done = status.phase == "ready" || status.phase == "error";
+                let done = matches!(status.phase.as_str(), "ready" | "error" | "not_installed");
                 self.set_status(status.clone()).await;
                 if done {
                     return Ok((status.phase == "ready").then_some(base_url));
@@ -557,6 +560,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
             "ok" | "ready" => "ready",
             "loading" => "loading",
             "unloaded" => "unloaded",
+            "not_installed" => "not_installed",
             "error" => "error",
             _ => "starting",
         };
@@ -571,10 +575,10 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
                 .get("loadedModel")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
-            detail: Some(if phase == "ready" {
-                "Laguna XS ready".into()
-            } else {
-                format!("sidecar {phase}")
+            detail: Some(match phase {
+                "ready" => "Laguna XS ready".into(),
+                "not_installed" => "Laguna XS is not installed".into(),
+                _ => format!("sidecar {phase}"),
             }),
             memory_bytes: body.get("memoryBytes").and_then(Value::as_u64),
             idle_seconds: residency.idle_seconds,
