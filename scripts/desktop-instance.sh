@@ -162,19 +162,13 @@ executable_digest() {
 revalidate_provenance() {
   local phase="${1:-post-build}" expected="${2:-$SOURCE_REVISION}"
   local current digest manifest_tmp="$MANIFEST.provenance.tmp"
-  local expected_base current_base
   current="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
   if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
     current="$current-dirty"
   fi
-  expected_base="${expected%-dirty}"
-  current_base="${current%-dirty}"
-  if [[ "$current_base" != "$expected_base" ]]; then
+  if [[ "$current" != "$expected" ]]; then
     echo "[desktop:$NAME] ERROR provenance drift ($phase): expected $expected got $current" >&2
     return 1
-  fi
-  if [[ "$current" != "$expected" ]]; then
-    echo "[desktop:$NAME] provenance dirty-bit changed during $phase ($expected -> $current); recording latest" >&2
   fi
   SOURCE_REVISION="$current"
   digest="$(executable_digest)"
