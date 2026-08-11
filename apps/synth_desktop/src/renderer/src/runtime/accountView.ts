@@ -67,7 +67,9 @@ const CURRENCY = new Intl.NumberFormat("en-US", {
 });
 
 export function formatUsd(value: number | null | undefined): string {
-	return CURRENCY.format(typeof value === "number" && Number.isFinite(value) ? value : 0);
+	return typeof value === "number" && Number.isFinite(value)
+		? CURRENCY.format(value)
+		: "UNKNOWN";
 }
 
 export function formatTokens(value: number | null | undefined): string {

@@ -1265,6 +1265,23 @@ a,
 	padding-bottom: 0;
 }
 
+.titlebar-version {
+	display: inline-flex;
+	align-items: center;
+	height: 22px;
+	padding: 0 7px;
+	border: 1px solid var(--color-border);
+	border-radius: 999px;
+	background: rgba(255, 255, 255, 0.5);
+	color: var(--color-text-faint);
+	font-size: 10.5px;
+	font-variant-numeric: tabular-nums;
+	letter-spacing: 0.01em;
+	line-height: 1;
+	white-space: nowrap;
+	-webkit-app-region: no-drag;
+}
+
 .titlebar-chevron {
 	width: 18px;
 	margin-right: 2px;
