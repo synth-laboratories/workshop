@@ -19,6 +19,7 @@ mod synth_config;
 mod tariffs;
 mod terminal;
 pub mod trace_ingest;
+mod update_check;
 mod visuals;
 mod visuals_ipc;
 mod whisper;
@@ -476,6 +477,21 @@ async fn usage_summary(
 #[tauri::command]
 fn tariff_catalog() -> Vec<tariffs::TariffCard> {
     tariffs::cards_in_force(chrono::Utc::now().timestamp_millis())
+}
+
+#[tauri::command]
+async fn update_status() -> update_check::UpdateStatus {
+    update_check::status().await
+}
+
+/// Always the fixed public download page — the manifest never chooses the
+/// destination.
+#[tauri::command]
+async fn update_open_download(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(update_check::DOWNLOAD_PAGE, None::<String>)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1825,6 +1841,8 @@ pub fn run() {
             model_performance_summary,
             usage_summary,
             tariff_catalog,
+            update_status,
+            update_open_download,
             inventory_counts,
             optimizers_algorithms_list,
             optimizers_recipes_list,
