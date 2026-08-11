@@ -177,8 +177,13 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 	await expect(luna).toContainText("Cache write / 1M$0.25");
 	await expect(models.getByTestId("authorized-model-openrouter-laguna-s")).toContainText("$0.20");
 	await expect(models.getByTestId("authorized-model-synth-cloud-laguna-s")).toContainText("Plan");
+	// Muse Spark has no tariff card yet: identity renders, no pricing block,
+	// and no invented dollars.
+	const muse = models.getByTestId("authorized-model-openrouter-muse-spark");
+	await expect(muse).toContainText("meta/muse-spark-1.2");
+	await expect(muse).not.toContainText("$");
 	const marks = models.locator(".authorized-model-mark");
-	await expect(marks).toHaveCount(3);
+	await expect(marks).toHaveCount(4);
 	const markBoxes = await marks.evaluateAll((elements) => elements.map((element) => {
 		const box = element.getBoundingClientRect();
 		return { width: box.width, height: box.height, centerX: box.left + box.width / 2 };
@@ -194,11 +199,46 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 			return { fontSize: Number.parseFloat(style.fontSize), family: style.fontFamily };
 		})
 	);
-	expect(slugStyles).toHaveLength(3);
+	expect(slugStyles).toHaveLength(4);
 	for (const style of slugStyles) {
 		expect(style.fontSize, "model slugs stay subordinate to provider labels").toBeLessThanOrEqual(10);
 		expect(style.family).toMatch(/SFMono|Menlo|Monaco|Consolas|monospace/i);
 	}
+});
+
+test("About offers the download page when a newer release exists, and stays quiet otherwise", async ({ page }) => {
+	await page.addInitScript(() => {
+		(window as unknown as { __updateOpens: number }).__updateOpens = 0;
+		window.synthUpdates = {
+			status: async () => ({
+				currentVersion: "0.1.0",
+				channel: "stable",
+				latestVersion: "0.1.2",
+				updateAvailable: true
+			}),
+			openDownload: async () => {
+				(window as unknown as { __updateOpens: number }).__updateOpens += 1;
+			}
+		};
+	});
+	await page.reload();
+	await openSettings(page);
+	await page.getByRole("button", { name: "About" }).click();
+	const identity = page.getByTestId("about-build-identity");
+	await expect(identity).toContainText("· stable ·");
+	const affordance = page.getByTestId("about-update-available");
+	await expect(affordance).toHaveText("Update available · v0.1.2");
+	await affordance.click();
+	await expect
+		.poll(() => page.evaluate(() => (window as unknown as { __updateOpens: number }).__updateOpens))
+		.toBe(1);
+});
+
+test("About shows no update affordance when the release is current", async ({ page }) => {
+	await openSettings(page);
+	await page.getByRole("button", { name: "About" }).click();
+	await expect(page.getByTestId("about-build-identity")).toBeVisible();
+	await expect(page.getByTestId("about-update-available")).toHaveCount(0);
 });
 
 test("Settings can force and reset a model multi-agent preset", async ({ page }) => {

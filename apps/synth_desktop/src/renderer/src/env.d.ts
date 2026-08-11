@@ -341,6 +341,20 @@ export type TariffsBridge = {
 	catalog(): Promise<TariffCard[]>;
 };
 
+/** Passive release check: version facts only. The download action always
+ * opens the fixed public download page. */
+export type UpdateStatus = {
+	currentVersion: string;
+	channel: string;
+	latestVersion: string | null;
+	updateAvailable: boolean;
+};
+
+export type UpdatesBridge = {
+	status(): Promise<UpdateStatus>;
+	openDownload(): Promise<void>;
+};
+
 export type VisualTemplateMeta = {
 	id: string;
 	title: string;
@@ -597,6 +611,7 @@ declare global {
 		synthModelPerformance?: ModelPerformanceBridge;
 		synthUsage?: UsageBridge;
 		synthTariffs?: TariffsBridge;
+		synthUpdates?: UpdatesBridge;
 		synthVisuals?: VisualsBridge;
 		synthOptimizers?: OptimizersBridge;
 		synthTerminal: TerminalBridge;

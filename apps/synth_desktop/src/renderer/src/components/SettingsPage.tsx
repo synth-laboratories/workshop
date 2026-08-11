@@ -6,7 +6,8 @@ import type {
 	MultiAgentVersion,
 	SynthAccountSummary,
 	SynthBackendSettings,
-	TariffCard
+	TariffCard,
+	UpdateStatus
 } from "../env";
 import type { AccountViewModel } from "../runtime/accountView";
 import type { DeviceUsageSummary } from "./UsageSheet";
@@ -167,7 +168,7 @@ type AuthorizedModel = {
 	id: string;
 	name: string;
 	provider: string;
-	providerMark: "openai" | "laguna" | "synth";
+	providerMark: "openai" | "laguna" | "meta" | "synth";
 	modelId: string;
 	tariffProvider?: string;
 	planMetered?: boolean;
@@ -191,7 +192,8 @@ function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSett
 	if (connection?.openrouterApiKeyConfigured) {
 		models.push(
 			{ id: "openrouter-luna", name: "GPT 5.6 Luna", provider: "OpenRouter · OpenAI", providerMark: "openai", modelId: "openai/gpt-5.6-luna", tariffProvider: "openrouter" },
-			{ id: "openrouter-laguna-s", name: "Laguna S 2.1", provider: "OpenRouter · Poolside", providerMark: "laguna", modelId: "poolside/laguna-s-2.1", tariffProvider: "openrouter" }
+			{ id: "openrouter-laguna-s", name: "Laguna S 2.1", provider: "OpenRouter · Poolside", providerMark: "laguna", modelId: "poolside/laguna-s-2.1", tariffProvider: "openrouter" },
+			{ id: "openrouter-muse-spark", name: "Muse Spark 1.2", provider: "OpenRouter · Meta", providerMark: "meta", modelId: "meta/muse-spark-1.2", tariffProvider: "openrouter" }
 		);
 	}
 	if (connection?.apiKeyConfigured) {
@@ -308,6 +310,7 @@ export function SettingsPage({
 		SECTIONS.some((entry) => entry.id === initialSection) ? initialSection : "general"
 	);
 	const [desktopIdentity, setDesktopIdentity] = useState<DesktopInstanceDiagnostics | null>(null);
+	const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
 
 	// Deep links (e.g. the inference panel's gear) retarget an already-open
 	// Settings view; internal nav clicks never change the prop, so they win.
@@ -317,6 +320,12 @@ export function SettingsPage({
 
 	useEffect(() => {
 		void window.synthDesktop.getInstanceDiagnostics().then(setDesktopIdentity).catch(() => undefined);
+	}, []);
+
+	useEffect(() => {
+		void window.synthUpdates?.status()
+			.then(setUpdateStatus)
+			.catch(() => setUpdateStatus(null));
 	}, []);
 
 	const activeSection = SECTIONS.find((entry) => entry.id === section) ?? SECTIONS[0];
@@ -410,9 +419,19 @@ export function SettingsPage({
 									<strong>{desktopIdentity?.displayName ?? "Synth Desktop"}</strong>
 									<span className="finetune-meta">
 										{desktopIdentity
-											? `v${desktopIdentity.appVersion} · ${desktopIdentity.mode} · source ${desktopIdentity.sourceRevision} · build ${desktopIdentity.buildRevision}`
+											? `v${desktopIdentity.appVersion} · ${updateStatus?.channel ?? "stable"} · ${desktopIdentity.mode} · source ${desktopIdentity.sourceRevision} · build ${desktopIdentity.buildRevision}`
 											: "Build identity unavailable in this environment."}
 									</span>
+									{updateStatus?.updateAvailable && updateStatus.latestVersion ? (
+										<button
+											type="button"
+											className="settings-update-available"
+											data-testid="about-update-available"
+											onClick={() => void window.synthUpdates?.openDownload()}
+										>
+											{`Update available · v${updateStatus.latestVersion}`}
+										</button>
+									) : null}
 									<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? "Local-first research workbench"}</code>
 								</div>
 								<p className="settings-runtime-copy">

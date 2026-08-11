@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../env";
+import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../env";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 
@@ -326,7 +326,8 @@ window.synthConfig ??= isTauri
 				{ modelId: "gpt-5.6-terra", displayName: "GPT-5.6 Terra", preset: "v2", effective: "v2", overridden: false },
 				{ modelId: "gpt-5.6-luna", displayName: "GPT 5.6 Luna", preset: "v1", effective: "v1", overridden: false },
 				{ modelId: "laguna-xs-2.1", displayName: "Laguna XS 2.1", preset: "none", effective: "none", overridden: false },
-				{ modelId: "laguna-s-2.1", displayName: "Laguna S 2.1", preset: "none", effective: "none", overridden: false }
+				{ modelId: "laguna-s-2.1", displayName: "Laguna S 2.1", preset: "none", effective: "none", overridden: false },
+				{ modelId: "muse-spark-1.2", displayName: "Muse Spark 1.2", preset: "none", effective: "none", overridden: false }
 			],
 			updateModelMultiAgent: async () => { throw new Error("Model settings require Synth Desktop"); },
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
@@ -427,6 +428,20 @@ window.synthWorkspaceScope ??= isTauri
 	window.synthModelPerformance ??= isTauri
 		? { summaries: () => invoke<ModelPerformanceSummary[]>("model_performance_summary") }
 		: { summaries: async () => [] };
+	window.synthUpdates ??= isTauri
+		? {
+			status: () => invoke<UpdateStatus>("update_status"),
+			openDownload: () => invoke<void>("update_open_download")
+		}
+		: {
+			status: async () => ({
+				currentVersion: "0.1.0",
+				channel: "stable",
+				latestVersion: null,
+				updateAvailable: false
+			}),
+			openDownload: async () => undefined
+		};
 	if (isTauri) {
 		window.synthUsage ??= {
 			summary: (window: UsageWindow) => invoke<UsageSummary>("usage_summary", { window })
