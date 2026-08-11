@@ -4,14 +4,16 @@
 
 Synth Desktop / Local Agent Workbench — a local-first agent research and development workbench where agents can run locally (Laguna XS 2.1) or in Synth Cloud (Intern sync/async), and where every run produces inspectable, replayable, quantitative, version-linked artifacts.
 
-## Branching
+## Branching (single release trunk)
 
 | Branch | Role |
 | --- | --- |
-| **`dev`** | Day-to-day integration branch. Open PRs against `dev`. Keep `dev` current. |
-| **`main`** | Release branch. Merge `dev` → `main` only for cut releases (for example v0.1). |
+| **`main`** | **Release source of truth.** Friends ZIPs, notarized builds, and published Desktop artifacts cut only from a clean `origin/main` tip (or an annotated tag on that tip). |
+| **`dev`** | Day-to-day integration branch. Open feature PRs against `dev`. After every release merge into `main`, **fast-forward `dev` to `main`** so the two tips match again. |
 
-Do not land feature work directly on `main`. After a release merge, fast-forward `dev` to `main` so they match again. Alignment checklist for the next cut: [`HANDOFF_DEV_MAIN.md`](./HANDOFF_DEV_MAIN.md).
+Do not land feature work directly on `main`. Do not leave `dev` lagging behind a released `main` tip — that recreates parallel histories. If `dev` has unique commits that are not on `main`, land them via PR into the synced tip or retire them; do not treat a divergent `dev` as a second release trunk.
+
+**No artifacts from dirty trees.** `desktop:build`, `desktop:install`, `desktop:install:release`, and `desktop:verify` refuse a dirty worktree. Named `desktop:dev` instances may run dirty (revision is tagged `-dirty`); those are not release artifacts. Alignment checklist: [`HANDOFF_DEV_MAIN.md`](./HANDOFF_DEV_MAIN.md).
 
 ## Status — v0 ready for review
 
