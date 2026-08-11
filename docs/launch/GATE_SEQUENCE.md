@@ -61,3 +61,9 @@ Helper: `workshop-v0.1/scripts/run_launch_gates.sh` runs the deterministic subse
 ## Exit
 
 One machine-readable evals gate receipt + backend pytest JUnit + Desktop suite logs, all on the same SHAs that will be signed.
+
+## Channel scope and known annotated exceptions
+
+- These gates bind the **stable** channel. Nightly builds (see UPDATES_AND_CHANNELS.md) are signed/notarized and pass the secret-scan gate, but are exempt from the full manual/CUA matrix by design.
+- The Rust suite carries exactly one `#[ignore]`: `trace_v5_e2e::imports_real_bundle_into_trusted_catalog_and_keeps_duplicate_identity` — external-fixture by design (needs `SYNTH_TRACE_V5_REAL_BUNDLE`; runner `scripts/test-trace-v5-real-bundle.sh`). It is not launch debt; run it whenever a real dogfood bundle is on the machine.
+- The "no skip/fixme/todo/expected-fail" rule above covers everything else, with zero current exceptions.
