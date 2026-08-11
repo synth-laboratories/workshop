@@ -18,6 +18,10 @@ test.describe("first-five-minutes golden path", () => {
 		await expect(choices).toBeVisible();
 		await expect(choices.getByRole("button", { name: /Continue locally/ })).toBeVisible();
 		await expect(choices.getByRole("button", { name: /Sign in to Synth/ })).toBeVisible();
+		for (const button of await choices.getByRole("button").all()) {
+			const copyWidth = await button.locator("span").evaluate((copy) => copy.clientWidth);
+			expect(copyWidth, "first-run card copy uses the full card width").toBeGreaterThan(200);
+		}
 		// The shell is complete behind the choice: sidebar, titlebar, composer.
 		await expect(page.getByTestId("sidebar")).toBeVisible();
 		await expect(page.getByTestId("titlebar")).toBeVisible();
