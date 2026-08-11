@@ -514,9 +514,8 @@ async fn prepare_start(
         crate::codex::ProviderClass::SynthCloud => {
             let resolved = synth_config::resolve()?;
             // Same split as the production path in `lib.rs`: only Codex's
-            // Responses traffic can be redirected via `[intern.gateways]` or
-            // `SYNTH_RESPONSES_GATEWAY_URL`, never account/billing. A
-            // profile with no configured gateway fails closed instead of
+            // Responses traffic uses the source-owned profile gateway, never
+            // account/billing. An unknown profile fails closed instead of
             // silently reusing the backend URL.
             let gateway_url = synth_config::require_responses_gateway_url(&resolved)
                 .map_err(|message| anyhow!(message))?;
@@ -918,9 +917,8 @@ async fn resolve_policy_target(
                 .clone()
                 .ok_or_else(|| anyhow!("Synth Cloud API key is not configured on the Workshop host"))?;
             // Same split as Codex's own session-start path: only Responses
-            // traffic can be redirected via `[intern.gateways]` or
-            // `SYNTH_RESPONSES_GATEWAY_URL`, and a profile with no
-            // configured gateway fails closed rather than silently reusing
+            // traffic uses the source-owned profile gateway, and an unknown
+            // profile fails closed rather than silently reusing
             // the backend URL. `resolved.backend_url` above still backs the
             // API key lookup; nothing here touches account/billing endpoints.
             let gateway_url = synth_config::require_responses_gateway_url(&resolved)
@@ -1759,10 +1757,10 @@ mod tests {
     }
 
     #[test]
-    fn policy_chat_url_for_synth_cloud_honors_the_responses_gateway_override() {
+    fn policy_chat_url_for_synth_cloud_uses_the_responses_gateway() {
         // Mirrors what `resolve_policy_target`'s SynthCloud branch composes:
         // the composer/eval "policy" path must redirect to the profile's
-        // configured Responses gateway just like Codex's own session-start
+        // source-owned Responses gateway just like Codex's own session-start
         // path does, while the resolved backend URL (what account/billing
         // reads) stays untouched.
         let resolved = synth_config::ResolvedBackend {
@@ -1776,30 +1774,22 @@ mod tests {
             worker_key: None,
         };
 
-        std::env::remove_var("SYNTH_RESPONSES_GATEWAY_URL");
         let default_gateway = synth_config::require_responses_gateway_url(&resolved)
             .expect("a profile gateway is configured");
-        let (default_url, _) = policy_chat_url("synth-cloud", &default_gateway);
+        let (gateway_url, wire) = policy_chat_url("synth-cloud", &default_gateway);
         assert_eq!(
-            default_url,
+            gateway_url,
             "https://synth-responses-gateway-prod-production.up.railway.app/api/v1/responses"
         );
-
-        std::env::set_var("SYNTH_RESPONSES_GATEWAY_URL", "http://127.0.0.1:41124");
-        let overridden_gateway = synth_config::require_responses_gateway_url(&resolved).unwrap();
-        let (gateway_url, wire) = policy_chat_url("synth-cloud", &overridden_gateway);
-        assert_eq!(gateway_url, "http://127.0.0.1:41124/api/v1/responses");
         assert_eq!(wire, "responses");
-        // Overriding the Responses gateway must never mutate the resolved
-        // backend URL account/billing calls read directly.
+        // Gateway routing must never mutate the resolved backend URL that
+        // account/billing calls read directly.
         assert_eq!(resolved.backend_url, "https://mcp.usesynth.ai");
-        std::env::remove_var("SYNTH_RESPONSES_GATEWAY_URL");
     }
 
     #[test]
     fn resolve_policy_target_gateway_fails_closed_without_a_configured_gateway() {
-        // A profile with no `[intern.gateways]` entry and no env override
-        // (e.g. legacy "prod") must fail closed rather than have the policy
+        // An unknown profile must fail closed rather than have the policy
         // path silently fall back to `resolved.backend_url`.
         let resolved = synth_config::ResolvedBackend {
             config_path: std::path::PathBuf::from("/tmp/config.toml"),
@@ -1809,7 +1799,6 @@ mod tests {
             api_key: Some("sk_dev".into()),
             worker_key: None,
         };
-        std::env::remove_var("SYNTH_RESPONSES_GATEWAY_URL");
         let error = synth_config::require_responses_gateway_url(&resolved).unwrap_err();
         assert!(error.to_lowercase().contains("gateway"));
     }

@@ -2230,9 +2230,9 @@ fn client_base_url(backend_url: &str) -> String {
         .replacen("http://0.0.0.0:", "http://127.0.0.1:", 1)
 }
 
-/// A configured `[intern.gateways]` entry may already include the `/api/v1`
-/// (or `/api/v1/responses`) suffix `apply_synth_cloud_provider` is about to
-/// append. Strip it first so the composed `base_url` never doubles the path.
+/// A checked-in gateway URL may already include the `/api/v1` (or
+/// `/api/v1/responses`) suffix `apply_synth_cloud_provider` is about to append.
+/// Strip it first so the composed `base_url` never doubles the path.
 fn normalize_gateway_origin(gateway_url: &str) -> String {
     let mut origin = client_base_url(gateway_url);
     for suffix in ["/api/v1/responses", "/api/v1"] {
