@@ -138,25 +138,13 @@ no server-side session store: Codex already sends full conversation history
 `store: false` on every turn — it never relies on `previous_response_id` —
 so there is no continuation state to migrate when the gateway host changes.
 
-`SYNTH_RESPONSES_GATEWAY_URL` (`synth_config::responses_gateway_url`)
-redirects *only* Codex's Responses wire traffic for the `synth-cloud`
-provider to a dedicated gateway — a local Laguna dev slot
-(`http://127.0.0.1:<port>/api/v1`) or a staging Responses gateway under
-test — without touching where account, billing, or usage calls go; those
-always read `resolved.backend_url` (`SYNTH_BACKEND_URL` /
-`[intern.endpoints].{profile}`) directly. Unset or blank leaves today's
-behavior unchanged: one URL for both.
-
-```bash
-# Point Codex's Responses calls at a local slot while account/billing stay
-# on the real backend (prod or whatever [intern.endpoints].{profile} names).
-export SYNTH_RESPONSES_GATEWAY_URL="http://127.0.0.1:41209/api/v1"
-```
-
-Before this variable existed, the only way to reach a local slot (see
-"Local-slot Laguna S smoke" below) was to repoint the whole
-`[intern.endpoints].{profile}` entry — which also redirected account/billing
-calls at the slot, since both read the same `backend_url`.
+`synth_config::responses_gateway_url` redirects *only* Codex's Responses wire
+traffic for the `synth-cloud` provider to the source-owned gateway checked in
+for the active Desktop profile. Staging and production URLs cannot be changed
+through environment variables or config. Account, billing, and usage calls
+continue to read `resolved.backend_url` (`SYNTH_BACKEND_URL` /
+`[intern.endpoints].{profile}`) directly. An unknown profile fails closed and
+never sends inference to the backend Responses route.
 
 The bundled third-party Codex client does not currently send
 `max_output_tokens` on Responses requests. The governed backend therefore

@@ -1479,10 +1479,9 @@ async fn prepare_codex_provider(
         }
         codex::ProviderClass::SynthCloud => {
             let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
-            // Only Codex's Responses traffic can be redirected to a
-            // dedicated gateway (`[intern.gateways]` or
-            // `SYNTH_RESPONSES_GATEWAY_URL`); account and billing calls
-            // elsewhere keep reading `resolved.backend_url` directly. A
+            // Only Codex's Responses traffic uses the dedicated, source-owned
+            // gateway for the active profile; account and billing calls elsewhere
+            // keep reading `resolved.backend_url` directly. A
             // profile with no configured gateway fails closed here rather
             // than silently reusing the backend URL.
             let gateway_url = synth_config::require_responses_gateway_url(&resolved)?;

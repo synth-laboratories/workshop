@@ -86,10 +86,10 @@ Gateway source tip on `synth-responses-gateway` main at receipt
 **ahead** of the deployed Railway short SHA — see W2 / H1.
 
 Desktop account/billing default backend for the frozen tree:
-`https://api.usesynth.ai`. Dedicated gateway routing via
-`SYNTH_RESPONSES_GATEWAY_URL` lands in Workshop main after the ZIP
-(PR #4); friends ZIP behavior follows the tagged tree unless operators
-override locally.
+`https://api.usesynth.ai`. The tagged friends ZIP predates dedicated gateway
+routing and cannot be repaired with a runtime override. Replacement artifacts
+must be cut from Workshop main after PR #7, where local, staging, and production
+Responses gateway routing is source-owned and unknown profiles fail closed.
 
 ## Reproduce checks
 
