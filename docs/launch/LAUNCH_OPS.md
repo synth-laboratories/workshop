@@ -22,19 +22,23 @@ Do not record prompt text, API keys, lease tokens, or card data.
 | Flag / env | Friends / staging | Public prod |
 |---|---|---|
 | `SYNTH_PUBLIC_INFERENCE_GATEWAY_SETTLEMENT` | `1` (also default-on for `local`/`staging`/`dev`) | explicit `1` after review; never silent stub |
-| `DEV_AUTUMN_API_BASE` / `DEV_AUTUMN_API_KEY` | fake or sandbox Autumn only | unset |
-| `AUTUMN_API_BASE` / `AUTUMN_API_KEY` or `PROD_AUTUMN_API_KEY` | sandbox | live Autumn |
+| `SYNTH_BILLING_REQUIRE_PROVIDER_CHECKOUT` | default **on** for `local`/`staging`/`dev`; set `1` explicitly on friends deploy | `1` — Desktop Upgrade already refuses `hosted_web` |
+| `DEV_AUTUMN_API_BASE` / `DEV_AUTUMN_API_KEY` | sandbox Autumn (or fake via ASGI for unit proof) | unset |
+| `AUTUMN_API_BASE` / `AUTUMN_API_KEY` or `PROD_AUTUMN_API_KEY` | sandbox for friends | live Autumn |
 | `AUTUMN_PRODUCT_ID_STANDARD` / `AUTUMN_PRODUCT_ID_MAX` | `standard_monthly` / `max_monthly` unless overridden | same |
 | Clerk | production-supported method (no `+clerk_test` / `424242`) | same |
 
 ## Rollback
 
-1. **Stop distribution** — unpublish the download URL / CDN object; keep the previous artifact URL live.
-2. **Pin previous artifact** — checksum + notarization ticket of N-1 must already be on the release receipt.
-3. **Backend** — revert the billing/metering image to the last green SHA; disable `SYNTH_PUBLIC_INFERENCE_GATEWAY_SETTLEMENT` only if settlement is corrupting money (prefer freeze + drain over silent unmetered).
-4. **Autumn** — do not delete products; pause new checkouts via catalog/feature flag if needed.
-5. **Desktop** — users keep local data. Sign-out language must remain “this device,” not “delete my work.”
-6. **Comms** — incident channel posts: what users see, spending pause if any, ETA, checksum of the rolled-back build.
+Desktop releases never downgrade: one-way profile migrations make reinstalling N-1 unsafe. A Desktop rollback is therefore a **forward-versioned replacement built from reverted source** (for example, bad `0.1.2` → `0.1.3` built from the `0.1.1` tree).
+
+1. **Contain distribution** — remove the bad artifact from the public download page while preserving the immutable incident copy and its receipt. Do not point users at N-1.
+2. **Build forward from reverted source** — revert to the last green tree, increment beyond the bad version, then sign, notarize, checksum, and run the release gates again.
+3. **Publish the replacement** — replace the public download artifact and repoint `/releases/stable/latest.json` to the higher replacement version. Users already on the bad build must install that replacement; changing the manifest alone does not repair them.
+4. **Backend** — revert the billing/metering image to the last green SHA; disable `SYNTH_PUBLIC_INFERENCE_GATEWAY_SETTLEMENT` only if settlement is corrupting money (prefer freeze + drain over silent unmetered).
+5. **Autumn** — do not delete products; pause new checkouts via catalog/feature flag if needed.
+6. **Desktop data** — users keep local data, and an older binary must continue to fail closed on a newer database schema. Sign-out language must remain “this device,” not “delete my work.”
+7. **Comms** — incident channel posts: what users see, spending pause if any, ETA, and the replacement version + checksum.
 
 Rollback owner is named in `V01_SCOPE_AND_OWNERS.md`. No-go authority can halt Gate F/P without a full incident.
 
@@ -59,7 +63,7 @@ Rollback owner is named in `V01_SCOPE_AND_OWNERS.md`. No-go authority can halt G
 
 ## Receipts to attach
 
-- Artifact SHA256, notarization id, Sparkle/appcast URL
+- Artifact SHA256, notarization id, public download URL, and stable manifest URL
 - Workshop / backend / frontend / evals / site SHAs
 - Gate receipt JSON from `evals/workshop` (`gate:release`)
 - CRAFTAX-LUNA-010 evidence pack

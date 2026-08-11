@@ -56,14 +56,15 @@ These are **not** Gate F receipts. They are the integration baseline this freeze
 
 | Component | Branch / worktree | SHA / note |
 |---|---|---|
-| Workshop Desktop | `release/v0.1` | `459755e` + uncommitted Trace V5 eval-driver + settlement/catalog work in this pass. **5 commits ahead of origin.** |
-| Workshop Trace V5 driver | cherry-pick of `d635519` | integrated into `eval_driver.rs` / `EVAL_DRIVER.md` |
-| Evals launch harness | `evals/workshop/` (untracked on intern branch `feat/intern-async-24-7-20260805` @ `7de424236`) | Trace V5 grading from `fd02ce7e5`; isolate onto a clean evals release branch before Gate F |
-| Backend account + billing | `feat/desktop-account-snapshot` @ `ac9ae580f` | Autumn checkout adapter + fake-Autumn + `smr_spend` on Starter/Pro |
-| Backend metering | local `33447f872` / `57e5bf449` | gateway `direct_api` settlement; prefer provider `usage.cost` over stub. Do not rebuild a second settlement path. Dirty gateway worktree files belong to another worker — do not sweep them in. |
-| Frontend upgrade deep link | isolate `bfd2d5a3` (later follow-up `4638f3d7` on `frontend-desktop-upgrade`) | do not merge unrelated Intern dirt from that worktree |
+| Workshop Desktop | `workshop-v0.1` `release/v0.1` | local tip ahead of origin (settlement + tariff catalog + Trace V5 driver landed). Review before push. |
+| Evals launch harness | `evals-workshop-v01` `release/workshop-v0.1-evals` | base `fd02ce7e5` + CRAFTAX-LUNA-010 harness in worktree (20/20 unit + typecheck). Do not use intern-dirty `evals/` tip. |
+| Backend account + billing | `backend-desktop-account-snapshot` `feat/desktop-account-snapshot` | `ac9ae580f` + Autumn checkout adapter + fake-Autumn + `smr_spend` on Starter/Pro (14 units green). |
+| Backend metering | gateway settlement on same snapshot line | default-on for `local`/`staging`/`dev`; prefer provider `usage.cost`. Do not rebuild a second settlement path. |
+| Frontend upgrade deep link | `frontend-upgrade-isolated` `release/workshop-v0.1-upgrade-deeplink` | clean cherry-picks of `bfd2d5a3` + `4638f3d7` onto `origin/dev` → tip `c2b85dd3`. |
 | Site / download / Clerk | production | external; not frozen here |
 | Signed artifact | none yet | Gate F blocker |
+
+See [LAUNCH_READINESS_STATUS.md](./LAUNCH_READINESS_STATUS.md) for the live Gate F/P gap list.
 
 ## Integration rules
 

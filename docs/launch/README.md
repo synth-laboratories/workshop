@@ -10,5 +10,7 @@ Frozen contract and remaining Gate F / Gate P work.
 | [CLEAN_USER_REHEARSAL.md](./CLEAN_USER_REHEARSAL.md) | Download / signup / sign-in / checkout rehearsal |
 | [CRAFTAX_LUNA_010.md](./CRAFTAX_LUNA_010.md) | Blocking Luna xhigh → 10 Luna-low Craftax scenario |
 | [AUTH_WEB_HANDOFF.md](./AUTH_WEB_HANDOFF.md) | Clerk, device-init, download, upgrade deep link |
+| [UPDATES_AND_CHANNELS.md](./UPDATES_AND_CHANNELS.md) | Passive v0.1 check, stable/nightly isolation, updater plan, rollback |
+| [LAUNCH_READINESS_STATUS.md](./LAUNCH_READINESS_STATUS.md) | Live status vs Gate F / Gate P blockers |
 
 Helper: `scripts/run_launch_gates.sh` runs the deterministic subset.
