@@ -50,7 +50,25 @@ Usage: ./scripts/desktop.sh <command>
   restart   Restart the already-installed canonical app
   stop      Stop every Synth Desktop process, including stale backup/build copies
   status    Show canonical Synth Desktop process and install status
+
+Artifact commands (build / verify / install / install-release) refuse a dirty
+git worktree. Use a clean checkout of origin/main (or a release tag) for
+friends ZIP / notarized / installed acceptance cuts. Named `dev` instances may
+run dirty; they are not release artifacts. See README Branching + HANDOFF_DEV_MAIN.md.
 EOF
+}
+
+# See: README.md Branching; HANDOFF_DEV_MAIN.md; SYN-3196
+require_clean_worktree() {
+  local dirty
+  dirty="$(git -C "$ROOT" status --porcelain 2>/dev/null || true)"
+  if [[ -n "$dirty" ]]; then
+    echo "[desktop] refusing artifact command on a dirty worktree." >&2
+    echo "[desktop] checkout a clean origin/main (or release tag) tip, or stash/commit first." >&2
+    echo "[desktop] dirty paths:" >&2
+    printf '%s\n' "$dirty" | sed 's/^/[desktop]   /' >&2
+    return 1
+  fi
 }
 
 desktop_processes() {
@@ -265,6 +283,7 @@ case "$command" in
     exec "$ROOT/scripts/desktop-instance.sh" dev "${2:-codex}"
     ;;
   verify)
+    require_clean_worktree
     verify_desktop
     ;;
   verify-fast)
@@ -274,12 +293,15 @@ case "$command" in
 		verify_desktop_fast
 		;;
 	build)
+		require_clean_worktree
 		build_desktop
 		;;
   install)
+		require_clean_worktree
 		install_desktop fast
 		;;
 	install-release)
+		require_clean_worktree
 		install_desktop release
     ;;
   restart)

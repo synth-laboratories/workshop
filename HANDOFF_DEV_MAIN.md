@@ -1,111 +1,115 @@
-# Handoff: keep `dev` current, merge to `main` for releases
+# Handoff: one release trunk (`main`), keep `dev` synced
 
-**Audience:** whoever next aligns local WIP and cuts a `dev` → `main` release  
-**Date:** 2026-08-10  
-**Current tips (at handoff write):** both should be at `71e0046` (`v0.1: Desktop stack + compact-on-send model switch (#2)`) after you push the README/`dev` sync below.
+**Audience:** whoever next aligns local WIP and cuts a Desktop release  
+**Date:** 2026-08-11  
+**Policy owner:** SYN-3196 (H4 Workshop release trunk hygiene)
 
-## Policy (also in README)
+## Policy
 
+- **`origin/main` is the release source of truth.** Cut friends ZIPs / notarized / installed acceptance builds only from a **clean** tree at that tip (or a tag on it).
 - **Work on `dev`.** Feature PRs target `dev`.
-- **Release via `main`.** Merge `dev` → `main` only when cutting a release.
-- After each release merge, **fast-forward `dev` to `main`** so `dev` stays the newest tip.
+- **Release via `main`.** Merge `dev` → `main` only when cutting a release (merge commit preferred so the release boundary stays visible).
+- After each release merge, **fast-forward `dev` to `main`** so `dev` is never a second, lagging trunk.
+- **Never publish artifacts from a dirty worktree.** Lifecycle scripts refuse dirty trees for `build` / `verify` / `install` / `install-release`. Dev instances may append `-dirty` to the revision label; that is not a release seal.
 
-## What already landed (do not re-litigate)
+## Snapshot (2026-08-11 audit)
 
-- [PR #2](https://github.com/synth-laboratories/workshop/pull/2) merged `dev` → `main` for the v0.1 Desktop stack cut.
-- That merge resolved ~70 **add/add** conflicts by preferring the **`dev` Desktop/Codex/Laguna line**. Auth pairing from `main` #1 was already represented on the `dev` history; do not “take theirs” wholesale if histories diverge again.
-- Compact-on-send model switch is in tree:
-  - Explicit decision tree: `apps/synth_desktop/src/renderer/src/runtime/modelSwitchPlan.ts`
-  - Send path: `App.tsx` (`planComposerSend` / no landing kick on model chip)
-  - Rust: `compact_before_model_switch` + `thread/compact/start` wait in `codex.rs`
-  - Tests: `tests/model_switch_plan.test.mjs`, Rust `turn_send_compacts_on_source_model_before_rebind`, Playwright mid-chat provider switch
+| Ref | Tip (at audit) | Note |
+| --- | --- | --- |
+| `origin/main` | `0e8af0a` | Includes v0.1 release merges (#3, #4) and macOS 14 release fix |
+| `origin/dev` | `a94fda7` | **Ancestor of `origin/main`** — 93 commits behind; no unique commits |
+| Merge-base | `a94fda7` | Same as `origin/dev` → sync is a pure fast-forward |
 
-## Immediate sync (make `dev` newest)
+`origin/dev` is not divergent in content; it was simply not fast-forwarded after the v0.1 cut. Sync it; do not rebase released `main` history.
+
+Local checkouts may still hold **unpushed** Muse / account WIP on a private `dev` tip ahead of `origin/dev`. That WIP is **not** on either remote trunk — triage onto topic branches off the synced tip, or discard. Do not push a divergent local `dev` over the FF sync without an explicit review.
+
+## Immediate sync (retire the lag)
+
+Because `origin/dev` is a strict ancestor of `origin/main`:
 
 ```bash
 git fetch origin
 git checkout dev
-git merge --ff-only origin/main   # should be a no-op once pushed
-git push origin dev               # if local was ahead of origin/dev by the merge commit only
+# Park or commit any local dirty files first — do not mix WIP into the FF.
+git status --porcelain   # must be empty on the branch tip you will push
+git merge --ff-only origin/main
+git push origin dev
 ```
 
-`dev` must be an ancestor of nothing unique on `main` after sync — ideally:
+Verify alignment:
 
 ```bash
-git rev-list --count origin/main..origin/dev   # expect 0 for “fully released”
-git rev-list --count origin/dev..origin/main   # expect 0 after ff sync
+git fetch origin
+git rev-list --count origin/main..origin/dev   # expect 0
+git rev-list --count origin/dev..origin/main   # expect 0 after FF
+git merge-base --is-ancestor origin/dev origin/main && echo ok
 ```
 
-If `main` is one merge-commit ahead of `dev`, fast-forward `dev` (do not rebase released history).
+If someone already pushed unique commits onto `origin/dev` that are not ancestors of `main`, stop: open an integration PR into the synced tip instead of force-pushing.
 
-## Local leftovers (not on either branch — triage carefully)
+### Optional: retire long-lived `dev` later
 
-These were stashed while shipping the v0.1 cut. **Do not dump them onto `main`.** Review on a topic branch off `dev`, then PR into `dev`.
+If the team decides Workshop should be **`main`-only** (like some other repos), the retirement path is:
 
-| Stash | Notes |
-| --- | --- |
-| `stash@{0}` `wip: model_performance leftovers` | Small `storage/` edits + untracked `model_performance.rs` |
-| `stash@{1}` `wip: pre-v0.1 local leftover 20260810` | Large mixed WIP: whisper, Composer images, App, laguna, polish, handoff md, scripts, etc. |
-| `stash@{2}` duplicate of model-switch era WIP | Likely obsolete relative to merged `d491ee9`; diff before applying |
+1. FF-sync `dev` to `main` one last time (commands above).
+2. Update README branching table to drop `dev` as integration.
+3. Protect `main`; open feature PRs against `main` (or short-lived release branches).
+4. Leave `origin/dev` as a historical pointer or delete after a grace period — do not keep merging into a zombie `dev`.
 
-Also untracked locally: `work/` (ignore unless you know it is intentional).
+Until that decision is explicit, keep the dual-branch policy above with **mandatory post-release FF**.
 
-Suggested triage:
+## Dirty worktrees (do not cut from these)
+
+Before any friends ZIP / notarized / `desktop:install:release` cut:
 
 ```bash
-git stash list
-git stash show --stat stash@{1} | less
-# For each coherent slice:
-git checkout -b topic/<name> origin/dev
-git stash apply stash@{N}   # or path-limited checkout from stash
-# prune unrelated files, run desktop:verify, PR → dev
+git fetch origin
+git checkout main
+git merge --ff-only origin/main
+git status --porcelain   # must be empty
+git rev-parse HEAD       # record as the artifact source SHA
 ```
+
+Named Codex/Claude worktrees with local edits are fine for iteration. They are **forbidden** as the packaging root. If `./scripts/desktop.sh build|verify|install|install-release` reports a dirty tree, stop and move to a clean checkout of `origin/main`.
 
 ## Careful `dev` → `main` release checklist (next cut)
 
-1. **Freeze `dev` tip** you intend to release; note the SHA.
-2. **CI green on `dev`** (or run locally):
-   - `npm run desktop:verify`
-   - `node --test apps/synth_desktop/tests/model_switch_plan.test.mjs`
-   - `cargo test --lib turn_send_compacts_on_source_model_before_rebind` (from `apps/synth_desktop/src-tauri`)
-3. **Diff the release:**
+1. Confirm `origin/dev` and `origin/main` already match (post-sync), or freeze the `dev` tip you intend to release and note the SHA.
+2. CI green / local: `npm run desktop:verify` on a **clean** tree.
+3. Diff the release:
    ```bash
    git fetch origin
    git log --oneline origin/main..origin/dev
    git diff --stat origin/main...origin/dev
    ```
-4. **Open PR `dev` → `main`** with release notes (what ships, what is explicitly out).
-5. **If GitHub reports conflicts:**
-   - Prefer merging `main` *into* `dev` first on a integration branch, resolve there, then PR.
-   - For add/add Desktop duplicates: default to **`dev` (ours)** unless `main` has a hotfix not cherry-picked.
-   - Never force-push `main`.
-6. **Merge with a normal merge commit** (keeps release boundary visible); avoid squash for the integration PR if history on `dev` matters.
-7. **Post-merge:**
+4. Open PR `dev` → `main` with release notes (what ships, what is out).
+5. On conflicts: merge `main` into `dev` first on an integration branch; never force-push `main`.
+6. Merge with a normal merge commit (avoid squash for the integration PR if `dev` history matters).
+7. Post-merge FF:
    ```bash
    git fetch origin
    git checkout dev
    git merge --ff-only origin/main
    git push origin dev
    ```
-8. **Tag** if this cut is a named release (`v0.1.x`).
+8. Tag if this cut is a named release (`v0.1.x`). Bind published ZIP provenance to source SHA + executable digest + backend/gateway SHAs.
 
-## Known footguns from the last cut
+## Known footguns
 
-- **Parallel histories / add/add:** both branches grew the same paths independently. Resolving by “take ours everywhere” is only safe when `dev` is the product line of record.
-- **Huge PR surface:** Desktop + Laguna + auth already mixed; keep release PRs as integration cuts, not drive-by refactors.
-- **Do not** open feature work against `main` “to go faster” — it recreates the divergence.
-- Renderer chip policy: model chip change must **not** kick to landing; compact only on send when pending ≠ bound model (`modelSwitchPlan.ts`).
+- **Skipped post-release FF** left `origin/dev` 93 commits behind `origin/main` after v0.1 — the exact failure mode this handoff prevents.
+- **Parallel histories / add/add:** both branches grew the same paths independently in earlier cuts. Prefer one product line of record (`dev` until merge, then `main`).
+- **Do not** open feature work against `main` “to go faster” — it recreates divergence.
+- **Dirty local `dev` ahead of `origin/dev`:** park Muse/account WIP on topic branches before pushing the FF sync.
 
 ## Ready-to-go definition
 
-`dev` → `main` is ready when:
-
-- [ ] `origin/dev` and `origin/main` share the same tree for the release SHA (or `main` is exactly the merge of that `dev` tip)
+- [ ] `origin/dev` and `origin/main` share the same tip (or `main` is exactly the merge of that `dev` tip, then FF’d)
 - [ ] No open conflicting PR targeting `main` with a second Desktop history
-- [ ] Stashes triaged onto topic branches or discarded with a written note
+- [ ] Local stashes / dirty worktrees triaged onto topic branches or discarded with a written note
 - [ ] README branching policy still accurate
-- [ ] Smoke: Desktop boots; model chip fiddle stays in chat; send on new model continues same thread
+- [ ] Artifact builds only from clean trees at the release tip
 
 ## Owner ask
 
-Align leftover stashes onto `dev` via small PRs, keep `dev` tip newest daily, and only open the next `dev` → `main` PR when cutting the next release.
+Fast-forward `origin/dev` to `origin/main` now, keep tips matched after every future cut, and refuse dirty-tree Desktop artifacts.
