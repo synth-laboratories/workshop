@@ -42,6 +42,12 @@ Names must match:
 
 ## Identity model
 
+> **v0.2 branch note:** v0.2 development instances are release-scoped under
+> `instances/v02/`, display as `Synth Workshop v0.2 · <name>`, use the bundle
+> namespace `com.synth.desktop.v02.dev.<name>`, and render both `v0.2` and the
+> instance badge in the icon. The examples below describe the original v0.1
+> contract and remain useful background for the general isolation model.
+
 An instance name is the authority for all local automation. For `alpha`, the
 launcher generates:
 

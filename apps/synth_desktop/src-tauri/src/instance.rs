@@ -4,6 +4,7 @@ use std::{env, fs, path::PathBuf};
 pub const INSTANCE_ENV: &str = "SYNTH_DESKTOP_INSTANCE";
 pub const DATA_ROOT_ENV: &str = "SYNTH_DESKTOP_DATA_ROOT";
 pub const MANIFEST_ENV: &str = "SYNTH_DESKTOP_INSTANCE_MANIFEST";
+pub const APP_NAME_ENV: &str = "SYNTH_DESKTOP_APP_NAME";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +61,12 @@ pub fn state_root() -> PathBuf {
 }
 
 pub fn display_name() -> String {
+    if let Ok(value) = env::var(APP_NAME_ENV) {
+        let value = value.trim();
+        if !value.is_empty() {
+            return value.to_owned();
+        }
+    }
     name()
         .map(|value| format!("Synth Desktop · {value}"))
         .unwrap_or_else(|| "Synth Desktop".into())

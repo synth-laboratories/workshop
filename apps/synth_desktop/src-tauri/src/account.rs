@@ -7,12 +7,18 @@
 //!
 //! Two rules hold everywhere below:
 //!
-//! * production never invents dollars. If the snapshot is missing or the
-//!   backend does not meter this account in dollars, the shell shows no plan
-//!   figure rather than a plausible one;
-//! * local/dev keeps its seeded `Synth Dev` $200 stand-in — charged from the
-//!   device `usage_ledger` — so the shell is exercisable offline, and it is
-//!   always labelled as a dev stand-in, never as cloud truth.
+//! * every cloud profile — `prod`, `staging`, `production`, or any other
+//!   name that isn't an explicit local-only lane — never invents dollars. If
+//!   the snapshot is missing or the backend does not meter this account in
+//!   dollars, the shell shows no plan figure rather than a plausible one;
+//! * only the explicit local-only profiles (`local`, `local-slot1`) keep a
+//!   seeded `Synth Dev` $200 stand-in — charged from the device
+//!   `usage_ledger` — so the shell is exercisable offline, and it is always
+//!   labelled as a dev stand-in, never as cloud truth. Gating is on the
+//!   *profile* (`is_local_only_profile`), not on the origin heuristic used
+//!   for the display-only `environment` field: a stand-in seeded while on a
+//!   local profile must not leak into a later summary read under a cloud
+//!   profile.
 
 use anyhow::Result;
 use chrono::{DateTime, Datelike, TimeZone, Utc};
@@ -159,6 +165,19 @@ pub fn environment_from_origin(origin: &str) -> &'static str {
     }
 }
 
+/// The only profiles allowed to seed the `Synth Dev` $200 stand-in. Every
+/// other profile name — `staging`, `production`, `prod`, or anything else —
+/// is a cloud lane and must show an error state instead of inventing
+/// dollars when the signed-in snapshot is missing.
+///
+/// This is intentionally an allow-list, not a deny-list: a new profile name
+/// added later defaults to "never seed" until explicitly added here.
+const LOCAL_ONLY_PROFILES: &[&str] = &["local", "local-slot1"];
+
+fn is_local_only_profile(profile: &str) -> bool {
+    LOCAL_ONLY_PROFILES.contains(&profile.trim().to_ascii_lowercase().as_str())
+}
+
 /// First instant of the month after `now`, in UTC. UTC keeps the boundary
 /// timezone-safe: it never jumps backwards for the user's local offset.
 pub fn next_monthly_reset(now: DateTime<Utc>) -> DateTime<Utc> {
@@ -239,17 +258,20 @@ fn has_paired_before(storage: &Storage) -> bool {
         .is_some()
 }
 
-/// Load the seeded dev plan, seeding it on first read. Never seeds for prod.
+/// Load the seeded dev plan, seeding it on first read. Only ever seeds — or
+/// returns a previously seeded value — for an explicit local-only profile;
+/// every cloud profile gets `None` even if a stand-in was seeded earlier
+/// under a different (local) profile on this same device.
 fn load_or_seed_plan(
     storage: &Storage,
-    environment: &str,
+    profile: &str,
     now: DateTime<Utc>,
 ) -> Result<Option<StoredPlan>> {
+    if !is_local_only_profile(profile) {
+        return Ok(None);
+    }
     if let Some(raw) = read_setting(storage, PLAN_SETTINGS_KEY)? {
         return Ok(serde_json::from_str(&raw).ok());
-    }
-    if environment == "prod" {
-        return Ok(None);
     }
     let seeded = StoredPlan {
         name: DEV_PLAN_NAME.into(),
@@ -263,10 +285,10 @@ fn load_or_seed_plan(
 
 fn dev_seed_plan(
     storage: &Storage,
-    environment: &str,
+    profile: &str,
     now: DateTime<Utc>,
 ) -> Result<Option<AccountPlan>> {
-    let Some(stored) = load_or_seed_plan(storage, environment, now)? else {
+    let Some(stored) = load_or_seed_plan(storage, profile, now)? else {
         return Ok(None);
     };
     let used_cents = used_cents_since(storage, month_start(now))?;
@@ -350,10 +372,14 @@ fn signed_out_summary(storage: &Storage, environment: &str) -> AccountSummary {
 }
 
 /// Compose what the shell renders. `cloud` is the result of the last Account
-/// Snapshot read; the caller owns fetching and caching it.
+/// Snapshot read; the caller owns fetching and caching it. `profile` is the
+/// resolved `[intern]` profile (`local`, `local-slot1`, `staging`,
+/// `production`, legacy `prod`, …) and is what gates the dev $200 stand-in —
+/// never the display-only `environment` derived from `origin`.
 pub fn summary(
     storage: &Storage,
     origin: &str,
+    profile: &str,
     signed_in: bool,
     now: DateTime<Utc>,
     cloud: &SnapshotRead,
@@ -407,10 +433,12 @@ pub fn summary(
         });
     }
 
-    // No snapshot: local/dev falls back to the labelled stand-in so the shell
-    // stays exercisable offline; prod shows an error and no dollars at all.
-    let plan = dev_seed_plan(storage, environment, now)?;
-    let is_dev_env = environment != "prod";
+    // No snapshot: only an explicit local-only profile falls back to the
+    // labelled stand-in so the shell stays exercisable offline; every cloud
+    // profile — staging, production, legacy prod — shows an error and no
+    // dollars at all.
+    let seed_eligible = is_local_only_profile(profile);
+    let plan = dev_seed_plan(storage, profile, now)?;
     Ok(AccountSummary {
         signed_in: true,
         state: if plan.is_some() {
@@ -424,8 +452,8 @@ pub fn summary(
         } else {
             SOURCE_NONE.into()
         },
-        account_id: is_dev_env.then(|| DEV_ACCOUNT_ID.into()),
-        display_name: is_dev_env.then(|| DEV_DISPLAY_NAME.into()),
+        account_id: seed_eligible.then(|| DEV_ACCOUNT_ID.into()),
+        display_name: seed_eligible.then(|| DEV_DISPLAY_NAME.into()),
         email: None,
         organization: None,
         plan,
@@ -548,7 +576,7 @@ mod tests {
     #[test]
     fn a_fresh_install_reads_as_local_only_not_signed_out() {
         let (_root, storage) = open_storage();
-        let summary = summary(&storage, "http://localhost:3000", false, now(), &offline()).unwrap();
+        let summary = summary(&storage, "http://localhost:3000", "local", false, now(), &offline()).unwrap();
         assert!(!summary.signed_in);
         assert_eq!(summary.state, STATE_LOCAL_ONLY);
         assert_eq!(summary.environment, "local");
@@ -560,7 +588,7 @@ mod tests {
     fn a_device_that_has_paired_before_reads_as_signed_out() {
         let (_root, storage) = open_storage();
         mark_paired(&storage, now()).unwrap();
-        let summary = summary(&storage, "http://localhost:3000", false, now(), &offline()).unwrap();
+        let summary = summary(&storage, "http://localhost:3000", "local", false, now(), &offline()).unwrap();
         assert_eq!(summary.state, STATE_SIGNED_OUT);
         assert!(summary.plan.is_none(), "signed out shows no plan dollars");
     }
@@ -573,6 +601,7 @@ mod tests {
         let summary = summary(
             &storage,
             "https://www.usesynth.ai",
+            "prod",
             true,
             now(),
             &cloud_snapshot("active", Some(20_000), 4_250),
@@ -610,6 +639,7 @@ mod tests {
         let summary = summary(
             &storage,
             "https://www.usesynth.ai",
+            "prod",
             true,
             now(),
             &cloud_snapshot("limited", Some(2_000), 2_500),
@@ -627,6 +657,7 @@ mod tests {
         let summary = summary(
             &storage,
             "https://www.usesynth.ai",
+            "prod",
             true,
             now(),
             &cloud_snapshot("active", None, 0),
@@ -644,7 +675,7 @@ mod tests {
         let mut cloud = cloud_snapshot("active", Some(20_000), 0);
         cloud.stale = true;
         cloud.error = Some("Synth Cloud is unavailable right now".into());
-        let summary = summary(&storage, "https://www.usesynth.ai", true, now(), &cloud).unwrap();
+        let summary = summary(&storage, "https://www.usesynth.ai", "prod", true, now(), &cloud).unwrap();
         assert!(summary.stale);
         assert_eq!(summary.state, STATE_ACTIVE);
         assert!(summary.error.is_some());
@@ -658,7 +689,7 @@ mod tests {
             error: Some("Synth Cloud is unavailable right now".into()),
             ..SnapshotRead::default()
         };
-        let summary = summary(&storage, "https://www.usesynth.ai", true, now(), &cloud).unwrap();
+        let summary = summary(&storage, "https://www.usesynth.ai", "prod", true, now(), &cloud).unwrap();
         assert!(summary.signed_in);
         assert_eq!(summary.state, STATE_ERROR);
         assert!(summary.plan.is_none(), "prod must not be seeded");
@@ -680,9 +711,48 @@ mod tests {
     }
 
     #[test]
+    fn staging_without_a_snapshot_never_seeds_the_200_dollar_stand_in() {
+        let (_root, storage) = open_storage();
+        let cloud = SnapshotRead {
+            error: Some("Synth Cloud is unavailable right now".into()),
+            ..SnapshotRead::default()
+        };
+        let summary = summary(
+            &storage,
+            "https://api-dev.usesynth.ai",
+            "staging",
+            true,
+            now(),
+            &cloud,
+        )
+        .unwrap();
+        assert!(summary.signed_in);
+        assert_eq!(summary.state, STATE_ERROR);
+        assert!(summary.plan.is_none(), "staging must not invent dollars");
+        assert_ne!(summary.account_id.as_deref(), Some("dev-local"));
+    }
+
+    #[test]
+    fn local_slot1_without_a_snapshot_may_seed_the_stand_in() {
+        let (_root, storage) = open_storage();
+        let summary = summary(
+            &storage,
+            "http://127.0.0.1:41109",
+            "local-slot1",
+            true,
+            now(),
+            &offline(),
+        )
+        .unwrap();
+        let plan = summary.plan.expect("local-slot1 may seed");
+        assert_eq!(plan.source, SOURCE_DEV_SEED);
+        assert_eq!(plan.monthly_allowance_usd, Some(200.0));
+    }
+
+    #[test]
     fn dev_without_a_snapshot_seeds_the_200_dollar_stand_in_once() {
         let (_root, storage) = open_storage();
-        let first = summary(&storage, "http://localhost:3000", true, now(), &offline()).unwrap();
+        let first = summary(&storage, "http://localhost:3000", "local", true, now(), &offline()).unwrap();
         let plan = first.plan.expect("dev plan seeded");
         assert_eq!(plan.name, "Synth Dev");
         assert_eq!(plan.source, SOURCE_DEV_SEED);
@@ -693,7 +763,7 @@ mod tests {
         assert_eq!(first.display_name.as_deref(), Some("Synth Dev"));
         assert_eq!(first.account_id.as_deref(), Some("dev-local"));
 
-        let second = summary(&storage, "http://localhost:3000", true, now(), &offline()).unwrap();
+        let second = summary(&storage, "http://localhost:3000", "local", true, now(), &offline()).unwrap();
         assert_eq!(second.plan.unwrap(), plan);
     }
 
@@ -714,7 +784,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let plan = summary(&storage, "http://localhost:3000", true, now(), &offline())
+        let plan = summary(&storage, "http://localhost:3000", "local", true, now(), &offline())
             .unwrap()
             .plan
             .unwrap();
@@ -726,7 +796,7 @@ mod tests {
     fn the_dev_stand_in_clamps_at_zero_when_usage_exceeds_the_allowance() {
         let (_root, storage) = open_storage();
         charge(&storage, "big", 250.0, "2026-08-02T00:00:00+00:00");
-        let plan = summary(&storage, "http://localhost:3000", true, now(), &offline())
+        let plan = summary(&storage, "http://localhost:3000", "local", true, now(), &offline())
             .unwrap()
             .plan
             .unwrap();

@@ -2134,6 +2134,11 @@ pub fn provider_class(provider_name: Option<&str>) -> ProviderClass {
 
 /// Point a session start request at the Synth Cloud provider.
 ///
+/// `gateway_url` must already be the profile's resolved, fail-closed
+/// Responses gateway — see `synth_config::require_responses_gateway_url`,
+/// which every caller runs before reaching this function. This function
+/// itself never falls back to a backend URL.
+///
 /// Fail-closed when the Synth API key is missing. Always overwrites any
 /// renderer-supplied `api_key` / `base_url` / env key — credentials never
 /// originate from the renderer.
@@ -2144,14 +2149,14 @@ pub fn provider_class(provider_name: Option<&str>) -> ProviderClass {
 /// `credential_broker`.
 pub fn apply_synth_cloud_provider(
     request: &mut CodexSessionStartRequest,
-    backend_url: &str,
+    gateway_url: &str,
     api_key: Option<&str>,
 ) -> Result<(), String> {
     let key = api_key
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Synth API key not configured — Settings → Account".to_string())?;
-    request.base_url = format!("{}/api/v1", client_base_url(backend_url));
+    request.base_url = format!("{}/api/v1", normalize_gateway_origin(gateway_url));
     request.provider_name = Some("synth-cloud".into());
     request.provider_title = Some("Synth Cloud Responses".into());
     stage_brokered_credential(request, key)
@@ -2223,6 +2228,20 @@ fn client_base_url(backend_url: &str) -> String {
         .trim()
         .trim_end_matches('/')
         .replacen("http://0.0.0.0:", "http://127.0.0.1:", 1)
+}
+
+/// A configured `[intern.gateways]` entry may already include the `/api/v1`
+/// (or `/api/v1/responses`) suffix `apply_synth_cloud_provider` is about to
+/// append. Strip it first so the composed `base_url` never doubles the path.
+fn normalize_gateway_origin(gateway_url: &str) -> String {
+    let mut origin = client_base_url(gateway_url);
+    for suffix in ["/api/v1/responses", "/api/v1"] {
+        if let Some(stripped) = origin.strip_suffix(suffix) {
+            origin = stripped.to_owned();
+            break;
+        }
+    }
+    origin
 }
 
 fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Result<()> {
@@ -3706,6 +3725,39 @@ mod tests {
             responses_base_url("http://127.0.0.1:41209/api/v1"),
             "http://127.0.0.1:41209/api/v1"
         );
+    }
+
+    #[test]
+    fn normalizes_a_gateway_origin_that_already_carries_the_api_v1_suffix() {
+        assert_eq!(
+            normalize_gateway_origin("http://127.0.0.1:41124/api/v1"),
+            "http://127.0.0.1:41124"
+        );
+        assert_eq!(
+            normalize_gateway_origin("https://gateway.example/api/v1/responses"),
+            "https://gateway.example"
+        );
+        assert_eq!(
+            normalize_gateway_origin("http://0.0.0.0:41124"),
+            "http://127.0.0.1:41124"
+        );
+        assert_eq!(
+            normalize_gateway_origin("https://gateway.example/"),
+            "https://gateway.example"
+        );
+    }
+
+    #[test]
+    fn synth_cloud_provider_does_not_double_the_api_v1_path() {
+        let temp = tempdir().unwrap();
+        let mut request = test_request(temp.path(), "synth-cloud-double-path");
+        apply_synth_cloud_provider(
+            &mut request,
+            "http://127.0.0.1:41124/api/v1",
+            Some("sk_dev_double_path"),
+        )
+        .unwrap();
+        assert_eq!(request.base_url, "http://127.0.0.1:41124/api/v1");
     }
 
     #[test]
