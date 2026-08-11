@@ -513,9 +513,13 @@ async fn prepare_start(
         }
         crate::codex::ProviderClass::SynthCloud => {
             let resolved = synth_config::resolve()?;
+            // Same split as the production path in `lib.rs`: only Codex's
+            // Responses traffic can be redirected via
+            // `SYNTH_RESPONSES_GATEWAY_URL`, never account/billing.
+            let gateway_url = synth_config::responses_gateway_url(&resolved);
             crate::codex::apply_synth_cloud_provider(
                 &mut request,
-                &resolved.backend_url,
+                &gateway_url,
                 resolved.api_key.as_deref(),
             )
             .map_err(|message| anyhow!(message))?;
@@ -910,7 +914,12 @@ async fn resolve_policy_target(
                 .api_key
                 .clone()
                 .ok_or_else(|| anyhow!("Synth Cloud API key is not configured on the Workshop host"))?;
-            let (chat_url, wire) = policy_chat_url("synth-cloud", &resolved.backend_url);
+            // Same split as Codex's own session-start path: only Responses
+            // traffic can be redirected via `SYNTH_RESPONSES_GATEWAY_URL`.
+            // `resolved.backend_url` above still backs the API key lookup;
+            // nothing here touches account/billing endpoints.
+            let gateway_url = synth_config::responses_gateway_url(&resolved);
+            let (chat_url, wire) = policy_chat_url("synth-cloud", &gateway_url);
             Ok(PolicyTarget {
                 provider: "synth-cloud".into(),
                 chat_url,

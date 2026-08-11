@@ -11,6 +11,26 @@ from ..errors import ResponsesError
 from .protocol import CompiledTurn, ModelEvent, TokenUsageEstimate
 
 
+def _passthrough_body(turn: CompiledTurn) -> dict[str, Any]:
+    """Build the upstream request body for a native Responses passthrough.
+
+    The upstream gateway behind this backend is itself a stateless native
+    Responses passthrough: it holds no `previous_response_id` session store
+    and must not be asked to keep one. `turn.context_items` is the
+    coordinator's fully resolved conversation — any `previous_response_id`
+    history already flattened in as ordinary `message`/`function_call`/
+    `function_call_output` items — so it, not the client's original short
+    `input`, is what travels upstream as `input`. `previous_response_id` is
+    dropped (the id belongs to this daemon's local id space, not the
+    upstream's, and is meaningless there) and `store` is forced to `False`:
+    this backend never asks the upstream to retain anything, and retains
+    nothing itself.
+    """
+    body = {**turn.request, "input": turn.context_items, "store": False}
+    body.pop("previous_response_id", None)
+    return body
+
+
 class RemoteResponsesBackend:
     """Native Responses passthrough adapter; Chat Completions is never used."""
 
@@ -47,7 +67,7 @@ class RemoteResponsesBackend:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
                 f"{self.base_url}/v1/responses/input_tokens",
-                json=turn.request,
+                json=_passthrough_body(turn),
                 headers=headers,
             )
         if response.status_code == 404:
@@ -62,7 +82,7 @@ class RemoteResponsesBackend:
 
     async def stream(self, turn: CompiledTurn) -> AsyncIterator[ModelEvent]:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
-        body = {**turn.request, "stream": False}
+        body = {**_passthrough_body(turn), "stream": False}
         async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(
                 f"{self.base_url}/v1/responses", json=body, headers=headers

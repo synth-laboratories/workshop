@@ -1478,9 +1478,14 @@ async fn prepare_codex_provider(
         }
         codex::ProviderClass::SynthCloud => {
             let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
+            // Only Codex's Responses traffic can be redirected to a
+            // dedicated gateway (`SYNTH_RESPONSES_GATEWAY_URL`); account and
+            // billing calls elsewhere keep reading `resolved.backend_url`
+            // directly.
+            let gateway_url = synth_config::responses_gateway_url(&resolved);
             codex::apply_synth_cloud_provider(
                 &mut request,
-                &resolved.backend_url,
+                &gateway_url,
                 resolved.api_key.as_deref(),
             )?;
         }

@@ -130,6 +130,34 @@ openrouter/poolside/laguna-s-2.1
 
 (`SYNTH_CLOUD_LAGUNA_S_MODEL` in `types/landing.ts`). Rust rewrites the Codex provider to `synth-cloud` and `base_url = {backend}/api/v1` from `synth_config` (`SYNTH_BACKEND_URL` / `[intern.endpoints].{profile}`).
 
+#### Pointing Codex's Responses traffic at a dedicated gateway
+
+The Synth Hosted Laguna gateway is a native `/v1/responses` passthrough with
+no server-side session store: Codex already sends full conversation history
+(`message` / `function_call` / `function_call_output` items) plus
+`store: false` on every turn — it never relies on `previous_response_id` —
+so there is no continuation state to migrate when the gateway host changes.
+
+`SYNTH_RESPONSES_GATEWAY_URL` (`synth_config::responses_gateway_url`)
+redirects *only* Codex's Responses wire traffic for the `synth-cloud`
+provider to a dedicated gateway — a local Laguna dev slot
+(`http://127.0.0.1:<port>/api/v1`) or a staging Responses gateway under
+test — without touching where account, billing, or usage calls go; those
+always read `resolved.backend_url` (`SYNTH_BACKEND_URL` /
+`[intern.endpoints].{profile}`) directly. Unset or blank leaves today's
+behavior unchanged: one URL for both.
+
+```bash
+# Point Codex's Responses calls at a local slot while account/billing stay
+# on the real backend (prod or whatever [intern.endpoints].{profile} names).
+export SYNTH_RESPONSES_GATEWAY_URL="http://127.0.0.1:41209/api/v1"
+```
+
+Before this variable existed, the only way to reach a local slot (see
+"Local-slot Laguna S smoke" below) was to repoint the whole
+`[intern.endpoints].{profile}` entry — which also redirected account/billing
+calls at the slot, since both read the same `backend_url`.
+
 The bundled third-party Codex client does not currently send
 `max_output_tokens` on Responses requests. The governed backend therefore
 defaults a missing value to the smaller of the execution-policy ceiling and
