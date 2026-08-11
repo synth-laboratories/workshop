@@ -37,10 +37,10 @@ const COMPACT_PROMPT: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionStartRequest {
     pub session_id: String,
-	pub workspace: String,
-	pub base_url: String,
-	#[serde(default)]
-	pub api_key: String,
+    pub workspace: String,
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
     pub model: String,
     pub provider_name: Option<String>,
     pub provider_title: Option<String>,
@@ -849,10 +849,20 @@ impl CodexManager {
             }
         };
         let Some(turn_id) = nested_id(&result, "turnId") else {
-            self.performance_trackers.lock().await.remove(&request.session_id);
-            return Err(anyhow!("Codex turn/start response missing turn id: {result}"));
+            self.performance_trackers
+                .lock()
+                .await
+                .remove(&request.session_id);
+            return Err(anyhow!(
+                "Codex turn/start response missing turn id: {result}"
+            ));
         };
-        if let Some(tracker) = self.performance_trackers.lock().await.get_mut(&request.session_id) {
+        if let Some(tracker) = self
+            .performance_trackers
+            .lock()
+            .await
+            .get_mut(&request.session_id)
+        {
             if tracker.turn_id == pending_turn_id {
                 tracker.turn_id = turn_id.clone();
             }
@@ -1357,9 +1367,7 @@ const CREDENTIAL_ENV_NAMES: &[&str] = &["SYNTH_API_KEY", "OPENROUTER_API_KEY", "
 /// Refusing a real credential name is an error, not an omission: launching the
 /// child without the variable it was configured to read would surface later as
 /// an unauthenticated provider, and the reason would be nowhere in the logs.
-fn provider_child_env(
-    request: &CodexSessionStartRequest,
-) -> Result<Option<(String, String)>> {
+fn provider_child_env(request: &CodexSessionStartRequest) -> Result<Option<(String, String)>> {
     if request.api_key.is_empty() {
         return Ok(None);
     }
@@ -1589,7 +1597,10 @@ async fn read_stdout<R: tauri::Runtime>(
             )
             .await;
         }
-        if matches!(method.as_str(), "turn/completed" | "thread/compact/completed") {
+        if matches!(
+            method.as_str(),
+            "turn/completed" | "thread/compact/completed"
+        ) {
             if let Some(waiter) = persistence.compact_waiters.lock().await.remove(&session_id) {
                 let _ = waiter.send(Ok(()));
             }
@@ -1789,11 +1800,21 @@ fn usage_from_object(value: &Value) -> Option<TurnTokenUsage> {
     Some(TurnTokenUsage {
         input_tokens: positive_i64(integer_field(
             value,
-            &["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"],
+            &[
+                "input_tokens",
+                "inputTokens",
+                "prompt_tokens",
+                "promptTokens",
+            ],
         )),
         cached_input_tokens: positive_i64(integer_field(
             value,
-            &["cached_input_tokens", "cachedInputTokens", "cached_tokens", "cachedTokens"],
+            &[
+                "cached_input_tokens",
+                "cachedInputTokens",
+                "cached_tokens",
+                "cachedTokens",
+            ],
         )),
         cache_write_tokens: positive_i64(integer_field(
             value,
@@ -1805,7 +1826,10 @@ fn usage_from_object(value: &Value) -> Option<TurnTokenUsage> {
             ],
         )),
         reasoning_tokens: details.and_then(|details| {
-            positive_i64(integer_field(details, &["reasoning_tokens", "reasoningTokens"]))
+            positive_i64(integer_field(
+                details,
+                &["reasoning_tokens", "reasoningTokens"],
+            ))
         }),
         output_tokens,
     })
@@ -1853,7 +1877,10 @@ async fn track_performance_event(
     params: &Value,
 ) {
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let terminal = matches!(method, "turn/completed" | "turn/failed" | "turn/interrupted");
+    let terminal = matches!(
+        method,
+        "turn/completed" | "turn/failed" | "turn/interrupted"
+    );
     {
         let mut trackers = trackers.lock().await;
         let Some(tracker) = trackers.get_mut(session_id) else {
@@ -2199,9 +2226,7 @@ pub fn apply_brokered_credential(
     Ok(())
 }
 
-fn validated_provider_endpoint(
-    request: &CodexSessionStartRequest,
-) -> Result<reqwest::Url, String> {
+fn validated_provider_endpoint(request: &CodexSessionStartRequest) -> Result<reqwest::Url, String> {
     reqwest::Url::parse(&request.base_url).map_err(|_| {
         format!(
             "{} could not start because its endpoint is invalid: {}. Update it in Settings → Account → Backend API.",
@@ -3697,10 +3722,7 @@ mod tests {
         assert!(config.contains("model_provider = \"synth-cloud\""));
         assert!(config.contains("[model_providers.\"synth-cloud\"]"));
         // Codex is pointed at the native proxy, not at the backend directly.
-        assert!(config.contains(&format!(
-            "base_url = \"{}/api/v1\"",
-            broker.origin()
-        )));
+        assert!(config.contains(&format!("base_url = \"{}/api/v1\"", broker.origin())));
         assert!(config.contains("wire_api = \"responses\""));
         assert!(config.contains(&format!(
             "env_key = \"{}\"",
@@ -3801,8 +3823,12 @@ mod tests {
         let mut request = test_request(temp.path(), "synth-cloud-overwrite");
         request.api_key = "renderer-leaked-key".into();
         request.base_url = "https://evil.example/v1".into();
-        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209/", Some("sk_dev_real_key"))
-            .unwrap();
+        apply_synth_cloud_provider(
+            &mut request,
+            "http://127.0.0.1:41209/",
+            Some("sk_dev_real_key"),
+        )
+        .unwrap();
         // Staging discards the renderer's value and endpoint outright.
         assert_eq!(request.api_key, "sk_dev_real_key");
         assert!(request.broker_credential);
@@ -3892,8 +3918,12 @@ mod tests {
         let app = tauri::test::mock_app();
         let app_handle = app.handle().clone();
         let mut request = test_request(temp.path(), "lease-rebind");
-        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some("sk_dev_rebind"))
-            .unwrap();
+        apply_synth_cloud_provider(
+            &mut request,
+            "http://127.0.0.1:41209",
+            Some("sk_dev_rebind"),
+        )
+        .unwrap();
         manager
             .start(app_handle.clone(), request.clone())
             .await
@@ -3925,8 +3955,12 @@ mod tests {
         let app = tauri::test::mock_app();
         let app_handle = app.handle().clone();
         let mut request = test_request(temp.path(), "lease-provider-identity");
-        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some("sk_dev_shared"))
-            .unwrap();
+        apply_synth_cloud_provider(
+            &mut request,
+            "http://127.0.0.1:41209",
+            Some("sk_dev_shared"),
+        )
+        .unwrap();
         manager
             .start(app_handle.clone(), request.clone())
             .await
@@ -4095,7 +4129,11 @@ mod tests {
             .expect("the brokered lease is allowed across the spawn boundary")
             .map(|(name, value)| format!("export {name}={value}\n"))
             .unwrap_or_default();
-        fs::write(snapshots.join("snapshot.sh"), format!("#!/bin/sh\n{exported}")).unwrap();
+        fs::write(
+            snapshots.join("snapshot.sh"),
+            format!("#!/bin/sh\n{exported}"),
+        )
+        .unwrap();
         // Session logs and event payloads are the other things a home accumulates.
         fs::create_dir_all(home.join("sessions")).unwrap();
         fs::write(

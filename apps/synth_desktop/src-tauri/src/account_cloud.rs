@@ -193,7 +193,9 @@ fn connection_identity(backend_url: &str, api_key: &str) -> u64 {
 #[derive(Clone, Debug)]
 pub enum AccountError {
     /// Connection refused, DNS failure, TLS failure, or timeout.
-    Unreachable { detail: String },
+    Unreachable {
+        detail: String,
+    },
     Unauthorized,
     /// The backend answered, but does not serve the account contract.
     MissingRoute,
@@ -203,9 +205,13 @@ pub enum AccountError {
     UnexpectedStatus(u16),
     /// A schema this build does not speak. The reported version is backend text
     /// and stays out of the copy.
-    UnsupportedSchema { reported: String },
+    UnsupportedSchema {
+        reported: String,
+    },
     /// A 200 whose body is not an account snapshot.
-    Malformed { detail: String },
+    Malformed {
+        detail: String,
+    },
 }
 
 impl AccountError {
@@ -469,7 +475,6 @@ impl AccountCloudClient {
         }
         Ok(session.url)
     }
-
 }
 
 #[cfg(test)]

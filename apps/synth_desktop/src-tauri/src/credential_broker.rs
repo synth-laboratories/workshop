@@ -192,11 +192,7 @@ impl CredentialBroker {
     /// `CodexManager::start` leases only on its spawn path.
     pub fn lease(&self, session_id: &str, upstream_origin: &str, api_key: &str) -> LeaseHandle {
         let upstream_origin = upstream_origin.trim_end_matches('/');
-        let token = format!(
-            "sdl_{}{}",
-            Uuid::new_v4().simple(),
-            Uuid::new_v4().simple()
-        );
+        let token = format!("sdl_{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let lease = Arc::new(Lease {
             upstream_origin: upstream_origin.to_owned(),
             api_key: api_key.to_owned(),
@@ -248,7 +244,12 @@ impl CredentialBroker {
     /// The session's current token, for tests that assert lease lifecycle.
     #[cfg(test)]
     pub(crate) fn token_for(&self, session_id: &str) -> Option<String> {
-        self.state.by_session.read().unwrap().get(session_id).cloned()
+        self.state
+            .by_session
+            .read()
+            .unwrap()
+            .get(session_id)
+            .cloned()
     }
 }
 
@@ -404,18 +405,18 @@ fn accounting_from_json(value: &Value) -> Option<ResponseAccounting> {
             .find_map(|key| usage.get(*key)?.get(inner)?.as_i64())
     };
     Some(ResponseAccounting {
-        response_id: object
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        response_id: object.get("id").and_then(Value::as_str).map(str::to_owned),
         model: object
             .get("model")
             .and_then(Value::as_str)
             .map(str::to_owned),
         prompt_tokens: int(&["prompt_tokens", "input_tokens"]),
         completion_tokens: int(&["completion_tokens", "output_tokens"]),
-        cached_tokens: detail(&["prompt_tokens_details", "input_tokens_details"], "cached_tokens")
-            .or_else(|| int(&["cached_tokens"])),
+        cached_tokens: detail(
+            &["prompt_tokens_details", "input_tokens_details"],
+            "cached_tokens",
+        )
+        .or_else(|| int(&["cached_tokens"])),
         reasoning_tokens: detail(
             &["completion_tokens_details", "output_tokens_details"],
             "reasoning_tokens",
@@ -1016,7 +1017,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 401);
-        assert!(response.text().await.unwrap().contains("lease is not valid"));
+        assert!(response
+            .text()
+            .await
+            .unwrap()
+            .contains("lease is not valid"));
     }
 
     #[tokio::test]
@@ -1106,8 +1111,12 @@ mod tests {
         std::fs::write(&user_file, format!("export SYNTH_API_KEY={SENTINEL}\n")).unwrap();
 
         assert_eq!(redact_managed_shell_snapshots(&root).unwrap(), 1);
-        assert!(!std::fs::read_to_string(&snapshot).unwrap().contains(SENTINEL));
-        assert!(std::fs::read_to_string(&user_file).unwrap().contains(SENTINEL));
+        assert!(!std::fs::read_to_string(&snapshot)
+            .unwrap()
+            .contains(SENTINEL));
+        assert!(std::fs::read_to_string(&user_file)
+            .unwrap()
+            .contains(SENTINEL));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1262,12 +1271,18 @@ mod tests {
         let with_neither: Value =
             serde_json::from_str(r#"{"id":"d","usage":{"prompt_tokens":9,"completion_tokens":3}}"#)
                 .unwrap();
-        assert_eq!(accounting_from_json(&with_cost).unwrap().cost_usd, Some(0.5));
+        assert_eq!(
+            accounting_from_json(&with_cost).unwrap().cost_usd,
+            Some(0.5)
+        );
         assert_eq!(
             accounting_from_json(&with_cost_usd).unwrap().cost_usd,
             Some(0.7)
         );
-        assert_eq!(accounting_from_json(&with_both).unwrap().cost_usd, Some(0.5));
+        assert_eq!(
+            accounting_from_json(&with_both).unwrap().cost_usd,
+            Some(0.5)
+        );
         // Usage without money is still a receipt: tokens are real, cost stays
         // None rather than an invented zero.
         let tokens_only = accounting_from_json(&with_neither).unwrap();
@@ -1277,24 +1292,32 @@ mod tests {
 
     #[test]
     fn only_successful_sse_or_json_responses_are_scanned() {
+        assert!(
+            AccountingScanner::for_response(StatusCode::BAD_GATEWAY, Some("application/json"))
+                .is_none()
+        );
         assert!(AccountingScanner::for_response(
-            StatusCode::BAD_GATEWAY,
-            Some("application/json")
+            StatusCode::UNAUTHORIZED,
+            Some("text/event-stream")
         )
         .is_none());
         assert!(
-            AccountingScanner::for_response(StatusCode::UNAUTHORIZED, Some("text/event-stream"))
+            AccountingScanner::for_response(StatusCode::OK, Some("application/octet-stream"))
                 .is_none()
         );
-        assert!(AccountingScanner::for_response(StatusCode::OK, Some("application/octet-stream"))
-            .is_none());
         assert!(AccountingScanner::for_response(StatusCode::OK, None).is_none());
         assert!(matches!(
-            AccountingScanner::for_response(StatusCode::OK, Some("text/event-stream; charset=utf-8")),
+            AccountingScanner::for_response(
+                StatusCode::OK,
+                Some("text/event-stream; charset=utf-8")
+            ),
             Some(AccountingScanner::Sse(_))
         ));
         assert!(matches!(
-            AccountingScanner::for_response(StatusCode::OK, Some("application/json; charset=utf-8")),
+            AccountingScanner::for_response(
+                StatusCode::OK,
+                Some("application/json; charset=utf-8")
+            ),
             Some(AccountingScanner::Json(_))
         ));
     }
@@ -1364,7 +1387,8 @@ mod tests {
         // The body even carries a plausible usage object; a non-2xx response
         // must still produce no receipt.
         let body = r#"{"id":"resp_err","error":{"message":"overloaded"},"usage":{"input_tokens":5,"cost":0.9}}"#;
-        let (upstream, _seen) = spawn_upstream_as("503 Service Unavailable", "application/json", body);
+        let (upstream, _seen) =
+            spawn_upstream_as("503 Service Unavailable", "application/json", body);
         let broker = CredentialBroker::start().unwrap();
         let handle = broker.lease("session-non2xx", &upstream, SENTINEL);
 

@@ -57,8 +57,7 @@ fn apply_one(conn: &Connection, version: i64, sql: &str) -> Result<()> {
         // A failed batch can leave its transaction open on the shared
         // connection; roll it back so the caller's error path still works.
         let _ = conn.execute_batch("ROLLBACK;");
-        return Err(anyhow::Error::from(error)
-            .context(format!("apply schema migration {version}")));
+        return Err(anyhow::Error::from(error).context(format!("apply schema migration {version}")));
     }
     Ok(())
 }

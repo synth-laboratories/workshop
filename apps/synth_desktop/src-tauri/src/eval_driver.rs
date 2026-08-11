@@ -718,10 +718,7 @@ async fn open_visual(core: &CoreRuntime, body: Value) -> Result<Value> {
         metadata: body.get("metadata").cloned(),
     };
     let (visual, event) = core.visuals().create(create).await?;
-    let (shown, show_event) = core
-        .visuals()
-        .show(visual.id.clone(), session_id)
-        .await?;
+    let (shown, show_event) = core.visuals().show(visual.id.clone(), session_id).await?;
     core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
     core.broadcast_committed(Some(serde_json::from_value(show_event.clone())?));
     Ok(json!({
@@ -894,8 +891,9 @@ async fn resolve_policy_target(
 ) -> Result<PolicyTarget> {
     match codex::provider_class(Some(provider)) {
         codex::ProviderClass::OpenRouter => {
-            let api_key = synth_config::openrouter_api_key()?
-                .ok_or_else(|| anyhow!("OpenRouter API key is not configured on the Workshop host"))?;
+            let api_key = synth_config::openrouter_api_key()?.ok_or_else(|| {
+                anyhow!("OpenRouter API key is not configured on the Workshop host")
+            })?;
             let (chat_url, wire) = policy_chat_url("openrouter", OPENROUTER_CHAT_URL);
             Ok(PolicyTarget {
                 provider: "openrouter".into(),
@@ -906,10 +904,9 @@ async fn resolve_policy_target(
         }
         codex::ProviderClass::SynthCloud => {
             let resolved = synth_config::resolve()?;
-            let api_key = resolved
-                .api_key
-                .clone()
-                .ok_or_else(|| anyhow!("Synth Cloud API key is not configured on the Workshop host"))?;
+            let api_key = resolved.api_key.clone().ok_or_else(|| {
+                anyhow!("Synth Cloud API key is not configured on the Workshop host")
+            })?;
             let (chat_url, wire) = policy_chat_url("synth-cloud", &resolved.backend_url);
             Ok(PolicyTarget {
                 provider: "synth-cloud".into(),
@@ -943,7 +940,11 @@ async fn resolve_policy_target(
     }
 }
 
-async fn run_policy_rollout(deps: &EvalDriverDeps, container_id: &str, body: Value) -> Result<Value> {
+async fn run_policy_rollout(
+    deps: &EvalDriverDeps,
+    container_id: &str,
+    body: Value,
+) -> Result<Value> {
     let core = &deps.core;
     let container = core
         .inventory()
@@ -1511,24 +1512,27 @@ async fn policy_actions_from_model(
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| {
-                response.get("output").and_then(Value::as_array).and_then(|items| {
-                    for item in items {
-                        if let Some(parts) = item.get("content").and_then(Value::as_array) {
-                            for part in parts {
-                                if let Some(text) = part
-                                    .get("text")
-                                    .and_then(Value::as_str)
-                                    .or_else(|| part.pointer("/text").and_then(Value::as_str))
-                                {
-                                    if !text.trim().is_empty() {
-                                        return Some(text.to_string());
+                response
+                    .get("output")
+                    .and_then(Value::as_array)
+                    .and_then(|items| {
+                        for item in items {
+                            if let Some(parts) = item.get("content").and_then(Value::as_array) {
+                                for part in parts {
+                                    if let Some(text) = part
+                                        .get("text")
+                                        .and_then(Value::as_str)
+                                        .or_else(|| part.pointer("/text").and_then(Value::as_str))
+                                    {
+                                        if !text.trim().is_empty() {
+                                            return Some(text.to_string());
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    None
-                })
+                        None
+                    })
             })
             .unwrap_or_default()
     } else {
@@ -1718,17 +1722,11 @@ mod tests {
         );
         assert_eq!(
             policy_chat_url("synth-cloud", "https://api.synth.dev"),
-            (
-                "https://api.synth.dev/api/v1/responses".into(),
-                "responses"
-            )
+            ("https://api.synth.dev/api/v1/responses".into(), "responses")
         );
         assert_eq!(
             policy_chat_url("local-laguna", "http://127.0.0.1:17301"),
-            (
-                "http://127.0.0.1:17301/v1/chat/completions".into(),
-                "chat"
-            )
+            ("http://127.0.0.1:17301/v1/chat/completions".into(), "chat")
         );
     }
 

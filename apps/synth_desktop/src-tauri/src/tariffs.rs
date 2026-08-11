@@ -93,10 +93,9 @@ pub fn cards_in_force(at_ms: i64) -> Vec<TariffCard> {
         .fold(Vec::new(), |mut cards, card| {
             // `tariff_for` already resolved superseded entries; folding by key
             // keeps one card even when the catalog holds historic revisions.
-            if !cards
-                .iter()
-                .any(|kept: &TariffCard| kept.provider == card.provider && kept.model_id == card.model_id)
-            {
+            if !cards.iter().any(|kept: &TariffCard| {
+                kept.provider == card.provider && kept.model_id == card.model_id
+            }) {
                 cards.push(card);
             }
             cards
@@ -144,12 +143,19 @@ pub fn estimate_cost_usd(
     }
     let input = tokens.input_tokens.unwrap_or(0).max(0);
     let cached = tokens.cached_input_tokens.unwrap_or(0).clamp(0, input);
-    let writes = tokens.cache_write_tokens.unwrap_or(0).clamp(0, input - cached);
+    let writes = tokens
+        .cache_write_tokens
+        .unwrap_or(0)
+        .clamp(0, input - cached);
     let base = input - cached - writes;
     let output = tokens.output_tokens.unwrap_or(0).max(0);
 
-    let cached_rate = tariff.cached_input_usd_per_m.unwrap_or(tariff.input_usd_per_m);
-    let write_rate = tariff.cache_write_usd_per_m.unwrap_or(tariff.input_usd_per_m);
+    let cached_rate = tariff
+        .cached_input_usd_per_m
+        .unwrap_or(tariff.input_usd_per_m);
+    let write_rate = tariff
+        .cache_write_usd_per_m
+        .unwrap_or(tariff.input_usd_per_m);
     let per_m = |tokens: i64, rate: f64| tokens as f64 * rate / 1_000_000.0;
     Some(
         per_m(base, tariff.input_usd_per_m)

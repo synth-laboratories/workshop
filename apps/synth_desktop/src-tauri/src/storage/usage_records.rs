@@ -362,11 +362,12 @@ impl Bucket {
             (Some(cached), input) if input > 0 => Some(cached as f64 / input as f64),
             _ => None,
         };
-        let non_cached = self
-            .cached
-            .map(|cached| (self.input - cached).max(0));
-        let perf_sample_count =
-            self.decode_tps.len().max(self.e2e_tps.len()).max(self.ttft.len()) as i64;
+        let non_cached = self.cached.map(|cached| (self.input - cached).max(0));
+        let perf_sample_count = self
+            .decode_tps
+            .len()
+            .max(self.e2e_tps.len())
+            .max(self.ttft.len()) as i64;
         let mut decode_p95 = self.decode_tps.clone();
         let mut e2e_p95 = self.e2e_tps.clone();
         let mut ttft_p95 = self.ttft.clone();
