@@ -762,6 +762,21 @@ export function eventsToLocalActivity(
 	// assistant message. Until the new assistant item has a stable id it stays
 	// in the active tail directly after the latest user bubble.
 	let current = "__active__";
+	// Use timestamps rather than delivery order when placing activity around its
+	// owning assistant message. Replayed events can arrive out of order, while
+	// their recorded times still preserve the intended transcript chronology.
+	const assistantMessageTimes = new Map(
+		messages
+			.filter((message) => message.role === "assistant")
+			.map((message) => [message.id, Date.parse(message.at)] as const)
+	);
+	const placementForCurrent = (event: RuntimeEvent): "before" | "after" | undefined => {
+		if (current === "__active__") return undefined;
+		const messageTime = assistantMessageTimes.get(current);
+		const eventTime = Date.parse(event.createdAt);
+		if (messageTime === undefined || !Number.isFinite(messageTime) || !Number.isFinite(eventTime)) return undefined;
+		return eventTime < messageTime ? "before" : "after";
+	};
 	const subagentTitles = new Map<string, string>();
 	const shownSubagentStarts = new Set<string>();
 	const shownSubagentEnds = new Set<string>();
@@ -887,6 +902,7 @@ export function eventsToLocalActivity(
 					id: `activity-${event.sequence}`,
 					label,
 					detail: supplied,
+					placement: placementForCurrent(event),
 					kind: "thought",
 					reasoningDisplay
 				});
@@ -918,6 +934,7 @@ export function eventsToLocalActivity(
 					kind: safeTool.kind,
 					artifactId: safeTool.artifactId,
 					containerId: safeTool.containerId,
+					placement: placementForCurrent(event),
 					toolStatus: safeTool.toolStatus
 				};
 				shownToolLines.set(safeTool.key, line);
