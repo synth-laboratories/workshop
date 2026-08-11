@@ -15,6 +15,8 @@ DEBUG_EXE="$ROOT/apps/synth_desktop/src-tauri/target/debug/synth-desktop"
 BACKUP_ROOT="${SYNTH_DESKTOP_BACKUP_ROOT:-$HOME/.synth-desktop/backups/app-builds}"
 INSTALL_STAGE=""
 LAGUNA_PID_FILE="$HOME/.synth-desktop/laguna/sidecar.pid"
+INSTALL_LOCK_DIR="${SYNTH_DESKTOP_INSTALL_LOCK_DIR:-$HOME/.synth-desktop/locks/canonical-install}"
+INSTALL_LOCK_HELD=0
 
 enable_rust_cache() {
 	if command -v sccache >/dev/null 2>&1; then
@@ -35,7 +37,62 @@ cleanup_stage() {
   fi
 }
 
-trap cleanup_stage EXIT
+release_install_lock() {
+  if [[ "$INSTALL_LOCK_HELD" -eq 1 && -d "$INSTALL_LOCK_DIR" ]]; then
+    local owner=""
+    owner="$(cat "$INSTALL_LOCK_DIR/pid" 2>/dev/null || true)"
+    if [[ "$owner" == "$$" ]]; then
+      /bin/rm -rf "$INSTALL_LOCK_DIR"
+    fi
+  fi
+  INSTALL_LOCK_HELD=0
+}
+
+cleanup_all() {
+  cleanup_stage
+  release_install_lock
+}
+
+trap cleanup_all EXIT
+
+acquire_install_lock() {
+  local owner=""
+  mkdir -p "$(dirname "$INSTALL_LOCK_DIR")"
+  if ! mkdir "$INSTALL_LOCK_DIR" 2>/dev/null; then
+    owner="$(cat "$INSTALL_LOCK_DIR/pid" 2>/dev/null || true)"
+    if [[ "$owner" =~ ^[1-9][0-9]*$ ]] && kill -0 "$owner" 2>/dev/null; then
+      echo "[desktop] ERROR canonical install is already owned by pid $owner" >&2
+      return 1
+    fi
+    echo "[desktop] removing stale canonical install lock${owner:+ from pid $owner}"
+    /bin/rm -rf "$INSTALL_LOCK_DIR"
+    mkdir "$INSTALL_LOCK_DIR"
+  fi
+  printf '%s\n' "$$" >"$INSTALL_LOCK_DIR/pid"
+  INSTALL_LOCK_HELD=1
+}
+
+source_revision() {
+  local revision
+  revision="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
+  if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+    revision="$revision-dirty"
+  fi
+  printf '%s' "$revision"
+}
+
+require_source_revision() {
+  local phase="$1" expected="$2" current
+  current="$(source_revision)"
+  if [[ "$current" != "$expected" ]]; then
+    echo "[desktop] ERROR provenance drift ($phase): expected $expected got $current" >&2
+    return 1
+  fi
+}
+
+executable_digest() {
+  shasum -a 256 "$1" | awk '{print "sha256:" $1}'
+}
 
 usage() {
   cat <<'EOF'
@@ -175,6 +232,7 @@ verify_desktop() {
 	run_renderer_typecheck
   cargo test --manifest-path apps/synth_desktop/src-tauri/Cargo.toml
   ./scripts/test-desktop-instance.sh
+  ./scripts/test-desktop-install-lock.sh
   npm run test:playwright --workspace @synth/synth-desktop
 }
 
@@ -203,7 +261,9 @@ build_desktop() {
 }
 
 install_desktop() {
-	local verification="${1:-fast}" timestamp stage backup=""
+	local verification="${1:-fast}" timestamp stage backup="" pre_build_revision stage_digest installed_digest
+	acquire_install_lock
+	pre_build_revision="$(source_revision)"
 	if [[ "$verification" == "release" ]]; then
 		verify_desktop
 	fi
@@ -214,6 +274,7 @@ install_desktop() {
 	# app loads, so it was removed; bundling them as Tauri sidecars is the real
 	# fix and is tracked in the launch program.
 	build_desktop
+  require_source_revision "post-build" "$pre_build_revision"
   [[ -d "$BUNDLE_APP" && -x "$BUNDLE_EXE" ]] || {
     echo "[desktop] build did not produce $BUNDLE_APP" >&2
     return 1
@@ -241,6 +302,8 @@ install_desktop() {
   /bin/rm -rf "$BUNDLE_APP"
   /usr/bin/codesign --force --deep --sign - "$stage"
   /usr/bin/codesign --verify --deep --strict "$stage"
+  stage_digest="$(executable_digest "$stage/Contents/MacOS/synth-desktop")"
+  require_source_revision "pre-install" "$pre_build_revision"
 
   if [[ -d "$INSTALLED_APP" ]]; then
     backup="$BACKUP_ROOT/Synth Desktop-$timestamp.app"
@@ -255,7 +318,14 @@ install_desktop() {
   fi
   INSTALL_STAGE=""
   /usr/bin/codesign --verify --deep --strict "$INSTALLED_APP"
+  installed_digest="$(executable_digest "$INSTALLED_EXE")"
+  if [[ "$installed_digest" != "$stage_digest" ]]; then
+    echo "[desktop] ERROR installed executable digest drift: staged $stage_digest installed $installed_digest" >&2
+    return 1
+  fi
+  require_source_revision "pre-launch" "$pre_build_revision"
   echo "[desktop] installed $INSTALLED_APP"
+  echo "[desktop] provenance $pre_build_revision $installed_digest"
   launch_installed
 }
 
@@ -283,8 +353,13 @@ case "$command" in
 		install_desktop release
     ;;
   restart)
+    acquire_install_lock
     stop_desktop
     launch_installed
+    ;;
+  _lock-probe)
+    acquire_install_lock
+    sleep "${2:-1}"
     ;;
   stop)
     stop_desktop

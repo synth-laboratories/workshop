@@ -1,6 +1,6 @@
 use super::models::{
-    validate_bindings, RendererKind, VisualCreateRequest, VisualQuery, VisualRecord,
-    VisualRevision, VisualStatus, VisualUpdateRequest, VISUAL_SCHEMA_VERSION,
+    validate_bindings, validate_template_bindings, RendererKind, VisualCreateRequest, VisualQuery,
+    VisualRecord, VisualRevision, VisualStatus, VisualUpdateRequest, VISUAL_SCHEMA_VERSION,
 };
 use super::templates::{resolve_template, TemplateMeta};
 use crate::storage::{ContentStore, Database, EventAppend, EventJournal, EventSource};
@@ -56,6 +56,7 @@ impl VisualRegistry {
         validate_visual_id(&id)?;
         let bindings = request.bindings.unwrap_or_else(|| json!({}));
         validate_bindings(&bindings)?;
+        validate_template_bindings(&template.id, &bindings)?;
         let status = request.status.unwrap_or(VisualStatus::Draft);
         let renderer_kind = request.renderer_kind.unwrap_or(RendererKind::Template);
         let metadata = request.metadata.unwrap_or_else(|| json!({}));
@@ -176,6 +177,7 @@ impl VisualRegistry {
                 let mut new_bindings = None;
                 if let Some(bindings) = request.bindings {
                     validate_bindings(&bindings)?;
+                    validate_template_bindings(&current.template_id, &bindings)?;
                     current.bindings = bindings.clone();
                     new_bindings = Some(bindings);
                     bumped = true;

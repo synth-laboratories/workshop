@@ -36,6 +36,26 @@ printf '%s' "$default_instance" | jq -e '
 [[ "$(printf '%s' "$beta" | jq -r .iconLabel)" == "2" ]]
 [[ -f "$(printf '%s' "$alpha" | jq -r .icon)" ]]
 
+# A named eval instance receives a preflighted Trace V5 CLI at the exact path
+# resolved by the Rust runtime. Use a fake uv so this contract test is hermetic.
+FAKE_BIN="$TEST_ROOT/fake-bin"
+TRACE_TARGET="$TEST_ROOT/trace-target/Resources/bin/synth-trace"
+mkdir -p "$FAKE_BIN"
+cat >"$FAKE_BIN/uv" <<'EOF'
+#!/bin/sh
+case "$*" in
+  *"synth-trace --help"*) exit 0 ;;
+  *) exit 9 ;;
+esac
+EOF
+chmod +x "$FAKE_BIN/uv"
+mkdir -p "$TEST_ROOT/containers"
+touch "$TEST_ROOT/containers/pyproject.toml"
+SYNTH_UV_BIN="$FAKE_BIN/uv" SYNTH_CONTAINERS_ROOT="$TEST_ROOT/containers" \
+  "$ROOT/scripts/prepare-synth-trace-cli.sh" "$TRACE_TARGET" >/dev/null
+[[ -x "$TRACE_TARGET" ]]
+"$TRACE_TARGET" --help >/dev/null
+
 if "$ROOT/scripts/desktop-instance.sh" print '../unsafe' >/dev/null 2>&1; then
   echo "unsafe instance name was accepted" >&2
   exit 1

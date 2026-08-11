@@ -209,6 +209,84 @@ pub fn validate_bindings(bindings: &Value) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Validate template-owned inline payloads before a visual can be persisted or
+/// opened. Canonical source bindings (Trace V5/CAS/fixture) are validated when
+/// resolved; inline and legacy prop bags must already satisfy the shell.
+pub fn validate_template_bindings(template_id: &str, bindings: &Value) -> anyhow::Result<()> {
+    if template_id != "analysis.visual.v1" {
+        return Ok(());
+    }
+    let object = bindings
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("analysis visual bindings must be an object"))?;
+    let spec = if object.get("schemaVersion").and_then(Value::as_str)
+        == Some(VISUAL_BINDINGS_SCHEMA_VERSION)
+    {
+        let slots = object
+            .get("slots")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("analysis visual requires a spec slot"))?;
+        let Some(slot) = slots
+            .iter()
+            .find(|slot| slot.get("slot").and_then(Value::as_str) == Some("spec"))
+        else {
+            anyhow::bail!("analysis visual requires a spec slot");
+        };
+        if slot.get("kind").and_then(Value::as_str) != Some("inline") {
+            return Ok(());
+        }
+        slot.get("data")
+            .ok_or_else(|| anyhow::anyhow!("analysis visual spec slot requires inline data"))?
+    } else {
+        object
+            .get("spec")
+            .or_else(|| object.get("data"))
+            .unwrap_or(bindings)
+    };
+    let blocks = spec
+        .get("blocks")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("analysis visual spec requires a blocks array"))?;
+    if blocks.is_empty() {
+        anyhow::bail!("analysis visual spec requires at least one block");
+    }
+    for (index, block) in blocks.iter().enumerate() {
+        let block = block
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("analysis block {index} must be an object"))?;
+        let kind = block
+            .get("kind")
+            .or_else(|| block.get("type"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("analysis block {index} requires kind"))?;
+        let required_array = match kind {
+            "metrics" | "ranked-bars" => Some("items"),
+            "frequency-diff" | "table" => Some("rows"),
+            "scatter" => Some("points"),
+            "note" => {
+                if !block
+                    .get("body")
+                    .or_else(|| block.get("text"))
+                    .is_some_and(Value::is_string)
+                {
+                    anyhow::bail!("analysis note block {index} requires body text");
+                }
+                None
+            }
+            other => anyhow::bail!("unsupported analysis block kind at {index}: {other}"),
+        };
+        if let Some(field) = required_array {
+            if !block.get(field).is_some_and(Value::is_array) {
+                anyhow::bail!("analysis {kind} block {index} requires a {field} array");
+            }
+        }
+        if kind == "table" && !block.get("columns").is_some_and(Value::is_array) {
+            anyhow::bail!("analysis table block {index} requires a columns array");
+        }
+    }
+    Ok(())
+}
+
 impl VisualRecord {
     pub fn to_legacy_instance(&self) -> Value {
         json!({
@@ -250,5 +328,22 @@ mod tests {
             "slots": [{"slot":"matrix", "kind":"local_cas"}]
         }))
         .is_err());
+    }
+
+    #[test]
+    fn rejects_malformed_analysis_blocks_before_rendering() {
+        let missing_items = json!({"spec":{"blocks":[{"type":"metrics","title":"Summary"}]}});
+        let error = validate_template_bindings("analysis.visual.v1", &missing_items).unwrap_err();
+        assert!(error.to_string().contains("requires a items array"));
+        validate_template_bindings(
+            "analysis.visual.v1",
+            &json!({
+                "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+                "slots": [{"slot":"spec", "kind":"inline", "data": {
+                    "blocks": [{"kind":"metrics", "items":[{"label":"Runs", "value":"10"}]}]
+                }}]
+            }),
+        )
+        .unwrap();
     }
 }

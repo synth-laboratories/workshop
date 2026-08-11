@@ -315,6 +315,13 @@ dev_instance() {
   export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
   export CARGO_TARGET_DIR="$TARGET_ROOT"
 
+  # Debug/eval instances must carry the same Trace V5 format authority used by
+  # the runner. Provision and probe it before compilation or any rollout work.
+  # trace_ingest.rs resolves this exact target-relative location.
+  "$ROOT/scripts/prepare-synth-trace-cli.sh" \
+    "$TARGET_ROOT/Resources/bin/synth-trace"
+  export SYNTH_TRACE_CLI="$TARGET_ROOT/Resources/bin/synth-trace"
+
   # The adapter prebuild compiles the shared desktop library and therefore
   # runs Tauri code generation too. Give it the same overlay as `tauri dev`;
   # otherwise Cargo can cache the canonical bundle identifier and the named

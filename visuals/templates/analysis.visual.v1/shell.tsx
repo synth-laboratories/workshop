@@ -63,9 +63,10 @@ function normalizeBlock(raw: unknown): Block | null {
       items: block.items as Extract<Block, { kind: "metrics" }>["items"]
     };
   }
-  if (kind === "ranked-bars" || kind === "frequency-diff" || kind === "table" || kind === "scatter") {
-    return { ...block, kind } as Block;
-  }
+  if (kind === "ranked-bars" && Array.isArray(block.items)) return { ...block, kind } as Block;
+  if (kind === "frequency-diff" && Array.isArray(block.rows)) return { ...block, kind } as Block;
+  if (kind === "table" && Array.isArray(block.columns) && Array.isArray(block.rows)) return { ...block, kind } as Block;
+  if (kind === "scatter" && Array.isArray(block.points)) return { ...block, kind } as Block;
   return null;
 }
 
