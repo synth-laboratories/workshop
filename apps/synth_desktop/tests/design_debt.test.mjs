@@ -126,11 +126,14 @@ test("intended design: styles must not retain a LoRA picker affordance", () => {
 	assert.ok(!styles.includes(".is-lora"));
 });
 
-test("intended design: Playwright workers use isolated renderer ports", () => {
+test("intended design: Playwright workers isolate renderer ports and Vite caches", () => {
 	const fixture = readFileSync(join(appRoot, "tests/playwright/browser.fixture.ts"), "utf8");
+	const viteConfig = readFileSync(join(appRoot, "vite.config.ts"), "utf8");
 	assert.ok(!fixture.includes("127.0.0.1:1420"));
 	assert.match(fixture, /reserveLoopbackPort/);
 	assert.match(fixture, /--strictPort/);
+	assert.match(fixture, /SYNTH_DESKTOP_VITE_CACHE_DIR: cacheDir/);
+	assert.match(viteConfig, /cacheDir: process\.env\.SYNTH_DESKTOP_VITE_CACHE_DIR/);
 });
 
 test("Codex thread compaction uses the native app glyph and divider", () => {
