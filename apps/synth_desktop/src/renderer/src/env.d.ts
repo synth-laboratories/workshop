@@ -517,7 +517,7 @@ export type SynthAccountPlan = {
 	/** False when the backend reports no dollar allowance: show no dollars. */
 	metered?: boolean;
 	monthlyAllowanceUsd?: number;
-	usedUsd: number;
+	usedUsd?: number;
 	remainingUsd?: number;
 	resetsAt?: string;
 	renewsAt?: string;
