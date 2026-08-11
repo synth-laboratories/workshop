@@ -5,7 +5,7 @@ account/billing remain on the main backend.
 
 | Desktop profile | Responses gateway |
 | --- | --- |
-| `local-slot1` | `http://127.0.0.1:41124` |
+| `local` / `local-slot1` | `http://127.0.0.1:41124` |
 | `staging` | `https://synth-responses-gateway-staging-dev.up.railway.app` |
 | `prod` / `production` | `https://synth-responses-gateway-prod-production.up.railway.app` |
 

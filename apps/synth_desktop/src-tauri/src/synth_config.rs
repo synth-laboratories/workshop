@@ -28,6 +28,7 @@ const DEFAULT_ENDPOINTS: &[(&str, &str)] = &[
 /// backend Responses route. Unknown profiles have no gateway and fail closed.
 const DEFAULT_GATEWAYS: &[(&str, &str)] = &[
     ("local-slot1", "http://127.0.0.1:41124"),
+    ("local", "http://127.0.0.1:41124"),
     (
         "staging",
         "https://synth-responses-gateway-staging-dev.up.railway.app",
@@ -944,6 +945,10 @@ mod tests {
             Some("http://127.0.0.1:41124")
         );
         assert_eq!(
+            lookup_default(DEFAULT_GATEWAYS, "local").as_deref(),
+            Some("http://127.0.0.1:41124")
+        );
+        assert_eq!(
             lookup_default(DEFAULT_GATEWAYS, "staging").as_deref(),
             Some("https://synth-responses-gateway-staging-dev.up.railway.app")
         );
@@ -980,11 +985,6 @@ mod tests {
         env::remove_var("SYNTH_INTERN_PROFILE");
         env::remove_var("SYNTH_BACKEND_URL");
         env::remove_var("SYNTH_INTERN_CONFIG");
-        env::set_var(
-            "SYNTH_RESPONSES_GATEWAY_URL",
-            "https://deprecated-override.example",
-        );
-
         // Legacy TOML gateway overrides are ignored; the checked-in staging
         // route is authoritative.
         let staging_config = root.join("staging.toml");
@@ -1013,6 +1013,18 @@ mod tests {
             Some("http://127.0.0.1:41124")
         );
 
+        // The conventional local profile uses the same checked-in local
+        // gateway and needs no per-machine routing variable.
+        let local_config = root.join("local.toml");
+        fs::write(&local_config, "[intern]\nprofile = \"local\"\n").unwrap();
+        env::set_var("SYNTH_DESKTOP_CONFIG", &local_config);
+        let resolved = resolve().unwrap();
+        assert_eq!(resolved.backend_url, "http://127.0.0.1:8000");
+        assert_eq!(
+            resolved.responses_gateway_url.as_deref(),
+            Some("http://127.0.0.1:41124")
+        );
+
         // Legacy "prod" maps to the checked-in production gateway so the
         // default profile cannot fall through to the backend Responses route.
         let prod_config = root.join("prod.toml");
@@ -1026,7 +1038,6 @@ mod tests {
         );
 
         env::remove_var("SYNTH_DESKTOP_CONFIG");
-        env::remove_var("SYNTH_RESPONSES_GATEWAY_URL");
         let _ = fs::remove_dir_all(root);
     }
 
