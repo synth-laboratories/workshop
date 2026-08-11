@@ -1181,7 +1181,6 @@ export function healthToModelStatus(
 	status: ModelStatus;
 	name: string;
 	composerEnabled: boolean;
-	composerPlaceholder: string;
 	detail?: string;
 } {
 	const name = "Laguna-XS-2.1";
@@ -1190,7 +1189,6 @@ export function healthToModelStatus(
 			status: "starting",
 			name,
 			composerEnabled: health?.openrouter.mode === "ready",
-			composerPlaceholder: "Starting Laguna XS…",
 			detail: laguna.detail || "Starting Laguna sidecar…"
 		};
 	}
@@ -1199,7 +1197,6 @@ export function healthToModelStatus(
 			status: "loading",
 			name,
 			composerEnabled: health?.openrouter.mode === "ready",
-			composerPlaceholder: "Loading Laguna XS…",
 			detail: laguna.detail || "Loading model weights…"
 		};
 	}
@@ -1208,7 +1205,6 @@ export function healthToModelStatus(
 			status: "error",
 			name,
 			composerEnabled: health?.openrouter.mode === "ready",
-			composerPlaceholder: "Laguna unavailable — pick OpenRouter or retry",
 			detail: laguna.detail || "Laguna sidecar error"
 		};
 	}
@@ -1219,7 +1215,6 @@ export function healthToModelStatus(
 			status: "ready",
 			name,
 			composerEnabled: true,
-			composerPlaceholder: "Ask Laguna something…",
 			detail: "Laguna XS ready"
 		};
 	}
@@ -1228,7 +1223,6 @@ export function healthToModelStatus(
 			status: "starting",
 			name,
 			composerEnabled: false,
-			composerPlaceholder: "Connecting to local runtime…",
 			detail: "Connecting to local runtime…"
 		};
 	}
@@ -1237,7 +1231,6 @@ export function healthToModelStatus(
 			status: "not_installed",
 			name,
 			composerEnabled: health.openrouter.mode === "ready",
-			composerPlaceholder: "Local Laguna not ready — use OpenRouter or wait…",
 			detail: "Local Laguna sidecar not connected"
 		};
 	}
@@ -1245,7 +1238,6 @@ export function healthToModelStatus(
 		status: "not_installed",
 		name,
 		composerEnabled: health.openrouter.mode === "ready",
-		composerPlaceholder: "Select a model…",
 		detail: "Laguna not available"
 	};
 }
@@ -1356,6 +1348,5 @@ export function buildLandingState(args: {
 		internMode: args.health?.intern.mode,
 		apiKeyConfigured: args.apiKeyConfigured,
 		composerEnabled: model.composerEnabled,
-		composerPlaceholder: model.composerPlaceholder
 	};
 }

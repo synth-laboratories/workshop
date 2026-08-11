@@ -327,16 +327,20 @@ function modelChipLabel(state: LandingState): string {
 }
 
 function composerPlaceholder(state: LandingState): string {
+	const target = EXECUTION_TARGETS.find((entry) => entry.id === state.selectedTargetId);
 	if (state.selectedTargetId === "local-laguna") {
-		return state.composerPlaceholder;
+		if (state.model.status === "starting") return "Starting Laguna XS…";
+		if (state.model.status === "loading") return "Loading Laguna XS…";
+		if (state.model.status === "error") return "Laguna unavailable — pick OpenRouter or retry";
+		if (state.model.status === "not_installed") return "Local Laguna not ready — use OpenRouter or wait…";
 	}
 	if (state.selectedTargetId === "synth-cloud-laguna-s") {
 		return state.apiKeyConfigured
-			? "Ask anything…"
+			? (target?.composerPlaceholder ?? "Ask something…")
 			: "Configure Synth API key in Settings → Account";
 	}
 	if (state.selectedTargetId.startsWith("openrouter-")) {
-		return "Ask anything…";
+		return target?.composerPlaceholder ?? "Ask something…";
 	}
 	if (
 		(state.selectedTargetId === "intern-sync" || state.selectedTargetId === "intern-async") &&
@@ -344,9 +348,7 @@ function composerPlaceholder(state: LandingState): string {
 	) {
 		return "Configure Synth Cloud in Settings → Account";
 	}
-	if (state.selectedTargetId === "intern-sync") return "Message live Intern…";
-	if (state.selectedTargetId === "intern-async") return "Message background Intern…";
-	return state.composerPlaceholder;
+	return target?.composerPlaceholder ?? "Ask something…";
 }
 
 function composerEnabled(state: LandingState): boolean {

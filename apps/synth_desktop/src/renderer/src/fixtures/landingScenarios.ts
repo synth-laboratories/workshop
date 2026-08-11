@@ -450,8 +450,7 @@ export const LANDING_SCENARIOS: Record<LandingScenarioId, LandingState> = {
 		asyncIntern: null,
 		model: { status: "not_installed", name: "Laguna XS 2.1" },
 		selectedTargetId: "local-laguna",
-		composerEnabled: false,
-		composerPlaceholder: "No model available"
+		composerEnabled: false
 	},
 	"landing-downloading": {
 		id: "landing-downloading",
@@ -466,8 +465,7 @@ export const LANDING_SCENARIOS: Record<LandingScenarioId, LandingState> = {
 			downloadPaused: false
 		},
 		selectedTargetId: "local-laguna",
-		composerEnabled: false,
-		composerPlaceholder: "No model available"
+		composerEnabled: false
 	},
 	"landing-ready": {
 		id: "landing-ready",
@@ -477,8 +475,7 @@ export const LANDING_SCENARIOS: Record<LandingScenarioId, LandingState> = {
 		asyncIntern: ASYNC_RUNNING,
 		model: { status: "ready", name: "Laguna XS 2.1" },
 		selectedTargetId: "local-laguna",
-		composerEnabled: true,
-		composerPlaceholder: "Ask Laguna anything about your project…"
+		composerEnabled: true
 	},
 	"landing-with-history": {
 		id: "landing-with-history",
@@ -534,8 +531,7 @@ export const LANDING_SCENARIOS: Record<LandingScenarioId, LandingState> = {
 		asyncIntern: ASYNC_NEEDS_INPUT,
 		model: { status: "ready", name: "Laguna XS 2.1" },
 		selectedTargetId: "local-laguna",
-		composerEnabled: true,
-		composerPlaceholder: "Ask Laguna anything about your project…"
+		composerEnabled: true
 	},
 	"landing-with-project": {
 		id: "landing-with-project",
@@ -626,8 +622,7 @@ export const LANDING_SCENARIOS: Record<LandingScenarioId, LandingState> = {
 		asyncIntern: ASYNC_RUNNING,
 		model: { status: "ready", name: "Laguna XS 2.1" },
 		selectedTargetId: "intern-sync",
-		composerEnabled: true,
-		composerPlaceholder: "Ask Intern to improve this agent…"
+		composerEnabled: true
 	}
 };
 

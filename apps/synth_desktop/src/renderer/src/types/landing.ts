@@ -51,6 +51,8 @@ export type ExecutionTargetOption = {
 	id: string;
 	label: string;
 	description: string;
+	/** Draft-surface copy owned by the model catalog, not transient runtime state. */
+	composerPlaceholder: string;
 	/** Where tokens run — local Metal, remote API, or Synth Cloud Intern. */
 	group: "local" | "remote" | "cloud";
 };
@@ -167,7 +169,6 @@ export type LandingState = {
 	/** Synth org API key present — gates Synth Cloud billed models. Boolean only; never the secret. */
 	apiKeyConfigured?: boolean;
 	composerEnabled: boolean;
-	composerPlaceholder: string;
 };
 
 /** OpenRouter model ids used by the remote ACP adapter. */
@@ -182,42 +183,49 @@ export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 		id: "local-laguna",
 		label: "Laguna XS 2.1",
 		description: "Local · MLX · Metal · usage tracked",
+		composerPlaceholder: "Ask Laguna something…",
 		group: "local"
 	},
 	{
 		id: "local-muse-glimmer",
 		label: "Muse Glimmer 30B",
 		description: "Local · GGUF · Metal · vision · DFlash",
+		composerPlaceholder: "Ask Muse something…",
 		group: "local"
 	},
 	{
 		id: "openrouter-luna",
 		label: "GPT 5.6 Luna",
 		description: `OpenRouter · ${OPENROUTER_LUNA_MODEL} · usage tracked`,
+		composerPlaceholder: "Ask Luna something…",
 		group: "remote"
 	},
 	{
 		id: "openrouter-laguna-s",
 		label: "Laguna S 2.1",
 		description: `OpenRouter · ${OPENROUTER_LAGUNA_S_MODEL} · usage tracked`,
+		composerPlaceholder: "Ask Laguna something…",
 		group: "remote"
 	},
 	{
 		id: "synth-cloud-laguna-s",
 		label: "Laguna S 2.1",
 		description: "Synth Cloud · usage tracked",
+		composerPlaceholder: "Ask Laguna something…",
 		group: "cloud"
 	},
 	{
 		id: "intern-sync",
 		label: "Intern · Live",
 		description: "Synth Cloud · sync session",
+		composerPlaceholder: "Message live Intern…",
 		group: "cloud"
 	},
 	{
 		id: "intern-async",
 		label: "Intern · Background",
 		description: "Synth Cloud · async (pinned)",
+		composerPlaceholder: "Message background Intern…",
 		group: "cloud"
 	}
 ];
