@@ -16,6 +16,40 @@ const OPENROUTER_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
 /// `responses_gateway_url` for the split this exists to make.
 const RESPONSES_GATEWAY_URL_ENV: &str = "SYNTH_RESPONSES_GATEWAY_URL";
 
+/// Checked-in backend endpoint defaults for the explicit workshop lane
+/// profile names, layered on top of the legacy `prod`/`staging`/`local`
+/// fallback `resolve()` already had. `[intern.endpoints].<profile>` in
+/// config.toml always wins over these.
+const DEFAULT_ENDPOINTS: &[(&str, &str)] = &[
+    ("local-slot1", "http://127.0.0.1:41109"),
+    ("staging", "https://api-dev.usesynth.ai"),
+    ("production", "https://mcp.usesynth.ai"),
+];
+
+/// Checked-in Responses gateway defaults for the explicit workshop lane
+/// profiles. `[intern.gateways].<profile>` in config.toml overrides these;
+/// a profile with neither an override nor an entry here has no gateway at
+/// all — see `responses_gateway_url`, which fails closed rather than ever
+/// falling back to `backend_url`.
+const DEFAULT_GATEWAYS: &[(&str, &str)] = &[
+    ("local-slot1", "http://127.0.0.1:41124"),
+    (
+        "staging",
+        "https://synth-responses-gateway-staging-dev.up.railway.app",
+    ),
+    (
+        "production",
+        "https://synth-responses-gateway-prod-production.up.railway.app",
+    ),
+];
+
+fn lookup_default(table: &[(&str, &str)], profile: &str) -> Option<String> {
+    table
+        .iter()
+        .find(|(name, _)| *name == profile)
+        .map(|(_, url)| (*url).to_owned())
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum MultiAgentVersion {
@@ -93,6 +127,12 @@ pub struct ResolvedBackend {
     pub config_path: PathBuf,
     pub env_file: PathBuf,
     pub backend_url: String,
+    /// This profile's dedicated Responses gateway, from `[intern.gateways]`
+    /// or a checked-in lane default — never a copy of `backend_url`. `None`
+    /// when the profile has neither. See `responses_gateway_url`, which
+    /// layers the process-env override on top of this and fails closed
+    /// rather than ever falling back to `backend_url`.
+    pub responses_gateway_url: Option<String>,
     pub api_key: Option<String>,
     pub worker_key: Option<String>,
 }
@@ -404,11 +444,22 @@ pub fn resolve() -> Result<ResolvedBackend> {
                 .and_then(toml::Value::as_str)
                 .map(str::to_owned)
         })
+        .or_else(|| lookup_default(DEFAULT_ENDPOINTS, &profile))
         .unwrap_or_else(|| match profile.as_str() {
             "staging" => "https://api-dev.usesynth.ai".into(),
             "local" => "http://127.0.0.1:8000".into(),
             _ => "https://api.usesynth.ai".into(),
         });
+    // The dedicated Responses gateway for this profile: TOML override, else
+    // a checked-in lane default, else absent. Never derived from
+    // `endpoint` above — see `responses_gateway_url`.
+    let responses_gateway_url = intern
+        .and_then(|v| v.get("gateways"))
+        .and_then(toml::Value::as_table)
+        .and_then(|v| v.get(&profile))
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| lookup_default(DEFAULT_GATEWAYS, &profile));
     let env_file_raw = intern
         .and_then(|v| v.get("env_file"))
         .and_then(toml::Value::as_str)
@@ -435,6 +486,7 @@ pub fn resolve() -> Result<ResolvedBackend> {
         config_path,
         env_file: env_file.clone(),
         backend_url: validate_url(&endpoint)?,
+        responses_gateway_url,
         api_key: resolve_secret(api_key_env, &env_file).0,
         worker_key: resolve_secret("SYNTH_EVAL_EXEC_WORKER_API_KEY", &env_file)
             .0
@@ -443,7 +495,9 @@ pub fn resolve() -> Result<ResolvedBackend> {
 }
 
 /// The endpoint Codex's native Responses wire traffic should use for the
-/// `synth-cloud` provider.
+/// `synth-cloud` provider, or `None` when this profile has no gateway
+/// configured — callers must fail closed in that case, never fall back to
+/// `resolved.backend_url`.
 ///
 /// The Synth Hosted Laguna gateway is a native `/v1/responses` passthrough
 /// with no server-side session store: Codex already sends full history and
@@ -455,17 +509,30 @@ pub fn resolve() -> Result<ResolvedBackend> {
 /// account-snapshot fetch, …) always read `ResolvedBackend::backend_url`
 /// directly and never call this function — signing in, plan/usage display,
 /// and checkout stay pinned to the main backend no matter what this returns.
-/// Only Codex's Responses requests can be redirected, by setting
-/// `SYNTH_RESPONSES_GATEWAY_URL` to a dedicated gateway: a local Laguna dev
-/// slot (`http://127.0.0.1:<port>/api/v1`) or a staging Responses gateway
-/// under test. Unset or blank leaves today's behavior unchanged — one URL
-/// for both account/billing and Responses traffic.
-pub fn responses_gateway_url(resolved: &ResolvedBackend) -> String {
-    env::var(RESPONSES_GATEWAY_URL_ENV)
+///
+/// Resolution order: the `SYNTH_RESPONSES_GATEWAY_URL` process-env override,
+/// then `resolved.responses_gateway_url` (the profile's `[intern.gateways]`
+/// entry or a checked-in lane default from `resolve()`), then `None`. A
+/// profile without a gateway anywhere in that chain gets no Responses
+/// traffic redirected to it — see `require_responses_gateway_url` for the
+/// fail-closed helper every `synth-cloud` call site uses.
+pub fn responses_gateway_url(resolved: &ResolvedBackend) -> Option<String> {
+    let override_value = env::var(RESPONSES_GATEWAY_URL_ENV)
         .ok()
         .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| resolved.backend_url.clone())
+        .filter(|value| !value.is_empty());
+    override_value.or_else(|| resolved.responses_gateway_url.clone())
+}
+
+/// `responses_gateway_url`, but fails closed with a message safe to show
+/// the user instead of returning `Option`. Every `synth-cloud` call site —
+/// Codex's own session start (`lib.rs`, `eval_driver.rs::prepare_start`) and
+/// the eval driver's policy path (`eval_driver.rs::resolve_policy_target`) —
+/// goes through this rather than inlining the same fallback decision.
+pub fn require_responses_gateway_url(resolved: &ResolvedBackend) -> Result<String, String> {
+    responses_gateway_url(resolved).ok_or_else(|| {
+        "Synth Responses gateway is not configured for this profile. Set [intern.gateways] in config.toml, or SYNTH_RESPONSES_GATEWAY_URL, then retry.".to_string()
+    })
 }
 
 fn config_path() -> PathBuf {
@@ -839,32 +906,159 @@ mod tests {
     /// parallel by default, so spreading these across separate `#[test]`s
     /// would race on the same key.
     #[test]
-    fn responses_gateway_url_redirects_only_the_responses_gateway() {
-        let resolved = ResolvedBackend {
+    fn responses_gateway_url_fails_closed_and_env_override_wins_over_toml() {
+        let without_gateway = ResolvedBackend {
             config_path: PathBuf::from("/tmp/config.toml"),
             env_file: PathBuf::from("/tmp/.env"),
             backend_url: "https://api.usesynth.ai".into(),
+            responses_gateway_url: None,
             api_key: None,
             worker_key: None,
         };
+        let with_toml_gateway = ResolvedBackend {
+            responses_gateway_url: Some(
+                "https://synth-responses-gateway-staging-dev.up.railway.app".into(),
+            ),
+            ..without_gateway.clone()
+        };
 
         env::remove_var(RESPONSES_GATEWAY_URL_ENV);
-        assert_eq!(responses_gateway_url(&resolved), resolved.backend_url);
+        // No profile gateway and no override: fail closed. Never a copy of
+        // backend_url, which account/billing calls read directly.
+        assert_eq!(responses_gateway_url(&without_gateway), None);
+        assert!(require_responses_gateway_url(&without_gateway).is_err());
+        // A TOML/profile gateway resolves without needing the env override.
+        assert_eq!(
+            responses_gateway_url(&with_toml_gateway).as_deref(),
+            Some("https://synth-responses-gateway-staging-dev.up.railway.app")
+        );
 
-        // Guards the split this env var exists to make: overriding it must
-        // never change `resolved.backend_url` itself, which is what
-        // account/billing calls read directly.
+        // The env override wins over both the TOML gateway and backend_url.
         env::set_var(RESPONSES_GATEWAY_URL_ENV, "http://127.0.0.1:41209/api/v1");
         assert_eq!(
-            responses_gateway_url(&resolved),
-            "http://127.0.0.1:41209/api/v1"
+            responses_gateway_url(&without_gateway).as_deref(),
+            Some("http://127.0.0.1:41209/api/v1")
         );
-        assert_eq!(resolved.backend_url, "https://api.usesynth.ai");
+        assert_eq!(
+            responses_gateway_url(&with_toml_gateway).as_deref(),
+            Some("http://127.0.0.1:41209/api/v1")
+        );
+        assert_eq!(without_gateway.backend_url, "https://api.usesynth.ai");
 
+        // A blank override is treated as unset.
         env::set_var(RESPONSES_GATEWAY_URL_ENV, "   ");
-        assert_eq!(responses_gateway_url(&resolved), resolved.backend_url);
+        assert_eq!(responses_gateway_url(&without_gateway), None);
 
         env::remove_var(RESPONSES_GATEWAY_URL_ENV);
+    }
+
+    #[test]
+    fn require_responses_gateway_url_reports_an_actionable_error() {
+        let resolved = ResolvedBackend {
+            config_path: PathBuf::from("/tmp/config.toml"),
+            env_file: PathBuf::from("/tmp/.env"),
+            backend_url: "https://mcp.usesynth.ai".into(),
+            responses_gateway_url: None,
+            api_key: None,
+            worker_key: None,
+        };
+        env::remove_var(RESPONSES_GATEWAY_URL_ENV);
+        let error = require_responses_gateway_url(&resolved).unwrap_err();
+        assert!(error.to_lowercase().contains("gateway"));
+        assert!(error.contains("intern.gateways"));
+
+        let configured = ResolvedBackend {
+            responses_gateway_url: Some("http://127.0.0.1:41124".into()),
+            ..resolved
+        };
+        assert_eq!(
+            require_responses_gateway_url(&configured).unwrap(),
+            "http://127.0.0.1:41124"
+        );
+    }
+
+    #[test]
+    fn default_gateways_and_endpoints_cover_the_explicit_lane_profiles() {
+        assert_eq!(
+            lookup_default(DEFAULT_GATEWAYS, "local-slot1").as_deref(),
+            Some("http://127.0.0.1:41124")
+        );
+        assert_eq!(
+            lookup_default(DEFAULT_GATEWAYS, "staging").as_deref(),
+            Some("https://synth-responses-gateway-staging-dev.up.railway.app")
+        );
+        assert_eq!(
+            lookup_default(DEFAULT_GATEWAYS, "production").as_deref(),
+            Some("https://synth-responses-gateway-prod-production.up.railway.app")
+        );
+        // Legacy "prod" has no checked-in gateway default: it never had a
+        // dedicated Responses gateway before this profile split, and must
+        // keep failing closed rather than silently gaining one.
+        assert_eq!(lookup_default(DEFAULT_GATEWAYS, "prod"), None);
+
+        assert_eq!(
+            lookup_default(DEFAULT_ENDPOINTS, "local-slot1").as_deref(),
+            Some("http://127.0.0.1:41109")
+        );
+        assert_eq!(
+            lookup_default(DEFAULT_ENDPOINTS, "staging").as_deref(),
+            Some("https://api-dev.usesynth.ai")
+        );
+        assert_eq!(
+            lookup_default(DEFAULT_ENDPOINTS, "production").as_deref(),
+            Some("https://mcp.usesynth.ai")
+        );
+    }
+
+    /// `SYNTH_DESKTOP_CONFIG` is process-global and Rust runs tests in
+    /// parallel by default, so both profile fixtures live in one `#[test]`
+    /// to avoid racing another thread's config path.
+    #[test]
+    fn resolve_layers_toml_gateway_over_checked_in_lane_defaults() {
+        let root = env::temp_dir().join(format!("synth-resolve-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        env::remove_var("SYNTH_INTERN_PROFILE");
+        env::remove_var("SYNTH_BACKEND_URL");
+        env::remove_var("SYNTH_INTERN_CONFIG");
+
+        // A profile with a TOML `[intern.gateways]` override doesn't need
+        // the checked-in default, and resolves without any env var at all.
+        let staging_config = root.join("staging.toml");
+        fs::write(
+            &staging_config,
+            "[intern]\nprofile = \"staging\"\n\n[intern.gateways]\nstaging = \"https://custom-staging-gateway.example\"\n",
+        )
+        .unwrap();
+        env::set_var("SYNTH_DESKTOP_CONFIG", &staging_config);
+        let resolved = resolve().unwrap();
+        assert_eq!(resolved.backend_url, "https://api-dev.usesynth.ai");
+        assert_eq!(
+            resolved.responses_gateway_url.as_deref(),
+            Some("https://custom-staging-gateway.example")
+        );
+
+        // A profile with no override falls back to the checked-in default
+        // for both the backend endpoint and its dedicated gateway.
+        let local_slot1_config = root.join("local-slot1.toml");
+        fs::write(&local_slot1_config, "[intern]\nprofile = \"local-slot1\"\n").unwrap();
+        env::set_var("SYNTH_DESKTOP_CONFIG", &local_slot1_config);
+        let resolved = resolve().unwrap();
+        assert_eq!(resolved.backend_url, "http://127.0.0.1:41109");
+        assert_eq!(
+            resolved.responses_gateway_url.as_deref(),
+            Some("http://127.0.0.1:41124")
+        );
+
+        // Legacy "prod" still resolves its endpoint but keeps no gateway.
+        let prod_config = root.join("prod.toml");
+        fs::write(&prod_config, "[intern]\nprofile = \"prod\"\n").unwrap();
+        env::set_var("SYNTH_DESKTOP_CONFIG", &prod_config);
+        let resolved = resolve().unwrap();
+        assert_eq!(resolved.backend_url, "https://api.usesynth.ai");
+        assert_eq!(resolved.responses_gateway_url, None);
+
+        env::remove_var("SYNTH_DESKTOP_CONFIG");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

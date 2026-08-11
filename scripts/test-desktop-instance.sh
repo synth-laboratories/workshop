@@ -21,6 +21,9 @@ default_instance="$($ROOT/scripts/desktop-instance.sh print)"
 [[ "$(printf '%s' "$default_instance" | jq -r .name)" == "codex" ]]
 printf '%s' "$default_instance" | jq -e '
   .mode == "development" and
+  .product == "workshop" and
+  .releaseLine == "v0.2" and
+  .appVersion == "0.2.0" and
   (.sourceRoot | length > 0) and
   (.sourceRevision | length > 0) and
   .hotReload.renderer == true and
@@ -40,14 +43,19 @@ if "$ROOT/scripts/desktop-instance.sh" print '../unsafe' >/dev/null 2>&1; then
   echo "unsafe instance name was accepted" >&2
   exit 1
 fi
+if SYNTH_DESKTOP_RELEASE_LINE=v0.1 "$ROOT/scripts/desktop-instance.sh" print alpha >/dev/null 2>&1; then
+  echo "non-v0.2 release line was accepted by the v0.2 launcher" >&2
+  exit 1
+fi
 
 jq -e '
-  .identifier == "com.synth.desktop.dev.alpha" and
-  .productName == "Synth Desktop · alpha" and
+  .identifier == "com.synth.desktop.v02.dev.alpha" and
+  .productName == "Synth Workshop v0.2 · alpha" and
+  .version == "0.2.0" and
   (.bundle.icon | length) == 2 and
   .bundle.macOS.minimumSystemVersion == "14.0"
 ' \
-  "$TEST_ROOT/instances/alpha/generated/tauri.instance.json" >/dev/null
+  "$TEST_ROOT/instances/v02/alpha/generated/tauri.instance.json" >/dev/null
 jq -e '.bundle.macOS.minimumSystemVersion == "14.0"' \
   "$ROOT/apps/synth_desktop/src-tauri/tauri.conf.json" >/dev/null
 

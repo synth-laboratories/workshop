@@ -5,6 +5,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMMAND="${1:-dev}"
 NAME="${2:-${SYNTH_DESKTOP_INSTANCE:-codex}}"
+RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.2}"
+APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.2.0}"
+
+if [[ "$RELEASE_LINE" != "v0.2" ]]; then
+  echo "[desktop:$NAME] invalid release line; this branch only builds v0.2 instances" >&2
+  exit 2
+fi
+RELEASE_SLUG="v02"
 
 usage() {
   cat <<'EOF'
@@ -25,7 +33,7 @@ if [[ ! "$NAME" =~ ^[a-z][a-z0-9-]{0,31}$ ]]; then
   exit 2
 fi
 
-INSTANCE_ROOT="${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/$NAME"
+INSTANCE_ROOT="${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/$RELEASE_SLUG/$NAME"
 DATA_ROOT="$INSTANCE_ROOT/data"
 WORKSPACE="$INSTANCE_ROOT/workspace"
 GENERATED_ROOT="$INSTANCE_ROOT/generated"
@@ -35,8 +43,8 @@ MANIFEST="$INSTANCE_ROOT/instance.json"
 ICON_PNG="$GENERATED_ROOT/icon.png"
 ICON_ICNS="$GENERATED_ROOT/icon.icns"
 EXE="$TARGET_ROOT/debug/synth-desktop"
-APP_TITLE="Synth Desktop · $NAME"
-BUNDLE_ID="com.synth.desktop.dev.$NAME"
+APP_TITLE="Synth Workshop $RELEASE_LINE · $NAME"
+BUNDLE_ID="com.synth.desktop.$RELEASE_SLUG.dev.$NAME"
 CHECKSUM="$(printf '%s' "$NAME" | cksum | awk '{print $1}')"
 VITE_PORT=$((14200 + CHECKSUM % 1000))
 # Every instance owns a stable Laguna port derived from its name. Instances
@@ -72,23 +80,48 @@ write_contract() {
   mkdir -p "$DATA_ROOT" "$WORKSPACE" "$GENERATED_ROOT" "$TARGET_ROOT"
   chmod 700 "$INSTANCE_ROOT" "$DATA_ROOT" "$WORKSPACE"
 
-  if [[ ! -e "$DATA_ROOT/config.toml" && -f "$HOME/.synth-desktop/config.toml" ]]; then
-    cp "$HOME/.synth-desktop/config.toml" "$DATA_ROOT/config.toml"
+  if [[ ! -e "$DATA_ROOT/config.toml" ]]; then
+    if [[ "${SYNTH_DESKTOP_SEED_GLOBAL_CONFIG:-0}" == "1" && -f "$HOME/.synth-desktop/config.toml" ]]; then
+      cp "$HOME/.synth-desktop/config.toml" "$DATA_ROOT/config.toml"
+    else
+      local profile="${SYNTH_INTERN_PROFILE:-local-slot1}"
+      local backend_url="${SYNTH_BACKEND_URL:-http://127.0.0.1:41109}"
+      local gateway_url="${SYNTH_RESPONSES_GATEWAY_URL:-http://127.0.0.1:41124}"
+      cat >"$DATA_ROOT/config.toml" <<EOF
+[intern]
+profile = "$profile"
+env_file = "$DATA_ROOT/.env"
+api_key_env = "SYNTH_API_KEY"
+
+[intern.endpoints]
+$profile = "$backend_url"
+
+[intern.gateways]
+$profile = "$gateway_url"
+EOF
+    fi
   fi
-  if [[ ! -e "$DATA_ROOT/.env" && -f "$HOME/.synth-desktop/.env" ]]; then
-    cp "$HOME/.synth-desktop/.env" "$DATA_ROOT/.env"
-    chmod 600 "$DATA_ROOT/.env"
+  if [[ ! -e "$DATA_ROOT/.env" ]]; then
+    if [[ "${SYNTH_DESKTOP_SEED_GLOBAL_CONFIG:-0}" == "1" && -f "$HOME/.synth-desktop/.env" ]]; then
+      cp "$HOME/.synth-desktop/.env" "$DATA_ROOT/.env"
+      chmod 600 "$DATA_ROOT/.env"
+    else
+      : >"$DATA_ROOT/.env"
+      chmod 600 "$DATA_ROOT/.env"
+    fi
   fi
 
   python3 "$ROOT/scripts/generate-desktop-instance-icon.py" \
     --source "$ROOT/apps/synth_desktop/resources/icon.png" \
     --png "$ICON_PNG" \
     --icns "$ICON_ICNS" \
-    --label "$ICON_LABEL"
+    --release-label "$RELEASE_LINE" \
+    --instance-label "$ICON_LABEL"
 
   cat >"$CONFIG" <<EOF
 {
   "productName": "$APP_TITLE",
+  "version": "$APP_VERSION",
   "identifier": "$BUNDLE_ID",
   "build": {
     "beforeDevCommand": "npm run frontend:dev -- --port $VITE_PORT --strictPort",
@@ -125,6 +158,9 @@ EOF
 {
   "schemaVersion": "synth.desktop-instance.v1",
   "mode": "development",
+  "product": "workshop",
+  "releaseLine": "$RELEASE_LINE",
+  "appVersion": "$APP_VERSION",
   "name": "$NAME",
   "displayName": "$APP_TITLE",
   "bundleId": "$BUNDLE_ID",
@@ -318,6 +354,47 @@ dev_instance() {
   export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
   export CARGO_TARGET_DIR="$TARGET_ROOT"
 
+  # Export routing from the instance TOML so the Rust process sees the same
+  # lane the launcher wrote (process-env is the only override
+  # responses_gateway_url reads today for an explicit force).
+  if [[ -z "${SYNTH_INTERN_PROFILE:-}" && -f "$DATA_ROOT/config.toml" ]]; then
+    SYNTH_INTERN_PROFILE="$(python3 - <<'PY' "$DATA_ROOT/config.toml"
+import sys, tomllib
+from pathlib import Path
+data = tomllib.loads(Path(sys.argv[1]).read_text())
+print((data.get("intern") or {}).get("profile") or "")
+PY
+)"
+    export SYNTH_INTERN_PROFILE
+  fi
+  if [[ -z "${SYNTH_BACKEND_URL:-}" && -f "$DATA_ROOT/config.toml" ]]; then
+    SYNTH_BACKEND_URL="$(python3 - <<'PY' "$DATA_ROOT/config.toml"
+import sys, tomllib
+from pathlib import Path
+data = tomllib.loads(Path(sys.argv[1]).read_text())
+intern = data.get("intern") or {}
+profile = intern.get("profile") or ""
+endpoints = intern.get("endpoints") or {}
+print(endpoints.get(profile) or "")
+PY
+)"
+    [[ -n "$SYNTH_BACKEND_URL" ]] && export SYNTH_BACKEND_URL
+  fi
+  if [[ -z "${SYNTH_RESPONSES_GATEWAY_URL:-}" && -f "$DATA_ROOT/config.toml" ]]; then
+    SYNTH_RESPONSES_GATEWAY_URL="$(python3 - <<'PY' "$DATA_ROOT/config.toml"
+import sys, tomllib
+from pathlib import Path
+data = tomllib.loads(Path(sys.argv[1]).read_text())
+intern = data.get("intern") or {}
+profile = intern.get("profile") or ""
+gateways = intern.get("gateways") or {}
+print(gateways.get(profile) or "")
+PY
+)"
+    [[ -n "$SYNTH_RESPONSES_GATEWAY_URL" ]] && export SYNTH_RESPONSES_GATEWAY_URL
+  fi
+  echo "[desktop:$NAME] profile=${SYNTH_INTERN_PROFILE:-} backend=${SYNTH_BACKEND_URL:-} gateway=${SYNTH_RESPONSES_GATEWAY_URL:-}"
+
   # The adapter prebuild compiles the shared desktop library and therefore
   # runs Tauri code generation too. Give it the same overlay as `tauri dev`;
   # otherwise Cargo can cache the canonical bundle identifier and the named
@@ -345,7 +422,7 @@ dev_instance() {
 
 clean_instance() {
   stop_instance
-  [[ "$INSTANCE_ROOT" == "${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/$NAME" ]] || {
+  [[ "$INSTANCE_ROOT" == "${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/$RELEASE_SLUG/$NAME" ]] || {
     echo "[desktop:$NAME] refusing unresolved cleanup target" >&2
     exit 1
   }
