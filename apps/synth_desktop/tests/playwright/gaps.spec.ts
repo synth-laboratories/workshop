@@ -156,13 +156,19 @@ test.describe("coverage gaps", () => {
 		await expect(visualPane.getByTestId("visual-craftax-eval-matrix")).toBeVisible();
 	});
 
-	test("Intern Live and Background stay hidden from the v0.1 launch picker", async ({ page }) => {
+	test("Intern is absent from every v0.1 navigation and setup surface", async ({ page }) => {
 		await page.getByTestId("model-picker").click();
 		const menu = page.getByTestId("model-dropdown");
 		await expect(menu).toBeVisible();
 		await expect(menu.getByText("Intern · Live", { exact: true })).toHaveCount(0);
 		await expect(menu.getByText("Intern · Background", { exact: true })).toHaveCount(0);
 		await expect(menu.getByTestId("model-option-local-laguna")).toBeVisible();
+		await expect(page.getByTestId("cloud-list")).toHaveCount(0);
+		await expect(page.getByTestId("new-sync-session")).toHaveCount(0);
+		await expect(page.getByTestId("async-intern-pin")).toHaveCount(0);
+		await expect(page.getByTestId("landing-page")).not.toContainText("Intern");
+		await page.getByTestId("open-search").click();
+		await expect(page.getByTestId("conversation-search")).not.toContainText("Intern");
 	});
 
 	test("Inventory traces/containers/usage are served from Rust storage", async ({ page }) => {
@@ -188,7 +194,7 @@ test.describe("coverage gaps", () => {
 			} as typeof window.synthVisuals;
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		await page.getByTestId("open-inventory").click();
 		await page.getByTestId("inventory-container-rust-container").waitFor();
 		await page.getByTestId("inventory-tab-traces").click();

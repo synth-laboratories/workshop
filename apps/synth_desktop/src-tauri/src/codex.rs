@@ -1,16 +1,19 @@
 use crate::core_runtime::CoreRuntime;
+use crate::credential_broker::{self, CredentialBroker};
 use crate::domain::{
     RunCreate, RunService, RunStatus, SessionCreate, SessionService, SessionStatus,
     SessionTitleOrigin,
 };
-use crate::storage::{EventAppend, EventSource};
+use crate::storage::{
+    CostSource, EventAppend, EventSource, MeasurementKind, UsageRecord, UsageRecordsRepository,
+};
 use crate::synth_config::MultiAgentVersion;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    env, fs,
+    env, fmt, fs,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -27,14 +30,17 @@ use tokio::{
 };
 
 const EVENT_NAME: &str = "codex:event";
+const MIN_AUTO_COMPACT_TOKEN_LIMIT: u64 = 16_000;
+const COMPACT_PROMPT: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION for a coding agent.\nWrite a handoff for another LLM that will continue the same workspace task.\nInclude:\n- Goal and acceptance criteria\n- Files read/changed (paths + one-line why)\n- Commands/tests run and outcomes\n- Decisions and constraints\n- Open bugs / next concrete steps\n- Any secrets-safe identifiers (branch names, ticket ids) needed to continue\nOmit raw file dumps, full command logs, and superseded plans.\nBe concise and structured (bullets).";
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionStartRequest {
     pub session_id: String,
-    pub workspace: String,
-    pub base_url: String,
-    pub api_key: String,
+	pub workspace: String,
+	pub base_url: String,
+	#[serde(default)]
+	pub api_key: String,
     pub model: String,
     pub provider_name: Option<String>,
     pub provider_title: Option<String>,
@@ -43,10 +49,42 @@ pub struct CodexSessionStartRequest {
     pub sandbox: Option<String>,
     pub thread_id: Option<String>,
     pub multi_agent_version: Option<MultiAgentVersion>,
+    #[serde(default)]
+    pub auto_compact_token_limit: Option<u64>,
     /// Rust-populated exact roots for this conversation. Renderer input is
     /// discarded by `prepare_codex_start` before launch.
     #[serde(default)]
     pub writable_roots: Vec<String>,
+    /// Rust-set marker that `api_key` holds a real user credential which must
+    /// move into native custody before any child process observes it. Staged
+    /// by `prepare_codex_start`, consumed by `CodexManager::start` at spawn
+    /// time. Serde skips it, so the renderer can never set it.
+    #[serde(skip)]
+    pub broker_credential: bool,
+}
+
+impl fmt::Debug for CodexSessionStartRequest {
+    /// Between preparation and spawn, `api_key` may hold a real user
+    /// credential rather than a lease token; never let `{:?}` reproduce it.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CodexSessionStartRequest")
+            .field("session_id", &self.session_id)
+            .field("workspace", &self.workspace)
+            .field("base_url", &self.base_url)
+            .field("api_key", &"<redacted>")
+            .field("model", &self.model)
+            .field("provider_name", &self.provider_name)
+            .field("provider_title", &self.provider_title)
+            .field("provider_env_key", &self.provider_env_key)
+            .field("approval_policy", &self.approval_policy)
+            .field("sandbox", &self.sandbox)
+            .field("thread_id", &self.thread_id)
+            .field("multi_agent_version", &self.multi_agent_version)
+            .field("auto_compact_token_limit", &self.auto_compact_token_limit)
+            .field("writable_roots", &self.writable_roots)
+            .field("broker_credential", &self.broker_credential)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -189,7 +227,12 @@ struct CodexEvent {
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
 /// Waiters for `thread/compacted`, keyed by Desktop session id.
-type CompactWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>;
+/// Model-switch compaction waiters. A `thread/compacted` notification means
+/// the summary exists, but the source app-server still owns an active
+/// compaction turn until its terminal turn event arrives. Rebinding before
+/// that terminal event can consume the user's destination prompt as the
+/// compaction turn and leave no answer.
+type CompactWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<Result<(), String>>>>>;
 
 #[derive(Clone, Debug)]
 struct PendingApproval {
@@ -198,6 +241,28 @@ struct PendingApproval {
 }
 
 type PendingApprovals = Arc<Mutex<HashMap<String, PendingApproval>>>;
+
+#[derive(Clone, Debug, Default)]
+struct TurnTokenUsage {
+    input_tokens: Option<i64>,
+    cached_input_tokens: Option<i64>,
+    cache_write_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
+struct TurnPerformanceTracker {
+    provider: String,
+    model_id: String,
+    turn_id: String,
+    started_at_ms: i64,
+    first_output_at_ms: Option<i64>,
+    last_output_at_ms: Option<i64>,
+    usage: TurnTokenUsage,
+}
+
+type PerformanceTrackers = Arc<Mutex<HashMap<String, TurnPerformanceTracker>>>;
 
 struct AppServer {
     child: Mutex<Child>,
@@ -307,6 +372,19 @@ struct Session {
     approval_policy: String,
     sandbox: String,
     workspace: String,
+    /// The provider binding the child was spawned against, as staged by
+    /// `prepare_codex_start` — the upstream endpoint and credential *before*
+    /// brokering. Held in memory only, never serialized, and compared on
+    /// reuse so a rotated credential or endpoint respawns the child instead
+    /// of leaving it bound to the old provider.
+    upstream_endpoint: String,
+    upstream_credential: String,
+    /// The provider identity the child was spawned under. This is the sole
+    /// input to `provider_class`, which gates the settled-receipt drain at
+    /// finalize — so a name change must respawn (and thereby revoke, which
+    /// discards queued receipts) even if endpoint, credential and model all
+    /// coincide across the two providers.
+    provider_name: String,
 }
 
 pub struct CodexManager {
@@ -316,6 +394,11 @@ pub struct CodexManager {
     /// window between "the attachment exists" and "the turn is running".
     turn_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     compact_waiters: CompactWaiters,
+    /// Session ids awaiting a `thread/compacted` notification, mapped to the
+    /// UI source label (`manual` or `model_switch`). Auto token-threshold
+    /// compaction leaves this empty and renders as "automatically compacted".
+    pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
+    performance_trackers: PerformanceTrackers,
     root: PathBuf,
     state_path: PathBuf,
     binary: PathBuf,
@@ -340,6 +423,8 @@ impl CodexManager {
             records: Arc::new(RwLock::new(records)),
             turn_locks: Mutex::new(HashMap::new()),
             compact_waiters: Arc::new(Mutex::new(HashMap::new())),
+            pending_compact_sources: Arc::new(Mutex::new(HashMap::new())),
+            performance_trackers: Arc::new(Mutex::new(HashMap::new())),
             root,
             state_path,
             binary,
@@ -350,7 +435,7 @@ impl CodexManager {
     pub async fn start<R: tauri::Runtime>(
         &self,
         app: AppHandle<R>,
-        request: CodexSessionStartRequest,
+        mut request: CodexSessionStartRequest,
     ) -> Result<CodexSessionInfo> {
         validate_start(&request)?;
         let requested_approval = request
@@ -358,20 +443,43 @@ impl CodexManager {
             .clone()
             .unwrap_or_else(default_approval_policy);
         let requested_sandbox = request.sandbox.clone().unwrap_or_else(default_sandbox);
+        let requested_provider = request
+            .provider_name
+            .clone()
+            .unwrap_or_else(|| "custom".into());
         let existing = self.sessions.read().await.get(&request.session_id).cloned();
         if let Some(existing) = existing {
             if existing.model == request.model
                 && existing.approval_policy == requested_approval
                 && existing.sandbox == requested_sandbox
                 && existing.workspace == request.workspace
+                && existing.upstream_endpoint == request.base_url
+                && existing.upstream_credential == request.api_key
+                && existing.provider_name == requested_provider
             {
                 return Ok(session_info(&request.session_id, &existing).await);
             }
             // Approval, sandbox and workspace are attachment-time properties in
             // Codex app-server. Reusing an attachment after the composer mode
             // changes would make the UI lie (for example, showing Allow all
-            // while the live process still asks for shell approval).
+            // while the live process still asks for shell approval). The
+            // provider binding is compared the same way: a child spawned
+            // against a rotated-away credential or endpoint must be replaced,
+            // not reused.
             self.close(&request.session_id).await?;
+        }
+        // Custody is taken here — at spawn, after the reuse decision — and
+        // nowhere earlier. Leasing during request preparation invalidated the
+        // token a live, reused child was still presenting (a mid-conversation
+        // 401), and on rebind the `close()` above revokes the previous lease,
+        // so this is the one point where a fresh token's lifetime matches the
+        // child's.
+        let upstream_endpoint = request.base_url.clone();
+        let upstream_credential = request.api_key.clone();
+        if request.broker_credential {
+            let broker = credential_broker::shared()
+                .map_err(|error| anyhow!("credential broker unavailable: {error}"))?;
+            apply_brokered_credential(&mut request, &broker).map_err(|message| anyhow!(message))?;
         }
         let home = self
             .root
@@ -390,6 +498,8 @@ impl CodexManager {
             self.core.clone(),
             self.sessions.clone(),
             self.compact_waiters.clone(),
+            self.pending_compact_sources.clone(),
+            self.performance_trackers.clone(),
             attachment_id,
         )
         .await?;
@@ -457,6 +567,9 @@ impl CodexManager {
                 .unwrap_or_else(default_approval_policy),
             sandbox: request.sandbox.clone().unwrap_or_else(default_sandbox),
             workspace: request.workspace.clone(),
+            upstream_endpoint,
+            upstream_credential,
+            provider_name: requested_provider.clone(),
         });
         self.sessions
             .write()
@@ -701,9 +814,49 @@ impl CodexManager {
         if let Some(effort) = effort {
             turn_params["effort"] = Value::String(effort.to_owned());
         }
-        let result = session.server.request("turn/start", turn_params).await?;
-        let turn_id = nested_id(&result, "turnId")
-            .ok_or_else(|| anyhow!("Codex turn/start response missing turn id: {result}"))?;
+        let started_at_ms = chrono::Utc::now().timestamp_millis();
+        let provider = self
+            .records
+            .read()
+            .await
+            .get(&request.session_id)
+            .map(|record| record.provider_name.clone())
+            .unwrap_or_else(|| "custom".into());
+        let pending_turn_id = format!("pending-{}", uuid::Uuid::new_v4().simple());
+        self.performance_trackers.lock().await.insert(
+            request.session_id.clone(),
+            TurnPerformanceTracker {
+                provider,
+                model_id: session.model.clone(),
+                turn_id: pending_turn_id.clone(),
+                started_at_ms,
+                first_output_at_ms: None,
+                last_output_at_ms: None,
+                usage: TurnTokenUsage::default(),
+            },
+        );
+        let result = match session.server.request("turn/start", turn_params).await {
+            Ok(result) => result,
+            Err(error) => {
+                let mut trackers = self.performance_trackers.lock().await;
+                if trackers
+                    .get(&request.session_id)
+                    .is_some_and(|tracker| tracker.turn_id == pending_turn_id)
+                {
+                    trackers.remove(&request.session_id);
+                }
+                return Err(error);
+            }
+        };
+        let Some(turn_id) = nested_id(&result, "turnId") else {
+            self.performance_trackers.lock().await.remove(&request.session_id);
+            return Err(anyhow!("Codex turn/start response missing turn id: {result}"));
+        };
+        if let Some(tracker) = self.performance_trackers.lock().await.get_mut(&request.session_id) {
+            if tracker.turn_id == pending_turn_id {
+                tracker.turn_id = turn_id.clone();
+            }
+        }
         *session.turn_id.write().await = Some(turn_id.clone());
         self.set_automatic_title(&app, &request.session_id, &request.prompt, &session)
             .await;
@@ -756,29 +909,38 @@ impl CodexManager {
     }
 
     async fn compact_thread(&self, session_id: &str, session: &Session) -> Result<()> {
+        self.pending_compact_sources
+            .lock()
+            .await
+            .insert(session_id.to_owned(), "model_switch".into());
         let (tx, rx) = oneshot::channel();
         {
             let mut waiters = self.compact_waiters.lock().await;
             if let Some(previous) = waiters.insert(session_id.to_owned(), tx) {
-                let _ = previous.send(());
+                let _ = previous.send(Err("context compaction was superseded".into()));
             }
         }
         let params = json!({ "threadId": session.thread_id });
-        if let Err(error) = session
-            .server
-            .request("thread/compact/start", params)
-            .await
-        {
+        if let Err(error) = session.server.request("thread/compact/start", params).await {
             self.compact_waiters.lock().await.remove(session_id);
+            self.pending_compact_sources.lock().await.remove(session_id);
             return Err(error.context("thread/compact/start failed; staying on the current model"));
         }
         match tokio::time::timeout(Duration::from_secs(120), rx).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(_)) => Err(anyhow!(
-                "compaction waiter dropped before thread/compacted; staying on the current model"
-            )),
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(message))) => {
+                self.pending_compact_sources.lock().await.remove(session_id);
+                Err(anyhow!(message))
+            }
+            Ok(Err(_)) => {
+                self.pending_compact_sources.lock().await.remove(session_id);
+                Err(anyhow!(
+                    "compaction waiter dropped before thread/compacted; staying on the current model"
+                ))
+            }
             Err(_) => {
                 self.compact_waiters.lock().await.remove(session_id);
+                self.pending_compact_sources.lock().await.remove(session_id);
                 Err(anyhow!(
                     "timed out waiting for thread/compacted; staying on the current model"
                 ))
@@ -807,6 +969,69 @@ impl CodexManager {
         Ok(())
     }
 
+    pub async fn compact<R: tauri::Runtime>(
+        &self,
+        app: AppHandle<R>,
+        request: CodexSessionStartRequest,
+    ) -> Result<()> {
+        let session_id = request.session_id.clone();
+        let lock = self.turn_lock(&session_id).await;
+        let _guard = lock.lock().await;
+
+        let mut failure = None;
+        for attempt in 0..2u8 {
+            let attachment = match self.start(app.clone(), request.clone()).await {
+                Ok(_) => self
+                    .sessions
+                    .read()
+                    .await
+                    .get(&session_id)
+                    .map(|session| session.attachment_id),
+                Err(error) => {
+                    let detached = is_detached_failure(&error);
+                    failure = Some(error);
+                    if detached && attempt == 0 {
+                        self.discard_attachment(&session_id, None).await;
+                        continue;
+                    }
+                    break;
+                }
+            };
+            let session = self.session(&session_id).await?;
+            self.pending_compact_sources
+                .lock()
+                .await
+                .insert(session_id.clone(), "manual".into());
+            match session
+                .server
+                .request(
+                    "thread/compact/start",
+                    json!({"threadId": session.thread_id}),
+                )
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(error) => {
+                    self.pending_compact_sources
+                        .lock()
+                        .await
+                        .remove(&session_id);
+                    let detached = is_detached_failure(&error);
+                    failure = Some(error);
+                    if !detached {
+                        break;
+                    }
+                    self.discard_attachment(&session_id, attachment).await;
+                    if attempt == 0 {
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+        Err(failure.unwrap_or_else(|| anyhow!("context compaction could not be started")))
+    }
+
     /// Steers an in-flight turn with additional user input. Unlike `interrupt`,
     /// this requires an attached session with an active turn: there is
     /// nothing sensible to steer once the app-server has detached or the turn
@@ -822,7 +1047,10 @@ impl CodexManager {
         }
         let session = self.session(&request.session_id).await?;
         let Some(turn_id) = session.turn_id.read().await.clone() else {
-            return Err(anyhow!("session {} has no active turn to steer", request.session_id));
+            return Err(anyhow!(
+                "session {} has no active turn to steer",
+                request.session_id
+            ));
         };
         self.record_user_prompt(&app, &request.session_id, &request.text)
             .await;
@@ -845,6 +1073,8 @@ impl CodexManager {
         if let Some(session) = session {
             session.server.stop().await?;
         }
+        // The child is gone; its loopback lease must not outlive it.
+        credential_broker::revoke_shared(session_id);
         self.set_status(session_id, "closed").await?;
         Ok(())
     }
@@ -1115,6 +1345,38 @@ async fn interrupt_active_core_run(
     Ok(mutation.event)
 }
 
+/// Environment variables reaching a Codex child are not private: Codex writes
+/// its inherited environment to `CODEX_HOME/shell_snapshots` as plain
+/// `export NAME=value`. These names are the ones a real provider credential
+/// lives under, so a value under any of them is refused at the spawn boundary —
+/// a `credential_broker` lease is the only thing that may cross it.
+const CREDENTIAL_ENV_NAMES: &[&str] = &["SYNTH_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"];
+
+/// The single provider variable the Codex child is allowed to receive, if any.
+///
+/// Refusing a real credential name is an error, not an omission: launching the
+/// child without the variable it was configured to read would surface later as
+/// an unauthenticated provider, and the reason would be nowhere in the logs.
+fn provider_child_env(
+    request: &CodexSessionStartRequest,
+) -> Result<Option<(String, String)>> {
+    if request.api_key.is_empty() {
+        return Ok(None);
+    }
+    let env_key = request
+        .provider_env_key
+        .as_deref()
+        .unwrap_or("SYNTH_LAGUNA_API_KEY");
+    if CREDENTIAL_ENV_NAMES.contains(&env_key) {
+        return Err(anyhow!(
+            "{env_key} would be written to this session's Codex shell snapshot. \
+             Route the provider through the credential broker instead of exporting \
+             its key (see credential_broker::apply_brokered_credential)."
+        ));
+    }
+    Ok(Some((env_key.to_owned(), request.api_key.clone())))
+}
+
 async fn spawn_server<R: tauri::Runtime>(
     app: AppHandle<R>,
     binary: &Path,
@@ -1126,12 +1388,10 @@ async fn spawn_server<R: tauri::Runtime>(
     core: Option<Arc<CoreRuntime>>,
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     compact_waiters: CompactWaiters,
+    pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
+    performance_trackers: PerformanceTrackers,
     attachment_id: uuid::Uuid,
 ) -> Result<Arc<AppServer>> {
-    let env_key = request
-        .provider_env_key
-        .as_deref()
-        .unwrap_or("SYNTH_LAGUNA_API_KEY");
     let mut command = Command::new(binary);
     command
         .args(["app-server", "--listen", "stdio://"])
@@ -1141,8 +1401,8 @@ async fn spawn_server<R: tauri::Runtime>(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    if !request.api_key.is_empty() {
-        command.env(env_key, &request.api_key);
+    if let Some((name, value)) = provider_child_env(request)? {
+        command.env(name, value);
     }
     let mut child = command.spawn().context("spawn codex app-server")?;
     let stdin = Arc::new(Mutex::new(
@@ -1177,6 +1437,8 @@ async fn spawn_server<R: tauri::Runtime>(
             core,
             sessions,
             compact_waiters,
+            pending_compact_sources,
+            performance_trackers,
             attachment_id,
         },
     ));
@@ -1202,6 +1464,8 @@ struct PersistenceContext {
     core: Option<Arc<CoreRuntime>>,
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     compact_waiters: CompactWaiters,
+    pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
+    performance_trackers: PerformanceTrackers,
     attachment_id: uuid::Uuid,
 }
 
@@ -1233,12 +1497,24 @@ async fn read_stdout<R: tauri::Runtime>(
             continue;
         }
         let raw_method = message["method"].as_str().unwrap_or_default();
-        let params = message.get("params").cloned().unwrap_or(Value::Null);
+        let mut params = message.get("params").cloned().unwrap_or(Value::Null);
         // Some Responses-compatible servers report a terminal envelope as
         // `turn/completed` even when the enclosed turn has failed. Preserve
         // the actual outcome: otherwise the transcript says “Worked” while
         // there is no answer to show.
         let method = normalized_turn_method(raw_method, &params).to_owned();
+        if is_context_compaction_notification(&method, &params) {
+            if let Some(source) = persistence
+                .pending_compact_sources
+                .lock()
+                .await
+                .remove(&session_id)
+            {
+                if let Some(value) = params.as_object_mut() {
+                    value.insert("source".into(), Value::String(source));
+                }
+            }
+        }
         if let Some(rpc_id) = message.get("id").cloned() {
             if is_approval_method(&method) {
                 let available_decisions = params
@@ -1250,7 +1526,7 @@ async fn read_stdout<R: tauri::Runtime>(
                             .filter_map(Value::as_str)
                             .map(str::to_owned)
                             .collect::<Vec<_>>()
-                })
+                    })
                     .unwrap_or_default();
                 if approval_policy == "never" {
                     // “Allow all” is an explicit session policy. A provider
@@ -1303,9 +1579,23 @@ async fn read_stdout<R: tauri::Runtime>(
                 params: params.clone(),
             },
         );
-        if method == "thread/compacted" || method == "thread/compact/completed" {
+        if let Some(core) = &persistence.core {
+            track_performance_event(
+                core,
+                &persistence.performance_trackers,
+                &session_id,
+                &method,
+                &params,
+            )
+            .await;
+        }
+        if matches!(method.as_str(), "turn/completed" | "thread/compact/completed") {
             if let Some(waiter) = persistence.compact_waiters.lock().await.remove(&session_id) {
-                let _ = waiter.send(());
+                let _ = waiter.send(Ok(()));
+            }
+        } else if matches!(method.as_str(), "turn/failed" | "turn/interrupted") {
+            if let Some(waiter) = persistence.compact_waiters.lock().await.remove(&session_id) {
+                let _ = waiter.send(Err(format!("context compaction ended with {method}")));
             }
         }
         if let Some(core) = &persistence.core {
@@ -1362,6 +1652,11 @@ async fn read_stdout<R: tauri::Runtime>(
             method.as_str(),
             "turn/completed" | "turn/failed" | "turn/interrupted"
         ) {
+            persistence
+                .pending_compact_sources
+                .lock()
+                .await
+                .remove(&session_id);
             let status = match method.as_str() {
                 "turn/completed" => "ready",
                 "turn/failed" => "failed",
@@ -1441,6 +1736,14 @@ async fn read_stdout<R: tauri::Runtime>(
             },
         );
         if let Some(core) = &persistence.core {
+            finalize_performance_tracker(
+                core,
+                &persistence.performance_trackers,
+                &session_id,
+                "interrupted",
+                None,
+            )
+            .await;
             if let Ok(Some(event)) =
                 interrupt_active_core_run(core, &session_id, "app_server_exited").await
             {
@@ -1448,6 +1751,245 @@ async fn read_stdout<R: tauri::Runtime>(
             }
         }
     }
+}
+
+fn is_context_compaction_notification(method: &str, params: &Value) -> bool {
+    method == "thread/compacted"
+        || params
+            .get("item")
+            .and_then(|item| item.get("type"))
+            .and_then(Value::as_str)
+            == Some("contextCompaction")
+}
+
+fn positive_i64(value: Option<i64>) -> Option<i64> {
+    value.filter(|value| *value >= 0)
+}
+
+fn integer_field(value: &Value, aliases: &[&str]) -> Option<i64> {
+    aliases
+        .iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_i64))
+}
+
+fn usage_from_object(value: &Value) -> Option<TurnTokenUsage> {
+    let output_tokens = positive_i64(integer_field(
+        value,
+        &[
+            "output_tokens",
+            "outputTokens",
+            "completion_tokens",
+            "completionTokens",
+        ],
+    ));
+    output_tokens?;
+    let details = value
+        .get("output_tokens_details")
+        .or_else(|| value.get("outputTokensDetails"));
+    Some(TurnTokenUsage {
+        input_tokens: positive_i64(integer_field(
+            value,
+            &["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"],
+        )),
+        cached_input_tokens: positive_i64(integer_field(
+            value,
+            &["cached_input_tokens", "cachedInputTokens", "cached_tokens", "cachedTokens"],
+        )),
+        cache_write_tokens: positive_i64(integer_field(
+            value,
+            &[
+                "cache_write_input_tokens",
+                "cacheWriteInputTokens",
+                "cache_creation_input_tokens",
+                "cacheCreationInputTokens",
+            ],
+        )),
+        reasoning_tokens: details.and_then(|details| {
+            positive_i64(integer_field(details, &["reasoning_tokens", "reasoningTokens"]))
+        }),
+        output_tokens,
+    })
+}
+
+fn extract_turn_usage(params: &Value) -> Option<TurnTokenUsage> {
+    // Prefer explicitly per-turn/last-usage objects. Thread-wide totals are
+    // excluded: after a restart they cannot produce an honest turn rate.
+    const PATHS: &[&str] = &[
+        "/lastUsage",
+        "/lastTokenUsage",
+        "/tokenUsage/last",
+        "/tokenUsage/lastUsage",
+        "/tokenUsage/lastTokenUsage",
+        "/turn/lastUsage",
+        "/turn/lastTokenUsage",
+        "/turn/tokenUsage/last",
+        "/turn/tokenUsage/lastUsage",
+        "/turn/usage",
+        "/usage",
+    ];
+    PATHS
+        .iter()
+        .find_map(|path| params.pointer(path).and_then(usage_from_object))
+}
+
+fn is_output_delta(method: &str, params: &Value) -> bool {
+    let normalized = method.to_ascii_lowercase();
+    let is_agent_delta = normalized.contains("agentmessage/delta")
+        || normalized.contains("agent_message/delta")
+        || normalized.contains("outputtext/delta")
+        || normalized.contains("output_text/delta");
+    is_agent_delta
+        && params
+            .get("delta")
+            .and_then(Value::as_str)
+            .is_some_and(|delta| !delta.is_empty())
+}
+
+async fn track_performance_event(
+    core: &Arc<CoreRuntime>,
+    trackers: &PerformanceTrackers,
+    session_id: &str,
+    method: &str,
+    params: &Value,
+) {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let terminal = matches!(method, "turn/completed" | "turn/failed" | "turn/interrupted");
+    {
+        let mut trackers = trackers.lock().await;
+        let Some(tracker) = trackers.get_mut(session_id) else {
+            return;
+        };
+        if is_output_delta(method, params) {
+            tracker.first_output_at_ms.get_or_insert(now_ms);
+            tracker.last_output_at_ms = Some(now_ms);
+        }
+        if method.to_ascii_lowercase().contains("usage") || terminal {
+            if let Some(usage) = extract_turn_usage(params) {
+                tracker.usage = usage;
+            }
+        }
+    }
+    if terminal {
+        let status = match method {
+            "turn/completed" => "completed",
+            "turn/failed" => "failed",
+            _ => "interrupted",
+        };
+        finalize_performance_tracker(core, trackers, session_id, status, Some(now_ms)).await;
+    }
+}
+
+async fn finalize_performance_tracker(
+    core: &Arc<CoreRuntime>,
+    trackers: &PerformanceTrackers,
+    session_id: &str,
+    status: &str,
+    completed_at_ms: Option<i64>,
+) {
+    let Some(tracker) = trackers.lock().await.remove(session_id) else {
+        return;
+    };
+    let completed_at_ms = completed_at_ms.unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+    let output_tokens = tracker.usage.output_tokens.filter(|tokens| *tokens > 0);
+    let stream_seconds = tracker
+        .first_output_at_ms
+        .zip(tracker.last_output_at_ms)
+        .map(|(first, last)| (last - first) as f64 / 1_000.0)
+        .filter(|seconds| *seconds > 0.0);
+    let end_to_end_seconds = ((completed_at_ms - tracker.started_at_ms) as f64 / 1_000.0).max(0.0);
+    let observed_output_tps = output_tokens
+        .zip(stream_seconds)
+        .map(|(tokens, seconds)| tokens as f64 / seconds);
+    let end_to_end_output_tps = output_tokens
+        .filter(|_| end_to_end_seconds > 0.0)
+        .map(|tokens| tokens as f64 / end_to_end_seconds);
+    let measurement_kind = if observed_output_tps.is_some() {
+        MeasurementKind::ObservedStream
+    } else {
+        MeasurementKind::EndToEnd
+    };
+    // A failed or interrupted turn still consumed whatever the provider
+    // reported, so it is recorded — and estimated — like any other request.
+    let estimated_cost_usd = crate::tariffs::estimate_cost_usd(
+        &tracker.provider,
+        &tracker.model_id,
+        completed_at_ms,
+        crate::tariffs::BillableTokens {
+            input_tokens: tracker.usage.input_tokens,
+            cached_input_tokens: tracker.usage.cached_input_tokens,
+            cache_write_tokens: tracker.usage.cache_write_tokens,
+            output_tokens: tracker.usage.output_tokens,
+        },
+    );
+    // Settled Synth Cloud accounting, captured by the credential broker as the
+    // child's responses streamed through it. Only cloud turns drain: local /
+    // on-device providers have no provider charge and their rows stay exactly
+    // as the tracker built them — billed stays `None`, never $0.
+    //
+    // Exactly-once contract: draining removes the receipts, and the
+    // `(provider, request_id)` upsert key dedupes a replayed finalize. A
+    // receipt landing after this drain (cancellation race) stays queued no
+    // longer than the session's next finalize; if the session closes first,
+    // the broker logs one line and drops it rather than inventing a row.
+    // The drain reads a module-level store — it never starts a broker.
+    let settled_cost_usd = if provider_class(Some(&tracker.provider)) == ProviderClass::SynthCloud {
+        settled_cost_from_receipts(&credential_broker::drain_settled_receipts(session_id))
+    } else {
+        None
+    };
+    // A settled receipt is authoritative; the tariff figure stays in
+    // `estimated_cost_usd` and must never override it.
+    let cost_source = if settled_cost_usd.is_some() {
+        CostSource::SynthCloud
+    } else if estimated_cost_usd.is_some() {
+        CostSource::TariffEstimate
+    } else {
+        CostSource::None
+    };
+    let record = UsageRecord {
+        id: format!("perf:{}:{}", tracker.provider, tracker.turn_id),
+        provider: tracker.provider,
+        model_id: tracker.model_id,
+        model_revision: None,
+        session_id: Some(session_id.to_owned()),
+        run_id: Some(tracker.turn_id.clone()),
+        request_id: tracker.turn_id,
+        measurement_kind,
+        status: status.to_owned(),
+        started_at_ms: tracker.started_at_ms,
+        first_output_at_ms: tracker.first_output_at_ms,
+        last_output_at_ms: tracker.last_output_at_ms,
+        completed_at_ms,
+        input_tokens: tracker.usage.input_tokens,
+        cached_input_tokens: tracker.usage.cached_input_tokens,
+        cache_write_tokens: tracker.usage.cache_write_tokens,
+        reasoning_tokens: tracker.usage.reasoning_tokens,
+        output_tokens,
+        ttft_ms: tracker
+            .first_output_at_ms
+            .map(|first| (first - tracker.started_at_ms).max(0) as f64),
+        observed_output_tps,
+        end_to_end_output_tps,
+        billed_cost_usd: settled_cost_usd,
+        estimated_cost_usd,
+        cost_source,
+        source: "codex_app_server".into(),
+    };
+    let repository = UsageRecordsRepository::new(core.storage().database().clone());
+    if let Err(error) = repository.record(record).await {
+        eprintln!("usage record could not be persisted: {error:#}");
+    }
+}
+
+/// Sum of the settled charges a turn's receipts carried. A turn is allowed to
+/// span several upstream requests, so several receipts sum into one figure.
+/// `None` when no receipt reported money — token-only receipts never fabricate
+/// a $0 settled charge.
+fn settled_cost_from_receipts(receipts: &[credential_broker::SettledReceipt]) -> Option<f64> {
+    receipts
+        .iter()
+        .filter_map(|receipt| receipt.cost_usd)
+        .fold(None, |total, cost| Some(total.unwrap_or(0.0) + cost))
 }
 
 fn normalized_turn_method<'a>(method: &'a str, params: &Value) -> &'a str {
@@ -1486,7 +2028,9 @@ fn automatic_approval_response(available: &[String], id: Value) -> Value {
         .or_else(|_| select_approval_decision(available, "once"))
     {
         Ok(decision) => json!({"jsonrpc":"2.0","id":id,"result":{"decision":decision}}),
-        Err(error) => json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":format!("Cannot automatically approve this request: {error}")}}),
+        Err(error) => {
+            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":format!("Cannot automatically approve this request: {error}")}})
+        }
     }
 }
 
@@ -1560,11 +2104,44 @@ async fn write_message(
     Ok(())
 }
 
-/// Inject Synth Cloud billing fields into a session start request.
+/// The four ways a session sources its provider endpoint and credential.
+/// Every start request falls into exactly one class, and both preparation
+/// paths (`lib.rs` commands and the eval driver) branch on this — nowhere
+/// else decides how a credential is handled.
+///
+/// | class        | endpoint from        | credential from        | custody |
+/// |--------------|----------------------|------------------------|---------|
+/// | `LocalLaguna`| local Laguna daemon  | loopback service token | none — the token is process-owned and only works against loopback |
+/// | `SynthCloud` | resolved backend cfg | user's Synth API key   | staged, leased at spawn |
+/// | `OpenRouter` | renderer (public URL)| user's OpenRouter key  | staged, leased at spawn |
+/// | `Direct`     | renderer             | none on the Rust side  | pass-through — renderer-supplied `api_key` is never treated as a credential Rust vouches for |
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderClass {
+    LocalLaguna,
+    SynthCloud,
+    OpenRouter,
+    Direct,
+}
+
+pub fn provider_class(provider_name: Option<&str>) -> ProviderClass {
+    match provider_name {
+        Some(name) if name.eq_ignore_ascii_case("local-laguna") => ProviderClass::LocalLaguna,
+        Some(name) if name.eq_ignore_ascii_case("synth-cloud") => ProviderClass::SynthCloud,
+        Some(name) if name.eq_ignore_ascii_case("openrouter") => ProviderClass::OpenRouter,
+        _ => ProviderClass::Direct,
+    }
+}
+
+/// Point a session start request at the Synth Cloud provider.
 ///
 /// Fail-closed when the Synth API key is missing. Always overwrites any
 /// renderer-supplied `api_key` / `base_url` / env key — credentials never
 /// originate from the renderer.
+///
+/// The key is only *staged* here; `CodexManager::start` exchanges it for a
+/// revocable loopback lease at spawn time, so what the child process, its
+/// shell snapshots, and its config end up carrying is never the real key. See
+/// `credential_broker`.
 pub fn apply_synth_cloud_provider(
     request: &mut CodexSessionStartRequest,
     backend_url: &str,
@@ -1574,12 +2151,68 @@ pub fn apply_synth_cloud_provider(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Synth API key not configured — Settings → Account".to_string())?;
-    request.api_key = key.to_owned();
     request.base_url = format!("{}/api/v1", client_base_url(backend_url));
     request.provider_name = Some("synth-cloud".into());
     request.provider_title = Some("Synth Cloud Responses".into());
-    request.provider_env_key = Some("SYNTH_API_KEY".into());
+    stage_brokered_credential(request, key)
+}
+
+/// Stage a user credential for native custody.
+///
+/// The request carries the real key only between preparation and spawn, and
+/// only inside this process. Deliberately no lease is minted here: preparation
+/// runs on every send, and minting for a session whose live child is about to
+/// be reused would invalidate the token that child is still presenting. The
+/// exchange happens in `CodexManager::start`, on its spawn path.
+pub fn stage_brokered_credential(
+    request: &mut CodexSessionStartRequest,
+    api_key: &str,
+) -> Result<(), String> {
+    // Surface a malformed endpoint at preparation time, where the caller can
+    // still map it to a typed provider failure for the renderer.
+    validated_provider_endpoint(request)?;
+    request.api_key = api_key.to_owned();
+    request.broker_credential = true;
     Ok(())
+}
+
+/// Move a staged credential into native custody at spawn time.
+///
+/// The request keeps its logical endpoint path but is re-pointed at the
+/// loopback proxy, and the staged key it carries becomes a revocable lease
+/// token. Every provider whose credential belongs to the user — not to a local
+/// loopback service — goes through here before a child process can observe it.
+pub fn apply_brokered_credential(
+    request: &mut CodexSessionStartRequest,
+    broker: &CredentialBroker,
+) -> Result<(), String> {
+    let endpoint = validated_provider_endpoint(request)?;
+    let lease = broker.lease(
+        &request.session_id,
+        &endpoint.origin().ascii_serialization(),
+        &request.api_key,
+    );
+    request.base_url = format!("{}{}", lease.origin, endpoint.path().trim_end_matches('/'));
+    request.api_key = lease.token;
+    request.provider_env_key = Some(credential_broker::LEASE_ENV_KEY.into());
+    request.broker_credential = false;
+    Ok(())
+}
+
+fn validated_provider_endpoint(
+    request: &CodexSessionStartRequest,
+) -> Result<reqwest::Url, String> {
+    reqwest::Url::parse(&request.base_url).map_err(|_| {
+        format!(
+            "{} could not start because its endpoint is invalid: {}. Update it in Settings → Account → Backend API.",
+            request
+                .provider_title
+                .as_deref()
+                .or(request.provider_name.as_deref())
+                .unwrap_or("Selected provider"),
+            safe_endpoint_label(&request.base_url)
+        )
+    })
 }
 
 /// Local services often advertise `0.0.0.0` as their bind address. That is
@@ -1634,9 +2267,21 @@ fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Result<()> {
     writable_roots.sort();
     writable_roots.dedup();
     let workspace_write_config = workspace_write_config(&writable_roots);
+    let compaction_config = if supports_provider_compaction(request) {
+        // OpenAI and Azure Responses providers are recognized by Codex itself.
+        // Leave their compaction configuration untouched so Codex uses the
+        // provider-hosted /responses/compact implementation.
+        String::new()
+    } else {
+        format!(
+            "model_auto_compact_token_limit = {}\ntool_output_token_limit = 12000\ncompact_prompt = \"{}\"\n",
+            auto_compact_token_limit(request),
+            toml_string(COMPACT_PROMPT)
+        )
+    };
     let config = format!(
-        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"default\"\n\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\nenv_key = \"{}\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
-        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), workspace_write_config, toml_key(provider), toml_string(title), toml_string(&responses_base_url(&request.base_url)), toml_string(env_key), agents_enabled, multi_agent_v1, multi_agent_v2
+        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"default\"\n{}\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\nenv_key = \"{}\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n# Codex selects provider-hosted compaction for OpenAI/Azure and local summarization otherwise.\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
+        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), compaction_config, workspace_write_config, toml_key(provider), toml_string(title), toml_string(&responses_base_url(&request.base_url)), toml_string(env_key), agents_enabled, multi_agent_v1, multi_agent_v2
     );
     fs::write(home.join("config.toml"), config)?;
     let auth = home.join("auth.json");
@@ -1694,6 +2339,16 @@ fn validate_start(request: &CodexSessionStartRequest) -> Result<()> {
     if !Path::new(&request.workspace).is_dir() {
         return Err(anyhow!("workspace must be an existing directory"));
     }
+    if !supports_provider_compaction(request) {
+        let compact_limit = auto_compact_token_limit(request);
+        let max_compact_limit = model_context_window(&request.model) * 9 / 10;
+        if !(MIN_AUTO_COMPACT_TOKEN_LIMIT..=max_compact_limit).contains(&compact_limit) {
+            return Err(anyhow!(
+                "autoCompactTokenLimit must be between {MIN_AUTO_COMPACT_TOKEN_LIMIT} and {max_compact_limit} for {}",
+                request.model
+            ));
+        }
+    }
     if !(request.base_url.starts_with("http://127.0.0.1:")
         || request.base_url.starts_with("http://localhost:")
         || request.base_url.starts_with("https://"))
@@ -1711,14 +2366,67 @@ fn validate_start(request: &CodexSessionStartRequest) -> Result<()> {
     Ok(())
 }
 
+fn model_context_window(model: &str) -> u64 {
+    if model.to_ascii_lowercase().contains("laguna-xs") {
+        262_144
+    } else if model.to_ascii_lowercase().contains("muse-spark-1.2") {
+        1_048_576
+    } else if model.to_ascii_lowercase().contains("laguna-s-2.1")
+        || model.to_ascii_lowercase().contains("gpt-5.6-luna")
+    {
+        1_050_000
+    } else {
+        262_144
+    }
+}
+
+fn auto_compact_token_limit(request: &CodexSessionStartRequest) -> u64 {
+    request.auto_compact_token_limit.unwrap_or_else(|| {
+        let model = request.model.to_ascii_lowercase();
+        if model.contains("laguna-s-2.1")
+            || model.contains("gpt-5.6-luna")
+            || model.contains("muse-spark-1.2")
+        {
+            250_000
+        } else if model.contains("laguna-xs") {
+            150_000
+        } else {
+            model_context_window(&request.model) * 4 / 5
+        }
+    })
+}
+
+fn supports_provider_compaction(request: &CodexSessionStartRequest) -> bool {
+    if request.provider_name.as_deref() == Some("openai")
+        || request.provider_title.as_deref() == Some("OpenAI")
+        || request
+            .provider_name
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("azure"))
+        || request
+            .provider_title
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("azure"))
+    {
+        return true;
+    }
+    let base_url = request.base_url.to_ascii_lowercase();
+    [
+        "openai.azure.",
+        "cognitiveservices.azure.",
+        "aoai.azure.",
+        "azure-api.",
+        "azurefd.",
+        "windows.net/openai",
+    ]
+    .iter()
+    .any(|marker| base_url.contains(marker))
+}
+
 /// Produces an endpoint label that is useful in UI errors without exposing a
 /// query-string token or credentials embedded in the URL authority.
 fn safe_endpoint_label(endpoint: &str) -> String {
-    let without_query = endpoint
-        .trim()
-        .split(['?', '#'])
-        .next()
-        .unwrap_or_default();
+    let without_query = endpoint.trim().split(['?', '#']).next().unwrap_or_default();
     let redacted = match without_query.split_once("://") {
         Some((scheme, remainder)) => match remainder.split_once('@') {
             Some((_, host_and_path)) => format!("{scheme}://[credentials]@{host_and_path}"),
@@ -1732,7 +2440,10 @@ fn safe_endpoint_label(endpoint: &str) -> String {
     } else {
         format!(
             "{}…",
-            redacted.chars().take(MAX_CHARS.saturating_sub(1)).collect::<String>()
+            redacted
+                .chars()
+                .take(MAX_CHARS.saturating_sub(1))
+                .collect::<String>()
         )
     }
 }
@@ -1766,7 +2477,7 @@ async fn session_info(id: &str, session: &Session) -> CodexSessionInfo {
     }
 }
 
-fn codex_root() -> PathBuf {
+pub fn codex_root() -> PathBuf {
     env::var_os("SYNTH_CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::instance::state_root().join("codex"))
@@ -1912,6 +2623,7 @@ fn automatic_thread_title(prompt: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::domain::{RunCreate, RunService, SessionCreate, SessionService};
+    use crate::storage::UsageBreakdown;
     use std::path::Path;
     use tempfile::tempdir;
 
@@ -1933,7 +2645,9 @@ mod tests {
             sandbox: Some("workspace-write".into()),
             thread_id: None,
             multi_agent_version: Some(MultiAgentVersion::None),
+            auto_compact_token_limit: None,
             writable_roots: Vec::new(),
+            broker_credential: false,
         }
     }
 
@@ -2141,6 +2855,30 @@ mod tests {
             "actually, focus on the tests first"
         );
         assert_eq!(steer["params"]["input"][0]["type"], "text");
+
+        manager.close(&request.session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn compact_sends_thread_compact_start_for_the_attached_thread() {
+        let temp = tempdir().unwrap();
+        let codex_root = temp.path().join("codex");
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let manager = CodexManager::with_paths(Some(core), codex_root.clone(), fixture_binary());
+        let app = tauri::test::mock_app();
+        let request = test_request(temp.path(), "compact-me");
+
+        manager
+            .compact(app.handle().clone(), request.clone())
+            .await
+            .unwrap();
+
+        let requests = fixture_requests(&codex_root, &request.session_id);
+        let compact = requests
+            .iter()
+            .find(|message| message["method"] == "thread/compact/start")
+            .expect("fixture did not see thread/compact/start");
+        assert_eq!(compact["params"]["threadId"], "thread-fixture");
 
         manager.close(&request.session_id).await.unwrap();
     }
@@ -2708,7 +3446,9 @@ mod tests {
             .filter_map(|message| message.get("method").and_then(Value::as_str))
             .collect();
         assert!(
-            methods.iter().any(|method| *method == "thread/compact/start"),
+            methods
+                .iter()
+                .any(|method| *method == "thread/compact/start"),
             "expected compact before rebind, got {methods:?}"
         );
         let compact_idx = methods
@@ -2731,6 +3471,31 @@ mod tests {
                 .get(&request.session_id)
                 .map(|record| record.model.as_str()),
             Some("openai/gpt-5.6-luna")
+        );
+        assert!(
+            manager
+                .pending_compact_sources
+                .lock()
+                .await
+                .get(&request.session_id)
+                .is_none(),
+            "model-switch compact source should be consumed when thread/compacted arrives"
+        );
+        let events = core
+            .journal()
+            .session_events_after(request.session_id.clone(), 0, 200)
+            .await
+            .expect("session events");
+        assert!(
+            events.iter().any(|event| {
+                event.kind == "thread/compacted"
+                    && event.payload.get("source").and_then(Value::as_str) == Some("model_switch")
+            }),
+            "expected persisted thread/compacted with source=model_switch, got {:?}",
+            events
+                .iter()
+                .map(|event| (&event.kind, event.payload.get("source")))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2916,6 +3681,7 @@ mod tests {
         let home = temp.path().join("home");
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(&workspace).unwrap();
+        let (broker, _listener) = CredentialBroker::bind().unwrap();
         let mut request = test_request(&workspace, "synth-cloud-config");
         apply_synth_cloud_provider(
             &mut request,
@@ -2923,18 +3689,34 @@ mod tests {
             Some("sk_dev_00000000000000000000000000000001"),
         )
         .unwrap();
+        apply_brokered_credential(&mut request, &broker).unwrap();
         request.model = "openrouter/poolside/laguna-s-2.1".into();
         ensure_home(&home, &request).unwrap();
         let config = fs::read_to_string(home.join("config.toml")).unwrap();
         assert!(config.contains("model = \"openrouter/poolside/laguna-s-2.1\""));
         assert!(config.contains("model_provider = \"synth-cloud\""));
         assert!(config.contains("[model_providers.\"synth-cloud\"]"));
-        assert!(config.contains("base_url = \"http://127.0.0.1:41209/api/v1\""));
+        // Codex is pointed at the native proxy, not at the backend directly.
+        assert!(config.contains(&format!(
+            "base_url = \"{}/api/v1\"",
+            broker.origin()
+        )));
         assert!(config.contains("wire_api = \"responses\""));
-        assert!(config.contains("env_key = \"SYNTH_API_KEY\""));
+        assert!(config.contains(&format!(
+            "env_key = \"{}\"",
+            credential_broker::LEASE_ENV_KEY
+        )));
+        assert!(!config.contains("SYNTH_API_KEY"));
+        assert_eq!(
+            broker.upstream_for(&request.api_key).as_deref(),
+            Some("http://127.0.0.1:41209")
+        );
+        assert!(config.contains("model_auto_compact_token_limit = 250000"));
+        assert!(config.contains("tool_output_token_limit = 12000"));
+        assert!(config.contains("CONTEXT CHECKPOINT COMPACTION for a coding agent"));
         let optimizer_skill =
             fs::read_to_string(home.join("skills/use-synth-optimizers/SKILL.md")).unwrap();
-        assert!(optimizer_skill.contains("gepa.banking77.smoke.v1"));
+        assert!(optimizer_skill.contains("optimizer_manage"));
     }
 
     #[test]
@@ -2948,29 +3730,104 @@ mod tests {
         assert!(error.contains("Synth API key not configured"));
         assert!(error.contains("Settings → Account"));
         assert_eq!(request.api_key, "renderer-supplied-should-not-matter");
+        assert!(!request.broker_credential);
+    }
+
+    #[test]
+    fn rejects_auto_compact_limits_outside_the_desktop_range() {
+        let temp = tempdir().unwrap();
+        let mut request = test_request(temp.path(), "compact-limit");
+        request.auto_compact_token_limit = Some(MIN_AUTO_COMPACT_TOKEN_LIMIT - 1);
+        assert!(validate_start(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("autoCompactTokenLimit"));
+        request.auto_compact_token_limit = Some(235_930);
+        assert!(validate_start(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("autoCompactTokenLimit"));
+    }
+
+    #[test]
+    fn defaults_luna_and_laguna_s_compaction_to_250k() {
+        let temp = tempdir().unwrap();
+        let mut request = test_request(temp.path(), "compact-defaults");
+        request.model = "poolside/Laguna-XS-2.1-NVFP4-mlx".into();
+        assert_eq!(auto_compact_token_limit(&request), 150_000);
+        request.model = "poolside/laguna-s-2.1".into();
+        assert_eq!(auto_compact_token_limit(&request), 250_000);
+        request.model = "openai/gpt-5.6-luna".into();
+        assert_eq!(auto_compact_token_limit(&request), 250_000);
+    }
+
+    #[test]
+    fn leaves_compaction_to_openai_and_azure_responses_providers() {
+        let temp = tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+
+        let mut openai = test_request(&workspace, "openai-compaction");
+        openai.provider_name = Some("openai".into());
+        openai.provider_title = Some("OpenAI".into());
+        openai.base_url = "https://api.openai.com/v1".into();
+        openai.model = "gpt-5.6-luna".into();
+        openai.auto_compact_token_limit = Some(999_999_999);
+        validate_start(&openai).unwrap();
+        let openai_home = temp.path().join("openai-home");
+        ensure_home(&openai_home, &openai).unwrap();
+        let openai_config = fs::read_to_string(openai_home.join("config.toml")).unwrap();
+        assert!(!openai_config.contains("model_auto_compact_token_limit"));
+        assert!(!openai_config.contains("compact_prompt"));
+
+        let mut azure = test_request(&workspace, "azure-compaction");
+        azure.provider_name = Some("custom-azure".into());
+        azure.provider_title = Some("Azure".into());
+        azure.base_url = "https://example.openai.azure.com/openai/v1".into();
+        assert!(supports_provider_compaction(&azure));
+
+        let mut openrouter = test_request(&workspace, "openrouter-compaction");
+        openrouter.provider_name = Some("openrouter".into());
+        openrouter.provider_title = Some("OpenRouter Responses".into());
+        openrouter.base_url = "https://openrouter.ai/api/v1".into();
+        openrouter.model = "openai/gpt-5.6-luna".into();
+        assert!(!supports_provider_compaction(&openrouter));
     }
 
     #[test]
     fn synth_cloud_provider_overwrites_renderer_api_key() {
         let temp = tempdir().unwrap();
+        let (broker, _listener) = CredentialBroker::bind().unwrap();
         let mut request = test_request(temp.path(), "synth-cloud-overwrite");
         request.api_key = "renderer-leaked-key".into();
         request.base_url = "https://evil.example/v1".into();
-        apply_synth_cloud_provider(
-            &mut request,
-            "http://127.0.0.1:41209/",
-            Some("sk_dev_real_key"),
-        )
-        .unwrap();
+        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209/", Some("sk_dev_real_key"))
+            .unwrap();
+        // Staging discards the renderer's value and endpoint outright.
         assert_eq!(request.api_key, "sk_dev_real_key");
-        assert_eq!(request.base_url, "http://127.0.0.1:41209/api/v1");
+        assert!(request.broker_credential);
+        apply_brokered_credential(&mut request, &broker).unwrap();
+        // At spawn the staged key is replaced by a lease rather than being
+        // carried on the request.
+        assert_ne!(request.api_key, "renderer-leaked-key");
+        assert_ne!(request.api_key, "sk_dev_real_key");
+        assert!(request.api_key.starts_with("sdl_"));
+        assert_eq!(request.base_url, format!("{}/api/v1", broker.origin()));
         assert_eq!(request.provider_name.as_deref(), Some("synth-cloud"));
-        assert_eq!(request.provider_env_key.as_deref(), Some("SYNTH_API_KEY"));
+        assert_eq!(
+            request.provider_env_key.as_deref(),
+            Some(credential_broker::LEASE_ENV_KEY)
+        );
+        assert_eq!(
+            broker.upstream_for(&request.api_key).as_deref(),
+            Some("http://127.0.0.1:41209")
+        );
     }
 
     #[test]
     fn synth_cloud_normalizes_a_local_bind_address_for_the_client() {
         let temp = tempdir().unwrap();
+        let (broker, _listener) = CredentialBroker::bind().unwrap();
         let mut request = test_request(temp.path(), "synth-cloud-loopback");
         apply_synth_cloud_provider(
             &mut request,
@@ -2978,8 +3835,175 @@ mod tests {
             Some("sk_dev_00000000000000000000000000000001"),
         )
         .unwrap();
+        apply_brokered_credential(&mut request, &broker).unwrap();
         validate_start(&request).unwrap();
-        assert_eq!(request.base_url, "http://127.0.0.1:41209/api/v1");
+        assert_eq!(request.base_url, format!("{}/api/v1", broker.origin()));
+        // `0.0.0.0` is a bind address, not a destination; the proxy's upstream
+        // must still be rewritten to loopback.
+        assert_eq!(
+            broker.upstream_for(&request.api_key).as_deref(),
+            Some("http://127.0.0.1:41209")
+        );
+    }
+
+    /// The CUA-found 401: preparing a send re-ran provider setup for a live
+    /// session, minted a fresh lease, and thereby killed the token the reused
+    /// child was still presenting. Preparing the same binding again must leave
+    /// the live child's lease untouched.
+    #[tokio::test]
+    async fn reusing_a_live_child_leaves_its_lease_untouched() {
+        let temp = tempdir().unwrap();
+        let manager = CodexManager::with_paths(None, temp.path().join("codex"), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut request = test_request(temp.path(), "lease-live-reuse");
+        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some("sk_dev_reuse"))
+            .unwrap();
+
+        manager
+            .start(app_handle.clone(), request.clone())
+            .await
+            .unwrap();
+        let broker = credential_broker::shared().unwrap();
+        let token = broker
+            .token_for("lease-live-reuse")
+            .expect("spawning the child mints its lease");
+
+        // Second send: same staged binding, live child gets reused.
+        manager.start(app_handle, request.clone()).await.unwrap();
+        assert_eq!(
+            broker.token_for("lease-live-reuse").as_deref(),
+            Some(token.as_str())
+        );
+        assert!(broker.resolves(&token));
+
+        manager.close("lease-live-reuse").await.unwrap();
+        assert!(!broker.resolves(&token));
+    }
+
+    /// Rebind (for example a model switch) closes the old child, which revokes
+    /// its lease. The replacement child must be spawned with a lease minted
+    /// *after* that revocation — leasing during preparation handed it a token
+    /// `close()` had already deleted.
+    #[tokio::test]
+    async fn rebinding_a_session_spawns_the_new_child_with_a_live_lease() {
+        let temp = tempdir().unwrap();
+        let manager = CodexManager::with_paths(None, temp.path().join("codex"), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut request = test_request(temp.path(), "lease-rebind");
+        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some("sk_dev_rebind"))
+            .unwrap();
+        manager
+            .start(app_handle.clone(), request.clone())
+            .await
+            .unwrap();
+        let broker = credential_broker::shared().unwrap();
+        let before = broker.token_for("lease-rebind").unwrap();
+
+        let mut switched = request.clone();
+        switched.model = "openrouter/poolside/laguna-s-2.1".into();
+        manager.start(app_handle, switched).await.unwrap();
+        let after = broker
+            .token_for("lease-rebind")
+            .expect("the respawned child must hold a lease that survived close()");
+        assert_ne!(before, after);
+        assert!(!broker.resolves(&before));
+        assert!(broker.resolves(&after));
+    }
+
+    /// Provider identity is part of the reuse comparison in its own right.
+    /// `provider_name` is the sole input to `provider_class`, which gates the
+    /// settled-receipt drain — two providers sharing endpoint, credential and
+    /// model must still respawn (revoking, and discarding queued receipts)
+    /// when the name changes, or a finalize under the new name could drain
+    /// receipts born under the old one.
+    #[tokio::test]
+    async fn a_provider_name_change_alone_respawns_the_child() {
+        let temp = tempdir().unwrap();
+        let manager = CodexManager::with_paths(None, temp.path().join("codex"), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut request = test_request(temp.path(), "lease-provider-identity");
+        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some("sk_dev_shared"))
+            .unwrap();
+        manager
+            .start(app_handle.clone(), request.clone())
+            .await
+            .unwrap();
+        let broker = credential_broker::shared().unwrap();
+        let before = broker.token_for("lease-provider-identity").unwrap();
+        credential_broker::push_settled_receipt(credential_broker::SettledReceipt {
+            session_id: "lease-provider-identity".into(),
+            provider_response_id: "resp-born-under-old-name".into(),
+            model: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
+            cost_usd: Some(0.25),
+            completed_at_ms: 0,
+        });
+
+        // Same endpoint, credential, model, workspace, approval and sandbox —
+        // only the provider name differs.
+        let mut renamed = request.clone();
+        renamed.provider_name = Some("openrouter".into());
+        manager.start(app_handle, renamed).await.unwrap();
+        let after = broker
+            .token_for("lease-provider-identity")
+            .expect("the respawned child must hold a fresh lease");
+        assert_ne!(before, after);
+        assert!(!broker.resolves(&before));
+        assert!(broker.resolves(&after));
+        assert!(
+            credential_broker::drain_settled_receipts("lease-provider-identity").is_empty(),
+            "receipts born under the old provider name must not survive the switch"
+        );
+    }
+
+    /// A changed credential or endpoint is part of the reuse comparison: the
+    /// old child was spawned against the old binding, so rotation must respawn
+    /// it rather than leave it talking through the stale credential.
+    #[tokio::test]
+    async fn a_rotated_credential_respawns_the_child_with_a_fresh_lease() {
+        let temp = tempdir().unwrap();
+        let manager = CodexManager::with_paths(None, temp.path().join("codex"), fixture_binary());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut request = test_request(temp.path(), "lease-rotation");
+        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some("sk_dev_old"))
+            .unwrap();
+        manager
+            .start(app_handle.clone(), request.clone())
+            .await
+            .unwrap();
+        let broker = credential_broker::shared().unwrap();
+        let old_token = broker.token_for("lease-rotation").unwrap();
+        let old_attachment = manager
+            .sessions
+            .read()
+            .await
+            .get("lease-rotation")
+            .unwrap()
+            .attachment_id;
+
+        let mut rotated = test_request(temp.path(), "lease-rotation");
+        apply_synth_cloud_provider(&mut rotated, "http://127.0.0.1:41209", Some("sk_dev_new"))
+            .unwrap();
+        manager.start(app_handle, rotated).await.unwrap();
+        let new_attachment = manager
+            .sessions
+            .read()
+            .await
+            .get("lease-rotation")
+            .unwrap()
+            .attachment_id;
+        let new_token = broker.token_for("lease-rotation").unwrap();
+        assert_ne!(old_attachment, new_attachment);
+        assert_ne!(old_token, new_token);
+        assert!(!broker.resolves(&old_token));
+        assert!(broker.resolves(&new_token));
     }
 
     #[test]
@@ -2990,7 +4014,10 @@ mod tests {
                 "error": {"message": "provider disconnected"}
             }
         });
-        assert_eq!(normalized_turn_method("turn/completed", &failed), "turn/failed");
+        assert_eq!(
+            normalized_turn_method("turn/completed", &failed),
+            "turn/failed"
+        );
         assert_eq!(
             normalized_turn_method("turn/completed", &json!({"turn": {"status": "completed"}})),
             "turn/completed"
@@ -3020,16 +4047,134 @@ mod tests {
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(&workspace).unwrap();
         let secret = "sk_dev_SYNTH_CLOUD_SECRET_VALUE_DO_NOT_LEAK";
+        let (broker, _listener) = CredentialBroker::bind().unwrap();
         let mut request = test_request(&workspace, "synth-cloud-redact");
         apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some(secret)).unwrap();
+        apply_brokered_credential(&mut request, &broker).unwrap();
         request.model = "openrouter/poolside/laguna-s-2.1".into();
         ensure_home(&home, &request).unwrap();
         let config = fs::read_to_string(home.join("config.toml")).unwrap();
         let auth = fs::read_to_string(home.join("auth.json")).unwrap();
         assert!(!config.contains(secret));
         assert!(!auth.contains(secret));
-        assert!(config.contains("env_key = \"SYNTH_API_KEY\""));
+        assert!(config.contains(&format!(
+            "env_key = \"{}\"",
+            credential_broker::LEASE_ENV_KEY
+        )));
         assert!(auth.contains("synth-desktop-provider"));
+    }
+
+    /// Every path that ever wrote a file under a generated Codex home, checked
+    /// against one sentinel value: the credential must exist only in the native
+    /// broker.
+    ///
+    /// `shell_snapshots` is the leak this guards. Codex serializes its inherited
+    /// environment there as `export NAME=value`, so the test reproduces that
+    /// step from the exact environment `spawn_server` would hand the child.
+    #[test]
+    fn the_synth_credential_never_reaches_a_generated_codex_home() {
+        const SENTINEL: &str = "sk_live_SENTINEL_ONLY_IN_NATIVE_CUSTODY";
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("codex");
+        let home = root.join("homes/session-sentinel");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+
+        let (broker, _listener) = CredentialBroker::bind().unwrap();
+        let mut request = test_request(&workspace, "session-sentinel");
+        apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some(SENTINEL)).unwrap();
+        apply_brokered_credential(&mut request, &broker).unwrap();
+        validate_start(&request).unwrap();
+        ensure_home(&home, &request).unwrap();
+
+        // Stand in for the Codex child: write the snapshot it would write from
+        // the environment we actually pass it.
+        let snapshots = home.join("shell_snapshots");
+        fs::create_dir_all(&snapshots).unwrap();
+        let exported = provider_child_env(&request)
+            .expect("the brokered lease is allowed across the spawn boundary")
+            .map(|(name, value)| format!("export {name}={value}\n"))
+            .unwrap_or_default();
+        fs::write(snapshots.join("snapshot.sh"), format!("#!/bin/sh\n{exported}")).unwrap();
+        // Session logs and event payloads are the other things a home accumulates.
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        fs::write(
+            home.join("sessions/rollout.jsonl"),
+            serde_json::to_string(&json!({
+                "base_url": request.base_url,
+                "provider": request.provider_name,
+                "env_key": request.provider_env_key,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut scanned = 0usize;
+        let mut pending = vec![root.clone()];
+        while let Some(dir) = pending.pop() {
+            for entry in fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                scanned += 1;
+                let bytes = fs::read(&path).unwrap();
+                assert!(
+                    !String::from_utf8_lossy(&bytes).contains(SENTINEL),
+                    "the Synth credential reached {}",
+                    path.display()
+                );
+            }
+        }
+        assert!(scanned > 3, "the sentinel scan must actually read files");
+
+        // The broker holds it, and only the broker.
+        assert!(request.api_key.starts_with("sdl_"));
+        assert!(broker.upstream_for(&request.api_key).is_some());
+        // Nothing that renders to the user or a log can reproduce it either.
+        let rendered = format!(
+            "{:?} {:?} {}",
+            broker,
+            request.provider_env_key,
+            validate_start(&request)
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default()
+        );
+        assert!(!rendered.contains(SENTINEL));
+    }
+
+    #[test]
+    fn a_real_credential_variable_is_refused_at_the_spawn_boundary() {
+        let temp = tempdir().unwrap();
+        let mut request = test_request(temp.path(), "spawn-boundary");
+        request.api_key = "sk_live_should_never_be_exported".into();
+        for name in CREDENTIAL_ENV_NAMES {
+            request.provider_env_key = Some((*name).into());
+            let error = provider_child_env(&request)
+                .expect_err(&format!("{name} must never be exported to a Codex child"))
+                .to_string();
+            // The refusal names the variable and the way out of it.
+            assert!(error.contains(name), "{error}");
+            assert!(error.contains("credential broker"), "{error}");
+            assert!(
+                !error.contains("sk_live_should_never_be_exported"),
+                "the refusal must not quote the credential: {error}"
+            );
+        }
+        // The broker lease, and the local loopback token, still cross.
+        request.provider_env_key = Some(credential_broker::LEASE_ENV_KEY.into());
+        assert_eq!(
+            provider_child_env(&request).unwrap(),
+            Some((
+                credential_broker::LEASE_ENV_KEY.to_owned(),
+                "sk_live_should_never_be_exported".to_owned()
+            ))
+        );
+        request.provider_env_key = None;
+        request.api_key = String::new();
+        assert_eq!(provider_child_env(&request).unwrap(), None);
     }
 
     #[test]
@@ -3082,5 +4227,206 @@ mod tests {
         let mut ready = "ready".to_owned();
         assert!(!reconcile_detached_status(&mut ready, false));
         assert_eq!(ready, "ready");
+    }
+
+    #[test]
+    fn extracts_only_authoritative_per_turn_usage_shapes() {
+        let snake_case = extract_turn_usage(&json!({
+            "turn": {"usage": {
+                "input_tokens": 100,
+                "output_tokens": 25,
+                "output_tokens_details": {"reasoning_tokens": 4}
+            }}
+        }))
+        .unwrap();
+        assert_eq!(snake_case.input_tokens, Some(100));
+        assert_eq!(snake_case.output_tokens, Some(25));
+        assert_eq!(snake_case.reasoning_tokens, Some(4));
+
+        let camel_case = extract_turn_usage(&json!({
+            "tokenUsage": {
+                "totalUsage": {"inputTokens": 9999, "outputTokens": 9999},
+                "lastUsage": {"inputTokens": 50, "outputTokens": 8, "cachedInputTokens": 20}
+            }
+        }))
+        .unwrap();
+        assert_eq!(camel_case.input_tokens, Some(50));
+        assert_eq!(camel_case.output_tokens, Some(8));
+        assert_eq!(camel_case.cached_input_tokens, Some(20));
+        assert!(extract_turn_usage(&json!({
+            "tokenUsage": {"totalUsage": {"inputTokens": 9999, "outputTokens": 9999}}
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn recognizes_answer_deltas_but_not_reasoning_or_empty_events() {
+        assert!(is_output_delta(
+            "item/agentMessage/delta",
+            &json!({"delta": "answer"})
+        ));
+        assert!(!is_output_delta(
+            "item/reasoning/delta",
+            &json!({"delta": "private reasoning"})
+        ));
+        assert!(!is_output_delta(
+            "item/agentMessage/delta",
+            &json!({"delta": ""})
+        ));
+    }
+
+    // ---- settled Synth Cloud accounting at turn finalize ----
+    // Session ids are unique per test: the broker's receipt store is
+    // process-wide and these tests run in parallel.
+
+    fn tracker_for(provider: &str, turn_id: &str) -> TurnPerformanceTracker {
+        TurnPerformanceTracker {
+            provider: provider.into(),
+            model_id: "openrouter/poolside/laguna-s-2.1".into(),
+            turn_id: turn_id.into(),
+            started_at_ms: 1_000,
+            first_output_at_ms: Some(1_100),
+            last_output_at_ms: Some(1_900),
+            usage: TurnTokenUsage {
+                input_tokens: Some(1_000),
+                cached_input_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+                output_tokens: Some(200),
+            },
+        }
+    }
+
+    fn settled_receipt(
+        session_id: &str,
+        response_id: &str,
+        cost_usd: Option<f64>,
+    ) -> credential_broker::SettledReceipt {
+        credential_broker::SettledReceipt {
+            session_id: session_id.into(),
+            provider_response_id: response_id.into(),
+            model: Some("openrouter/poolside/laguna-s-2.1".into()),
+            prompt_tokens: Some(500),
+            completion_tokens: Some(100),
+            cached_tokens: None,
+            reasoning_tokens: None,
+            cost_usd,
+            completed_at_ms: 1_950,
+        }
+    }
+
+    async fn finalize_turn(core: &Arc<CoreRuntime>, session_id: &str, provider: &str, turn: &str) {
+        let trackers: PerformanceTrackers = Arc::default();
+        trackers
+            .lock()
+            .await
+            .insert(session_id.to_owned(), tracker_for(provider, turn));
+        finalize_performance_tracker(core, &trackers, session_id, "completed", Some(2_000)).await;
+    }
+
+    async fn usage_totals(core: &Arc<CoreRuntime>) -> UsageBreakdown {
+        UsageRecordsRepository::new(core.storage().database().clone())
+            .summary("all".into(), None)
+            .await
+            .unwrap()
+            .totals
+    }
+
+    #[test]
+    fn settled_cost_sums_only_receipts_that_carried_money() {
+        assert_eq!(settled_cost_from_receipts(&[]), None);
+        assert_eq!(
+            settled_cost_from_receipts(&[settled_receipt("s", "a", None)]),
+            None
+        );
+        let mixed = [
+            settled_receipt("s", "a", Some(0.01)),
+            settled_receipt("s", "b", None),
+            settled_receipt("s", "c", Some(0.02)),
+        ];
+        let sum = settled_cost_from_receipts(&mixed).unwrap();
+        assert!((sum - 0.03).abs() < 1e-12, "{sum}");
+    }
+
+    #[tokio::test]
+    async fn a_synth_cloud_turn_records_the_sum_of_its_settled_receipts() {
+        let temp = tempdir().unwrap();
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let session = "wp4-cloud-settles";
+        // One turn may make several upstream requests; their settled charges
+        // sum, and a token-only receipt contributes no invented money.
+        credential_broker::push_settled_receipt(settled_receipt(session, "resp-1", Some(0.01)));
+        credential_broker::push_settled_receipt(settled_receipt(session, "resp-2", Some(0.02)));
+        credential_broker::push_settled_receipt(settled_receipt(session, "resp-3", None));
+        finalize_turn(&core, session, "synth-cloud", "turn-1").await;
+
+        let totals = usage_totals(&core).await;
+        assert_eq!(totals.requests, 1);
+        assert!((totals.billed_cost_usd.unwrap() - 0.03).abs() < 1e-12);
+        assert_eq!(totals.cost_source, CostSource::SynthCloud);
+        // Tokens stay the tracker's own counts, and the settled charge left
+        // nothing in the estimate column.
+        assert_eq!(totals.input_tokens, 1_000);
+        assert_eq!(totals.output_tokens, 200);
+        assert_eq!(totals.estimated_cost_usd, None);
+        // Drained: a replayed finalize finds nothing to double-bill.
+        assert!(credential_broker::drain_settled_receipts(session).is_empty());
+    }
+
+    #[tokio::test]
+    async fn cloud_receipts_without_money_leave_billed_unset() {
+        let temp = tempdir().unwrap();
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let session = "wp4-cloud-token-only";
+        credential_broker::push_settled_receipt(settled_receipt(session, "resp-1", None));
+        finalize_turn(&core, session, "synth-cloud", "turn-1").await;
+
+        let totals = usage_totals(&core).await;
+        assert_eq!(totals.requests, 1);
+        assert_eq!(totals.billed_cost_usd, None);
+        assert_eq!(totals.cost_source, CostSource::None);
+        assert_eq!(totals.input_tokens, 1_000);
+    }
+
+    #[tokio::test]
+    async fn local_turns_neither_drain_receipts_nor_carry_any_charge() {
+        let temp = tempdir().unwrap();
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let session = "wp4-local-untouched";
+        // Even a stray receipt under a local session's id must not turn an
+        // on-device row into a billed one — billed stays None, never $0.
+        credential_broker::push_settled_receipt(settled_receipt(session, "resp-1", Some(0.42)));
+        finalize_turn(&core, session, "local-laguna", "turn-1").await;
+
+        let totals = usage_totals(&core).await;
+        assert_eq!(totals.requests, 1);
+        assert_eq!(totals.billed_cost_usd, None);
+        assert_eq!(totals.estimated_cost_usd, None);
+        assert_eq!(totals.cost_source, CostSource::None);
+        // The local finalize did not consume the queue.
+        assert_eq!(credential_broker::drain_settled_receipts(session).len(), 1);
+    }
+
+    /// The cancellation-race contract: a receipt landing after its turn
+    /// finalized stays queued no longer than the session's next finalize, and
+    /// never becomes a row of its own.
+    #[tokio::test]
+    async fn a_late_receipt_waits_for_the_next_finalize_and_never_invents_a_row() {
+        let temp = tempdir().unwrap();
+        let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+        let session = "wp4-late-receipt";
+        finalize_turn(&core, session, "synth-cloud", "turn-1").await;
+        let totals = usage_totals(&core).await;
+        assert_eq!((totals.requests, totals.billed_cost_usd), (1, None));
+
+        credential_broker::push_settled_receipt(settled_receipt(session, "resp-late", Some(0.05)));
+        // Still exactly one row: a queued receipt is not a usage record.
+        assert_eq!(usage_totals(&core).await.requests, 1);
+
+        finalize_turn(&core, session, "synth-cloud", "turn-2").await;
+        let totals = usage_totals(&core).await;
+        assert_eq!(totals.requests, 2);
+        assert!((totals.billed_cost_usd.unwrap() - 0.05).abs() < 1e-12);
+        assert_eq!(totals.cost_source, CostSource::SynthCloud);
     }
 }

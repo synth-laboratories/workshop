@@ -11,15 +11,22 @@ import type {
 	RuntimeHealth,
 	SemanticUiSnapshot,
 	Session,
-	UsageLedgerEntry,
+	UsageBreakdown,
 	VisualInstanceRecord,
 	VisualRecord
 } from "@synth/runtime-protocol";
-import { EXECUTION_TARGETS, isInternTargetId } from "./types/landing";
+import {
+	EXECUTION_TARGETS,
+	OPENROUTER_LAGUNA_S_MODEL,
+	OPENROUTER_LUNA_MODEL,
+	OPENROUTER_MUSE_SPARK_MODEL,
+	SYNTH_CLOUD_LAGUNA_S_MODEL,
+	isInternTargetId
+} from "./types/landing";
 import type { ArtifactRef } from "./types/landing";
-import { ChatTranscript } from "./components/ChatTranscript";
+import { ChatTranscript, OutputsPanel, outputContainerIds } from "./components/ChatTranscript";
 import { ContainerPane } from "./components/ContainerPane";
-import { CloudDesk } from "./components/CloudDesk";
+// CloudDesk stays dormant for v0.2; see the removal contract at its route site.
 import { Composer } from "./components/Composer";
 import { ConnectorsPage } from "./components/ConnectorsPage";
 import { ConversationSearch } from "./components/ConversationSearch";
@@ -30,6 +37,9 @@ import { OptimizersPage } from "./components/OptimizersPage";
 import { PaneResizeHandle } from "./components/PaneResizeHandle";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
+import { UsageSheet, type DeviceUsageSummary } from "./components/UsageSheet";
+import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
+import { buildAccountView } from "./runtime/accountView";
 import { SynthLogo } from "./components/SynthLogo";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { artifactFromVisualRecord, VisualPane } from "./components/VisualHost";
@@ -43,21 +53,20 @@ import {
 	targetIdToExecutionTarget,
 	visualRecordToArtifact
 } from "./runtime/sessionView";
-import { approvalModeConfig, approvalModeFromConfig, codexEventToRuntime, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode } from "./runtime/nativeCodex";
+import { approvalModeConfig, approvalModeFromConfig, codexEventToRuntime, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode, type ApprovalPolicy, type SandboxMode } from "./runtime/nativeCodex";
 import {
 	loadModelKnobValues,
 	modelKnobForTarget,
 	modelKnobKey,
-	modelSupportsImageInput,
 	turnStartEffortForExecutionTarget,
-	type ModelKnobValue
+	type ModelKnobTransportValue
 } from "./runtime/modelCapabilities";
 import {
 	planComposerSend,
 	planModelChipChange,
 	threadHasHistoryFromEvents
 } from "./runtime/modelSwitchPlan";
-import type { CodexSessionInfo, CodexTurnFailure, ComposerImageAttachment, ConversationWorkspaceScope, LagunaStatus } from "./env";
+import type { CodexBridge, CodexSessionInfo, CodexSessionStart, CodexTurnFailure, ComposerImageAttachment, ConversationWorkspaceScope, LagunaStatus, ModelPerformanceSummary, SynthAccountSummary, SynthBackendSettings } from "./env";
 import {
 	applyPreferencesToDocument,
 	archiveConversation,
@@ -72,7 +81,7 @@ import {
 	removeQueuedPrompt,
 	renameConversation,
 	saveLayout,
-	setApprovalModePreference,
+	setPermissionPreferences,
 	setToolActivityMode,
 	setUnreadCompletedChats,
 	subscribePreferences,
@@ -120,17 +129,83 @@ function turnFailureMessage(failure: CodexTurnFailure): string {
 /** A user message that reached no app-server, kept so it can be retried. */
 type FailedSend = { sessionId: string; text: string; messageId: string; message: string };
 
-function summarizeAccountUsage(entries: UsageLedgerEntry[]) {
-	const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-	return entries.reduce((summary, entry) => {
-		summary.totalTokens += Math.max(0, entry.totalTokens);
-		summary.totalCostUsd += Math.max(0, entry.costUsd ?? 0);
-		if (Date.parse(entry.createdAt) >= weekAgo) {
-			summary.weeklyTokens += Math.max(0, entry.totalTokens);
-			summary.weeklyCostUsd += Math.max(0, entry.costUsd ?? 0);
-		}
-		return summary;
-	}, { weeklyTokens: 0, weeklyCostUsd: 0, totalTokens: 0, totalCostUsd: 0, entries: entries.length });
+function performanceTargetId(summary: ModelPerformanceSummary): string | null {
+	if (summary.provider === "local-laguna") return "local-laguna";
+	if (summary.provider === "synth-cloud" && summary.modelId === SYNTH_CLOUD_LAGUNA_S_MODEL) return "synth-cloud-laguna-s";
+	if (summary.provider !== "openrouter") return null;
+	if (summary.modelId === OPENROUTER_LUNA_MODEL) return "openrouter-luna";
+	if (summary.modelId === OPENROUTER_LAGUNA_S_MODEL) return "openrouter-laguna-s";
+	if (summary.modelId === OPENROUTER_MUSE_SPARK_MODEL) return "openrouter-muse-spark";
+	return null;
+}
+
+function performanceKindLabel(kind: ModelPerformanceSummary["measurementKind"]): string {
+	if (kind === "decode") return "decode";
+	if (kind === "provider_reported") return "provider";
+	if (kind === "end_to_end") return "end-to-end";
+	return "observed";
+}
+
+function performancePreference(summary: ModelPerformanceSummary, targetId: string): number {
+	if (targetId === "local-laguna" && summary.measurementKind === "decode") return 4;
+	if (summary.measurementKind === "observed_stream") return 3;
+	if (summary.measurementKind === "provider_reported") return 2;
+	return 1;
+}
+
+/**
+ * Compact device rollup for the Settings/Account pages, derived from the
+ * native `usage_summary` aggregation — never by reducing raw ledger rows in
+ * the renderer. Billed money and unbilled estimates are combined here only
+ * because these pages show a single indicative figure; the Usage sheet keeps
+ * them separate and labeled.
+ */
+async function loadDeviceUsage(): Promise<DeviceUsageSummary | null> {
+	const bridge = window.synthUsage;
+	if (!bridge) return null;
+	const [sevenDays, allTime] = await Promise.all([bridge.summary("7d"), bridge.summary("all")]);
+	const cost = (totals: UsageBreakdown) => (totals.billedCostUsd ?? 0) + (totals.estimatedCostUsd ?? 0);
+	return {
+		weeklyTokens: sevenDays.totals.totalTokens,
+		weeklyCostUsd: cost(sevenDays.totals),
+		totalTokens: allTime.totals.totalTokens,
+		totalCostUsd: cost(allTime.totals),
+		entries: allTime.totals.requests
+	};
+}
+
+function isCodexCompactionEvent(event: { method: string; params: Record<string, unknown> }): boolean {
+	if (event.method === "thread/compacted") return true;
+	const item = event.params.item;
+	return Boolean(item && typeof item === "object" && (item as Record<string, unknown>).type === "contextCompaction");
+}
+
+/** Rebuild a start request for an existing session (compaction path — no model switch). */
+async function codexResumeRequest(
+	nativeCodex: CodexBridge,
+	session: Session,
+	autoCompactTokenLimits: Record<string, number>,
+	localBaseUrl?: string
+): Promise<CodexSessionStart> {
+	if (session.metadata.runtime !== "codex-app-server") {
+		throw new Error(`Session ${session.id} is not owned by Codex app-server`);
+	}
+	const workspace = typeof session.metadata.workspace === "string"
+		? session.metadata.workspace
+		: await nativeCodex.defaultWorkspace();
+	const storedApprovalMode = typeof session.metadata.approvalMode === "string"
+		? session.metadata.approvalMode as ApprovalMode
+		: approvalModeFromConfig(
+			typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : undefined,
+			typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : undefined
+		);
+	const storedApproval = approvalModeConfig(storedApprovalMode);
+	return {
+		...codexStartRequest(session.id, workspace, session.target, "ask", autoCompactTokenLimits, localBaseUrl),
+		approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : storedApproval.approvalPolicy,
+		sandbox: typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : storedApproval.sandbox,
+		threadId: typeof session.metadata.threadId === "string" ? session.metadata.threadId : undefined
+	};
 }
 
 type MainView =
@@ -138,7 +213,7 @@ type MainView =
 	| { kind: "chat"; chatId: string }
 	| { kind: "sync"; sessionId: string }
 	| { kind: "async"; sessionId: string }
-	| { kind: "settings"; section?: "general" | "models" | "inference" | "voice" | "runtime" | "account" | "about" }
+	| { kind: "settings"; section?: "general" | "models" | "inference" | "voice" | "account" | "about" }
 	| { kind: "connectors" }
 	| { kind: "inventory" }
 	| { kind: "visuals" }
@@ -154,17 +229,6 @@ type SemanticEvalApi = {
 function truncate(label: string, max = 22) {
 	if (label.length <= max) return label;
 	return `${label.slice(0, max - 1)}…`;
-}
-
-function localRuntimePresentation(health: RuntimeHealth | null, laguna: LagunaStatus | null) {
-	if (laguna?.phase === "ready" || health?.local.mode === "mlx") {
-		return { label: "Local ready", visibleLabel: "Local", tone: "is-ready" } as const;
-	}
-	if (laguna?.phase === "loading" || laguna?.phase === "starting") {
-		return { label: "Local starting", visibleLabel: "Local", tone: "is-starting" } as const;
-	}
-	if (!health && !laguna) return { label: "Connecting to local runtime", visibleLabel: "Local", tone: "is-connecting" } as const;
-	return { label: "Local offline", visibleLabel: "Local", tone: "is-offline" } as const;
 }
 
 function appendEvent(events: RuntimeEvent[], event: RuntimeEvent): RuntimeEvent[] {
@@ -235,33 +299,21 @@ const browserRuntimeClient = {
 	}
 };
 
-function IconCloud() {
-	return (
-		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<path
-				d="M5.2 12.2h6.1a2.7 2.7 0 00.2-5.4 3.5 3.5 0 00-6.7-1.1A2.5 2.5 0 005.2 12.2z"
-				stroke="currentColor"
-				strokeWidth="1.25"
-				strokeLinejoin="round"
-			/>
-		</svg>
-	);
-}
-
-function IconLayout() {
+function IconSidePanel() {
 	return (
 		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
 			<rect x="2.5" y="2.5" width="11" height="11" rx="2" stroke="currentColor" strokeWidth="1.3" />
-			<path d="M6.2 2.5v11" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M10 2.5v11" stroke="currentColor" strokeWidth="1.3" />
 		</svg>
 	);
 }
 
-function IconPulse() {
+function IconTerminal() {
 	return (
 		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="2.5" y="3" width="11" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
 			<path
-				d="M1.5 8h2.6l1.6-4.3 2.4 8.6 1.7-4.3h2.7"
+				d="M5 6.2l2 1.8L5 9.8M8.2 10.2H11"
 				stroke="currentColor"
 				strokeWidth="1.3"
 				strokeLinecap="round"
@@ -289,22 +341,43 @@ export default function App() {
 		if (isInternTargetId(selectedTargetId)) setSelectedTargetId("local-laguna");
 	}, [selectedTargetId]);
 	const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
-	const [accountUsage, setAccountUsage] = useState<ReturnType<typeof summarizeAccountUsage> | null>(null);
+	/** Connection facts for the Account page's Devices and Advanced sections. */
+	const [backendSettings, setBackendSettings] = useState<SynthBackendSettings | null>(null);
+	const [accountUsage, setAccountUsage] = useState<DeviceUsageSummary | null>(null);
+	const [accountSummary, setAccountSummary] = useState<SynthAccountSummary | null>(null);
+	const [usageSheetOpen, setUsageSheetOpen] = useState(false);
+	const refreshAccountSummary = useCallback((force = false) => {
+		const bridge = window.synthAccount;
+		if (typeof bridge?.getSummary !== "function") {
+			setAccountSummary(null);
+			return;
+		}
+		// `refresh` skips the host cache; older hosts only expose `getSummary`.
+		const read = force && typeof bridge.refresh === "function"
+			? bridge.refresh()
+			: bridge.getSummary();
+		void read
+			.then(setAccountSummary)
+			.catch(() => setAccountSummary(null));
+	}, []);
 	useEffect(() => {
-		void window.synthInventory?.listUsage(2000)
-			.then((entries) => setAccountUsage(summarizeAccountUsage(entries)))
+		refreshAccountSummary();
+		void loadDeviceUsage()
+			.then(setAccountUsage)
 			.catch(() => setAccountUsage(null));
-	}, []);
+	}, [refreshAccountSummary]);
+	const accountView = useMemo(
+		() => buildAccountView(accountSummary, apiKeyConfigured),
+		[accountSummary, apiKeyConfigured]
+	);
 	const [preferences, setPreferences] = useState<DesktopPreferences>(() => loadPreferences());
-	const [approvalMode, setApprovalMode] = useState<ApprovalMode>(() => loadPreferences().approvalMode);
-	const selectApprovalMode = useCallback((mode: ApprovalMode) => {
-		setApprovalMode(mode);
-		setPreferences(setApprovalModePreference(mode));
-	}, []);
+	const [, setApprovalMode] = useState<ApprovalMode>(() => loadPreferences().approvalMode);
+	const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>(() => loadPreferences().approvalPolicy);
+	const [sandboxMode, setSandboxMode] = useState<SandboxMode>(() => loadPreferences().sandboxMode);
 	const [modelKnobValues, setModelKnobValues] = useState(() => loadModelKnobValues(window.localStorage));
-	const selectModelKnob = useCallback((targetId: string, knobId: string, value: ModelKnobValue) => {
+	const selectModelKnob = useCallback((targetId: string, knobId: string, value: ModelKnobTransportValue) => {
 		const knob = modelKnobForTarget(targetId, knobId);
-		if (!knob || !knob.options.some((option) => option.id === value)) return;
+		if (!knob || !knob.options.some((option) => option.transportValue === value)) return;
 		setModelKnobValues((current) => ({
 			...current,
 			[modelKnobKey(targetId, knobId)]: value
@@ -330,7 +403,7 @@ export default function App() {
 	// Local inference is a first-class part of the workbench. Default the MLX
 	// sidecar rail open once for existing installs, while preserving explicit
 	// show/hide choices after that migration.
-	const [inferenceRailOpen, setInferenceRailOpen] = useState(
+	const [sidePanelOpen, setSidePanelOpen] = useState(
 		() => {
 			if (window.localStorage.getItem("synth.inferenceRailDefaultV2") !== "1") {
 				window.localStorage.setItem("synth.inferenceRailDefaultV2", "1");
@@ -340,18 +413,66 @@ export default function App() {
 			return window.localStorage.getItem("synth.inferenceRailOpen") !== "0";
 		}
 	);
+	const [sidePanelTab, setSidePanelTab] = useState<"outputs" | "inference">("inference");
 	const inferenceMonitor = useInferenceMonitor({ visible: selectedTargetId === "local-laguna" });
+	const [modelPerformance, setModelPerformance] = useState<ModelPerformanceSummary[]>([]);
+	useEffect(() => {
+		let disposed = false;
+		const refresh = async () => {
+			try {
+				const summaries = await window.synthModelPerformance?.summaries();
+				if (!disposed && summaries) setModelPerformance(summaries);
+			} catch {
+				// Optional telemetry must never block chat.
+			}
+		};
+		void refresh();
+		const timer = window.setInterval(() => void refresh(), 10_000);
+		return () => {
+			disposed = true;
+			window.clearInterval(timer);
+		};
+	}, []);
+	const persistedPerformanceByTarget = useMemo(() => {
+		const chosen = new Map<string, ModelPerformanceSummary>();
+		for (const summary of modelPerformance) {
+			if (summary.tpsP50 == null || summary.sampleCount < 1) continue;
+			const targetId = performanceTargetId(summary);
+			if (!targetId) continue;
+			const current = chosen.get(targetId);
+			if (!current || performancePreference(summary, targetId) > performancePreference(current, targetId)) chosen.set(targetId, summary);
+		}
+		return chosen;
+	}, [modelPerformance]);
 	const selectedModelMedianTps = selectedTargetId === "local-laguna"
 		? inferenceMonitor.snapshot?.rolling.decodeTpsP50 ?? null
 		: null;
+	const selectedPersistedPerformance = persistedPerformanceByTarget.get(selectedTargetId);
 	const selectedModelMedianTpsLabel = selectedModelMedianTps == null
-		? null
+		? selectedPersistedPerformance?.tpsP50 == null
+			? null
+			: `${formatTps(selectedPersistedPerformance.tpsP50)} tok/s ${performanceKindLabel(selectedPersistedPerformance.measurementKind)} p50`
 		: `${formatTps(selectedModelMedianTps)} tok/s p50`;
+	const aggregateModelTpsLabels = useMemo(() => {
+		const labels: Record<string, string> = {};
+		for (const [targetId, summary] of persistedPerformanceByTarget) {
+			if (summary.tpsP50 == null) continue;
+			labels[targetId] = `${formatTps(summary.tpsP50)} tok/s ${performanceKindLabel(summary.measurementKind)} p50 · ${summary.sampleCount} ${summary.sampleCount === 1 ? "request" : "requests"} · all sessions`;
+		}
+		if (!labels["local-laguna"] && selectedModelMedianTpsLabel) labels["local-laguna"] = `${selectedModelMedianTpsLabel} · daemon lifetime`;
+		return labels;
+	}, [persistedPerformanceByTarget, selectedModelMedianTpsLabel]);
 	const [inventoryContainerWidth, setInventoryContainerWidth] = useState(() => loadPreferences().layout.last.outputPaneWidth);
 	const [busy, setBusy] = useState(false);
 	const [bootError, setBootError] = useState<string | null>(null);
 	const [terminalOpen, setTerminalOpen] = useState(() => loadPreferences().layout.last.bottomPanelVisible);
 	const [sidebarVisible, setSidebarVisible] = useState(() => loadPreferences().layout.last.sidebarVisible);
+	const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+	useEffect(() => {
+		const onResize = () => setViewportWidth(window.innerWidth);
+		window.addEventListener("resize", onResize);
+		return () => window.removeEventListener("resize", onResize);
+	}, []);
 	const [sidebarWidth, setSidebarWidth] = useState(() => loadPreferences().layout.last.sidebarWidth);
 	const [steerError, setSteerError] = useState<string | null>(null);
 	const [composerSkills, setComposerSkills] = useState<Array<{ id: string; name: string; description: string }>>([]);
@@ -365,6 +486,8 @@ export default function App() {
 	// Sessions whose last turn start was rejected. A late `run.started` from the
 	// process that just died must not resurrect Working for them.
 	const staleRunFenceRef = useRef(new Set<string>());
+	const manualCompactionPendingRef = useRef(new Set<string>());
+	const queuedCompactionRef = useRef(new Set<string>());
 	const sendToSessionRef = useRef<(sessionId: string, text: string, options?: { messageId?: string }) => Promise<boolean>>(async () => false);
 	const queueDrainStatusesRef = useRef(new Map<string, Session["status"]>());
 	const queueDrainingRef = useRef(new Set<string>());
@@ -381,9 +504,31 @@ export default function App() {
 		window.setTimeout(() => setToast(null), 2200);
 	}, []);
 
+	/**
+	 * Billing always leaves the app: the host opens a backend-issued hosted URL
+	 * in the system browser. On return the snapshot is refetched so a completed
+	 * checkout shows up without a restart.
+	 */
+	const openBilling = useCallback(async (action: "upgrade" | "manage") => {
+		const bridge = window.synthAccount;
+		if (typeof bridge?.openBilling !== "function") {
+			showToast("Billing management requires Synth Desktop");
+			return;
+		}
+		try {
+			await bridge.openBilling(action, accountSummary?.billing?.upgradeTier);
+			showToast(action === "upgrade" ? "Finish your upgrade in the browser" : "Manage billing opened in your browser");
+			window.setTimeout(() => refreshAccountSummary(true), 4_000);
+		} catch (reason) {
+			showToast(reason instanceof Error ? reason.message : String(reason));
+		}
+	}, [accountSummary?.billing?.upgradeTier, refreshAccountSummary, showToast]);
+
 	useEffect(() => subscribePreferences((next) => {
 		setPreferences(next);
 		setApprovalMode(next.approvalMode);
+		setApprovalPolicy(next.approvalPolicy);
+		setSandboxMode(next.sandboxMode);
 		setUnreadChatIds(new Set(next.unreadCompletedChats));
 		applyPreferencesToDocument(next);
 	}), []);
@@ -476,7 +621,7 @@ export default function App() {
 				window.synthConfig.get(),
 				window.synthInventory.counts(),
 				window.synthLaguna?.getStatus() ?? Promise.resolve(null),
-				window.synthInventory.listUsage(2000).catch(() => [])
+				loadDeviceUsage().catch(() => null)
 			]);
 			const next: RuntimeHealth = {
 				status: "ok",
@@ -504,7 +649,8 @@ export default function App() {
 				}
 			};
 			setApiKeyConfigured(config.apiKeyConfigured);
-			setAccountUsage(summarizeAccountUsage(usage));
+			setBackendSettings(config);
+			setAccountUsage(usage);
 			setHealth(next);
 			return next;
 		}
@@ -512,7 +658,10 @@ export default function App() {
 			browserRuntimeClient.health(),
 			window.synthConfig?.get().catch(() => null) ?? Promise.resolve(null)
 		]);
-		if (config) setApiKeyConfigured(config.apiKeyConfigured);
+		if (config) {
+			setApiKeyConfigured(config.apiKeyConfigured);
+			setBackendSettings(config);
+		}
 		setHealth(next);
 		return next;
 	}, [isDesktop]);
@@ -522,10 +671,11 @@ export default function App() {
 			const configured = (event as CustomEvent<{ apiKeyConfigured?: boolean }>).detail?.apiKeyConfigured;
 			if (typeof configured === "boolean") setApiKeyConfigured(configured);
 			else void refreshHealth().catch(() => undefined);
+			refreshAccountSummary();
 		};
 		window.addEventListener("synth:account-changed", onAccountChanged);
 		return () => window.removeEventListener("synth:account-changed", onAccountChanged);
-	}, [refreshHealth]);
+	}, [refreshAccountSummary, refreshHealth]);
 
 	useEffect(() => {
 		void window.synthCodex?.defaultWorkspace().then(setDefaultWorkspace).catch(() => undefined);
@@ -596,8 +746,13 @@ export default function App() {
 	useEffect(() => {
 		if (!nativeCodex) return;
 		return nativeCodex.onEvent((event) => {
+			const manualCompaction = isCodexCompactionEvent(event)
+				&& manualCompactionPendingRef.current.delete(event.sessionId);
+			const normalizedEvent = manualCompaction
+				? { ...event, params: { ...event.params, source: "manual" } }
+				: event;
 			const sequence = allocateNativeSequence(event.sessionId);
-			const runtimeEvent = codexEventToRuntime(event, sequence);
+			const runtimeEvent = codexEventToRuntime(normalizedEvent, sequence);
 			const updatedThreadName = event.method === "thread/name/updated"
 				&& typeof event.params.threadName === "string"
 				? event.params.threadName.trim()
@@ -606,6 +761,25 @@ export default function App() {
 			// process that emitted this run.started is the one that just died.
 			const fenced = runtimeEvent.eventKind === "run.started"
 				&& staleRunFenceRef.current.has(event.sessionId);
+			if (runtimeEvent.eventKind === "run.failed" || runtimeEvent.eventKind === "run.cancelled") {
+				manualCompactionPendingRef.current.delete(event.sessionId);
+			}
+			if (
+				(runtimeEvent.eventKind === "run.completed" || runtimeEvent.eventKind === "run.failed" || runtimeEvent.eventKind === "run.cancelled")
+				&& queuedCompactionRef.current.delete(event.sessionId)
+				&& nativeCodex.compact
+			) {
+				manualCompactionPendingRef.current.add(event.sessionId);
+				const session = sessionsRef.current.find((candidate) => candidate.id === event.sessionId);
+				if (!session) return;
+				void codexResumeRequest(nativeCodex, session, preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined)
+					.then((request) => nativeCodex.compact!(request))
+					.then(() => showToast("Compacting context…"))
+					.catch((reason) => {
+						manualCompactionPendingRef.current.delete(event.sessionId);
+						showToast(reason instanceof Error ? reason.message : String(reason));
+					});
+			}
 			setEventsBySession((current) => ({
 				...current,
 				[event.sessionId]: appendEvent(current[event.sessionId] ?? [], runtimeEvent)
@@ -622,7 +796,7 @@ export default function App() {
 						: session.status }
 				: session));
 		});
-	}, [allocateNativeSequence, nativeCodex]);
+	}, [allocateNativeSequence, laguna?.baseUrl, nativeCodex, preferences.agentContext.autoCompactTokenLimits, showToast]);
 
 	useEffect(() => {
 		const bridge = window.synthLaguna;
@@ -661,9 +835,11 @@ export default function App() {
 	}, [view]);
 	const terminalWorkspaceRoot = defaultWorkspace;
 	const terminalWorkspaceId = activeSessionId ?? "default";
-	const selectActiveApprovalMode = useCallback((mode: ApprovalMode) => {
+	const selectActivePermissions = useCallback((nextApprovalPolicy: ApprovalPolicy, nextSandboxMode: SandboxMode) => {
+		const mode = approvalModeFromConfig(nextApprovalPolicy, nextSandboxMode);
 		if (!activeSessionId) {
-			selectApprovalMode(mode);
+			setApprovalMode(mode); setApprovalPolicy(nextApprovalPolicy); setSandboxMode(nextSandboxMode);
+			setPreferences(setPermissionPreferences(nextApprovalPolicy, nextSandboxMode));
 			return;
 		}
 		const activeSession = sessionsRef.current.find((session) => session.id === activeSessionId);
@@ -672,18 +848,19 @@ export default function App() {
 			// not relabel an in-flight Ask turn as Allow all: preserve an honest
 			// current label and save the requested mode as the default for the
 			// next turn instead.
-			setPreferences(setApprovalModePreference(mode));
+			setPreferences(setPermissionPreferences(nextApprovalPolicy, nextSandboxMode));
 			showToast("Approval mode will apply after the current turn finishes.");
 			return;
 		}
-		selectApprovalMode(mode);
-		const config = approvalModeConfig(mode);
+		setApprovalMode(mode); setApprovalPolicy(nextApprovalPolicy); setSandboxMode(nextSandboxMode);
+		setPreferences(setPermissionPreferences(nextApprovalPolicy, nextSandboxMode));
+		const config = { approvalPolicy: nextApprovalPolicy, sandbox: nextSandboxMode };
 		setSessions((current) => current.map((session) => session.id === activeSessionId ? {
 			...session,
 			metadata: { ...session.metadata, approvalMode: mode, ...config }
 		} : session));
 		void nativeCodex?.close(activeSessionId).catch((reason) => showToast(reason instanceof Error ? reason.message : String(reason)));
-	}, [activeSessionId, nativeCodex, selectApprovalMode, showToast]);
+	}, [activeSessionId, nativeCodex, showToast]);
 
 	// The composer describes the active conversation, not merely the global
 	// default. Keep its label synchronized with the policy that will actually be
@@ -699,6 +876,8 @@ export default function App() {
 				typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : undefined
 			);
 		setApprovalMode(mode);
+		setApprovalPolicy(typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy as ApprovalPolicy : approvalModeConfig(mode).approvalPolicy as ApprovalPolicy);
+		setSandboxMode(typeof session.metadata.sandbox === "string" ? session.metadata.sandbox as SandboxMode : approvalModeConfig(mode).sandbox as SandboxMode);
 	}, [activeSessionId, sessions]);
 
 	useEffect(() => {
@@ -804,7 +983,9 @@ export default function App() {
 			codexActivityBySession,
 			selectedTargetId,
 			laguna,
-			apiKeyConfigured
+			apiKeyConfigured,
+			openrouterApiKeyConfigured: backendSettings?.openrouterApiKeyConfigured,
+			cloudBlockedReason: accountView.cloudBlockedReason
 		});
 		const archived = new Set(
 			Object.entries(preferences.conversations)
@@ -824,7 +1005,9 @@ export default function App() {
 			model: { ...withTitles.model, downloadPaused }
 		};
 	}, [
+		accountView.cloudBlockedReason,
 		apiKeyConfigured,
+		backendSettings?.openrouterApiKeyConfigured,
 		downloadPaused,
 		eventsBySession,
 		codexActivityBySession,
@@ -911,13 +1094,30 @@ export default function App() {
 		? sessions.find((candidate) => candidate.id === activeChat.id)
 		: undefined;
 	const activeChatRunning = activeChat ? (() => {
-		// A restored session record is authoritative. In particular, a stale
-		// run.started event must not resurrect Working after the app-server that
-		// owned that turn has exited or the desktop app has restarted.
-		if (activeChatSession) return activeChatSession.status === "running";
 		const latestRunEvent = [...(eventsBySession[activeChat.id] ?? [])]
 			.reverse()
 			.find((event) => event.eventKind.startsWith("run."));
+		if (
+			latestRunEvent?.eventKind === "run.completed" ||
+			latestRunEvent?.eventKind === "run.failed" ||
+			latestRunEvent?.eventKind === "run.cancelled"
+		) {
+			// A new turn can be accepted before a provider emits run.started. Do not
+			// let the preceding turn's terminal event hide Stop for that new turn.
+			// Sequence, unlike restored wall-clock timestamps, proves the user event
+			// belongs to a later turn.
+			const hasNewerUserTurn = (eventsBySession[activeChat.id] ?? []).some((event) =>
+				event.sequence > latestRunEvent.sequence &&
+				event.eventKind === "message.created" &&
+				event.payload?.role === "user"
+			);
+			if (activeChatSession?.status !== "running" || !hasNewerUserTurn) return false;
+		}
+		// A restored session record is authoritative. In particular, a stale
+		// run.started event must not resurrect Working after the app-server that
+		// owned that turn has exited or the desktop app has restarted. A terminal
+		// event is newer evidence and must clear a lagging running record.
+		if (activeChatSession) return activeChatSession.status === "running";
 		return latestRunEvent?.eventKind === "run.started";
 	})() : false;
 	const activeChatWarmingUp = Boolean(
@@ -926,13 +1126,21 @@ export default function App() {
 		(laguna?.phase === "loading" || !laguna?.loadedModel)
 	);
 	const activeLocalModel = activeChatSession?.target.kind === "local";
-	const showInferenceRail = activeLocalModel && inferenceRailOpen;
+	/*
+	 * The rail takes a fixed-ish column out of the workbench. Below this width
+	 * it squeezed the transcript until the composer fell under its 320px usable
+	 * floor and slid beneath the rail. Unmount rather than `display: none` so
+	 * the pane genuinely does not exist for layout, measurement, or a11y.
+	 * 368px = the composer's 320px floor plus the transcript's 24px gutters;
+	 * 300px = the rail's own minimum column.
+	 */
+	const workbenchWidth = viewportWidth - (sidebarVisible ? sidebarWidth : 0);
+	const sidePanelFits = workbenchWidth >= 368 + 300;
+	const showSidePanel = sidePanelOpen && sidePanelFits && (sidePanelTab === "outputs" || activeLocalModel);
 	const activeSync =
 		view.kind === "sync"
 			? (state.syncSessions.find((s) => s.id === view.sessionId) ?? null)
 			: null;
-	const asyncSession =
-		view.kind === "async" ? (sessions.find((s) => s.id === view.sessionId) ?? null) : null;
 
 	const openArtifact =
 		standaloneVisual && openArtifactId === standaloneVisual.id
@@ -1052,6 +1260,19 @@ export default function App() {
 		return () => unlisten?.();
 	}, [openVisualRecord, showToast]);
 
+	const ensureOpenRouterReady = useCallback(async (targetId: string): Promise<boolean> => {
+		if (!targetId.startsWith("openrouter-")) return true;
+		const config = await window.synthConfig?.get().catch(() => null);
+		const configured = config?.openrouterApiKeyConfigured ?? health?.openrouter.mode === "ready";
+		if (configured) {
+			if (config) setBackendSettings(config);
+			return true;
+		}
+		showToast("OpenRouter API key required — message was not sent");
+		setView({ kind: "settings", section: "account" });
+		return false;
+	}, [health?.openrouter.mode, showToast]);
+
 	const createConversation = useCallback(
 		async (targetId: string = selectedTargetId, title?: string, objective?: string) => {
 			setBusy(true);
@@ -1065,8 +1286,9 @@ export default function App() {
 					const id = crypto.randomUUID();
 					// Every local/configured-provider task starts in the configured safe workspace.
 					const workspace = await nativeCodex.defaultWorkspace();
-					await nativeCodex.start(codexStartRequest(id, workspace, target, approvalMode));
-					const session = createCodexSession(id, target, null, workspace, title, approvalMode);
+					const permissions = { approvalPolicy, sandbox: sandboxMode };
+					await nativeCodex.start(codexStartRequest(id, workspace, target, permissions, preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined));
+					const session = createCodexSession(id, target, null, workspace, title, permissions);
 					sessionsRef.current = [session, ...sessionsRef.current.filter((item) => item.id !== session.id)];
 					setSessions(sessionsRef.current);
 					setView({ kind: "chat", chatId: session.id });
@@ -1091,12 +1313,17 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[approvalMode, nativeCodex, nativeIntern, refreshSessions, selectedTargetId, showToast]
+		[approvalPolicy, sandboxMode, laguna?.baseUrl, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
 	);
 
 	const ensureActiveSession = useCallback(async (objective: string): Promise<{ sessionId: string; objectiveConsumed: boolean } | null> => {
-		if (activeSessionId) return { sessionId: activeSessionId, objectiveConsumed: false };
-		if (view.kind !== "landing") return null;
+		if (activeSessionId && sessionsRef.current.some((session) => session.id === activeSessionId)) {
+			return { sessionId: activeSessionId, objectiveConsumed: false };
+		}
+		// A persisted selection can outlive the underlying session record. Treat
+		// that empty Chat shell like the landing page instead of sending to a UUID
+		// that the native bridge no longer owns.
+		if (view.kind !== "landing" && view.kind !== "chat") return null;
 		const target = targetIdToExecutionTarget(selectedTargetId);
 		const objectiveConsumed = target.kind === "intern";
 		const session = await createConversation(selectedTargetId, undefined, objectiveConsumed ? objective : undefined);
@@ -1105,23 +1332,24 @@ export default function App() {
 
 	const sendToSession = useCallback(
 		async (sessionId: string, text: string, options?: { messageId?: string; images?: ComposerImageAttachment[] }) => {
-			setBusy(true);
 			try {
 				const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
+				const sessionTargetId = session ? executionTargetToUiId(session.target) : selectedTargetId;
+				const pendingTargetId = isInternTargetId(selectedTargetId) ? sessionTargetId : selectedTargetId;
+				if (!await ensureOpenRouterReady(pendingTargetId)) return false;
+				setBusy(true);
 				if (nativeCodex && (!session || session.target.kind !== "intern")) {
 					if (!session) throw new Error(`Native Codex session is not registered: ${sessionId}`);
 					if (session.metadata.runtime !== "codex-app-server") {
 						throw new Error(`Session ${sessionId} is not owned by Codex app-server`);
 					}
-					const sessionTargetId = executionTargetToUiId(session.target);
-					const pendingTargetId = isInternTargetId(selectedTargetId) ? sessionTargetId : selectedTargetId;
 					const sendPlan = planComposerSend({
 						pendingTargetId,
 						sessionTargetId,
 						threadHasHistory: threadHasHistoryFromEvents(eventsBySessionRef.current[sessionId] ?? []),
 						turnRunning: session.status === "running",
 						hasPendingImages: Boolean(options?.images?.length),
-						destinationSupportsImages: modelSupportsImageInput(pendingTargetId)
+						destinationSupportsImages: false
 					});
 					if (sendPlan.kind === "block") {
 						showToast(sendPlan.message);
@@ -1141,7 +1369,7 @@ export default function App() {
 						);
 					const storedApproval = approvalModeConfig(storedApprovalMode);
 					const startRequest = {
-						...codexStartRequest(sessionId, workspace, executionTarget),
+						...codexStartRequest(sessionId, workspace, executionTarget, "ask", preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined),
 						// Restored pre-policy sessions can carry only the human mode. Never
 						// turn that into an undefined request which Rust then treats as Ask.
 						approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : storedApproval.approvalPolicy,
@@ -1210,7 +1438,7 @@ export default function App() {
 				setBusy(false);
 			}
 		},
-		[allocateNativeSequence, failTurnStart, modelKnobValues, nativeCodex, nativeIntern, refreshSessions, selectedTargetId, showToast]
+		[allocateNativeSequence, ensureOpenRouterReady, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
 	);
 	sendToSessionRef.current = sendToSession;
 
@@ -1224,6 +1452,7 @@ export default function App() {
 	const onComposerSend = useCallback(
 		async (text: string, images: ComposerImageAttachment[] = []) => {
 			try {
+				if (!await ensureOpenRouterReady(selectedTargetId)) return;
 				const ensured = await ensureActiveSession(text);
 				if (!ensured) {
 					showToast("No active session");
@@ -1238,7 +1467,7 @@ export default function App() {
 				/* toast already shown */
 			}
 		},
-		[ensureActiveSession, sendToSession, showToast]
+		[ensureActiveSession, ensureOpenRouterReady, selectedTargetId, sendToSession, showToast]
 	);
 
 	const controlActive = useCallback(
@@ -1275,19 +1504,6 @@ export default function App() {
 			}
 		},
 		[activeSessionId, nativeCodex, nativeIntern, refreshSessions, sessions, showToast]
-	);
-
-	const onCloudAction = useCallback(
-		(label: string) => {
-			const lower = label.toLowerCase();
-			if (lower === "pause") void controlActive("pause");
-			else if (lower === "resume") void controlActive("resume");
-			else if (lower === "close") void controlActive("close");
-			else if (lower === "cancel") void controlActive("cancel");
-			else if (lower === "checkpoint") void controlActive("request_checkpoint");
-			else showToast(`${label} is not available`);
-		},
-		[controlActive, showToast]
 	);
 
 	const onSelectTarget = useCallback((id: string) => {
@@ -1340,6 +1556,37 @@ export default function App() {
 		setPreferences(renameConversation(activeSessionId, trimmed));
 	}, [activeSessionId, showToast]);
 
+	const onSlashCompact = useCallback(async () => {
+		if (!activeSessionId || !nativeCodex?.compact) {
+			showToast("Context compaction requires an active Codex conversation");
+			return;
+		}
+		if (activeChatRunning) {
+			queuedCompactionRef.current.add(activeSessionId);
+			showToast("Compaction queued for after the current response");
+			return;
+		}
+		setBusy(true);
+		manualCompactionPendingRef.current.add(activeSessionId);
+		try {
+			const session = sessionsRef.current.find((candidate) => candidate.id === activeSessionId);
+			if (!session) throw new Error(`Native Codex session is not registered: ${activeSessionId}`);
+			const request = await codexResumeRequest(
+				nativeCodex,
+				session,
+				preferences.agentContext.autoCompactTokenLimits,
+				laguna?.baseUrl ?? undefined
+			);
+			await nativeCodex.compact(request);
+			showToast("Compacting context…");
+		} catch (reason) {
+			manualCompactionPendingRef.current.delete(activeSessionId);
+			showToast(reason instanceof Error ? reason.message : String(reason));
+		} finally {
+			setBusy(false);
+		}
+	}, [activeChatRunning, activeSessionId, laguna?.baseUrl, nativeCodex, preferences.agentContext.autoCompactTokenLimits, showToast]);
+
 	const onReloadLaguna = useCallback(async () => {
 		const bridge = window.synthLaguna;
 		if (!bridge) throw new Error("Laguna controls are unavailable in this build");
@@ -1353,12 +1600,13 @@ export default function App() {
 		return status;
 	}, [refreshHealth]);
 
-	const onNewSyncSession = useCallback(() => {
-		setSelectedTargetId("intern-sync");
-		setView({ kind: "landing" });
-		setOpenArtifactId(null);
-		setStandaloneVisual(null);
-		showToast("Enter an objective to start Live Intern");
+	const onFreeLocalMemory = useCallback(async () => {
+		const bridge = window.synthLaguna;
+		if (!bridge?.freeMemory) throw new Error("Local model controls are unavailable in this build");
+		const outcome = await bridge.freeMemory();
+		if (outcome.conflict || !outcome.released) throw new Error(outcome.detail ?? "Local model memory could not be freed");
+		setLaguna(await bridge.getStatus());
+		showToast(outcome.detail ?? "Local model memory freed");
 	}, [showToast]);
 
 	const openSearch = useCallback(() => {
@@ -1597,17 +1845,19 @@ export default function App() {
 	return (
 		<div className="app-shell">
 			<div className="body-row">
-					<Sidebar
+					{/* Settings owns the whole left rail; the conversation sidebar and its
+					    persisted visibility/width return untouched when Settings closes. */}
+					{view.kind !== "settings" ? <Sidebar
 						state={state}
 						lagunaStatus={laguna}
 					activeChatId={view.kind === "chat" ? view.chatId : null}
-					activeSyncId={view.kind === "sync" ? view.sessionId : null}
-					asyncActive={view.kind === "async"}
 					inventoryActive={view.kind === "inventory"}
 					visualsActive={view.kind === "visuals"}
 					optimizersActive={view.kind === "optimizers"}
-					connectorsActive={view.kind === "connectors"}
 					workingChatIds={workingChatIds}
+					activeLocalDecodeTps={inferenceMonitor.snapshot?.active?.decodeTokensPerSecond == null
+						? null
+						: `${formatTps(inferenceMonitor.snapshot.active.decodeTokensPerSecond)} tok/s`}
 					unreadChatIds={unreadChatIds}
 					pinnedChatIds={pinnedChatIds}
 					conversationTitles={conversationTitles}
@@ -1618,12 +1868,10 @@ export default function App() {
 						persistLayoutSnapshot({ sidebarWidth: width });
 					}}
 					onNewConversation={onNewConversation}
-					onNewSyncSession={onNewSyncSession}
 					onOpenChat={(id) => {
 						openChat(id);
 						persistLayoutSnapshot({ selectedConversationId: id });
 					}}
-					onOpenSyncSession={(id) => setView({ kind: "sync", sessionId: id })}
 					onRenameChat={(id, title) => {
 						try {
 							setPreferences(renameConversation(id, title));
@@ -1642,29 +1890,15 @@ export default function App() {
 							setView({ kind: "landing" });
 						}
 					}}
-					onOpenAsync={() => {
-						const pinned = sessions.find((session) =>
-							sessionIsAsync(session) &&
-							(!nativeIntern || session.metadata.runtime === "rust-intern")
-						);
-						if (!pinned || !state.asyncIntern) {
-							setSelectedTargetId("intern-async");
-							setView({ kind: "landing" });
-							setOpenArtifactId(null);
-							setStandaloneVisual(null);
-							showToast("Enter an objective to start Background Intern");
-							return;
-						}
-						setView({ kind: "async", sessionId: pinned.id });
-					}}
 					onOpenInventory={() => setView({ kind: "inventory" })}
 					onOpenVisuals={() => setView({ kind: "visuals" })}
 					onOpenOptimizers={() => setView({ kind: "optimizers" })}
-					onOpenConnectors={() => setView({ kind: "connectors" })}
 					onSearch={openSearch}
 					onSettings={() => setView({ kind: "settings" })}
-					accountSignedIn={apiKeyConfigured}
-					accountUsage={accountUsage}
+					account={accountView}
+					onOpenUsage={() => setUsageSheetOpen(true)}
+					onBilling={(action) => void openBilling(action)}
+					onRetryAccount={() => refreshAccountSummary(true)}
 					onOpenAccount={() => setView({ kind: "settings", section: "account" })}
 					onSignOut={async () => {
 						if (!window.synthAccount) {
@@ -1674,13 +1908,15 @@ export default function App() {
 						try {
 							const next = await window.synthAccount.signOut();
 							setApiKeyConfigured(next.apiKeyConfigured);
+							refreshAccountSummary();
 							showToast("Signed out of Synth");
 						} catch (reason) {
 							showToast(reason instanceof Error ? reason.message : String(reason));
 						}
 					}}
 					onPauseToggle={() => setDownloadPaused((v) => !v)}
-				/>
+					onFreeLocalMemory={onFreeLocalMemory}
+				/> : null}
 
 				<main className="main-pane">
 					<header className="titlebar" data-testid="titlebar" data-tauri-drag-region="">
@@ -1710,76 +1946,12 @@ export default function App() {
 							</button> : null}
 						</div>
 						<div className="titlebar-actions">
-							{(() => {
-								const runtime = localRuntimePresentation(health, laguna);
-								const diagnostic = health
-									? [
-										health.runtimeId,
-										`Laguna ${health.local.mode}`,
-										laguna?.phase ? `sidecar ${laguna.phase}` : null,
-										laguna?.backend ? `backend ${laguna.backend}` : null,
-										laguna?.loadedModel || health.local.modelPath ||
-											(laguna?.phase === "ready" ? "weights currently unloaded" : "weights not detected"),
-										`Intern ${health.intern.mode}`,
-										`OpenRouter ${health.openrouter.mode}`,
-										health.inventory
-											? `Inventory ${health.inventory.containers} containers, ${health.inventory.traces} traces, ${health.inventory.visuals} visuals`
-											: null
-									].filter(Boolean).join(" · ")
-									: laguna?.detail || runtime.label;
-								return (
-									<span
-										className={`runtime-pill ${runtime.tone}`}
-										data-testid="runtime-status"
-										aria-label={runtime.label}
-										title={diagnostic}
-									>
-										<span className="runtime-pill-dot" aria-hidden />
-										<span className="runtime-pill-label">{runtime.visibleLabel}</span>
-									</span>
-								);
-							})()}
-							{activeLocalModel ? <button
-								type="button"
-								className={`titlebar-icon-btn${inferenceRailOpen ? " active" : ""}`}
-								aria-label={inferenceRailOpen ? "Hide inference monitor" : "Show inference monitor"}
-								aria-pressed={inferenceRailOpen}
-								title="MLX sidecar inference stats"
-								data-testid="toggle-inference-rail"
-								onClick={() => {
-									setInferenceRailOpen((current) => {
-										const next = !current;
-										window.localStorage.setItem("synth.inferenceRailOpen", next ? "1" : "0");
-										return next;
-									});
-								}}
-							>
-								<IconPulse />
-							</button> : null}
-							<button
-								type="button"
-								className="avatar-btn"
-								aria-label="Account"
-								data-testid="open-account-settings"
-								onClick={() => setView({ kind: "settings", section: "account" })}
-							>
-								S
-							</button>
-							<button
-								type="button"
-								className="titlebar-icon-btn"
-								aria-label="Models"
-								title="Models"
-								data-testid="open-models-settings"
-								onClick={() => setView({ kind: "settings", section: "models" })}
-							>
-								<IconCloud />
-							</button>
 							<button
 								type="button"
 								className="titlebar-icon-btn"
 								aria-label={terminalOpen ? "Hide terminal" : "Show terminal"}
 								title="Toggle terminal (⌘J)"
+								data-testid="toggle-terminal"
 								onClick={() => {
 									setTerminalOpen((current) => {
 										const next = !current;
@@ -1788,8 +1960,24 @@ export default function App() {
 									});
 								}}
 							>
-								<IconLayout />
+								<IconTerminal />
 							</button>
+							{activeLocalModel ? <button
+								type="button"
+								className={`titlebar-icon-btn${sidePanelOpen && sidePanelTab === "inference" ? " active" : ""}`}
+								aria-label={sidePanelOpen && sidePanelTab === "inference" ? "Hide inference panel" : "Show inference panel"}
+								aria-pressed={sidePanelOpen && sidePanelTab === "inference"}
+								title="Local inference panel"
+								data-testid="toggle-inference-rail"
+								onClick={() => {
+									const next = !(sidePanelOpen && sidePanelTab === "inference");
+									setSidePanelTab("inference");
+									setSidePanelOpen(next);
+										window.localStorage.setItem("synth.inferenceRailOpen", next ? "1" : "0");
+								}}
+							>
+								<IconSidePanel />
+							</button> : null}
 						</div>
 					</header>
 
@@ -1801,10 +1989,18 @@ export default function App() {
 
 					{view.kind === "settings" ? (
 						<SettingsPage
+							account={{
+								view: accountView,
+								summary: accountSummary,
+								deviceUsage: accountUsage,
+								connection: backendSettings,
+								onBilling: (action) => void openBilling(action),
+								onRefresh: () => refreshAccountSummary(true),
+								onOpenDeviceUsage: () => setView({ kind: "inventory" })
+							}}
 							key={view.section ?? "general"}
 							onBack={() => setView({ kind: "landing" })}
 							onReloadLaguna={onReloadLaguna}
-							health={health}
 							lagunaPhase={laguna?.phase}
 							initialSection={view.section}
 							preferences={preferences}
@@ -1816,12 +2012,8 @@ export default function App() {
 								setInventoryContainerWidth(next.layout.last.outputPaneWidth);
 								setTerminalOpen(next.layout.last.bottomPanelVisible);
 								setApprovalMode(next.approvalMode);
-							}}
-							conversationTitles={conversationTitles}
-							onUnarchiveConversation={(id) => setPreferences(archiveConversation(id, false))}
-							onOpenConversation={(id) => {
-								setPreferences(archiveConversation(id, false));
-								openChat(id);
+								setApprovalPolicy(next.approvalPolicy);
+								setSandboxMode(next.sandboxMode);
 							}}
 						/>
 					) : null}
@@ -1942,11 +2134,12 @@ export default function App() {
 							selectedTargetId={selectedTargetId}
 							onSelectTarget={onSelectTarget}
 							onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
+							onResolveBilling={() => setUsageSheetOpen(true)}
 						/>
 					) : null}
 
 					{view.kind === "chat" && activeChat ? (
-						<div className={`workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}${showInferenceRail ? " with-inference" : ""}`}>
+						<div className={`workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}${showSidePanel ? " with-side-panel" : ""}`}>
 								<ChatTranscript
 									chat={activeChat}
 									openArtifactId={openArtifactId}
@@ -1963,24 +2156,14 @@ export default function App() {
 											void controlActive("cancel");
 										}}
 										activityMode={preferences.toolActivity.mode}
-										onActivityModeChange={(mode) => setPreferences(setToolActivityMode(mode))}
-								/>
-							{failedSend && failedSend.sessionId === activeChat.id ? (
-								<div
-									role="status"
-									data-testid="send-retry"
-									style={{
-										display: "flex", alignItems: "center", justifyContent: "space-between",
-										gap: 12, margin: "0 16px 8px", padding: "8px 12px", borderRadius: 10,
-										border: "1px solid currentColor", opacity: 0.9, fontSize: 13
+									onActivityModeChange={(mode) => setPreferences(setToolActivityMode(mode))}
+									outputsOpen={showSidePanel && sidePanelTab === "outputs"}
+									onToggleOutputs={() => {
+										const next = !(showSidePanel && sidePanelTab === "outputs");
+										setSidePanelTab("outputs");
+										setSidePanelOpen(next);
 									}}
-								>
-									<span>{failedSend.message}</span>
-									<button type="button" data-testid="send-retry-button" onClick={retryFailedSend}>
-										Retry
-									</button>
-								</div>
-							) : null}
+							/>
 							{openArtifact ? (
 								<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
 							) : null}
@@ -1993,49 +2176,35 @@ export default function App() {
 									onClose={() => void toggleContainer(null)}
 								/>
 							) : null}
-							{showInferenceRail ? (
-								<aside className="inference-rail" data-testid="inference-rail" aria-label="Local inference monitor">
-									<div className="inference-rail-label">
-										<span>MLX sidecar</span>
-										<small>Owns local model memory, prompt caches, and the single-GPU queue.</small>
-									</div>
-									{/* `visible` drives subscribe/teardown, so a closed rail
-									    costs nothing. */}
-									<InferencePanel
-										visible
-										monitor={inferenceMonitor}
-										turnRunning={Boolean(
-											activeChatRunning && activeChatSession?.target.kind === "local"
-										)}
-										warmingUp={activeChatWarmingUp}
-										onOpenSettings={() => setView({ kind: "settings", section: "inference" })}
-									/>
-								</aside>
+							{showSidePanel ? (
+								<WorkbenchSidePanel
+									activeTabId={sidePanelTab}
+									onTabChange={(tabId) => setSidePanelTab(tabId as "outputs" | "inference")}
+									onClose={() => setSidePanelOpen(false)}
+									tabs={[
+										{
+											id: "outputs",
+											label: "Outputs",
+											badge: outputContainerIds(activeChat).length + (activeChat.artifacts?.length ?? 0),
+											content: <OutputsPanel chat={activeChat} openArtifactId={openArtifactId} onOpenArtifact={toggleArtifact} openContainerId={openContainer?.id ?? null} onOpenContainer={(id) => void toggleContainer(id)} />
+										},
+										...(activeLocalModel ? [{
+											id: "inference",
+											label: "Inference",
+											content: <InferencePanel visible monitor={inferenceMonitor} observedPerformance={persistedPerformanceByTarget.get("local-laguna") ?? null} turnRunning={Boolean(activeChatRunning && activeChatSession?.target.kind === "local")} warmingUp={activeChatWarmingUp} onOpenSettings={() => setView({ kind: "settings", section: "inference" })} />
+										}] : [])
+									]}
+								/>
 							) : null}
 						</div>
 					) : null}
 
-					{view.kind === "sync" && activeSync ? (
-						<CloudDesk
-							kind="sync"
-							session={activeSync}
-							openArtifactId={openArtifactId}
-							onOpenArtifact={toggleArtifact}
-							onBack={() => setView({ kind: "landing" })}
-							onAction={onCloudAction}
-							onSendMessage={(text) => void sendToSession(activeSync.id, text)}
-						/>
-					) : null}
-
-					{view.kind === "async" && state.asyncIntern && asyncSession ? (
-						<CloudDesk
-							kind="async"
-							intern={state.asyncIntern}
-							onBack={() => setView({ kind: "landing" })}
-							onAction={onCloudAction}
-							onSendMessage={(text) => void sendToSession(asyncSession.id, text)}
-						/>
-					) : null}
+					{/*
+					 * v0.1 removal contract: the CloudDesk sync/async routes are the
+					 * Intern surface and stay unmounted. components/CloudDesk.tsx is
+					 * retained dormant so v0.2 re-entry is a routing change, not a
+					 * rewrite.
+					 */}
 
 					{showComposer ? (
 						<Composer
@@ -2054,20 +2223,27 @@ export default function App() {
 							onSend={(text) => void onComposerSend(text)}
 							onSelectTarget={onSelectTarget}
 							onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
+							onResolveBilling={() => setUsageSheetOpen(true)}
 							onOpenVoiceSettings={() => setView({ kind: "settings", section: "voice" })}
 							skills={composerSkills}
 							onSlashNew={onNewConversation}
 							onSlashMcp={() => setView({ kind: "connectors" })}
 							onSlashRename={onSlashRename}
-							approvalMode={approvalMode}
-							onSelectApprovalMode={selectActiveApprovalMode}
+							onSlashCompact={onSlashCompact}
+							approvalPolicy={approvalPolicy}
+							sandboxMode={sandboxMode}
+							onSelectPermissions={selectActivePermissions}
 							modelKnobValues={modelKnobValues}
 							onSelectModelKnob={selectModelKnob}
 							modelMedianTpsLabel={selectedModelMedianTpsLabel}
+							aggregateModelTpsLabels={aggregateModelTpsLabels}
 							agentWorking={Boolean(activeChatRunning)}
 							activeEnterAction={preferences.submission.activeEnterAction}
 							steerSupported={Boolean(nativeCodex?.steerTurn)}
 							steerError={steerError}
+							sendFailure={failedSend && failedSend.sessionId === activeChat?.id
+								? { message: failedSend.message, onRetry: retryFailedSend }
+								: null}
 							onSteer={async (text) => {
 								if (!activeSessionId || !nativeCodex?.steerTurn) {
 									setSteerError("Steer is not supported by the current runtime. Queue the prompt or wait for the turn to finish.");
@@ -2097,8 +2273,21 @@ export default function App() {
 									showToast(reason instanceof Error ? reason.message : String(reason));
 								}
 							}}
-							onRemoveQueuedPrompt={(id) => setPreferences(removeQueuedPrompt(id))}
-							queueAfterStop={queueAfterStop}
+								onRemoveQueuedPrompt={(id) => setPreferences(removeQueuedPrompt(id))}
+								onPromoteQueuedPrompt={async (id, text) => {
+									if (!activeSessionId || !nativeCodex?.steerTurn) {
+										setSteerError("Steer is not supported by the current runtime. Keep the prompt queued or wait for the turn to finish.");
+										return;
+									}
+									try {
+										await nativeCodex.steerTurn(activeSessionId, text);
+										setPreferences(removeQueuedPrompt(id));
+										setSteerError(null);
+									} catch (reason) {
+										setSteerError(reason instanceof Error ? reason.message : String(reason));
+									}
+								}}
+								queueAfterStop={queueAfterStop}
 							onKeepQueued={() => setQueueAfterStop(false)}
 							onSendNextQueued={() => {
 								if (!activeSessionId) return;
@@ -2114,10 +2303,14 @@ export default function App() {
 						open={terminalOpen}
 						workspaceId={terminalWorkspaceId}
 						workspaceRoot={terminalWorkspaceRoot}
+						height={preferences.layout.last.bottomPanelHeight}
+						fontFamily={preferences.appearance.terminalFontFamily}
+						fontSize={preferences.appearance.terminalFontSize}
 						onOpenChange={(open) => {
 							setTerminalOpen(open);
 							persistLayoutSnapshot({ bottomPanelVisible: open });
 						}}
+						onHeightChange={(height) => persistLayoutSnapshot({ bottomPanelHeight: height })}
 			/>
 		</main>
 	</div>
@@ -2127,13 +2320,25 @@ export default function App() {
 			state={state}
 			onClose={closeSearch}
 			onOpenChat={(id) => openChat(id)}
-			onOpenSync={(id) => setView({ kind: "sync", sessionId: id })}
-			onOpenAsync={() => {
-				const pinned = sessions.find((session) => sessionIsAsync(session));
-				if (pinned) setView({ kind: "async", sessionId: pinned.id });
-			}}
 		/>
 	) : null}
+
+	<UsageSheet
+		open={usageSheetOpen}
+		view={accountView}
+		summary={accountSummary}
+		onClose={() => setUsageSheetOpen(false)}
+		onSignIn={() => {
+			setUsageSheetOpen(false);
+			setView({ kind: "settings", section: "account" });
+		}}
+		onBilling={(action) => void openBilling(action)}
+		onRetry={() => refreshAccountSummary(true)}
+		onOpenDeviceUsage={() => {
+			setUsageSheetOpen(false);
+			setView({ kind: "inventory" });
+		}}
+	/>
 
 			{toast ? (
 				<div className="toast" role="status" key={toast}>

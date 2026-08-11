@@ -7,17 +7,21 @@ use std::{
     collections::HashSet,
     env,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Arc,
+    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
+/// Canonical ports. A named development instance overrides both through the
+/// environment so several Desktops can run at once: they share one models
+/// directory of read-only weights, but never a daemon, an engine, a data
+/// directory, or a port. See `scripts/desktop-instance.sh`.
 const DEFAULT_PORT: u16 = 7333;
-const DEFAULT_PORT_STR: &str = "7333";
 /// Cleared before spawning the daemon so no inherited value can resurrect the
 /// deleted second-engine path.
 const UPSTREAM_ENV_VARS: [&str; 5] = [
@@ -29,7 +33,20 @@ const UPSTREAM_ENV_VARS: [&str; 5] = [
 ];
 const DEFAULT_MODEL: &str = "poolside/Laguna-XS-2.1-NVFP4-mlx";
 const DEFAULT_MODEL_REVISION: &str = "841778bda563a36104dd521e37d99218e46f4f25";
-const MIN_DOWNLOAD_DISK_BYTES: u64 = 24 * 1024 * 1024 * 1024;
+/// This process's Laguna port. Read per call rather than cached so a launcher
+/// that sets it after startup is still honored.
+fn laguna_port() -> u16 {
+    env::var("SYNTH_LAGUNA_PORT")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(DEFAULT_PORT)
+}
+
+/// This process's Laguna base URL: an explicit override, else its own port.
+fn laguna_base_url() -> String {
+    env::var("SYNTH_LAGUNA_BASE_URL")
+        .unwrap_or_else(|_| format!("http://127.0.0.1:{}", laguna_port()))
+}
 const MODEL_INDEX: &str = "model.safetensors.index.json";
 const SELECTED_MODEL_FILE: &str = "selected_model_path";
 /// The daemon at `DEFAULT_PORT` is the only local runtime: it owns the weights,
@@ -41,6 +58,31 @@ const SETTINGS_PATH: &str = "/v1/synth/settings";
 /// Guards against an SSE peer that never emits an event boundary.
 const SSE_BUFFER_LIMIT: usize = 1 << 20;
 
+#[derive(Clone, Copy)]
+struct ModelSpec {
+    id: &'static str,
+    revision: &'static str,
+    title: &'static str,
+    min_disk_bytes: u64,
+    download_bytes: u64,
+}
+
+const MODEL_CATALOG: [ModelSpec; 1] = [ModelSpec {
+    id: DEFAULT_MODEL,
+    revision: DEFAULT_MODEL_REVISION,
+    title: "Laguna XS 2.1",
+    min_disk_bytes: 24 * 1024 * 1024 * 1024,
+    download_bytes: 21_600_000_000,
+}];
+
+fn model_spec(model_id: &str) -> Result<ModelSpec> {
+    MODEL_CATALOG
+        .iter()
+        .copied()
+        .find(|spec| spec.id == model_id)
+        .ok_or_else(|| anyhow::anyhow!("Unknown on-device model `{model_id}`"))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LagunaModelHit {
@@ -50,6 +92,8 @@ pub struct LagunaModelHit {
     pub shard_count: usize,
     pub total_bytes: u64,
     pub selected: bool,
+    pub runtime_ready: bool,
+    pub companion_bytes: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -282,44 +326,112 @@ impl LagunaManager {
         }
     }
 
-    pub fn download_model(&self) -> Result<LagunaModelHit> {
-        let python = home().join(".venv/bin/python");
-        validate_python(&python)?;
+    pub fn download_model_with_progress<F>(
+        &self,
+        model_id: &str,
+        mut progress: F,
+    ) -> Result<LagunaModelHit>
+    where
+        F: FnMut(&str, &str, u64, u64),
+    {
+        let spec = model_spec(model_id)?;
+        progress(
+            "preparing",
+            "Preparing the managed model runtime…",
+            0,
+            spec.download_bytes,
+        );
         let models_root = dirs::home_dir()
             .unwrap_or_default()
             .join(".synth-desktop/models");
         fs::create_dir_all(&models_root)?;
         if let Some(available) = available_disk_bytes(&models_root) {
-            if available < MIN_DOWNLOAD_DISK_BYTES {
+            if available < spec.min_disk_bytes {
                 return Err(anyhow::anyhow!(
-                    "Laguna XS needs at least 24 GiB of free disk space; only {:.1} GiB is available.",
+                    "{} needs at least {:.0} GiB of free disk space; only {:.1} GiB is available.",
+                    spec.title,
+                    spec.min_disk_bytes as f64 / 1024f64.powi(3),
                     available as f64 / 1024f64.powi(3)
                 ));
             }
         }
-        let model_dir = models_root.join(DEFAULT_MODEL);
+        let model_dir = models_root.join(spec.id);
         fs::create_dir_all(&model_dir)?;
+        let python = home().join(".venv/bin/python");
+        validate_python(&python)?;
         let script = r#"from huggingface_hub import snapshot_download
-import sys
+import json, sys
 snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[3])
 "#;
-        let output = Command::new(&python)
+        progress(
+            "downloading",
+            "Downloading model weights…",
+            dir_size(&model_dir),
+            spec.download_bytes,
+        );
+        let mut child = Command::new(&python)
             .arg("-c")
             .arg(script)
-            .arg(DEFAULT_MODEL)
-            .arg(DEFAULT_MODEL_REVISION)
+            .arg(spec.id)
+            .arg(spec.revision)
             .arg(&model_dir)
             .stdin(Stdio::null())
-            .output()
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
             .context("download Laguna XS from Hugging Face")?;
-        if !output.status.success() {
-            let detail = String::from_utf8_lossy(&output.stderr);
+        let status = loop {
+            if let Some(status) = child.try_wait().context("check model download")? {
+                break status;
+            }
+            progress(
+                "downloading",
+                "Downloading model weights…",
+                dir_size(&model_dir),
+                spec.download_bytes,
+            );
+            thread::sleep(Duration::from_millis(500));
+        };
+        let mut stderr = String::new();
+        if let Some(mut pipe) = child.stderr.take() {
+            let _ = pipe.read_to_string(&mut stderr);
+        }
+        if !status.success() {
             return Err(anyhow::anyhow!(
                 "Laguna download failed: {}",
-                detail.trim().chars().take(500).collect::<String>()
+                stderr.trim().chars().take(500).collect::<String>()
             ));
         }
-        self.select_model(&model_dir)
+        let hit = self.select_model(&model_dir)?;
+        progress(
+            "ready",
+            "Model and runtime are ready.",
+            spec.download_bytes,
+            spec.download_bytes,
+        );
+        Ok(hit)
+    }
+
+    pub fn delete_model(&self, model_id: &str) -> Result<()> {
+        let spec = model_spec(model_id)?;
+        let models_root = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".synth-desktop/models");
+        let model_dir = models_root.join(spec.id);
+        let selected = read_selected_model_path()?.and_then(|path| path.canonicalize().ok());
+        if selected.as_ref().is_some_and(|path| {
+            path == &model_dir
+                .canonicalize()
+                .unwrap_or_else(|_| model_dir.clone())
+        }) {
+            stop_managed_sidecar()?;
+            self.clear_selected_model()?;
+        }
+        if model_dir.exists() {
+            fs::remove_dir_all(&model_dir)
+                .with_context(|| format!("remove {}", model_dir.display()))?;
+        }
+        Ok(())
     }
 
     pub async fn ensure(&self, workshop_root: &Path) -> Result<Option<String>> {
@@ -333,10 +445,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         }
 
         let api_key = ensure_api_key()?;
-        let base_url = trim_url(
-            env::var("SYNTH_LAGUNA_BASE_URL")
-                .unwrap_or_else(|_| format!("http://127.0.0.1:{DEFAULT_PORT}")),
-        );
+        let base_url = trim_url(laguna_base_url());
         self.set_status(LagunaStatus {
             phase: "starting".into(),
             base_url: Some(base_url.clone()),
@@ -482,10 +591,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         if let Some(url) = self.status().await.base_url {
             return url;
         }
-        trim_url(
-            env::var("SYNTH_LAGUNA_BASE_URL")
-                .unwrap_or_else(|_| format!("http://127.0.0.1:{DEFAULT_PORT}")),
-        )
+        trim_url(laguna_base_url())
     }
 
     async fn record_inference(&self, snapshot: LagunaInference) {
@@ -784,24 +890,52 @@ pub async fn laguna_settings_update(
 pub async fn laguna_model_download(
     app: AppHandle,
     state: State<'_, Arc<LagunaManager>>,
+    model_id: String,
 ) -> std::result::Result<LagunaModelHit, String> {
+    let spec = model_spec(&model_id).map_err(|error| error.to_string())?;
     let _ = app.emit(
         "laguna:download",
-        serde_json::json!({"phase":"downloading","detail":"Downloading Laguna XS 2.1 from Hugging Face…"}),
+        serde_json::json!({"phase":"downloading","detail":format!("Downloading {} from Hugging Face…", spec.title), "modelId":model_id}),
     );
     let manager = state.inner().clone();
-    let result = tauri::async_runtime::spawn_blocking(move || manager.download_model())
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string());
+    let progress_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        manager.download_model_with_progress(spec.id, |phase, detail, downloaded, total| {
+            let _ = progress_app.emit(
+                "laguna:download",
+                serde_json::json!({
+                    "phase": phase,
+                    "detail": detail,
+                    "modelId": spec.id,
+                    "downloadedBytes": downloaded,
+                    "totalBytes": total,
+                }),
+            );
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string());
     let payload = match &result {
         Ok(hit) => {
-            serde_json::json!({"phase":"ready","detail":"Laguna XS download complete.","path":hit.path})
+            serde_json::json!({"phase":"ready","detail":format!("{} download complete.", spec.title),"path":hit.path,"modelId":spec.id})
         }
         Err(error) => serde_json::json!({"phase":"error","detail":error}),
     };
     let _ = app.emit("laguna:download", payload);
     result
+}
+
+#[tauri::command]
+pub async fn laguna_model_delete(
+    state: State<'_, Arc<LagunaManager>>,
+    model_id: String,
+) -> std::result::Result<(), String> {
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || manager.delete_model(&model_id))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -869,6 +1003,13 @@ fn models_dir() -> Result<PathBuf> {
     }
 }
 
+fn selected_model_id() -> Result<String> {
+    if let Some(selected) = read_selected_model_path()? {
+        return Ok(validate_model_input(&selected)?.model_id);
+    }
+    Ok(DEFAULT_MODEL.into())
+}
+
 fn read_selected_model_path() -> Result<Option<PathBuf>> {
     match fs::read_to_string(home().join(SELECTED_MODEL_FILE)) {
         Ok(value) if !value.trim().is_empty() => Ok(Some(PathBuf::from(value.trim()))),
@@ -882,12 +1023,16 @@ fn validate_model_input(input: &Path) -> Result<LagunaModelHit> {
     let model_dir = if input.join("config.json").is_file() {
         input.to_owned()
     } else {
-        let nested = input.join(DEFAULT_MODEL);
-        if nested.join("config.json").is_file() {
-            nested
-        } else {
-            return Err(anyhow::anyhow!("{} is neither a Laguna model directory nor a models root containing {DEFAULT_MODEL}", input.display()));
-        }
+        MODEL_CATALOG
+            .iter()
+            .map(|spec| input.join(spec.id))
+            .find(|candidate| candidate.join("config.json").is_file())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{} is neither a supported model directory nor a models root",
+                    input.display()
+                )
+            })?
     };
     validate_model_dir(&model_dir)
 }
@@ -930,8 +1075,22 @@ fn validate_model_dir(model_dir: &Path) -> Result<LagunaModelHit> {
     let canonical = model_dir
         .canonicalize()
         .with_context(|| format!("Resolve model directory {}", model_dir.display()))?;
-    let suffix_depth = Path::new(DEFAULT_MODEL).components().count();
-    let models_root = if canonical.ends_with(DEFAULT_MODEL) {
+    let spec = MODEL_CATALOG
+        .iter()
+        .find(|spec| canonical.ends_with(spec.id))
+        .copied()
+        .or_else(|| {
+            let config: Value = serde_json::from_str(&fs::read_to_string(&config).ok()?).ok()?;
+            match config.get("model_type").and_then(Value::as_str) {
+                Some("laguna") => model_spec(DEFAULT_MODEL).ok(),
+                _ => None,
+            }
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("{} is not a supported Workshop model", canonical.display())
+        })?;
+    let suffix_depth = Path::new(spec.id).components().count();
+    let models_root = if canonical.ends_with(spec.id) {
         canonical
             .ancestors()
             .nth(suffix_depth)
@@ -944,19 +1103,23 @@ fn validate_model_dir(model_dir: &Path) -> Result<LagunaModelHit> {
     Ok(LagunaModelHit {
         path: canonical.to_string_lossy().into_owned(),
         models_root: models_root.to_string_lossy().into_owned(),
-        model_id: DEFAULT_MODEL.into(),
+        model_id: spec.id.into(),
         shard_count: shards.len(),
         total_bytes,
         selected: false,
+        runtime_ready: true,
+        companion_bytes: 0,
     })
 }
 
 fn discover_models() -> Result<Vec<LagunaModelHit>> {
     let user = dirs::home_dir().unwrap_or_default();
-    let mut candidates = vec![
-        user.join(".config/poolside/models").join(DEFAULT_MODEL),
-        user.join(".synth-desktop/models").join(DEFAULT_MODEL),
-    ];
+    let mut candidates = vec![user.join(".config/poolside/models").join(DEFAULT_MODEL)];
+    candidates.extend(
+        MODEL_CATALOG
+            .iter()
+            .map(|spec| user.join(".synth-desktop/models").join(spec.id)),
+    );
     if let Ok(repositories) = fs::read_dir(user.join(".cache/huggingface/hub")) {
         for repository in repositories.flatten().filter(|entry| {
             entry
@@ -1045,7 +1208,8 @@ fn write_secret(path: &Path, value: &str) -> Result<()> {
 
 fn write_env_sh(api_key: &str, base_url: &str) -> Result<()> {
     fs::create_dir_all(home())?;
-    let body = format!("export SYNTH_LAGUNA_HOST=\"127.0.0.1\"\nexport SYNTH_LAGUNA_BASE_URL=\"{base_url}\"\nexport SYNTH_LAGUNA_API_KEY=\"{api_key}\"\nexport SYNTH_LAGUNA_BACKEND=\"{}\"\nexport SYNTH_LAGUNA_DEFAULT_MODEL=\"{DEFAULT_MODEL}\"\nexport SYNTH_LAGUNA_MODELS_DIR=\"{}\"\nexport SYNTH_LAGUNA_AUTO_LOAD=\"1\"\nexport PATH=\"$HOME/.synth-desktop/laguna/.venv/bin:$PATH\"\n", env::var("SYNTH_LAGUNA_BACKEND").unwrap_or_else(|_| "auto".into()), models_dir()?.display());
+    let model_id = selected_model_id()?;
+    let body = format!("export SYNTH_LAGUNA_HOST=\"127.0.0.1\"\nexport SYNTH_LAGUNA_BASE_URL=\"{base_url}\"\nexport SYNTH_LAGUNA_API_KEY=\"{api_key}\"\nexport SYNTH_LAGUNA_BACKEND=\"{}\"\nexport SYNTH_LAGUNA_DEFAULT_MODEL=\"{model_id}\"\nexport SYNTH_LAGUNA_MODELS_DIR=\"{}\"\nexport SYNTH_LAGUNA_AUTO_LOAD=\"1\"\nexport PATH=\"$HOME/.synth-desktop/laguna/.venv/bin:$PATH\"\n", env::var("SYNTH_LAGUNA_BACKEND").unwrap_or_else(|_| "auto".into()), models_dir()?.display());
     fs::write(home().join("env.sh"), body)?;
     Ok(())
 }
@@ -1089,12 +1253,15 @@ fn spawn_sidecar(root: &Path, api_key: &str, backend: &str) -> Result<()> {
 /// `:7334` upstream port) would otherwise make the daemon proxy to a second
 /// engine instead of owning the weights itself.
 fn apply_daemon_env(command: &mut Command, api_key: &str, backend: &str, models_dir: &Path) {
+    let model_id = selected_model_id().unwrap_or_else(|_| DEFAULT_MODEL.into());
+    let laguna_port_string = laguna_port().to_string();
     command.envs([
+        ("PYTHONDONTWRITEBYTECODE", "1"),
         ("SYNTH_LAGUNA_HOST", "127.0.0.1"),
-        ("SYNTH_LAGUNA_PORT", DEFAULT_PORT_STR),
+        ("SYNTH_LAGUNA_PORT", laguna_port_string.as_str()),
         ("SYNTH_LAGUNA_API_KEY", api_key),
         ("SYNTH_LAGUNA_BACKEND", backend),
-        ("SYNTH_LAGUNA_DEFAULT_MODEL", DEFAULT_MODEL),
+        ("SYNTH_LAGUNA_DEFAULT_MODEL", model_id.as_str()),
         ("SYNTH_LAGUNA_AUTO_LOAD", "1"),
         ("SYNTH_LAGUNA_REQUIRE_AUTH", "1"),
     ]);
@@ -1193,6 +1360,21 @@ fn available_disk_bytes(path: &Path) -> Option<u64> {
         .then(|| parse_df_available_bytes(&String::from_utf8_lossy(&output.stdout)))
         .flatten()
 }
+
+fn dir_size(path: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| match entry.metadata() {
+            Ok(metadata) if metadata.is_dir() => dir_size(&entry.path()),
+            Ok(metadata) => metadata.len(),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
 #[cfg(unix)]
 fn detach(command: &mut Command) {
     use std::os::unix::process::CommandExt;
@@ -1232,7 +1414,7 @@ mod tests {
             env::temp_dir().join(format!("synth-laguna-model-test-{}", uuid::Uuid::new_v4()));
         let model = root.join(DEFAULT_MODEL);
         fs::create_dir_all(&model).unwrap();
-        fs::write(model.join("config.json"), "{}").unwrap();
+        fs::write(model.join("config.json"), r#"{"model_type":"laguna"}"#).unwrap();
         fs::write(model.join("a.safetensors"), b"abc").unwrap();
         fs::write(model.join("b.safetensors"), b"12345").unwrap();
         fs::write(
@@ -1268,10 +1450,7 @@ mod tests {
         assert!(exchange.supported);
         assert_eq!(exchange.status, 400);
         assert_eq!(exchange.body["error"]["code"], "invalid_setting");
-        assert_eq!(
-            exchange.body["error"]["details"]["field"],
-            "default_top_k"
-        );
+        assert_eq!(exchange.body["error"]["details"]["field"], "default_top_k");
     }
 
     #[test]
@@ -1533,6 +1712,11 @@ mod tests {
         };
         assert_eq!(get("SYNTH_LAGUNA_PORT"), Some(Some("7333".into())));
         assert_eq!(get("SYNTH_LAGUNA_BACKEND"), Some(Some("mlx_lm".into())));
+        assert_eq!(
+            get("PYTHONDONTWRITEBYTECODE"),
+            Some(Some("1".into())),
+            "the bundled daemon must not mutate the signed app with __pycache__ files"
+        );
         for legacy in UPSTREAM_ENV_VARS {
             assert_eq!(get(legacy), Some(None), "{legacy} must be cleared");
         }
@@ -1541,6 +1725,27 @@ mod tests {
                 .as_deref()
                 .is_some_and(|value| value.contains("7334") || value.contains("63300"))),
             "no legacy or Poolside engine port may reach the daemon"
+        );
+    }
+
+    #[test]
+    fn ports_come_from_the_environment_so_instances_do_not_share_a_daemon() {
+        // The canonical app uses the default while a named instance overrides
+        // it through the environment.
+        assert_eq!(DEFAULT_PORT, 7333);
+        match env::var("SYNTH_LAGUNA_PORT") {
+            Ok(value) => assert_eq!(laguna_port().to_string(), value.trim()),
+            Err(_) => assert_eq!(laguna_port(), DEFAULT_PORT),
+        }
+        let mut command = Command::new("/usr/bin/true");
+        apply_daemon_env(&mut command, "key", "mlx_lm", Path::new("/models"));
+        assert_eq!(
+            command
+                .get_envs()
+                .find(|(key, _)| key.to_string_lossy() == "SYNTH_LAGUNA_PORT")
+                .and_then(|(_, value)| value)
+                .map(|value| value.to_string_lossy().into_owned()),
+            Some(laguna_port().to_string())
         );
     }
 

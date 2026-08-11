@@ -2,9 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TerminalEvent, TerminalInfo, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../env";
+import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../env";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
-import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry } from "@synth/runtime-protocol";
+import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 
 // The packaged WebKit view is always served from the `tauri:` protocol.  The
 // injected internals global can appear too late for eager ES-module evaluation,
@@ -161,6 +161,7 @@ export function installDesktopBridge(): void {
 		? {
 			getStatus: () => invoke<LagunaStatus>("laguna_get_status"),
 			reload: () => invoke<LagunaStatus>("laguna_reload"),
+			freeMemory: () => invoke<{ released: boolean; conflict: boolean; detail: string | null }>("laguna_model_unload"),
 			listModels: () => invoke<LagunaModelHit[]>("laguna_models_list"),
 			chooseModelDirectory: async () => {
 				const selection = await open({ directory: true, multiple: false, title: "Choose a Laguna model folder" });
@@ -168,7 +169,17 @@ export function installDesktopBridge(): void {
 			},
 			setModelDirectory: (path) => invoke<LagunaModelHit>("laguna_models_set_directory", { path }),
 			clearModelDirectory: () => invoke<void>("laguna_models_clear_directory"),
-			downloadModel: () => invoke<LagunaModelHit>("laguna_model_download"),
+			downloadModel: (modelId) => invoke<LagunaModelHit>("laguna_model_download", { modelId }),
+			deleteModel: (modelId) => invoke<void>("laguna_model_delete", { modelId }),
+			onDownloadProgress(listener) {
+				let disposed = false;
+				let unlisten: (() => void) | undefined;
+				void listen<LagunaDownloadProgress>("laguna:download", ({ payload }) => listener(payload)).then((next) => {
+					if (disposed) next();
+					else unlisten = next;
+				});
+				return () => { disposed = true; unlisten?.(); };
+			},
 			onStatus(listener) {
 				let disposed = false;
 				let unlisten: (() => void) | undefined;
@@ -188,8 +199,10 @@ export function installDesktopBridge(): void {
 		: {
 			getStatus: async () => unavailableLaguna,
 			reload: async () => unavailableLaguna,
+			freeMemory: async () => ({ released: false, conflict: false, detail: "Local model controls require Synth Desktop" }),
 			listModels: async () => [],
 			downloadModel: async () => { throw new Error("Model downloads require Synth Desktop"); },
+			deleteModel: async () => { throw new Error("Model deletion requires Synth Desktop"); },
 			chooseModelDirectory: async () => null,
 			setModelDirectory: async () => { throw new Error("Model folders require the desktop app"); },
 			clearModelDirectory: async () => undefined,
@@ -273,13 +286,19 @@ export function installDesktopBridge(): void {
 			beginSignIn: () => invoke<SynthSignInBegin>("account_begin_sign_in"),
 			pollSignIn: () => invoke<SynthSignInPoll>("account_poll_sign_in"),
 			cancelSignIn: () => invoke<void>("account_cancel_sign_in"),
-			signOut: () => invoke<SynthBackendSettings>("account_sign_out")
+			signOut: () => invoke<SynthBackendSettings>("account_sign_out"),
+			getSummary: () => invoke<SynthAccountSummary>("account_get_summary"),
+			refresh: () => invoke<SynthAccountSummary>("account_refresh"),
+			openBilling: (action, tier) => invoke<string>("account_open_billing", { action, tier })
 		}
 		: {
 			beginSignIn: async () => { throw new Error("Browser sign-in requires Synth Desktop"); },
 			pollSignIn: async () => ({ status: "expired", reason: "Browser sign-in requires Synth Desktop" }),
 			cancelSignIn: async () => undefined,
-			signOut: async () => { throw new Error("Sign out requires Synth Desktop"); }
+			signOut: async () => { throw new Error("Sign out requires Synth Desktop"); },
+			getSummary: async () => ({ signedIn: false, state: "local_only", environment: "local", source: "none" }),
+			refresh: async () => ({ signedIn: false, state: "local_only", environment: "local", source: "none" }),
+			openBilling: async () => { throw new Error("Billing requires Synth Desktop"); }
 		};
 window.synthConfig ??= isTauri
 		? {
@@ -307,7 +326,8 @@ window.synthConfig ??= isTauri
 				{ modelId: "gpt-5.6-terra", displayName: "GPT-5.6 Terra", preset: "v2", effective: "v2", overridden: false },
 				{ modelId: "gpt-5.6-luna", displayName: "GPT 5.6 Luna", preset: "v1", effective: "v1", overridden: false },
 				{ modelId: "laguna-xs-2.1", displayName: "Laguna XS 2.1", preset: "none", effective: "none", overridden: false },
-				{ modelId: "laguna-s-2.1", displayName: "Laguna S 2.1", preset: "none", effective: "none", overridden: false }
+				{ modelId: "laguna-s-2.1", displayName: "Laguna S 2.1", preset: "none", effective: "none", overridden: false },
+				{ modelId: "muse-spark-1.2", displayName: "Muse Spark 1.2", preset: "none", effective: "none", overridden: false }
 			],
 			updateModelMultiAgent: async () => { throw new Error("Model settings require Synth Desktop"); },
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
@@ -405,6 +425,31 @@ window.synthWorkspaceScope ??= isTauri
 				return { containers: containers.length, traces: traces.length, usage: usage.length };
 			}
 		};
+	window.synthModelPerformance ??= isTauri
+		? { summaries: () => invoke<ModelPerformanceSummary[]>("model_performance_summary") }
+		: { summaries: async () => [] };
+	window.synthUpdates ??= isTauri
+		? {
+			status: () => invoke<UpdateStatus>("update_status"),
+			openDownload: () => invoke<void>("update_open_download")
+		}
+		: {
+			status: async () => ({
+				currentVersion: "0.1.0",
+				channel: "stable",
+				latestVersion: null,
+				updateAvailable: false
+			}),
+			openDownload: async () => undefined
+		};
+	if (isTauri) {
+		window.synthUsage ??= {
+			summary: (window: UsageWindow) => invoke<UsageSummary>("usage_summary", { window })
+		};
+		window.synthTariffs ??= {
+			catalog: () => invoke<TariffCard[]>("tariff_catalog")
+		};
+	}
 	window.synthSkills ??= isTauri
 		? { list: () => invoke<SkillHit[]>("skills_list") }
 		: {
@@ -432,6 +477,7 @@ window.synthWorkspaceScope ??= isTauri
 					}
 				}),
 			interrupt: (sessionId) => invoke<void>("codex_turn_interrupt", { request: { sessionId } }),
+			compact: (request) => invoke<void>("codex_thread_compact", { request }),
 			steerTurn: (sessionId, text) =>
 				invoke<void>("codex_turn_steer", { request: { sessionId, text } }),
 			resolveApproval: (sessionId, approvalId, decision) => invoke<void>("codex_approval_resolve", { request: { sessionId, approvalId, decision } }),

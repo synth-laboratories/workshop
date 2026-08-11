@@ -14,6 +14,20 @@ BUNDLE_EXE="$BUNDLE_APP/Contents/MacOS/synth-desktop"
 DEBUG_EXE="$ROOT/apps/synth_desktop/src-tauri/target/debug/synth-desktop"
 BACKUP_ROOT="${SYNTH_DESKTOP_BACKUP_ROOT:-$HOME/.synth-desktop/backups/app-builds}"
 INSTALL_STAGE=""
+LAGUNA_PID_FILE="$HOME/.synth-desktop/laguna/sidecar.pid"
+
+enable_rust_cache() {
+	if command -v sccache >/dev/null 2>&1; then
+		export RUSTC_WRAPPER="${RUSTC_WRAPPER:-$(command -v sccache)}"
+		export SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/synth-workshop/sccache}"
+		mkdir -p "$SCCACHE_DIR"
+	fi
+}
+
+run_renderer_typecheck() {
+	cd "$ROOT"
+	npx turbo run typecheck --filter=@synth/synth-desktop
+}
 
 cleanup_stage() {
   if [[ -n "$INSTALL_STAGE" && -d "$INSTALL_STAGE" ]]; then
@@ -28,10 +42,13 @@ usage() {
 Usage: ./scripts/desktop.sh <command>
 
   dev [name] Run an isolated named Tauri/Vite development instance (default: codex)
-  verify    Run the desktop type, Rust, and renderer acceptance gates
-  install   Build, install, sign, launch, and verify /Applications
+  check     Run the fast local type and Rust compile checks
+  build     Typecheck and build the signed-app input bundle (no tests)
+  verify    Run the full desktop type, Rust, and renderer release gates
+  install   Build, install, sign, and launch /Applications (no tests)
+  install-release Run full release gates, then install /Applications
   restart   Restart the already-installed canonical app
-  stop      Stop only the canonical installed/debug Synth Desktop process
+  stop      Stop every Synth Desktop process, including stale backup/build copies
   status    Show canonical Synth Desktop process and install status
 EOF
 }
@@ -41,7 +58,7 @@ desktop_processes() {
     {
       pid=$1
       sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", $0)
-      if ($0 == installed || $0 == debug) print pid "\t" $0
+      if ($0 == installed || $0 == debug || $0 ~ /\/Synth Desktop\.app\/Contents\/MacOS\/synth-desktop$/) print pid "\t" $0
     }
   '
 }
@@ -69,6 +86,33 @@ stop_desktop() {
     # shellcheck disable=SC2086
     kill -KILL $pids 2>/dev/null || true
   fi
+}
+
+stop_managed_laguna() {
+  local pid command
+  [[ -f "$LAGUNA_PID_FILE" ]] || return 0
+  pid="$(tr -d '[:space:]' < "$LAGUNA_PID_FILE")"
+  if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[desktop] ignoring invalid Laguna pid file: $LAGUNA_PID_FILE" >&2
+    return
+  fi
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  if [[ "$command" != *"-m laguna_daemon"* ]]; then
+    echo "[desktop] stale Laguna pid $pid is not our managed daemon"
+    /bin/rm -f "$LAGUNA_PID_FILE"
+    return
+  fi
+  echo "[desktop] stopping managed Laguna sidecar $pid"
+  kill -TERM "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.25
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "[desktop] force stopping managed Laguna sidecar $pid"
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  /bin/rm -f "$LAGUNA_PID_FILE"
 }
 
 status_desktop() {
@@ -127,23 +171,56 @@ launch_installed() {
 
 verify_desktop() {
   cd "$ROOT"
-  npm run typecheck --workspace @synth/synth-desktop
+	enable_rust_cache
+	run_renderer_typecheck
   cargo test --manifest-path apps/synth_desktop/src-tauri/Cargo.toml
   ./scripts/test-desktop-instance.sh
   npm run test:playwright --workspace @synth/synth-desktop
 }
 
+verify_desktop_fast() {
+  cd "$ROOT"
+	enable_rust_cache
+	local type_pid type_status=0 rust_status=0
+	run_renderer_typecheck &
+	type_pid=$!
+	cargo check --manifest-path apps/synth_desktop/src-tauri/Cargo.toml || rust_status=$?
+	wait "$type_pid" || type_status=$?
+	[[ "$type_status" -eq 0 && "$rust_status" -eq 0 ]]
+}
+
+build_desktop() {
+	cd "$ROOT"
+	enable_rust_cache
+	local type_pid type_status=0 build_status=0
+	# TypeScript checking is read-only and independent of the Tauri/Rust build,
+	# so overlap it with the real packaging compilation instead of serializing it.
+	run_renderer_typecheck &
+	type_pid=$!
+	(cd "$ROOT/apps/synth_desktop" && npx tauri build --bundles app) || build_status=$?
+	wait "$type_pid" || type_status=$?
+	[[ "$type_status" -eq 0 && "$build_status" -eq 0 ]]
+}
+
 install_desktop() {
-  local timestamp stage backup=""
-  verify_desktop
-  cd "$ROOT/apps/synth_desktop"
-  npx tauri build --bundles app
+	local verification="${1:-fast}" timestamp stage backup=""
+	if [[ "$verification" == "release" ]]; then
+		verify_desktop
+	fi
+	# The synth_* MCP noun adapters are NOT bundled into the .app; the installed
+	# app resolves them beside its executable and then falls back to the build
+	# tree's target/debug copies (see codex.rs). Building release copies here
+	# added ~20s of link time per install without changing what the installed
+	# app loads, so it was removed; bundling them as Tauri sidecars is the real
+	# fix and is tracked in the launch program.
+	build_desktop
   [[ -d "$BUNDLE_APP" && -x "$BUNDLE_EXE" ]] || {
     echo "[desktop] build did not produce $BUNDLE_APP" >&2
     return 1
   }
 
   stop_desktop
+  stop_managed_laguna
   timestamp="$(date '+%Y%m%d-%H%M%S')"
   stage="/Applications/.Synth Desktop.stage-$timestamp.app"
   INSTALL_STAGE="$stage"
@@ -153,6 +230,11 @@ install_desktop() {
     return 1
   fi
   /usr/bin/ditto "$BUNDLE_APP" "$stage"
+  for adapter in synth-containers-mcp synth-visuals-mcp synth-optimizers-mcp; do
+    /usr/bin/ditto \
+      "$ROOT/apps/synth_desktop/src-tauri/target/release/$adapter" \
+      "$stage/Contents/MacOS/$adapter"
+  done
   # The generated release bundle is not a supported launch target. Removing it
   # after staging makes stale Dock/Finder entries fail closed instead of opening
   # a second app with a different environment and state directory.
@@ -185,8 +267,20 @@ case "$command" in
   verify)
     verify_desktop
     ;;
+  verify-fast)
+    verify_desktop_fast
+    ;;
+	check)
+		verify_desktop_fast
+		;;
+	build)
+		build_desktop
+		;;
   install)
-    install_desktop
+		install_desktop fast
+		;;
+	install-release)
+		install_desktop release
     ;;
   restart)
     stop_desktop

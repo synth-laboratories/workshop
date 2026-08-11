@@ -77,7 +77,7 @@ test.beforeEach(async ({ page }) => {
 		};
 	});
 	await page.reload();
-	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("titlebar").waitFor();
 	await page.getByRole("button", { name: "Optimizers" }).click();
 });
 

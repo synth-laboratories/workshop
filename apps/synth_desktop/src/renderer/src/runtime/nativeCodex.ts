@@ -2,6 +2,9 @@ import type { AppEvent, ExecutionTarget, RuntimeEvent, Session } from "@synth/ru
 import type { CodexEvent, CodexSessionStart, PersistedCodexSession } from "../env";
 
 export type ApprovalMode = "ask" | "accept-edits" | "allow-all";
+export type ApprovalPolicy = "untrusted" | "on-request" | "never";
+export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+export type PermissionConfig = { approvalPolicy: ApprovalPolicy; sandbox: SandboxMode };
 
 export function approvalModeFromConfig(approvalPolicy?: string, sandbox?: string): ApprovalMode {
 	if (approvalPolicy === "never" && sandbox === "danger-full-access") return "allow-all";
@@ -18,43 +21,64 @@ export function approvalModeConfig(mode: ApprovalMode): Pick<CodexSessionStart, 
 	}
 }
 
+export function permissionConfigFromApprovalMode(mode: ApprovalMode): PermissionConfig {
+	return approvalModeConfig(mode) as PermissionConfig;
+}
+
+/** Where the local daemon listens when nothing else says otherwise. A named
+ *  development instance gets its own port, so the caller passes the address the
+ *  supervisor actually reported rather than assuming this one. */
+export const DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:7333";
+
 export function codexStartRequest(
-	sessionId: string, workspace: string, target: ExecutionTarget, approvalMode: ApprovalMode = "ask"
+	sessionId: string, workspace: string, target: ExecutionTarget, permissions: ApprovalMode | PermissionConfig = "ask",
+	autoCompactTokenLimits: Record<string, number> = { lagunaXs: 150_000, lagunaS: 250_000, luna: 250_000 },
+	localBaseUrl: string = DEFAULT_LOCAL_BASE_URL
 ): CodexSessionStart {
-	const approval = approvalModeConfig(approvalMode);
+	const approval = typeof permissions === "string" ? approvalModeConfig(permissions) : permissions;
 	if (target.kind === "intern") throw new Error("Intern sessions are owned by Synth Cloud");
 	if (target.kind === "local") {
+		const autoCompactTokenLimit = autoCompactTokenLimits.lagunaXs ?? 150_000;
 		return {
-			sessionId, workspace, baseUrl: "http://127.0.0.1:7333", apiKey: "",
+			sessionId, workspace, baseUrl: localBaseUrl,
 			model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
 			providerTitle: "Laguna XS Responses", providerEnvKey: "SYNTH_LAGUNA_API_KEY",
-			...approval
+			autoCompactTokenLimit, ...approval
 		};
 	}
 	if (target.kind !== "remote") throw new Error("Unsupported Codex execution target");
+	const autoCompactTokenLimit = target.model.includes("gpt-5.6-luna")
+		? autoCompactTokenLimits.luna ?? 250_000
+		: target.model.includes("muse-spark-1.2")
+			? 250_000
+			: autoCompactTokenLimits.lagunaS ?? 250_000;
 	if (target.provider === "synth-cloud") {
 		return {
-			// baseUrl is overwritten by the Rust host from synth_config; placeholder satisfies types.
-			sessionId, workspace, baseUrl: "https://api.usesynth.ai/api/v1", apiKey: "",
+			// baseUrl and providerEnvKey are both overwritten by the Rust host,
+			// which routes this provider through the native credential broker;
+			// the placeholder only satisfies the type.
+			sessionId, workspace, baseUrl: "https://api.usesynth.ai/api/v1",
 			model: target.model, providerName: "synth-cloud", providerTitle: "Synth Cloud Responses",
-			providerEnvKey: "SYNTH_API_KEY", ...approval
+			providerEnvKey: "SYNTH_API_KEY", autoCompactTokenLimit, ...approval
 		};
 	}
 	return {
-		sessionId, workspace, baseUrl: "https://openrouter.ai/api/v1", apiKey: "",
+		sessionId, workspace, baseUrl: "https://openrouter.ai/api/v1",
 		model: target.model, providerName: "openrouter", providerTitle: "OpenRouter Responses",
-		providerEnvKey: "OPENROUTER_API_KEY", ...approval
+		providerEnvKey: "OPENROUTER_API_KEY", autoCompactTokenLimit, ...approval
 	};
 }
 
 export function createCodexSession(
-	id: string, target: ExecutionTarget, projectId: string | null, workspace: string, title?: string, approvalMode: ApprovalMode = "ask"
+	id: string, target: ExecutionTarget, projectId: string | null, workspace: string, title?: string, permissions: ApprovalMode | PermissionConfig = "ask"
 ): Session {
+	const approval = typeof permissions === "string" ? approvalModeConfig(permissions) : permissions;
+	const approvalMode = approvalModeFromConfig(approval.approvalPolicy, approval.sandbox);
 	const now = new Date().toISOString();
 	return {
 		id, title: title || (target.kind === "local" ? "Laguna XS" : target.kind === "remote" ? target.model : "Intern"), target,
 		projectId, createdAt: now, updatedAt: now, status: "ready", latestCursor: 0,
-		metadata: { runtime: "codex-app-server", workspace, approvalMode, ...approvalModeConfig(approvalMode) }
+		metadata: { runtime: "codex-app-server", workspace, approvalMode, ...approval }
 	};
 }
 
@@ -124,7 +148,8 @@ export function codexEventToRuntime(event: CodexEvent, sequence: number): Runtim
 	const itemType = typeof item?.type === "string" ? item.type.toLowerCase() : "";
 	const agentMessage = lower.includes("agentmessage") || lower.includes("agent_message") || itemType === "agentmessage";
 	let eventKind = method;
-	if (agentMessage) {
+	if (lower === "thread/compacted" || itemType === "contextcompaction") eventKind = "thread/compacted";
+	else if (agentMessage) {
 		eventKind = lower.includes("delta") ? "message.delta" : lower.includes("completed") ? "message.completed" : "message.created";
 	} else if (lower.includes("reasoning") || itemType === "reasoning") eventKind = "agent.reasoning";
 	else if (lower.includes("commandexecution") || itemType === "commandexecution") eventKind = "command.execution";

@@ -809,8 +809,11 @@ impl InventoryStore {
                     containers: conn
                         .query_row("SELECT COUNT(*) FROM containers", [], |row| row.get(0))?,
                     traces: conn.query_row("SELECT COUNT(*) FROM traces", [], |row| row.get(0))?,
-                    usage: conn
-                        .query_row("SELECT COUNT(*) FROM usage_ledger", [], |row| row.get(0))?,
+                    usage: conn.query_row(
+                        "SELECT (SELECT COUNT(*) FROM usage_records) + (SELECT COUNT(*) FROM usage_ledger)",
+                        [],
+                        |row| row.get(0),
+                    )?,
                 })
             })
             .await
@@ -924,9 +927,24 @@ fn usage_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageEntry> {
     })
 }
 
+/// Raw request-level inspection feed: the authoritative `usage_records`
+/// ledger first-class, with any legacy `usage_ledger` rows preserved beside
+/// it. The exposed cost is the settled charge when one exists, otherwise the
+/// labeled-elsewhere estimate — never a mixture per request.
 fn list_usage(conn: &Connection, limit: i64) -> Result<Vec<UsageEntry>> {
     let mut statement = conn.prepare(
-        "SELECT id,provider,model,session_id,run_id,prompt_tokens,completion_tokens,total_tokens,cost_usd,created_at FROM usage_ledger ORDER BY created_at DESC, id LIMIT ?1",
+        "SELECT id,provider,model,session_id,run_id,prompt_tokens,completion_tokens,total_tokens,cost_usd,created_at FROM (
+            SELECT id, provider, model_id AS model, session_id, run_id,
+                   COALESCE(input_tokens, 0) AS prompt_tokens,
+                   COALESCE(output_tokens, 0) AS completion_tokens,
+                   COALESCE(total_tokens, 0) AS total_tokens,
+                   COALESCE(billed_cost_usd, estimated_cost_usd) AS cost_usd,
+                   created_at
+            FROM usage_records
+            UNION ALL
+            SELECT id, provider, model, session_id, run_id, prompt_tokens, completion_tokens, total_tokens, cost_usd, created_at
+            FROM usage_ledger
+         ) ORDER BY created_at DESC, id LIMIT ?1",
     )?;
     let rows = statement
         .query_map(params![limit], usage_from_row)?

@@ -39,6 +39,9 @@ APP_TITLE="Synth Desktop · $NAME"
 BUNDLE_ID="com.synth.desktop.dev.$NAME"
 CHECKSUM="$(printf '%s' "$NAME" | cksum | awk '{print $1}')"
 VITE_PORT=$((14200 + CHECKSUM % 1000))
+# Every instance owns a stable Laguna port derived from its name. Instances
+# share one models directory of read-only weights and nothing else.
+LAGUNA_PORT=$((17300 + CHECKSUM % 600))
 SOURCE_REVISION="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
 if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
   SOURCE_REVISION="$SOURCE_REVISION-dirty"
@@ -103,11 +106,14 @@ write_contract() {
       "backgroundColor": "#f3f5f8",
       "titleBarStyle": "Overlay",
       "hiddenTitle": true,
-      "trafficLightPosition": { "x": 16, "y": 13 }
+      "trafficLightPosition": { "x": 20, "y": 22 }
     }]
   },
   "bundle": {
-    "icon": ["$ICON_PNG", "$ICON_ICNS"]
+    "icon": ["$ICON_PNG", "$ICON_ICNS"],
+    "macOS": {
+      "minimumSystemVersion": "14.0"
+    }
   }
 }
 EOF
@@ -146,19 +152,66 @@ EOF
   mv "$manifest_tmp" "$MANIFEST"
 }
 
+executable_digest() {
+  if [[ -f "$EXE" ]]; then
+    shasum -a 256 "$EXE" | awk '{print "sha256:" $1}'
+  else
+    printf ''
+  fi
+}
+
+# Capture rev+dirty before a build, revalidate after, and record the executable
+# digest so eval manifests can bind app provenance without stale pointers.
+revalidate_provenance() {
+  local phase="${1:-post-build}" expected="${2:-$SOURCE_REVISION}"
+  local current digest manifest_tmp="$MANIFEST.provenance.tmp"
+  current="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
+  if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+    current="$current-dirty"
+  fi
+  if [[ "$current" != "$expected" ]]; then
+    echo "[desktop:$NAME] ERROR provenance drift ($phase): expected $expected got $current" >&2
+    return 1
+  fi
+  SOURCE_REVISION="$current"
+  digest="$(executable_digest)"
+  [[ -f "$MANIFEST" ]] || write_contract
+  jq \
+    --arg sourceRevision "$SOURCE_REVISION" \
+    --arg executable "$EXE" \
+    --arg executableDigest "$digest" \
+    --arg validatedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    --arg phase "$phase" \
+    '.provenance = ((.provenance // {}) + {
+      sourceRevision: $sourceRevision,
+      executable: $executable,
+      executableDigest: (if $executableDigest == "" then null else $executableDigest end),
+      validatedAt: $validatedAt,
+      phase: $phase
+    })
+    | .sourceRevision = $sourceRevision
+    | .executableDigest = (if $executableDigest == "" then null else $executableDigest end)' \
+    "$MANIFEST" >"$manifest_tmp"
+  mv "$manifest_tmp" "$MANIFEST"
+}
+
 mark_runtime() {
   local status="$1" pid="${2:-}" manifest_tmp="$MANIFEST.runtime.tmp"
+  local digest
   [[ -f "$MANIFEST" ]] || write_contract
+  digest="$(executable_digest)"
   jq \
     --arg status "$status" \
     --arg pid "$pid" \
     --arg executable "$EXE" \
+    --arg executableDigest "$digest" \
     --arg sourceRevision "$SOURCE_REVISION" \
     --arg checkedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     '.runtime = ((.runtime // {}) + {
       status: $status,
       pid: (if $pid == "" then null else ($pid | tonumber) end),
       executable: $executable,
+      executableDigest: (if $executableDigest == "" then null else $executableDigest end),
       sourceRevision: $sourceRevision,
       checkedAt: $checkedAt
     })' "$MANIFEST" >"$manifest_tmp"
@@ -213,6 +266,7 @@ status_instance() {
   echo "[desktop:$NAME] data $DATA_ROOT"
   echo "[desktop:$NAME] workspace $WORKSPACE"
   echo "[desktop:$NAME] vite http://127.0.0.1:$VITE_PORT"
+  echo "[desktop:$NAME] laguna http://127.0.0.1:$LAGUNA_PORT"
   echo "[desktop:$NAME] identity $APP_TITLE · badge $ICON_LABEL · $BUNDLE_ID"
   echo "[desktop:$NAME] executable $EXE"
   echo "[desktop:$NAME] manifest $MANIFEST"
@@ -225,12 +279,32 @@ dev_instance() {
     exit 1
   fi
 
-  local laguna_home="${SYNTH_LAGUNA_HOME:-$HOME/.synth-desktop/laguna}"
+  # Capture provenance before any compile so a mid-build dirty tree fails closed.
+  local pre_build_revision="$SOURCE_REVISION"
+  revalidate_provenance "pre-build" "$pre_build_revision"
+
+  # The daemon's data directory holds its api key, pid files, response store,
+  # logs, and selected model. Sharing it across instances shares all of those.
+  local laguna_home="${SYNTH_LAGUNA_HOME:-$DATA_ROOT/laguna}"
+  mkdir -p "$laguna_home"
   export SYNTH_LAGUNA_HOME="$laguna_home"
-  export SYNTH_LAGUNA_BASE_URL="${SYNTH_LAGUNA_BASE_URL:-http://127.0.0.1:7333}"
+  export SYNTH_LAGUNA_PORT="${SYNTH_LAGUNA_PORT:-$LAGUNA_PORT}"
+  export SYNTH_LAGUNA_BASE_URL="${SYNTH_LAGUNA_BASE_URL:-http://127.0.0.1:$SYNTH_LAGUNA_PORT}"
   if [[ -z "${SYNTH_LAGUNA_API_KEY:-}" && -f "$laguna_home/api_key" ]]; then
     export SYNTH_LAGUNA_API_KEY
     SYNTH_LAGUNA_API_KEY="$(tr -d '\n' <"$laguna_home/api_key")"
+  fi
+
+  # Port derivation is a hash, so a collision is unlikely but not impossible,
+  # and a shared port is invisible until turns start failing in one instance
+  # for reasons that live in another. Fail here, by name, instead.
+  local port_holder
+  port_holder="$(lsof -nP -iTCP:"$SYNTH_LAGUNA_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+  if [[ -n "$port_holder" ]]; then
+    echo "[desktop:$NAME] ERROR Laguna port $SYNTH_LAGUNA_PORT is held by pid $port_holder:" >&2
+    ps -p "$port_holder" -o command= >&2 || true
+    echo "[desktop:$NAME] stop that process, or set SYNTH_LAGUNA_PORT to a free port for this instance" >&2
+    exit 1
   fi
 
   export SYNTH_DESKTOP_INSTANCE="$NAME"
@@ -256,10 +330,15 @@ dev_instance() {
   cargo build \
     --manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
     --bin synth-containers-mcp \
-    --bin synth-visuals-mcp
+    --bin synth-visuals-mcp \
+    --bin synth-optimizers-mcp
+
+  revalidate_provenance "post-build" "$pre_build_revision"
+  export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
 
   echo "[desktop:$NAME] launching $APP_TITLE"
-  echo "[desktop:$NAME] data=$DATA_ROOT vite=$VITE_PORT laguna=$SYNTH_LAGUNA_BASE_URL"
+  echo "[desktop:$NAME] data=$DATA_ROOT vite=$VITE_PORT laguna=$SYNTH_LAGUNA_BASE_URL home=$laguna_home"
+  echo "[desktop:$NAME] provenance $SOURCE_REVISION digest=$(executable_digest)"
   cd "$ROOT/apps/synth_desktop"
   exec npx tauri dev --config "$CONFIG"
 }

@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -32,12 +33,39 @@ if (!rendererRoot) {
 	);
 }
 const bombadil = resolve(workshopRoot, "node_modules/.bin/bombadil");
-const outputPath = resolve(appRoot, "test-results/bombadil");
 const specificationPath = process.env.BOMBADIL_SPEC
 	? resolve(workshopRoot, process.env.BOMBADIL_SPEC)
 	: resolve(here, "layout.spec.ts");
-const includeCuaAnalysisVisual = specificationPath.endsWith("launch-debt.spec.ts");
-const timeLimit = process.env.BOMBADIL_TIME_LIMIT || "10s";
+// Unique output roots so parallel gate jobs do not clobber each other.
+const outputPath = process.env.BOMBADIL_OUTPUT_PATH
+	? resolve(process.env.BOMBADIL_OUTPUT_PATH)
+	: resolve(
+		appRoot,
+		"test-results/bombadil",
+		specificationPath.replace(/.*\//, "").replace(/\.spec\.ts$/, "")
+	);
+const includeCuaAnalysisVisual = specificationPath.endsWith("launch-debt.spec.ts")
+	|| specificationPath.endsWith("visual-library-layout.spec.ts");
+const includeBlankWorkedTurn = specificationPath.endsWith("empty-completed-turn.spec.ts")
+	|| specificationPath.endsWith("empty-outputs.spec.ts")
+	|| specificationPath.endsWith("inference-state-honesty.spec.ts")
+	|| specificationPath.endsWith("run-summary-sanity.spec.ts")
+	|| specificationPath.endsWith("model-menu-polish.spec.ts");
+const includeComposerToolbar = specificationPath.endsWith("composer-toolbar.spec.ts");
+const includeTerminalPolish = specificationPath.endsWith("terminal-polish.spec.ts");
+const includeTraceCatalogLayout = specificationPath.endsWith("trace-catalog-layout.spec.ts");
+const includeShellContainment = specificationPath.endsWith("shell-containment.spec.ts");
+const includeInferenceHonesty = specificationPath.endsWith("inference-state-honesty.spec.ts");
+const includeRunSummarySanity = specificationPath.endsWith("run-summary-sanity.spec.ts");
+const includeVisualContracts = specificationPath.endsWith("v0.1-visual-contracts.spec.ts");
+// Five seconds covers every directed/eventual horizon in layout.spec.ts. Longer
+// runs intermittently wedge the current Chromiumoxide transport after the
+// properties have already been exercised, turning a clean trace into a harness
+// watchdog failure. Nightly exploration can still opt into a longer duration.
+const timeLimit = process.env.BOMBADIL_TIME_LIMIT
+	|| (includeBlankWorkedTurn || includeComposerToolbar || includeTerminalPolish || includeVisualContracts
+		? "10s"
+		: "5s");
 const timeLimitMatch = /^(\d+(?:\.\d+)?)(ms|s|m)$/.exec(timeLimit);
 if (!timeLimitMatch) throw new Error(`Unsupported BOMBADIL_TIME_LIMIT: ${timeLimit}`);
 const timeLimitMs = Number(timeLimitMatch[1]) * ({ ms: 1, s: 1_000, m: 60_000 })[timeLimitMatch[2]];
@@ -102,6 +130,189 @@ async function seedVisualAlignmentFixture() {
 	if (!visualResponse.ok) throw new Error(`Could not seed Bombadil alignment visual (${visualResponse.status})`);
 }
 
+async function seedTraceCatalogFixture() {
+	if (!includeTraceCatalogLayout) return;
+	const response = await fetch(`${connection.url}/v1/traces`, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			...(connection.token ? { Authorization: `Bearer ${connection.token}` } : {})
+		},
+		body: JSON.stringify({
+			title: "Bombadil Trace V5 viewport containment fixture",
+			source: "import",
+			payload: { schemaVersion: "synth.trace.v5", events: [{ kind: "tool.completed" }] },
+			metadata: { schemaVersion: "synth.trace.v5", model: "poolside/laguna-xs-2.1", events: 83, tools: 7, status: "completed", hasEvidence: true }
+		})
+	});
+	if (!response.ok) throw new Error(`Could not seed Bombadil trace fixture (${response.status})`);
+}
+
+/**
+ * Seeds the exact dishonest completed-turn UI from the 2026-08-10 CUA shot:
+ * Worked + empty assistant + Reasoned, plus an Unavailable tok/s chip.
+ * Intentionally red until the product refuses to render that state.
+ */
+function blankWorkedTurnBridgeScript() {
+	return `
+const blankSessionId = "blank-worked-turn";
+const blankStartedAt = "2026-08-10T15:44:50.000Z";
+const blankCompletedAt = "2026-08-10T15:45:01.000Z";
+function blankAppEvent(sequence, kind, payload, createdAt) {
+  return {
+    schemaVersion: "synth.desktop-app-event.v1",
+    sequence,
+    eventId: "blank-" + sequence,
+    sessionId: blankSessionId,
+    sessionSequence: sequence,
+    runId: "run-blank-worked",
+    source: "local",
+    kind,
+    payload,
+    createdAt
+  };
+}
+const blankWorkedEvents = [
+  blankAppEvent(1, "run.started", {}, blankStartedAt),
+  blankAppEvent(2, "message.created", { role: "user", content: "hello", messageId: "user-hello" }, blankStartedAt),
+  // Empty delta still opens an assistant draft and marks the turn "produced".
+  blankAppEvent(3, "message.delta", { delta: "", messageId: "asst-blank" }, "2026-08-10T15:44:51.000Z"),
+  blankAppEvent(4, "agent.reasoning", { content: "Considering a greeting response." }, "2026-08-10T15:44:55.000Z"),
+  blankAppEvent(5, "run.completed", { turn: { id: "turn-blank", status: "completed" } }, blankCompletedAt)
+];
+window.synthCodex = {
+  defaultWorkspace: async () => "/workspaces/default",
+  list: async () => [{
+    sessionId: blankSessionId,
+    threadId: "blank-thread",
+    workspace: "/workspaces/default",
+    model: "openrouter/poolside/laguna-s-2.1",
+    providerName: "synth-cloud",
+    providerTitle: "Synth Cloud Responses",
+    baseUrl: "http://127.0.0.1:41109/api/v1",
+    status: "ready",
+    title: "Hello",
+    approvalPolicy: "untrusted",
+    sandbox: "workspace-write"
+  }],
+  start: async () => ({ sessionId: blankSessionId, threadId: "blank-thread" }),
+  startTurn: async () => ({ sessionId: blankSessionId, threadId: "blank-thread", turnId: "turn-blank" }),
+  interrupt: async () => undefined,
+  close: async () => undefined,
+  onEvent: () => () => undefined
+};
+window.synthCore = {
+  diagnostics: async () => ({
+    databasePath: "bombadil-memory://core",
+    schemaVersion: 0,
+    integrityOk: true,
+    contentStorePath: "bombadil-memory://content",
+    journalHead: blankWorkedEvents.length,
+    sessionCount: 1,
+    runCount: 1,
+    visualCount: 0,
+    migrationComplete: true
+  }),
+  eventsAfter: async () => blankWorkedEvents,
+  sessionEventsAfter: async (sessionId) => sessionId === blankSessionId ? blankWorkedEvents : [],
+  onEvent: () => () => undefined
+};
+// Implausible p50 still passes the null gate, so formatTps collapses to
+// "Unavailable" and the composer chip advertises nonsense throughput.
+window.synthModelPerformance = {
+  summaries: async () => [{
+    provider: "synth-cloud",
+    modelId: "openrouter/poolside/laguna-s-2.1",
+    measurementKind: "observed_stream",
+    sampleCount: 1,
+    tpsP50: 99999,
+    tpsP95: 99999,
+    ttftP50Ms: null,
+    lastObservedAt: blankCompletedAt
+  }]
+};
+`;
+}
+
+/**
+ * Seeds the CUA composer-toolbar collision: Never ask · Full system access
+ * plus Unavailable tok/s observed p50 next to Thinking Max.
+ */
+function composerToolbarBridgeScript() {
+	return `
+try {
+  localStorage.setItem("synth.preferences.v1", JSON.stringify({
+    schemaVersion: 3,
+    appearance: {
+      theme: "system",
+      chatFontSize: 14,
+      codeFontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+      codeFontSize: 12,
+      terminalFontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+      terminalFontSize: 12
+    },
+    submission: { activeEnterAction: "enqueue" },
+    toolActivity: { mode: "grouped" },
+    agentContext: { autoCompactTokenLimits: { lagunaXs: 150000, lagunaS: 250000, luna: 250000 } },
+    layout: {
+      last: { sidebarVisible: true, sidebarWidth: 260, outputPaneVisible: false, outputPaneWidth: 420, bottomPanelVisible: false, bottomPanelHeight: 220, selectedConversationId: null, selectedOutputTab: null },
+      default: { sidebarVisible: true, sidebarWidth: 260, outputPaneVisible: false, outputPaneWidth: 420, bottomPanelVisible: false, bottomPanelHeight: 220, selectedConversationId: null, selectedOutputTab: null }
+    },
+    conversations: {},
+    promptQueue: [],
+    unreadCompletedChats: [],
+    approvalMode: "allow-all",
+    approvalPolicy: "never",
+    sandboxMode: "danger-full-access"
+  }));
+} catch (error) {
+  console.warn("bombadil composer-toolbar prefs seed failed", error);
+}
+
+window.synthModelPerformance = {
+  summaries: async () => [{
+    provider: "openrouter",
+    modelId: "poolside/laguna-s-2.1",
+    measurementKind: "observed_stream",
+    sampleCount: 1,
+    tpsP50: 99999,
+    tpsP95: 99999,
+    ttftP50Ms: null,
+    lastObservedAt: new Date().toISOString()
+  }]
+};
+`;
+}
+
+/** Supplies enough native-terminal behavior to exercise the real xterm chrome
+ * in a browser fixture. The renderer still owns tab selection, sizing, and
+ * control behavior; this only replaces the Tauri command transport. */
+function terminalPolishBridgeScript() {
+	return `
+window.__terminalPolishFixture = [
+  { id: "terminal-main", workspaceId: "fixture", cwd: "/workspaces/default", shell: "/bin/zsh", title: "workspace", status: "running", createdAt: 1 },
+  { id: "terminal-server", workspaceId: "fixture", cwd: "/workspaces/default", shell: "/bin/zsh", title: "dev server", status: "running", createdAt: 2 }
+];
+window.__terminalPolishSequence = 2;
+window.synthTerminal = {
+  available: true,
+  create: async () => {
+    const next = { id: "terminal-" + (++window.__terminalPolishSequence), workspaceId: "fixture", cwd: "/workspaces/default", shell: "/bin/zsh", title: "shell " + window.__terminalPolishSequence, status: "running", createdAt: window.__terminalPolishSequence };
+    window.__terminalPolishFixture.push(next);
+    return next;
+  },
+  list: async () => window.__terminalPolishFixture,
+  snapshot: async () => [],
+  write: async () => undefined,
+  resize: async () => undefined,
+  close: async (id) => {
+    const index = window.__terminalPolishFixture.findIndex((item) => item.id === id);
+    if (index >= 0) window.__terminalPolishFixture.splice(index, 1);
+  },
+  onEvent: () => () => undefined
+};`;
+}
+
 function browserBridgeScript() {
 	return `<script>
 window.synthDesktop = {
@@ -116,8 +327,76 @@ window.synthDesktop = {
 };
 window.synthLaguna = {
   getStatus: async () => ({ phase: "unavailable", baseUrl: null, backend: "stub", loadedModel: null, detail: "Bombadil fixture", memoryBytes: null, updatedAt: Date.now() }),
+  reload: async () => ({ phase: "unavailable", baseUrl: null, backend: "stub", loadedModel: null, detail: "Bombadil fixture", memoryBytes: null, updatedAt: Date.now() }),
+  listModels: async () => [],
+  downloadModel: async () => { throw new Error("Model downloads require Synth Desktop"); },
+  deleteModel: async () => { throw new Error("Model deletion requires Synth Desktop"); },
+  chooseModelDirectory: async () => null,
+  setModelDirectory: async () => { throw new Error("Model folders require the desktop app"); },
+  clearModelDirectory: async () => undefined,
   onStatus: () => () => {}
 };
+${includeShellContainment ? `window.synthLaguna.getStatus = async () => ({
+  phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm",
+  loadedModel: "/models/Laguna-XS-2.1-NVFP4-mlx", detail: "Ready", memoryBytes: null,
+  updatedAt: Date.now(), lastUsedAt: Date.now() - 60_000,
+  idleSeconds: 60, idleUnloadAfterSeconds: 900, freeAt: Date.now() + 840_000
+});` : ""}
+${includeInferenceHonesty ? `globalThis.__SYNTH_TEST_INFERENCE_TRANSPORT__ = {
+  snapshot: async () => ({
+    model: "/models/Laguna-XS-2.1-NVFP4-mlx", resident: true, residentBytes: null,
+    queueDepth: 0, queueCapacity: 9, active: null,
+    rolling: {
+      requestsCompleted: 1, requestsFailed: 0, requestsCancelled: 0,
+      inputTokens: null, outputTokens: null, cachedTokens: null,
+      ttftP50Ms: 1070, ttftP95Ms: 1070,
+      decodeTpsP50: null, decodeTpsP95: null,
+      latencyP50Ms: null, latencyP95Ms: null
+    }
+  }),
+  subscribe: () => () => {},
+  unload: async () => ({ released: true, conflict: false, detail: null })
+};` : ""}
+${includeBlankWorkedTurn ? blankWorkedTurnBridgeScript() : ""}
+${includeRunSummarySanity ? `blankWorkedEvents[0].createdAt = "2026-08-09T15:44:50.000Z";` : ""}
+${includeInferenceHonesty ? `window.synthCodex.list = async () => [{
+  sessionId: "blank-worked-turn", threadId: "blank-thread", workspace: "/workspaces/default",
+  model: "laguna-xs-2.1", providerName: "local-laguna", providerTitle: "Local Laguna",
+  baseUrl: "http://127.0.0.1:7333/v1", status: "ready", title: "Hello",
+  approvalPolicy: "untrusted", sandbox: "workspace-write"
+}];` : ""}
+${includeComposerToolbar ? composerToolbarBridgeScript() : ""}
+${includeTerminalPolish ? terminalPolishBridgeScript() : ""}
+${includeVisualContracts ? `window.synthConfig = {
+  get: async () => ({
+    configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod",
+    backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY",
+    apiKeyConfigured: true, workerKeyConfigured: false, openrouterApiKeyConfigured: true
+  }),
+  update: async () => { throw new Error("not used"); },
+  listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
+  getWorkspaceAccess: async () => ({ allowedRoots: [] }),
+  updateWorkspaceAccess: async () => ({ allowedRoots: [] })
+};` : ""}
+${includeTraceCatalogLayout ? `window.synthInventory = {
+  listContainers: async () => [],
+  getContainer: async () => { throw new Error("fixture has no containers"); },
+  registerContainer: async () => { throw new Error("not used"); },
+  probeContainer: async () => { throw new Error("not used"); },
+  listTraces: async () => [{
+    id: "trace-bombadil-containment", digest: "sha256:bombadil-containment-fixture",
+    title: "Bombadil Trace V5 viewport containment fixture", source: "import",
+    containerId: null, sessionId: null, runId: null, reward: null, metrics: [],
+    createdAt: "2026-08-10T16:00:00.000Z", path: "/tmp/bombadil-trace.json",
+    metadata: { schemaVersion: "synth.trace.v5", model: "poolside/laguna-xs-2.1", events: 83, tools: 7, status: "completed", hasEvidence: true }
+  }],
+  getTrace: async () => { throw new Error("not used"); },
+  chooseTraceInput: async () => null,
+  ingestTraceBundle: async () => { throw new Error("not used"); },
+  resolveTraceProjection: async () => { throw new Error("not used"); },
+  listUsage: async () => [],
+  counts: async () => ({ containers: 0, traces: 1, usage: 0 })
+};` : ""}
 // This is the exact payload shape produced by the CUA-observed Laguna prompt
 // trim visual. Only the dedicated launch-debt spec receives it: the normal
 // navigation spec must be able to visit Visuals without knowingly rendering
@@ -222,7 +501,16 @@ const rendererServer = createServer(async (request, response) => {
 });
 
 try {
-	runtimeProcess = spawn("python3", [
+	const pythonCandidates = [
+		process.env.SYNTH_PYTHON,
+		process.env.PYTHON,
+		resolve(homedir(), ".synth-desktop/laguna/.venv/bin/python"),
+		"/opt/homebrew/bin/python3.12",
+		"python3"
+	].filter(Boolean);
+	const python = pythonCandidates.find((candidate) => candidate === "python3" || existsSync(candidate))
+		|| "python3";
+	runtimeProcess = spawn(python, [
 		"-m", "synth_local_runtime",
 		"--host", "127.0.0.1",
 		"--port", "0",
@@ -242,6 +530,7 @@ try {
 	});
 	connection = await waitForConnection();
 	await seedVisualAlignmentFixture();
+	await seedTraceCatalogFixture();
 
 	await new Promise((resolvePromise, reject) => {
 		rendererServer.once("error", reject);

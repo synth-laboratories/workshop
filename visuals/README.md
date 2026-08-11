@@ -93,6 +93,7 @@ or
 | `live.eval_stream.v1` | Live eval / acceptance event stream |
 | `live.dock_harbor.v1` | Dock/harbor job status + rollout stream |
 | `live.intern_acceptance.v1` | Intern sync/async acceptance cell stream |
+| `optimizer.run.v1` | Shared optimizer chrome + GEPA/GELO/SFT overlays |
 
 Each template directory contains `template.json`, `shell.tsx`, `examples/`, `README.md` (plus `components/` when needed).
 
@@ -104,6 +105,7 @@ Each template directory contains `template.json`, `shell.tsx`, `examples/`, `REA
 | `trace_v5` | Sealed trace (read-only) |
 | `local_cas` | Desktop content-addressed blobs |
 | `live_sse` | Streaming eval / job / acceptance events |
+| `optimizer_run` | First-class optimizer run id (Desktop mirror) |
 
 Annotations never mutate sealed traces — `annotation.overlay.v1` is overlay-only.
 

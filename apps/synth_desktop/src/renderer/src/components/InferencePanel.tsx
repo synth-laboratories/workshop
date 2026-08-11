@@ -341,6 +341,12 @@ function isTauri(): boolean {
 }
 
 export function defaultInferenceTransport(): InferenceTransport {
+	// A narrow browser-test seam. Production has no such global and therefore
+	// always uses the Tauri daemon transport below.
+	const testTransport = (globalThis as typeof globalThis & {
+		__SYNTH_TEST_INFERENCE_TRANSPORT__?: InferenceTransport;
+	}).__SYNTH_TEST_INFERENCE_TRANSPORT__;
+	if (testTransport) return testTransport;
 	if (!isTauri()) return unavailableTransport;
 	tauriTransport ??= {
 		snapshot: () => invoke<InferenceSnapshot>("laguna_inference_snapshot"),
@@ -509,6 +515,8 @@ export type InferencePanelProps = {
 	className?: string;
 	/** When set, a labelled button deep-links to Settings → Inference. */
 	onOpenSettings?: () => void;
+	/** Cross-session measurements shown until the live monitor has samples. */
+	observedPerformance?: { tpsP50: number | null; tpsP95: number | null; sampleCount: number } | null;
 };
 
 export function InferencePanel({
@@ -519,7 +527,8 @@ export function InferencePanel({
 	transport,
 	historyLimit,
 	className,
-	onOpenSettings
+	onOpenSettings,
+	observedPerformance = null
 }: InferencePanelProps) {
 	// The panel is mounted in both the rail and the page, so ids must be local.
 	const reasonId = `${useId()}-free-reason`;
@@ -573,6 +582,9 @@ export function InferencePanel({
 			</section>
 		);
 	}
+	const decodeP50 = rolling.decodeTpsP50 ?? observedPerformance?.tpsP50 ?? null;
+	const decodeP95 = rolling.decodeTpsP95 ?? observedPerformance?.tpsP95 ?? null;
+	const decodeIsPersisted = rolling.decodeTpsP50 == null && observedPerformance?.tpsP50 != null;
 
 	const freeBlocked = Boolean(active) || turnRunning || !snapshot.resident || view.unloadState === "pending";
 	const freeReason = active
@@ -716,10 +728,10 @@ export function InferencePanel({
 				<div className="inference-stat-row">
 					<dt>Decode</dt>
 					<dd>
-						<Metric label="Decode p50" value={formatTps(rolling.decodeTpsP50)} /> <i>p50</i>
+						<Metric label="Decode p50" value={formatTps(decodeP50)} /> <i>{decodeIsPersisted ? "observed p50" : "p50"}</i>
 					</dd>
 					<dd>
-						<Metric label="Decode p95" value={formatTps(rolling.decodeTpsP95)} /> <i>p95 tok/s</i>
+						<Metric label="Decode p95" value={formatTps(decodeP95)} /> <i>p95 tok/s</i>
 					</dd>
 				</div>
 				<div className="inference-stat-row inference-stat-row-requests">

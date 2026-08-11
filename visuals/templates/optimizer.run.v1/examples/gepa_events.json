@@ -1,0 +1,144 @@
+{
+  "run": {
+    "schemaVersion": "optimizer_run.v1",
+    "id": "opt_gepa_fixture",
+    "algorithmId": "gepa",
+    "algorithmVersion": "1.0.0",
+    "status": "completed",
+    "source": "local",
+    "objective": "banking77 prompt · maximize macro-F1",
+    "createdAt": "2026-08-09T15:00:00Z",
+    "startedAt": "2026-08-09T15:00:01Z",
+    "finishedAt": "2026-08-09T15:02:10Z",
+    "cursorSeq": 10,
+    "capabilities": {
+      "cancel": true,
+      "pause": true,
+      "resume": true,
+      "streamEvents": true,
+      "stateSlices": true,
+      "candidates": true
+    },
+    "summary": { "bestScore": 0.82, "iteration": 1, "accepted": 2 },
+    "usage": {
+      "costUsd": 0.83,
+      "promptTokens": 4800,
+      "completionTokens": 1600,
+      "rollouts": 24,
+      "wallTimeMs": 90000
+    }
+  },
+  "events": [
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_fixture:1",
+      "type": "gepa.run.started",
+      "sequenceNumber": 1,
+      "occurredAt": "2026-08-09T15:00:01Z",
+      "optimizerRunId": "opt_gepa_fixture",
+      "algorithmId": "gepa",
+      "delta": { "status": "running" },
+      "usageDelta": { "cost_usd": 0, "rollouts": 0 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_fixture:3",
+      "type": "candidate.evaluated",
+      "sequenceNumber": 3,
+      "occurredAt": "2026-08-09T15:00:20Z",
+      "optimizerRunId": "opt_gepa_fixture",
+      "algorithmId": "gepa",
+      "item": {
+        "kind": "candidate",
+        "id": "cand_seed",
+        "status": "evaluated",
+        "raw": { "score": 0.71, "costUsd": 0.12, "rollouts": 8 }
+      },
+      "delta": { "train_reward": 0.71 },
+      "usageDelta": { "cost_usd": 0.12, "rollouts": 8, "prompt_tokens": 800, "completion_tokens": 200 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_fixture:4",
+      "type": "candidate.accepted",
+      "sequenceNumber": 4,
+      "occurredAt": "2026-08-09T15:00:25Z",
+      "optimizerRunId": "opt_gepa_fixture",
+      "algorithmId": "gepa",
+      "item": {
+        "kind": "candidate",
+        "id": "cand_seed",
+        "status": "accepted",
+        "raw": { "score": 0.71, "costUsd": 0.12, "rollouts": 8, "parentId": null }
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_fixture:6",
+      "type": "candidate.full_train_evaluated",
+      "sequenceNumber": 6,
+      "occurredAt": "2026-08-09T15:01:40Z",
+      "optimizerRunId": "opt_gepa_fixture",
+      "algorithmId": "gepa",
+      "item": {
+        "kind": "candidate",
+        "id": "cand_m1",
+        "status": "evaluated",
+        "raw": { "parentId": "cand_seed", "score": 0.82, "costUsd": 0.31, "rollouts": 16, "delta": 0.11 }
+      },
+      "delta": { "train_reward": 0.82 },
+      "usageDelta": { "cost_usd": 0.31, "rollouts": 16 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_fixture:7",
+      "type": "candidate.accepted",
+      "sequenceNumber": 7,
+      "occurredAt": "2026-08-09T15:01:42Z",
+      "optimizerRunId": "opt_gepa_fixture",
+      "algorithmId": "gepa",
+      "item": {
+        "kind": "candidate",
+        "id": "cand_m1",
+        "status": "accepted",
+        "raw": { "parentId": "cand_seed", "score": 0.82, "costUsd": 0.31, "rollouts": 16, "rank": 1 }
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_fixture:8",
+      "type": "frontier.updated",
+      "sequenceNumber": 8,
+      "occurredAt": "2026-08-09T15:01:43Z",
+      "optimizerRunId": "opt_gepa_fixture",
+      "algorithmId": "gepa",
+      "snapshot": {
+        "cells": [
+          { "candidateId": "cand_seed", "quality": 0.71, "costUsd": 0.12, "rollouts": 8 },
+          { "candidateId": "cand_m1", "quality": 0.82, "costUsd": 0.31, "rollouts": 16, "accent": true }
+        ],
+        "bestScore": 0.82
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_fixture:9",
+      "type": "gepa.reflection",
+      "sequenceNumber": 9,
+      "occurredAt": "2026-08-09T15:01:50Z",
+      "optimizerRunId": "opt_gepa_fixture",
+      "algorithmId": "gepa",
+      "delta": { "message": "Clarify fee vs balance intents; keep short system preamble." }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_fixture:10",
+      "type": "gepa.run.finished",
+      "sequenceNumber": 10,
+      "occurredAt": "2026-08-09T15:02:10Z",
+      "optimizerRunId": "opt_gepa_fixture",
+      "algorithmId": "gepa",
+      "snapshot": { "status": "completed", "bestScore": 0.82, "summary": { "bestScore": 0.82, "iteration": 1 } }
+    }
+  ]
+}

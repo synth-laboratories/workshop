@@ -1,5 +1,8 @@
+mod account;
+mod account_cloud;
 mod cloud;
 mod codex;
+mod credential_broker;
 pub mod core_runtime;
 mod device_auth;
 mod domain;
@@ -13,13 +16,16 @@ mod runtime;
 mod skills;
 pub mod storage;
 mod synth_config;
+mod tariffs;
 mod terminal;
 pub mod trace_ingest;
+mod update_check;
 mod visuals;
 mod visuals_ipc;
 mod whisper;
 mod workspace_scope;
 
+use base64::Engine as _;
 use codex::{
     CodexApprovalDecisionRequest, CodexManager, CodexSessionInfo, CodexSessionRecord,
     CodexSessionRequest, CodexSessionStartRequest, CodexSteerRequest, CodexTurnFailure,
@@ -43,7 +49,7 @@ use optimizers::{
 };
 use serde_json::Value;
 use std::sync::Arc;
-use storage::{AppEvent, CoreDiagnostics};
+use storage::{AppEvent, CoreDiagnostics, ModelPerformanceRepository, ModelPerformanceSummary};
 use synth_config::{
     BackendSettings, BackendSettingsUpdate, ModelMultiAgentSetting, ModelMultiAgentUpdate,
     WorkspaceAccessSettings, WorkspaceAccessUpdate,
@@ -67,6 +73,34 @@ fn core_diagnostics(state: State<'_, Arc<CoreRuntime>>) -> Result<CoreDiagnostic
 #[tauri::command]
 fn desktop_instance_diagnostics() -> InstanceDiagnostics {
     instance::diagnostics()
+}
+
+#[tauri::command]
+fn desktop_image_preview(path: String) -> Result<String, String> {
+    let path = std::path::Path::new(&path)
+        .canonicalize()
+        .map_err(|_| "Screenshot is unavailable".to_string())?;
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| "Screenshot has no supported format".to_string())?;
+    let mime = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => return Err("Screenshot format is unsupported".into()),
+    };
+    let metadata = std::fs::metadata(&path).map_err(|_| "Screenshot is unavailable".to_string())?;
+    if !metadata.is_file() || metadata.len() > 20 * 1024 * 1024 {
+        return Err("Screenshot must be a file smaller than 20 MB".into());
+    }
+    let bytes = std::fs::read(path).map_err(|_| "Screenshot could not be read".to_string())?;
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
 }
 
 #[tauri::command]
@@ -408,6 +442,55 @@ async fn inventory_usage_list(
         .inventory()
         .list_usage(limit.unwrap_or(100))
         .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn model_performance_summary(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<Vec<ModelPerformanceSummary>, String> {
+    ModelPerformanceRepository::new(state.storage().database().clone())
+        .summaries()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Device-wide usage dashboard for one time window, aggregated in SQLite/Rust
+/// over the authoritative per-request `usage_records` ledger — the renderer
+/// never reduces raw rows itself.
+#[tauri::command]
+async fn usage_summary(
+    state: State<'_, Arc<CoreRuntime>>,
+    window: String,
+) -> Result<storage::UsageSummary, String> {
+    let now = chrono::Utc::now();
+    let offset_seconds = chrono::Local::now().offset().local_minus_utc();
+    let since_ms = storage::window_start_ms(&window, now, offset_seconds);
+    storage::UsageRecordsRepository::new(state.storage().database().clone())
+        .summary(window, since_ms)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// The provider price cards currently in force. Settings renders these
+/// numbers; the renderer never carries its own copy of a rate.
+#[tauri::command]
+fn tariff_catalog() -> Vec<tariffs::TariffCard> {
+    tariffs::cards_in_force(chrono::Utc::now().timestamp_millis())
+}
+
+#[tauri::command]
+async fn update_status() -> update_check::UpdateStatus {
+    update_check::status().await
+}
+
+/// Always the fixed public download page — the manifest never chooses the
+/// destination.
+#[tauri::command]
+async fn update_open_download(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(update_check::DOWNLOAD_PAGE, None::<String>)
         .map_err(|error| error.to_string())
 }
 
@@ -968,6 +1051,7 @@ async fn account_begin_sign_in(
 async fn account_poll_sign_in(
     core: State<'_, Arc<CoreRuntime>>,
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
+    cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
 ) -> Result<device_auth::SignInPoll, String> {
     let origin = device_auth::workshop_origin();
     let result = manager
@@ -978,6 +1062,10 @@ async fn account_poll_sign_in(
         core.reload_intern_config()
             .await
             .map_err(|error| error.to_string())?;
+        // A new key invalidates any cached snapshot, and the device is now
+        // known to have paired at least once.
+        cloud.clear_cache();
+        let _ = account::mark_paired(core.storage(), chrono::Utc::now());
     }
     Ok(result)
 }
@@ -990,9 +1078,89 @@ fn account_cancel_sign_in(
     Ok(())
 }
 
+/// Compose the account summary the shell renders: the Synth Cloud Account
+/// Snapshot when the device is paired, the labelled local/dev stand-in when it
+/// is not reachable outside prod. The renderer never derives plan or identity.
+async fn account_summary_now(
+    core: &Arc<CoreRuntime>,
+    cloud: &Arc<account_cloud::AccountCloudClient>,
+    force: bool,
+) -> Result<account::AccountSummary, String> {
+    let settings = synth_config::get().map_err(|error| error.to_string())?;
+    let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
+    let origin = device_auth::workshop_origin();
+    let now = chrono::Utc::now();
+    let read = cloud
+        .read(
+            &resolved.backend_url,
+            resolved.api_key.as_deref(),
+            force,
+            now,
+        )
+        .await;
+    account::summary(
+        core.storage(),
+        &origin,
+        settings.api_key_configured,
+        now,
+        &read,
+    )
+    .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
-async fn account_sign_out(core: State<'_, Arc<CoreRuntime>>) -> Result<BackendSettings, String> {
+async fn account_get_summary(
+    core: State<'_, Arc<CoreRuntime>>,
+    cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
+) -> Result<account::AccountSummary, String> {
+    account_summary_now(&core, &cloud, false).await
+}
+
+/// Force a snapshot refetch — used after returning from hosted checkout and by
+/// the explicit retry in the account menu.
+#[tauri::command]
+async fn account_refresh(
+    core: State<'_, Arc<CoreRuntime>>,
+    cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
+) -> Result<account::AccountSummary, String> {
+    account_summary_now(&core, &cloud, true).await
+}
+
+/// Open a backend-issued hosted billing URL in the system browser. Desktop
+/// never renders a payment form and never receives card data.
+#[tauri::command]
+async fn account_open_billing(
+    app: tauri::AppHandle,
+    cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
+    action: account_cloud::BillingAction,
+    tier: Option<String>,
+) -> Result<String, String> {
+    let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
+    let url = cloud
+        .billing_url(
+            &resolved.backend_url,
+            resolved.api_key.as_deref(),
+            action,
+            tier.as_deref(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url.clone(), None::<String>)
+        .map_err(|error| error.to_string())?;
+    Ok(url)
+}
+
+#[tauri::command]
+async fn account_sign_out(
+    core: State<'_, Arc<CoreRuntime>>,
+    cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
+) -> Result<BackendSettings, String> {
     synth_config::remove_api_key().map_err(|error| error.to_string())?;
+    // Cloud facts belong to the signed-out session; local history and the
+    // device ledger stay untouched.
+    cloud.clear_cache();
     core.reload_intern_config()
         .await
         .map_err(|error| error.to_string())?;
@@ -1143,7 +1311,10 @@ async fn workspace_scope_attach_recent(
     let scope = workspace_scope::attach_recent(core.storage().database(), &session_id, &path)
         .await
         .map_err(|error| error.to_string())?;
-    codex.close(&session_id).await.map_err(|error| error.to_string())?;
+    codex
+        .close(&session_id)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(scope)
 }
 
@@ -1276,37 +1447,50 @@ async fn prepare_codex_provider(
                 .map_err(|error| error.to_string())?,
         );
     }
-    if request.provider_name.as_deref() == Some("local-laguna") {
-        let root = runtime::workshop_root().map_err(|error| error.to_string())?;
-        request.base_url = laguna
-            .ensure(&root)
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "Laguna Responses server is unavailable".to_string())?;
-        request.api_key = laguna.api_key().unwrap_or_default();
-    } else if request
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider| provider.eq_ignore_ascii_case("openrouter"))
-    {
-        request.api_key = synth_config::openrouter_api_key()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| {
-                "OpenRouter API key is not configured. Add it in Synth backend settings."
-                    .to_string()
-            })?;
-        request.provider_env_key = Some("OPENROUTER_API_KEY".into());
-    } else if request
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider| provider.eq_ignore_ascii_case("synth-cloud"))
-    {
-        let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
-        codex::apply_synth_cloud_provider(
-            &mut request,
-            &resolved.backend_url,
-            resolved.api_key.as_deref(),
-        )?;
+    // Exactly one preparation rule per provider class — see
+    // `codex::ProviderClass` for the endpoint/credential/custody table. User
+    // credentials are only *staged* here; `CodexManager::start` exchanges them
+    // for a loopback lease at spawn time, so preparing a send for a live,
+    // reused child never invalidates the token that child is presenting.
+    match codex::provider_class(request.provider_name.as_deref()) {
+        codex::ProviderClass::LocalLaguna => {
+            let root = runtime::workshop_root().map_err(|error| error.to_string())?;
+            request.base_url = laguna
+                .ensure(&root)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "Laguna Responses server is unavailable".to_string())?;
+            // The Laguna key is this process's loopback service token, not a
+            // user credential: the child talks to the local daemon directly
+            // and no broker lease is involved.
+            request.api_key = laguna.api_key().unwrap_or_default();
+        }
+        codex::ProviderClass::OpenRouter => {
+            let key = synth_config::openrouter_api_key()
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| {
+                    "OpenRouter API key is not configured. Add it in Synth backend settings."
+                        .to_string()
+                })?;
+            // The OpenRouter key is the user's, and leaks into shell snapshots
+            // the same way the Synth key did; it goes into native custody too.
+            codex::stage_brokered_credential(&mut request, &key)?;
+        }
+        codex::ProviderClass::SynthCloud => {
+            let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
+            codex::apply_synth_cloud_provider(
+                &mut request,
+                &resolved.backend_url,
+                resolved.api_key.as_deref(),
+            )?;
+        }
+        codex::ProviderClass::Direct => {
+            // openai / Azure / custom Responses endpoints: the renderer
+            // supplies endpoint and env key, Rust holds no credential for
+            // them, and the request passes through untouched. Deliberately no
+            // brokering — custody is only for credentials Rust itself
+            // resolves, never for renderer-controlled values.
+        }
     }
     Ok(request)
 }
@@ -1368,6 +1552,21 @@ async fn codex_turn_interrupt(
 ) -> Result<(), String> {
     state
         .interrupt(&request.session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn codex_thread_compact(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CodexManager>>,
+    laguna: State<'_, Arc<LagunaManager>>,
+    core: State<'_, Arc<CoreRuntime>>,
+    request: CodexSessionStartRequest,
+) -> Result<(), String> {
+    let request = prepare_codex_start(&laguna, &core, request).await?;
+    state
+        .compact(app, request)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1509,6 +1708,23 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             instance::mark_manifest_running();
+            // Builds before the credential broker exported provider keys into
+            // Codex, which recorded them in its shell snapshots. Scrub what
+            // those builds left behind in Desktop's own Codex homes.
+            match credential_broker::redact_managed_shell_snapshots(&codex::codex_root()) {
+                Ok(0) => {}
+                Ok(count) => {
+                    eprintln!("redacted provider secrets from {count} Codex shell snapshot(s)")
+                }
+                Err(error) => {
+                    return Err(std::io::Error::other(format!(
+                        "could not scrub provider secrets from Codex shell snapshots, so a \
+                         credential may remain in cleartext under {}: {error:#}",
+                        codex::codex_root().display()
+                    ))
+                    .into())
+                }
+            }
             let core =
                 Arc::new(CoreRuntime::open_default().map_err(|error| {
                     std::io::Error::other(format!("open CoreRuntime: {error}"))
@@ -1525,6 +1741,7 @@ pub fn run() {
             app.manage(codex.clone());
             app.manage(Arc::new(TerminalManager::new()));
             app.manage(Arc::new(device_auth::DeviceAuthManager::new()));
+            app.manage(Arc::new(account_cloud::AccountCloudClient::new()));
             app.manage(laguna.clone());
 
             // All committed CoreRuntime events reach Tauri through this single
@@ -1603,6 +1820,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             desktop_instance_diagnostics,
+            desktop_image_preview,
             core_diagnostics,
             core_events_after,
             core_session_events_after,
@@ -1620,6 +1838,11 @@ pub fn run() {
             inventory_traces_ingest,
             inventory_trace_projection_resolve,
             inventory_usage_list,
+            model_performance_summary,
+            usage_summary,
+            tariff_catalog,
+            update_status,
+            update_open_download,
             inventory_counts,
             optimizers_algorithms_list,
             optimizers_recipes_list,
@@ -1654,6 +1877,9 @@ pub fn run() {
             synth_config_update,
             model_performance_get,
             account_begin_sign_in,
+            account_get_summary,
+            account_refresh,
+            account_open_billing,
             account_poll_sign_in,
             account_cancel_sign_in,
             account_sign_out,
@@ -1684,12 +1910,15 @@ pub fn run() {
             laguna::laguna_inference_stream_stop,
             laguna::laguna_model_unload,
             laguna::laguna_model_download,
+            laguna::laguna_model_delete,
             laguna::laguna_settings_snapshot,
             laguna::laguna_settings_update,
             whisper::whisper_models_list,
             whisper::whisper_model_download,
             whisper::whisper_models_set_selected,
             whisper::whisper_models_clear,
+            whisper::whisper_runtime_status,
+            whisper::whisper_runtime_warm,
             whisper::whisper_transcribe,
             whisper::whisper_transcribe_base64,
             skills::skills_list,
@@ -1698,6 +1927,7 @@ pub fn run() {
             codex_turn_start,
             codex_turn_send,
             codex_turn_interrupt,
+            codex_thread_compact,
             codex_turn_steer,
             codex_approval_resolve,
             codex_session_close,

@@ -1,7 +1,9 @@
 import { test as base, expect, type Page } from "@playwright/test";
+import { mkdtemp, rm } from "node:fs/promises";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 type Fixtures = { page: Page };
 type WorkerFixtures = { rendererOrigin: string };
@@ -32,6 +34,7 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
 		const appRoot = resolve(import.meta.dirname, "../..");
 		const workshopRoot = resolve(appRoot, "../..");
 		const port = await reserveLoopbackPort();
+		const cacheDir = await mkdtemp(join(tmpdir(), "synth-desktop-playwright-vite-"));
 		let server: ChildProcess | undefined;
 		server = spawn(resolve(workshopRoot, "node_modules/.bin/vite"), [
 			"--host", "127.0.0.1",
@@ -39,24 +42,30 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
 			"--strictPort"
 		], {
 			cwd: appRoot,
+			env: { ...process.env, SYNTH_DESKTOP_VITE_CACHE_DIR: cacheDir },
 			stdio: "ignore"
 		});
-		const origin = `http://127.0.0.1:${port}`;
-		let ready = false;
-		for (let attempt = 0; attempt < 300; attempt += 1) {
-			if (server.exitCode !== null) {
-				throw new Error(`Vite exited before becoming ready (code ${server.exitCode})`);
-			}
-			try {
-				if ((await fetch(origin)).ok) {
-					ready = true;
-					break;
+		try {
+			const origin = `http://127.0.0.1:${port}`;
+			let ready = false;
+			for (let attempt = 0; attempt < 300; attempt += 1) {
+				if (server.exitCode !== null) {
+					throw new Error(`Vite exited before becoming ready (code ${server.exitCode})`);
 				}
-			} catch { /* Vite is starting. */ }
-			await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+				try {
+					if ((await fetch(origin)).ok) {
+						ready = true;
+						break;
+					}
+				} catch { /* Vite is starting. */ }
+				await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+			}
+			if (!ready) throw new Error(`Vite did not become ready at ${origin} within 30 seconds`);
+			await use(origin);
+		} finally {
+			server.kill("SIGTERM");
+			await rm(cacheDir, { recursive: true, force: true });
 		}
-		if (!ready) throw new Error(`Vite did not become ready at ${origin} within 30 seconds`);
-		try { await use(origin); } finally { server.kill("SIGTERM"); }
 	}, { scope: "worker" }],
 	page: async ({ page, rendererOrigin }, use) => {
 		await page.addInitScript(() => {
@@ -77,7 +86,7 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
 			};
 		});
 		await page.goto(rendererOrigin);
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		await use(page);
 	}
 });

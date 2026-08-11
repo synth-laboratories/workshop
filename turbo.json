@@ -1,0 +1,18 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "typecheck": {
+      "inputs": ["src/**", "tsconfig.json", "package.json", "../../packages/**"],
+      "outputs": []
+    },
+    "frontend:build": {
+      "dependsOn": ["typecheck"],
+      "inputs": ["src/**", "index.html", "vite.config.*", "package.json", "../../visuals/**", "../../packages/**"],
+      "outputs": ["../../dist/**"]
+    },
+    "test:playwright": {
+      "dependsOn": ["frontend:build"],
+      "cache": false
+    }
+  }
+}

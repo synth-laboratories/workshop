@@ -7,16 +7,18 @@
 //! debug/dev builds and only spawned for named development instances. Production /
 //! release builds never listen.
 
-use crate::codex::{CodexManager, CodexSessionStartRequest, CodexTurnSendRequest};
+use crate::codex::{self, CodexManager, CodexSessionStartRequest, CodexTurnSendRequest};
 use crate::core_runtime::CoreRuntime;
 use crate::laguna::LagunaManager;
 use crate::storage::{EventAppend, EventSource};
 use crate::synth_config;
-use crate::visuals::VisualCreateRequest;
+use crate::trace_ingest::TraceBundleIngestRequest;
+use crate::visuals::{VisualCreateRequest, VisualUpdateRequest};
 use crate::visuals_ipc;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 use tauri::AppHandle;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -376,7 +378,7 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
                 .trim_start_matches("/v1/containers/")
                 .trim_end_matches("/policy_rollouts")
                 .trim_end_matches('/');
-            run_policy_rollout(core, id, body).await
+            run_policy_rollout(deps, id, body).await
         }
         ("POST", "/v1/container_register") => {
             visuals_ipc::dispatch("POST", "/v1/containers", body, core).await
@@ -395,9 +397,18 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
             .await
         }
         ("POST", "/v1/open_visual") => open_visual(core, body).await,
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/update") => {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/update")
+                .trim_end_matches('/');
+            update_visual(core, id, body).await
+        }
         ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/show") => {
             visuals_ipc::dispatch(method, path, body, core).await
         }
+        ("POST", "/v1/traces/ingest") => ingest_trace_bundle(core, body).await,
+        ("POST", "/v1/policy_preflight") => policy_preflight(deps, body).await,
         _ => bail!("unsupported eval driver route {method} {path}"),
     }
 }
@@ -460,7 +471,9 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
         ),
         thread_id: None,
         multi_agent_version: None,
+        auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
         writable_roots: Vec::new(),
+        broker_credential: false,
     };
     start = prepare_start(&deps.laguna, start).await?;
     let info = deps
@@ -474,37 +487,40 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
     }))
 }
 
+/// Mirrors `prepare_codex_provider` in `lib.rs`: one preparation rule per
+/// `codex::ProviderClass`, so the eval driver exercises the same credential
+/// custody the product uses.
 async fn prepare_start(
     laguna: &LagunaManager,
     mut request: CodexSessionStartRequest,
 ) -> Result<CodexSessionStartRequest> {
-    if request.provider_name.as_deref() == Some("local-laguna") {
-        let root = crate::runtime::workshop_root()?;
-        request.base_url = laguna
-            .ensure(&root)
-            .await?
-            .ok_or_else(|| anyhow!("Laguna Responses server is unavailable"))?;
-        request.api_key = laguna.api_key().unwrap_or_default();
-    } else if request
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider| provider.eq_ignore_ascii_case("openrouter"))
-    {
-        request.api_key = synth_config::openrouter_api_key()?
-            .ok_or_else(|| anyhow!("OpenRouter API key is not configured"))?;
-        request.provider_env_key = Some("OPENROUTER_API_KEY".into());
-    } else if request
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider| provider.eq_ignore_ascii_case("synth-cloud"))
-    {
-        let resolved = synth_config::resolve()?;
-        crate::codex::apply_synth_cloud_provider(
-            &mut request,
-            &resolved.backend_url,
-            resolved.api_key.as_deref(),
-        )
-        .map_err(|message| anyhow!(message))?;
+    match crate::codex::provider_class(request.provider_name.as_deref()) {
+        crate::codex::ProviderClass::LocalLaguna => {
+            let root = crate::runtime::workshop_root()?;
+            request.base_url = laguna
+                .ensure(&root)
+                .await?
+                .ok_or_else(|| anyhow!("Laguna Responses server is unavailable"))?;
+            request.api_key = laguna.api_key().unwrap_or_default();
+        }
+        crate::codex::ProviderClass::OpenRouter => {
+            let key = synth_config::openrouter_api_key()?
+                .ok_or_else(|| anyhow!("OpenRouter API key is not configured"))?;
+            // Staged for native custody, exactly like the production path;
+            // `CodexManager::start` exchanges it for a loopback lease at spawn.
+            crate::codex::stage_brokered_credential(&mut request, &key)
+                .map_err(|message| anyhow!(message))?;
+        }
+        crate::codex::ProviderClass::SynthCloud => {
+            let resolved = synth_config::resolve()?;
+            crate::codex::apply_synth_cloud_provider(
+                &mut request,
+                &resolved.backend_url,
+                resolved.api_key.as_deref(),
+            )
+            .map_err(|message| anyhow!(message))?;
+        }
+        crate::codex::ProviderClass::Direct => {}
     }
     Ok(request)
 }
@@ -561,7 +577,9 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
         sandbox: Some("workspace-write".into()),
         thread_id: None,
         multi_agent_version: None,
+        auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
         writable_roots: Vec::new(),
+        broker_credential: false,
     };
     start = prepare_start(&deps.laguna, start).await?;
     let info = deps
@@ -572,6 +590,7 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
                 start,
                 prompt,
                 effort,
+                compact_before_model_switch: false,
             },
         )
         .await
@@ -600,14 +619,7 @@ async fn wait_for_terminal(core: &CoreRuntime, session_id: &str, body: Value) ->
         for event in &events {
             after = after.max(event.session_sequence.unwrap_or(event.sequence));
             let kind = event.kind.as_str();
-            if matches!(
-                kind,
-                "run.completed"
-                    | "run.failed"
-                    | "run.cancelled"
-                    | "session.run.completed"
-                    | "session.run.failed"
-            ) {
+            if is_terminal_event(kind, &event.payload) {
                 return Ok(json!({
                     "terminal": true,
                     "kind": kind,
@@ -626,6 +638,21 @@ async fn wait_for_terminal(core: &CoreRuntime, session_id: &str, body: Value) ->
         }
         tokio::time::sleep(Duration::from_millis(poll_ms)).await;
     }
+}
+
+fn is_terminal_event(kind: &str, payload: &Value) -> bool {
+    matches!(
+        kind,
+        "run.completed"
+            | "run.failed"
+            | "run.cancelled"
+            | "session.run.completed"
+            | "session.run.failed"
+    ) || (kind == "run.status_changed"
+        && matches!(
+            payload.get("to").and_then(Value::as_str),
+            Some("completed" | "failed" | "cancelled" | "interrupted")
+        ))
 }
 
 async fn export_session(core: &CoreRuntime, session_id: &str) -> Result<Value> {
@@ -691,7 +718,11 @@ async fn open_visual(core: &CoreRuntime, body: Value) -> Result<Value> {
         metadata: body.get("metadata").cloned(),
     };
     let (visual, event) = core.visuals().create(create).await?;
-    let (shown, show_event) = core.visuals().show(visual.id.clone(), session_id).await?;
+    let (shown, show_event) = core
+        .visuals()
+        .show(visual.id.clone(), session_id)
+        .await?;
+    core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
     core.broadcast_committed(Some(serde_json::from_value(show_event.clone())?));
     Ok(json!({
         "opened": true,
@@ -701,7 +732,219 @@ async fn open_visual(core: &CoreRuntime, body: Value) -> Result<Value> {
     }))
 }
 
-async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value) -> Result<Value> {
+async fn update_visual(core: &CoreRuntime, visual_id: &str, body: Value) -> Result<Value> {
+    let request = VisualUpdateRequest {
+        title: body
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        bindings: body.get("bindings").cloned(),
+        status: None,
+        renderer_kind: None,
+        message_id: None,
+        run_id: None,
+        trace_id: body
+            .get("traceId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        content: None,
+        metadata: body.get("metadata").cloned(),
+        bump_revision: Some(true),
+    };
+    let (visual, event) = core
+        .visuals()
+        .update(visual_id.to_string(), request)
+        .await?;
+    core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
+    Ok(json!({ "ok": true, "visual": visual, "event": event }))
+}
+
+async fn ingest_trace_bundle(core: &CoreRuntime, body: Value) -> Result<Value> {
+    let source_path = body
+        .get("sourcePath")
+        .or_else(|| body.get("source_path"))
+        .and_then(Value::as_str)
+        .context("traces/ingest requires sourcePath")?
+        .to_string();
+    let request = TraceBundleIngestRequest {
+        source_path,
+        source_kind: body
+            .get("sourceKind")
+            .or_else(|| body.get("source_kind"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        title: body
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        source_uri: body
+            .get("sourceUri")
+            .or_else(|| body.get("source_uri"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    };
+    let (result, event) = core.inventory().ingest_trace_bundle(request).await?;
+    core.broadcast_committed(event);
+    Ok(serde_json::to_value(result)?)
+}
+
+async fn policy_preflight(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
+    let provider = body
+        .get("provider")
+        .and_then(Value::as_str)
+        .unwrap_or("openrouter");
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    match resolve_policy_target(deps, provider, &model).await {
+        Ok(target) => match probe_policy_endpoint(&target).await {
+            Ok(()) => Ok(json!({
+                "ok": true,
+                "provider": target.provider,
+                "model": model,
+                "chatUrl": target.chat_url,
+            })),
+            Err(error) => Ok(json!({
+                "ok": false,
+                "provider": target.provider,
+                "model": model,
+                "chatUrl": target.chat_url,
+                "detail": error.to_string(),
+            })),
+        },
+        Err(error) => Ok(json!({
+            "ok": false,
+            "provider": provider,
+            "model": model,
+            "detail": error.to_string(),
+        })),
+    }
+}
+
+async fn probe_policy_endpoint(target: &PolicyTarget) -> Result<()> {
+    // Fail closed on unreachable provider endpoints before any paid rollout batch.
+    // Deliberately no completion request — connectivity only.
+    let url = reqwest::Url::parse(&target.chat_url)
+        .with_context(|| format!("invalid provider chat URL: {}", target.chat_url))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("provider chat URL missing host: {}", target.chat_url))?;
+    let port = url.port_or_known_default().unwrap_or(443);
+    let addr = format!("{host}:{port}");
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        tokio::net::TcpStream::connect(&addr),
+    )
+    .await
+    .with_context(|| format!("provider endpoint timed out: {addr}"))?
+    .with_context(|| format!("provider endpoint unreachable: {addr}"))?;
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct PolicyTarget {
+    provider: String,
+    chat_url: String,
+    api_key: String,
+    /// `chat` = OpenAI chat completions; `responses` = OpenAI Responses API.
+    wire: &'static str,
+}
+
+fn policy_chat_url(provider: &str, base: &str) -> (String, &'static str) {
+    let trimmed = base.trim_end_matches('/');
+    match provider {
+        "openrouter" => {
+            if trimmed.ends_with("/chat/completions") {
+                (trimmed.to_string(), "chat")
+            } else if trimmed.ends_with("/v1") || trimmed.ends_with("/api/v1") {
+                (format!("{trimmed}/chat/completions"), "chat")
+            } else {
+                (OPENROUTER_CHAT_URL.to_string(), "chat")
+            }
+        }
+        "synth-cloud" => {
+            // Synth Cloud Codex path is Responses (`{backend}/api/v1` + /responses).
+            if trimmed.ends_with("/responses") {
+                (trimmed.to_string(), "responses")
+            } else if trimmed.ends_with("/api/v1") {
+                (format!("{trimmed}/responses"), "responses")
+            } else {
+                (format!("{trimmed}/api/v1/responses"), "responses")
+            }
+        }
+        "local-laguna" => {
+            if trimmed.ends_with("/chat/completions") {
+                (trimmed.to_string(), "chat")
+            } else if trimmed.ends_with("/v1") {
+                (format!("{trimmed}/chat/completions"), "chat")
+            } else {
+                (format!("{trimmed}/v1/chat/completions"), "chat")
+            }
+        }
+        _ => (format!("{trimmed}/v1/chat/completions"), "chat"),
+    }
+}
+
+async fn resolve_policy_target(
+    deps: &EvalDriverDeps,
+    provider: &str,
+    _model: &str,
+) -> Result<PolicyTarget> {
+    match codex::provider_class(Some(provider)) {
+        codex::ProviderClass::OpenRouter => {
+            let api_key = synth_config::openrouter_api_key()?
+                .ok_or_else(|| anyhow!("OpenRouter API key is not configured on the Workshop host"))?;
+            let (chat_url, wire) = policy_chat_url("openrouter", OPENROUTER_CHAT_URL);
+            Ok(PolicyTarget {
+                provider: "openrouter".into(),
+                chat_url,
+                api_key,
+                wire,
+            })
+        }
+        codex::ProviderClass::SynthCloud => {
+            let resolved = synth_config::resolve()?;
+            let api_key = resolved
+                .api_key
+                .clone()
+                .ok_or_else(|| anyhow!("Synth Cloud API key is not configured on the Workshop host"))?;
+            let (chat_url, wire) = policy_chat_url("synth-cloud", &resolved.backend_url);
+            Ok(PolicyTarget {
+                provider: "synth-cloud".into(),
+                chat_url,
+                api_key,
+                wire,
+            })
+        }
+        codex::ProviderClass::LocalLaguna => {
+            let root = crate::runtime::workshop_root()?;
+            let base_url = deps
+                .laguna
+                .ensure(&root)
+                .await?
+                .ok_or_else(|| anyhow!("local Laguna daemon is unavailable"))?;
+            let api_key = deps
+                .laguna
+                .api_key()
+                .unwrap_or_else(|| "local-laguna".into());
+            let (chat_url, wire) = policy_chat_url("local-laguna", &base_url);
+            Ok(PolicyTarget {
+                provider: "local-laguna".into(),
+                chat_url,
+                api_key,
+                wire,
+            })
+        }
+        codex::ProviderClass::Direct => {
+            bail!("policy_rollouts require provider=openrouter|synth-cloud|local-laguna")
+        }
+    }
+}
+
+async fn run_policy_rollout(deps: &EvalDriverDeps, container_id: &str, body: Value) -> Result<Value> {
+    let core = &deps.core;
     let container = core
         .inventory()
         .get_container(container_id.to_string())
@@ -721,14 +964,12 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         .get("provider")
         .and_then(Value::as_str)
         .unwrap_or("openrouter");
-    if provider != "openrouter" {
-        bail!("policy_rollouts currently support provider=openrouter only");
-    }
     let model = body
         .get("model")
         .and_then(Value::as_str)
         .context("policy_rollouts require model")?
         .to_string();
+    let target = resolve_policy_target(deps, provider, &model).await?;
     let reasoning_effort = body
         .get("reasoningEffort")
         .or_else(|| body.get("reasoning_effort"))
@@ -760,9 +1001,6 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         "frame": {"enabled": false}
     }));
 
-    let api_key = synth_config::openrouter_api_key()?
-        .ok_or_else(|| anyhow!("OpenRouter API key is not configured on the Workshop host"))?;
-
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(timeout_s))
@@ -792,6 +1030,11 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
     let mut calls = 0usize;
     let started = std::time::Instant::now();
     let mut actions_taken = Vec::new();
+    let mut correlated_model_response_id = None;
+    let mut correlated_model_event_id = None;
+    let mut correlated_model_name = None;
+    let mut correlated_action = None;
+    let mut correlated_step = None;
 
     for _ in 0..max_calls {
         if state
@@ -811,7 +1054,7 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         let readout = state.get("readout").cloned().unwrap_or_else(|| json!({}));
         let planned = policy_actions_from_model(
             &client,
-            &api_key,
+            &target,
             &model,
             &reasoning_effort,
             &readout,
@@ -819,7 +1062,31 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         )
         .await?;
         calls += 1;
-        for action in planned {
+        let model_event = core
+            .append_and_broadcast(EventAppend {
+                event_id: None,
+                session_id: None,
+                // Craftax rollout ids are external identities, not rows in the
+                // Workshop `runs` table. Bind them in payload to avoid the FK.
+                run_id: None,
+                source: EventSource::System,
+                kind: "eval.policy_model.response".into(),
+                payload: json!({
+                    "containerId": container_id,
+                    "rolloutId": rollout_id,
+                    "taskInstanceId": task_instance_id,
+                    "provider": target.provider,
+                    "providerResponseId": &planned.response_id,
+                    "model": &planned.response_model,
+                    "plannedActions": &planned.actions,
+                    "call": calls,
+                }),
+                remote_sequence: None,
+                command_id: None,
+                created_at: None,
+            })
+            .await?;
+        for action in planned.actions {
             if actions_taken.len() >= max_steps {
                 break;
             }
@@ -831,6 +1098,15 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
                 .error_for_status()?
                 .json::<Value>()
                 .await?;
+            let step = state
+                .pointer("/progress/env_steps")
+                .and_then(Value::as_u64)
+                .unwrap_or(actions_taken.len() as u64 + 1);
+            correlated_model_response_id = Some(planned.response_id.clone());
+            correlated_model_event_id = Some(model_event.event_id.clone());
+            correlated_model_name = Some(planned.response_model.clone());
+            correlated_action = Some(action.clone());
+            correlated_step = Some(step);
             actions_taken.push(action);
             if state
                 .get("terminated")
@@ -855,6 +1131,24 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         .await
         .unwrap_or(json!({}));
 
+    let trace_correlation = build_trace_correlation(
+        &client,
+        &base,
+        container_id,
+        &rollout_id,
+        &task_instance_id,
+        seed,
+        &target.provider,
+        &model,
+        correlated_model_name.as_deref(),
+        &state,
+        correlated_action.as_deref(),
+        correlated_step,
+        correlated_model_response_id.as_deref(),
+        correlated_model_event_id.as_deref(),
+    )
+    .await?;
+
     let reward = state.get("reward").cloned().unwrap_or(json!(0.0));
     let achievements = state
         .pointer("/readout/observation/achievements")
@@ -865,23 +1159,39 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
     core.update_container_last_rollout(container_id.to_string(), rollout_id.clone())
         .await?;
 
+    let env_terminated = state
+        .get("terminated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let env_truncated = state
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // Driver-side step/call caps are an honest lane completion even when the
+    // environment never flipped its own truncated bit.
+    let budget_exhausted = actions_taken.len() >= max_steps || calls >= max_calls;
+    let truncated = env_truncated || (!env_terminated && budget_exhausted);
+
     // Journal a durable lifecycle breadcrumb for cross-check (no secrets).
     let _ = core
         .append_and_broadcast(EventAppend {
             event_id: None,
             session_id: None,
-            run_id: Some(rollout_id.clone()),
+            run_id: None,
             source: EventSource::System,
             kind: "eval.policy_rollout.completed".into(),
             payload: json!({
                 "containerId": container_id,
                 "rolloutId": rollout_id,
                 "taskInstanceId": task_instance_id,
+                "provider": target.provider,
                 "model": model,
                 "reasoningEffort": reasoning_effort,
                 "reward": reward,
                 "actionCount": actions_taken.len(),
                 "calls": calls,
+                "terminated": env_terminated,
+                "truncated": truncated,
             }),
             remote_sequence: None,
             command_id: None,
@@ -896,6 +1206,7 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         "rolloutId": rollout_id,
         "taskInstanceId": task_instance_id,
         "seed": seed,
+        "provider": target.provider,
         "model": model,
         "reasoningEffort": reasoning_effort,
         "actions": actions_taken,
@@ -904,10 +1215,11 @@ async fn run_policy_rollout(core: &CoreRuntime, container_id: &str, body: Value)
         "score": reward,
         "reward": reward,
         "achievements": achievements,
-        "terminated": state.get("terminated").and_then(Value::as_bool).unwrap_or(false),
-        "truncated": state.get("truncated").and_then(Value::as_bool).unwrap_or(false),
+        "terminated": env_terminated,
+        "truncated": truncated,
         "state": state,
         "eventLog": event_log,
+        "traceCorrelation": trace_correlation,
         "stream": stream,
         "usage": {
             "promptTokens": usage_total.prompt,
@@ -927,14 +1239,183 @@ struct UsageAcc {
     cost_usd: f64,
 }
 
+struct PolicyPlan {
+    actions: Vec<String>,
+    response_id: String,
+    response_model: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_trace_correlation(
+    client: &reqwest::Client,
+    base: &str,
+    container_id: &str,
+    rollout_id: &str,
+    task_instance_id: &str,
+    seed: i64,
+    provider: &str,
+    requested_model: &str,
+    model: Option<&str>,
+    state: &Value,
+    action: Option<&str>,
+    step: Option<u64>,
+    model_response_id: Option<&str>,
+    model_event_id: Option<&str>,
+) -> Result<Value> {
+    let step = step.context("policy rollout took no action to correlate")?;
+    let action = action.context("policy rollout omitted the correlated action")?;
+    let model_response_id =
+        model_response_id.context("policy rollout omitted the correlated model response id")?;
+    let model_event_id =
+        model_event_id.context("policy rollout omitted the correlated journal event id")?;
+    let model = model.context("policy rollout omitted the provider-returned model identity")?;
+    let observation_text = state
+        .pointer("/readout/observation_text")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let ascii = state
+        .pointer("/readout/ascii")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let (observation_source, observation) = observation_text
+        .map(|value| ("state.readout.observation_text", value))
+        .or_else(|| ascii.map(|value| ("state.readout.ascii", value)))
+        .context("policy rollout omitted a non-empty observation")?;
+    let excerpt = observation.chars().take(512).collect::<String>();
+    let reward = state
+        .get("reward")
+        .cloned()
+        .context("policy rollout omitted reward evidence")?;
+    if !reward.is_number() {
+        bail!("policy rollout reward evidence is not numeric");
+    }
+
+    // The immutable step route snapshots the current frame on demand even when
+    // replay persistence is disabled. Hash the exact bytes referenced by the proof.
+    let frame_url = format!("{base}/rollouts/{rollout_id}/frames/{step}.png");
+    let frame_bytes = client
+        .get(&frame_url)
+        .send()
+        .await?
+        .error_for_status()
+        .context("fetch correlated Craftax frame")?
+        .bytes()
+        .await?;
+    if frame_bytes.is_empty() {
+        bail!("correlated Craftax frame is empty");
+    }
+    let frame_sha256 = format!("{:x}", Sha256::digest(&frame_bytes));
+
+    trace_correlation_payload(
+        container_id,
+        rollout_id,
+        task_instance_id,
+        seed,
+        provider,
+        requested_model,
+        model,
+        step,
+        action,
+        observation_source,
+        &excerpt,
+        reward,
+        model_event_id,
+        model_response_id,
+        &frame_url,
+        &frame_sha256,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn trace_correlation_payload(
+    container_id: &str,
+    rollout_id: &str,
+    task_instance_id: &str,
+    seed: i64,
+    provider: &str,
+    requested_model: &str,
+    model: &str,
+    step: u64,
+    action: &str,
+    observation_source: &str,
+    observation_excerpt: &str,
+    reward: Value,
+    model_event_id: &str,
+    model_response_id: &str,
+    frame_url: &str,
+    frame_sha256: &str,
+) -> Result<Value> {
+    let mut correlation = json!({
+        "schemaVersion": "synth.trace-correlation.v1",
+        "containerId": container_id,
+        "rolloutId": rollout_id,
+        "seed": seed,
+        "taskInstanceId": task_instance_id,
+        "observation": {
+            "step": step,
+            "source": observation_source,
+            "excerpt": observation_excerpt,
+        },
+        "action": {"step": step, "name": action},
+        "reward": {"step": step, "value": reward},
+        "frame": {"step": step, "url": frame_url, "sha256": frame_sha256},
+        "modelEvent": {
+            "kind": "eval.policy_model.response",
+            "id": model_event_id,
+            "providerResponseId": model_response_id,
+            "provider": provider,
+            "requestedModel": requested_model,
+            "model": model,
+            "boundRolloutId": rollout_id,
+        },
+    });
+    let trace_digest = format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_json::to_vec(&correlation)?)
+    );
+    correlation["traceDigest"] = json!(trace_digest);
+    Ok(correlation)
+}
+
+fn policy_request(wire: &str, model: &str, reasoning_effort: &str, prompt: &str) -> Value {
+    let mut request = if wire == "responses" {
+        // Luna / Responses rejects chat-only fields like temperature.
+        json!({
+            "model": model,
+            "input": [{
+                "role": "user",
+                "content": [{"type": "input_text", "text": format!(
+                    "Return only JSON with an actions array. No prose.\n{prompt}"
+                )}]
+            }],
+        })
+    } else {
+        json!({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "Return only JSON with an actions array. No prose."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.2,
+        })
+    };
+    if !reasoning_effort.is_empty() {
+        request["reasoning"] = json!({ "effort": reasoning_effort });
+        if wire != "responses" {
+            request["reasoning_effort"] = json!(reasoning_effort);
+        }
+    }
+    request
+}
+
 async fn policy_actions_from_model(
     client: &reqwest::Client,
-    api_key: &str,
+    target: &PolicyTarget,
     model: &str,
     reasoning_effort: &str,
     readout: &Value,
     usage: &mut UsageAcc,
-) -> Result<Vec<String>> {
+) -> Result<PolicyPlan> {
     let valid = readout
         .get("valid_actions")
         .and_then(Value::as_array)
@@ -959,33 +1440,60 @@ async fn policy_actions_from_model(
         valid.join(", "),
         serde_json::to_string(readout).unwrap_or_else(|_| "{}".into())
     );
-    let mut request = json!({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "Return only JSON with an actions array. No prose."},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.2,
-    });
-    if !reasoning_effort.is_empty() {
-        request["reasoning"] = json!({"effort": reasoning_effort});
-        request["reasoning_effort"] = json!(reasoning_effort);
+    let request = policy_request(target.wire, model, reasoning_effort, &prompt);
+    let mut builder = client
+        .post(&target.chat_url)
+        .bearer_auth(&target.api_key)
+        .header("X-Title", "Synth Workshop Eval Driver");
+    if target.provider == "openrouter" {
+        builder = builder.header("HTTP-Referer", "https://synth.dev");
     }
-    let response = client
-        .post(OPENROUTER_CHAT_URL)
-        .bearer_auth(api_key)
-        .header("HTTP-Referer", "https://synth.dev")
-        .header("X-Title", "Synth Workshop Eval Driver")
+    let response = builder
         .json(&request)
         .send()
         .await?
-        .error_for_status()?
+        .error_for_status()
+        .with_context(|| {
+            format!(
+                "policy model call failed for provider={} url={}",
+                target.provider, target.chat_url
+            )
+        })?
         .json::<Value>()
         .await?;
+    let response_id = response
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .with_context(|| {
+            format!(
+                "{} omitted the model response id required for trace correlation",
+                target.provider
+            )
+        })?
+        .to_string();
+    let response_model = response
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .or(Some(model))
+        .filter(|value| !value.trim().is_empty())
+        .with_context(|| {
+            format!(
+                "{} omitted the model identity required for trace correlation",
+                target.provider
+            )
+        })?
+        .to_string();
     if let Some(u) = response.get("usage") {
-        usage.prompt += u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
+        usage.prompt += u
+            .get("prompt_tokens")
+            .or_else(|| u.get("input_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         usage.completion += u
             .get("completion_tokens")
+            .or_else(|| u.get("output_tokens"))
             .and_then(Value::as_u64)
             .unwrap_or(0);
         usage.total += u.get("total_tokens").and_then(Value::as_u64).unwrap_or(0);
@@ -997,11 +1505,44 @@ async fn policy_actions_from_model(
             usage.cost_usd += cost;
         }
     }
-    let content = response
-        .pointer("/choices/0/message/content")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    Ok(extract_actions(content, &valid))
+    let content = if target.wire == "responses" {
+        response
+            .get("output_text")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                response.get("output").and_then(Value::as_array).and_then(|items| {
+                    for item in items {
+                        if let Some(parts) = item.get("content").and_then(Value::as_array) {
+                            for part in parts {
+                                if let Some(text) = part
+                                    .get("text")
+                                    .and_then(Value::as_str)
+                                    .or_else(|| part.pointer("/text").and_then(Value::as_str))
+                                {
+                                    if !text.trim().is_empty() {
+                                        return Some(text.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    None
+                })
+            })
+            .unwrap_or_default()
+    } else {
+        response
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    Ok(PolicyPlan {
+        actions: extract_actions(&content, &valid),
+        response_id,
+        response_model,
+    })
 }
 
 fn extract_actions(text: &str, valid: &[String]) -> Vec<String> {
@@ -1113,5 +1654,112 @@ mod tests {
         assert!(validated_loopback_base("http://127.0.0.1:8098").is_ok());
         assert!(validated_loopback_base("http://example.com:8098").is_err());
         assert!(validated_loopback_base("https://127.0.0.1:8098").is_err());
+    }
+
+    #[test]
+    fn wait_terminal_recognizes_codex_run_status_events() {
+        for status in ["completed", "failed", "cancelled", "interrupted"] {
+            assert!(is_terminal_event(
+                "run.status_changed",
+                &json!({"from": "running", "to": status})
+            ));
+        }
+        assert!(!is_terminal_event(
+            "run.status_changed",
+            &json!({"from": "created", "to": "running"})
+        ));
+        assert!(is_terminal_event("run.completed", &json!({})));
+    }
+
+    #[test]
+    fn trace_correlation_payload_binds_every_evidence_kind() {
+        let value = trace_correlation_payload(
+            "container-1",
+            "rollout-1",
+            "craftax:test:2001",
+            2001,
+            "openrouter",
+            "openai/gpt-5.6-luna",
+            "openai/gpt-5.6-luna",
+            7,
+            "left",
+            "state.readout.observation_text",
+            "player at 1,2",
+            json!(0.25),
+            "event-1",
+            "generation-1",
+            "http://127.0.0.1:8098/rollouts/rollout-1/frames/7.png",
+            &"a".repeat(64),
+        )
+        .unwrap();
+
+        assert_eq!(value["schemaVersion"], "synth.trace-correlation.v1");
+        assert_eq!(value["rolloutId"], "rollout-1");
+        assert_eq!(value["observation"]["step"], 7);
+        assert_eq!(value["action"]["step"], 7);
+        assert_eq!(value["reward"]["step"], 7);
+        assert_eq!(value["frame"]["step"], 7);
+        assert_eq!(value["modelEvent"]["provider"], "openrouter");
+        assert_eq!(value["modelEvent"]["boundRolloutId"], "rollout-1");
+        assert!(value["traceDigest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+    }
+
+    #[test]
+    fn policy_chat_urls_normalize_per_provider() {
+        assert_eq!(
+            policy_chat_url("openrouter", "https://openrouter.ai/api/v1"),
+            (
+                "https://openrouter.ai/api/v1/chat/completions".into(),
+                "chat"
+            )
+        );
+        assert_eq!(
+            policy_chat_url("synth-cloud", "https://api.synth.dev"),
+            (
+                "https://api.synth.dev/api/v1/responses".into(),
+                "responses"
+            )
+        );
+        assert_eq!(
+            policy_chat_url("local-laguna", "http://127.0.0.1:17301"),
+            (
+                "http://127.0.0.1:17301/v1/chat/completions".into(),
+                "chat"
+            )
+        );
+    }
+
+    #[test]
+    fn responses_policy_request_excludes_chat_only_fields() {
+        let request = policy_request("responses", "openai/gpt-5.6-luna", "low", "observe");
+        assert_eq!(request["model"], "openai/gpt-5.6-luna");
+        assert_eq!(request["reasoning"]["effort"], "low");
+        assert_eq!(request["input"].as_array().map(Vec::len), Some(1));
+        assert!(request.get("temperature").is_none());
+        assert!(request.get("messages").is_none());
+        assert!(request.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn policy_provider_class_rejects_direct_providers() {
+        assert!(matches!(
+            codex::provider_class(Some("openai")),
+            codex::ProviderClass::Direct
+        ));
+        assert!(matches!(
+            codex::provider_class(Some("synth-cloud")),
+            codex::ProviderClass::SynthCloud
+        ));
+        assert!(matches!(
+            codex::provider_class(Some("local-laguna")),
+            codex::ProviderClass::LocalLaguna
+        ));
+        assert!(matches!(
+            codex::provider_class(Some("openrouter")),
+            codex::ProviderClass::OpenRouter
+        ));
     }
 }

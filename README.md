@@ -4,6 +4,15 @@
 
 Synth Desktop / Local Agent Workbench — a local-first agent research and development workbench where agents can run locally (Laguna XS 2.1) or in Synth Cloud (Intern sync/async), and where every run produces inspectable, replayable, quantitative, version-linked artifacts.
 
+## Branching
+
+| Branch | Role |
+| --- | --- |
+| **`dev`** | Day-to-day integration branch. Open PRs against `dev`. Keep `dev` current. |
+| **`main`** | Release branch. Merge `dev` → `main` only for cut releases (for example v0.1). |
+
+Do not land feature work directly on `main`. After a release merge, fast-forward `dev` to `main` so they match again. Alignment checklist for the next cut: [`HANDOFF_DEV_MAIN.md`](./HANDOFF_DEV_MAIN.md).
+
 ## Status — v0 ready for review
 
 | Surface | Path | Role |
@@ -35,8 +44,12 @@ Use the repository-owned lifecycle commands instead of opening a build-tree
 npm run desktop:dev      # primary hot-reload loop; isolated instance "codex"
 npm run desktop:codex:status
 npm run desktop:codex:stop
-npm run desktop:verify   # typecheck + Rust tests + renderer acceptance suite
-npm run desktop:install  # release build → atomic /Applications install → launch
+npm run desktop:check   # parallel typecheck + cargo check; normal checkpoint
+npm run desktop:build   # parallel typecheck + Tauri release build; no tests
+npm run cache:rust:stats # inspect Rust compiler-cache effectiveness
+npm run desktop:verify   # full Rust + renderer acceptance battery; release/CI gate
+npm run desktop:install  # standard build → atomic local /Applications install → launch
+npm run desktop:install:release # full release gate → install → launch
 npm run desktop:restart  # restart the installed canonical app
 npm run desktop:status   # verify the one allowed process and install path
 npm run desktop:stop
@@ -47,9 +60,20 @@ Their exact source revision, executable, PID, data root, and manifest are shown
 under Settings → Runtime → Desktop identity. The canonical lifecycle is
 reserved for release acceptance.
 
-`desktop:install` first runs `desktop:verify`, then signs and verifies the staged bundle, backs up the previous
+Use the test batteries according to the scope of the change:
+
+| Battery | Command | Run it when |
+| --- | --- | --- |
+| Focused | The relevant `npm`, Playwright, or Cargo test directly | During iteration and after a localized UI/runtime change. |
+| Check | `npm run desktop:check` | Before handoff or when renderer/native contracts changed; parallel TypeScript and Rust compile checks. |
+| Build | `npm run desktop:build` | Produce a local release bundle. It overlaps typechecking with the real Tauri build and runs no tests. |
+| Full release | `npm run desktop:verify` | Before merging a release PR, cutting a release, or after broad runtime/integration changes. |
+
+`desktop:install` runs the standard build (with no separate `cargo check` or test
+battery), then signs and verifies the staged bundle, backs up the previous
 install under `~/.synth-desktop/backups/app-builds`, and launches only
-`/Applications/Synth Desktop.app`. Acceptance testing and Computer Use must
+`/Applications/Synth Desktop.app`. Use `desktop:install:release` when the full
+release battery must pass before installation. Acceptance testing and Computer Use must
 target that full path. `desktop:stop` targets only that exact installed path (or
 the canonical Cargo debug executable); it does not stop named instances or
 arbitrary copied apps. Do not launch
@@ -57,6 +81,12 @@ arbitrary copied apps. Do not launch
 lifecycle commands never use a generic process-name match. Use the Runtime
 identity receipt or the named instance manifest for CUA rather than relying on
 whichever generic Synth window is focused.
+
+Build acceleration is layered: Turborepo owns the npm-workspace task graph and
+caches deterministic renderer tasks; Cargo remains authoritative for Rust;
+`sccache` is detected automatically and caches eligible `rustc` invocations
+under `~/.cache/synth-workshop/sccache`. The final macOS bundle, signing,
+backup, and installation remain uncached and explicit.
 
 
 ### Dogfood gates (verified)
@@ -81,6 +111,8 @@ Core loop: **observe → understand → modify → evaluate → fine-tune → de
 
 ## Docs
 
+- [`WORKSHOP_QUALITY_STYLE_GUIDE.md`](./WORKSHOP_QUALITY_STYLE_GUIDE.md) — unified visual, interaction, runtime-honesty, accessibility, and test quality bar
+- [`workshop_style.md`](./workshop_style.md) — provisional categorical triage: unacceptable, fix-before-review, and expected-fail debt
 - [`HANDOFF_RUST_CORE_VISUALS_AND_INTERN.md`](./HANDOFF_RUST_CORE_VISUALS_AND_INTERN.md) — current Rust core / visuals / Intern SDK handoff
 - [`testing.md`](./testing.md) — Playwright, Bombadil, Rust, and runtime coverage map
 - [`HANDOFF.md`](./HANDOFF.md) — full product + architecture

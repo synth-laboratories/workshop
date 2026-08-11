@@ -9,7 +9,10 @@ import {
 	type QueuedPrompt,
 	type ToolActivityMode,
 	type ActiveEnterAction,
-	type ThemePreference
+	type ApprovalPolicyPreference,
+	type SandboxModePreference,
+	type ThemePreference,
+	type CompactContextModel
 } from "./schema";
 
 type Listener = (prefs: DesktopPreferences) => void;
@@ -85,6 +88,18 @@ export function setToolActivityMode(mode: ToolActivityMode): DesktopPreferences 
 	}));
 }
 
+export function setAutoCompactTokenLimit(model: CompactContextModel, autoCompactTokenLimit: number): DesktopPreferences {
+	return updatePreferences((current) => ({
+		...current,
+		agentContext: {
+			autoCompactTokenLimits: {
+				...current.agentContext.autoCompactTokenLimits,
+				[model]: autoCompactTokenLimit
+			}
+		}
+	}));
+}
+
 export function setActiveEnterAction(action: ActiveEnterAction): DesktopPreferences {
 	return updatePreferences((current) => ({
 		...current,
@@ -141,7 +156,13 @@ export function setUnreadCompletedChats(ids: Iterable<string>): DesktopPreferenc
 }
 
 export function setApprovalModePreference(mode: DesktopPreferences["approvalMode"]): DesktopPreferences {
-	return updatePreferences((current) => ({ ...current, approvalMode: mode }));
+	const permissions = mode === "allow-all" ? { approvalPolicy: "never" as const, sandboxMode: "danger-full-access" as const } : mode === "accept-edits" ? { approvalPolicy: "on-request" as const, sandboxMode: "workspace-write" as const } : { approvalPolicy: "untrusted" as const, sandboxMode: "workspace-write" as const };
+	return updatePreferences((current) => ({ ...current, approvalMode: mode, ...permissions }));
+}
+
+export function setPermissionPreferences(approvalPolicy: ApprovalPolicyPreference, sandboxMode: SandboxModePreference): DesktopPreferences {
+	const approvalMode = approvalPolicy === "never" && sandboxMode === "danger-full-access" ? "allow-all" : approvalPolicy === "on-request" && sandboxMode === "workspace-write" ? "accept-edits" : "ask";
+	return updatePreferences((current) => ({ ...current, approvalMode, approvalPolicy, sandboxMode }));
 }
 
 function conversationMeta(current: DesktopPreferences, id: string): ConversationMeta {

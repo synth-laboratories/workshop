@@ -1,6 +1,11 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./browser.fixture";
 
+async function openSettings(page: Page) {
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-menu-settings").click();
+}
+
 async function enableComposer(page: Page): Promise<void> {
 	await page.addInitScript(() => {
 		(window as typeof window & { synthLaguna?: unknown }).synthLaguna = {
@@ -31,7 +36,7 @@ async function enableComposer(page: Page): Promise<void> {
 		};
 	});
 	await page.reload();
-	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("titlebar").waitFor();
 	await expect(page.getByTestId("composer-input")).toBeEnabled();
 }
 
@@ -44,9 +49,19 @@ test("slash button opens command menu and /new returns to landing", async ({ pag
 	await expect(menu.getByTestId("slash-command-item-new")).toBeVisible();
 	await expect(menu.getByTestId("slash-command-item-mode")).toBeVisible();
 	await expect(menu.getByTestId("slash-command-item-model")).toBeVisible();
+	await expect(menu.getByTestId("slash-command-item-compact")).toContainText("Compact context");
 
 	await menu.getByTestId("slash-command-item-new").click();
 	await expect(page.getByTestId("landing-page")).toBeVisible();
+});
+
+test("typing /compact offers ad-hoc context compaction", async ({ page }) => {
+	await enableComposer(page);
+
+	await page.getByTestId("composer-input").fill("/compact");
+	const menu = page.getByTestId("slash-command-menu");
+	await expect(menu.getByTestId("slash-command-item-compact")).toBeVisible();
+	await expect(menu.getByRole("option")).toHaveCount(1);
 });
 
 test("typing / filters slash menu and selecting a skill attaches a chip", async ({ page }) => {
@@ -98,9 +113,9 @@ test("Settings Voice lists Whisper models and download selects one", async ({ pa
 		};
 	});
 	await page.reload();
-	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("titlebar").waitFor();
 
-	await page.getByRole("button", { name: "Settings" }).click();
+	await openSettings(page);
 	await page.getByRole("button", { name: "Voice", exact: true }).click();
 	const voice = page.getByTestId("voice-recognition-settings");
 	await expect(voice).toBeVisible();

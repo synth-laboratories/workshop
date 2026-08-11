@@ -85,15 +85,54 @@ test("landing shell has no horizontal overflow", async ({ page }) => {
 	await expect(page.getByTestId("titlebar")).toBeVisible();
 });
 
-test("titlebar runtime status stays compact and leaves diagnostics out of visible chrome", async ({ page }) => {
-	for (const [width, height] of [[960, 640], [1280, 840], [1440, 900]] as const) {
+test("sidebar account and settings footer stays anchored to the bottom edge", async ({ page }) => {
+	for (const [width, height] of [[1280, 840], [960, 640], [1440, 900]] as const) {
 		await page.setViewportSize({ width, height });
-		const status = page.getByTestId("runtime-status");
-		await expect(status).toBeVisible();
-		await expect(status).not.toContainText(/Laguna·|\bOR\b|Intern|\d+\/\d+/);
-		const box = await status.boundingBox();
-		expect(box?.width ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(90);
+		const geometry = await page.evaluate(() => {
+			const sidebar = document.querySelector<HTMLElement>('[data-testid="sidebar"]')?.getBoundingClientRect();
+			const footer = document.querySelector<HTMLElement>(".sidebar-footer")?.getBoundingClientRect();
+			if (!sidebar || !footer) throw new Error("Sidebar footer invariant target is absent");
+			return {
+				bottomInset: sidebar.bottom - footer.bottom,
+				footerTop: footer.top,
+				sidebarTop: sidebar.top
+			};
+		});
+		expect(geometry.bottomInset).toBeGreaterThanOrEqual(8);
+		expect(geometry.bottomInset).toBeLessThanOrEqual(12);
+		expect(geometry.footerTop).toBeGreaterThan(geometry.sidebarTop);
 	}
+});
+
+test("sidebar seam is one hairline with an invisible resize hit target", async ({ page }) => {
+	const seam = await page.evaluate(() => {
+		const sidebar = document.querySelector<HTMLElement>('[data-testid="sidebar"]');
+		const handle = document.querySelector<HTMLElement>('[data-testid="sidebar-resize-handle"]');
+		if (!sidebar || !handle) throw new Error("Sidebar seam targets are absent");
+		const sidebarBox = sidebar.getBoundingClientRect();
+		const handleBox = handle.getBoundingClientRect();
+		const sidebarStyle = getComputedStyle(sidebar);
+		const handleLine = getComputedStyle(handle, "::after");
+		return {
+			borderWidth: Number.parseFloat(sidebarStyle.borderRightWidth),
+			borderStyle: sidebarStyle.borderRightStyle,
+			handleLineBackground: handleLine.backgroundColor,
+			seamInsideHandle: sidebarBox.right >= handleBox.left && sidebarBox.right <= handleBox.right,
+			handleWidth: handleBox.width
+		};
+	});
+	expect(seam.borderWidth).toBe(1);
+	expect(seam.borderStyle).toBe("solid");
+	expect(seam.handleLineBackground).toBe("rgba(0, 0, 0, 0)");
+	expect(seam.seamInsideHandle).toBe(true);
+	expect(seam.handleWidth).toBeGreaterThanOrEqual(6);
+});
+
+test("titlebar chrome is trimmed to terminal controls", async ({ page }) => {
+	await expect(page.getByRole("button", { name: "Show terminal" })).toBeVisible();
+	await expect(page.getByTestId("runtime-status")).toHaveCount(0);
+	await expect(page.getByTestId("open-account-settings")).toHaveCount(0);
+	await expect(page.getByTestId("open-models-settings")).toHaveCount(0);
 });
 
 test("the window has generous drag surfaces without swallowing titlebar controls", async ({ page }) => {
@@ -106,12 +145,12 @@ test("the window has generous drag surfaces without swallowing titlebar controls
 		titlebar: getComputedStyle(document.querySelector<HTMLElement>('[data-testid="titlebar"]')!).getPropertyValue("-webkit-app-region"),
 		tab: getComputedStyle(document.querySelector<HTMLElement>('[role="tab"]')!).getPropertyValue("-webkit-app-region"),
 		close: getComputedStyle(document.querySelector<HTMLElement>('.tab-close')!).getPropertyValue("-webkit-app-region"),
-		account: getComputedStyle(document.querySelector<HTMLElement>('[data-testid="open-account-settings"]')!).getPropertyValue("-webkit-app-region")
+		terminal: getComputedStyle(document.querySelector<HTMLElement>('[aria-label="Show terminal"]')!).getPropertyValue("-webkit-app-region")
 	}));
 	expect(regions.titlebar).toBe("drag");
 	expect(regions.tab).toBe("drag");
 	expect(regions.close).toBe("no-drag");
-	expect(regions.account).toBe("no-drag");
+	expect(regions.terminal).toBe("no-drag");
 });
 
 test("terminal panel is discoverable and toggles without changing the active surface", async ({ page }) => {
@@ -220,4 +259,69 @@ test("a long prompt never hides the active turn beneath the composer", async ({ 
 
 	await page.getByRole("button", { name: "Show full message" }).click();
 	await expect.poll(tailGeometry).toEqual({ collapsed: false, atTail: true, workingClearsComposer: true });
+});
+
+// Model-picker containment (12:54 screenshot regression): while open, the
+// dropdown must stay inside the viewport with an 8px inset, never overlap the
+// composer, scroll internally when tall, and flip above a low trigger.
+async function readPickerLayout(page: import("@playwright/test").Page) {
+	return page.evaluate(() => {
+		const picker = document.querySelector('[data-testid="model-dropdown"]');
+		const composer = document.querySelector('[data-testid="composer"]');
+		if (!picker) return { open: false as const };
+		const p = picker.getBoundingClientRect();
+		const c = composer?.getBoundingClientRect() ?? null;
+		const selected = picker.querySelector(".model-option.selected");
+		const s = selected?.getBoundingClientRect() ?? null;
+		return {
+			open: true as const,
+			rect: { left: p.left, top: p.top, right: p.right, bottom: p.bottom },
+			viewport: { width: window.innerWidth, height: window.innerHeight },
+			overlapsComposer: Boolean(
+				c && !(p.right <= c.left || p.left >= c.right || p.bottom <= c.top || p.top >= c.bottom)
+			),
+			scrollsInternally: picker.scrollHeight > picker.clientHeight
+				? getComputedStyle(picker).overflowY === "auto"
+				: true,
+			selectedVisible: Boolean(s && s.top >= p.top - 1 && s.bottom <= p.bottom + 1),
+			bodyOverflowX: document.documentElement.scrollWidth > window.innerWidth,
+			placement: picker.getAttribute("data-placement")
+		};
+	});
+}
+
+test("model picker stays contained at normal and short window sizes", async ({ page }) => {
+	for (const [width, height] of [[1728, 1117], [1100, 700], [960, 640]] as const) {
+		await page.setViewportSize({ width, height });
+		await page.getByTestId("model-picker").click();
+		await expect(page.getByTestId("model-dropdown")).toBeVisible();
+		const layout = await readPickerLayout(page);
+		if (!layout.open) throw new Error("model dropdown did not open");
+		expect(layout.rect.left, `left inset at ${width}x${height}`).toBeGreaterThanOrEqual(8);
+		expect(layout.rect.top, `top inset at ${width}x${height}`).toBeGreaterThanOrEqual(8);
+		expect(layout.rect.right, `right inset at ${width}x${height}`).toBeLessThanOrEqual(width - 8);
+		expect(layout.rect.bottom, `bottom inset at ${width}x${height}`).toBeLessThanOrEqual(height - 8);
+		expect(layout.overlapsComposer, `composer overlap at ${width}x${height}`).toBe(false);
+		expect(layout.scrollsInternally, `internal scroll at ${width}x${height}`).toBe(true);
+		expect(layout.selectedVisible, `selected visible at ${width}x${height}`).toBe(true);
+		expect(layout.bodyOverflowX, `horizontal overflow at ${width}x${height}`).toBe(false);
+		// All three provider groups stay reachable inside the scrollable dropdown.
+		await expect(page.getByTestId("model-dropdown")).toContainText("Local");
+		await expect(page.getByTestId("model-option-local-laguna")).toBeVisible();
+		await page.keyboard.press("Escape");
+		await expect(page.getByTestId("model-dropdown")).not.toBeVisible();
+	}
+});
+
+test("opening and closing the model picker never moves the composer", async ({ page }) => {
+	await page.setViewportSize({ width: 1280, height: 840 });
+	const before = await readLayout(page);
+	await page.getByTestId("model-picker").click();
+	await expect(page.getByTestId("model-dropdown")).toBeVisible();
+	const during = await readLayout(page);
+	await page.keyboard.press("Escape");
+	const after = await readLayout(page);
+	expect(during.composer.top).toBeCloseTo(before.composer.top, 0);
+	expect(after.composer.top).toBeCloseTo(before.composer.top, 0);
+	expect(after.composer.left).toBeCloseTo(before.composer.left, 0);
 });

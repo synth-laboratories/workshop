@@ -7,7 +7,9 @@ default-run = "synth-desktop"
 
 [lib]
 name = "synth_desktop_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Desktop-only app: the bin links the rlib. staticlib/cdylib are mobile-template
+# artifacts and each forces a full extra codegen+link pass of the whole lib.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -15,9 +17,17 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
+bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 dirs = "6"
 futures-util = "0.3"
+fs2 = "0.4"
+# The credential proxy: a loopback Responses endpoint that holds the Synth key
+# so `codex app-server` never receives it. All three already build as reqwest
+# dependencies; only the server-side features are new.
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 portable-pty = "0.9"
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
@@ -30,7 +40,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
@@ -49,3 +59,9 @@ path = "src/bin/synth_optimizers_mcp.rs"
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
 tempfile = "3"
+
+# Local installs rebuild the whole app crate for any one-line change; release
+# incremental turns that ~35s codegen pass into a few seconds. Cargo applies
+# incremental only to workspace crates, so registry deps stay sccache-cached.
+[profile.release]
+incremental = true

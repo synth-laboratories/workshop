@@ -216,7 +216,7 @@ test("the ready form renders every settings group with the daemon's values", () 
 	assert.match(html, /aria-checked="true"[^>]*data-testid="inference-reasoning-none"/);
 	assert.match(html, /aria-checked="false"[^>]*data-testid="inference-reasoning-high"/);
 	// The footer points at the panel instead of duplicating live stats.
-	assert.match(html, /MLX sidecar inference panel/);
+	assert.doesNotMatch(html, /MLX sidecar|Local inference panel/);
 	assert.doesNotMatch(html, /tok\/s/);
 });
 
@@ -273,10 +273,10 @@ test("the panel header renders a labelled settings button only when a target exi
 	assert.doesNotMatch(without, /data-testid="inference-open-settings"/);
 });
 
-test("the settings button deep-links to the Settings view and the rail explains the sidecar", () => {
+test("the settings button deep-links to the Settings view without duplicative rail commentary", () => {
 	const app = readFileSync(join(appRoot, "src/renderer/src/App.tsx"), "utf8");
 	assert.match(app, /onOpenSettings=\{\(\) => setView\(\{ kind: "settings", section: "inference" \}\)\}/);
-	assert.match(app, /Owns local model memory, prompt caches, and the single-GPU queue\./);
+	assert.doesNotMatch(app, /MLX sidecar|Owns local model memory, prompt caches, and the single-GPU queue\./);
 });
 
 test("Settings hosts an Inference section after Models and follows deep links", () => {
@@ -284,9 +284,9 @@ test("Settings hosts an Inference section after Models and follows deep links", 
 		join(appRoot, "src/renderer/src/components/SettingsPage.tsx"),
 		"utf8"
 	);
-	const models = settings.indexOf('{ id: "models", label: "Models" }');
-	const inference = settings.indexOf('{ id: "inference", label: "Inference" }');
-	const voice = settings.indexOf('{ id: "voice", label: "Voice" }');
+	const models = settings.indexOf('{ id: "models", label: "Models"');
+	const inference = settings.indexOf('{ id: "inference", label: "Inference"');
+	const voice = settings.indexOf('{ id: "voice", label: "Voice"');
 	assert.ok(models !== -1 && inference !== -1 && voice !== -1);
 	assert.ok(models < inference && inference < voice, "Inference sits between Models and Voice");
 	// An already-open Settings view must retarget when the prop changes.

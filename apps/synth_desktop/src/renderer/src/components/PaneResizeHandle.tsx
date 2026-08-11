@@ -18,14 +18,17 @@ export function PaneResizeHandle({
 	direction = "output"
 }: Props) {
 	const resize = (clientX: number, target: HTMLElement) => {
-		const parent = target.parentElement;
-		if (!parent) return;
-		const bounds = parent.getBoundingClientRect();
 		if (direction === "sidebar") {
+			const appRow = target.parentElement?.parentElement;
+			if (!appRow) return;
+			const bounds = appRow.getBoundingClientRect();
 			const maximum = Math.max(minSecondary, bounds.width - minPrimary);
 			onChange(Math.round(Math.min(maximum, Math.max(minSecondary, clientX - bounds.left))));
 			return;
 		}
+		const parent = target.parentElement;
+		if (!parent) return;
+		const bounds = parent.getBoundingClientRect();
 		const maximum = Math.max(minSecondary, bounds.width - minPrimary);
 		onChange(Math.round(Math.min(maximum, Math.max(minSecondary, bounds.right - clientX))));
 	};
@@ -39,6 +42,12 @@ export function PaneResizeHandle({
 	const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
 		if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
 		resize(event.clientX, event.currentTarget);
+	};
+
+	const onPointerUp = (event: PointerEvent<HTMLDivElement>) => {
+		if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+			event.currentTarget.releasePointerCapture(event.pointerId);
+		}
 	};
 
 	const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -62,6 +71,8 @@ export function PaneResizeHandle({
 		data-testid={direction === "sidebar" ? "sidebar-resize-handle" : "pane-resize-handle"}
 		onPointerDown={onPointerDown}
 		onPointerMove={onPointerMove}
+		onPointerUp={onPointerUp}
+		onPointerCancel={onPointerUp}
 		onKeyDown={onKeyDown}
 	/>;
 }

@@ -30,6 +30,7 @@ export type ChatMessage = {
 	role: "user" | "assistant" | "system";
 	body: string;
 	at: string;
+	images?: Array<{ path: string; name: string; previewUrl: string }>;
 };
 
 /**
@@ -106,14 +107,19 @@ export type LocalActivityLine = {
 	path?: string;
 	/** Sanitized lifecycle status for an allowlisted tool call. */
 	toolStatus?: "running" | "completed" | "failed";
-	kind?: "thought" | "search" | "command" | "file_read" | "file_write" | "visual" | "subagent" | "run_summary" | "approval" | "working";
+	/** Transcript placement relative to the assistant response owning this activity. */
+	placement?: "before" | "after";
+	/** Token totals surrounding a context compaction (for the disclosure). */
+	tokensBefore?: number;
+	tokensAfter?: number;
+	kind?: "thought" | "search" | "command" | "file_read" | "file_write" | "visual" | "subagent" | "run_summary" | "context_compaction" | "approval" | "working";
 };
 
 export type LocalChat = {
 	id: string;
 	title: string;
 	messages: ChatMessage[];
-	/** Activity lines keyed by the assistant message they precede. */
+	/** Activity lines keyed by their owning assistant message. */
 	activityByMessageId?: Record<string, LocalActivityLine[]>;
 	artifacts?: ArtifactRef[];
 };
@@ -160,6 +166,14 @@ export type LandingState = {
 	internMode?: "remote" | "demo" | "unconfigured";
 	/** Synth org API key present — gates Synth Cloud billed models. Boolean only; never the secret. */
 	apiKeyConfigured?: boolean;
+	/** OpenRouter API key present — gates direct OpenRouter models. Boolean only; never the secret. */
+	openrouterApiKeyConfigured?: boolean;
+	/**
+	 * Backend-authored reason billable Synth Cloud actions are blocked for this
+	 * account (exhausted allowance, past due, cancelled). Local models are never
+	 * affected. Null when cloud actions are allowed.
+	 */
+	cloudBlockedReason?: string | null;
 	composerEnabled: boolean;
 	composerPlaceholder: string;
 };
@@ -167,6 +181,7 @@ export type LandingState = {
 /** OpenRouter model ids used by the remote ACP adapter. */
 export const OPENROUTER_LUNA_MODEL = "openai/gpt-5.6-luna";
 export const OPENROUTER_LAGUNA_S_MODEL = "poolside/laguna-s-2.1";
+export const OPENROUTER_MUSE_SPARK_MODEL = "meta/muse-spark-1.2";
 /** Fully qualified — bare `laguna-s-2.1` resolves to a different catalog entry server-side. */
 export const SYNTH_CLOUD_LAGUNA_S_MODEL = "openrouter/poolside/laguna-s-2.1";
 
@@ -187,6 +202,12 @@ export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 		id: "openrouter-laguna-s",
 		label: "Laguna S 2.1",
 		description: `OpenRouter · ${OPENROUTER_LAGUNA_S_MODEL} · usage tracked`,
+		group: "remote"
+	},
+	{
+		id: "openrouter-muse-spark",
+		label: "Muse Spark 1.2",
+		description: `OpenRouter · ${OPENROUTER_MUSE_SPARK_MODEL} · usage tracked`,
 		group: "remote"
 	},
 	{

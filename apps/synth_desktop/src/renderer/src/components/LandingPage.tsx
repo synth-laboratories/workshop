@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { EXECUTION_TARGETS, LAUNCH_PICKER_TARGETS, TARGET_GROUP_LABEL } from "../types/landing";
 import type { ExecutionTargetOption, LandingState } from "../types/landing";
 import { SynthLogo } from "./SynthLogo";
@@ -9,30 +9,87 @@ type Props = {
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
+	onResolveBilling?: () => void;
 };
 
 export function ModelPicker({
 	selectedTargetId,
 	apiKeyConfigured,
+	openrouterApiKeyConfigured,
+	cloudBlockedReason = null,
 	onSelectTarget,
-	onConfigureAccount
+	onConfigureAccount,
+	onResolveBilling
 }: {
 	selectedTargetId: string;
 	apiKeyConfigured?: boolean;
+	openrouterApiKeyConfigured?: boolean;
+	/** Backend-authored reason billable cloud actions are blocked; local is unaffected. */
+	cloudBlockedReason?: string | null;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
+	onResolveBilling?: () => void;
 }) {
 	const [open, setOpen] = useState(false);
 	const ref = useRef<HTMLDivElement>(null);
 	const selected = EXECUTION_TARGETS.find((t) => t.id === selectedTargetId) ?? EXECUTION_TARGETS[0];
+	// The dropdown must stay inside the viewport with an 8px inset, never cover
+	// the composer, and flip above the trigger when the space below is tighter
+	// than the space above. Content taller than the slot scrolls internally.
+	const [placement, setPlacement] = useState<{ direction: "down" | "up"; maxHeight: number } | null>(null);
+	useLayoutEffect(() => {
+		// No setState in the closed branch: a state update in a mount-time layout
+		// effect perturbs StrictMode's effect replay and double-registers the
+		// app-level keydown listeners (Cmd+J toggled twice = no-op).
+		if (!open) return;
+		const compute = () => {
+			const trigger = ref.current?.querySelector<HTMLElement>('[data-testid="model-picker"]');
+			if (!trigger) return;
+			const rect = trigger.getBoundingClientRect();
+			const inset = 8;
+			const gap = 8;
+			const composer = document.querySelector<HTMLElement>('[data-testid="composer"]');
+			const composerTop = composer ? composer.getBoundingClientRect().top : Number.POSITIVE_INFINITY;
+			const bottomLimit = Math.min(window.innerHeight - inset, composerTop - gap);
+			const spaceBelow = Math.max(0, bottomLimit - (rect.bottom + gap));
+			const spaceAbove = Math.max(0, rect.top - gap - inset);
+			const direction = spaceBelow >= 240 || spaceBelow >= spaceAbove ? "down" : "up";
+			/*
+			 * Clamp to the space actually available on the chosen side. A floor
+			 * here (previously `Math.max(120, …)`) silently re-crossed the very
+			 * boundary bottomLimit exists to enforce, so a trigger sitting close
+			 * to the composer opened a dropdown straight over it. The panel
+			 * scrolls internally, so a tight slot degrades to scrolling, not
+			 * overlap.
+			 */
+			const maxHeight = Math.floor(direction === "down" ? spaceBelow : spaceAbove);
+			setPlacement({ direction, maxHeight });
+		};
+		compute();
+		window.addEventListener("resize", compute);
+		return () => window.removeEventListener("resize", compute);
+	}, [open]);
+	useEffect(() => {
+		if (!open) return;
+		ref.current
+			?.querySelector(".model-option.selected")
+			?.scrollIntoView({ block: "nearest" });
+	}, [open, placement]);
 
 	useEffect(() => {
 		if (!open) return;
 		const onDocClick = (e: MouseEvent) => {
 			if (!ref.current?.contains(e.target as Node)) setOpen(false);
 		};
+		const onKeyDown = (e: KeyboardEvent) => {
+			if (e.key === "Escape") setOpen(false);
+		};
 		document.addEventListener("mousedown", onDocClick);
-		return () => document.removeEventListener("mousedown", onDocClick);
+		document.addEventListener("keydown", onKeyDown);
+		return () => {
+			document.removeEventListener("mousedown", onDocClick);
+			document.removeEventListener("keydown", onKeyDown);
+		};
 	}, [open]);
 
 	return (
@@ -57,7 +114,19 @@ export function ModelPicker({
 				</svg>
 			</button>
 			{open ? (
-				<div id="model-dropdown" className="model-dropdown" role="listbox" data-testid="model-dropdown">
+				<div
+					id="model-dropdown"
+					className="model-dropdown"
+					role="listbox"
+					data-testid="model-dropdown"
+					data-placement={placement?.direction ?? "down"}
+					style={placement
+						? {
+							maxHeight: placement.maxHeight,
+							...(placement.direction === "up" ? { top: "auto", bottom: "calc(100% + 8px)" } : {})
+						}
+						: undefined}
+				>
 					{(["local", "remote", "cloud"] as const).map((group) => {
 						const items = LAUNCH_PICKER_TARGETS.filter((t) => t.group === group);
 						if (!items.length) return null;
@@ -67,7 +136,11 @@ export function ModelPicker({
 								{items.map((target: ExecutionTargetOption) => {
 									const needsSynthKey =
 										target.id === "synth-cloud-laguna-s" && apiKeyConfigured !== true;
-									if (needsSynthKey) {
+									const needsOpenRouterKey =
+										target.id.startsWith("openrouter-") && openrouterApiKeyConfigured !== true;
+									const allowanceBlocked =
+										target.id === "synth-cloud-laguna-s" && !needsSynthKey && Boolean(cloudBlockedReason);
+									if (allowanceBlocked) {
 										return (
 											<div
 												key={target.id}
@@ -81,18 +154,49 @@ export function ModelPicker({
 													aria-disabled="true"
 												>
 													<span className="model-option-label">{target.label}</span>
-													<span className="model-option-desc">Synth API key required</span>
+													<span className="model-option-desc" data-testid="model-option-allowance-blocked">{cloudBlockedReason}</span>
 												</span>
 												<button
 													type="button"
 													className="model-option-configure"
-													data-testid="model-configure-synth-api-key"
+													data-testid="model-resolve-synth-billing"
+													onClick={() => {
+														onResolveBilling?.();
+														setOpen(false);
+													}}
+												>
+													Manage plan
+												</button>
+											</div>
+										);
+									}
+									if (needsSynthKey || needsOpenRouterKey) {
+										const providerName = needsOpenRouterKey ? "OpenRouter" : "Synth";
+										return (
+											<div
+												key={target.id}
+												className="model-option is-disabled"
+												data-testid={`model-option-${target.id}`}
+											>
+												<span
+													className="model-option-copy"
+													role="option"
+													aria-selected={false}
+													aria-disabled="true"
+												>
+													<span className="model-option-label">{target.label}</span>
+												<span className="model-option-desc">{providerName} API key required</span>
+												</span>
+												<button
+													type="button"
+													className="model-option-configure"
+												data-testid={`model-configure-${providerName.toLowerCase()}-api-key`}
 													onClick={() => {
 														onConfigureAccount?.();
 														setOpen(false);
 													}}
 												>
-													Configure Synth API key
+												Configure {providerName} API key
 												</button>
 											</div>
 										);
@@ -128,7 +232,8 @@ export function LandingPage({
 	state,
 	selectedTargetId,
 	onSelectTarget,
-	onConfigureAccount
+	onConfigureAccount,
+	onResolveBilling
 }: Props) {
 	const [accountChoiceMade, setAccountChoiceMade] = useState(
 		() => window.localStorage.getItem("synth.accountChoiceMade") === "1"
@@ -145,7 +250,7 @@ export function LandingPage({
 							<span><strong>Continue locally</strong><small>No account required</small></span>
 						</button>
 						<button type="button" className="quick-card" onClick={onConfigureAccount}>
-							<span><strong>Sign in to Synth</strong><small>Connect cloud models and Intern</small></span>
+							<span><strong>Sign in to Synth</strong><small>Connect cloud models</small></span>
 						</button>
 					</div>
 				) : null}
@@ -157,8 +262,11 @@ export function LandingPage({
 					<ModelPicker
 						selectedTargetId={selectedTargetId}
 						apiKeyConfigured={state.apiKeyConfigured}
+						openrouterApiKeyConfigured={state.openrouterApiKeyConfigured}
+						cloudBlockedReason={state.cloudBlockedReason}
 						onSelectTarget={onSelectTarget}
 						onConfigureAccount={onConfigureAccount}
+						onResolveBilling={onResolveBilling}
 					/>
 				</div>
 			</div>

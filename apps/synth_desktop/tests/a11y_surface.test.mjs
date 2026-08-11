@@ -69,6 +69,24 @@ test("execution targets include Laguna local + OpenRouter Luna/Laguna + Synth Cl
   assert.ok(bridge.includes("request: { sessionId, prompt, effort }"));
 });
 
+test("v0.1 exposes remote Muse Spark while excluding local Muse Glimmer, GGUF, and DFlash", () => {
+  const files = [
+    "App.tsx",
+    "types/landing.ts",
+    "components/Composer.tsx",
+    "components/ProviderMark.tsx",
+    "components/SettingsPage.tsx",
+    "runtime/desktopBridge.ts",
+    "runtime/modelCapabilities.ts",
+    "runtime/nativeCodex.ts",
+    "runtime/sessionView.ts",
+  ];
+  const modelSurface = files.map(read).join("\n");
+  assert.match(modelSurface, /Muse Spark 1\.2/);
+  assert.match(modelSurface, /openrouter-muse-spark/);
+  assert.doesNotMatch(modelSurface, /Muse Glimmer|muse-glimmer|GGUF|DFlash/i);
+});
+
 test("model knobs are registered once and consumed without model-specific UI or transport branches", () => {
   const registry = read("runtime/modelCapabilities.ts");
   const composer = read("components/Composer.tsx");
@@ -80,7 +98,9 @@ test("model knobs are registered once and consumed without model-specific UI or 
   assert.ok(composer.includes("modelCapabilities?.knobs.map"));
   assert.ok(!composer.includes('state.selectedTargetId === "openrouter-luna"'));
   assert.ok(!composer.includes('state.selectedTargetId === "openrouter-laguna-s"'));
-  assert.ok(app.includes("turnStartEffortForExecutionTarget(session.target, modelKnobValues)"));
+  // Match the call, not the caller's local name: the point is that effort comes
+  // from the registry helper rather than a per-model branch at the send site.
+  assert.match(app, /turnStartEffortForExecutionTarget\(\s*\w+\s*,\s*modelKnobValues\s*\)/);
   assert.ok(!app.includes('session.target.model === "openai/gpt-5.6-luna"'));
   assert.ok(!app.includes('session.target.model === "poolside/laguna-s-2.1"'));
 });
@@ -147,29 +167,35 @@ test("unconfigured Intern has explicit boot guidance and a disabled composer", (
   const settings = read("components/SettingsPage.tsx");
   assert.ok(composer.includes("Configure Synth Cloud in Settings → Account"));
   assert.ok(composer.includes('state.internMode !== "unconfigured"'));
-  assert.ok(settings.includes("Settings → Account → Synth backend"));
-  assert.ok(settings.includes("SYNTH_INTERN_DEMO=1 npm run dev:desktop"));
+  // v0.1 removal contract: the dormant composer guidance above is unreachable
+  // because no Intern target can be selected, and Settings must carry no Intern
+  // setup prompt or demo-boot instructions at all.
+  assert.ok(!settings.includes("Settings → Account → Synth backend"));
+  assert.ok(!settings.includes("SYNTH_INTERN_DEMO"));
 });
 
-test("Synth API settings keep routing in TOML and secrets in an env file", () => {
+test("Synth API settings keep routing in TOML while credentials remain in native custody", () => {
   const settings = read("components/BackendSettings.tsx");
   assert.ok(settings.includes('data-testid="backend-settings"'));
   assert.ok(settings.includes("Backend API"));
   assert.ok(settings.includes("Secrets env file"));
-  assert.ok(settings.includes('type="password"'));
+	assert.ok(!settings.includes('type="password"'));
+	assert.ok(settings.includes("Credentials must already exist in a private env file read only by the native host."));
   assert.ok(settings.includes("Save and reconnect"));
   assert.ok(settings.includes('staging: "https://api-dev.usesynth.ai"'));
   assert.ok(settings.includes("Preserve explicitly customized endpoints"));
 });
 
-test("native Intern defers creation until a nonempty objective is submitted", () => {
+test("dormant native Intern cannot be selected from v0.1 App routes", () => {
   const app = read("App.tsx");
   assert.ok(app.includes('throw new Error("Enter an objective to start an Intern session")'));
   assert.ok(app.includes("objective: internObjective!"));
   assert.ok(app.includes("objectiveConsumed"));
   assert.ok(app.includes("if (!ensured.objectiveConsumed)"));
-  assert.ok(app.includes('setSelectedTargetId("intern-sync")'));
-  assert.ok(app.includes('setSelectedTargetId("intern-async")'));
+  // v0.1 removal contract: the dormant creation path above may remain, but the
+  // entry points that selected an Intern target must not. See PRODUCT-NO-INTERN-V0P1.
+  assert.ok(!app.includes('setSelectedTargetId("intern-sync")'));
+  assert.ok(!app.includes('setSelectedTargetId("intern-async")'));
 });
 
 test("native Intern projection changes refresh the renderer session cache", () => {
@@ -180,9 +206,9 @@ test("native Intern projection changes refresh the renderer session cache", () =
 });
 
 test("migrated demo async pins cannot mask the Rust singleton", () => {
-  const app = read("App.tsx");
+  // The App-side guard went out with the Async Intern pin (v0.1 removal
+  // contract); sessionView is now the single place the singleton is enforced.
   const sessionView = read("runtime/sessionView.ts");
-  assert.ok(app.includes('session.metadata.runtime === "rust-intern"'));
   assert.ok(sessionView.includes('const isRustIntern = session.metadata.runtime === "rust-intern"'));
   assert.ok(sessionView.includes("if (asyncIntern && !isRustIntern) continue"));
 });
@@ -196,15 +222,16 @@ test("renderer exposes CoreRuntime visual registry bridge commands", () => {
   assert.ok(bridge.includes('"visual:show"'));
 });
 
-test("Runtime Settings projects the persisted Rust run count", () => {
+test("Rust run counts remain projected without a Runtime Settings surface", () => {
   const app = read("App.tsx");
   const settings = read("components/SettingsPage.tsx");
   assert.ok(app.includes("runs: core.runCount"));
-  assert.ok(settings.includes("health?.dataStore?.runs"));
+  assert.ok(!settings.includes('id: "runtime"'));
+  assert.ok(!settings.includes("health?.dataStore?.runs"));
   assert.ok(!app.includes("runs: 0"));
 });
 
-test("desktop Intern uses the typed Rust session bridge with journal replay", () => {
+test("v0.2 Intern bridge remains typed while v0.1 creation stays unreachable", () => {
   const bridge = read("runtime/desktopBridge.ts");
   const app = read("App.tsx");
   for (const command of [
@@ -215,7 +242,9 @@ test("desktop Intern uses the typed Rust session bridge with journal replay", ()
     "intern_session_events_after",
   ]) assert.ok(bridge.includes(`"${command}"`), command);
   assert.ok(bridge.includes('listen<AppEvent>("runtime:event"'));
-  assert.ok(app.includes("nativeIntern.createSession"));
+	assert.ok(app.includes("nativeIntern.createSession"));
+	assert.ok(!app.includes('setSelectedTargetId("intern-sync")'));
+	assert.ok(!app.includes('setSelectedTargetId("intern-async")'));
   assert.ok(app.includes("nativeIntern.eventsAfter"));
   assert.ok(app.includes("appEventToRuntimeEvent"));
 });

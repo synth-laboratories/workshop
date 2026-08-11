@@ -30,4 +30,9 @@ fi
 
 echo "[desktop-local] laguna=$SYNTH_LAGUNA_BASE_URL runtime=rust-core"
 cd "$ROOT"
+cargo build \
+  --manifest-path apps/synth_desktop/src-tauri/Cargo.toml \
+  --bin synth-containers-mcp \
+  --bin synth-visuals-mcp \
+  --bin synth-optimizers-mcp
 exec npm run dev --workspace @synth/synth-desktop

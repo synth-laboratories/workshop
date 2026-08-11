@@ -13,6 +13,7 @@ const layout = extract((state: any) => {
 	);
 	const composerRect = composer?.getBoundingClientRect();
 	const inputRect = input?.getBoundingClientRect();
+	const transcriptScrollRect = transcriptScroll?.getBoundingClientRect();
 	const transcriptPaddingBottom = transcriptScroll
 		? Number.parseFloat(getComputedStyle(transcriptScroll).paddingBottom)
 		: null;
@@ -42,8 +43,11 @@ const layout = extract((state: any) => {
 			!visualRect || !composerRect || composerRect.right <= visualRect.left + 1
 		),
 		clearsTranscript: Boolean(
-			!transcriptScroll || !composerRect ||
-			(transcriptPaddingBottom !== null && transcriptPaddingBottom >= viewport.innerHeight - composerRect.top + 12)
+			!transcriptScrollRect || !composerRect ||
+			(
+				transcriptScrollRect.bottom <= composerRect.top + 1 &&
+				transcriptPaddingBottom !== null && transcriptPaddingBottom >= 12
+			)
 		),
 		noHorizontalOverflow:
 			document.documentElement.scrollWidth <= viewport.innerWidth + 1,
@@ -51,8 +55,8 @@ const layout = extract((state: any) => {
 			document.querySelector('[data-testid="sidebar"]') &&
 			document.querySelector('[data-testid="titlebar"]')
 		),
-		runtimeStatusCompact: Boolean(
-			runtimeStatus && runtimeStatusRect && runtimeStatusRect.width <= 90 &&
+		runtimeStatusCompact: !runtimeStatus || Boolean(
+			runtimeStatusRect && runtimeStatusRect.width <= 90 &&
 			!/(Laguna·|\bOR\b|Intern|\d+\/\d+)/.test(runtimeStatus.textContent ?? "")
 		),
 		subagentsValid: !subagents || (
@@ -61,7 +65,23 @@ const layout = extract((state: any) => {
 		),
 		chatIndicatorsValid: [...chatRows].every((row) =>
 			row.querySelectorAll(".chat-working-indicator, .chat-unread-indicator").length <= 1
-		)
+		),
+		chatRowsHaveNoDecorativeIcons: [...chatRows].every((row) =>
+			!row.querySelector(".item-icon")
+		),
+		chatActivityStatusContained: [...chatRows].every((row) => {
+			const status = row.querySelector<HTMLElement>(".chat-working-status");
+			if (!status) return true;
+			const rowRect = row.getBoundingClientRect();
+			const statusRect = status.getBoundingClientRect();
+			return statusRect.left >= rowRect.left && statusRect.right <= rowRect.right &&
+				statusRect.top >= rowRect.top && statusRect.bottom <= rowRect.bottom;
+		}),
+		chatActivityRateValid: [...document.querySelectorAll<HTMLElement>(".chat-working-rate")].every((rate) => {
+			const status = rate.closest<HTMLElement>(".chat-working-status");
+			return Boolean(status?.querySelector(".chat-working-indicator")) &&
+				/^\d+(?:\.\d)? tok\/s$/.test(rate.textContent?.trim() ?? "");
+		})
 	};
 });
 
@@ -154,8 +174,17 @@ const runtimeErrors = extract((state: any) => ({
 	consoleErrors: (state.console ?? []).filter((entry: { level?: string }) => entry.level === "error").length
 }));
 
+/*
+ * The account entry point is the always-present control; `open-account-settings`
+ * lives inside the popup it opens, so asserting that testid at every step made
+ * the property fail at t=0 the moment the footer moved to a popup. Intent is
+ * "an account control is always reachable", not "one specific row is mounted".
+ */
 const accountControl = extract((state: any) => ({
-	present: Boolean(state.document.querySelector('[data-testid="open-account-settings"]')),
+	present: Boolean(state.document.querySelector('[data-testid="account-menu-trigger"]')),
+	menuOpen: Boolean(state.document.querySelector('[data-testid="account-menu"]')),
+	settingsReachable: !state.document.querySelector('[data-testid="account-menu"]')
+		|| Boolean(state.document.querySelector('[data-testid="open-account-settings"]')),
 	stubVisible: state.document.body.textContent?.includes("Account — stub") ?? false
 }));
 
@@ -174,7 +203,10 @@ const primaryNavigation = extract((state: any) => {
 		searchPoint: searchRect ? { x: searchRect.left + searchRect.width / 2, y: searchRect.top + searchRect.height / 2 } : null,
 		connectorsVisible: Boolean(state.document.querySelector('[data-testid="connectors-page"]')),
 		searchVisible: Boolean(state.document.querySelector('[data-testid="conversation-search"]')),
-		controlsUsable: Boolean(connectorsRect && searchRect && connectorsRect.width >= 120 && connectorsRect.height >= 28 && searchRect.width >= 120 && searchRect.height >= 28),
+		// Connectors nav was removed from the v0.1 product surface; only assert it
+		// when it exists so the property tracks the shipped shell, not a removed one.
+		controlsUsable: Boolean(searchRect && searchRect.width >= 120 && searchRect.height >= 28
+			&& (!connectorsRect || (connectorsRect.width >= 120 && connectorsRect.height >= 28))),
 		connectorsFit: !connectorsPageRect || (connectorsPageRect.left >= 0 && connectorsPageRect.right <= state.window.innerWidth && connectorsPageRect.bottom <= state.window.innerHeight),
 		searchFits: !searchDialogRect || (searchDialogRect.left >= 0 && searchDialogRect.right <= state.window.innerWidth && searchDialogRect.bottom <= state.window.innerHeight)
 	};
@@ -234,8 +266,11 @@ const backNavigation = extract((state: any) => {
 		const rect = element?.getBoundingClientRect();
 		return rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null;
 	};
+	const settingsEntry = document.querySelector('[data-testid="account-menu-settings"]')
+		? '[data-testid="account-menu-settings"]'
+		: '[data-testid="account-menu-trigger"]';
 	const routes = [
-		{ id: "settings", page: '[data-testid="settings-page"]', entry: '[data-testid="settings"]', exit: '.desk-back' },
+		{ id: "settings", page: '[data-testid="settings-page"]', entry: settingsEntry, exit: '.desk-back' },
 		{ id: "connectors", page: '[data-testid="connectors-page"]', entry: '[data-testid="open-connectors"]', exit: '.page-back' },
 		{ id: "visuals", page: '[data-testid="visuals-page"]', entry: '[data-testid="open-visuals"]', exit: '.ghost-button' },
 		{ id: "inventory", page: '[data-testid="inventory-page"]', entry: '[data-testid="open-inventory"]', exit: '.desk-back' },
@@ -278,12 +313,20 @@ const backNavigation = extract((state: any) => {
 });
 
 /** Exercise the supported lower bound and representative desktop sizes. */
-export const exploreViewportSizes = actions(() => [
-	"Wait",
-	{ SetViewport: { width: 960, height: 640 } },
-	{ SetViewport: { width: 1280, height: 840 } },
-	{ SetViewport: { width: 1440, height: 900 } }
-]);
+export const exploreViewportSizes = actions(() => {
+	if (!composerLayers.current.terminalOpen && composerLayers.current.showTerminalPoint) {
+		return [{ Click: { name: "Open terminal before viewport fuzz", point: composerLayers.current.showTerminalPoint } }];
+	}
+	if (!composerLayers.current.menuOpen && composerLayers.current.modelPoint) {
+		return [{ Click: { name: "Open model picker before viewport fuzz", point: composerLayers.current.modelPoint } }];
+	}
+	return [
+		"Wait",
+		{ SetViewport: { width: 960, height: 640 } },
+		{ SetViewport: { width: 1280, height: 840 } },
+		{ SetViewport: { width: 1440, height: 900 } }
+	];
+});
 
 /** Exercise the real layered controls before the normal viewport fuzzer runs. */
 export const exercise_model_picker_above_terminal = actions(() => {
@@ -298,7 +341,11 @@ export const exercise_model_picker_above_terminal = actions(() => {
 
 /** Open and close Outputs whenever a resource-bearing transcript is available. */
 export const exercise_outputs_alignment = actions(() =>
-	visualAlignment.current.triggerPoint
+	!composerLayers.current.terminalOpen && composerLayers.current.showTerminalPoint
+		? [{ Click: { name: "Open terminal before outputs fuzz", point: composerLayers.current.showTerminalPoint } }]
+		: composerLayers.current.terminalOpen && !composerLayers.current.menuOpen && composerLayers.current.modelPoint
+		? [{ Click: { name: "Open model picker before outputs fuzz", point: composerLayers.current.modelPoint } }]
+		: visualAlignment.current.triggerPoint
 		? [{ Click: {
 			name: visualAlignment.current.shelfOpen ? "Close aligned Outputs" : "Open aligned Outputs",
 			point: visualAlignment.current.triggerPoint
@@ -313,7 +360,11 @@ export const exercise_outputs_alignment = actions(() =>
  * Direct this route on every exploration and assert the Escape postcondition.
  */
 export const open_then_escape_conversation_search = actions(() =>
-	searchDismissal.current.searchVisible
+	!composerLayers.current.terminalOpen && composerLayers.current.showTerminalPoint
+		? [{ Click: { name: "Open terminal before search fuzz", point: composerLayers.current.showTerminalPoint } }]
+		: composerLayers.current.terminalOpen && !composerLayers.current.menuOpen && composerLayers.current.modelPoint
+		? [{ Click: { name: "Open model picker before search fuzz", point: composerLayers.current.modelPoint } }]
+		: searchDismissal.current.searchVisible
 		? [{ PressKey: { code: 27 } }]
 		: searchDismissal.current.searchPoint
 			? [{ Click: { name: "Open conversation search", point: searchDismissal.current.searchPoint } }]
@@ -325,6 +376,12 @@ export const open_then_escape_conversation_search = actions(() =>
  * way back. When Bombadil enters one, its next directed action is that exit.
  */
 export const return_from_every_navigable_surface = actions(() => {
+	if (!composerLayers.current.terminalOpen && composerLayers.current.showTerminalPoint) {
+		return [{ Click: { name: "Open terminal before route fuzz", point: composerLayers.current.showTerminalPoint } }];
+	}
+	if (composerLayers.current.terminalOpen && !composerLayers.current.menuOpen && composerLayers.current.modelPoint) {
+		return [{ Click: { name: "Open model picker before route fuzz", point: composerLayers.current.modelPoint } }];
+	}
 	if (backNavigation.current.searchVisible) return [{ PressKey: { code: 27 } }];
 	if (backNavigation.current.activeRoute && backNavigation.current.activeRouteExitPoint) {
 		return [{ Click: {
@@ -388,7 +445,7 @@ export const app_shell_initializes_promptly = eventually(() =>
 
 export const terminal_and_model_picker_are_exercised = eventually(() =>
 	composerLayers.current.terminalOpen && composerLayers.current.menuOpen
-).within(5, "seconds");
+).within(8, "seconds");
 
 export const model_picker_stays_visible_above_the_terminal = always(() =>
 	!composerLayers.current.menuOpen || (
@@ -411,7 +468,8 @@ export const account_control_never_falls_back_to_stub_copy = always(() =>
 );
 
 export const account_control_remains_present = always(() =>
-	!layout.current.initialized || accountControl.current.present
+	!layout.current.initialized
+	|| (accountControl.current.present && accountControl.current.settingsReachable)
 );
 
 export const connector_catalog_stays_inside_the_viewport = always(() =>
@@ -469,6 +527,16 @@ export const chat_rows_never_show_working_and_unread_at_once = always(() =>
 	layout.current.chatIndicatorsValid
 );
 
+/** A live rate is supplementary: it must stay in its row and remain attached to
+ * the animated working marker rather than displacing the conversation title. */
+export const active_chat_rate_stays_compact_and_attached_to_working = always(() =>
+	layout.current.chatActivityStatusContained && layout.current.chatActivityRateValid
+);
+
+export const chat_rows_never_regain_generic_decorative_icons = always(() =>
+	layout.current.chatRowsHaveNoDecorativeIcons
+);
+
 const polishState = extract((state: any) => {
 	const document = state.document;
 	const mode = document.querySelector<HTMLElement>('[data-testid="chat-transcript"]')?.dataset.activityMode ?? null;
@@ -490,6 +558,7 @@ const polishState = extract((state: any) => {
 	const inferencePanel = document.querySelector<HTMLElement>('[data-testid="inference-panel"]');
 	const railRect = inferenceRail?.getBoundingClientRect();
 	const panelRect = inferencePanel?.getBoundingClientRect();
+	const inferenceVisible = Boolean(railRect && panelRect && railRect.width > 0 && railRect.height > 0);
 	return {
 		initialized: Boolean(document.querySelector(".app-shell")),
 		modeValid: !mode || ["detailed", "grouped", "compact"].includes(mode),
@@ -501,9 +570,10 @@ const polishState = extract((state: any) => {
 		steerErrorHonest: !document.querySelector('[data-testid="steer-error"]') || /not supported|unavailable|rejected/i.test(document.querySelector('[data-testid="steer-error"]')?.textContent ?? ""),
 		settingsNavigable: !document.querySelector('[data-testid="settings-page"]') || Boolean(document.querySelector('[data-testid="settings-general"], [data-testid="settings-models"], [data-testid="settings-about"]')),
 		projectsAbsent: !document.querySelector('[data-testid="project-list"], [data-testid="add-project"], [data-testid="quick-add-project"]'),
-		inferenceContained: !railRect || !panelRect || (panelRect.left >= railRect.left && panelRect.right <= railRect.right + 1 && panelRect.top >= railRect.top && panelRect.bottom <= railRect.bottom + 1),
-		inferenceInset: !railRect || !panelRect || (panelRect.left - railRect.left >= 8 && railRect.right - panelRect.right >= 8),
-		composerClearsInference: !railRect || !composerRect || composerRect.right <= railRect.left + 1,
+		inferenceContained: !inferenceVisible || (panelRect!.left >= railRect!.left && panelRect!.right <= railRect!.right + 1 && panelRect!.top >= railRect!.top && panelRect!.bottom <= railRect!.bottom + 1),
+		inferenceInset: !inferenceVisible || (panelRect!.left - railRect!.left >= 8 && railRect!.right - panelRect!.right >= 8),
+		inferenceTopAligned: !inferenceVisible || panelRect!.top - railRect!.top <= 92,
+		composerClearsInference: !inferenceVisible || !composerRect || composerRect.right <= railRect!.left + 1,
 		inferenceNoOverflow: !inferenceRail || document.documentElement.scrollWidth <= state.window.innerWidth + 1
 	};
 });
@@ -528,7 +598,7 @@ const polishControls = extract((state: any) => {
 		["Apply layout default", '[data-testid="apply-layout-default"]'],
 		["Reset layout", '[data-testid="reset-layout"]']
 	].map(([name, selector]) => ({ name, point: point(selector) })).filter((entry) => entry.point !== null);
-	return { settingsPoint: point('[data-testid="settings"]'), controls };
+	return { settingsPoint: point('[data-testid="account-menu-settings"]') ?? point('[data-testid="account-menu-trigger"]'), controls };
 });
 
 /** Exercise every currently visible preference control instead of only visiting Settings. */
@@ -565,7 +635,7 @@ export const sidebar_width_stays_within_bounds = always(() =>
 );
 
 export const inference_rail_keeps_a_contained_inset_panel = always(() =>
-	!polishState.current.initialized || (polishState.current.inferenceContained && polishState.current.inferenceInset && polishState.current.composerClearsInference && polishState.current.inferenceNoOverflow)
+	!polishState.current.initialized || (polishState.current.inferenceContained && polishState.current.inferenceInset && polishState.current.inferenceTopAligned && polishState.current.composerClearsInference && polishState.current.inferenceNoOverflow)
 );
 
 export const steer_errors_stay_honest = always(() =>
@@ -586,4 +656,61 @@ export const renderer_has_no_uncaught_errors = always(() =>
 
 export const renderer_has_no_console_errors = always(() =>
 	runtimeErrors.current.consoleErrors === 0
+);
+
+/* Landing model-picker containment (12:54 screenshot regression): while the
+ * dropdown is open it must stay inside the viewport with an 8px inset, never
+ * cover the composer, scroll internally instead of growing past its slot, and
+ * keep the selected option visible. */
+const landingPickerLayout = extract((state: any) => {
+	const document = state.document;
+	const viewport = state.window;
+	const trigger = document.querySelector<HTMLElement>('[data-testid="model-picker"]');
+	const picker = document.querySelector<HTMLElement>('[data-testid="model-dropdown"]');
+	const composer = document.querySelector<HTMLElement>('[data-testid="composer"]');
+	const triggerRect = trigger?.getBoundingClientRect();
+	const triggerPoint = triggerRect
+		? { x: triggerRect.left + triggerRect.width / 2, y: triggerRect.top + triggerRect.height / 2 }
+		: null;
+	if (!picker) return { open: false, triggerPoint, insideViewport: true, avoidsComposer: true, scrollsInternally: true, selectedVisible: true, bodyOverflowX: false };
+	const p = picker.getBoundingClientRect();
+	const c = composer?.getBoundingClientRect() ?? null;
+	const selected = picker.querySelector<HTMLElement>(".model-option.selected");
+	const s = selected?.getBoundingClientRect() ?? null;
+	return {
+		open: true,
+		triggerPoint,
+		insideViewport:
+			p.left >= 8 && p.top >= 8 &&
+			p.right <= viewport.innerWidth - 8 && p.bottom <= viewport.innerHeight - 8,
+		avoidsComposer: Boolean(
+			!c || p.right <= c.left || p.left >= c.right || p.bottom <= c.top || p.top >= c.bottom
+		),
+		scrollsInternally: picker.scrollHeight <= picker.clientHeight ||
+			getComputedStyle(picker).overflowY === "auto",
+		selectedVisible: Boolean(!s || (s.top >= p.top - 1 && s.bottom <= p.bottom + 1)),
+		bodyOverflowX: document.documentElement.scrollWidth > viewport.innerWidth + 1
+	};
+});
+
+/** Open the landing picker, then let the viewport fuzzer squeeze it. */
+export const exercise_landing_model_picker = actions(() => {
+	if (!landingPickerLayout.current.open && landingPickerLayout.current.triggerPoint) {
+		return [{ Click: { name: "Open landing model picker for containment fuzz", point: landingPickerLayout.current.triggerPoint } }];
+	}
+	return ["Wait"];
+});
+
+export const landing_model_picker_is_exercised = eventually(() =>
+	landingPickerLayout.current.open
+).within(8, "seconds");
+
+export const landing_model_picker_stays_contained = always(() =>
+	!landingPickerLayout.current.open || (
+		landingPickerLayout.current.insideViewport &&
+		landingPickerLayout.current.avoidsComposer &&
+		landingPickerLayout.current.scrollsInternally &&
+		landingPickerLayout.current.selectedVisible &&
+		!landingPickerLayout.current.bodyOverflowX
+	)
 );

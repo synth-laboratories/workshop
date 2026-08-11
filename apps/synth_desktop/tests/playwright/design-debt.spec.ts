@@ -1,4 +1,10 @@
 import { expect, test } from "./browser.fixture";
+import type { Page } from "@playwright/test";
+
+async function openSettings(page: Page) {
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-menu-settings").click();
+}
 
 /**
  * Design-debt and intended-architecture flags.
@@ -24,7 +30,7 @@ test.describe("design locks (must pass)", () => {
 	});
 
 	test("Settings has no Finetunes or adapter-placeholder UI", async ({ page }) => {
-		await page.getByRole("button", { name: "Settings" }).click();
+		await openSettings(page);
 		await expect(page.getByTestId("settings-page")).toBeVisible();
 		await expect(page.getByRole("button", { name: "Finetunes" })).toHaveCount(0);
 		await expect(page.getByTestId("settings-finetunes")).toHaveCount(0);
@@ -33,34 +39,24 @@ test.describe("design locks (must pass)", () => {
 		await expect(page.getByTestId("settings-models")).not.toContainText("Adapters");
 	});
 
-	test("Runtime settings persist additional Codex workspace roots", async ({ page }) => {
-		await page.addInitScript(() => {
-			const allowedRoots = ["/Users/joshuapurtell/Documents/GitHub"];
-			(window as typeof window & { __savedWorkspaceRoots?: string[] }).__savedWorkspaceRoots = [...allowedRoots];
-			window.synthConfig = {
-				get: async () => ({
-					configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod",
-					backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY",
-					apiKeyConfigured: false, workerKeyConfigured: false, openrouterApiKeyConfigured: false
-				}),
-				update: async () => { throw new Error("unused"); },
-				listModelMultiAgent: async () => [],
-				updateModelMultiAgent: async () => [],
-				getWorkspaceAccess: async () => ({ allowedRoots: [...allowedRoots] }),
-				updateWorkspaceAccess: async (request) => {
-					(window as typeof window & { __savedWorkspaceRoots?: string[] }).__savedWorkspaceRoots = [...request.allowedRoots];
-					return { allowedRoots: [...request.allowedRoots] };
-				}
-			};
-		});
-		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
-		await page.getByRole("button", { name: "Settings" }).click();
-		await page.getByRole("button", { name: "Runtime", exact: true }).click();
-		await expect(page.getByTestId("workspace-access-settings")).toContainText("/Users/joshuapurtell/Documents/GitHub");
-		await page.getByRole("button", { name: "Remove /Users/joshuapurtell/Documents/GitHub" }).click();
-		await page.getByTestId("save-workspace-roots").click();
-		await expect.poll(() => page.evaluate(() => (window as typeof window & { __savedWorkspaceRoots?: string[] }).__savedWorkspaceRoots)).toEqual([]);
+	test("Runtime settings are not exposed", async ({ page }) => {
+		await openSettings(page);
+		await expect(page.getByRole("button", { name: "Runtime", exact: true })).toHaveCount(0);
+		await expect(page.getByTestId("settings-runtime")).toHaveCount(0);
+	});
+
+	test("About ships the current release changelog", async ({ page }) => {
+		await openSettings(page);
+		await page.getByRole("button", { name: "About", exact: true }).click();
+		const changelog = page.getByTestId("about-changelog");
+		await expect(changelog).toBeVisible();
+		await expect(changelog).toContainText("Version 0.1.0");
+		await expect(changelog).toContainText("New");
+		await expect(changelog).toContainText("Improved");
+		await expect(changelog).toContainText("Fixed");
+		await expect(changelog).toContainText("Muse Spark");
+		await expect(changelog).toContainText("passive stable-channel update check");
+		await expect(changelog).toContainText("build provenance");
 	});
 
 	test("Inventory exposes Attach container defaulting to Craftax Rust :8098", async ({ page }) => {
@@ -80,9 +76,17 @@ test.describe("design locks (must pass)", () => {
 		await expect(page.getByTestId("filter-traces")).toBeVisible();
 	});
 
-	test("titlebar Account opens Account settings, not a dead control", async ({ page }) => {
+	test("sidebar account menu opens Account settings, not a dead control", async ({ page }) => {
+		await page.getByTestId("account-menu-trigger").click();
 		await page.getByTestId("open-account-settings").click();
 		await expect(page.getByTestId("settings-page")).toBeVisible();
+		// Account leads with the user-facing sections; endpoint/key configuration
+		// is deliberately demoted behind Advanced connection but stays reachable.
+		await expect(page.getByTestId("settings-account")).toBeVisible();
+		await expect(page.getByTestId("account-page-profile")).toBeVisible();
+		await expect(page.getByTestId("account-page-plan")).toBeVisible();
+		await expect(page.getByTestId("backend-settings")).toBeHidden();
+		await page.getByTestId("account-page-advanced").getByText("Advanced connection").click();
 		await expect(page.getByTestId("backend-settings")).toBeVisible();
 		await expect(page.getByText("Account — stub", { exact: true })).toHaveCount(0);
 	});
@@ -104,18 +108,21 @@ test.describe("design locks (must pass)", () => {
 			};
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		const permission = page.getByTestId("approval-mode-select");
 		await expect(permission).toBeEnabled();
 		await permission.click();
 		const menu = page.getByTestId("approval-mode-menu");
 		await expect(menu).toBeVisible();
-		await expect(menu.getByRole("option")).toHaveCount(3);
+		await expect(menu.getByRole("option")).toHaveCount(6);
 		await expect(menu.getByRole("option", { name: /Always ask/ })).toBeVisible();
-		await expect(menu.getByRole("option", { name: /Allow all/ })).toBeVisible();
-		await menu.getByRole("option", { name: /Accept edits/ }).click();
-		await expect(permission).toContainText("Accept edits");
-		await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.approvalMode"))).toBe("accept-edits");
+		await expect(menu.getByRole("option", { name: /Full system access/ })).toBeVisible();
+		await menu.getByRole("option", { name: /Ask for risky actions/ }).click();
+		await menu.getByRole("option", { name: /Full system access/ }).click();
+		await expect(permission).toHaveText("RiskyFull");
+		await expect(permission).toHaveAttribute("aria-label", "Permissions: Ask for risky actions; Full system access");
+		await expect(permission).toHaveCSS("white-space", "nowrap");
+		expect((await permission.boundingBox())?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(32);
 	});
 });
 
@@ -125,21 +132,14 @@ test.describe("design debt (expected fail until fixed)", () => {
 		await expect(page.getByRole("button", { name: "Expand" })).toHaveCount(0);
 		await expect(page.getByText("Account menu — stub", { exact: true })).toHaveCount(0);
 		await expect(page.getByText("Expand — stub", { exact: true })).toHaveCount(0);
+		await page.getByTestId("account-menu-trigger").click();
 		await expect(page.getByTestId("open-account-settings")).toBeVisible();
 	});
 
-	test("titlebar Models opens the models settings section", async ({ page }) => {
-		await page.getByTestId("open-models-settings").click();
-		await expect(page.getByTestId("settings-page")).toBeVisible();
-		await expect(page.getByTestId("settings-models")).toBeVisible();
-		await expect(page.getByTestId("on-device-laguna-xs")).toBeVisible();
-		await expect(page.getByText("Downloads — stub", { exact: true })).toHaveCount(0);
-	});
 
-	test("Runtime settings has no legacy Python migration surface", async ({ page }) => {
-		await page.getByRole("button", { name: "Settings" }).click();
-		await page.getByTestId("settings-page").getByRole("button", { name: "Runtime" }).click();
-		await expect(page.getByTestId("settings-runtime")).toBeVisible();
+	test("Settings has no legacy Python migration surface", async ({ page }) => {
+		await openSettings(page);
+		await expect(page.getByTestId("settings-runtime")).toHaveCount(0);
 		await expect(page.getByText("Legacy Python Runtime Data")).toHaveCount(0);
 		await expect(page.getByText("Legacy runtime.sqlite3 path")).toHaveCount(0);
 		await expect(page.getByRole("button", { name: "Inspect migration" })).toHaveCount(0);
@@ -172,8 +172,8 @@ test.describe("design debt (expected fail until fixed)", () => {
 			} as typeof window.synthLaguna;
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
-		await page.getByRole("button", { name: "Settings" }).click();
+		await page.getByTestId("titlebar").waitFor();
+		await openSettings(page);
 		await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
 		await page.getByRole("button", { name: "Reload" }).click();
 		await expect
@@ -197,7 +197,7 @@ test.describe("design debt (expected fail until fixed)", () => {
 			};
 		});
 		await page.reload();
-		await page.getByRole("button", { name: "Settings" }).click();
+		await openSettings(page);
 		await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
 		await page.getByRole("button", { name: "Reload" }).click();
 		const status = page.getByTestId("laguna-reload-status");
@@ -216,7 +216,7 @@ test.describe("design debt (expected fail until fixed)", () => {
 		expect(source).toMatch(/props\.intern\.leaveSafe === true/);
 	});
 
-	test("a needs-input Async Intern opens a real intervention control", async ({ page }) => {
+	test("a needs-input Async Intern is unreachable in v0.1", async ({ page }) => {
 		const asyncSession = {
 			id: "async-needs-input",
 			title: "Async Intern",
@@ -245,10 +245,19 @@ test.describe("design debt (expected fail until fixed)", () => {
 			};
 		}, asyncSession);
 		await page.reload();
-		await page.getByTestId("async-intern-pin").click();
-		await page.getByRole("button", { name: "Respond" }).click();
-		await expect(page.getByTestId("intern-intervention-input")).toBeVisible();
-		await expect(page.getByText("Provide input — stub", { exact: true })).toHaveCount(0);
+		/*
+		 * v0.1 removal contract: even with a needs-input Async Intern session
+		 * present in the runtime, no surface may expose it. The dormant
+		 * CloudDesk intervention control keeps its own honesty assertion in
+		 * design_debt.test.mjs so v0.2 re-entry stays covered.
+		 */
+		await expect(page.getByTestId("sidebar")).toBeVisible();
+		await expect(page.getByTestId("async-intern-pin")).toHaveCount(0);
+		await expect(page.getByTestId("cloud-list")).toHaveCount(0);
+		await expect(page.getByTestId("new-sync-session")).toHaveCount(0);
+		await page.getByTestId("open-search").click();
+		await expect(page.getByTestId("conversation-search")).toBeVisible();
+		await expect(page.getByText("Background Intern", { exact: true })).toHaveCount(0);
 	});
 
 	test("agent-authored analysis visuals render the persisted type-block payload from CUA", async ({ page }) => {

@@ -1,17 +1,23 @@
 import { expect, test } from "./browser.fixture";
+import type { Page } from "@playwright/test";
 
-test("parked Projects surface is absent while workspace access remains available", async ({ page }) => {
+async function openSettings(page: Page) {
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-menu-settings").click();
+}
+
+test("parked Projects and Runtime settings surfaces are absent", async ({ page }) => {
 	await expect(page.getByText("Projects", { exact: true })).toHaveCount(0);
 	await expect(page.getByTestId("project-list")).toHaveCount(0);
 	await expect(page.getByTestId("quick-add-project")).toHaveCount(0);
-	await page.getByTestId("settings").click();
-	await page.getByRole("button", { name: "Runtime" }).click();
-	await expect(page.getByTestId("workspace-access-settings")).toBeVisible();
+	await openSettings(page);
+	await expect(page.getByRole("button", { name: "Runtime" })).toHaveCount(0);
+	await expect(page.getByTestId("workspace-access-settings")).toHaveCount(0);
 });
 
 test.describe("preferences persistence", () => {
 	test("theme, fonts, tool activity, and layout survive a fresh context", async ({ page, context }) => {
-		await page.getByTestId("settings").click();
+		await openSettings(page);
 		await expect(page.getByTestId("settings-general")).toBeVisible();
 		await page.getByTestId("theme-dark").click();
 		await page.getByTestId("tool-activity-compact").click();
@@ -30,7 +36,7 @@ test.describe("preferences persistence", () => {
 
 		const page2 = await context.newPage();
 		await page2.goto(page.url());
-		await page2.getByTestId("runtime-status").waitFor();
+		await page2.getByTestId("titlebar").waitFor();
 		await expect(page2.locator("html")).toHaveAttribute("data-theme", "dark");
 		const restored = await page2.evaluate(() => (window as typeof window & { __synthPreferences?: { get(): { appearance: { chatFontSize: number }; toolActivity: { mode: string } } } }).__synthPreferences?.get());
 		expect(restored?.appearance.chatFontSize).toBe(18);
@@ -49,7 +55,7 @@ test.describe("preferences persistence", () => {
 			}));
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		const normalized = await page.evaluate(() => (window as typeof window & { __synthPreferences?: { get(): any } }).__synthPreferences!.get());
 		expect(["system", "light", "dark"]).toContain(normalized.appearance.theme);
 		expect(["detailed", "grouped", "compact"]).toContain(normalized.toolActivity.mode);
@@ -60,7 +66,7 @@ test.describe("preferences persistence", () => {
 	});
 
 	test("invalid font size is rejected with feedback", async ({ page }) => {
-		await page.getByTestId("settings").click();
+		await openSettings(page);
 		await page.getByTestId("chat-font-size").fill("99");
 		await page.getByTestId("chat-font-size").blur();
 		await expect(page.getByTestId("chat-font-size-error")).toBeVisible();
@@ -70,7 +76,7 @@ test.describe("preferences persistence", () => {
 
 test.describe("tool activity presentation", () => {
 	test("settings and transcript menu share the same mode labels", async ({ page }) => {
-		await page.getByTestId("settings").click();
+		await openSettings(page);
 		await expect(page.getByTestId("tool-activity-detailed")).toContainText("Detailed");
 		await expect(page.getByTestId("tool-activity-grouped")).toContainText("Grouped");
 		await expect(page.getByTestId("tool-activity-compact")).toContainText("Compact");
@@ -104,7 +110,7 @@ test.describe("tool activity presentation", () => {
 			};
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		await page.getByTestId("local-chat-activity-chat").click();
 		await expect(page.getByTestId("chat-transcript")).toHaveAttribute("data-activity-mode", "detailed");
 		await page.getByTestId("activity-mode-menu-trigger").click();
@@ -158,34 +164,29 @@ test.describe("steer and enqueue", () => {
 			};
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		await page.getByTestId("local-chat-queue-chat").click();
 		await expect(page.getByTestId("composer-input")).toBeEnabled();
-		await expect(page.getByTestId("composer-intent-hint")).toBeVisible();
+		await expect(page.getByTestId("composer-intent-hint")).toHaveCount(0);
 		await page.getByTestId("composer-input").focus();
 		const workingComposerGeometry = await page.evaluate(() => {
 			const composer = document.querySelector<HTMLElement>("[data-testid=composer]");
 			const input = document.querySelector<HTMLTextAreaElement>("[data-testid=composer-input]");
 			const toolbar = document.querySelector<HTMLElement>(".composer-toolbar");
-			const hint = document.querySelector<HTMLElement>("[data-testid=composer-intent-hint]");
-			if (!composer || !input || !toolbar || !hint) throw new Error("Working composer fixture is incomplete");
+			if (!composer || !input || !toolbar) throw new Error("Working composer fixture is incomplete");
 			const composerRect = composer.getBoundingClientRect();
-			const toolbarRect = toolbar.getBoundingClientRect();
-			const hintRect = hint.getBoundingClientRect();
 			return {
 				compact: composerRect.height <= 140 && input.getBoundingClientRect().height <= 80,
-				hintLivesInToolbar: hintRect.top >= toolbarRect.top && hintRect.bottom <= toolbarRect.bottom,
+				toolbarIsSingleRow: toolbar.scrollHeight <= toolbar.clientHeight + 1,
 				quietTextareaFocus: getComputedStyle(input).outlineStyle === "none",
-				noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1,
-				showsInternalRuntimeDetail: hint.textContent?.includes("runtime primitive") ?? false
+				noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1
 			};
 		});
 		expect(workingComposerGeometry).toEqual({
 			compact: true,
-			hintLivesInToolbar: true,
+			toolbarIsSingleRow: true,
 			quietTextareaFocus: true,
-			noHorizontalOverflow: true,
-			showsInternalRuntimeDetail: false
+			noHorizontalOverflow: true
 		});
 		await page.getByTestId("composer-input").fill("queued one");
 		await page.getByTestId("composer-send").click();
@@ -294,7 +295,8 @@ test.describe("steer and enqueue", () => {
 			};
 			window.localStorage.setItem("synth.preferences.v1", JSON.stringify({
 				schemaVersion: 1,
-				submission: { activeEnterAction: "steer" }
+				submission: { activeEnterAction: "steer" },
+				promptQueue: [{ id: "promote-me", conversationId: "steer-session", text: "push this through now", createdAt: "2026-08-09T12:00:00.000Z" }]
 			}));
 		});
 		await page.reload();
@@ -307,6 +309,16 @@ test.describe("steer and enqueue", () => {
 		await expect(page.getByTestId("composer-input")).toHaveValue("");
 		const calls = await page.evaluate(() => (window as typeof window & { __steerCalls?: Array<{ sessionId: string; text: string }> }).__steerCalls ?? []);
 		expect(calls).toEqual([{ sessionId: "steer-session", text: "nudge the active turn" }]);
+		const queued = page.getByRole("textbox", { name: "Queued prompt 1" });
+		await queued.press("Enter");
+		await expect(page.getByTestId("prompt-queue")).toContainText("Return again to steer now");
+		await queued.press("Enter");
+		await expect(page.getByTestId("prompt-queue")).toBeHidden();
+		const promotedCalls = await page.evaluate(() => (window as typeof window & { __steerCalls?: Array<{ sessionId: string; text: string }> }).__steerCalls ?? []);
+		expect(promotedCalls).toEqual([
+			{ sessionId: "steer-session", text: "nudge the active turn" },
+			{ sessionId: "steer-session", text: "push this through now" }
+		]);
 	});
 });
 
@@ -340,7 +352,7 @@ test.describe("conversation management", () => {
 			};
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		await expect(page.getByTestId("chat-unread-manage-chat")).toBeVisible();
 		const chat = page.getByTestId("local-chat-manage-chat");
 		await chat.focus();
@@ -363,15 +375,28 @@ test.describe("conversation management", () => {
 		await page.getByTestId("local-chat-manage-chat").click();
 		await expect(page.getByTestId("chat-unread-manage-chat")).toHaveCount(0);
 
-		await page.getByTestId("local-chat-manage-chat").click({ button: "right" });
-		await page.getByRole("menuitem", { name: "Archive" }).click();
-		await expect(page.getByTestId("local-chat-manage-chat")).toHaveCount(0);
-		await page.getByTestId("settings").click();
-		await expect(page.getByTestId("archived-chat-manage-chat")).toBeVisible();
+		await openSettings(page);
+		await expect(page.getByRole("button", { name: "Keyboard Shortcuts" })).toHaveCount(0);
+		await expect(page.getByRole("button", { name: "Archived Chats" })).toHaveCount(0);
 	});
 });
 
 test.describe("layout persistence", () => {
+	test("sidebar divider drags against the full app width and persists", async ({ page }) => {
+		const handle = page.getByRole("separator", { name: "Resize sidebar" });
+		const box = await handle.boundingBox();
+		expect(box).not.toBeNull();
+		await page.mouse.move(box!.x + box!.width / 2, box!.y + 120);
+		await page.mouse.down();
+		await page.mouse.move(box!.x + box!.width / 2 + 72, box!.y + 120, { steps: 5 });
+		await page.mouse.up();
+		const draggedWidth = await page.getByTestId("sidebar").evaluate((node) => node.getBoundingClientRect().width);
+		expect(draggedWidth).toBeGreaterThanOrEqual(320);
+		await page.reload();
+		await page.getByTestId("titlebar").waitFor();
+		await expect(page.getByTestId("sidebar")).toHaveCSS("width", `${draggedWidth}px`);
+	});
+
 	test("sidebar width and terminal visibility persist through reload", async ({ page }) => {
 		await page.evaluate(() => {
 			(window as typeof window & { __synthPreferences?: { set(raw: unknown): unknown } }).__synthPreferences?.set({
@@ -401,7 +426,7 @@ test.describe("layout persistence", () => {
 			});
 		});
 		await page.reload();
-		await page.getByTestId("runtime-status").waitFor();
+		await page.getByTestId("titlebar").waitFor();
 		await expect(page.getByTestId("sidebar")).toHaveCSS("width", "300px");
 		await expect(page.getByTestId("terminal-panel")).toBeVisible();
 	});
@@ -412,7 +437,7 @@ test.describe("layout persistence", () => {
 			const prefs = adapter.get();
 			adapter.set({ ...prefs, layout: { ...prefs.layout, last: { ...prefs.layout.last, sidebarWidth: 310 } } });
 		});
-		await page.getByTestId("settings").click();
+		await openSettings(page);
 		await page.getByTestId("save-layout-default").click();
 		await page.evaluate(() => {
 			const adapter = (window as typeof window & { __synthPreferences?: { get(): any; set(raw: unknown): unknown } }).__synthPreferences!;
@@ -420,8 +445,13 @@ test.describe("layout persistence", () => {
 			adapter.set({ ...prefs, layout: { ...prefs.layout, last: { ...prefs.layout.last, sidebarWidth: 220 } } });
 		});
 		await page.getByTestId("apply-layout-default").click();
+		// Settings owns the whole left rail; the conversation sidebar returns
+		// with the applied width once the workspace is back.
+		await page.getByRole("button", { name: "← Back" }).click();
 		await expect(page.getByTestId("sidebar")).toHaveCSS("width", "310px");
+		await openSettings(page);
 		await page.getByTestId("reset-layout").click();
+		await page.getByRole("button", { name: "← Back" }).click();
 		await expect(page.getByTestId("sidebar")).toHaveCSS("width", "260px");
 		const widths = await page.evaluate(() => {
 			const prefs = (window as typeof window & { __synthPreferences?: { get(): any } }).__synthPreferences!.get();
@@ -432,7 +462,9 @@ test.describe("layout persistence", () => {
 });
 
 test("keyboard-only settings navigation reaches General anchors", async ({ page }) => {
-	await page.getByTestId("settings").focus();
+	await page.getByTestId("account-menu-trigger").focus();
+	await page.keyboard.press("Enter");
+	await page.getByTestId("account-menu-settings").focus();
 	await page.keyboard.press("Enter");
 	await expect(page.getByTestId("settings-general")).toBeVisible();
 	await page.getByRole("button", { name: "About" }).focus();

@@ -9,6 +9,7 @@ import type {
 import {
 	OPENROUTER_LAGUNA_S_MODEL,
 	OPENROUTER_LUNA_MODEL,
+	OPENROUTER_MUSE_SPARK_MODEL,
 	SYNTH_CLOUD_LAGUNA_S_MODEL,
 	type ActivityEvent,
 	type ArtifactRef,
@@ -23,6 +24,47 @@ import {
 	type SyncSessionStatus
 } from "../types/landing";
 import { modelCapabilitiesForExecutionTarget } from "./modelCapabilities";
+
+/** Transcript divider copy for `thread/compacted` events. */
+export function contextCompactionLabel(source: string): string {
+	switch (source.toLowerCase()) {
+		case "manual":
+			return "Context compacted";
+		case "model_switch":
+			return "Model switch - context compacted";
+		default:
+			return "Context automatically compacted";
+	}
+}
+
+/** Format a token count as a fraction of a million, e.g. `0.27M`. */
+export function formatTokensAsMillions(tokens: number): string {
+	const millions = Math.max(0, tokens) / 1_000_000;
+	const digits = millions >= 10 ? 1 : 2;
+	return `${millions.toFixed(digits)}M`;
+}
+
+/** Compact before → after summary for the compaction disclosure. */
+export function contextCompactionTokenSummary(before: number, after: number): string {
+	return `${formatTokensAsMillions(before)} → ${formatTokensAsMillions(after)}`;
+}
+
+function tokenTotalFromPayload(payload: Record<string, unknown>): number | undefined {
+	const usage = payload.tokenUsage && typeof payload.tokenUsage === "object"
+		? payload.tokenUsage as Record<string, unknown>
+		: payload.usage && typeof payload.usage === "object"
+			? payload.usage as Record<string, unknown>
+			: payload;
+	const nest = (value: unknown): Record<string, unknown> | null =>
+		value && typeof value === "object" ? value as Record<string, unknown> : null;
+	const candidates = [nest(usage.last), nest(usage.total), usage];
+	for (const candidate of candidates) {
+		if (!candidate) continue;
+		const total = candidate.totalTokens ?? candidate.total_tokens;
+		if (typeof total === "number" && Number.isFinite(total) && total >= 0) return total;
+	}
+	return undefined;
+}
 
 export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 	const adapter = null;
@@ -41,6 +83,13 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 				kind: "remote",
 				provider: "openrouter",
 				model: OPENROUTER_LAGUNA_S_MODEL,
+				adapter
+			};
+		case "openrouter-muse-spark":
+			return {
+				kind: "remote",
+				provider: "openrouter",
+				model: OPENROUTER_MUSE_SPARK_MODEL,
 				adapter
 			};
 		case "synth-cloud-laguna-s":
@@ -75,6 +124,7 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 	if (target.model === OPENROUTER_LUNA_MODEL || target.model.includes("kimi")) {
 		return "openrouter-luna";
 	}
+	if (target.model === OPENROUTER_MUSE_SPARK_MODEL) return "openrouter-muse-spark";
 	return "openrouter-laguna-s";
 }
 
@@ -130,12 +180,26 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 	const subagentIds = new Set(eventsToSubagents(events).map((agent) => agent.id));
 	let activeAssistantId: string | null = null;
 	let producedAssistantForTurn = false;
+	let compactedDuringTurn = false;
 
 	for (const event of events) {
 		const payload = event.payload ?? {};
 		if (event.eventKind === "run.started") {
 			activeAssistantId = null;
 			producedAssistantForTurn = false;
+			compactedDuringTurn = false;
+		}
+		if (event.eventKind === "thread/compacted") {
+			compactedDuringTurn = true;
+			continue;
+		}
+		// Agent commentary is segmented by concrete activity. Once a tool or
+		// approval begins, a later assistant delta is a new chronological block;
+		// keeping the prior draft active would hoist that new text above the tools
+		// that already ran. Rotating token-envelope ids are still coalesced as long
+		// as no activity boundary intervenes.
+		if (safeToolActivity(event) || event.eventKind.startsWith("approval.")) {
+			activeAssistantId = null;
 		}
 		const eventThreadId = typeof payload.threadId === "string"
 			? payload.threadId
@@ -179,18 +243,27 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 							: typeof payload.text === "string"
 								? payload.text
 						: "";
-			if (!content) continue;
+			const images = Array.isArray(payload.images)
+				? payload.images.flatMap((entry) => {
+					if (typeof entry !== "object" || entry === null) return [];
+					const image = entry as Record<string, unknown>;
+					if (typeof image.path !== "string" || typeof image.name !== "string" || typeof image.previewUrl !== "string") return [];
+					return [{ path: image.path, name: image.name, previewUrl: image.previewUrl }];
+				})
+				: undefined;
+			if (!content && !images?.length) continue;
 			if (!byId.has(messageId)) {
 				order.push(messageId);
 				byId.set(messageId, {
 					id: messageId,
 					role: isInternAgentMessage ? "assistant" : role,
 					body: content,
-					at: event.createdAt
+					at: event.createdAt,
+					images
 				});
 				} else {
-				const existing = byId.get(messageId)!;
-				byId.set(messageId, { ...existing, role, body: content || existing.body });
+					const existing = byId.get(messageId)!;
+					byId.set(messageId, { ...existing, role, body: content || existing.body, images: images ?? existing.images });
 				}
 				if (!isInternAgentMessage && role === "assistant") {
 					activeAssistantId = messageId;
@@ -273,7 +346,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 			event.eventKind === "run.failed" ||
 			event.eventKind === "run.cancelled"
 		) {
-			if (!producedAssistantForTurn) {
+			if (!producedAssistantForTurn && !compactedDuringTurn) {
 				const detail = terminalTurnDetail(event.payload ?? {});
 				const failureDetail = detail ? `: ${detail.replace(/[.!?]+$/, "")}.` : ".";
 				const message = event.eventKind === "run.failed"
@@ -287,6 +360,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 			}
 			activeAssistantId = null;
 			producedAssistantForTurn = false;
+			compactedDuringTurn = false;
 		}
 	}
 
@@ -531,17 +605,32 @@ function mcpToolActivity(
 		"synth_visuals.visual_archive": ["visual_id", "instance_id"],
 	};
 	const qualified = `${server}.${tool}`;
-	const fields = allowlisted[qualified];
-	if (!fields) return undefined;
+	const fields = allowlisted[qualified] ?? [
+		"operation",
+		"path",
+		"query",
+		"pattern",
+		"glob",
+		"container_id",
+		"optimizer_run_id",
+		"recipe_id",
+		"visual_id",
+		"title",
+		"status",
+		"limit"
+	];
 	const duration = typeof item.durationMs === "number" && Number.isFinite(item.durationMs)
 		? `${Math.max(0, Math.round(item.durationMs))}ms`
 		: undefined;
-	const argsLabel = compactToolArgs(args, fields);
+	const nestedArgs = objectValue(args.arguments) ?? {};
+	const argsLabel = [compactToolArgs(args, fields), compactToolArgs(nestedArgs, fields)]
+		.filter(Boolean)
+		.join(" · ") || undefined;
 	const artifactId = server === "synth_visuals" ? visualIdForTool(item, args, tool) : undefined;
 	const containerId = server === "synth_containers" ? containerIdForTool(item, args, tool) : undefined;
 	return {
 		key: `mcp:${id}`,
-		label: qualified,
+		label: [server, tool].filter(Boolean).join(".") || "Tool call",
 		detail: [argsLabel, duration].filter(Boolean).join(" · ") || undefined,
 		kind: artifactId ? "visual" : "working",
 		artifactId,
@@ -558,8 +647,6 @@ function safeToolActivity(event: RuntimeEvent): SafeToolActivity | undefined {
 	const tool = (stringField(item, "tool", "name", "toolName", "tool_name") ?? "").toLowerCase();
 	const args = nestedObject(item, "arguments", "args", "input") ?? nestedObject(payload, "arguments", "args", "input") ?? {};
 	const id = stringField(item, "id", "callId", "call_id") ?? `${event.eventKind}-${event.sequence}`;
-	const mcp = mcpToolActivity(item, args, id, itemType, tool);
-	if (mcp) return mcp;
 
 	if (event.eventKind === "command.execution" || itemType === "commandexecution") {
 		const raw = stringField(item, "command", "cmd") ?? stringField(payload, "command", "cmd");
@@ -588,7 +675,7 @@ function safeToolActivity(event: RuntimeEvent): SafeToolActivity | undefined {
 	if (["view_image", "viewimage"].includes(tool)) {
 		return { key: `view:${id}`, label: "Viewed image", path, kind: "working" };
 	}
-	return undefined;
+	return mcpToolActivity(item, args, id, itemType, tool);
 }
 
 function compactDuration(start: string | undefined, end: string): string {
@@ -760,10 +847,33 @@ export function eventsToLocalActivity(
 	const shownSubagentEnds = new Set<string>();
 	let runStartedAt: string | undefined;
 	let runActions = { commands: 0, reads: 0, writes: 0, searches: 0, tools: 0 };
+	let compactionMarkerAddedForRun = false;
+	let lastTokenTotal: number | undefined;
+	let openCompactionLine: LocalActivityLine | undefined;
 	const shownToolLines = new Map<string, LocalActivityLine>();
 	for (const event of events) {
 		if (event.eventKind === "approval.requested" && resolvedApprovalSequences.has(event.sequence)) continue;
 		const payload = event.payload ?? {};
+		if (
+			event.eventKind === "thread/tokenUsage/updated"
+			|| event.eventKind === "thread/token_usage/updated"
+			|| event.eventKind.toLowerCase() === "tokenusage/updated"
+		) {
+			const tokens = tokenTotalFromPayload(payload);
+			if (tokens != null) {
+				if (
+					openCompactionLine
+					&& openCompactionLine.tokensBefore != null
+					&& tokens < openCompactionLine.tokensBefore
+					&& (openCompactionLine.tokensAfter == null || tokens < openCompactionLine.tokensAfter)
+				) {
+					openCompactionLine.tokensAfter = tokens;
+					openCompactionLine.detail = contextCompactionTokenSummary(openCompactionLine.tokensBefore, tokens);
+				}
+				lastTokenTotal = tokens;
+			}
+			continue;
+		}
 		const item = eventItem(event);
 		const tool = collabTool(item);
 		if (tool && /spawn.?agent/.test(tool)) {
@@ -801,10 +911,24 @@ export function eventsToLocalActivity(
 			continue;
 		}
 		const explicit = typeof payload.messageId === "string" ? payload.messageId : null;
+		const messageText = event.eventKind.startsWith("message.")
+			? (typeof payload.delta === "string" ? payload.delta
+				: typeof payload.content === "string" ? payload.content
+					: typeof payload.text === "string" ? payload.text : "")
+			: "";
+		// Streaming adapters frequently rotate or omit message ids, and the
+		// aggregate message timestamp can be later than its first preamble delta.
+		// Resolve that delta by content before falling back to timestamps so tools
+		// emitted after the preamble attach *after* its bubble.
+		const contentMatchedAssistant = messageText
+			? messages.filter((message) => message.role === "assistant" && message.body.includes(messageText)).at(-1)?.id
+			: undefined;
 		const chronologicalAssistant = event.eventKind.startsWith("message.")
 			? messages.filter((message) => message.role === "assistant" && message.at <= event.createdAt).at(-1)?.id
 			: undefined;
-		const resolvedAssistant = explicit && assistantIds.includes(explicit) ? explicit : chronologicalAssistant;
+		const resolvedAssistant = explicit && assistantIds.includes(explicit)
+			? explicit
+			: contentMatchedAssistant ?? chronologicalAssistant;
 		if (resolvedAssistant) {
 			if (current === "__active__" && byMessage.__active__?.length) {
 				(byMessage[resolvedAssistant] ??= []).push(...byMessage.__active__);
@@ -819,12 +943,16 @@ export function eventsToLocalActivity(
 				: undefined;
 			current = followingAssistant?.id ?? "__active__";
 			shownToolLines.clear();
+			openCompactionLine = undefined;
 			continue;
 		}
 		if (event.eventKind === "run.started") {
 			runStartedAt = event.createdAt;
 			runActions = { commands: 0, reads: 0, writes: 0, searches: 0, tools: 0 };
+			compactionMarkerAddedForRun = false;
 			shownToolLines.clear();
+			// Keep openCompactionLine: model-switch compact finishes before the
+			// destination turn starts, and post-compact tokenUsage arrives after.
 			continue;
 		}
 		if (event.eventKind === "run.completed" || event.eventKind === "run.failed" || event.eventKind === "run.cancelled") {
@@ -847,6 +975,25 @@ export function eventsToLocalActivity(
 			runStartedAt = undefined;
 			continue;
 		}
+		if (event.eventKind === "thread/compacted") {
+			if (compactionMarkerAddedForRun) continue;
+			compactionMarkerAddedForRun = true;
+			const source = typeof payload.source === "string" ? payload.source.toLowerCase() : "automatic";
+			// Manual `/compact` is a discrete post-response action → render after
+			// the owning assistant bubble. Model-switch and automatic compaction
+			// happen before the continued turn's tools/text, so they stay in the
+			// chronological before-stream (tools must render *below* the divider).
+			const line: LocalActivityLine = {
+				id: `context-compaction-${event.sequence}`,
+				label: contextCompactionLabel(source),
+				placement: source === "manual" ? "after" : "before",
+				kind: "context_compaction",
+				tokensBefore: lastTokenTotal
+			};
+			(byMessage[current] ??= []).push(line);
+			openCompactionLine = line;
+			continue;
+		}
 		if (event.eventKind.startsWith("message.")) continue;
 		if (reasoningDisplay !== "none" && (event.eventKind === "agent.reasoning" || event.eventKind.startsWith("thought."))) {
 			const supplied =
@@ -866,6 +1013,7 @@ export function eventsToLocalActivity(
 					id: `activity-${event.sequence}`,
 					label,
 					detail: supplied,
+					placement: current === "__active__" ? undefined : "after",
 					kind: "thought",
 					reasoningDisplay
 				});
@@ -894,6 +1042,7 @@ export function eventsToLocalActivity(
 					label: safeTool.label,
 					detail: safeTool.detail,
 					path: safeTool.path,
+					placement: current === "__active__" ? undefined : "after",
 					kind: safeTool.kind,
 					artifactId: safeTool.artifactId,
 					containerId: safeTool.containerId,
@@ -917,6 +1066,7 @@ export function eventsToLocalActivity(
 		(byMessage[current] ??= []).push({
 			id: `activity-${event.sequence}`,
 			label,
+			placement: current === "__active__" ? undefined : "after",
 			approvalId: event.eventKind === "approval.requested"
 				? approvalKey(event) ?? `approval-${event.sequence}`
 				: undefined,
@@ -1143,6 +1293,8 @@ export function buildLandingState(args: {
 		loadedModel?: string | null;
 	} | null;
 	apiKeyConfigured?: boolean;
+	openrouterApiKeyConfigured?: boolean;
+	cloudBlockedReason?: string | null;
 }): LandingState {
 	const model = healthToModelStatus(args.health, args.laguna);
 	const chats: LocalChat[] = [];
@@ -1236,6 +1388,8 @@ export function buildLandingState(args: {
 		selectedTargetId: args.selectedTargetId,
 		internMode: args.health?.intern.mode,
 		apiKeyConfigured: args.apiKeyConfigured,
+		openrouterApiKeyConfigured: args.openrouterApiKeyConfigured ?? args.health?.openrouter.mode === "ready",
+		cloudBlockedReason: args.cloudBlockedReason ?? null,
 		composerEnabled: model.composerEnabled,
 		composerPlaceholder: model.composerPlaceholder
 	};

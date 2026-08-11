@@ -2,8 +2,8 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "./browser.fixture";
 
 async function openSettings(page: Page) {
-	await page.getByTestId("account-footer-trigger").click();
-	await page.getByTestId("settings").click();
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-menu-settings").click();
 }
 
 type LagunaPhase = "starting" | "loading" | "ready";
@@ -40,7 +40,24 @@ async function installLagunaFixture(page: Page, phase: LagunaPhase): Promise<voi
 		};
 	}, phase);
 	await page.reload();
-	await page.getByTestId("runtime-status").waitFor();
+	await page.getByTestId("titlebar").waitFor();
+}
+
+async function installConfiguredOpenRouter(page: Page): Promise<void> {
+	await page.addInitScript(() => {
+		window.synthConfig = {
+			get: async () => ({
+				configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod",
+				backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY",
+				apiKeyConfigured: false, workerKeyConfigured: false,
+				openrouterApiKeyConfigured: true
+			}),
+			update: async () => { throw new Error("unused"); },
+			listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
+			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
+			updateWorkspaceAccess: async () => ({ allowedRoots: [] })
+		};
+	});
 }
 
 test("native Laguna readiness overrides missing legacy runtime health", async ({ page }) => {
@@ -50,8 +67,7 @@ test("native Laguna readiness overrides missing legacy runtime health", async ({
 	await expect(page.getByTestId("composer-input")).toHaveAttribute("placeholder", "Ask Laguna something…");
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName(/Laguna XS 2\.1/);
 	await expect(page.getByTestId("composer-model")).not.toHaveAccessibleName(/offline|starting/i);
-	await expect(page.getByTestId("runtime-status")).toHaveAccessibleName("Local ready");
-	await expect(page.getByTestId("runtime-status")).not.toContainText(/Laguna·|\bOR\b|Intern|\d+\/\d+/);
+	await expect(page.getByTestId("runtime-status")).toHaveCount(0);
 });
 
 for (const phase of ["starting", "loading"] as const) {
@@ -67,6 +83,7 @@ for (const phase of ["starting", "loading"] as const) {
 }
 
 test("a blocked local startup does not trap remote or cloud target selection", async ({ page }) => {
+	await installConfiguredOpenRouter(page);
 	await installLagunaFixture(page, "starting");
 	await page.getByTestId("composer-model").click();
 
@@ -120,7 +137,7 @@ test("Settings offers and completes a real model-download bridge when weights ar
 	await page.reload();
 	await openSettings(page);
 	await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
-	await page.getByTestId("download-laguna-model").click();
+	await page.getByTestId("settings-page").getByRole("button", { name: "Download", exact: true }).click();
 	const locations = page.getByTestId("laguna-model-locations");
 	await expect(locations).toContainText("/models/poolside/Laguna-XS-2.1-NVFP4-mlx");
 	await expect(locations.getByText("In use")).toBeVisible();
@@ -128,12 +145,97 @@ test("Settings offers and completes a real model-download bridge when weights ar
 
 test("Settings identifies the exact running desktop build", async ({ page }) => {
 	await openSettings(page);
-	await page.getByRole("button", { name: "Runtime" }).click();
-	const identity = page.getByTestId("desktop-build-identity");
+	await page.getByRole("button", { name: "About" }).click();
+	const identity = page.getByTestId("about-build-identity");
 	await expect(identity).toContainText("Synth Desktop · browser");
 	await expect(identity).toContainText("source vite · build vite");
-	await expect(identity).toContainText("PID 0 · browser");
 	await expect(page).toHaveTitle("Synth Desktop · browser");
+});
+
+test("Models lists only credentialed remote providers with pricing", async ({ page }) => {
+	await page.addInitScript(() => {
+		window.synthConfig = {
+			get: async () => ({ configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod", backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY", apiKeyConfigured: true, workerKeyConfigured: false, openrouterApiKeyConfigured: true }),
+			update: async () => { throw new Error("unused"); }, listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
+			getWorkspaceAccess: async () => ({ allowedRoots: [] }), updateWorkspaceAccess: async () => ({ allowedRoots: [] })
+		};
+		window.synthTariffs = {
+			catalog: async () => [
+				{ provider: "openrouter", modelId: "openai/gpt-5.6-luna", inputUsdPerM: 0.20, outputUsdPerM: 1.20, cachedInputUsdPerM: 0.02, cacheWriteUsdPerM: 0.25 },
+				{ provider: "openrouter", modelId: "poolside/laguna-s-2.1", inputUsdPerM: 0.10, outputUsdPerM: 0.20, cachedInputUsdPerM: null, cacheWriteUsdPerM: null },
+				{ provider: "openrouter", modelId: "meta/muse-spark-1.2", inputUsdPerM: 1.25, outputUsdPerM: 4.25, cachedInputUsdPerM: 0.15, cacheWriteUsdPerM: null }
+			]
+		};
+	});
+	await page.reload();
+	await openSettings(page);
+	await page.getByRole("button", { name: "Models" }).click();
+	const models = page.getByTestId("authorized-models");
+	const luna = models.getByTestId("authorized-model-openrouter-luna");
+	await expect(luna).toContainText("$0.20");
+	await expect(luna).toContainText("$1.20");
+	await expect(luna).toContainText("Cached read / 1M$0.02");
+	await expect(luna).toContainText("Cache write / 1M$0.25");
+	await expect(models.getByTestId("authorized-model-openrouter-laguna-s")).toContainText("$0.20");
+	await expect(models.getByTestId("authorized-model-openrouter-muse-spark")).toContainText("$4.25");
+	await expect(models.getByTestId("authorized-model-synth-cloud-laguna-s")).toContainText("Plan");
+	const marks = models.locator(".authorized-model-mark");
+	await expect(marks).toHaveCount(4);
+	const markBoxes = await marks.evaluateAll((elements) => elements.map((element) => {
+		const box = element.getBoundingClientRect();
+		return { width: box.width, height: box.height, centerX: box.left + box.width / 2 };
+	}));
+	for (const box of markBoxes) {
+		expect(box.width, "authorized-provider logos stay visually quiet").toBeLessThanOrEqual(22);
+		expect(box.height, "authorized-provider logos stay visually quiet").toBeLessThanOrEqual(22);
+	}
+	expect(Math.max(...markBoxes.map((box) => box.centerX)) - Math.min(...markBoxes.map((box) => box.centerX)), "provider marks share one centerline").toBeLessThanOrEqual(1);
+	const slugStyles = await models.locator(".authorized-model-identity code").evaluateAll((elements) =>
+		elements.map((element) => {
+			const style = getComputedStyle(element);
+			return { fontSize: Number.parseFloat(style.fontSize), family: style.fontFamily };
+		})
+	);
+	expect(slugStyles).toHaveLength(4);
+	for (const style of slugStyles) {
+		expect(style.fontSize, "model slugs stay subordinate to provider labels").toBeLessThanOrEqual(10);
+		expect(style.family).toMatch(/SFMono|Menlo|Monaco|Consolas|monospace/i);
+	}
+});
+
+test("About offers the download page when a newer release exists, and stays quiet otherwise", async ({ page }) => {
+	await page.addInitScript(() => {
+		(window as unknown as { __updateOpens: number }).__updateOpens = 0;
+		window.synthUpdates = {
+			status: async () => ({
+				currentVersion: "0.1.0",
+				channel: "stable",
+				latestVersion: "0.1.2",
+				updateAvailable: true
+			}),
+			openDownload: async () => {
+				(window as unknown as { __updateOpens: number }).__updateOpens += 1;
+			}
+		};
+	});
+	await page.reload();
+	await openSettings(page);
+	await page.getByRole("button", { name: "About" }).click();
+	const identity = page.getByTestId("about-build-identity");
+	await expect(identity).toContainText("· stable ·");
+	const affordance = page.getByTestId("about-update-available");
+	await expect(affordance).toHaveText("Update available · v0.1.2");
+	await affordance.click();
+	await expect
+		.poll(() => page.evaluate(() => (window as unknown as { __updateOpens: number }).__updateOpens))
+		.toBe(1);
+});
+
+test("About shows no update affordance when the release is current", async ({ page }) => {
+	await openSettings(page);
+	await page.getByRole("button", { name: "About" }).click();
+	await expect(page.getByTestId("about-build-identity")).toBeVisible();
+	await expect(page.getByTestId("about-update-available")).toHaveCount(0);
 });
 
 test("Settings can force and reset a model multi-agent preset", async ({ page }) => {
@@ -360,6 +462,7 @@ test("Rust Inventory navigation never replaces native Codex sessions with legacy
 });
 
 test("changing providers mid-chat stays in the thread and switches on send", async ({ page }) => {
+	await installConfiguredOpenRouter(page);
 	await page.addInitScript(() => {
 		const starts: Array<Record<string, unknown>> = [];
 		const turns: Array<{ sessionId: string; prompt: string; effort?: string }> = [];
@@ -379,11 +482,11 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 			},
 			startTurn: async (sessionId: string, prompt: string, effort?: string) => {
 				turns.push({ sessionId, prompt, effort });
-				queueMicrotask(() => {
+				setTimeout(() => {
 					for (const listener of listeners) {
 						listener({ sessionId, method: "turn/completed", params: { turn: { status: "completed" } } });
 					}
-				});
+				}, 0);
 				return { sessionId, threadId: "local-thread", turnId: `turn-${turns.length}` };
 			},
 			interrupt: async () => undefined,
@@ -397,15 +500,16 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 	await installLagunaFixture(page, "ready");
 	await page.getByTestId("local-chat-bound-local").click();
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName("Model: Laguna XS 2.1");
-	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Thinking: On");
+	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Thinking: Max");
 	await page.getByTestId("reasoning-effort-select").click();
 	await expect(page.getByTestId("reasoning-effort-menu").getByRole("option")).toHaveCount(2);
-	await page.getByTestId("reasoning-effort-menu").getByRole("option", { name: "Off", exact: true }).click();
+	await page.getByTestId("reasoning-effort-menu").getByRole("option", { name: "Minimal", exact: true }).click();
 	await page.getByTestId("composer-input").fill("hello Laguna");
 	await page.getByTestId("composer-send").click();
 	await expect.poll(() => page.evaluate(() =>
 		(window as typeof window & { __providerTurns: Array<{ effort?: string }> }).__providerTurns.at(-1)?.effort
 	)).toBe("none");
+	await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0);
 	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.models.local-laguna.reasoning"))).toBe("none");
 	await page.getByTestId("composer-model").click();
 	await page.getByTestId("composer-model-option-openrouter-luna").click();
@@ -421,34 +525,30 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Reasoning effort: High");
 	await page.getByTestId("composer-input").fill("hello Luna");
 	await page.getByTestId("composer-send").click();
-	const starts = await page.evaluate(() => (window as typeof window & { __providerStarts: Array<Record<string, unknown>> }).__providerStarts);
-	const turns = await page.evaluate(() => (window as typeof window & { __providerTurns: Array<{ sessionId: string; prompt: string; effort?: string }> }).__providerTurns);
-	expect(starts.at(-1)).toMatchObject({
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __providerStarts: Array<Record<string, unknown>> }).__providerStarts.at(-1))).toMatchObject({
 		sessionId: "bound-local",
 		providerName: "openrouter",
 		model: "openai/gpt-5.6-luna",
 		threadId: "local-thread"
 	});
-	expect(turns.at(-1)).toMatchObject({ sessionId: "bound-local", prompt: "hello Luna", effort: "high" });
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __providerTurns: Array<{ sessionId: string; prompt: string; effort?: string }> }).__providerTurns.at(-1))).toMatchObject({ sessionId: "bound-local", prompt: "hello Luna", effort: "high" });
 	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.reasoningEffort"))).toBe("high");
 
 	await page.getByTestId("composer-model").click();
 	await page.getByTestId("composer-model-option-openrouter-laguna-s").click();
 	await expect(page.getByTestId("chat-transcript")).toBeVisible();
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName("Model: Laguna S 2.1");
-	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Thinking: On");
+	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Thinking: Max");
 	await page.getByTestId("reasoning-effort-select").click();
-	await page.getByTestId("reasoning-effort-menu").getByRole("option", { name: "Off", exact: true }).click();
+	await page.getByTestId("reasoning-effort-menu").getByRole("option", { name: "None", exact: true }).click();
 	await page.getByTestId("composer-input").fill("hello Laguna S");
 	await page.getByTestId("composer-send").click();
-	const lagunaStarts = await page.evaluate(() => (window as typeof window & { __providerStarts: Array<Record<string, unknown>> }).__providerStarts);
-	const lagunaTurns = await page.evaluate(() => (window as typeof window & { __providerTurns: Array<{ prompt: string; effort?: string }> }).__providerTurns);
-	expect(lagunaStarts.at(-1)).toMatchObject({
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __providerStarts: Array<Record<string, unknown>> }).__providerStarts.at(-1))).toMatchObject({
 		sessionId: "bound-local",
 		providerName: "openrouter",
 		model: "poolside/laguna-s-2.1"
 	});
-	expect(lagunaTurns.at(-1)).toMatchObject({ prompt: "hello Laguna S", effort: "none" });
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __providerTurns: Array<{ prompt: string; effort?: string }> }).__providerTurns.at(-1))).toMatchObject({ prompt: "hello Laguna S", effort: "none" });
 	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.models.openrouter-laguna-s.reasoning"))).toBe("none");
 });
 
@@ -633,6 +733,9 @@ test("native Codex deltas form one readable message with working and stop state"
 		// Those ids must not turn one assistant response into many block rows.
 		send("item/agentMessage/delta", { itemId: "token-envelope-1", delta: " One" });
 		send("item/agentMessage/delta", { itemId: "token-envelope-2", delta: " response." });
+		// Commentary is a preamble: a tool that follows it must render below it,
+		// never be hoisted above the text when activity is grouped.
+		send("item/started", { item: { id: "post-preamble-command", type: "commandExecution", command: "pwd" } });
 		send("item/reasoning/delta", { delta: "Checking the relevant " });
 		send("item/reasoning/delta", { delta: "renderer state." });
 		send("remoteControl/status/changed", { status: "connected" });
@@ -642,17 +745,27 @@ test("native Codex deltas form one readable message with working and stop state"
 
 	const transcript = page.getByTestId("chat-transcript");
 	await expect(transcript.locator(".local-assistant")).toHaveCount(1);
-	await expect(transcript.locator(".local-assistant")).toHaveText("Fragmented draft\nstill streaming. One response.");
-	await expect(transcript.locator(".local-assistant p")).toHaveCSS("white-space", "pre-wrap");
+	const assistantText = transcript.locator(".local-assistant p");
+	await expect(assistantText).toHaveText("Fragmented draft\nstill streaming. One response.");
+	await expect(assistantText).toHaveCSS("white-space", "pre-wrap");
 	await expect(page.getByTestId("model-working")).toContainText("Working…");
 	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
+	const postPreambleCommand = transcript.locator(".command-activity").filter({ hasText: "pwd" });
+	await expect(postPreambleCommand).toBeVisible();
+	expect((await postPreambleCommand.boundingBox())!.y).toBeGreaterThan((await assistantText.boundingBox())!.y);
 	const thought = transcript.getByRole("button", { name: /Thought/ });
 	await expect(thought).toBeVisible();
 	await expect(thought).toHaveAttribute("aria-expanded", "false");
+	const thoughtDisclosure = thought.locator("..");
+	await expect(thoughtDisclosure).toHaveCSS("border-top-width", "0px");
+	await expect(thoughtDisclosure).toHaveCSS("padding-top", "0px");
+	await expect(thoughtDisclosure.locator(".local-activity-wave")).toHaveCount(0);
+	expect((await thoughtDisclosure.boundingBox())?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(48);
 	await expect(transcript.getByTestId(/activity-detail-/)).toHaveCount(0);
 	await thought.click();
 	await expect(thought).toHaveAttribute("aria-expanded", "true");
 	await expect(transcript).toContainText("Checking the relevant renderer state.");
+	await expect(thoughtDisclosure.locator(".local-activity-detail")).toHaveCSS("font-family", /-apple-system|BlinkMacSystemFont|system-ui/);
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitConversationCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitConversationCodex;
@@ -670,9 +783,9 @@ test("native Codex deltas form one readable message with working and stop state"
 			}
 		});
 	});
-	await expect(transcript.locator(".local-assistant")).toHaveCount(1);
-	await expect(transcript.locator(".local-assistant")).toHaveText("One correct final answer.\nWith preserved spacing.");
-	await expect(transcript).not.toContainText("Fragmented draft");
+	await expect(transcript.locator(".local-assistant")).toHaveCount(2);
+	await expect(transcript.locator(".local-assistant p").last()).toHaveText("One correct final answer.\nWith preserved spacing.");
+	await expect(transcript.locator(".local-assistant p").first()).toContainText("Fragmented draft");
 	await expect(transcript).not.toContainText("remoteControl/status/changed");
 	await expect(transcript).not.toContainText("model-metadata");
 	await expect(transcript).not.toContainText("account/rateLimits/updated");
@@ -720,8 +833,8 @@ test("native Codex deltas form one readable message with working and stop state"
 		send("Replacement stream with one paragraph.");
 		send("Replacement stream with one paragraph.");
 	});
-	await expect(transcript.locator(".local-assistant")).toHaveCount(2);
-	await expect(transcript.locator(".local-assistant").last()).toHaveText("Replacement stream with one paragraph.");
+	await expect(transcript.locator(".local-assistant")).toHaveCount(3);
+	await expect(transcript.locator(".local-assistant p").last()).toHaveText("Replacement stream with one paragraph.");
 	const finalTurnOrder = await transcript.locator(".local-turn").evaluateAll((turns) => turns.slice(-2).map((turn) => ({
 		role: turn.classList.contains("local-turn-user") ? "user" : turn.classList.contains("local-turn-assistant") ? "assistant" : "system",
 		text: turn.textContent ?? ""
@@ -735,13 +848,13 @@ test("native Codex deltas form one readable message with working and stop state"
 	expect((await secondCommand.boundingBox())!.y).toBeGreaterThan((await secondUser.boundingBox())!.y);
 	await page.getByRole("button", { name: "Stop generating" }).click();
 	expect(await page.evaluate(() => (window as typeof window & { __conversationInterrupts: () => number }).__conversationInterrupts())).toBe(1);
-	await expect(page.getByTestId("inference-rail")).toBeVisible();
+	await expect(page.getByTestId("workbench-side-panel")).toBeVisible();
 	await expect(page.getByTestId("inference-panel")).toBeVisible();
-	await expect(page.getByText("MLX sidecar", { exact: true })).toBeVisible();
+	await expect(page.getByTestId("workbench-side-tab-inference")).toHaveAttribute("aria-selected", "true");
 	await page.getByTestId("toggle-inference-rail").click();
-	await expect(page.getByTestId("inference-rail")).toBeHidden();
+	await expect(page.getByTestId("workbench-side-panel")).toBeHidden();
 	await page.getByTestId("toggle-inference-rail").click();
-	await expect(page.getByTestId("inference-rail")).toBeVisible();
+	await expect(page.getByTestId("workbench-side-panel")).toBeVisible();
 	const inferenceGeometry = await page.getByTestId("inference-panel").evaluate((panel) => {
 		const rail = panel.parentElement!.getBoundingClientRect();
 		const panelRect = panel.getBoundingClientRect();
@@ -790,11 +903,145 @@ test("closed-model reasoning renders only a provider summary disclosure", async 
 	const transcript = page.getByTestId("chat-transcript");
 	const summary = transcript.getByRole("button", { name: /Reasoning summary/ });
 	await expect(summary).toBeVisible();
-	await expect(summary).toContainText("Provider summary");
+	await expect(summary).toContainText("Reasoning summary");
 	await expect(transcript.getByRole("button", { name: /Thought/ })).toHaveCount(0);
 	await expect(transcript.getByTestId(/activity-detail-/)).toHaveCount(0);
 	await summary.click();
 	await expect(transcript).toContainText("Checked the workspace boundary.");
+});
+
+test("manual XS compaction resumes the thread and renders success without an empty-turn error", async ({ page }) => {
+	await page.addInitScript(() => {
+		let listener: ((event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) | undefined;
+		const testWindow = window as typeof window & {
+			__emitCompactCodex?: typeof listener;
+			__compactRequest?: Record<string, unknown>;
+			synthCodex?: unknown;
+		};
+		testWindow.synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId: "compact-session", threadId: "thread-compact", workspace: "/workspaces/default",
+				model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
+				providerTitle: "Laguna XS", baseUrl: "http://127.0.0.1:7333", status: "ready"
+			}],
+			start: async () => ({ sessionId: "compact-session", threadId: "thread-compact" }),
+			startTurn: async () => ({ sessionId: "compact-session", threadId: "thread-compact", turnId: "turn-compact" }),
+			compact: async (request: Record<string, unknown>) => { testWindow.__compactRequest = request; },
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: (next: typeof listener) => {
+				listener = next;
+				testWindow.__emitCompactCodex = next;
+				return () => { listener = undefined; };
+			}
+		};
+	});
+	await installLagunaFixture(page, "ready");
+	await page.getByTestId("local-chat-compact-session").click();
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCompactCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCompactCodex;
+		emit({ sessionId: "compact-session", method: "item/completed", params: { item: { id: "answer-before-compact", type: "agentMessage", text: "BEFORE_COMPACT_OK" } } });
+	});
+	await page.getByTestId("composer-input").fill("/compact");
+	await page.getByRole("option", { name: /Compact context/ }).click();
+	await expect.poll(() => page.evaluate(() => Boolean((window as typeof window & { __compactRequest?: unknown }).__compactRequest))).toBe(true);
+	expect(await page.evaluate(() => (window as typeof window & { __compactRequest: { threadId?: string } }).__compactRequest.threadId)).toBe("thread-compact");
+
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCompactCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCompactCodex;
+		emit({ sessionId: "compact-session", method: "turn/started", params: { turn: { id: "turn-compact" } } });
+		emit({ sessionId: "compact-session", method: "item/completed", params: { item: { id: "compact-item", type: "contextCompaction" } } });
+		emit({ sessionId: "compact-session", method: "thread/compacted", params: { threadId: "thread-compact" } });
+		emit({ sessionId: "compact-session", method: "turn/completed", params: { turn: { id: "turn-compact", status: "completed" } } });
+	});
+	const transcript = page.getByTestId("chat-transcript");
+	await expect(transcript).toContainText("Context compacted");
+	await expect(transcript.locator(".context-compaction-divider")).toHaveCount(1);
+	await expect(transcript).not.toContainText("The provider ended the turn without a response");
+	const responseBox = await transcript.locator(".local-assistant", { hasText: "BEFORE_COMPACT_OK" }).boundingBox();
+	const markerBox = await transcript.locator(".context-compaction-divider").boundingBox();
+	expect(responseBox).not.toBeNull();
+	expect(markerBox).not.toBeNull();
+	expect(markerBox!.y).toBeGreaterThan(responseBox!.y + responseBox!.height - 1);
+});
+
+test("model-switch compaction renders above the continued turn's tool calls", async ({ page }) => {
+	await page.addInitScript(() => {
+		let listener: ((event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) | undefined;
+		const testWindow = window as typeof window & {
+			__emitSwitchCompactCodex?: typeof listener;
+			synthCodex?: unknown;
+		};
+		testWindow.synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId: "switch-compact-session", threadId: "thread-switch-compact", workspace: "/workspaces/default",
+				model: "poolside/laguna-s-2.1", providerName: "openrouter",
+				providerTitle: "Laguna S", baseUrl: "https://openrouter.ai/api/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId: "switch-compact-session", threadId: "thread-switch-compact" }),
+			startTurn: async () => ({ sessionId: "switch-compact-session", threadId: "thread-switch-compact", turnId: "turn-after-switch" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: (next: typeof listener) => {
+				listener = next;
+				testWindow.__emitSwitchCompactCodex = next;
+				return () => { listener = undefined; };
+			}
+		};
+	});
+	await installLagunaFixture(page, "ready");
+	await page.getByTestId("local-chat-switch-compact-session").click();
+	await page.getByTestId("activity-mode-menu-trigger").click();
+	await page.getByTestId("activity-mode-option-detailed").click();
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitSwitchCompactCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitSwitchCompactCodex;
+		const send = (method: string, params: Record<string, unknown>) => emit({ sessionId: "switch-compact-session", method, params });
+		send("turn/started", { turn: { id: "turn-after-switch" } });
+		send("thread/tokenUsage/updated", {
+			threadId: "thread-switch-compact",
+			tokenUsage: { last: { totalTokens: 271_840 }, total: { totalTokens: 271_840 }, modelContextWindow: 258_400 }
+		});
+		send("thread/compacted", { threadId: "thread-switch-compact", source: "model_switch" });
+		send("thread/tokenUsage/updated", {
+			threadId: "thread-switch-compact",
+			tokenUsage: { last: { totalTokens: 37_492 }, total: { totalTokens: 37_492 }, modelContextWindow: 258_400 }
+		});
+		send("thread/tokenUsage/updated", {
+			threadId: "thread-switch-compact",
+			tokenUsage: { last: { totalTokens: 7_385 }, total: { totalTokens: 7_385 }, modelContextWindow: 258_400 }
+		});
+		send("item/started", {
+			item: {
+				id: "probe-1",
+				type: "mcpToolCall",
+				server: "synth_containers",
+				tool: "container_probe",
+				status: "inProgress",
+				arguments: { container_id: "craftax-local" }
+			}
+		});
+		send("item/completed", {
+			item: { id: "answer-after-switch", type: "agentMessage", text: "Picking up after the model switch." }
+		});
+	});
+	const transcript = page.getByTestId("chat-transcript");
+	await expect(transcript).toContainText("Model switch - context compacted");
+	const compactToggle = transcript.getByTestId(/activity-toggle-context-compaction-/);
+	await expect(compactToggle).toBeVisible();
+	await compactToggle.click();
+	await expect(transcript.getByTestId(/activity-detail-context-compaction-/)).toHaveText("0.27M → 0.01M");
+	await expect(transcript.locator("code.mcp-activity-name").getByText("synth_containers.container_probe")).toBeVisible();
+	await expect(transcript).toContainText("Picking up after the model switch.");
+	const markerBox = await transcript.locator(".context-compaction-divider").boundingBox();
+	const toolBox = await transcript.locator("code.mcp-activity-name").getByText("synth_containers.container_probe").boundingBox();
+	const responseBox = await transcript.locator(".local-assistant", { hasText: "Picking up after the model switch." }).boundingBox();
+	expect(markerBox).not.toBeNull();
+	expect(toolBox).not.toBeNull();
+	expect(responseBox).not.toBeNull();
+	expect(toolBox!.y).toBeGreaterThan(markerBox!.y + markerBox!.height - 1);
+	expect(responseBox!.y).toBeGreaterThan(toolBox!.y);
 });
 
 test("native Codex tool use renders safe Poolside-style rows and a compact run summary", async ({ page }) => {
@@ -874,7 +1121,7 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 		return { separated: activity.right + 4 <= outputs.left, contained: activity.top >= bounds.top && outputs.bottom <= bounds.bottom };
 	});
 	expect(toolbarGeometry).toEqual({ separated: true, contained: true });
-	await expect(transcript.getByTestId("resource-shelf")).toHaveCount(0);
+	await expect(page.getByTestId("resource-shelf")).toHaveCount(0);
 	await containerOpen.click();
 	const containerPane = page.getByTestId("container-pane");
 	await expect(containerPane).toBeVisible();
@@ -907,6 +1154,7 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 		const emit = (window as typeof window & { __emitToolCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitToolCodex;
 		const send = (method: string, params: Record<string, unknown>) => emit({ sessionId: "tool-session", method, params });
 		send("item/agentMessage/delta", { delta: "I inspected the relevant files." });
+		send("item/reasoning/delta", { delta: "Checking the first command." });
 		send("item/completed", { item: { id: "container-1", type: "mcpToolCall", server: "synth_containers", tool: "container_probe", status: "completed", durationMs: 14, arguments: { container_id: "craftax-local" }, result: { secret: "RAW_RESULT_SECRET" } } });
 		send("item/started", { item: { id: "visual-1", type: "dynamicToolCall", server: "synth_visuals", tool: "visual_create", status: "inProgress", arguments: { template_id: "craftax.rollout.v1", title: "Craftax rollout", props: { token: "HIDDEN_PROP" } } } });
 		send("item/completed", { item: { id: "visual-1", type: "dynamicToolCall", server: "synth_visuals", tool: "visual_create", status: "failed", durationMs: 2, arguments: { template_id: "craftax.rollout.v1", title: "Craftax rollout" }, error: "RAW_ERROR_SECRET" } });
@@ -917,10 +1165,18 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 		send("item/completed", { item: { id: "read-1", type: "mcpToolCall", tool: "read_file", arguments: { path: "/work/src/App.tsx" }, output: "file contents must stay hidden" } });
 		send("item/completed", { item: { id: "search-1", type: "mcpToolCall", tool: "web_search", arguments: { query: "Codex app-server events" } } });
 		send("item/completed", { item: { id: "unsafe-1", type: "mcpToolCall", tool: "dump_environment", output: "DO_NOT_RENDER_SECRET" } });
+		send("item/agentMessage/delta", { itemId: "post-tools-preamble", delta: "I am continuing after the tools." });
 		send("turn/completed", { turn: { id: "turn-tools" } });
 	});
 
 	await expect(transcript.getByText("Run Shell Command")).toBeVisible();
+	const preamble = transcript.locator(".local-assistant p").filter({ hasText: "I inspected the relevant files." });
+	const preambleTurn = preamble.locator("xpath=ancestor::div[contains(@class, 'local-turn')]");
+	const postPreambleTool = preambleTurn.locator(".command-activity").filter({ hasText: "OPENROUTER_API_KEY=[redacted]" });
+	expect((await postPreambleTool.boundingBox())!.y).toBeGreaterThan((await preamble.boundingBox())!.y);
+	const laterPreamble = transcript.locator(".local-assistant p").filter({ hasText: "I am continuing after the tools." });
+	await expect(laterPreamble).toBeVisible();
+	expect((await laterPreamble.boundingBox())!.y).toBeGreaterThan((await postPreambleTool.boundingBox())!.y);
 	await expect(transcript.getByText(/OPENROUTER_API_KEY=\[redacted\] rg/)).toBeVisible();
 	await expect(transcript.getByText("App.tsx")).toBeVisible();
 	await expect(transcript.getByText("Searched the web")).toBeVisible();
@@ -930,11 +1186,11 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(transcript.getByText("Failed")).toBeVisible();
 	await expect(transcript).toContainText("template id craftax.rollout.v1 · title Craftax rollout · 2ms");
 	await transcript.getByTestId("resource-shelf-trigger").click();
-	const resourceShelf = transcript.getByTestId("resource-shelf");
+	const resourceShelf = page.getByTestId("resource-shelf");
 	await expect(resourceShelf).toContainText("Containers");
 	await expect(resourceShelf).toContainText("Visuals");
 	await expect(resourceShelf).toContainText("Reward comparison");
-	await resourceShelf.getByRole("button", { name: "Close outputs panel" }).click();
+	await page.getByRole("button", { name: "Close side panel" }).click();
 	const visualOpen = transcript.getByTestId("tool-visual-open-vis-reward-comparison");
 	await expect(visualOpen).toBeVisible();
 	await visualOpen.click();
@@ -942,7 +1198,14 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(visualPane).toBeVisible();
 	await expect(visualPane).toContainText("Reward comparison");
 	await expect(visualPane.getByTestId("visual-craftax-eval-matrix")).toBeVisible();
-	await expect(transcript.getByText(/Worked .*ran 1 command, read 1 file, searched once, used 3 tools/)).toBeVisible();
+	await page.getByTestId("activity-mode-menu-trigger").click();
+	await page.getByTestId("activity-mode-option-grouped").click();
+	const groupedWithContext = transcript.locator(".activity-group").first();
+	await groupedWithContext.locator(".activity-group-toggle").click();
+	const contextualStep = groupedWithContext.locator(".activity-group-step.has-context").first();
+	expect((await contextualStep.locator(".activity-group-action").boundingBox())!.y)
+		.toBeGreaterThanOrEqual((await contextualStep.locator(".activity-group-context").boundingBox())!.y);
+	await expect(transcript.getByText(/Worked .*ran 1 command, read 1 file, searched once, used 4 tools/)).toBeVisible();
 	await expect(transcript).not.toContainText("super-secret-value");
 	await expect(transcript).not.toContainText("raw command output");
 	await expect(transcript).not.toContainText("file contents must stay hidden");
@@ -987,18 +1250,20 @@ test("approval modes configure new native sessions and pending requests resolve 
 
 	await page.getByTestId("approval-mode-select").click();
 	const menu = page.getByTestId("approval-mode-menu");
-	await expect(menu.getByRole("option")).toHaveCount(3);
+	await expect(menu.getByRole("option")).toHaveCount(6);
 	await expect(menu).toContainText("Always ask");
-	await expect(menu).toContainText("Accept edits");
-	await expect(menu).toContainText("Allow all");
-	await menu.getByRole("option", { name: /Accept edits/ }).click();
+	await expect(menu).toContainText("Ask for risky actions");
+	await expect(menu).toContainText("Full system access");
+	await menu.getByRole("option", { name: /Ask for risky actions/ }).click();
+	await menu.getByRole("option", { name: /Full system access/ }).click();
 	await page.getByTestId("composer-input").fill("check approvals");
 	await page.getByTestId("composer-send").click();
-	await expect(page.getByTestId("approval-mode-select")).toContainText("Accept edits");
+	await expect(page.getByTestId("approval-mode-select")).toHaveText("RiskyFull");
+	await expect(page.getByTestId("approval-mode-select")).toHaveAttribute("aria-label", "Permissions: Ask for risky actions; Full system access");
 
 	const started = await page.evaluate(() => (window as typeof window & { __approvalStarted: () => Record<string, unknown> }).__approvalStarted());
 	expect(started?.approvalPolicy).toBe("on-request");
-	expect(started?.sandbox).toBe("workspace-write");
+	expect(started?.sandbox).toBe("danger-full-access");
 	const sessionId = String(started?.sessionId);
 	await page.evaluate((id) => {
 		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({
@@ -1067,7 +1332,7 @@ test("a recent folder can create and attach to a conversation from the landing c
 	await installLagunaFixture(page, "ready");
 
 	await page.getByTestId("composer-slash-btn").click();
-	await page.getByRole("option", { name: /Workspace/ }).click();
+	await page.getByTestId("slash-command-item-workspace").click();
 	const addFolder = page.getByTestId("workspace-scope-menu").getByRole("menuitem", { name: "Add folder…" });
 	await expect(addFolder).toBeEnabled();
 	const recentFolder = page.getByRole("menuitem", { name: /Documents\/GitHub/ });

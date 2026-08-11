@@ -18,12 +18,14 @@ function read(rel) {
 	return readFileSync(join(renderer, rel), "utf8");
 }
 
-test("titlebar Account and Models are wired; Account menu and Expand chrome are gone", () => {
+test("titlebar is trimmed; account entry lives in the sidebar footer", () => {
 	const app = read("App.tsx");
 	assert.doesNotMatch(app, /Account — stub/);
-	assert.match(app, /data-testid="open-account-settings"/);
+	assert.doesNotMatch(app, /data-testid="open-account-settings"/);
+	assert.doesNotMatch(app, /data-testid="open-models-settings"/);
+	assert.doesNotMatch(app, /data-testid="runtime-status"/);
+	assert.doesNotMatch(app, /avatar-btn/);
 	assert.match(app, /setView\(\{ kind: "settings", section: "account" \}\)/);
-	assert.match(app, /data-testid="open-models-settings"/);
 	assert.doesNotMatch(app, /Account menu — stub/);
 	assert.doesNotMatch(app, /Downloads — stub/);
 	assert.doesNotMatch(app, /Expand — stub/);
@@ -59,10 +61,13 @@ test("design debt: CloudDesk leave-safe is projection-driven from AsyncInternPin
 	assert.ok(!desk.includes("const leaveSafe = !isSync"));
 });
 
-test("CloudDesk unknown actions report unavailable without theater copy", () => {
+test("App carries no stub copy and no mounted CloudDesk route", () => {
 	const app = read("App.tsx");
-	assert.match(app, /showToast\(`\$\{label\} is not available`\)/);
 	assert.ok(!/\bstub\b/i.test(app));
+	// v0.1 removal contract: CloudDesk is the Intern surface and stays unmounted.
+	// Its unknown-action honesty was App's `onCloudAction` toast; that handler
+	// goes with the route and returns with it in v0.2, so nothing asserts it now.
+	assert.ok(!/<CloudDesk\b/.test(app));
 });
 
 test("Async Intern Respond opens an intervention control instead of a stub toast", () => {
@@ -81,12 +86,9 @@ test("design debt: agent-authored analysis shell normalizes persisted type-block
 test("composer approval policy control is wired and test-addressable", () => {
 	const composer = read("components/Composer.tsx");
 	assert.match(composer, /className="permission-select"/);
-	const block = composer.slice(
-		composer.indexOf('className="permission-select"'),
-		composer.indexOf('className="permission-select"') + 320
-	);
-	assert.ok(block.includes("onClick"));
-	assert.ok(block.includes('data-testid="approval-mode-select"'));
+	const triggerLine = composer.split("\n").find((line) => line.includes('className="permission-select"')) ?? "";
+	assert.ok(triggerLine.includes("onClick="));
+	assert.ok(triggerLine.includes('data-testid="approval-mode-select"'));
 	assert.match(composer, /data-testid="approval-mode-menu"/);
 });
 
@@ -124,9 +126,31 @@ test("intended design: styles must not retain a LoRA picker affordance", () => {
 	assert.ok(!styles.includes(".is-lora"));
 });
 
-test("intended design: Playwright workers use isolated renderer ports", () => {
+test("intended design: Playwright workers isolate renderer ports and Vite caches", () => {
 	const fixture = readFileSync(join(appRoot, "tests/playwright/browser.fixture.ts"), "utf8");
+	const viteConfig = readFileSync(join(appRoot, "vite.config.ts"), "utf8");
 	assert.ok(!fixture.includes("127.0.0.1:1420"));
 	assert.match(fixture, /reserveLoopbackPort/);
 	assert.match(fixture, /--strictPort/);
+	assert.match(fixture, /SYNTH_DESKTOP_VITE_CACHE_DIR: cacheDir/);
+	assert.match(viteConfig, /cacheDir: process\.env\.SYNTH_DESKTOP_VITE_CACHE_DIR/);
+});
+
+test("Codex thread compaction uses the native app glyph and divider", () => {
+	const transcript = read("components/ChatTranscript.tsx");
+	const sessionView = read("runtime/sessionView.ts");
+	assert.match(sessionView, /event\.eventKind === "thread\/compacted"/);
+	assert.match(sessionView, /kind: "context_compaction"/);
+	assert.match(sessionView, /Model switch - context compacted/);
+	assert.match(sessionView, /case "model_switch"/);
+	// Non-manual compact stays in the before-stream so post-switch tools render below the divider.
+	assert.match(sessionView, /placement: source === "manual" \? "after" : "before"/);
+	assert.match(sessionView, /formatTokensAsMillions/);
+	assert.match(sessionView, /contextCompactionTokenSummary/);
+	assert.match(transcript, /function IconContextCompaction/);
+	assert.match(transcript, /M12\.666 3\.50098/);
+	assert.match(transcript, /className="context-compaction-divider/);
+	assert.match(transcript, /context-compaction-toggle/);
+	assert.match(transcript, /line\.placement !== "after"/);
+	assert.match(transcript, /line\.placement === "after"/);
 });

@@ -10,6 +10,18 @@ Ignore `apps/mock` — it is UX pin-down only and is not part of these gates.
 From the workshop root:
 
 ```bash
+# Tranche 0 — one focused test/spec while iterating
+cd apps/synth_desktop && npx playwright test tests/playwright/<spec>.spec.ts --grep '<case>'
+
+# Tranche 1 — compile contracts, parallel and normally under a few seconds warm
+npm run desktop:check
+
+# Build tranche — production bundle only; deliberately no test suite
+npm run desktop:build
+
+# Tranche 2 — full release/CI acceptance battery
+npm run desktop:verify
+
 # Full product test umbrella
 npm test
 
@@ -32,6 +44,25 @@ node apps/synth_desktop/tests/bombadil/run.mjs
 ```
 
 Artifacts land under `apps/synth_desktop/test-results/{playwright,bombadil}/`.
+
+## Standard tranches
+
+| Tranche | Contents | Required for |
+| --- | --- | --- |
+| 0: Focused | Only the nearest Playwright spec, Node test, or Rust test filter | Every edit/iteration |
+| 1: Check | TypeScript `tsc --noEmit` and Rust `cargo check`, run concurrently | Handoff and cross-boundary changes |
+| Build | Typecheck overlapped with the actual Tauri release build; no tests and no redundant `cargo check` | Local bundle/install |
+| 2: Release | Typecheck, all Rust tests, desktop-instance acceptance, and full Playwright | Release PRs, release cuts, CI, broad integration changes |
+
+`desktop:install` consumes the Build tranche. It does not implicitly run Tranche
+1 or 2 because the release build already compiles Rust, and repeating
+`cargo check` adds latency without increasing packaging confidence. Use
+`desktop:install:release` when installation must be gated on Tranche 2.
+
+Turborepo caches deterministic workspace tasks and supplies the task graph.
+Rust compilation stays under Cargo with an automatically detected `sccache`
+wrapper. Inspect it with `npm run cache:rust:stats`; final Tauri bundling and
+signing are intentionally never restored from task cache.
 
 ---
 

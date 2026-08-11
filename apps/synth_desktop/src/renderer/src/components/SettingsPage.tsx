@@ -1,40 +1,123 @@
 import { useEffect, useState } from "react";
-import type { RuntimeHealth } from "@synth/runtime-protocol";
-import type { DesktopInstanceDiagnostics, LagunaStatus, ModelMultiAgentSetting, MultiAgentVersion } from "../env";
+import type {
+	DesktopInstanceDiagnostics,
+	LagunaStatus,
+	ModelMultiAgentSetting,
+	MultiAgentVersion,
+	SynthAccountSummary,
+	SynthBackendSettings,
+	TariffCard,
+	UpdateStatus
+} from "../env";
+import type { AccountViewModel } from "../runtime/accountView";
+import type { DeviceUsageSummary } from "./UsageSheet";
 import { OnDeviceModelsSettings } from "./OnDeviceModelsSettings";
 import { InferenceSettings } from "./InferenceSettings";
 import { VoiceRecognitionSettings } from "./VoiceRecognitionSettings";
 import { ModelObservabilitySettings } from "./ModelObservabilitySettings";
-import { BackendSettings } from "./BackendSettings";
-import { WorkspaceAccessSettings } from "./WorkspaceAccessSettings";
+import { AccountPage } from "./AccountPage";
 import { GeneralPreferencesSettings } from "./GeneralPreferencesSettings";
+import { SettingsCard } from "./SettingsCard";
 import type { DesktopPreferences } from "../preferences";
+import { ProviderMark } from "./ProviderMark";
 
 type Props = {
 	onBack: () => void;
+	/** Everything the consolidated Account section renders. */
+	account: AccountSectionProps;
 	onReloadLaguna: () => Promise<LagunaStatus>;
-	health?: RuntimeHealth | null;
 	lagunaPhase?: string | null;
 	initialSection?: SectionId;
 	preferences?: DesktopPreferences;
 	onPreferencesChange?: (prefs: DesktopPreferences) => void;
-	conversationTitles?: Record<string, string>;
-	onUnarchiveConversation?: (id: string) => void;
-	onOpenConversation?: (id: string) => void;
 };
+
+function IconSliders() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<path d="M2.5 4.5h7M12.5 4.5h1M2.5 11.5h1M6.5 11.5h7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+			<circle cx="11" cy="4.5" r="1.7" stroke="currentColor" strokeWidth="1.3" />
+			<circle cx="5" cy="11.5" r="1.7" stroke="currentColor" strokeWidth="1.3" />
+		</svg>
+	);
+}
+
+function IconChip() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="4" y="4" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M6 1.5v2M10 1.5v2M6 12.5v2M10 12.5v2M1.5 6h2M1.5 10h2M12.5 6h2M12.5 10h2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+		</svg>
+	);
+}
+
+function IconGauge() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<path d="M2.5 10.5a5.5 5.5 0 1 1 11 0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+			<path d="M8 10.5 10.8 6.6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+			<circle cx="8" cy="10.5" r="1.1" fill="currentColor" />
+		</svg>
+	);
+}
+
+function IconMic() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="6" y="1.8" width="4" height="7.4" rx="2" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+		</svg>
+	);
+}
+
+function IconPerson() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<circle cx="8" cy="5.2" r="2.7" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M2.8 13.8a5.4 5.4 0 0 1 10.4 0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+		</svg>
+	);
+}
+
+function IconInfo() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<circle cx="8" cy="8" r="6.2" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M8 7.4v3.4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+			<circle cx="8" cy="5" r="0.9" fill="currentColor" />
+		</svg>
+	);
+}
+
+function IconChevronLeft() {
+	return (
+		<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<path d="m10 3.5-4.5 4.5L10 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+		</svg>
+	);
+}
 
 /** Adapter UI is intentionally absent until its full runtime path exists. */
 const SECTIONS = [
-	{ id: "general", label: "General" },
-	{ id: "models", label: "Models" },
-	{ id: "inference", label: "Inference" },
-	{ id: "voice", label: "Voice" },
-	{ id: "runtime", label: "Runtime" },
-	{ id: "account", label: "Account" },
-	{ id: "about", label: "About" }
+	{ id: "general", label: "General", icon: IconSliders },
+	{ id: "models", label: "Models", icon: IconChip },
+	{ id: "inference", label: "Inference", icon: IconGauge },
+	{ id: "voice", label: "Voice", icon: IconMic },
+	{ id: "account", label: "Account", icon: IconPerson },
+	{ id: "about", label: "About", icon: IconInfo }
 ] as const;
 
 export type SectionId = (typeof SECTIONS)[number]["id"];
+
+export type AccountSectionProps = {
+	view: AccountViewModel;
+	summary: SynthAccountSummary | null;
+	deviceUsage: DeviceUsageSummary | null;
+	connection: SynthBackendSettings | null;
+	onBilling: (action: "upgrade" | "manage") => void;
+	onRefresh: () => void;
+	onOpenDeviceUsage: () => void;
+};
 
 const MULTI_AGENT_OPTIONS: Array<{ value: MultiAgentVersion; label: string }> = [
 	{ value: "none", label: "None" },
@@ -42,11 +125,104 @@ const MULTI_AGENT_OPTIONS: Array<{ value: MultiAgentVersion; label: string }> = 
 	{ value: "v2", label: "V2" }
 ];
 
+const CHANGELOG = [
+	{
+		version: "0.1.0",
+		date: "August 10, 2026",
+		groups: [
+			{
+				label: "New",
+				items: [
+					"Local Laguna XS inference with managed model downloads and memory controls.",
+					"Remote Luna, Laguna, Muse Spark, and Synth Cloud models with credentials kept in native custody.",
+					"Trace V5 imports, Craftax rollout inspection, and a first-class visual library.",
+					"Optional Synth account sign-in with clear cloud allowance and device-usage views."
+				]
+			},
+			{
+				label: "Improved",
+				items: [
+					"A quieter, more consistent Settings experience across models, voice, inference, account, and release information.",
+					"Compact composer controls for permissions, model choice, and thinking level.",
+					"Clearer local inference throughput, latency, cache, request telemetry, and provider-specific billing authority.",
+					"A passive stable-channel update check that stays silent when offline and always uses the official download page."
+				]
+			},
+			{
+				label: "Fixed",
+				items: [
+					"Thinking streams now render at their content height without oversized empty cards.",
+					"Auto-compaction preserves model-aware defaults and never falls back to a 16k limit.",
+					"Model menus remain inside the window at compact desktop sizes.",
+					"Bundled local services preserve the macOS app signature after launch.",
+					"Cloud checkout, provider requests, data migrations, and build provenance now fail closed when their release invariants are not met."
+				]
+			}
+		]
+	}
+] as const;
+
 const MULTI_AGENT_CONFIG: Record<MultiAgentVersion, string> = {
 	none: "[agents] enabled=false · [features] multi_agent=false · multi_agent_v2=false",
 	v1: "[agents] enabled=true · [features] multi_agent=true · multi_agent_v2=false",
 	v2: "[agents] enabled=true · [features] multi_agent=true · multi_agent_v2=true"
 };
+
+type AuthorizedModel = {
+	id: string;
+	name: string;
+	provider: string;
+	providerMark: "openai" | "laguna" | "meta" | "synth";
+	modelId: string;
+	tariffProvider?: string;
+	planMetered?: boolean;
+};
+
+function formatPerMillion(rate: number): string {
+	const rounded = rate.toFixed(2);
+	return `$${Number(rounded) === rate ? rounded : String(rate)}`;
+}
+
+function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSettings | null }) {
+	// Prices come from the native tariff catalog — the same numbers cost
+	// estimation uses — never from strings kept in the renderer.
+	const [tariffs, setTariffs] = useState<TariffCard[]>([]);
+	useEffect(() => {
+		void window.synthTariffs?.catalog()
+			.then(setTariffs)
+			.catch(() => setTariffs([]));
+	}, []);
+	const models: AuthorizedModel[] = [];
+	if (connection?.openrouterApiKeyConfigured) {
+		models.push(
+			{ id: "openrouter-luna", name: "GPT 5.6 Luna", provider: "OpenRouter · OpenAI", providerMark: "openai", modelId: "openai/gpt-5.6-luna", tariffProvider: "openrouter" },
+			{ id: "openrouter-laguna-s", name: "Laguna S 2.1", provider: "OpenRouter · Poolside", providerMark: "laguna", modelId: "poolside/laguna-s-2.1", tariffProvider: "openrouter" },
+			{ id: "openrouter-muse-spark", name: "Muse Spark 1.2", provider: "OpenRouter · Meta", providerMark: "meta", modelId: "meta/muse-spark-1.2", tariffProvider: "openrouter" }
+		);
+	}
+	if (connection?.apiKeyConfigured) {
+		models.push({ id: "synth-cloud-laguna-s", name: "Laguna S 2.1", provider: "Synth Cloud", providerMark: "synth", modelId: "openrouter/poolside/laguna-s-2.1", planMetered: true });
+	}
+	if (!models.length) return null;
+	const tariffFor = (model: AuthorizedModel) =>
+		tariffs.find((card) => card.provider === model.tariffProvider && card.modelId === model.modelId);
+	return (
+		<SettingsCard title="Authorized providers" testId="authorized-models" className="settings-card-embed">
+			<div className="authorized-model-list">
+				{models.map((model) => {
+					const tariff = tariffFor(model);
+					return (
+						<article className="authorized-model-row" key={model.id} data-testid={`authorized-model-${model.id}`}>
+							<ProviderMark kind={model.providerMark} className="authorized-model-mark" />
+							<div className="authorized-model-identity"><strong>{model.name}</strong><span>{model.provider}</span><code>{model.modelId}</code></div>
+							{model.planMetered ? <dl><div><dt>Pricing</dt><dd>Plan metered</dd></div></dl> : tariff ? <dl><div><dt>Input / 1M</dt><dd>{formatPerMillion(tariff.inputUsdPerM)}</dd></div><div><dt>Output / 1M</dt><dd>{formatPerMillion(tariff.outputUsdPerM)}</dd></div>{tariff.cachedInputUsdPerM != null ? <div><dt>Cached read / 1M</dt><dd>{formatPerMillion(tariff.cachedInputUsdPerM)}</dd></div> : null}{tariff.cacheWriteUsdPerM != null ? <div><dt>Cache write / 1M</dt><dd>{formatPerMillion(tariff.cacheWriteUsdPerM)}</dd></div> : null}</dl> : null}
+						</article>
+					);
+				})}
+			</div>
+		</SettingsCard>
+	);
+}
 
 function multiAgentOverrideWarning(model: ModelMultiAgentSetting): string | null {
 	if (model.effective === model.preset) return null;
@@ -127,20 +303,18 @@ function MultiAgentModelSettings() {
 
 export function SettingsPage({
 	onBack,
+	account,
 	onReloadLaguna,
-	health,
 	lagunaPhase,
 	initialSection = "general",
 	preferences,
-	onPreferencesChange,
-	conversationTitles,
-	onUnarchiveConversation,
-	onOpenConversation
+	onPreferencesChange
 }: Props) {
 	const [section, setSection] = useState<SectionId>(
 		SECTIONS.some((entry) => entry.id === initialSection) ? initialSection : "general"
 	);
 	const [desktopIdentity, setDesktopIdentity] = useState<DesktopInstanceDiagnostics | null>(null);
+	const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
 
 	// Deep links (e.g. the inference panel's gear) retarget an already-open
 	// Settings view; internal nav clicks never change the prop, so they win.
@@ -152,149 +326,142 @@ export function SettingsPage({
 		void window.synthDesktop.getInstanceDiagnostics().then(setDesktopIdentity).catch(() => undefined);
 	}, []);
 
+	useEffect(() => {
+		void window.synthUpdates?.status()
+			.then(setUpdateStatus)
+			.catch(() => setUpdateStatus(null));
+	}, []);
+
+	const activeSection = SECTIONS.find((entry) => entry.id === section) ?? SECTIONS[0];
+
 	return (
 		<div className="settings-page" data-testid="settings-page">
-			<header className="settings-top">
-				<button type="button" className="desk-back" onClick={onBack}>
-					← Back
+			<nav className="settings-rail" aria-label="Settings sections">
+				<button type="button" className="desk-back settings-back" aria-label="← Back" onClick={onBack}>
+					<IconChevronLeft />
+					Back
 				</button>
-				<h1>Settings</h1>
-			</header>
+				<h1 className="settings-rail-title">Settings</h1>
+				<div className="settings-nav">
+					{SECTIONS.map((s) => {
+						const Icon = s.icon;
+						return (
+							<button
+								key={s.id}
+								type="button"
+								className={`settings-nav-item${section === s.id ? " active" : ""}`}
+								aria-current={section === s.id ? "page" : undefined}
+								onClick={() => setSection(s.id)}
+							>
+								<Icon />
+								<span>{s.label}</span>
+							</button>
+						);
+					})}
+				</div>
+			</nav>
 
-			<div className="settings-body">
-				<nav className="settings-nav" aria-label="Settings sections">
-					{SECTIONS.map((s) => (
-						<button
-							key={s.id}
-							type="button"
-							className={`settings-nav-item${section === s.id ? " active" : ""}`}
-							onClick={() => setSection(s.id)}
-						>
-							{s.label}
-						</button>
-					))}
-				</nav>
+			<div className="settings-content">
+				<div className="settings-content-inner">
+					{section !== "account" ? <h2 className="settings-section-title">{activeSection.label}</h2> : null}
 
-				<div className="settings-content">
 					{section === "general" && preferences && onPreferencesChange ? (
 						<GeneralPreferencesSettings
 							preferences={preferences}
 							onPreferencesChange={onPreferencesChange}
-							conversationTitles={conversationTitles}
-							onUnarchive={onUnarchiveConversation}
-							onOpenConversation={onOpenConversation}
 						/>
 					) : null}
 					{section === "models" ? (
-						<div className="settings-finetunes" data-testid="settings-models">
-							<header className="settings-section-head">
-								<div>
-									<p className="settings-breadcrumb">Settings → Models</p>
-									<h2>Models</h2>
-									<p>On-device Laguna weights, telemetry, and compatibility for every provider.</p>
-								</div>
-							</header>
-							<section className="models-half" data-testid="models-on-device">
-								<header className="models-half-head">
-									<h3>On-device</h3>
-									<p>Local MLX models for Workshop coding agents.</p>
-								</header>
+						<div className="settings-sections" data-testid="settings-models">
+							<SettingsCard
+								title="On-device"
+								description="Managed local models and inference runtimes."
+								testId="models-on-device"
+								className="settings-card-embed"
+							>
 								<OnDeviceModelsSettings lagunaPhase={lagunaPhase} onReloadLaguna={onReloadLaguna} />
-							</section>
-							<section className="models-half models-half-all" data-testid="models-all">
-								<header className="models-half-head">
-									<h3>All</h3>
-									<p>Observability and multi-agent compatibility across local and cloud models.</p>
-								</header>
+							</SettingsCard>
+							<AuthorizedModelsSettings connection={account.connection} />
+							<SettingsCard testId="models-all" className="settings-card-embed">
 								<ModelObservabilitySettings />
 								<MultiAgentModelSettings />
-							</section>
+							</SettingsCard>
 						</div>
 					) : null}
 					{section === "inference" ? (
-						<div className="settings-finetunes" data-testid="settings-inference">
-							<header className="settings-section-head">
-								<div>
-									<p className="settings-breadcrumb">Settings → Inference</p>
-									<h2>Inference</h2>
-									<p>Daemon-side defaults for sampling, reasoning, and runtime residency.</p>
-								</div>
-							</header>
+						<div className="settings-sections" data-testid="settings-inference">
 							<InferenceSettings />
 						</div>
 					) : null}
 					{section === "voice" ? (
-						<div className="settings-finetunes" data-testid="settings-voice">
-							<header className="settings-section-head">
-								<div>
-									<p className="settings-breadcrumb">Settings → Voice Recognition</p>
-									<h2>Voice Recognition</h2>
-									<p>Local Whisper models that transcribe dictation from this desktop.</p>
-								</div>
-							</header>
-							<VoiceRecognitionSettings />
-						</div>
-					) : null}
-					{section === "runtime" ? (
-						<div className="settings-finetunes" data-testid="settings-runtime">
-							<h2>Runtime</h2>
-							<p className="settings-runtime-copy">One append-only local authority owns sessions, runs, events, approvals, traces, visuals, and usage. The UI can inspect the store without leaving the workbench.</p>
-							<div className="finetune-base-card" data-testid="desktop-build-identity">
-								<span className="finetune-kicker">Desktop identity</span>
-								<strong>{desktopIdentity?.displayName ?? "Reading running build…"}</strong>
-								<span className="finetune-meta">
-									{desktopIdentity
-										? `v${desktopIdentity.appVersion} · ${desktopIdentity.mode} · source ${desktopIdentity.sourceRevision} · build ${desktopIdentity.buildRevision}`
-										: "The running process will report its exact source and build revision."}
-								</span>
-								<code className="finetune-file">
-									{desktopIdentity ? `PID ${desktopIdentity.processId} · ${desktopIdentity.executable}` : "Waiting for desktop diagnostics"}
-								</code>
-								<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? ""}</code>
-							</div>
-							<div className="finetune-base-card">
-								<span className="finetune-kicker">Data store</span>
-								<strong>{health?.dataStore?.events ?? 0} events · {health?.dataStore?.runs ?? 0} runs</strong>
-								<span className="finetune-meta">{health?.dataStore?.projects ?? 0} projects · {health?.dataStore?.usage ?? 0} usage entries</span>
-								<span className="finetune-file">{health?.dataStore?.path ?? "Runtime is connecting"}</span>
-							</div>
-							<div className="finetune-base-card" data-testid="intern-routing">
-								<span className="finetune-kicker">Intern routing · [alpha]</span>
-								<strong>Deferred to v0.2</strong>
-								<span className="finetune-meta">
-									v0.1 does not claim a live Sync/Async cloud mailbox. Proper Intern cloud
-									routing returns when public backend contracts ship; internal or unfinished
-									endpoints are not shown as connected.
-								</span>
-								<code className="finetune-file">See launch_v0p1.md · Intern [alpha] → v0.2</code>
-							</div>
-							<WorkspaceAccessSettings />
+						<div className="settings-sections" data-testid="settings-voice">
+							<SettingsCard
+								title="Voice recognition"
+								description="Local Whisper models transcribe dictation from this desktop."
+								className="settings-card-embed"
+							>
+								<VoiceRecognitionSettings />
+							</SettingsCard>
 						</div>
 					) : null}
 					{section === "account" ? (
-						<BackendSettings />
+						<AccountPage
+							view={account.view}
+							summary={account.summary}
+							deviceUsage={account.deviceUsage}
+							connection={account.connection}
+							onBilling={account.onBilling}
+							onRefresh={account.onRefresh}
+							onOpenDeviceUsage={account.onOpenDeviceUsage}
+						/>
 					) : null}
 					{section === "about" ? (
-						<div className="settings-finetunes" data-testid="settings-about">
-							<header className="settings-section-head">
-								<div>
-									<h2>About</h2>
-									<p>Version, build identity, and changelog entry points.</p>
+						<div className="settings-sections" data-testid="settings-about">
+							<SettingsCard title="Synth Desktop">
+								<div className="finetune-base-card" data-testid="about-build-identity">
+									<span className="finetune-kicker">Build</span>
+									<strong>{desktopIdentity?.displayName ?? "Synth Desktop"}</strong>
+									<span className="finetune-meta">
+										{desktopIdentity
+											? `v${desktopIdentity.appVersion} · ${updateStatus?.channel ?? "stable"} · ${desktopIdentity.mode} · source ${desktopIdentity.sourceRevision} · build ${desktopIdentity.buildRevision}`
+											: "Build identity unavailable in this environment."}
+									</span>
+									{updateStatus?.updateAvailable && updateStatus.latestVersion ? (
+										<button
+											type="button"
+											className="settings-update-available"
+											data-testid="about-update-available"
+											onClick={() => void window.synthUpdates?.openDownload()}
+										>
+											{`Update available · v${updateStatus.latestVersion}`}
+										</button>
+									) : null}
+									<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? "Local-first research workbench"}</code>
 								</div>
-							</header>
-							<div className="finetune-base-card" data-testid="about-build-identity">
-								<span className="finetune-kicker">Synth Desktop</span>
-								<strong>{desktopIdentity?.displayName ?? "Synth Desktop"}</strong>
-								<span className="finetune-meta">
-									{desktopIdentity
-										? `v${desktopIdentity.appVersion} · ${desktopIdentity.mode} · source ${desktopIdentity.sourceRevision} · build ${desktopIdentity.buildRevision}`
-										: "Build identity unavailable in this environment."}
-								</span>
-								<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? "Local-first research workbench"}</code>
-							</div>
-							<p className="settings-runtime-copy">
-								Synth Desktop is a local-first research workbench. Release notes and acknowledgements ship with each desktop build.
-							</p>
+								<p className="settings-runtime-copy">
+									Synth Desktop is a local-first research workbench.
+								</p>
+							</SettingsCard>
+							<SettingsCard title="What’s new" testId="about-changelog">
+								<div className="about-changelog">
+									{CHANGELOG.map((release) => (
+										<article className="about-release" key={release.version}>
+											<header>
+												<strong>Version {release.version}</strong>
+												<time>{release.date}</time>
+											</header>
+											<div className="about-release-groups">
+												{release.groups.map((group) => (
+													<section key={group.label}>
+														<h4>{group.label}</h4>
+														<ul>{group.items.map((item) => <li key={item}>{item}</li>)}</ul>
+													</section>
+												))}
+											</div>
+										</article>
+									))}
+								</div>
+							</SettingsCard>
 						</div>
 					) : null}
 				</div>

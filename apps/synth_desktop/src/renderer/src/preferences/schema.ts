@@ -6,11 +6,21 @@
  */
 
 export const PREFERENCES_STORAGE_KEY = "synth.preferences.v1";
-export const PREFERENCES_SCHEMA_VERSION = 1 as const;
+export const PREFERENCES_SCHEMA_VERSION = 4 as const;
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ToolActivityMode = "detailed" | "grouped" | "compact";
 export type ActiveEnterAction = "steer" | "enqueue";
+export type ApprovalPolicyPreference = "untrusted" | "on-request" | "never";
+export type SandboxModePreference = "read-only" | "workspace-write" | "danger-full-access";
+export type CompactContextModel = "lagunaXs" | "lagunaS" | "luna";
+export type AutoCompactTokenLimits = Record<CompactContextModel, number>;
+
+export const DEFAULT_AUTO_COMPACT_TOKEN_LIMITS: AutoCompactTokenLimits = {
+	lagunaXs: 150_000,
+	lagunaS: 250_000,
+	luna: 250_000
+};
 
 export type LayoutSnapshot = {
 	sidebarVisible: boolean;
@@ -55,6 +65,10 @@ export type DesktopPreferences = {
 	toolActivity: {
 		mode: ToolActivityMode;
 	};
+	agentContext: {
+		/** Per-model local summarization thresholds. */
+		autoCompactTokenLimits: AutoCompactTokenLimits;
+	};
 	layout: {
 		last: LayoutSnapshot;
 		default: LayoutSnapshot;
@@ -65,6 +79,8 @@ export type DesktopPreferences = {
 	/** Finished-but-unviewed chat ids (migrated from synth.unreadCompletedChats). */
 	unreadCompletedChats: string[];
 	approvalMode: "ask" | "accept-edits" | "allow-all";
+	approvalPolicy: ApprovalPolicyPreference;
+	sandboxMode: SandboxModePreference;
 };
 
 export const DEFAULT_LAYOUT: LayoutSnapshot = {
@@ -94,6 +110,9 @@ export const DEFAULT_PREFERENCES: DesktopPreferences = {
 	toolActivity: {
 		mode: "grouped"
 	},
+	agentContext: {
+		autoCompactTokenLimits: { ...DEFAULT_AUTO_COMPACT_TOKEN_LIMITS }
+	},
 	layout: {
 		last: { ...DEFAULT_LAYOUT },
 		default: { ...DEFAULT_LAYOUT }
@@ -101,18 +120,41 @@ export const DEFAULT_PREFERENCES: DesktopPreferences = {
 	conversations: {},
 	promptQueue: [],
 	unreadCompletedChats: [],
-	approvalMode: "ask"
+	approvalMode: "ask",
+	approvalPolicy: "untrusted",
+	sandboxMode: "workspace-write"
 };
 
 const THEMES = new Set<ThemePreference>(["system", "light", "dark"]);
 const ACTIVITY_MODES = new Set<ToolActivityMode>(["detailed", "grouped", "compact"]);
 const ENTER_ACTIONS = new Set<ActiveEnterAction>(["steer", "enqueue"]);
 const APPROVAL_MODES = new Set(["ask", "accept-edits", "allow-all"]);
+const APPROVAL_POLICIES = new Set<ApprovalPolicyPreference>(["untrusted", "on-request", "never"]);
+const SANDBOX_MODES = new Set<SandboxModePreference>(["read-only", "workspace-write", "danger-full-access"]);
+
+function legacyPermissionConfig(mode: DesktopPreferences["approvalMode"]): Pick<DesktopPreferences, "approvalPolicy" | "sandboxMode"> {
+	if (mode === "allow-all") return { approvalPolicy: "never", sandboxMode: "danger-full-access" };
+	if (mode === "accept-edits") return { approvalPolicy: "on-request", sandboxMode: "workspace-write" };
+	return { approvalPolicy: "untrusted", sandboxMode: "workspace-write" };
+}
 
 export function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+	// Unset must fall back, never clamp: Number(null) and Number("") are 0,
+	// which silently pinned absent values to `min` (the 16k autocompact bug).
+	if (value === null || value === undefined || value === "") return fallback;
 	const n = typeof value === "number" ? value : Number(value);
 	if (!Number.isFinite(n)) return fallback;
 	return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+function normalizeAutoCompactTokenLimit(value: unknown, max: number, fallback: number): number {
+	if (value === null || value === undefined || value === "") return fallback;
+	const parsed = typeof value === "number" ? value : Number(value);
+	// 16k was an accidental normalization floor, never a valid persisted
+	// compact threshold. Invalid and formerly floor-clamped values return to the
+	// model's documented default instead of being raised to another low limit.
+	if (!Number.isFinite(parsed) || parsed <= 16_000) return fallback;
+	return Math.min(max, Math.round(parsed));
 }
 
 export function normalizeLayoutSnapshot(
@@ -178,6 +220,35 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 	const toolActivity = source.toolActivity && typeof source.toolActivity === "object"
 		? (source.toolActivity as Record<string, unknown>)
 		: {};
+	const agentContext = source.agentContext && typeof source.agentContext === "object"
+		? (source.agentContext as Record<string, unknown>)
+		: {};
+	const compactLimits = agentContext.autoCompactTokenLimits && typeof agentContext.autoCompactTokenLimits === "object"
+		? (agentContext.autoCompactTokenLimits as Record<string, unknown>)
+		: {};
+	const storedSchemaVersion = Number(source.schemaVersion);
+	// Version 1 persisted the old computed 80%-of-1.05M defaults. Move only
+	// those exact generated values to the new 250k defaults; preserve edits.
+	const lagunaSLimit = storedSchemaVersion < 2 && compactLimits.lagunaS === 840_000
+		? DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaS
+		: compactLimits.lagunaS;
+	const lunaLimit = storedSchemaVersion < 2 && compactLimits.luna === 840_000
+		? DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.luna
+		: compactLimits.luna;
+	// Version < 4: the UI floor (16k) was accidentally persisted for all models
+	// and caused mid-turn autocompact loops — first written directly (< 3), then
+	// regenerated by normalize itself when the limits were absent (clampNumber
+	// pinned Number(null) === 0 to the floor, < 4). Treat exact 16k as unset.
+	const storedBeforeFloorFix = !(storedSchemaVersion >= 4);
+	const migrateFloor = (value: unknown, fallback: number) =>
+		storedBeforeFloorFix && value === 16_000 ? fallback : value;
+	const legacyCompactLimitValue = agentContext.autoCompactTokenLimit;
+	const legacyCompactLimit = legacyCompactLimitValue === null || legacyCompactLimitValue === undefined || legacyCompactLimitValue === ""
+		? Number.NaN
+		: Number(legacyCompactLimitValue);
+	const legacyOverride = Number.isFinite(legacyCompactLimit) && legacyCompactLimit !== 196_000 && legacyCompactLimit > 16_000
+		? legacyCompactLimit
+		: null;
 	const layout = source.layout && typeof source.layout === "object"
 		? (source.layout as Record<string, unknown>)
 		: {};
@@ -206,6 +277,9 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 	const approvalMode = APPROVAL_MODES.has(source.approvalMode as string)
 		? (source.approvalMode as DesktopPreferences["approvalMode"])
 		: DEFAULT_PREFERENCES.approvalMode;
+	const legacyPermissions = legacyPermissionConfig(approvalMode);
+	const approvalPolicy = APPROVAL_POLICIES.has(source.approvalPolicy as ApprovalPolicyPreference) ? source.approvalPolicy as ApprovalPolicyPreference : legacyPermissions.approvalPolicy;
+	const sandboxMode = SANDBOX_MODES.has(source.sandboxMode as SandboxModePreference) ? source.sandboxMode as SandboxModePreference : legacyPermissions.sandboxMode;
 
 	return {
 		schemaVersion: PREFERENCES_SCHEMA_VERSION,
@@ -223,6 +297,25 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 		},
 		submission: { activeEnterAction: enter },
 		toolActivity: { mode },
+		agentContext: {
+			autoCompactTokenLimits: {
+				lagunaXs: normalizeAutoCompactTokenLimit(
+					migrateFloor(compactLimits.lagunaXs, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaXs) ?? legacyOverride,
+					235_929,
+					DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaXs
+				),
+				lagunaS: normalizeAutoCompactTokenLimit(
+					migrateFloor(lagunaSLimit, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaS) ?? legacyOverride,
+					945_000,
+					DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.lagunaS
+				),
+				luna: normalizeAutoCompactTokenLimit(
+					migrateFloor(lunaLimit, DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.luna) ?? legacyOverride,
+					945_000,
+					DEFAULT_AUTO_COMPACT_TOKEN_LIMITS.luna
+				)
+			}
+		},
 		layout: {
 			last: normalizeLayoutSnapshot(layout.last),
 			default: normalizeLayoutSnapshot(layout.default)
@@ -230,7 +323,9 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 		conversations,
 		promptQueue,
 		unreadCompletedChats: unread,
-		approvalMode
+		approvalMode,
+		approvalPolicy,
+		sandboxMode
 	};
 }
 

@@ -311,34 +311,40 @@ export function InferenceSettings({ transport, controller }: InferenceSettingsPr
 
 	if (view.state === "loading") {
 		return (
-			<p className="settings-runtime-copy" role="status" data-testid="inference-settings-loading">
-				Reading daemon runtime settings…
-			</p>
+			<div className="settings-card settings-empty-card" role="status" data-testid="inference-settings-loading">
+				<div className="settings-empty-body">
+					<strong>Reading daemon runtime settings…</strong>
+				</div>
+			</div>
 		);
 	}
 
 	if (view.state === "unsupported") {
 		return (
-			<div className="finetune-base-card" data-testid="inference-settings-unsupported">
-				<span className="finetune-kicker">Runtime settings</span>
-				<strong>This daemon does not support runtime settings yet.</strong>
-				<span className="finetune-meta">
-					{daemon?.detail ?? "Daemon identity unavailable"}
-					{daemon?.baseUrl ? ` · ${daemon.baseUrl}` : ""}
-				</span>
+			<div className="settings-card settings-empty-card" data-testid="inference-settings-unsupported">
+				<div className="settings-empty-body">
+					<strong>This daemon does not support runtime settings yet.</strong>
+					<p>
+						{daemon?.detail ?? "Daemon identity unavailable"}
+						{daemon?.baseUrl ? ` · ${daemon.baseUrl}` : ""}
+					</p>
+				</div>
 			</div>
 		);
 	}
 
 	if (view.state === "error") {
 		return (
-			<div className="settings-finetunes" data-testid="inference-settings-failed">
-				<p className="inference-error" role="alert" data-testid="inference-settings-error">
-					{view.message}
-				</p>
-				<button type="button" className="inference-retry" onClick={control.retry}>
-					Try again
-				</button>
+			<div className="settings-card settings-empty-card" data-testid="inference-settings-failed">
+				<div className="settings-empty-body">
+					<strong>Runtime settings are unavailable</strong>
+					<p className="inference-error" role="alert" data-testid="inference-settings-error">
+						{view.message}
+					</p>
+					<button type="button" className="settings-secondary-btn inference-retry" onClick={control.retry}>
+						Try again
+					</button>
+				</div>
 			</div>
 		);
 	}
@@ -503,9 +509,6 @@ export function InferenceSettings({ transport, controller }: InferenceSettingsPr
 				</div>
 			</section>
 
-			<p className="settings-runtime-copy" data-testid="inference-settings-footer">
-				Live throughput, residency, and queue depth stay on the MLX sidecar inference panel.
-			</p>
 		</div>
 	);
 }

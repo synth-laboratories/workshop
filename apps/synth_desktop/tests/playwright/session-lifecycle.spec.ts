@@ -46,6 +46,43 @@ test("a local session process exit clears stale Working and Stop state", async (
 		.toContainText("Stopped because the local agent disconnected · send a message to reconnect");
 });
 
+test("a replayed terminal event overrides a stale running session record", async ({ page }) => {
+	await page.addInitScript(() => {
+		const sessionId = "stale-provider-failure";
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "stale-provider-thread", workspace: "/workspaces/default",
+				model: "openai/gpt-5.6-luna", providerName: "openrouter",
+				providerTitle: "OpenRouter Responses", baseUrl: "https://openrouter.ai/api/v1",
+				status: "running"
+			}],
+			start: async () => ({ sessionId, threadId: "stale-provider-thread" }),
+			startTurn: async () => ({ sessionId, threadId: "stale-provider-thread", turnId: "turn-stale" }),
+			interrupt: async () => undefined, close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		const rows = [
+			{ sequence: 1, sessionSequence: 1, kind: "message.created", payload: { messageId: "user-stale", role: "user", content: "hello" } },
+			{ sequence: 2, sessionSequence: 2, kind: "run.started", payload: { runId: "turn-stale" } },
+			{ sequence: 3, sessionSequence: 3, kind: "run.failed", payload: { runId: "turn-stale", message: "Missing provider credential" } }
+		].map((row) => ({
+			schemaVersion: "synth.desktop-app-event.v1" as const, eventId: `evt-${row.sequence}`,
+			sessionId, source: "codex" as const, createdAt: "2026-08-10T20:00:00Z", ...row
+		}));
+		(window as typeof window & { synthCore?: unknown }).synthCore = {
+			diagnostics: async () => ({ databasePath: "/tmp/core.sqlite3", schemaVersion: 1, integrityOk: true,
+				contentStorePath: "/tmp/content", journalHead: 3, sessionCount: 1, runCount: 1, visualCount: 0, migrationComplete: true }),
+			eventsAfter: async () => rows, sessionEventsAfter: async () => rows, onEvent: () => () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-stale-provider-failure").click();
+	await expect(page.getByTestId("chat-transcript")).toContainText("Stopped with an error after");
+	await expect(page.getByTestId("model-working")).toHaveCount(0);
+	await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0);
+});
+
 test("a failed turn hidden inside a completed envelope never renders as blank success", async ({ page }) => {
 	await page.addInitScript(() => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
@@ -157,6 +194,17 @@ test("a rejected turn start clears Working, keeps the typed text and retries", a
 	await expect(retry).toBeVisible();
 	await expect(retry).toContainText("The local agent process disconnected before the turn started. Retry to reconnect.");
 	await expect(retry).not.toContainText("922c25f7");
+	const retryGeometry = await retry.boundingBox();
+	const composerGeometry = await page.getByTestId("composer").boundingBox();
+	expect(retryGeometry, "retry status has measurable geometry").not.toBeNull();
+	expect(composerGeometry, "composer has measurable geometry").not.toBeNull();
+	const retryBottom = retryGeometry!.y + retryGeometry!.height;
+	const retryRight = retryGeometry!.x + retryGeometry!.width;
+	const composerRight = composerGeometry!.x + composerGeometry!.width;
+	expect(retryBottom, "retry status is above the composer").toBeLessThanOrEqual(composerGeometry!.y);
+	expect(retryGeometry!.x).toBeGreaterThanOrEqual(composerGeometry!.x);
+	expect(retryRight).toBeLessThanOrEqual(composerRight);
+	expect(retryBottom).toBeLessThanOrEqual((await page.viewportSize())!.height);
 
 	// The typed text survived and is still in the transcript.
 	await expect(page.getByTestId("chat-transcript")).toContainText("summarize the lifecycle handoff");

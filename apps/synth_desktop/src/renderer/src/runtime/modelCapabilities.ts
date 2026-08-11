@@ -1,5 +1,5 @@
 import type { ExecutionTarget } from "@synth/runtime-protocol";
-import { OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL, SYNTH_CLOUD_LAGUNA_S_MODEL } from "../types/landing";
+import { OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL, OPENROUTER_MUSE_SPARK_MODEL, SYNTH_CLOUD_LAGUNA_S_MODEL } from "../types/landing";
 
 /**
  * Declarative registry for model-specific composer controls.
@@ -7,11 +7,12 @@ import { OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL, SYNTH_CLOUD_LAGUNA_S_
  * Register a model knob here instead of branching on model ids in App or Composer.
  * The same entry owns rendering, validation, persistence, defaults, and turn transport.
  */
-export type ModelKnobValue = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ModelKnobTransportValue = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ModelKnobDisplayValue = "Minimal" | "None" | "Low" | "Medium" | "High" | "XHigh" | "Max";
 
 export type ModelKnobOption = {
-	id: ModelKnobValue;
-	label: string;
+	displayValue: ModelKnobDisplayValue;
+	transportValue: ModelKnobTransportValue;
 };
 
 export type ModelKnobSpec = {
@@ -20,7 +21,7 @@ export type ModelKnobSpec = {
 	testId: string;
 	storageKey: string;
 	legacyStorageKeys?: string[];
-	defaultValue: ModelKnobValue;
+	defaultValue: ModelKnobTransportValue;
 	options: ModelKnobOption[];
 	turnStartField: "effort";
 };
@@ -35,24 +36,35 @@ export type ModelCapabilitySpec = {
 	 * a reasoning effort without ever returning displayable reasoning.
 	 */
 	reasoningDisplay: "none" | "full" | "summary";
+	/** Input kinds accepted by the provider/model before a turn is attempted. */
+	inputModalities: readonly ("text" | "image")[];
+	/** Provider-advertised maximum combined input/output context window. */
+	maxContextTokens: number;
 };
 
 const LUNA_EFFORT_OPTIONS: ModelKnobOption[] = [
-	{ id: "low", label: "Low" },
-	{ id: "medium", label: "Medium" },
-	{ id: "high", label: "High" },
-	{ id: "xhigh", label: "XHigh" },
-	{ id: "max", label: "Max" }
+	{ displayValue: "Low", transportValue: "low" },
+	{ displayValue: "Medium", transportValue: "medium" },
+	{ displayValue: "High", transportValue: "high" },
+	{ displayValue: "XHigh", transportValue: "xhigh" },
+	{ displayValue: "Max", transportValue: "max" }
+];
+
+const SPARK_EFFORT_OPTIONS: ModelKnobOption[] = [
+	{ displayValue: "Low", transportValue: "low" },
+	{ displayValue: "Medium", transportValue: "medium" },
+	{ displayValue: "High", transportValue: "high" },
+	{ displayValue: "XHigh", transportValue: "xhigh" }
 ];
 
 const BINARY_THINKING_OPTIONS: ModelKnobOption[] = [
-	{ id: "none", label: "Off" },
-	{ id: "max", label: "On" }
+	{ displayValue: "None", transportValue: "none" },
+	{ displayValue: "Max", transportValue: "max" }
 ];
 
 const LOCAL_THINKING_OPTIONS: ModelKnobOption[] = [
-	{ id: "none", label: "Off" },
-	{ id: "high", label: "On" }
+	{ displayValue: "Minimal", transportValue: "none" },
+	{ displayValue: "Max", transportValue: "high" }
 ];
 
 export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
@@ -71,7 +83,9 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 		}],
 		// The owned MLX Responses bridge separates its <think> span from the
 		// answer stream, so this is the one target allowed to show that text.
-		reasoningDisplay: "full"
+		reasoningDisplay: "full",
+		inputModalities: ["text"],
+		maxContextTokens: 262_144
 	},
 	{
 		targetId: "openrouter-luna",
@@ -87,7 +101,9 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 		}],
 		// Closed/remote providers expose a provider-authored summary, not their
 		// private chain of thought. Render only that safe payload when present.
-		reasoningDisplay: "summary"
+		reasoningDisplay: "summary",
+		inputModalities: ["text", "image"],
+		maxContextTokens: 272_000
 	},
 	{
 		targetId: "openrouter-laguna-s",
@@ -102,7 +118,29 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 			options: BINARY_THINKING_OPTIONS,
 			turnStartField: "effort"
 		}],
-		reasoningDisplay: "summary"
+		// Poolside's S 2.1 model card documents a per-request
+		// `enable_thinking` switch rather than graded low/max budgets. Our
+		// Responses adapter carries this binary choice as none/max, so present
+		// the exact provider vocabulary to people: None / Max.
+		reasoningDisplay: "summary",
+		inputModalities: ["text"],
+		maxContextTokens: 262_144
+	},
+	{
+		targetId: "openrouter-muse-spark",
+		target: { kind: "remote", models: [OPENROUTER_MUSE_SPARK_MODEL] },
+		knobs: [{
+			id: "reasoning",
+			label: "Reasoning effort",
+			testId: "reasoning-effort",
+			storageKey: "synth.models.openrouter-muse-spark.reasoning",
+			defaultValue: "medium",
+			options: SPARK_EFFORT_OPTIONS,
+			turnStartField: "effort"
+		}],
+		reasoningDisplay: "summary",
+		inputModalities: ["text", "image"],
+		maxContextTokens: 1_048_576
 	},
 	{
 		targetId: "synth-cloud-laguna-s",
@@ -117,14 +155,20 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 			options: BINARY_THINKING_OPTIONS,
 			turnStartField: "effort"
 		}],
-		reasoningDisplay: "summary"
+		reasoningDisplay: "summary",
+		inputModalities: ["text"],
+		maxContextTokens: 262_144
 	}
 ];
 
-export type ModelKnobValues = Record<string, ModelKnobValue>;
+export type ModelKnobValues = Record<string, ModelKnobTransportValue>;
 
 export function modelKnobKey(targetId: string, knobId: string): string {
 	return `${targetId}:${knobId}`;
+}
+
+export function modelSupportsImageInput(targetId: string): boolean {
+	return modelCapabilitiesForTarget(targetId)?.inputModalities.includes("image") ?? false;
 }
 
 export function modelCapabilitiesForTarget(targetId: string): ModelCapabilitySpec | undefined {
@@ -150,8 +194,8 @@ export function loadModelKnobValues(storage: Pick<Storage, "getItem">): ModelKno
 			const candidates = [knob.storageKey, ...(knob.legacyStorageKeys ?? [])];
 			const saved = candidates.map((key) => storage.getItem(key)).find((value) => value !== null);
 			values[modelKnobKey(capability.targetId, knob.id)] =
-				saved && knob.options.some((option) => option.id === saved)
-					? saved as ModelKnobValue
+				saved && knob.options.some((option) => option.transportValue === saved)
+					? saved as ModelKnobTransportValue
 					: knob.defaultValue;
 		}
 	}
@@ -162,15 +206,15 @@ export function modelKnobValue(
 	values: ModelKnobValues,
 	targetId: string,
 	knob: ModelKnobSpec
-): ModelKnobValue {
+): ModelKnobTransportValue {
 	const value = values[modelKnobKey(targetId, knob.id)];
-	return knob.options.some((option) => option.id === value) ? value : knob.defaultValue;
+	return knob.options.some((option) => option.transportValue === value) ? value : knob.defaultValue;
 }
 
 export function turnStartEffortForExecutionTarget(
 	target: ExecutionTarget,
 	values: ModelKnobValues
-): ModelKnobValue | undefined {
+): ModelKnobTransportValue | undefined {
 	const capability = modelCapabilitiesForExecutionTarget(target);
 	const knob = capability?.knobs.find(
 		(candidate) => candidate.turnStartField === "effort"

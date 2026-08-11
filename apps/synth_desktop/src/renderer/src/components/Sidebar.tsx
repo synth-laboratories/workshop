@@ -1,12 +1,9 @@
-import { useMemo, useState } from "react";
-import {
-	ASYNC_PHASE_LABEL,
-	SYNC_STATUS_LABEL,
-	type LandingState
-} from "../types/landing";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { type LandingState } from "../types/landing";
 import { ModelDownloadBar } from "./ModelDownloadBar";
 import { LocalModelResidency } from "./LocalModelResidency";
 import type { LagunaStatus } from "../env";
+import { type AccountViewModel } from "../runtime/accountView";
 import { ConversationContextMenu } from "./GeneralPreferencesSettings";
 import { PaneResizeHandle } from "./PaneResizeHandle";
 
@@ -14,28 +11,30 @@ type Props = {
 	state: LandingState;
 	lagunaStatus?: LagunaStatus | null;
 	activeChatId?: string | null;
-	activeSyncId?: string | null;
-	asyncActive?: boolean;
 	inventoryActive?: boolean;
 	visualsActive?: boolean;
 	optimizersActive?: boolean;
-	connectorsActive?: boolean;
 	workingChatIds?: ReadonlySet<string>;
+	activeLocalDecodeTps?: string | null;
 	unreadChatIds?: ReadonlySet<string>;
 	pinnedChatIds?: ReadonlySet<string>;
 	conversationTitles?: Record<string, string>;
 	onNewConversation: () => void;
-	onNewSyncSession: () => void;
 	onOpenChat: (id: string) => void;
-	onOpenSyncSession: (id: string) => void;
-	onOpenAsync: () => void;
 	onOpenInventory: () => void;
 	onOpenVisuals: () => void;
 	onOpenOptimizers: () => void;
-	onOpenConnectors: () => void;
 	onSearch: () => void;
 	onSettings: () => void;
+	/** Composed by the renderer from the host's account summary. */
+	account: AccountViewModel;
+	onOpenAccount?: () => void;
+	onOpenUsage?: () => void;
+	onBilling?: (action: "upgrade" | "manage") => void;
+	onRetryAccount?: () => void;
+	onSignOut?: () => void | Promise<void>;
 	onPauseToggle: () => void;
+	onFreeLocalMemory?: () => Promise<void>;
 	onRenameChat?: (id: string, title: string) => void;
 	onPinChat?: (id: string, pinned: boolean) => void;
 	onArchiveChat?: (id: string, archived: boolean) => void;
@@ -53,19 +52,6 @@ function IconPlusSquare({ className = "nav-icon" }: { className?: string }) {
 	);
 }
 
-function IconConnectors() {
-	return (
-		<svg className="nav-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<path
-				d="M8 1.5l1.6 1.6L8 4.7 6.4 3.1 8 1.5zM3.2 6.3l1.6 1.6-1.6 1.6L1.6 7.9 3.2 6.3zM12.8 6.3l1.6 1.6-1.6 1.6-1.6-1.6 1.6-1.6zM8 11.1l1.6 1.6L8 14.3l-1.6-1.6L8 11.1z"
-				stroke="currentColor"
-				strokeWidth="1.15"
-				strokeLinejoin="round"
-			/>
-		</svg>
-	);
-}
-
 function IconSearch() {
 	return (
 		<svg className="nav-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
@@ -75,44 +61,8 @@ function IconSearch() {
 	);
 }
 
-function IconGlobe() {
-	return (
-		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.25" />
-			<path
-				d="M2.5 8h11M8 2.5c1.8 1.8 2.7 3.6 2.7 5.5S9.8 11.7 8 13.5C6.2 11.7 5.3 9.9 5.3 8S6.2 4.3 8 2.5z"
-				stroke="currentColor"
-				strokeWidth="1.15"
-			/>
-		</svg>
-	);
-}
 
-function IconCloud() {
-	return (
-		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<path
-				d="M4.8 12h6.4a2.4 2.4 0 00.15-4.8 3.2 3.2 0 00-6.1-1A2.2 2.2 0 004.8 12z"
-				stroke="currentColor"
-				strokeWidth="1.2"
-				strokeLinejoin="round"
-			/>
-		</svg>
-	);
-}
 
-function IconBolt() {
-	return (
-		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<path
-				d="M9 2.5L4.5 9h3.2L7 13.5 12.5 7H9.2L9 2.5z"
-				stroke="currentColor"
-				strokeWidth="1.2"
-				strokeLinejoin="round"
-			/>
-		</svg>
-	);
-}
 
 function IconSettings() {
 	return (
@@ -165,28 +115,29 @@ export function Sidebar({
 	state,
 	lagunaStatus = null,
 	activeChatId = null,
-	activeSyncId = null,
-	asyncActive = false,
 	inventoryActive = false,
 	visualsActive = false,
 	optimizersActive = false,
-	connectorsActive = false,
 	workingChatIds = new Set<string>(),
+	activeLocalDecodeTps = null,
 	unreadChatIds = new Set<string>(),
 	pinnedChatIds = new Set<string>(),
 	conversationTitles = {},
 	onNewConversation,
-	onNewSyncSession,
 	onOpenChat,
-	onOpenSyncSession,
-	onOpenAsync,
 	onOpenInventory,
 	onOpenVisuals,
 	onOpenOptimizers,
-	onOpenConnectors,
 	onSearch,
 	onSettings,
+	account,
+	onOpenAccount,
+	onOpenUsage,
+	onBilling,
+	onRetryAccount,
+	onSignOut,
 	onPauseToggle,
+	onFreeLocalMemory,
 	onRenameChat,
 	onPinChat,
 	onArchiveChat,
@@ -195,13 +146,52 @@ export function Sidebar({
 	sidebarVisible = true
 }: Props) {
 	const [chatsOpen, setChatsOpen] = useState(true);
-	const [cloudOpen, setCloudOpen] = useState(true);
 	const [inventoryOpen, setInventoryOpen] = useState(true);
 	const [researchOpen, setResearchOpen] = useState(true);
 	const [menu, setMenu] = useState<{ id: string; x: number; y: number; invoker: HTMLButtonElement } | null>(null);
 	const [renamingId, setRenamingId] = useState<string | null>(null);
 	const [renameDraft, setRenameDraft] = useState("");
 	const [showAllChats, setShowAllChats] = useState(false);
+	const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+	const [allowanceOpen, setAllowanceOpen] = useState(false);
+	const accountMenuRef = useRef<HTMLDivElement>(null);
+	const accountTriggerRef = useRef<HTMLButtonElement>(null);
+
+	useEffect(() => {
+		if (!accountMenuOpen) return;
+		// Read the rows on demand: `Usage remaining` expands in place, so the
+		// menu's contents change while it is open.
+		const rows = () => Array.from(
+			accountMenuRef.current?.querySelectorAll<HTMLButtonElement>("[role=\"menuitem\"]") ?? []
+		);
+		// An open menu owns the focus, so a keyboard user is inside it rather
+		// than still on the trigger behind it.
+		requestAnimationFrame(() => rows()[0]?.focus());
+		const closeOutside = (event: MouseEvent) => {
+			if (!accountMenuRef.current?.contains(event.target as Node)) setAccountMenuOpen(false);
+		};
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key === "Escape") {
+				setAccountMenuOpen(false);
+				requestAnimationFrame(() => accountTriggerRef.current?.focus());
+				return;
+			}
+			if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+			const items = rows();
+			if (!items.length) return;
+			// The arrows belong to the menu; let them not scroll the page.
+			event.preventDefault();
+			const current = items.indexOf(document.activeElement as HTMLButtonElement);
+			const step = event.key === "ArrowDown" ? 1 : -1;
+			items[(current + step + items.length) % items.length]?.focus();
+		};
+		document.addEventListener("mousedown", closeOutside);
+		document.addEventListener("keydown", onKeyDown);
+		return () => {
+			document.removeEventListener("mousedown", closeOutside);
+			document.removeEventListener("keydown", onKeyDown);
+		};
+	}, [accountMenuOpen]);
 
 	const orderedChats = useMemo(() => [...state.chats].sort((a, b) => {
 		const aPinned = pinnedChatIds.has(a.id);
@@ -235,10 +225,6 @@ export function Sidebar({
 				>
 					<IconPlusSquare />
 					New conversation
-				</button>
-				<button type="button" className={`nav-item${connectorsActive ? " active" : ""}`} onClick={onOpenConnectors} data-testid="open-connectors">
-					<IconConnectors />
-					Connectors
 				</button>
 				<button type="button" className="nav-item" onClick={onSearch} data-testid="open-search" title="Search conversations (⌘K)">
 					<IconSearch />
@@ -331,11 +317,20 @@ export function Sidebar({
 											aria-haspopup="menu"
 											data-testid={`local-chat-${chat.id}`}
 										>
-											<IconGlobe />
 											<span className="item-label">{title}</span>
 											{pinned ? <span className="chat-pin-marker" aria-label="Pinned" title="Pinned" data-testid={`chat-pinned-${chat.id}`}>Pinned</span> : null}
 											{working ? (
-												<span className="chat-working-indicator" aria-label="Working" title="Working" data-testid={`chat-working-${chat.id}`} />
+												<>
+													<span
+														className="chat-working-indicator"
+														aria-label={activeChatId === chat.id && activeLocalDecodeTps ? `Working · ${activeLocalDecodeTps}` : "Working"}
+														title={activeChatId === chat.id && activeLocalDecodeTps ? `Working · ${activeLocalDecodeTps}` : "Working"}
+														data-testid={`chat-working-${chat.id}`}
+													/>
+													{activeChatId === chat.id && activeLocalDecodeTps ? (
+														<span className="chat-working-rate" data-testid={`chat-working-rate-${chat.id}`}>{activeLocalDecodeTps}</span>
+													) : null}
+												</>
 											) : unreadChatIds.has(chat.id) ? (
 												<span className="chat-unread-indicator" aria-label="Finished, unviewed" title="Finished, unviewed" data-testid={`chat-unread-${chat.id}`} />
 											) : null}
@@ -349,6 +344,7 @@ export function Sidebar({
 									className="sidebar-show-more"
 									data-testid="sidebar-show-all-chats"
 									aria-expanded={showAllChats}
+									aria-controls="sidebar-chats"
 									onClick={() => setShowAllChats(true)}
 								>
 									Show {orderedChats.length - visibleChats.length} more
@@ -367,75 +363,13 @@ export function Sidebar({
 					) : null}
 				</div>
 
-				{/* ── Cloud = Intern sync sessions + pinned async ── */}
-				<div className="sidebar-section">
-					<div className="section-header">
-						<button
-							type="button"
-							className="section-header-label"
-							onClick={() => setCloudOpen((v) => !v)}
-							aria-expanded={cloudOpen}
-							aria-controls="sidebar-cloud"
-						>
-							Cloud
-							<SectionChevron open={cloudOpen} />
-						</button>
-						<button
-							type="button"
-							className="section-action"
-							aria-label="New sync session"
-							onClick={onNewSyncSession}
-							data-testid="new-sync-session"
-						>
-							<IconPlusSquare className="section-action-icon" />
-						</button>
-					</div>
-					{cloudOpen ? (
-						<div id="sidebar-cloud" className="section-list" data-testid="cloud-list">
-							<p className="cloud-sublabel">Sync sessions</p>
-							{state.syncSessions.length === 0 ? (
-								<p className="empty-hint">No live sessions</p>
-							) : (
-								state.syncSessions.map((session) => (
-									<button
-										key={session.id}
-										type="button"
-										className={`chat-item cloud-item${activeSyncId === session.id ? " active" : ""}`}
-										onClick={() => onOpenSyncSession(session.id)}
-										data-testid={`sync-session-${session.id}`}
-									>
-										<IconCloud />
-										<span className="item-label">{session.title}</span>
-										<span className={`status-chip status-${session.status}`}>
-											{SYNC_STATUS_LABEL[session.status]}
-										</span>
-									</button>
-								))
-							)}
-
-							{/* Pinned Async Intern — not a session row */}
-							{state.asyncIntern ? (
-								<button
-									type="button"
-									className={`async-pin${state.asyncIntern.needsInput ? " needs-input" : ""}${asyncActive ? " active" : ""}`}
-									onClick={onOpenAsync}
-									data-testid="async-intern-pin"
-								>
-									<span className="async-pin-top">
-										<IconBolt />
-										<span className="async-pin-title">Async Intern</span>
-										<span className={`status-chip status-async-${state.asyncIntern.phase}`}>
-											{ASYNC_PHASE_LABEL[state.asyncIntern.phase]}
-										</span>
-									</span>
-									<span className="async-pin-summary">{state.asyncIntern.summary}</span>
-								</button>
-							) : (
-								<p className="empty-hint">Async Intern not provisioned</p>
-							)}
-						</div>
-					) : null}
-				</div>
+				{/*
+				 * v0.1 removal contract (launch_v0p1.md §"v0.1 removal contract"):
+				 * the Cloud section — sync-session list, "New sync session" action,
+				 * and the pinned Async Intern card — is de-scoped and must not be
+				 * reachable in the shipped build. The dormant catalog, protocol,
+				 * bridge, and CloudDesk component remain for v0.2 re-entry.
+				 */}
 
 				{/* ── Research = Visuals + Inventory ── */}
 				<div className="sidebar-section">
@@ -506,18 +440,94 @@ export function Sidebar({
 			</div>
 
 			<div className="sidebar-footer">
-				<LocalModelResidency status={lagunaStatus} />
+				<LocalModelResidency status={lagunaStatus} onFreeMemory={onFreeLocalMemory} />
 				<ModelDownloadBar state={state} onPauseToggle={onPauseToggle} />
-				<button
-					type="button"
-					className="settings-btn"
-					onClick={onSettings}
-					data-testid="settings"
-					aria-label="Settings"
-				>
-					<IconSettings />
-					Settings
-				</button>
+				<div className="account-footer" ref={accountMenuRef}>
+					{accountMenuOpen ? (
+						<div id="account-menu-panel" className="account-menu" role="menu" data-testid="account-menu">
+							<div className="account-menu-identity">
+								<span className="account-avatar" aria-hidden>{account.initial}</span>
+								<span>
+									<strong>{account.title}</strong>
+									<small data-testid="account-menu-subtitle">{account.subtitle}</small>
+								</span>
+							</div>
+							{account.cloudBlockedReason ? (
+								<p className="account-menu-alert" data-testid="account-menu-blocked">{account.cloudBlockedReason}</p>
+							) : null}
+							{/*
+							  Cloud allowance, expandable. Separate from the `Usage`
+							  row below on purpose: this summarizes Synth Cloud only,
+							  while `Usage` opens the sheet where cloud and device
+							  totals are shown side by side but never blended.
+							*/}
+							<button
+								type="button"
+								className="account-menu-row"
+								onClick={() => setAllowanceOpen((value) => !value)}
+								aria-expanded={allowanceOpen}
+								aria-controls="account-allowance-panel"
+								data-testid="account-usage-remaining"
+								role="menuitem"
+							>
+								<span className="account-menu-glyph" aria-hidden>◔</span>
+								<span>Usage remaining</span>
+								{account.allowance.headline ? (
+									<span className="account-menu-value" data-testid="account-usage-remaining-value">
+										{account.allowance.headline}
+									</span>
+								) : null}
+								<SectionChevron open={allowanceOpen} />
+							</button>
+							{allowanceOpen ? (
+								<div id="account-allowance-panel" className="account-menu-panel" data-testid="account-allowance-panel">
+									{account.allowance.rows.map((row) => (
+										<p key={row.label} className="account-menu-fact">
+											<span>{row.label}</span>
+											<strong>{row.value}</strong>
+										</p>
+									))}
+									{account.allowance.note ? (
+										<p className="account-menu-note" data-testid="account-allowance-note">{account.allowance.note}</p>
+									) : null}
+									{account.allowance.isDevSeed ? (
+										<p className="account-menu-note" data-testid="account-allowance-dev-seed">Local/dev plan stand-in</p>
+									) : null}
+								</div>
+							) : null}
+							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); onOpenUsage?.(); }} data-testid="account-open-usage" role="menuitem">
+								<span className="account-menu-glyph" aria-hidden>▤</span><span>Usage</span>
+							</button>
+							{account.primaryAction && account.primaryAction.kind !== "sign_in" ? (
+								<button
+									type="button"
+									className="account-menu-row"
+									data-testid="account-primary-action"
+									role="menuitem"
+									onClick={() => {
+										setAccountMenuOpen(false);
+										if (account.primaryAction?.kind === "retry") onRetryAccount?.();
+										else onBilling?.(account.primaryAction?.kind === "upgrade" ? "upgrade" : "manage");
+									}}
+								>
+									<span className="account-menu-glyph" aria-hidden>↗</span><span>{account.primaryAction.label}</span>
+								</button>
+							) : null}
+							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); (onOpenAccount ?? onSettings)(); }} data-testid="open-account-settings" role="menuitem">
+								<span className="account-menu-glyph" aria-hidden>◎</span><span>{account.signedIn ? "Manage account" : "Sign in to Synth"}</span>
+							</button>
+							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); onSettings(); }} data-testid="account-menu-settings" role="menuitem">
+								<IconSettings /><span>Settings</span><kbd>⌘,</kbd>
+							</button>
+							{account.signedIn ? <button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); void onSignOut?.(); }} data-testid="account-log-out" role="menuitem"><span className="account-menu-glyph" aria-hidden>↪</span><span>Log out</span></button> : null}
+						</div>
+					) : null}
+					<button ref={accountTriggerRef} type="button" className="account-trigger" onClick={() => setAccountMenuOpen((value) => !value)} aria-expanded={accountMenuOpen} aria-controls="account-menu-panel" aria-haspopup="menu" data-testid="account-menu-trigger">
+						<span className="account-avatar" aria-hidden>{account.initial}</span>
+						<span className="account-trigger-copy"><strong>{account.title}</strong><small>{account.subtitle}</small></span>
+						<span className="account-help" aria-hidden>?</span>
+					</button>
+				</div>
 			</div>
 			{onSidebarWidthChange ? (
 				<PaneResizeHandle

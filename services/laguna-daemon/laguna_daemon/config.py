@@ -169,7 +169,8 @@ class LagunaConfig:
                 os.getenv("SYNTH_LAGUNA_IDLE_UNLOAD_SECONDS", "900")
             ),
             context_length=int(
-                os.getenv("SYNTH_LAGUNA_CONTEXT_LENGTH", str(DEFAULT_CONTEXT_LENGTH))
+                os.getenv("SYNTH_LAGUNA_CONTEXT_LENGTH")
+                or str(DEFAULT_CONTEXT_LENGTH)
             ),
             started_at=time.time(),
         )

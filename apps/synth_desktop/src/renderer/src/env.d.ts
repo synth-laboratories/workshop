@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { AppEvent, CodexActivityEvent, ContainerDeployment, CoreDiagnostics, InternSessionControlRequest, InternSessionControlResult, InternSessionCreateRequest, InternSessionSendRequest, InternSessionSendResult, ResolvedTraceProjection, RuntimeEvent, Session, TraceBundleIngestRequest, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry } from "@synth/runtime-protocol";
+import type { AppEvent, CodexActivityEvent, ContainerDeployment, CoreDiagnostics, InternSessionControlRequest, InternSessionControlResult, InternSessionCreateRequest, InternSessionSendRequest, InternSessionSendResult, ResolvedTraceProjection, RuntimeEvent, Session, TraceBundleIngestRequest, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 
 export {};
 
@@ -69,17 +69,30 @@ export type LagunaModelHit = {
 	shardCount: number;
 	totalBytes: number;
 	selected: boolean;
+	runtimeReady: boolean;
+	companionBytes: number;
+};
+
+export type LagunaDownloadProgress = {
+	modelId: string;
+	phase: "preparing" | "provisioning" | "downloading" | "ready" | "error";
+	detail: string;
+	downloadedBytes?: number;
+	totalBytes?: number;
 };
 
 export type LagunaBridge = {
 	getStatus(): Promise<LagunaStatus>;
 	reload(): Promise<LagunaStatus>;
+	freeMemory?(): Promise<{ released: boolean; conflict: boolean; detail: string | null }>;
 	onStatus(listener: (status: LagunaStatus) => void): () => void;
 	listModels(): Promise<LagunaModelHit[]>;
 	chooseModelDirectory(): Promise<string | null>;
 	setModelDirectory(path: string): Promise<LagunaModelHit>;
 	clearModelDirectory(): Promise<void>;
-	downloadModel(): Promise<LagunaModelHit>;
+	downloadModel(modelId: string): Promise<LagunaModelHit>;
+	deleteModel(modelId: string): Promise<void>;
+	onDownloadProgress?(listener: (progress: LagunaDownloadProgress) => void): () => void;
 };
 
 export type WhisperModelHit = {
@@ -176,6 +189,11 @@ export type SynthConfigBridge = {
 		backendUrl: string;
 		envFile: string;
 		apiKeyEnv: string;
+		/**
+		 * Write-only. The host stores these in the 0600 env file and never
+		 * returns them; `SynthBackendSettings` reports only fingerprint and
+		 * source. Omit to leave the stored secret untouched.
+		 */
 		apiKey?: string;
 		openrouterApiKey?: string;
 	}): Promise<SynthBackendSettings>;
@@ -192,7 +210,7 @@ export type CodexSessionStart = {
 	sessionId: string;
 	workspace: string;
 	baseUrl: string;
-	apiKey: string;
+	apiKey?: string;
 	model: string;
 	providerName: string;
 	providerTitle: string;
@@ -201,6 +219,7 @@ export type CodexSessionStart = {
 	sandbox?: string;
 	threadId?: string;
 	multiAgentVersion?: MultiAgentVersion;
+	autoCompactTokenLimit: number;
 };
 
 export type CodexSessionInfo = { sessionId: string; threadId: string; turnId?: string | null };
@@ -247,6 +266,8 @@ export type CodexBridge = {
 		options?: { compactBeforeModelSwitch?: boolean }
 	): Promise<CodexSessionInfo>;
 	interrupt(sessionId: string): Promise<void>;
+	/** Atomically attaches/resumes a Codex thread and starts ad-hoc compaction. */
+	compact?(request: CodexSessionStart): Promise<void>;
 	/** Mid-turn user input via Codex `turn/steer`. Optional on browser fixtures without a native runtime. */
 	steerTurn?(sessionId: string, text: string): Promise<void>;
 	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject"): Promise<void>;
@@ -283,6 +304,55 @@ export type InventoryBridge = {
 	resolveTraceProjection(traceDigest: string, projectionKind?: string): Promise<ResolvedTraceProjection>;
 	listUsage(limit?: number): Promise<UsageLedgerEntry[]>;
 	counts(): Promise<InventoryCounts>;
+};
+
+export type ModelPerformanceSummary = {
+	provider: string;
+	modelId: string;
+	measurementKind: "decode" | "observed_stream" | "end_to_end" | "provider_reported";
+	sampleCount: number;
+	tpsP50: number | null;
+	tpsP95: number | null;
+	ttftP50Ms: number | null;
+	lastObservedAt: string;
+};
+
+export type ModelPerformanceBridge = {
+	summaries(): Promise<ModelPerformanceSummary[]>;
+};
+
+/** Device-wide usage dashboard, aggregated natively over `usage_records`. */
+export type UsageBridge = {
+	summary(window: UsageWindow): Promise<UsageSummary>;
+};
+
+/** One provider price card, served from the native tariff catalog — the same
+ * numbers the cost estimator prices with. */
+export type TariffCard = {
+	provider: string;
+	modelId: string;
+	inputUsdPerM: number;
+	outputUsdPerM: number;
+	cachedInputUsdPerM: number | null;
+	cacheWriteUsdPerM: number | null;
+};
+
+export type TariffsBridge = {
+	catalog(): Promise<TariffCard[]>;
+};
+
+/** Passive release check: version facts only. The download action always
+ * opens the fixed public download page. */
+export type UpdateStatus = {
+	currentVersion: string;
+	channel: string;
+	latestVersion: string | null;
+	updateAvailable: boolean;
+};
+
+export type UpdatesBridge = {
+	status(): Promise<UpdateStatus>;
+	openDownload(): Promise<void>;
 };
 
 export type VisualTemplateMeta = {
@@ -422,11 +492,100 @@ export type SynthSignInPoll =
 	| { status: "active" }
 	| { status: "expired"; reason: string };
 
+/**
+ * Shell account state. `pairing` is renderer-owned (a sign-in is in flight);
+ * every other value is decided by the Rust host from the Account Snapshot.
+ */
+export type SynthAccountState =
+	| "local_only"
+	| "signed_out"
+	| "pairing"
+	| "active"
+	| "limited"
+	| "past_due"
+	| "canceled"
+	| "error"
+	| "unknown";
+
+/** `cloud` = Synth Cloud snapshot; `dev_seed` = the labelled local/dev stand-in. */
+export type SynthAccountSource = "cloud" | "dev_seed" | "none";
+
+export type SynthAccountPlan = {
+	name: string;
+	tier?: string;
+	state?: string;
+	/** False when the backend reports no dollar allowance: show no dollars. */
+	metered?: boolean;
+	monthlyAllowanceUsd?: number;
+	usedUsd: number;
+	remainingUsd?: number;
+	resetsAt?: string;
+	renewsAt?: string;
+	source?: SynthAccountSource;
+};
+
+export type SynthAccountOrganization = {
+	id: string;
+	displayName?: string;
+	role?: string;
+};
+
+export type SynthAccountUsageWindow = {
+	events: number;
+	costUsd: number;
+};
+
+export type SynthAccountCloudUsage = {
+	today: SynthAccountUsageWindow;
+	sevenDays: SynthAccountUsageWindow;
+	thirtyDays: SynthAccountUsageWindow;
+};
+
+export type SynthAccountBilling = {
+	checkoutUrl?: string;
+	portalUrl?: string;
+	upgradeTier?: string;
+};
+
+export type SynthAccountPlanOption = {
+	tier: string;
+	displayName: string;
+	priceUsd: number;
+	monthlyAllowanceUsd: number;
+};
+
+export type SynthAccountSummary = {
+	signedIn: boolean;
+	/** Absent on older hosts; the renderer derives a state when it is missing. */
+	state?: SynthAccountState;
+	accountId?: string;
+	displayName?: string;
+	email?: string;
+	organization?: SynthAccountOrganization;
+	environment: "local" | "dev" | "prod";
+	source?: SynthAccountSource;
+	plan?: SynthAccountPlan;
+	cloudUsage?: SynthAccountCloudUsage;
+	billing?: SynthAccountBilling;
+	catalog?: SynthAccountPlanOption[];
+	lastUpdated?: string;
+	/** True when the cloud facts shown are a cached copy after a failed refresh. */
+	stale?: boolean;
+	error?: string;
+};
+
+export type SynthBillingAction = "upgrade" | "manage";
+
 export type SynthAccountBridge = {
 	beginSignIn(): Promise<SynthSignInBegin>;
 	pollSignIn(): Promise<SynthSignInPoll>;
 	cancelSignIn(): Promise<void>;
 	signOut(): Promise<SynthBackendSettings>;
+	getSummary(): Promise<SynthAccountSummary>;
+	/** Force a snapshot refetch (retry, or return from hosted checkout). */
+	refresh?(): Promise<SynthAccountSummary>;
+	/** Opens a backend-issued hosted URL in the system browser. */
+	openBilling?(action: SynthBillingAction, tier?: string): Promise<string>;
 };
 
 declare global {
@@ -449,6 +608,10 @@ declare global {
 		synthCore?: CoreBridge;
 		synthIntern?: InternBridge;
 		synthInventory?: InventoryBridge;
+		synthModelPerformance?: ModelPerformanceBridge;
+		synthUsage?: UsageBridge;
+		synthTariffs?: TariffsBridge;
+		synthUpdates?: UpdatesBridge;
 		synthVisuals?: VisualsBridge;
 		synthOptimizers?: OptimizersBridge;
 		synthTerminal: TerminalBridge;
