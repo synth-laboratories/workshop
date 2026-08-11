@@ -62,7 +62,7 @@ pub struct AccountPlan {
     pub metered: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub monthly_allowance_usd: Option<f64>,
-    pub used_usd: f64,
+    pub used_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remaining_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -299,7 +299,7 @@ fn dev_seed_plan(
         state: Some("active".into()),
         metered: true,
         monthly_allowance_usd: Some(usd(stored.monthly_allowance_cents)),
-        used_usd: usd(used_cents),
+        used_usd: Some(usd(used_cents)),
         remaining_usd: Some(usd(remaining_cents)),
         resets_at: Some(next_monthly_reset(now).to_rfc3339()),
         renews_at: None,
@@ -316,7 +316,7 @@ fn plan_from_snapshot(snapshot: &CloudSnapshot) -> AccountPlan {
         state: Some(snapshot.plan.state.clone()),
         metered,
         monthly_allowance_usd: allowance.limit_cents.map(usd),
-        used_usd: usd(allowance.used_cents),
+        used_usd: allowance.used_cents.map(usd),
         remaining_usd: allowance.remaining_cents.map(usd),
         resets_at: allowance.resets_at.clone(),
         renews_at: snapshot.plan.renews_at.clone(),
@@ -527,7 +527,7 @@ mod tests {
             },
             allowance: CloudAllowance {
                 limit_cents,
-                used_cents,
+                used_cents: Some(used_cents),
                 remaining_cents: limit_cents.map(|limit| (limit - used_cents).max(0)),
                 resets_at: Some("2026-09-01T00:00:00+00:00".into()),
                 source: "entitlement".into(),
@@ -619,7 +619,7 @@ mod tests {
         assert_eq!(plan.name, "Pro");
         assert_eq!(plan.tier.as_deref(), Some("pro"));
         assert_eq!(plan.monthly_allowance_usd, Some(200.0));
-        assert_eq!(plan.used_usd, 42.50);
+        assert_eq!(plan.used_usd, Some(42.50));
         assert_eq!(plan.remaining_usd, Some(157.50));
         assert_eq!(plan.source, SOURCE_CLOUD);
         let usage = summary.cloud_usage.expect("cloud usage");
@@ -757,7 +757,7 @@ mod tests {
         assert_eq!(plan.name, "Synth Dev");
         assert_eq!(plan.source, SOURCE_DEV_SEED);
         assert_eq!(plan.monthly_allowance_usd, Some(200.0));
-        assert_eq!(plan.used_usd, 0.0);
+        assert_eq!(plan.used_usd, Some(0.0));
         assert_eq!(plan.remaining_usd, Some(200.0));
         assert_eq!(first.source, SOURCE_DEV_SEED);
         assert_eq!(first.display_name.as_deref(), Some("Synth Dev"));
@@ -788,7 +788,7 @@ mod tests {
             .unwrap()
             .plan
             .unwrap();
-        assert_eq!(plan.used_usd, 13.0);
+        assert_eq!(plan.used_usd, Some(13.0));
         assert_eq!(plan.remaining_usd, Some(187.0));
     }
 
@@ -800,7 +800,7 @@ mod tests {
             .unwrap()
             .plan
             .unwrap();
-        assert_eq!(plan.used_usd, 250.0);
+        assert_eq!(plan.used_usd, Some(250.0));
         assert_eq!(plan.remaining_usd, Some(0.0));
     }
 

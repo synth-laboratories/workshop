@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 const SNAPSHOT_PATH: &str = "/api/v1/desktop/account-snapshot";
 const CHECKOUT_PATH: &str = "/api/v1/billing/checkout-session";
 const PORTAL_PATH: &str = "/api/v1/billing/portal-session";
+const CREDITS_UNKNOWN_PATH: &str = "/api/v1/billing/credits-unknown";
 /// Long enough that opening the menu repeatedly costs nothing, short enough
 /// that a checkout completed in the browser shows up on the next open.
 const CACHE_TTL_SECONDS: i64 = 60;
@@ -66,7 +67,7 @@ pub struct CloudAllowance {
     #[serde(default)]
     pub limit_cents: Option<i64>,
     #[serde(default)]
-    pub used_cents: i64,
+    pub used_cents: Option<i64>,
     #[serde(default)]
     pub remaining_cents: Option<i64>,
     #[serde(default)]
@@ -254,6 +255,13 @@ impl AccountError {
             _ => None,
         }
     }
+
+    fn credits_unknown_reason(&self) -> &'static str {
+        match self {
+            Self::Malformed { .. } | Self::UnsupportedSchema { .. } => "malformed_snapshot",
+            _ => "request_failed",
+        }
+    }
 }
 
 impl std::fmt::Display for AccountError {
@@ -343,13 +351,48 @@ impl AccountCloudClient {
                     unauthenticated: false,
                 }
             }
-            Err(error) => SnapshotRead {
-                snapshot: cached.as_ref().map(|entry| entry.snapshot.clone()),
-                stale: cached.is_some(),
-                error: Some(error.public_message()),
-                fetched_at: cached.as_ref().map(|entry| entry.fetched_at),
-                unauthenticated: false,
-            },
+            Err(error) => {
+                if cached.is_none() {
+                    self.report_credits_unknown(
+                        backend_url,
+                        api_key,
+                        error.credits_unknown_reason(),
+                    )
+                    .await;
+                }
+                SnapshotRead {
+                    snapshot: cached.as_ref().map(|entry| entry.snapshot.clone()),
+                    stale: cached.is_some(),
+                    error: Some(error.public_message()),
+                    fetched_at: cached.as_ref().map(|entry| entry.fetched_at),
+                    unauthenticated: false,
+                }
+            }
+        }
+    }
+
+    async fn report_credits_unknown(&self, backend_url: &str, api_key: &str, reason: &str) {
+        let result = self
+            .http
+            .post(format!(
+                "{}{}",
+                backend_url.trim_end_matches('/'),
+                CREDITS_UNKNOWN_PATH
+            ))
+            .bearer_auth(api_key)
+            .json(&serde_json::json!({
+                "surface": "desktop_account",
+                "reason": reason,
+            }))
+            .send()
+            .await;
+        match result {
+            Ok(response) if response.status().is_success() => {}
+            Ok(response) => eprintln!(
+                "credits_unknown observability report failed with status {}",
+                response.status()
+            ),
+            Err(error) => eprintln!("credits_unknown observability report failed: {error}"),
         }
     }
 
