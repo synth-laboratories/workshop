@@ -1,4 +1,5 @@
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::{env, fs, path::PathBuf};
 
 pub const INSTANCE_ENV: &str = "SYNTH_DESKTOP_INSTANCE";
@@ -109,14 +110,21 @@ pub fn mark_manifest_running() {
         return;
     };
     let diagnostics = diagnostics();
+    let executable_digest = fs::read(&diagnostics.executable)
+        .ok()
+        .map(|bytes| format!("sha256:{:x}", Sha256::digest(bytes)));
     manifest["runtime"] = serde_json::json!({
         "status": "running",
         "pid": diagnostics.process_id,
         "executable": diagnostics.executable,
+        "executableDigest": executable_digest,
         "sourceRevision": diagnostics.source_revision,
         "buildRevision": diagnostics.build_revision,
         "buildTimestamp": diagnostics.build_timestamp,
     });
+    manifest["executableDigest"] = executable_digest
+        .map(serde_json::Value::String)
+        .unwrap_or(serde_json::Value::Null);
     if let Ok(body) = serde_json::to_vec_pretty(&manifest) {
         let temporary = path.with_extension("json.running");
         if fs::write(&temporary, body).is_ok() {
