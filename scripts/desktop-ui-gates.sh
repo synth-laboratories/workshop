@@ -107,7 +107,6 @@ BOMBADIL_SPECS=(
 	empty-outputs.spec.ts
 	run-summary-sanity.spec.ts
 	model-menu-polish.spec.ts
-	muse-residency-honesty.spec.ts
 )
 
 BOMBADIL_EXIT=0

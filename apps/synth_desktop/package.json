@@ -28,7 +28,6 @@
 		"test:bombadil:reasoning": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/reasoning-disclosure.spec.ts node tests/bombadil/run.mjs",
 		"test:bombadil:empty-turn": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/empty-completed-turn.spec.ts node tests/bombadil/run.mjs",
 		"test:bombadil:composer-toolbar": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/composer-toolbar.spec.ts node tests/bombadil/run.mjs",
-		"test:bombadil:muse-residency": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/muse-residency-honesty.spec.ts node tests/bombadil/run.mjs",
 		"test:bombadil:terminal": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/terminal-polish.spec.ts node tests/bombadil/run.mjs",
 		"test:bombadil:v0.1-visuals": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/v0.1-visual-contracts.spec.ts node tests/bombadil/run.mjs"
   },

@@ -28,6 +28,8 @@ test("Synth Cloud Laguna S appears under SYNTH CLOUD when api key is configured"
 	await page.getByTestId("composer-model").click();
 	const menu = page.getByTestId("composer-model-menu");
 	await expect(menu).toBeVisible();
+	await expect(menu).not.toContainText(/Muse|Spark/i);
+	await expect(page.getByTestId("composer-model-option-openrouter-muse-spark")).toHaveCount(0);
 
 	const cloudGroup = menu.locator(".composer-model-group").filter({
 		has: page.locator(".composer-model-group-label", { hasText: "Synth Cloud" })

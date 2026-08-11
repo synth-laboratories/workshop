@@ -69,6 +69,22 @@ test("execution targets include Laguna local + OpenRouter Luna/Laguna + Synth Cl
   assert.ok(bridge.includes("request: { sessionId, prompt, effort }"));
 });
 
+test("v0.1 model surfaces exclude Muse, GGUF, and DFlash", () => {
+  const files = [
+    "App.tsx",
+    "types/landing.ts",
+    "components/Composer.tsx",
+    "components/ProviderMark.tsx",
+    "components/SettingsPage.tsx",
+    "runtime/desktopBridge.ts",
+    "runtime/modelCapabilities.ts",
+    "runtime/nativeCodex.ts",
+    "runtime/sessionView.ts",
+  ];
+  const modelSurface = files.map(read).join("\n");
+  assert.doesNotMatch(modelSurface, /Muse Spark|muse-spark|openrouter-muse|OPENROUTER_MUSE|GGUF|DFlash/i);
+});
+
 test("model knobs are registered once and consumed without model-specific UI or transport branches", () => {
   const registry = read("runtime/modelCapabilities.ts");
   const composer = read("components/Composer.tsx");

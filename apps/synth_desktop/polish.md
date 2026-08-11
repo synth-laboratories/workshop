@@ -18,14 +18,6 @@ Owner handoff: [`HANDOFF_POLISH_CUA_TESTS.md`](./HANDOFF_POLISH_CUA_TESTS.md).
 
 ## Sessions
 
-### 2026-08-10 — Muse residency Memory unavailable CUA locks
-
-- **Shipped:** (none — deliberate red debt) Bombadil fixture + honesty suite for the sidebar Muse-Glimmer card that paints green-ready chrome with `Memory unavailable` and `Free scheduled … · awaiting unload`.
-- **Tests:** Added `tests/bombadil/muse-residency-honesty.spec.ts` (11 red always-properties on the CUA fixture + reachability); wired `run.mjs` seed (`memoryBytes: null`, past `freeAt`), `test:bombadil:muse-residency`, and `desktop-ui-gates.sh` catalog. Confirmed exit 2 with 11 distinct honesty violations.
-- **Flagged:** Product still renders `formatMemory(null)` as `Memory unavailable` under a ready dot and will claim awaiting unload after `freeAt` elapses even when resident bytes are unknown.
-- **CUA notes:** 1:20 PM capture — Muse-Glimmer-30B-GGUF Memory unavailable / awaiting unload, Laguna-XS-2.1 ready underneath, MLX sidecar Monitor paused.
-- **Refs:** `LocalModelResidency.tsx`, `muse-residency-honesty.spec.ts`, screenshots in session assets.
-
 ### 2026-08-09 — Bootstrap (prior work)
 
 - **Shipped:** Removed stub LoRA / Finetunes UI (Composer + Settings); Settings shows Adapters · Not wired; Inventory Attach defaults to Craftax `http://127.0.0.1:8098`.

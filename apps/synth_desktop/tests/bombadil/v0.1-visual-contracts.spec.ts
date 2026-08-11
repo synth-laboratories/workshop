@@ -46,6 +46,7 @@ const visualContracts = extract((state: any) => {
 		modelsPoint: point(modelsButton),
 		settingsVisible: Boolean(document.querySelector('[data-testid="settings-page"]')),
 		providersVisible: Boolean(providerCard),
+		forbiddenModelSurfaceAbsent: !/Muse Spark|muse-spark|GGUF|DFlash/i.test(document.body.textContent ?? ""),
 		titlebarIsClean: Boolean(titlebar) &&
 			!titlebar.querySelector('[data-testid="runtime-status"], [data-testid="titlebar-account"], [data-testid="titlebar-account-avatar"], [data-testid="titlebar-cloud-status"]') &&
 			!actions.some((element) => !["toggle-terminal", "toggle-inference-rail"].includes(element.dataset.testid ?? "")) &&
@@ -124,6 +125,10 @@ export const credentialed_model_surface_is_exercised = eventually(() =>
 
 export const legacy_titlebar_chrome_never_returns = always(() =>
 	visualContracts.current.titlebarIsClean
+);
+
+export const v01_never_exposes_muse_or_legacy_model_formats = always(() =>
+	visualContracts.current.forbiddenModelSurfaceAbsent
 );
 
 export const authorized_provider_rows_remain_complete = always(() =>

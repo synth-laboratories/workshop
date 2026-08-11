@@ -177,13 +177,8 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 	await expect(luna).toContainText("Cache write / 1M$0.25");
 	await expect(models.getByTestId("authorized-model-openrouter-laguna-s")).toContainText("$0.20");
 	await expect(models.getByTestId("authorized-model-synth-cloud-laguna-s")).toContainText("Plan");
-	// Muse Spark has no tariff card yet: identity renders, no pricing block,
-	// and no invented dollars.
-	const muse = models.getByTestId("authorized-model-openrouter-muse-spark");
-	await expect(muse).toContainText("meta/muse-spark-1.2");
-	await expect(muse).not.toContainText("$");
 	const marks = models.locator(".authorized-model-mark");
-	await expect(marks).toHaveCount(4);
+	await expect(marks).toHaveCount(3);
 	const markBoxes = await marks.evaluateAll((elements) => elements.map((element) => {
 		const box = element.getBoundingClientRect();
 		return { width: box.width, height: box.height, centerX: box.left + box.width / 2 };
