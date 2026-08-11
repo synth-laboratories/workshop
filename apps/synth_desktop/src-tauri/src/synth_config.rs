@@ -11,6 +11,10 @@ const DEFAULT_PROFILE: &str = "prod";
 const DEFAULT_API_KEY_ENV: &str = "SYNTH_API_KEY";
 const DEFAULT_WORKER_KEY_ENV: &str = "SMR_WORKER_API_KEY";
 const OPENROUTER_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
+/// Redirects only Codex's native Responses traffic for the `synth-cloud`
+/// provider — never account, billing, or usage calls. See
+/// `responses_gateway_url` for the split this exists to make.
+const RESPONSES_GATEWAY_URL_ENV: &str = "SYNTH_RESPONSES_GATEWAY_URL";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -438,6 +442,32 @@ pub fn resolve() -> Result<ResolvedBackend> {
     })
 }
 
+/// The endpoint Codex's native Responses wire traffic should use for the
+/// `synth-cloud` provider.
+///
+/// The Synth Hosted Laguna gateway is a native `/v1/responses` passthrough
+/// with no server-side session store: Codex already sends full history and
+/// `store: false` on every turn (see `codex::apply_synth_cloud_provider`), so
+/// nothing here needs to add continuity — this function only decides *which
+/// host* receives that stateless traffic.
+///
+/// Account, billing, and usage calls (`account_cloud`, `tariffs`, the
+/// account-snapshot fetch, …) always read `ResolvedBackend::backend_url`
+/// directly and never call this function — signing in, plan/usage display,
+/// and checkout stay pinned to the main backend no matter what this returns.
+/// Only Codex's Responses requests can be redirected, by setting
+/// `SYNTH_RESPONSES_GATEWAY_URL` to a dedicated gateway: a local Laguna dev
+/// slot (`http://127.0.0.1:<port>/api/v1`) or a staging Responses gateway
+/// under test. Unset or blank leaves today's behavior unchanged — one URL
+/// for both account/billing and Responses traffic.
+pub fn responses_gateway_url(resolved: &ResolvedBackend) -> String {
+    env::var(RESPONSES_GATEWAY_URL_ENV)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| resolved.backend_url.clone())
+}
+
 fn config_path() -> PathBuf {
     env::var_os("SYNTH_DESKTOP_CONFIG")
         .or_else(|| env::var_os("SYNTH_INTERN_CONFIG"))
@@ -802,6 +832,39 @@ mod tests {
             canonical_model_id("poolside/Laguna-XS-2.1-NVFP4-mlx"),
             "laguna-xs-2.1"
         );
+    }
+
+    /// Exercises every `SYNTH_RESPONSES_GATEWAY_URL` state in one test, in one
+    /// thread: it is a process-global env var, and Rust runs tests in
+    /// parallel by default, so spreading these across separate `#[test]`s
+    /// would race on the same key.
+    #[test]
+    fn responses_gateway_url_redirects_only_the_responses_gateway() {
+        let resolved = ResolvedBackend {
+            config_path: PathBuf::from("/tmp/config.toml"),
+            env_file: PathBuf::from("/tmp/.env"),
+            backend_url: "https://api.usesynth.ai".into(),
+            api_key: None,
+            worker_key: None,
+        };
+
+        env::remove_var(RESPONSES_GATEWAY_URL_ENV);
+        assert_eq!(responses_gateway_url(&resolved), resolved.backend_url);
+
+        // Guards the split this env var exists to make: overriding it must
+        // never change `resolved.backend_url` itself, which is what
+        // account/billing calls read directly.
+        env::set_var(RESPONSES_GATEWAY_URL_ENV, "http://127.0.0.1:41209/api/v1");
+        assert_eq!(
+            responses_gateway_url(&resolved),
+            "http://127.0.0.1:41209/api/v1"
+        );
+        assert_eq!(resolved.backend_url, "https://api.usesynth.ai");
+
+        env::set_var(RESPONSES_GATEWAY_URL_ENV, "   ");
+        assert_eq!(responses_gateway_url(&resolved), resolved.backend_url);
+
+        env::remove_var(RESPONSES_GATEWAY_URL_ENV);
     }
 
     #[test]

@@ -23,9 +23,13 @@ class CompiledTurn:
     """A protocol-neutral unit of work handed to a backend.
 
     Everything a backend needs to generate lives in the neutral fields. The
-    `request`/`context_items` pair is Responses-only provenance retained for the
-    remote passthrough backend, which forwards the original body upstream; a
-    Chat turn leaves them empty rather than fabricating a Responses request.
+    `request`/`context_items` pair is Responses-only provenance retained for
+    the remote passthrough backend. That backend forwards `context_items` —
+    the coordinator's fully resolved history, with any `previous_response_id`
+    chain already flattened into ordinary items — as the upstream `input`,
+    never the client's original short `input` plus a `previous_response_id`
+    the upstream cannot resolve. A Chat turn leaves both fields empty rather
+    than fabricating a Responses request.
     """
 
     generation_id: str

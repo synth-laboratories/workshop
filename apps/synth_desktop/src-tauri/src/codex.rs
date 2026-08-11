@@ -2279,9 +2279,22 @@ fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Result<()> {
             toml_string(COMPACT_PROMPT)
         )
     };
+    // The Synth Hosted Laguna gateway behind `synth-cloud` is itself a
+    // stateless native Responses passthrough with no `previous_response_id`
+    // session store (see `laguna_daemon.responses_api.backends.remote_responses`).
+    // Telling Codex to disable response storage keeps both sides of the wire
+    // consistent: Codex sends `store: false` and the full turn history on
+    // every request instead of a bare `previous_response_id`, so nothing
+    // here ever depends on a server-held session or a `submit_tool_outputs`
+    // continuation the gateway cannot serve.
+    let disable_response_storage_config = if requires_disabled_response_storage(request) {
+        "disable_response_storage = true\n"
+    } else {
+        ""
+    };
     let config = format!(
-        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"default\"\n{}\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\nenv_key = \"{}\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n# Codex selects provider-hosted compaction for OpenAI/Azure and local summarization otherwise.\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
-        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), compaction_config, workspace_write_config, toml_key(provider), toml_string(title), toml_string(&responses_base_url(&request.base_url)), toml_string(env_key), agents_enabled, multi_agent_v1, multi_agent_v2
+        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"default\"\n{}{}\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\nenv_key = \"{}\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n# Codex selects provider-hosted compaction for OpenAI/Azure and local summarization otherwise.\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
+        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), disable_response_storage_config, compaction_config, workspace_write_config, toml_key(provider), toml_string(title), toml_string(&responses_base_url(&request.base_url)), toml_string(env_key), agents_enabled, multi_agent_v1, multi_agent_v2
     );
     fs::write(home.join("config.toml"), config)?;
     let auth = home.join("auth.json");
@@ -2394,6 +2407,26 @@ fn auto_compact_token_limit(request: &CodexSessionStartRequest) -> u64 {
             model_context_window(&request.model) * 4 / 5
         }
     })
+}
+
+/// Whether Codex should disable server-side response storage for this
+/// session's provider.
+///
+/// `synth-cloud` is the only provider this applies to today: the Synth
+/// Hosted Laguna gateway behind it is a stateless native Responses
+/// passthrough (`store: false` is forced upstream, and any
+/// `previous_response_id` a client sends is dropped rather than resolved —
+/// see `remote_responses.py`'s `_passthrough_body`). Setting
+/// `disable_response_storage = true` makes Codex match that contract: it
+/// sends `store: false` and full turn history with every request, so it
+/// never depends on the gateway resolving a `previous_response_id` or
+/// serving a `submit_tool_outputs` continuation against session state the
+/// gateway does not keep.
+fn requires_disabled_response_storage(request: &CodexSessionStartRequest) -> bool {
+    request
+        .provider_name
+        .as_deref()
+        .is_some_and(|name| name.eq_ignore_ascii_case("synth-cloud"))
 }
 
 fn supports_provider_compaction(request: &CodexSessionStartRequest) -> bool {
@@ -3714,9 +3747,49 @@ mod tests {
         assert!(config.contains("model_auto_compact_token_limit = 250000"));
         assert!(config.contains("tool_output_token_limit = 12000"));
         assert!(config.contains("CONTEXT CHECKPOINT COMPACTION for a coding agent"));
+        // The Laguna gateway behind synth-cloud is a stateless passthrough
+        // with no server-side session store: Codex must send `store: false`
+        // and full history on every turn rather than leaning on
+        // `previous_response_id` / `submit_tool_outputs` continuity the
+        // gateway cannot serve.
+        assert!(config.contains("disable_response_storage = true"));
         let optimizer_skill =
             fs::read_to_string(home.join("skills/use-synth-optimizers/SKILL.md")).unwrap();
         assert!(optimizer_skill.contains("optimizer_manage"));
+    }
+
+    #[test]
+    fn only_synth_cloud_gets_disable_response_storage() {
+        let temp = tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+
+        let mut openrouter = test_request(&workspace, "openrouter-storage");
+        openrouter.provider_name = Some("openrouter".into());
+        openrouter.provider_title = Some("OpenRouter Responses".into());
+        openrouter.base_url = "https://openrouter.ai/api/v1".into();
+        let openrouter_home = temp.path().join("openrouter-home");
+        ensure_home(&openrouter_home, &openrouter).unwrap();
+        let openrouter_config = fs::read_to_string(openrouter_home.join("config.toml")).unwrap();
+        assert!(!openrouter_config.contains("disable_response_storage"));
+
+        let mut local_laguna = test_request(&workspace, "local-laguna-storage");
+        local_laguna.provider_name = Some("local-laguna".into());
+        local_laguna.provider_title = Some("Local Laguna".into());
+        local_laguna.base_url = "http://127.0.0.1:7333".into();
+        let local_laguna_home = temp.path().join("local-laguna-home");
+        ensure_home(&local_laguna_home, &local_laguna).unwrap();
+        let local_laguna_config =
+            fs::read_to_string(local_laguna_home.join("config.toml")).unwrap();
+        assert!(!local_laguna_config.contains("disable_response_storage"));
+
+        assert!(requires_disabled_response_storage(&{
+            let mut synth_cloud = test_request(&workspace, "synth-cloud-storage");
+            synth_cloud.provider_name = Some("synth-cloud".into());
+            synth_cloud
+        }));
+        assert!(!requires_disabled_response_storage(&openrouter));
+        assert!(!requires_disabled_response_storage(&local_laguna));
     }
 
     #[test]
