@@ -92,7 +92,7 @@ through the same `codex::provider_class` table as Codex session preparation:
 | provider | credential / daemon | chat endpoint |
 | --- | --- | --- |
 | `openrouter` | host OpenRouter key | OpenRouter `/chat/completions` |
-| `synth-cloud` | brokered Synth API key | `{backend}/api/v1/chat/completions` |
+| `synth-cloud` | brokered Synth API key | `{backend}/api/v1/responses` |
 | `local-laguna` | `LagunaManager.ensure` + local key | `{laguna}/v1/chat/completions` |
 
 Call `POST /v1/policy_preflight` before a multi-rollout batch. Missing keys or

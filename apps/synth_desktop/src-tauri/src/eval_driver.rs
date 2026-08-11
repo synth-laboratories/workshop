@@ -1377,6 +1377,37 @@ fn trace_correlation_payload(
     Ok(correlation)
 }
 
+fn policy_request(wire: &str, model: &str, reasoning_effort: &str, prompt: &str) -> Value {
+    let mut request = if wire == "responses" {
+        // Luna / Responses rejects chat-only fields like temperature.
+        json!({
+            "model": model,
+            "input": [{
+                "role": "user",
+                "content": [{"type": "input_text", "text": format!(
+                    "Return only JSON with an actions array. No prose.\n{prompt}"
+                )}]
+            }],
+        })
+    } else {
+        json!({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "Return only JSON with an actions array. No prose."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.2,
+        })
+    };
+    if !reasoning_effort.is_empty() {
+        request["reasoning"] = json!({ "effort": reasoning_effort });
+        if wire != "responses" {
+            request["reasoning_effort"] = json!(reasoning_effort);
+        }
+    }
+    request
+}
+
 async fn policy_actions_from_model(
     client: &reqwest::Client,
     target: &PolicyTarget,
@@ -1409,39 +1440,7 @@ async fn policy_actions_from_model(
         valid.join(", "),
         serde_json::to_string(readout).unwrap_or_else(|_| "{}".into())
     );
-    let mut request = if target.wire == "responses" {
-        json!({
-            "model": model,
-            "input": [
-                {
-                    "role": "system",
-                    "content": [{"type": "input_text", "text": "Return only JSON with an actions array. No prose."}]
-                },
-                {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": prompt}]
-                }
-            ],
-            "temperature": 0.2,
-        })
-    } else {
-        json!({
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "Return only JSON with an actions array. No prose."},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.2,
-        })
-    };
-    if !reasoning_effort.is_empty() {
-        if target.wire == "responses" {
-            request["reasoning"] = json!({ "effort": reasoning_effort });
-        } else {
-            request["reasoning"] = json!({ "effort": reasoning_effort });
-            request["reasoning_effort"] = json!(reasoning_effort);
-        }
-    }
+    let request = policy_request(target.wire, model, reasoning_effort, &prompt);
     let mut builder = client
         .post(&target.chat_url)
         .bearer_auth(&target.api_key)
@@ -1731,6 +1730,17 @@ mod tests {
                 "chat"
             )
         );
+    }
+
+    #[test]
+    fn responses_policy_request_excludes_chat_only_fields() {
+        let request = policy_request("responses", "openai/gpt-5.6-luna", "low", "observe");
+        assert_eq!(request["model"], "openai/gpt-5.6-luna");
+        assert_eq!(request["reasoning"]["effort"], "low");
+        assert_eq!(request["input"].as_array().map(Vec::len), Some(1));
+        assert!(request.get("temperature").is_none());
+        assert!(request.get("messages").is_none());
+        assert!(request.get("reasoning_effort").is_none());
     }
 
     #[test]

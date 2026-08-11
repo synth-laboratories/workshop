@@ -870,7 +870,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upgrade_requires_provider_session_id() {
+    async fn upgrade_accepts_provider_session_with_id() {
         let (origin, _) = spawn_backend(vec![
             (200, snapshot_body("free", 0)),
             (
@@ -890,6 +890,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(url, "https://checkout.test/session/abc");
+    }
+
+    #[tokio::test]
+    async fn upgrade_rejects_provider_session_without_id() {
+        let (origin, _) = spawn_backend(vec![
+            (200, snapshot_body("free", 0)),
+            (
+                200,
+                r#"{"url":"https://checkout.test/session/abc","mode":"provider"}"#.into(),
+            ),
+        ]);
+        let client = AccountCloudClient::new();
+        client.read(&origin, Some("sk_test"), false, now()).await;
+        let error = client
+            .billing_url(
+                &origin,
+                Some("sk_test"),
+                BillingAction::Upgrade,
+                Some("starter"),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("without a session id"),
+            "unexpected copy: {error}"
+        );
     }
 
     #[tokio::test]
