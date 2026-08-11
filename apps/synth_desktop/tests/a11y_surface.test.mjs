@@ -52,7 +52,7 @@ test("installed desktop authorizes its declared window drag regions", () => {
   assert.match(permissions, /core:window:allow-start-dragging/);
 });
 
-test("execution targets include Laguna local + OpenRouter Luna/Laguna + Synth Cloud + Intern", () => {
+test("v0.1 execution targets include local and direct OpenRouter models but exclude metered cloud Laguna", () => {
   const types = read("types/landing.ts");
   const composer = read("components/Composer.tsx");
   const bridge = read("runtime/desktopBridge.ts");
@@ -60,8 +60,9 @@ test("execution targets include Laguna local + OpenRouter Luna/Laguna + Synth Cl
   assert.ok(types.includes("local-laguna") || types.includes("Laguna XS"));
   assert.ok(types.includes('label: "GPT 5.6 Luna"'));
   assert.ok(types.includes("laguna-s-2.1") || types.includes("Laguna S"));
-  assert.ok(types.includes("synth-cloud-laguna-s"));
-  assert.ok(types.includes("Synth Cloud · usage tracked"));
+  assert.ok(!/id: "synth-cloud-laguna-s"/.test(types));
+  assert.ok(composer.includes('state.selectedTargetId === "synth-cloud-laguna-s"'));
+  assert.ok(composer.includes("Synth Cloud Laguna is unavailable in v0.1"));
   assert.ok(types.includes("intern"));
   assert.ok(composer.includes('data-testid={`${knob.testId}-select`}'));
   assert.ok(composer.includes('data-testid={`${knob.testId}-menu`}'));
@@ -91,7 +92,7 @@ test("model knobs are registered once and consumed without model-specific UI or 
   const registry = read("runtime/modelCapabilities.ts");
   const composer = read("components/Composer.tsx");
   const app = read("App.tsx");
-  for (const target of ["local-laguna", "openrouter-luna", "openrouter-laguna-s", "synth-cloud-laguna-s"]) {
+  for (const target of ["local-laguna", "openrouter-luna", "openrouter-laguna-s"]) {
     assert.ok(registry.includes(`targetId: "${target}"`), target);
   }
   assert.ok(composer.includes("modelCapabilitiesForTarget(state.selectedTargetId)"));

@@ -200,9 +200,6 @@ function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSett
 			{ id: "openrouter-muse-spark", name: "Muse Spark 1.2", provider: "OpenRouter · Meta", providerMark: "meta", modelId: "meta/muse-spark-1.2", tariffProvider: "openrouter" }
 		);
 	}
-	if (connection?.apiKeyConfigured) {
-		models.push({ id: "synth-cloud-laguna-s", name: "Laguna S 2.1", provider: "Synth Cloud", providerMark: "synth", modelId: "openrouter/poolside/laguna-s-2.1", planMetered: true });
-	}
 	if (!models.length) return null;
 	const tariffFor = (model: AuthorizedModel) =>
 		tariffs.find((card) => card.provider === model.tariffProvider && card.modelId === model.modelId);

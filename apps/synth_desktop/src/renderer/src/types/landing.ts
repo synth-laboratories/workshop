@@ -211,12 +211,6 @@ export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 		group: "remote"
 	},
 	{
-		id: "synth-cloud-laguna-s",
-		label: "Laguna S 2.1",
-		description: "Synth Cloud · usage tracked",
-		group: "cloud"
-	},
-	{
 		id: "intern-sync",
 		label: "Intern · Live",
 		description: "Synth Cloud · sync session",

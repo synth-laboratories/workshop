@@ -46,15 +46,13 @@ test.describe("first-five-minutes golden path", () => {
 		await expect(dropdown).not.toBeVisible();
 	});
 
-	test("without an account, cloud targets ask for configuration instead of failing", async ({ page }) => {
+	test("v0.1 does not expose the deferred metered cloud Laguna target", async ({ page }) => {
 		await page.getByTestId("first-run-account-choice")
 			.getByRole("button", { name: /Continue locally/ }).click();
 		await page.getByTestId("model-picker").click();
 		const dropdown = page.getByTestId("model-dropdown");
 		await expect(dropdown).toBeVisible();
-		const cloudOption = dropdown.getByTestId("model-option-synth-cloud-laguna-s");
-		await expect(cloudOption).toContainText("Synth API key required");
-		await expect(cloudOption.getByTestId("model-configure-synth-api-key")).toBeVisible();
+		await expect(dropdown.getByTestId("model-option-synth-cloud-laguna-s")).toHaveCount(0);
 	});
 
 	test("the account footer reports local mode and leads to sign-in, settings stay reachable", async ({ page }) => {

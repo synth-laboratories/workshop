@@ -330,8 +330,7 @@ function composerPlaceholder(state: LandingState): string {
 		return state.composerPlaceholder;
 	}
 	if (state.selectedTargetId === "synth-cloud-laguna-s") {
-		if (state.apiKeyConfigured !== true) return "Configure Synth API key in Settings → Account";
-		return state.cloudBlockedReason ?? "Ask anything…";
+		return "Synth Cloud Laguna is unavailable in v0.1";
 	}
 	if (state.selectedTargetId.startsWith("openrouter-")) {
 		return state.openrouterApiKeyConfigured
@@ -351,9 +350,9 @@ function composerPlaceholder(state: LandingState): string {
 
 function composerEnabled(state: LandingState): boolean {
 	if (state.selectedTargetId === "synth-cloud-laguna-s") {
-		// Local models keep working when cloud spend is blocked; only the
-		// billable cloud target is closed off.
-		return state.apiKeyConfigured === true && !state.cloudBlockedReason;
+		// Existing persisted sessions must fail closed as well as disappearing
+		// from the v0.1 model picker.
+		return false;
 	}
 	if (state.selectedTargetId.startsWith("openrouter-")) {
 		return state.openrouterApiKeyConfigured === true;
