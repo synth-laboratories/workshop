@@ -4,6 +4,16 @@ Receipt for binding the published friends ZIP to Workshop source and the
 backend / Responses-gateway tips observed when this file was written.
 No secrets.
 
+> **Canonical release process (v0.2.0 and later):** run
+> [`scripts/release_desktop.sh`](../../scripts/release_desktop.sh) from a clean
+> checkout — e.g. `./scripts/release_desktop.sh 0.2.0`. It builds from a clean
+> detached worktree of `origin/main`, signs (ad-hoc + hardened runtime) and
+> strict-verifies in place, packages the `…-UNNOTARIZED.zip` with `ditto`, and
+> emits `dist/release/v<version>/RECEIPT.txt` plus a paste-ready section for
+> this file and the frontend `desktopRelease` constants. One script run = one
+> digest; do **not** hand-run the steps below for a public artifact. The
+> sections below document the v0.1.0-era manual path the script encodes.
+
 **Recorded:** 2026-08-11 (~19:10 UTC)  
 **Linear:** [SYN-3183](https://linear.app/synth-ai/issue/SYN-3183/w5-bind-friends-zip-provenance-to-sourceexecbackendgateway-shas)
 

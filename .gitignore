@@ -20,3 +20,5 @@ work/bombadil-src/
 .env.*
 .turbo/
 work/
+# Release artifacts cut by scripts/release_desktop.sh (one digest per version)
+dist/release/
