@@ -13,7 +13,7 @@ import {
 	modelKnobValue,
 	modelSupportsImageInput,
 	type ModelKnobSpec,
-	type ModelKnobValue,
+	type ModelKnobTransportValue,
 	type ModelKnobValues
 } from "../runtime/modelCapabilities";
 import { IconSparkle, SlashCommandMenu, type SlashCommandId, type SlashCommandMenuHandle } from "./SlashCommandMenu";
@@ -32,7 +32,7 @@ type Props = {
 	sandboxMode: SandboxMode;
 	onSelectPermissions: (approvalPolicy: ApprovalPolicy, sandboxMode: SandboxMode) => void;
 	modelKnobValues: ModelKnobValues;
-	onSelectModelKnob: (targetId: string, knobId: string, value: ModelKnobValue) => void;
+	onSelectModelKnob: (targetId: string, knobId: string, value: ModelKnobTransportValue) => void;
 	/** Rolling median decode speed for the currently selected model. */
 	modelMedianTpsLabel?: string | null;
 	/** Cross-session aggregate speeds keyed by model target id. */
@@ -82,6 +82,9 @@ const SANDBOX_OPTIONS: Array<{ id: SandboxMode; label: string; description: stri
 	{ id: "danger-full-access", label: "Full system access", description: "Allow unrestricted filesystem and network access." }
 ];
 
+const APPROVAL_CHIP_LABEL: Record<ApprovalPolicy, string> = { untrusted: "Ask", "on-request": "Risky", never: "Auto" };
+const SANDBOX_CHIP_LABEL: Record<SandboxMode, string> = { "read-only": "Read", "workspace-write": "Workspace", "danger-full-access": "Full" };
+
 function PermissionMenu({ approvalPolicy, sandboxMode, onSelect, disabled, open, onOpenChange }: {
 	approvalPolicy: ApprovalPolicy;
 	sandboxMode: SandboxMode;
@@ -100,8 +103,11 @@ function PermissionMenu({ approvalPolicy, sandboxMode, onSelect, disabled, open,
 		return () => document.removeEventListener("mousedown", close);
 	}, [open, onOpenChange]);
 	return <div className="permission-wrap" ref={ref}>
-		<button type="button" className="permission-select" disabled={disabled} onClick={() => onOpenChange(!open)} aria-expanded={open} aria-controls="approval-mode-menu" aria-haspopup="listbox" data-testid="approval-mode-select">
-			<IconAsk /><span>{selectedApproval.label} · {selectedSandbox.label}</span><IconChevron />
+		<button type="button" className="permission-select" disabled={disabled} onClick={() => onOpenChange(!open)} aria-label={`Permissions: ${selectedApproval.label}; ${selectedSandbox.label}`} title={`${selectedApproval.label} · ${selectedSandbox.label}`} aria-expanded={open} aria-controls="approval-mode-menu" aria-haspopup="listbox" data-testid="approval-mode-select">
+			<span className="permission-select-part"><IconAsk /><span>{APPROVAL_CHIP_LABEL[approvalPolicy]}</span></span>
+			<span className="permission-select-separator" aria-hidden />
+			<span className="permission-select-part"><IconWorkspace /><span>{SANDBOX_CHIP_LABEL[sandboxMode]}</span></span>
+			<IconChevron />
 		</button>
 		{open ? <div id="approval-mode-menu" className="permission-menu" aria-label="Permissions" data-testid="approval-mode-menu">
 			<div className="permission-section" role="listbox" aria-label="Command approvals"><p>Command approvals</p>
@@ -115,13 +121,13 @@ function PermissionMenu({ approvalPolicy, sandboxMode, onSelect, disabled, open,
 }
 
 function ModelKnobMenu({ value, onSelect, knob }: {
-	value: ModelKnobValue;
-	onSelect: (value: ModelKnobValue) => void;
+	value: ModelKnobTransportValue;
+	onSelect: (value: ModelKnobTransportValue) => void;
 	knob: ModelKnobSpec;
 }) {
 	const [open, setOpen] = useState(false);
 	const ref = useRef<HTMLDivElement>(null);
-	const selected = knob.options.find((option) => option.id === value) ?? knob.options[0];
+	const selected = knob.options.find((option) => option.transportValue === value) ?? knob.options[0];
 	useEffect(() => {
 		if (!open) return;
 		const close = (event: MouseEvent) => { if (!ref.current?.contains(event.target as Node)) setOpen(false); };
@@ -134,24 +140,24 @@ function ModelKnobMenu({ value, onSelect, knob }: {
 			type="button"
 			className={`reasoning-effort-chip${open ? " open" : ""}`}
 			onClick={() => setOpen((value) => !value)}
-			aria-label={`${knob.label}: ${selected.label}`}
+			aria-label={`${knob.label}: ${selected.displayValue}`}
 			aria-expanded={open}
 			aria-controls={`${knob.testId}-menu`}
 			aria-haspopup="listbox"
 			data-testid={`${knob.testId}-select`}
 		>
-			<span>{selected.label}</span><IconChevron />
+			<span>{selected.displayValue}</span><IconChevron />
 		</button>
 		{open ? <div id={`${knob.testId}-menu`} className="reasoning-effort-menu" role="listbox" aria-label={knob.label} data-testid={`${knob.testId}-menu`}>
 			{knob.options.map((option) => <button
-				key={option.id}
+				key={option.transportValue}
 				type="button"
 				role="option"
-				aria-selected={option.id === value}
-				className={option.id === value ? "selected" : ""}
-				onClick={() => { onSelect(option.id); setOpen(false); }}
+				aria-selected={option.transportValue === value}
+				className={option.transportValue === value ? "selected" : ""}
+				onClick={() => { onSelect(option.transportValue); setOpen(false); }}
 			>
-				<span>{option.label}</span>{option.id === value ? <b aria-hidden>✓</b> : null}
+				<span>{option.displayValue}</span>{option.transportValue === value ? <b aria-hidden>✓</b> : null}
 			</button>)}
 		</div> : null}
 	</div>;
@@ -185,6 +191,10 @@ function IconAsk() {
 			<circle cx="7" cy="10.05" r="0.7" fill="currentColor" />
 		</svg>
 	);
+}
+
+function IconWorkspace() {
+	return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden><path d="M1.75 4.25h10.5v6.5a1 1 0 01-1 1h-8.5a1 1 0 01-1-1v-6.5Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/><path d="M1.75 4.25V3.5a1 1 0 011-1h2.1l1.1 1.25h5.3a1 1 0 011 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 }
 
 function IconMic() {

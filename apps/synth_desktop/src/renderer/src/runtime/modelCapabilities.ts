@@ -7,11 +7,12 @@ import { OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL, SYNTH_CLOUD_LAGUNA_S_
  * Register a model knob here instead of branching on model ids in App or Composer.
  * The same entry owns rendering, validation, persistence, defaults, and turn transport.
  */
-export type ModelKnobValue = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ModelKnobTransportValue = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ModelKnobDisplayValue = "Minimal" | "None" | "Low" | "Medium" | "High" | "XHigh" | "Max";
 
 export type ModelKnobOption = {
-	id: ModelKnobValue;
-	label: string;
+	displayValue: ModelKnobDisplayValue;
+	transportValue: ModelKnobTransportValue;
 };
 
 export type ModelKnobSpec = {
@@ -20,7 +21,7 @@ export type ModelKnobSpec = {
 	testId: string;
 	storageKey: string;
 	legacyStorageKeys?: string[];
-	defaultValue: ModelKnobValue;
+	defaultValue: ModelKnobTransportValue;
 	options: ModelKnobOption[];
 	turnStartField: "effort";
 };
@@ -42,21 +43,21 @@ export type ModelCapabilitySpec = {
 };
 
 const LUNA_EFFORT_OPTIONS: ModelKnobOption[] = [
-	{ id: "low", label: "Low" },
-	{ id: "medium", label: "Medium" },
-	{ id: "high", label: "High" },
-	{ id: "xhigh", label: "XHigh" },
-	{ id: "max", label: "Max" }
+	{ displayValue: "Low", transportValue: "low" },
+	{ displayValue: "Medium", transportValue: "medium" },
+	{ displayValue: "High", transportValue: "high" },
+	{ displayValue: "XHigh", transportValue: "xhigh" },
+	{ displayValue: "Max", transportValue: "max" }
 ];
 
 const BINARY_THINKING_OPTIONS: ModelKnobOption[] = [
-	{ id: "none", label: "None" },
-	{ id: "max", label: "Max" }
+	{ displayValue: "None", transportValue: "none" },
+	{ displayValue: "Max", transportValue: "max" }
 ];
 
 const LOCAL_THINKING_OPTIONS: ModelKnobOption[] = [
-	{ id: "none", label: "Off" },
-	{ id: "high", label: "On" }
+	{ displayValue: "Minimal", transportValue: "none" },
+	{ displayValue: "Max", transportValue: "high" }
 ];
 
 export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
@@ -137,7 +138,7 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 	}
 ];
 
-export type ModelKnobValues = Record<string, ModelKnobValue>;
+export type ModelKnobValues = Record<string, ModelKnobTransportValue>;
 
 export function modelKnobKey(targetId: string, knobId: string): string {
 	return `${targetId}:${knobId}`;
@@ -170,8 +171,8 @@ export function loadModelKnobValues(storage: Pick<Storage, "getItem">): ModelKno
 			const candidates = [knob.storageKey, ...(knob.legacyStorageKeys ?? [])];
 			const saved = candidates.map((key) => storage.getItem(key)).find((value) => value !== null);
 			values[modelKnobKey(capability.targetId, knob.id)] =
-				saved && knob.options.some((option) => option.id === saved)
-					? saved as ModelKnobValue
+				saved && knob.options.some((option) => option.transportValue === saved)
+					? saved as ModelKnobTransportValue
 					: knob.defaultValue;
 		}
 	}
@@ -182,15 +183,15 @@ export function modelKnobValue(
 	values: ModelKnobValues,
 	targetId: string,
 	knob: ModelKnobSpec
-): ModelKnobValue {
+): ModelKnobTransportValue {
 	const value = values[modelKnobKey(targetId, knob.id)];
-	return knob.options.some((option) => option.id === value) ? value : knob.defaultValue;
+	return knob.options.some((option) => option.transportValue === value) ? value : knob.defaultValue;
 }
 
 export function turnStartEffortForExecutionTarget(
 	target: ExecutionTarget,
 	values: ModelKnobValues
-): ModelKnobValue | undefined {
+): ModelKnobTransportValue | undefined {
 	const capability = modelCapabilitiesForExecutionTarget(target);
 	const knob = capability?.knobs.find(
 		(candidate) => candidate.turnStartField === "effort"

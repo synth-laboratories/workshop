@@ -1968,12 +1968,19 @@ a,
 .permission-select {
 	display: inline-flex;
 	align-items: center;
-	gap: 5px;
-	padding: 6px 9px;
+	flex: 0 0 auto;
+	gap: 4px;
+	min-height: 32px;
+	padding: 5px 7px;
 	border-radius: 8px;
-	font-size: 13px;
+	font-size: 12px;
 	color: #8b9098;
+	white-space: nowrap;
 }
+
+.permission-select-part { display: inline-flex; align-items: center; gap: 3px; line-height: 1; }
+.permission-select-part svg { flex: 0 0 auto; }
+.permission-select-separator { width: 1px; height: 14px; margin: 0 2px; background: var(--color-border); }
 
 .permission-select:hover:not(:disabled) {
 	background: rgba(0, 0, 0, 0.045);
@@ -2599,29 +2606,27 @@ a,
 }
 
 .reasoning-disclosure {
-	width: min(100%, 680px);
-	margin: 5px 0 8px;
-	padding: 8px 10px;
-	border: 1px solid #e1e4e8;
-	border-radius: 10px;
-	background: linear-gradient(135deg, rgba(248, 249, 251, 0.98), rgba(255, 255, 255, 0.98));
+	width: fit-content;
+	max-width: 100%;
+	margin: 3px 0 6px;
+	padding: 0;
 }
 
 .reasoning-disclosure .local-activity-toggle {
-	width: 100%;
+	width: auto;
 	min-height: 24px;
-	gap: 8px;
+	gap: 5px;
 }
 
 .reasoning-disclosure .local-activity-label {
-	color: #747a84;
+	color: var(--color-text-muted);
 	font-weight: 550;
 }
 
 .reasoning-disclosure .local-activity-label::before {
 	content: "···";
-	margin-right: 7px;
-	color: #a9afb8;
+	margin-right: 6px;
+	color: var(--color-text-faint);
 	letter-spacing: 1px;
 }
 
@@ -2637,20 +2642,40 @@ a,
 	margin-left: auto;
 }
 
-.reasoning-disclosure .local-activity-wave {
-	width: min(100%, 480px);
-	margin-left: 4px;
+.reasoning-disclosure-chevron {
+	width: 11px;
+	height: 11px;
+	flex: 0 0 11px;
+	color: var(--color-text-faint);
+	transition: transform 0.15s ease;
+}
+
+.reasoning-disclosure-chevron path {
+	stroke: currentColor;
+	stroke-width: 1.4;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.reasoning-disclosure.open {
+	width: min(100%, 680px);
+}
+
+.reasoning-disclosure.open .reasoning-disclosure-chevron {
+	transform: rotate(180deg);
 }
 
 .reasoning-disclosure .local-activity-detail {
 	max-width: none;
 	max-height: 360px;
-	margin: 7px 0 0;
-	padding: 12px 13px;
-	border-color: #e0e4e8;
-	background: #fff;
-	color: #3f454d;
-	font-size: 12px;
+	margin: 5px 0 0 22px;
+	padding: 0;
+	border: 0;
+	border-radius: 0;
+	background: transparent;
+	color: var(--color-text);
+	font-family: inherit;
+	font-size: 13px;
 	line-height: 1.55;
 }
 
@@ -6469,10 +6494,6 @@ html.sidebar-hidden .sidebar {
 	background: #f5f6f8;
 	border-left: 1px solid #e4e6ea;
 }
-
-.inference-rail-label { width: 100%; max-width: 390px; display: grid; gap: 4px; padding: 2px 4px 9px; color: #555d68; }
-.inference-rail-label span { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
-.inference-rail-label small { max-width: 330px; color: #7b838e; font-size: 10px; line-height: 1.35; }
 
 /* The composer stays inside the transcript column while the inspector is open;
    the rail owns the right edge. That inset is measured in Composer.tsx and

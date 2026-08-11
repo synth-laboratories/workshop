@@ -57,7 +57,7 @@ import {
 	modelKnobForTarget,
 	modelKnobKey,
 	turnStartEffortForExecutionTarget,
-	type ModelKnobValue
+	type ModelKnobTransportValue
 } from "./runtime/modelCapabilities";
 import {
 	planComposerSend,
@@ -365,9 +365,9 @@ export default function App() {
 	const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>(() => loadPreferences().approvalPolicy);
 	const [sandboxMode, setSandboxMode] = useState<SandboxMode>(() => loadPreferences().sandboxMode);
 	const [modelKnobValues, setModelKnobValues] = useState(() => loadModelKnobValues(window.localStorage));
-	const selectModelKnob = useCallback((targetId: string, knobId: string, value: ModelKnobValue) => {
+	const selectModelKnob = useCallback((targetId: string, knobId: string, value: ModelKnobTransportValue) => {
 		const knob = modelKnobForTarget(targetId, knobId);
-		if (!knob || !knob.options.some((option) => option.id === value)) return;
+		if (!knob || !knob.options.some((option) => option.transportValue === value)) return;
 		setModelKnobValues((current) => ({
 			...current,
 			[modelKnobKey(targetId, knobId)]: value
@@ -2133,10 +2133,6 @@ export default function App() {
 							) : null}
 							{showInferenceRail ? (
 								<aside className="inference-rail" data-testid="inference-rail" aria-label="Local inference monitor">
-									<div className="inference-rail-label">
-										<span>MLX sidecar</span>
-										<small>Owns local model memory, prompt caches, and the single-GPU queue.</small>
-									</div>
 									{/* `visible` drives subscribe/teardown, so a closed rail
 									    costs nothing. */}
 									<InferencePanel

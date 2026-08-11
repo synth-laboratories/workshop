@@ -129,7 +129,9 @@ test.describe("design locks (must pass)", () => {
 		await expect(menu.getByRole("option", { name: /Full system access/ })).toBeVisible();
 		await menu.getByRole("option", { name: /Ask for risky actions/ }).click();
 		await menu.getByRole("option", { name: /Full system access/ }).click();
-		await expect(permission).toContainText("Ask for risky actions · Full system access");
+		await expect(permission).toHaveText("RiskyFull");
+		await expect(permission).toHaveAttribute("aria-label", "Permissions: Ask for risky actions; Full system access");
+		await expect(permission).toHaveCSS("white-space", "nowrap");
 	});
 });
 
