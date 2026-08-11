@@ -3,7 +3,7 @@ use crate::domain::{
     RunCreate, RunService, RunStatus, SessionCreate, SessionService, SessionStatus,
     SessionTitleOrigin,
 };
-use crate::storage::{EventAppend, EventSource};
+use crate::storage::{EventAppend,EventSource,ModelPerformanceTracker};
 use crate::synth_config::MultiAgentVersion;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -316,6 +316,7 @@ pub struct CodexManager {
     /// window between "the attachment exists" and "the turn is running".
     turn_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     compact_waiters: CompactWaiters,
+    performance: Option<Arc<ModelPerformanceTracker>>,
     root: PathBuf,
     state_path: PathBuf,
     binary: PathBuf,
@@ -330,6 +331,7 @@ impl CodexManager {
     }
 
     fn with_paths(core: Option<Arc<CoreRuntime>>, root: PathBuf, binary: PathBuf) -> Self {
+        let performance=core.as_ref().map(|core|Arc::new(ModelPerformanceTracker::new(core.storage().database().clone())));
         let state_path = root.join("threads.json");
         let records = fs::read_to_string(&state_path)
             .ok()
@@ -340,6 +342,7 @@ impl CodexManager {
             records: Arc::new(RwLock::new(records)),
             turn_locks: Mutex::new(HashMap::new()),
             compact_waiters: Arc::new(Mutex::new(HashMap::new())),
+            performance,
             root,
             state_path,
             binary,
@@ -390,6 +393,7 @@ impl CodexManager {
             self.core.clone(),
             self.sessions.clone(),
             self.compact_waiters.clone(),
+            self.performance.clone(),
             attachment_id,
         )
         .await?;
@@ -701,9 +705,12 @@ impl CodexManager {
         if let Some(effort) = effort {
             turn_params["effort"] = Value::String(effort.to_owned());
         }
-        let result = session.server.request("turn/start", turn_params).await?;
+        let pending=format!("pending-{}",uuid::Uuid::new_v4().simple());
+        if let Some(performance)=&self.performance{let provider=self.records.read().await.get(&request.session_id).map(|record|record.provider_name.clone()).unwrap_or_else(||"custom".into());performance.start(&request.session_id,provider,session.model.clone(),pending.clone()).await;}
+        let result=match session.server.request("turn/start",turn_params).await{Ok(result)=>result,Err(error)=>{if let Some(performance)=&self.performance{performance.discard(&request.session_id,&pending).await;}return Err(error)}};
         let turn_id = nested_id(&result, "turnId")
             .ok_or_else(|| anyhow!("Codex turn/start response missing turn id: {result}"))?;
+        if let Some(performance)=&self.performance{performance.identify(&request.session_id,&pending,turn_id.clone()).await;}
         *session.turn_id.write().await = Some(turn_id.clone());
         self.set_automatic_title(&app, &request.session_id, &request.prompt, &session)
             .await;
@@ -1126,6 +1133,7 @@ async fn spawn_server<R: tauri::Runtime>(
     core: Option<Arc<CoreRuntime>>,
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     compact_waiters: CompactWaiters,
+    performance: Option<Arc<ModelPerformanceTracker>>,
     attachment_id: uuid::Uuid,
 ) -> Result<Arc<AppServer>> {
     let env_key = request
@@ -1177,6 +1185,7 @@ async fn spawn_server<R: tauri::Runtime>(
             core,
             sessions,
             compact_waiters,
+            performance,
             attachment_id,
         },
     ));
@@ -1202,6 +1211,7 @@ struct PersistenceContext {
     core: Option<Arc<CoreRuntime>>,
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     compact_waiters: CompactWaiters,
+    performance: Option<Arc<ModelPerformanceTracker>>,
     attachment_id: uuid::Uuid,
 }
 
@@ -1303,12 +1313,14 @@ async fn read_stdout<R: tauri::Runtime>(
                 params: params.clone(),
             },
         );
+        if let Some(performance)=&persistence.performance{performance.observe(&session_id,&method,&params).await;}
         if method == "thread/compacted" || method == "thread/compact/completed" {
             if let Some(waiter) = persistence.compact_waiters.lock().await.remove(&session_id) {
                 let _ = waiter.send(());
             }
         }
         if let Some(core) = &persistence.core {
+            if let Some(performance)=&persistence.performance{performance.interrupt(&session_id).await;}
             let _ = core
                 .append_and_emit(
                     &app,

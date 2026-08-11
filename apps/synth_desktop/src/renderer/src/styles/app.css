@@ -1546,6 +1546,7 @@ a,
 	white-space: nowrap;
 	min-width: 0;
 }
+.model-chip-throughput,.composer-model-aggregate-tps{color:var(--color-text-muted);font-size:10.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
 
 .composer-model-wrap {
 	position: relative;

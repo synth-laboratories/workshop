@@ -572,6 +572,7 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
                 start,
                 prompt,
                 effort,
+                compact_before_model_switch:false,
             },
         )
         .await

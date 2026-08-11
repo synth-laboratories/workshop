@@ -29,6 +29,8 @@ type Props = {
 	onSelectApprovalMode: (mode: ApprovalMode) => void;
 	modelKnobValues: ModelKnobValues;
 	onSelectModelKnob: (targetId: string, knobId: string, value: ModelKnobValue) => void;
+	modelMedianTpsLabel?:string|null;
+	aggregateModelTpsLabels?:Readonly<Record<string,string>>;
 	/** True while the active conversation has a non-terminal run. */
 	agentWorking?: boolean;
 	/** Preferred Enter action while working. */
@@ -277,12 +279,16 @@ function formatSkillMention(skill: Skill): string {
 
 function ModelMenu({
 	state,
+	modelMedianTpsLabel,
+	aggregateModelTpsLabels,
 	onSelectTarget,
 	onConfigureAccount,
 	open,
 	onOpenChange
 }: {
 	state: LandingState;
+	modelMedianTpsLabel?:string|null;
+	aggregateModelTpsLabels?:Readonly<Record<string,string>>;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
 	open: boolean;
@@ -333,6 +339,7 @@ function ModelMenu({
 					className={`model-chip-logo model-chip-logo-${providerMarkForTarget(state.selectedTargetId)}`}
 				/>
 				<span className="model-chip-label">{modelLabel}</span>
+				{modelMedianTpsLabel?<span className="model-chip-throughput">{modelMedianTpsLabel}</span>:null}
 				<IconChevron />
 			</button>
 			{open ? (
@@ -363,6 +370,7 @@ function ModelMenu({
 														: null
 											: null;
 									const selectedHere = target.id === state.selectedTargetId;
+									const aggregateTps=aggregateModelTpsLabels?.[target.id]??null;
 									if (needsSynthKey) {
 										return (
 											<div
@@ -379,6 +387,7 @@ function ModelMenu({
 													<span className="composer-model-option-label">{target.label}</span>
 													<span className="composer-model-option-desc">Synth API key required</span>
 												</span>
+												{aggregateTps?<span className="composer-model-aggregate-tps">{aggregateTps}</span>:null}
 												<button
 													type="button"
 													className="composer-model-configure"
@@ -445,6 +454,8 @@ export function Composer({
 	onSelectApprovalMode,
 	modelKnobValues,
 	onSelectModelKnob,
+	modelMedianTpsLabel,
+	aggregateModelTpsLabels,
 	agentWorking = false,
 	activeEnterAction = "enqueue",
 	onSteer,
@@ -866,6 +877,8 @@ export function Composer({
 					<div className="composer-right">
 						<ModelMenu
 							state={state}
+							modelMedianTpsLabel={modelMedianTpsLabel}
+							aggregateModelTpsLabels={aggregateModelTpsLabels}
 							onSelectTarget={onSelectTarget}
 							onConfigureAccount={onConfigureAccount}
 							open={modelMenuOpen}

@@ -43,7 +43,7 @@ use optimizers::{
 };
 use serde_json::Value;
 use std::sync::Arc;
-use storage::{AppEvent, CoreDiagnostics};
+use storage::{AppEvent,CoreDiagnostics,ModelPerformanceRepository,ModelPerformanceSummary};
 use synth_config::{
     BackendSettings, BackendSettingsUpdate, ModelMultiAgentSetting, ModelMultiAgentUpdate,
     WorkspaceAccessSettings, WorkspaceAccessUpdate,
@@ -410,6 +410,8 @@ async fn inventory_usage_list(
         .await
         .map_err(|error| error.to_string())
 }
+#[tauri::command]
+async fn model_performance_summary(state:State<'_,Arc<CoreRuntime>>)->Result<Vec<ModelPerformanceSummary>,String>{ModelPerformanceRepository::new(state.storage().database().clone()).summaries().await.map_err(|error|error.to_string())}
 
 #[tauri::command]
 async fn inventory_counts(state: State<'_, Arc<CoreRuntime>>) -> Result<InventoryCounts, String> {
@@ -1620,6 +1622,7 @@ pub fn run() {
             inventory_traces_ingest,
             inventory_trace_projection_resolve,
             inventory_usage_list,
+            model_performance_summary,
             inventory_counts,
             optimizers_algorithms_list,
             optimizers_recipes_list,

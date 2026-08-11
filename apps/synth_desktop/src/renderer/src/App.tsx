@@ -15,7 +15,7 @@ import type {
 	VisualInstanceRecord,
 	VisualRecord
 } from "@synth/runtime-protocol";
-import { EXECUTION_TARGETS, isInternTargetId } from "./types/landing";
+import { EXECUTION_TARGETS,OPENROUTER_LAGUNA_S_MODEL,OPENROUTER_LUNA_MODEL,SYNTH_CLOUD_LAGUNA_S_MODEL,isInternTargetId } from "./types/landing";
 import type { ArtifactRef } from "./types/landing";
 import { ChatTranscript } from "./components/ChatTranscript";
 import { ContainerPane } from "./components/ContainerPane";
@@ -57,7 +57,7 @@ import {
 	planModelChipChange,
 	threadHasHistoryFromEvents
 } from "./runtime/modelSwitchPlan";
-import type { CodexSessionInfo, CodexTurnFailure, ComposerImageAttachment, ConversationWorkspaceScope, LagunaStatus } from "./env";
+import type { CodexSessionInfo,CodexTurnFailure,ComposerImageAttachment,ConversationWorkspaceScope,LagunaStatus,ModelPerformanceSummary } from "./env";
 import {
 	applyPreferencesToDocument,
 	archiveConversation,
@@ -119,6 +119,8 @@ function turnFailureMessage(failure: CodexTurnFailure): string {
 
 /** A user message that reached no app-server, kept so it can be retried. */
 type FailedSend = { sessionId: string; text: string; messageId: string; message: string };
+function performanceTargetId(s:ModelPerformanceSummary){if(s.provider==="local-laguna")return"local-laguna";if(s.provider==="synth-cloud"&&s.modelId===SYNTH_CLOUD_LAGUNA_S_MODEL)return"synth-cloud-laguna-s";if(s.provider==="openrouter"&&s.modelId===OPENROUTER_LUNA_MODEL)return"openrouter-luna";if(s.provider==="openrouter"&&s.modelId===OPENROUTER_LAGUNA_S_MODEL)return"openrouter-laguna-s";return null}
+function performanceKind(kind:ModelPerformanceSummary["measurementKind"]){return kind==="decode"?"decode":kind==="end_to_end"?"end-to-end":kind==="provider_reported"?"provider":"observed"}
 
 function summarizeAccountUsage(entries: UsageLedgerEntry[]) {
 	const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -341,6 +343,9 @@ export default function App() {
 		}
 	);
 	const inferenceMonitor = useInferenceMonitor({ visible: selectedTargetId === "local-laguna" });
+	const[modelPerformance,setModelPerformance]=useState<ModelPerformanceSummary[]>([]);
+	useEffect(()=>{let disposed=false;const refresh=async()=>{try{const rows=await window.synthModelPerformance?.summaries();if(!disposed&&rows)setModelPerformance(rows)}catch{}};void refresh();const timer=window.setInterval(()=>void refresh(),10000);return()=>{disposed=true;clearInterval(timer)}},[]);
+	const aggregateModelTpsLabels=useMemo(()=>{const labels:Record<string,string>={};for(const summary of modelPerformance){const target=performanceTargetId(summary);if(target&&summary.tpsP50!=null&&summary.sampleCount>0)labels[target]=`${formatTps(summary.tpsP50)} tok/s ${performanceKind(summary.measurementKind)} p50 · ${summary.sampleCount} ${summary.sampleCount===1?"request":"requests"} · all sessions`;}return labels},[modelPerformance]);
 	const selectedModelMedianTps = selectedTargetId === "local-laguna"
 		? inferenceMonitor.snapshot?.rolling.decodeTpsP50 ?? null
 		: null;
@@ -2064,6 +2069,7 @@ export default function App() {
 							modelKnobValues={modelKnobValues}
 							onSelectModelKnob={selectModelKnob}
 							modelMedianTpsLabel={selectedModelMedianTpsLabel}
+							aggregateModelTpsLabels={aggregateModelTpsLabels}
 							agentWorking={Boolean(activeChatRunning)}
 							activeEnterAction={preferences.submission.activeEnterAction}
 							steerSupported={Boolean(nativeCodex?.steerTurn)}
