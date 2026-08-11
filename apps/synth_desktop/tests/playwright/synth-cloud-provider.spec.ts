@@ -28,8 +28,7 @@ test("Synth Cloud Laguna S appears under SYNTH CLOUD when api key is configured"
 	await page.getByTestId("composer-model").click();
 	const menu = page.getByTestId("composer-model-menu");
 	await expect(menu).toBeVisible();
-	await expect(menu).not.toContainText(/Muse|Spark/i);
-	await expect(page.getByTestId("composer-model-option-openrouter-muse-spark")).toHaveCount(0);
+	await expect(menu).not.toContainText(/Muse Glimmer|GGUF|DFlash/i);
 
 	const cloudGroup = menu.locator(".composer-model-group").filter({
 		has: page.locator(".composer-model-group-label", { hasText: "Synth Cloud" })
@@ -47,6 +46,7 @@ test("Synth Cloud Laguna S appears under SYNTH CLOUD when api key is configured"
 		has: page.locator(".composer-model-group-label", { hasText: "Remote · OpenRouter" })
 	});
 	await expect(remoteGroup.getByTestId("composer-model-option-openrouter-laguna-s")).toBeVisible();
+	await expect(remoteGroup.getByTestId("composer-model-option-openrouter-muse-spark")).toHaveText(/Muse Spark 1\.2/);
 	await expect(cloudGroup.getByTestId("composer-model-option-openrouter-laguna-s")).toHaveCount(0);
 
 	await page.getByTestId("composer-model-option-synth-cloud-laguna-s").click();

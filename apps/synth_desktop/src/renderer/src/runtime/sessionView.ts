@@ -9,6 +9,7 @@ import type {
 import {
 	OPENROUTER_LAGUNA_S_MODEL,
 	OPENROUTER_LUNA_MODEL,
+	OPENROUTER_MUSE_SPARK_MODEL,
 	SYNTH_CLOUD_LAGUNA_S_MODEL,
 	type ActivityEvent,
 	type ArtifactRef,
@@ -84,6 +85,13 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 				model: OPENROUTER_LAGUNA_S_MODEL,
 				adapter
 			};
+		case "openrouter-muse-spark":
+			return {
+				kind: "remote",
+				provider: "openrouter",
+				model: OPENROUTER_MUSE_SPARK_MODEL,
+				adapter
+			};
 		case "synth-cloud-laguna-s":
 			return {
 				kind: "remote",
@@ -116,6 +124,7 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 	if (target.model === OPENROUTER_LUNA_MODEL || target.model.includes("kimi")) {
 		return "openrouter-luna";
 	}
+	if (target.model === OPENROUTER_MUSE_SPARK_MODEL) return "openrouter-muse-spark";
 	return "openrouter-laguna-s";
 }
 

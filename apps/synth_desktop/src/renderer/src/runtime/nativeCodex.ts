@@ -49,7 +49,9 @@ export function codexStartRequest(
 	if (target.kind !== "remote") throw new Error("Unsupported Codex execution target");
 	const autoCompactTokenLimit = target.model.includes("gpt-5.6-luna")
 		? autoCompactTokenLimits.luna ?? 250_000
-		: autoCompactTokenLimits.lagunaS ?? 250_000;
+		: target.model.includes("muse-spark-1.2")
+			? 250_000
+			: autoCompactTokenLimits.lagunaS ?? 250_000;
 	if (target.provider === "synth-cloud") {
 		return {
 			// baseUrl and providerEnvKey are both overwritten by the Rust host,

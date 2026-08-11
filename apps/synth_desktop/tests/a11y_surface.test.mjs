@@ -69,7 +69,7 @@ test("execution targets include Laguna local + OpenRouter Luna/Laguna + Synth Cl
   assert.ok(bridge.includes("request: { sessionId, prompt, effort }"));
 });
 
-test("v0.1 model surfaces exclude Muse, GGUF, and DFlash", () => {
+test("v0.1 exposes remote Muse Spark while excluding local Muse Glimmer, GGUF, and DFlash", () => {
   const files = [
     "App.tsx",
     "types/landing.ts",
@@ -82,7 +82,9 @@ test("v0.1 model surfaces exclude Muse, GGUF, and DFlash", () => {
     "runtime/sessionView.ts",
   ];
   const modelSurface = files.map(read).join("\n");
-  assert.doesNotMatch(modelSurface, /Muse Spark|muse-spark|openrouter-muse|OPENROUTER_MUSE|GGUF|DFlash/i);
+  assert.match(modelSurface, /Muse Spark 1\.2/);
+  assert.match(modelSurface, /openrouter-muse-spark/);
+  assert.doesNotMatch(modelSurface, /Muse Glimmer|muse-glimmer|GGUF|DFlash/i);
 });
 
 test("model knobs are registered once and consumed without model-specific UI or transport branches", () => {

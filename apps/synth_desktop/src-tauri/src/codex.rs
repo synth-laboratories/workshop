@@ -2369,6 +2369,8 @@ fn validate_start(request: &CodexSessionStartRequest) -> Result<()> {
 fn model_context_window(model: &str) -> u64 {
     if model.to_ascii_lowercase().contains("laguna-xs") {
         262_144
+    } else if model.to_ascii_lowercase().contains("muse-spark-1.2") {
+        1_048_576
     } else if model.to_ascii_lowercase().contains("laguna-s-2.1")
         || model.to_ascii_lowercase().contains("gpt-5.6-luna")
     {
@@ -2381,7 +2383,10 @@ fn model_context_window(model: &str) -> u64 {
 fn auto_compact_token_limit(request: &CodexSessionStartRequest) -> u64 {
     request.auto_compact_token_limit.unwrap_or_else(|| {
         let model = request.model.to_ascii_lowercase();
-        if model.contains("laguna-s-2.1") || model.contains("gpt-5.6-luna") {
+        if model.contains("laguna-s-2.1")
+            || model.contains("gpt-5.6-luna")
+            || model.contains("muse-spark-1.2")
+        {
             250_000
         } else if model.contains("laguna-xs") {
             150_000

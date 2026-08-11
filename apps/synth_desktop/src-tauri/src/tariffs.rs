@@ -32,6 +32,7 @@ pub struct Tariff {
 
 /// 2026-08-01T00:00:00Z — the day the current OpenRouter cards were entered.
 const AUG_2026_MS: i64 = 1_785_542_400_000;
+const SPARK_12_2026_MS: i64 = 1_786_320_000_000;
 
 const CATALOG: &[Tariff] = &[
     Tariff {
@@ -50,6 +51,15 @@ const CATALOG: &[Tariff] = &[
         input_usd_per_m: 0.10,
         output_usd_per_m: 0.20,
         cached_input_usd_per_m: None,
+        cache_write_usd_per_m: None,
+    },
+    Tariff {
+        provider: "openrouter",
+        model_id: "meta/muse-spark-1.2",
+        effective_from_ms: SPARK_12_2026_MS,
+        input_usd_per_m: 1.25,
+        output_usd_per_m: 4.25,
+        cached_input_usd_per_m: Some(0.15),
         cache_write_usd_per_m: None,
     },
 ];

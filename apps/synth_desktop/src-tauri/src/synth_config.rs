@@ -55,6 +55,7 @@ const MODEL_MULTI_AGENT_PRESETS: &[(&str, &str, MultiAgentVersion)] = &[
     ("gpt-5.6-luna", "GPT 5.6 Luna", MultiAgentVersion::V1),
     ("laguna-xs-2.1", "Laguna XS 2.1", MultiAgentVersion::None),
     ("laguna-s-2.1", "Laguna S 2.1", MultiAgentVersion::None),
+    ("muse-spark-1.2", "Muse Spark 1.2", MultiAgentVersion::None),
 ];
 
 #[derive(Clone, Debug, Serialize)]

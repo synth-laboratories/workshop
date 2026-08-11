@@ -46,21 +46,21 @@ const visualContracts = extract((state: any) => {
 		modelsPoint: point(modelsButton),
 		settingsVisible: Boolean(document.querySelector('[data-testid="settings-page"]')),
 		providersVisible: Boolean(providerCard),
-		forbiddenModelSurfaceAbsent: !/Muse Spark|muse-spark|GGUF|DFlash/i.test(document.body.textContent ?? ""),
+		forbiddenModelSurfaceAbsent: !/Muse Glimmer|muse-glimmer|GGUF|DFlash/i.test(document.body.textContent ?? ""),
 		titlebarIsClean: Boolean(titlebar) &&
 			!titlebar.querySelector('[data-testid="runtime-status"], [data-testid="titlebar-account"], [data-testid="titlebar-account-avatar"], [data-testid="titlebar-cloud-status"]') &&
 			!actions.some((element) => !["toggle-terminal", "toggle-inference-rail"].includes(element.dataset.testid ?? "")) &&
 			![...titlebar.querySelectorAll("*")].some((element) => ["Local", "S"].includes(element.textContent?.trim() ?? "")),
-		providerRowsComplete: !providerCard || rows.length === 3,
+		providerRowsComplete: !providerCard || rows.length === 4,
 		providerMarksQuiet: !providerCard || (
-			marks.length === 3 && markBoxes.every((box) => box.width <= 22 && box.height <= 22)
+			marks.length === 4 && markBoxes.every((box) => box.width <= 22 && box.height <= 22)
 		),
 		providerMarksAligned: markBoxes.length < 2 || (
 			Math.max(...markBoxes.map((box) => box.left + box.width / 2)) -
 			Math.min(...markBoxes.map((box) => box.left + box.width / 2)) <= 1
 		),
 		slugsSubordinate: !providerCard || (
-			slugs.length === 3 && slugs.every((slug) => Number.parseFloat(getComputedStyle(slug).fontSize) <= 10)
+			slugs.length === 4 && slugs.every((slug) => Number.parseFloat(getComputedStyle(slug).fontSize) <= 10)
 		),
 		providerCardContained: !cardBox || (
 			cardBox.left >= 0 && cardBox.right <= state.window.innerWidth &&
@@ -127,7 +127,7 @@ export const legacy_titlebar_chrome_never_returns = always(() =>
 	visualContracts.current.titlebarIsClean
 );
 
-export const v01_never_exposes_muse_or_legacy_model_formats = always(() =>
+export const v01_never_exposes_local_muse_glimmer_or_legacy_model_formats = always(() =>
 	visualContracts.current.forbiddenModelSurfaceAbsent
 );
 

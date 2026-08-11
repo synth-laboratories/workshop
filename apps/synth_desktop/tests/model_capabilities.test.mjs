@@ -30,3 +30,12 @@ test("Laguna XS presents minimal and max thinking without changing transport val
 	]);
 	assert.equal(reasoning?.defaultValue, "high");
 });
+
+test("remote Muse Spark exposes OpenRouter reasoning and multimodal capabilities", () => {
+	const capability = modelCapabilitiesForTarget("openrouter-muse-spark");
+	const reasoning = capability?.knobs.find((knob) => knob.id === "reasoning");
+	assert.deepEqual(capability?.target, { kind: "remote", models: ["meta/muse-spark-1.2"] });
+	assert.equal(capability?.maxContextTokens, 1_048_576);
+	assert.equal(reasoning?.defaultValue, "medium");
+	assert.deepEqual(reasoning?.options.map((option) => option.transportValue), ["low", "medium", "high", "xhigh"]);
+});
