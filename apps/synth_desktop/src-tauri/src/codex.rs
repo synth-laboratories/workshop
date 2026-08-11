@@ -1977,6 +1977,10 @@ fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Result<()> {
         visuals_skill.join("references/visual-recipes.md"),
         include_str!("../../skills/use-synth-visuals/references/visual-recipes.md"),
     )?;
+    fs::write(
+        visuals_skill.join("references/visual-style-guide.md"),
+        include_str!("../../skills/use-synth-visuals/references/visual-style-guide.md"),
+    )?;
     let optimizers_skill = home.join("skills/use-synth-optimizers");
     fs::create_dir_all(&optimizers_skill)?;
     fs::write(
@@ -3430,6 +3434,11 @@ mod tests {
         let optimizer_skill =
             fs::read_to_string(home.join("skills/use-synth-optimizers/SKILL.md")).unwrap();
         assert!(optimizer_skill.contains("optimizer_manage"));
+        let visual_style_guide = fs::read_to_string(
+            home.join("skills/use-synth-visuals/references/visual-style-guide.md"),
+        )
+        .unwrap();
+        assert!(visual_style_guide.contains("First pane-height contract"));
     }
 
     #[test]

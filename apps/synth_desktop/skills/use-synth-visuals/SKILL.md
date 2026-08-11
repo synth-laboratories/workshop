@@ -5,11 +5,13 @@ description: Use when creating, updating, inspecting, or opening a Synth Desktop
 
 # Use Synth Visuals
 
-Choose the visual grammar from the evidence. Treat registered templates as optional shortcuts, not mandates. For ad-hoc analysis, prefer `analysis.visual.v1` and author its ordered `spec.blocks` at creation time. Use `blank.canvas.v1` when the composition cannot be expressed cleanly with those blocks.
+Choose the visual grammar from the evidence. Treat registered templates as optional shortcuts, not mandates. For ad-hoc analysis, prefer `analysis.visual.v1` and author its ordered `spec.blocks` at creation time. Use `blank.canvas.v1` when the composition cannot be expressed cleanly with those blocks. Read [visual-style-guide.md](references/visual-style-guide.md) before authoring any user-facing visual; it defines the pane-first hierarchy, density, typography, color, and canonical compositions.
 
-Codex advertises one compact custom tool, `mcp__synth_visuals`, instead of all
-visual schemas on every turn. Call it with `method: "visual_manage"`, an
-`operation`, and an operation-specific `arguments` object:
+Codex advertises one compact custom tool, normally
+`mcp__synth_visuals__visual_manage`, instead of all visual schemas on every
+turn. Call it with an `operation` and an operation-specific `arguments` object.
+Use the exact tool exposed in the current tool catalog; do not search generic
+MCP resources after the visual tool is already available.
 
 | Operation | Arguments |
 | --- | --- |
@@ -25,7 +27,7 @@ visual schemas on every turn. Call it with `method: "visual_manage"`, an
 | `archive` | `{ "visual_id": string }` |
 
 For example, list templates with
-`{"method":"visual_manage","operation":"list_templates","arguments":{}}`.
+`{"operation":"list_templates","arguments":{}}`.
 Do not invent separate callable names such as
 `mcp__synth_visuals__visual_create`; legacy MCP names remain compatible for
 other clients but are intentionally not advertised to Codex.
@@ -34,23 +36,26 @@ other clients but are intentionally not advertised to Codex.
 
 1. Inspect the available evidence before choosing a chart: task metadata, rollout count, seeds, traces, reward components, achievements, costs, tokens, latency, and failure state.
 2. State the analytical question in one sentence: “Which arm achieves more per dollar?”, “Where do rewards diverge?”, or “What happened during this rollout?”
-3. Choose only visual forms that answer that question. Read [visual-recipes.md](references/visual-recipes.md) for mappings.
-4. Create the smallest useful visual with the `create` operation, a stable ID, and a title that names the task and comparison.
-5. Show exact units and provenance. Preserve small costs rather than rounding them to `$0.00`.
-6. Call the `show` operation after creation or update so the result opens in the Desktop pane.
-7. Inspect the rendered pane. Fix clipped labels, empty sections, misleading encodings, and excessive whitespace before reporting completion.
+3. Choose only visual forms that answer that question. Read [visual-recipes.md](references/visual-recipes.md) for mappings and [visual-style-guide.md](references/visual-style-guide.md) for presentation.
+4. Sketch the first pane-height: conclusion, one primary visual, and only the metrics needed to interpret it.
+5. Create the smallest useful visual with the `create` operation, a stable ID, and a title that names the task and comparison.
+6. Show exact units and provenance. Preserve small costs rather than rounding them to `$0.00`.
+7. Call the `show` operation after creation or update so the result opens in the Desktop pane.
+8. Inspect the rendered pane at its actual width. Fix clipped labels, awkward wrapping, empty sections, misleading encodings, excessive whitespace, and evidence that should be collapsed or moved below the fold before reporting completion.
 
 ## Composition rules
 
 - Lead with task identity and the question answered, not the template name.
 - Establish context with a compact task card when environment state or objective affects interpretation.
 - Put the most decision-relevant result above the fold.
+- Give each screenful one dominant question and one dominant visual. Supporting cards explain the graphic; they do not replace it.
 - Prefer direct labels over legends. If a legend is necessary, keep arm names short and consistent.
 - Use color for identity or signed meaning, never decoration. Keep one accent and one neutral comparison color by default.
 - Include sample count (`n`), seeds, aggregation, and uncertainty near the result.
 - Label single-rollout comparisons as exploratory. A 0% or 100% observation from one rollout is not a stable frequency estimate.
 - Distinguish missing from zero and failed from scored.
 - Keep raw trace detail available through a scrubber or table, but summarize the important transition first.
+- Keep audit detail last. Show a concise provenance line near the claim and put filenames, IDs, and field-level sourcing in the final block or an expandable surface.
 
 ## Never do this
 
@@ -61,6 +66,9 @@ other clients but are intentionally not advertised to Codex.
 - Do not truncate labels into ambiguity or overlay labels on marks.
 - Do not report cost as `$0.00` when a nonzero micro-cost is known.
 - Do not treat reward, achievement count, and pass rate as interchangeable.
+- Do not lead with four equal metric cards when one result matters most; establish a clear visual hierarchy.
+- Do not use a table as the primary visual when position, slope, or length would reveal the comparison faster.
+- Do not expose long paths, rollout IDs, or methodology paragraphs above the primary result.
 
 ## `analysis.visual.v1`
 
@@ -115,4 +123,6 @@ Before showing a visual, verify:
 - the title says what is compared;
 - the key difference is readable without hovering;
 - caveats are adjacent to the claim they qualify;
+- the first pane-height contains a conclusion and a real visual, not only prose and cards;
+- secondary evidence and provenance do not compete with the main result;
 - the pane remains useful at narrow Desktop width.
