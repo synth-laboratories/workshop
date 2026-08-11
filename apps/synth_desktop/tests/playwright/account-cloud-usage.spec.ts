@@ -1,4 +1,5 @@
 import { expect, test } from "./browser.fixture";
+import { formatUsd } from "../../src/renderer/src/runtime/accountView";
 
 /*
  * Synth Cloud account snapshot in the shell.
@@ -16,6 +17,13 @@ type StubOptions = {
 	tier?: "free" | "starter" | "pro";
 	metered?: boolean;
 };
+
+test("missing dollar amounts render UNKNOWN instead of zero", () => {
+	expect(formatUsd(null)).toBe("UNKNOWN");
+	expect(formatUsd(undefined)).toBe("UNKNOWN");
+	expect(formatUsd(Number.NaN)).toBe("UNKNOWN");
+	expect(formatUsd(0)).toBe("$0.00");
+});
 
 async function stubCloudAccount(page: import("@playwright/test").Page, options: StubOptions) {
 	await page.addInitScript((stub) => {

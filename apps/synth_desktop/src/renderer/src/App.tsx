@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { appEventToRuntimeEvent } from "@synth/runtime-protocol";
+import desktopPackage from "../../../package.json";
 import type {
 	CodexActivityEvent,
 	ContainerDeployment,
@@ -329,6 +330,15 @@ export default function App() {
 	// synthIntern is installed in browsers too as a demo adapter. Codex presence is
 	// the stable packaged-Tauri signal used here to select the Rust-owned path.
 	const nativeIntern = nativeCodex ? window.synthIntern : undefined;
+	const [appVersion, setAppVersion] = useState(desktopPackage.version);
+	useEffect(() => {
+		void window.synthDesktop.getInstanceDiagnostics()
+			.then((identity) => {
+				const runtimeVersion = identity.appVersion.trim();
+				if (runtimeVersion) setAppVersion(runtimeVersion);
+			})
+			.catch(() => undefined);
+	}, []);
 	const [health, setHealth] = useState<RuntimeHealth | null>(null);
 	const [laguna, setLaguna] = useState<LagunaStatus | null>(null);
 	const [sessions, setSessions] = useState<Session[]>([]);
@@ -1978,6 +1988,14 @@ export default function App() {
 							>
 								<IconSidePanel />
 							</button> : null}
+							<span
+								className="titlebar-version"
+								data-testid="app-version"
+								aria-label={`Synth Desktop version ${appVersion}`}
+								title={`Synth Desktop v${appVersion}`}
+							>
+								v{appVersion}
+							</span>
 						</div>
 					</header>
 

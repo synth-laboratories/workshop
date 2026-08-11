@@ -1,5 +1,9 @@
+import { createRequire } from "node:module";
 import { test, expect } from "./browser.fixture";
 import type { Page } from "@playwright/test";
+
+const require = createRequire(import.meta.url);
+const desktopPackage = require("../../package.json") as { version: string };
 
 type Layout = {
 	viewport: { width: number; height: number };
@@ -128,7 +132,21 @@ test("sidebar seam is one hairline with an invisible resize hit target", async (
 	expect(seam.handleWidth).toBeGreaterThanOrEqual(6);
 });
 
-test("titlebar chrome is trimmed to terminal controls", async ({ page }) => {
+test("titlebar always shows the package version", async ({ page }) => {
+	const version = page.getByTestId("app-version");
+	const expected = `v${desktopPackage.version}`;
+	await expect(version).toBeVisible();
+	await expect(version).toHaveText(expected);
+	await expect(version).toHaveAttribute("aria-label", `Synth Desktop version ${desktopPackage.version}`);
+
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-menu-settings").click();
+	await expect(page.getByTestId("settings-page")).toBeVisible();
+	await expect(version).toBeVisible();
+	await expect(version).toHaveText(expected);
+});
+
+test("titlebar chrome stays trimmed to version and terminal controls", async ({ page }) => {
 	await expect(page.getByRole("button", { name: "Show terminal" })).toBeVisible();
 	await expect(page.getByTestId("runtime-status")).toHaveCount(0);
 	await expect(page.getByTestId("open-account-settings")).toHaveCount(0);
