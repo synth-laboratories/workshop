@@ -86,7 +86,6 @@ write_contract() {
     else
       local profile="${SYNTH_INTERN_PROFILE:-local-slot1}"
       local backend_url="${SYNTH_BACKEND_URL:-http://127.0.0.1:41109}"
-      local gateway_url="${SYNTH_RESPONSES_GATEWAY_URL:-http://127.0.0.1:41124}"
       cat >"$DATA_ROOT/config.toml" <<EOF
 [intern]
 profile = "$profile"
@@ -95,9 +94,6 @@ api_key_env = "SYNTH_API_KEY"
 
 [intern.endpoints]
 $profile = "$backend_url"
-
-[intern.gateways]
-$profile = "$gateway_url"
 EOF
     fi
   fi
@@ -354,9 +350,8 @@ dev_instance() {
   export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
   export CARGO_TARGET_DIR="$TARGET_ROOT"
 
-  # Export routing from the instance TOML so the Rust process sees the same
-  # lane the launcher wrote (process-env is the only override
-  # responses_gateway_url reads today for an explicit force).
+  # Export profile/account-backend routing from the instance TOML. Responses
+  # gateway routing is source-owned by Rust and has no launcher override.
   if [[ -z "${SYNTH_INTERN_PROFILE:-}" && -f "$DATA_ROOT/config.toml" ]]; then
     SYNTH_INTERN_PROFILE="$(python3 - <<'PY' "$DATA_ROOT/config.toml"
 import sys, tomllib
@@ -380,20 +375,7 @@ PY
 )"
     [[ -n "$SYNTH_BACKEND_URL" ]] && export SYNTH_BACKEND_URL
   fi
-  if [[ -z "${SYNTH_RESPONSES_GATEWAY_URL:-}" && -f "$DATA_ROOT/config.toml" ]]; then
-    SYNTH_RESPONSES_GATEWAY_URL="$(python3 - <<'PY' "$DATA_ROOT/config.toml"
-import sys, tomllib
-from pathlib import Path
-data = tomllib.loads(Path(sys.argv[1]).read_text())
-intern = data.get("intern") or {}
-profile = intern.get("profile") or ""
-gateways = intern.get("gateways") or {}
-print(gateways.get(profile) or "")
-PY
-)"
-    [[ -n "$SYNTH_RESPONSES_GATEWAY_URL" ]] && export SYNTH_RESPONSES_GATEWAY_URL
-  fi
-  echo "[desktop:$NAME] profile=${SYNTH_INTERN_PROFILE:-} backend=${SYNTH_BACKEND_URL:-} gateway=${SYNTH_RESPONSES_GATEWAY_URL:-}"
+  echo "[desktop:$NAME] profile=${SYNTH_INTERN_PROFILE:-} backend=${SYNTH_BACKEND_URL:-} gateway=source-owned"
 
   # The adapter prebuild compiles the shared desktop library and therefore
   # runs Tauri code generation too. Give it the same overlay as `tauri dev`;

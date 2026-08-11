@@ -1,13 +1,15 @@
 # Desktop → synth-responses-gateway
 
-Point only the Responses path at the dedicated gateway; keep account/billing on the main backend.
+The Desktop profile selects a checked-in gateway for only the Responses path;
+account/billing remain on the main backend.
 
-```bash
-# Local slot1
-export SYNTH_RESPONSES_GATEWAY_URL="http://127.0.0.1:41124"
+| Desktop profile | Responses gateway |
+| --- | --- |
+| `local` / `local-slot1` | `http://127.0.0.1:41124` |
+| `staging` | `https://synth-responses-gateway-staging-dev.up.railway.app` |
+| `prod` / `production` | `https://synth-responses-gateway-prod-production.up.railway.app` |
 
-# Railway staging
-export SYNTH_RESPONSES_GATEWAY_URL="https://synth-responses-gateway-staging-dev.up.railway.app"
-```
+There is no environment or TOML gateway override. An unknown profile blocks
+Synth Cloud inference rather than falling back to the backend Responses route.
 
 `store: false` and full native history continuation are required. Do not send `previous_response_id` alone.
