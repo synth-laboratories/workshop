@@ -985,8 +985,14 @@ fn home() -> PathBuf {
         })
 }
 fn models_dir() -> Result<PathBuf> {
-    if let Some(selected) = read_selected_model_path()? {
-        return Ok(validate_model_input(&selected)?.models_root.into());
+    if let Some(selected) = selected_model_hit(read_selected_model_path()?)? {
+        // A managed model can be removed outside the app (or restored from an
+        // older profile after the weights have been deleted).  In that case
+        // the selection file is only a stale preference, not a reason to make
+        // the local runtime fail before the user asks to use it.  Existing,
+        // malformed model directories still fail loudly so partial/corrupt
+        // downloads are never mistaken for a usable model.
+        return Ok(selected.models_root.into());
     }
     if let Some(path) = env::var_os("SYNTH_LAGUNA_MODELS_DIR") {
         return Ok(validate_model_input(Path::new(&path))?.models_root.into());
@@ -1004,10 +1010,17 @@ fn models_dir() -> Result<PathBuf> {
 }
 
 fn selected_model_id() -> Result<String> {
-    if let Some(selected) = read_selected_model_path()? {
-        return Ok(validate_model_input(&selected)?.model_id);
+    if let Some(selected) = selected_model_hit(read_selected_model_path()?)? {
+        return Ok(selected.model_id);
     }
     Ok(DEFAULT_MODEL.into())
+}
+
+fn selected_model_hit(selected: Option<PathBuf>) -> Result<Option<LagunaModelHit>> {
+    match selected {
+        Some(path) if path.exists() => validate_model_input(&path).map(Some),
+        Some(_) | None => Ok(None),
+    }
 }
 
 fn read_selected_model_path() -> Result<Option<PathBuf>> {
@@ -1509,6 +1522,32 @@ mod tests {
         let hit = validate_model_input(&flat).unwrap();
         assert_eq!(Path::new(&hit.models_root), flat.canonicalize().unwrap());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ignores_a_stale_selected_model_path() {
+        let stale = env::temp_dir().join(format!(
+            "synth-stale-model-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        assert!(!stale.exists());
+        assert!(selected_model_hit(Some(stale)).unwrap().is_none());
+    }
+
+    #[test]
+    fn preserves_validation_for_an_existing_broken_selection() {
+        let selected = env::temp_dir().join(format!(
+            "synth-broken-model-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&selected).unwrap();
+        let error = selected_model_hit(Some(selected.clone()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("neither a supported model directory nor a models root"));
+        fs::remove_dir_all(selected).unwrap();
     }
 
     #[test]
