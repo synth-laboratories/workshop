@@ -44,7 +44,7 @@ VITE_PORT=$((14200 + CHECKSUM % 1000))
 LAGUNA_PORT=$((17300 + CHECKSUM % 600))
 SOURCE_REVISION="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
 if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
-  SOURCE_REVISION="$SOURCE_REVISION-dirty"
+  SOURCE_REVISION="$SOURCE_REVISION-dirty.$(git -C "$ROOT" diff --no-ext-diff --binary HEAD | shasum -a 256 | awk '{print substr($1,1,12)}')"
 fi
 
 case "$NAME" in
@@ -164,7 +164,7 @@ revalidate_provenance() {
   local current digest manifest_tmp="$MANIFEST.provenance.tmp"
   current="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
   if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
-    current="$current-dirty"
+    current="$current-dirty.$(git -C "$ROOT" diff --no-ext-diff --binary HEAD | shasum -a 256 | awk '{print substr($1,1,12)}')"
   fi
   if [[ "$current" != "$expected" ]]; then
     echo "[desktop:$NAME] ERROR provenance drift ($phase): expected $expected got $current" >&2

@@ -73,10 +73,11 @@ acquire_install_lock() {
 }
 
 source_revision() {
-  local revision
+  local revision dirty_digest
   revision="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
   if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
-    revision="$revision-dirty"
+    dirty_digest="$(git -C "$ROOT" diff --no-ext-diff --binary HEAD | shasum -a 256 | awk '{print substr($1,1,12)}')"
+    revision="$revision-dirty.$dirty_digest"
   fi
   printf '%s' "$revision"
 }
