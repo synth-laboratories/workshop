@@ -106,7 +106,7 @@ write_contract() {
       "backgroundColor": "#f3f5f8",
       "titleBarStyle": "Overlay",
       "hiddenTitle": true,
-      "trafficLightPosition": { "x": 33, "y": 22 }
+      "trafficLightPosition": { "x": 20, "y": 22 }
     }]
   },
   "bundle": {
