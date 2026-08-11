@@ -25,6 +25,14 @@ function IconPlay() {
 export function ModelDownloadBar({ state, onPauseToggle }: Props) {
 	const { model } = state;
 
+	// Local-runtime health is useful while the local target is selected, but it
+	// must not become a global application warning during a Synth Cloud or
+	// remote session. Keep an explicit download visible because that is a
+	// user-initiated background operation with progress worth preserving.
+	if (state.selectedTargetId !== "local-laguna" && model.status !== "downloading") {
+		return null;
+	}
+
 	if (model.status === "not_installed") {
 		return (
 			<div className="download-bar is-warning" data-testid="model-status-missing">
