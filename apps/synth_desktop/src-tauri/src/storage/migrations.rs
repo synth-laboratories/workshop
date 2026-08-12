@@ -13,6 +13,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_8,
     MIGRATION_9,
     MIGRATION_10,
+    MIGRATION_11,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -571,9 +572,8 @@ ON model_performance_samples(status, completed_at_ms DESC);
 /// One authoritative accounting record per provider request. Supersedes
 /// `model_performance_samples` (all rows are imported, then the old table is
 /// dropped) and takes over as the source for both throughput summaries and
-/// the usage dashboard. The legacy `usage_ledger` table is deliberately left
-/// in place untouched: the dev-seed allowance still charges from it, and its
-/// rows are preserved verbatim.
+/// the usage dashboard. The legacy `usage_ledger` table is left in place
+/// until migration 11 folds its rows into this ledger and drops it.
 ///
 /// `total_tokens` is a generated column so `input + output` can never drift
 /// from its parts, and it stays NULL — not zero — while neither side has been
@@ -690,6 +690,51 @@ CREATE INDEX IF NOT EXISTS sessions_runtime_target_kind
 ON sessions(runtime_target_kind);
 "#;
 
+/// Fold the legacy `usage_ledger` into the authoritative `usage_records`
+/// ledger, then drop it. One read model serves dashboard, allowance, and the
+/// Data → Usage feed. Orphan session/run FKs are nulled so the copy cannot
+/// fail under `PRAGMA foreign_keys=ON`.
+const MIGRATION_11: &str = r#"
+INSERT OR IGNORE INTO usage_records (
+    id, provider, model_id, session_id, run_id, request_id,
+    measurement_kind, status, started_at_ms, completed_at_ms,
+    input_tokens, output_tokens,
+    billed_cost_usd, estimated_cost_usd, cost_source,
+    source, created_at
+)
+SELECT
+    id,
+    provider,
+    model,
+    CASE
+        WHEN session_id IS NOT NULL
+             AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = usage_ledger.session_id)
+            THEN session_id
+        ELSE NULL
+    END,
+    CASE
+        WHEN run_id IS NOT NULL
+             AND EXISTS (SELECT 1 FROM runs r WHERE r.id = usage_ledger.run_id)
+            THEN run_id
+        ELSE NULL
+    END,
+    'legacy-ledger:' || id,
+    'provider_reported',
+    'completed',
+    COALESCE(CAST(strftime('%s', substr(created_at, 1, 19)) AS INTEGER), 0) * 1000,
+    COALESCE(CAST(strftime('%s', substr(created_at, 1, 19)) AS INTEGER), 0) * 1000,
+    prompt_tokens,
+    completion_tokens,
+    cost_usd,
+    NULL,
+    CASE WHEN cost_usd IS NOT NULL THEN 'provider_reported' ELSE 'none' END,
+    'legacy_usage_ledger',
+    created_at
+FROM usage_ledger;
+
+DROP TABLE usage_ledger;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,7 +784,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 10);
+        assert_eq!(apply_migrations(&conn).unwrap(), 11);
         let updated_at: String = conn
             .query_row(
                 "SELECT updated_at FROM runs WHERE id = 'run-1'",
@@ -770,7 +815,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(accounting_tables, 1);
-        // The performance table was folded into usage_records by migration 8.
+        // The performance table was folded into usage_records by migration 8;
+        // migration 11 drops usage_ledger after folding it in.
         let performance_tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'model_performance_samples'",
@@ -779,12 +825,20 @@ mod tests {
             )
             .unwrap();
         assert_eq!(performance_tables, 0);
+        let ledger_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'usage_ledger'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ledger_tables, 0);
     }
 
-    /// A v7 database keeps every legacy `usage_ledger` row untouched, and its
-    /// performance samples all come across into `usage_records` verbatim.
+    /// A v7 database imports performance samples into `usage_records`, then
+    /// migration 11 folds legacy `usage_ledger` rows into the same ledger.
     #[test]
-    fn migration_8_preserves_ledger_rows_and_imports_performance_samples() {
+    fn migration_8_and_11_fold_ledger_and_import_performance_samples() {
         let conn = seed_at_version(7);
         conn.execute(
             "INSERT INTO usage_ledger(id,provider,model,prompt_tokens,completion_tokens,total_tokens,cost_usd,created_at)
@@ -799,17 +853,27 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 10);
+        assert_eq!(apply_migrations(&conn).unwrap(), 11);
 
-        let (ledger_rows, ledger_cost): (i64, f64) = conn
+        let ledger_tables: i64 = conn
             .query_row(
-                "SELECT COUNT(*), COALESCE(SUM(cost_usd),0) FROM usage_ledger",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'usage_ledger'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(ledger_rows, 1);
-        assert!((ledger_cost - 0.5).abs() < 1e-9);
+        assert_eq!(ledger_tables, 0);
+        let (billed, cost_source, source): (f64, String, String) = conn
+            .query_row(
+                "SELECT billed_cost_usd, cost_source, source
+                 FROM usage_records WHERE request_id='legacy-ledger:ledger-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert!((billed - 0.5).abs() < 1e-9);
+        assert_eq!(cost_source, "provider_reported");
+        assert_eq!(source, "legacy_usage_ledger");
         let (input, cached, total, cost_source): (i64, i64, i64, String) = conn
             .query_row(
                 "SELECT input_tokens, cached_input_tokens, total_tokens, cost_source
@@ -851,12 +915,15 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 10);
+        assert_eq!(apply_migrations(&conn).unwrap(), 11);
 
         let imported: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(imported, 1_201, "history must never be silently trimmed");
+        assert_eq!(
+            imported, 1_202,
+            "history must never be silently trimmed (perf samples + folded ledger)"
+        );
         let (null_total, billed, estimated, cost_source): (
             Option<i64>,
             Option<f64>,
@@ -873,16 +940,18 @@ mod tests {
         assert_eq!(null_total, None, "unreported tokens must not become zero");
         assert_eq!((billed, estimated), (None, None));
         assert_eq!(cost_source, "none");
-        let (totals_ok, ledger_rows): (i64, i64) = conn
+        let (totals_ok, ledger_tables, folded): (i64, i64, i64) = conn
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM usage_records WHERE request_id LIKE 'req-%' AND request_id != 'req-null' AND total_tokens = 150),
-                        (SELECT COUNT(*) FROM usage_ledger)",
+                        (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='usage_ledger'),
+                        (SELECT COUNT(*) FROM usage_records WHERE request_id='legacy-ledger:ledger-1')",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
         assert_eq!(totals_ok, 1_200);
-        assert_eq!(ledger_rows, 1, "legacy ledger rows are preserved verbatim");
+        assert_eq!(ledger_tables, 0, "legacy ledger table is dropped after fold");
+        assert_eq!(folded, 1, "legacy ledger rows land in usage_records");
     }
 
     /// Recovery from the pre-transactional failure mode: a crash landed after
@@ -908,7 +977,7 @@ mod tests {
         conn.execute_batch(partial).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 7);
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 10);
+        assert_eq!(apply_migrations(&conn).unwrap(), 11);
         let (copies, leftovers): (i64, i64) = conn
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM usage_records WHERE request_id='req-1'),
@@ -935,7 +1004,7 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(apply_migrations(&conn).unwrap(), 10);
+        assert_eq!(apply_migrations(&conn).unwrap(), 11);
         let kinds: Vec<(String, String)> = {
             let mut stmt = conn
                 .prepare("SELECT id, kind FROM sessions ORDER BY id")
@@ -972,7 +1041,7 @@ mod tests {
         assert_eq!(probe, 0, "the failed migration's table must roll back");
         assert_eq!(version, 7);
         // The connection stays usable and the real migration still applies.
-        assert_eq!(apply_migrations(&conn).unwrap(), 10);
+        assert_eq!(apply_migrations(&conn).unwrap(), 11);
     }
 
     #[test]
@@ -984,7 +1053,7 @@ mod tests {
             [r#"{"kind":"remote","provider":"synth-cloud","model":"openrouter/poolside/laguna-s-2.1","adapter":null}"#],
         )
         .unwrap();
-        assert_eq!(apply_migrations(&conn).unwrap(), 10);
+        assert_eq!(apply_migrations(&conn).unwrap(), 11);
         let (kind, target): (String, String) = conn
             .query_row(
                 "SELECT runtime_target_kind, target_json FROM sessions WHERE id='cloud-1'",

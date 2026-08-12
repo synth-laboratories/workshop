@@ -458,7 +458,7 @@ export function UsageSheet({
 							onClick={onOpenDeviceUsage}
 							data-testid="usage-sheet-open-inventory"
 						>
-							Open Inventory → Usage
+							Open Data → Usage
 						</button>
 					</div>
 				</section>

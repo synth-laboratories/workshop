@@ -765,7 +765,7 @@ fn import_usage(source: &Connection, tx: &Transaction<'_>, state: &mut ImportSta
         ))
     })?;
     for row in rows {
-        let (id, provider, model, mut session, mut run, prompt, completion, total, cost, created) =
+        let (id, provider, model, mut session, mut run, prompt, completion, _total, cost, created) =
             row?;
         state.found("usage_ledger");
         session = valid_fk(
@@ -778,7 +778,35 @@ fn import_usage(source: &Connection, tx: &Transaction<'_>, state: &mut ImportSta
             state,
         )?;
         run = valid_fk(tx, "runs", run, "usage_ledger", &id, "run_id", state)?;
-        let changed=tx.execute("INSERT OR IGNORE INTO usage_ledger(id,provider,model,session_id,run_id,prompt_tokens,completion_tokens,total_tokens,cost_usd,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![id,provider,model,session,run,prompt,completion,total,cost,created])?;
+        let started_ms = 0_i64;
+        let cost_source = if cost.is_some() {
+            "provider_reported"
+        } else {
+            "none"
+        };
+        let request_id = format!("legacy-ledger:{id}");
+        let changed = tx.execute(
+            "INSERT OR IGNORE INTO usage_records(
+                id, provider, model_id, session_id, run_id, request_id,
+                measurement_kind, status, started_at_ms, completed_at_ms,
+                input_tokens, output_tokens, billed_cost_usd, estimated_cost_usd,
+                cost_source, source, created_at
+             ) VALUES (?1,?2,?3,?4,?5,?6,'provider_reported','completed',?7,?7,?8,?9,?10,NULL,?11,'legacy_usage_ledger',?12)",
+            params![
+                id,
+                provider,
+                model,
+                session,
+                run,
+                request_id,
+                started_ms,
+                prompt,
+                completion,
+                cost,
+                cost_source,
+                created
+            ],
+        )?;
         if changed == 1 {
             state.imported("usage_ledger", id)
         } else {
@@ -808,7 +836,7 @@ fn ensure_destination_schema(conn: &Connection) -> Result<()> {
         "traces",
         "visuals",
         "visual_revisions",
-        "usage_ledger",
+        "usage_records",
     ] {
         if !table_exists(conn, table)? {
             bail!("destination CoreRuntime database is missing table {table}");

@@ -79,9 +79,9 @@ impl Commands {
     pub const TERMINAL_RESIZE: &'static str = "terminal_resize";
     pub const TERMINAL_CLOSE: &'static str = "terminal_close";
 
-    // Inventory / visuals / optimizers (partial — expand with specta)
-    pub const INVENTORY_CONTAINERS_LIST: &'static str = "inventory_containers_list";
-    pub const INVENTORY_COUNTS: &'static str = "inventory_counts";
+    // Data / visuals / optimizers (partial — expand with specta)
+    pub const DATA_CONTAINERS_LIST: &'static str = "data_containers_list";
+    pub const DATA_COUNTS: &'static str = "data_counts";
     pub const USAGE_SUMMARY: &'static str = "usage_summary";
     pub const VISUALS_LIST: &'static str = "visuals_list";
     pub const VISUALS_GET: &'static str = "visuals_get";

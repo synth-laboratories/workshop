@@ -789,7 +789,7 @@ async fn ingest_trace_bundle(core: &CoreRuntime, body: Value) -> Result<Value> {
             .and_then(Value::as_str)
             .map(str::to_string),
     };
-    let (result, event) = core.inventory().ingest_trace_bundle(request).await?;
+    let (result, event) = core.data().ingest_trace_bundle(request).await?;
     core.broadcast_committed(event);
     Ok(serde_json::to_value(result)?)
 }
@@ -959,7 +959,7 @@ async fn resolve_policy_target(
 async fn run_policy_rollout(deps: &EvalDriverDeps, container_id: &str, body: Value) -> Result<Value> {
     let core = &deps.core;
     let container = core
-        .inventory()
+        .data()
         .get_container(container_id.to_string())
         .await?;
     let base = container

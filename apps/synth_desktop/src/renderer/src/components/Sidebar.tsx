@@ -371,7 +371,7 @@ export function Sidebar({
 				 * bridge, and CloudDesk component remain for v0.2 re-entry.
 				 */}
 
-				{/* ── Research = Visuals + Inventory ── */}
+				{/* ── Research = Visuals + Data ── */}
 				<div className="sidebar-section">
 					<div className="section-header">
 						<button
@@ -409,7 +409,7 @@ export function Sidebar({
 					) : null}
 				</div>
 
-				{/* ── Inventory = containers / traces / usage ── */}
+				{/* ── Data = containers / traces / usage ── */}
 				<div className="sidebar-section">
 					<div className="section-header">
 						<button
@@ -419,7 +419,7 @@ export function Sidebar({
 							aria-expanded={inventoryOpen}
 							aria-controls="sidebar-inventory"
 						>
-							Inventory
+							Data
 							<SectionChevron open={inventoryOpen} />
 						</button>
 					</div>

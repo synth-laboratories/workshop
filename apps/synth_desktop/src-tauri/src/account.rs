@@ -13,12 +13,12 @@
 //!   dollars, the shell shows no plan figure rather than a plausible one;
 //! * only the explicit local-only profiles (`local`, `local-slot1`) keep a
 //!   seeded `Synth Dev` $200 stand-in — charged from the device
-//!   `usage_ledger` — so the shell is exercisable offline, and it is always
-//!   labelled as a dev stand-in, never as cloud truth. Gating is on the
-//!   *profile* (`is_local_only_profile`), not on the origin heuristic used
-//!   for the display-only `environment` field: a stand-in seeded while on a
-//!   local profile must not leak into a later summary read under a cloud
-//!   profile.
+//!   `usage_records` ledger — so the shell is exercisable offline, and it is
+//!   always labelled as a dev stand-in, never as cloud truth. Gating is on
+//!   the *profile* (`is_local_only_profile`), not on the origin heuristic
+//!   used for the display-only `environment` field: a stand-in seeded while
+//!   on a local profile must not leak into a later summary read under a
+//!   cloud profile.
 
 use anyhow::Result;
 use chrono::{DateTime, Datelike, TimeZone, Utc};
@@ -200,19 +200,14 @@ fn usd(cents: i64) -> f64 {
 
 fn used_cents_since(storage: &Storage, since: DateTime<Utc>) -> Result<i64> {
     let floor = since.to_rfc3339();
-    // The dev stand-in charges from real device usage: the authoritative
-    // per-request ledger (settled charge first, else its labeled estimate)
-    // plus whatever the legacy ledger still holds.
+    // One ledger: settled charge first, else its labeled estimate. Legacy
+    // `usage_ledger` rows were folded into `usage_records` by migration 11.
     let used_usd: f64 = storage.database().with_conn(|conn| {
         let mut statement = conn.prepare(
-            "SELECT
-                (SELECT COALESCE(SUM(COALESCE(billed_cost_usd, estimated_cost_usd)), 0)
-                 FROM usage_records
-                 WHERE COALESCE(billed_cost_usd, estimated_cost_usd) IS NOT NULL AND created_at >= ?1)
-                +
-                (SELECT COALESCE(SUM(cost_usd), 0)
-                 FROM usage_ledger
-                 WHERE cost_usd IS NOT NULL AND created_at >= ?1)",
+            "SELECT COALESCE(SUM(COALESCE(billed_cost_usd, estimated_cost_usd)), 0)
+             FROM usage_records
+             WHERE COALESCE(billed_cost_usd, estimated_cost_usd) IS NOT NULL
+               AND created_at >= ?1",
         )?;
         let value: f64 = statement.query_row([&floor], |row| row.get(0))?;
         Ok(value)
@@ -485,8 +480,14 @@ mod tests {
             .database()
             .with_conn(|conn| {
                 conn.execute(
-                    "INSERT INTO usage_ledger(id,provider,model,prompt_tokens,completion_tokens,total_tokens,cost_usd,created_at)
-                     VALUES(?1,'synth','laguna-s',10,10,20,?2,?3)",
+                    "INSERT INTO usage_records(
+                        id,provider,model_id,request_id,measurement_kind,status,
+                        started_at_ms,completed_at_ms,input_tokens,output_tokens,
+                        billed_cost_usd,estimated_cost_usd,cost_source,source,created_at
+                     ) VALUES(
+                        ?1,'synth','laguna-s',?1,'provider_reported','completed',
+                        0,0,10,10,?2,NULL,'provider_reported','test',?3
+                     )",
                     rusqlite::params![id, cost_usd, created_at],
                 )?;
                 Ok(())
@@ -778,7 +779,7 @@ mod tests {
             .database()
             .with_conn(|conn| {
                 conn.execute(
-                    "UPDATE usage_ledger SET cost_usd = NULL WHERE id = 'untracked'",
+                    "UPDATE usage_records SET billed_cost_usd = NULL, cost_source = 'none' WHERE id = 'untracked'",
                     [],
                 )?;
                 Ok(())

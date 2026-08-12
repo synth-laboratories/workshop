@@ -224,7 +224,7 @@ export function AccountPage({
 				<p className="account-page-note">Device totals are local runs on this Mac — not your Synth Cloud allowance.</p>
 				<div className="account-page-actions">
 					<button type="button" className="settings-secondary-btn" data-testid="account-page-open-inventory" onClick={onOpenDeviceUsage}>
-						Open Inventory → Usage
+						Open Data → Usage
 					</button>
 				</div>
 			</Section>

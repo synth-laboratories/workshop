@@ -44,7 +44,7 @@ export type AccountViewModel = {
 /**
  * The cloud allowance, resolved to exactly what the menu should show.
  *
- * Cloud only, by construction: device totals live in Inventory → Usage and are
+ * Cloud only, by construction: device totals live in Data → Usage and are
  * never summed into these rows (invariant 1). `rows` is empty whenever there is
  * no metered dollar figure to show, so no surface can render an invented
  * `$0.00` (invariant 2) — `note` says why instead.
