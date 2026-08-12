@@ -17,6 +17,21 @@ import type {
 	VisualRecord
 } from "@synth/runtime-protocol";
 import {
+	dispatchLocalSessionStatus,
+	dispatchRuntimeEvent,
+	dispatchTurnAccepted,
+	mergeInternSessions,
+	mergeSessionReplay,
+	patchSessionMetadata,
+	replaceSessionEvents,
+	replaceSessions,
+	selectSessionRunning,
+	selectWorkingChatIds,
+	upsertSession,
+	useEventsBySession,
+	useSessions
+} from "./stores/sessionStore";
+import {
 	EXECUTION_TARGETS,
 	OPENROUTER_LAGUNA_S_MODEL,
 	OPENROUTER_LUNA_MODEL,
@@ -232,26 +247,6 @@ function truncate(label: string, max = 22) {
 	return `${label.slice(0, max - 1)}…`;
 }
 
-function appendEvent(events: RuntimeEvent[], event: RuntimeEvent): RuntimeEvent[] {
-	const payloadId = (value: RuntimeEvent) => {
-		const payload = value.payload ?? {};
-		return typeof payload.messageId === "string" ? payload.messageId
-			: typeof payload.eventId === "string" ? payload.eventId
-				: typeof payload.id === "string" ? payload.id : "";
-	};
-	if (events.some((candidate) =>
-		candidate.sequence === event.sequence &&
-		candidate.eventKind === event.eventKind &&
-		candidate.source === event.source &&
-		payloadId(candidate) === payloadId(event)
-	)) return events;
-	return [...events, event].sort((left, right) => left.sequence - right.sequence);
-}
-
-function mergeReplayedEvents(current: RuntimeEvent[], replayed: RuntimeEvent[]): RuntimeEvent[] {
-	return [...replayed, ...current].reduce<RuntimeEvent[]>((events, event) => appendEvent(events, event), []);
-}
-
 function appendCodexActivity(
 	events: CodexActivityEvent[],
 	event: CodexActivityEvent
@@ -341,9 +336,9 @@ export default function App() {
 	}, []);
 	const [health, setHealth] = useState<RuntimeHealth | null>(null);
 	const [laguna, setLaguna] = useState<LagunaStatus | null>(null);
-	const [sessions, setSessions] = useState<Session[]>([]);
-	const sessionsRef = useRef<Session[]>([]);
-	const [eventsBySession, setEventsBySession] = useState<Record<string, RuntimeEvent[]>>({});
+	const sessions = useSessions();
+	const sessionsRef = useRef<Session[]>(sessions);
+	const eventsBySession = useEventsBySession();
 	const [codexActivityBySession, setCodexActivityBySession] = useState<Record<string, CodexActivityEvent[]>>({});
 	const [selectedTargetId, setSelectedTargetId] = useState("local-laguna");
 	useEffect(() => {
@@ -596,16 +591,14 @@ export default function App() {
 			detail: failure.detail
 		});
 		staleRunFenceRef.current.add(sessionId);
-		setSessions((current) => current.map((item) => item.id === sessionId && item.status === "running"
-			? { ...item, status: "interrupted", updatedAt: new Date().toISOString() }
-			: item));
+		dispatchLocalSessionStatus(sessionId, "interrupted", { onlyIf: "running" });
 		const sequence = allocateNativeSequence(sessionId);
-		setEventsBySession((current) => ({ ...current, [sessionId]: appendEvent(current[sessionId] ?? [], {
+		dispatchRuntimeEvent({
 			schemaVersion: "synth.desktop-runtime-event.v1", sessionId, sequence,
 			eventKind: "session/unhealthy",
 			payload: { reason: failure.code, message: turnFailureMessage(failure) },
 			createdAt: new Date().toISOString(), source: "local"
-		}) }));
+		}, { updateStatus: false });
 		setFailedSend({ sessionId, text, messageId, message: turnFailureMessage(failure) });
 		showToast(turnFailureMessage(failure));
 	}, [allocateNativeSequence, showToast]);
@@ -613,14 +606,11 @@ export default function App() {
 	const refreshSessions = useCallback(async () => {
 		if (nativeIntern) {
 			const next = await nativeIntern.listSessions();
-			setSessions((current) => [
-				...current.filter((session) => session.target.kind !== "intern"),
-				...next
-			]);
+			mergeInternSessions(next);
 			return next;
 		}
 		const next = await browserRuntimeClient.listSessions();
-		setSessions(next);
+		replaceSessions(next);
 		return next;
 	}, [nativeIntern]);
 
@@ -721,7 +711,7 @@ export default function App() {
 				const restored = persisted.filter((session) => session.status !== "closed").map(restoreCodexSession);
 				const combined = [...restored, ...internSessions];
 				sessionsRef.current = combined;
-				setSessions(combined);
+				replaceSessions(combined);
 				const core = window.synthCore;
 				if (!core) return;
 				const replay = await Promise.all(combined.map(async (session) => {
@@ -729,10 +719,7 @@ export default function App() {
 					return [session.id, rows.map(session.target.kind === "intern" ? appEventToRuntimeEvent : coreEventToRuntime).filter((event): event is RuntimeEvent => event !== null)] as const;
 				}));
 				if (disposed) return;
-				setEventsBySession((current) => Object.fromEntries(replay.map(([sessionId, events]) => [
-					sessionId,
-					mergeReplayedEvents(current[sessionId] ?? [], events)
-				])));
+				mergeSessionReplay(replay);
 				for (const [sessionId, events] of replay) {
 					const head = events.at(-1)?.sequence ?? 0;
 					nativeSequencesRef.current.set(sessionId, head);
@@ -790,21 +777,10 @@ export default function App() {
 						showToast(reason instanceof Error ? reason.message : String(reason));
 					});
 			}
-			setEventsBySession((current) => ({
-				...current,
-				[event.sessionId]: appendEvent(current[event.sessionId] ?? [], runtimeEvent)
-			}));
-			setSessions((current) => current.map((session) => session.id === event.sessionId
-					? { ...session, ...(updatedThreadName ? { title: updatedThreadName } : {}),
-						updatedAt: runtimeEvent.createdAt, latestCursor: sequence,
-						status: fenced ? session.status
-							: runtimeEvent.eventKind === "run.started" ? "running"
-							: runtimeEvent.eventKind === "run.completed" ? "ready"
-						: runtimeEvent.eventKind === "run.failed" ? "failed"
-						: runtimeEvent.eventKind === "run.cancelled" ? "cancelled"
-						: runtimeEvent.eventKind === "session/unhealthy" ? "interrupted"
-						: session.status }
-				: session));
+			dispatchRuntimeEvent(runtimeEvent, {
+				fenced,
+				title: updatedThreadName
+			});
 		});
 	}, [allocateNativeSequence, laguna?.baseUrl, nativeCodex, preferences.agentContext.autoCompactTokenLimits, showToast]);
 
@@ -865,10 +841,7 @@ export default function App() {
 		setApprovalMode(mode); setApprovalPolicy(nextApprovalPolicy); setSandboxMode(nextSandboxMode);
 		setPreferences(setPermissionPreferences(nextApprovalPolicy, nextSandboxMode));
 		const config = { approvalPolicy: nextApprovalPolicy, sandbox: nextSandboxMode };
-		setSessions((current) => current.map((session) => session.id === activeSessionId ? {
-			...session,
-			metadata: { ...session.metadata, approvalMode: mode, ...config }
-		} : session));
+		patchSessionMetadata(activeSessionId, { approvalMode: mode, ...config });
 		void nativeCodex?.close(activeSessionId).catch((reason) => showToast(reason instanceof Error ? reason.message : String(reason)));
 	}, [activeSessionId, nativeCodex, showToast]);
 
@@ -911,18 +884,15 @@ export default function App() {
 				if (selected?.target.kind === "intern" && nativeIntern) {
 					const rows = await nativeIntern.eventsAfter(sessionId, 0, 500);
 					if (disposed) return;
-					setEventsBySession((current) => ({
-						...current,
-						[sessionId]: rows.map(appEventToRuntimeEvent).filter((event): event is RuntimeEvent => event !== null)
-					}));
+					replaceSessionEvents(
+						sessionId,
+						rows.map(appEventToRuntimeEvent).filter((event): event is RuntimeEvent => event !== null)
+					);
 					const unlisten = nativeIntern.onEvent((appEvent) => {
 						if (disposed || appEvent.sessionId !== sessionId) return;
 						const event = appEventToRuntimeEvent(appEvent);
 						if (!event) return;
-						setEventsBySession((current) => ({
-							...current,
-							[sessionId]: appendEvent(current[sessionId] ?? [], event)
-						}));
+						dispatchRuntimeEvent(event);
 						if (
 							event.eventKind.startsWith("run.") ||
 							event.eventKind === "command.receipt" ||
@@ -938,19 +908,13 @@ export default function App() {
 				}
 				const page = await browserRuntimeClient.events(sessionId, 0, 500);
 				if (disposed) return;
-				setEventsBySession((current) => ({
-					...current,
-					[sessionId]: page.events
-				}));
+				replaceSessionEvents(sessionId, page.events);
 				subscription = await browserRuntimeClient.subscribe(
 					sessionId,
 					page.nextSequence,
 					(event) => {
 						if (disposed) return;
-						setEventsBySession((current) => ({
-							...current,
-							[sessionId]: appendEvent(current[sessionId] ?? [], event)
-						}));
+						dispatchRuntimeEvent(event);
 						if (
 							event.eventKind.startsWith("run.") ||
 							event.eventKind === "usage.recorded" ||
@@ -1028,9 +992,7 @@ export default function App() {
 		sessions
 	]);
 
-	const workingChatIds = useMemo(() => new Set(sessions
-		.filter((session) => session.target.kind !== "intern" && session.status === "running")
-		.map((session) => session.id)), [sessions]);
+	const workingChatIds = useMemo(() => selectWorkingChatIds(sessions), [sessions]);
 
 	const pinnedChatIds = useMemo(() => new Set(
 		Object.entries(preferences.conversations)
@@ -1103,33 +1065,10 @@ export default function App() {
 	const activeChatSession = activeChat
 		? sessions.find((candidate) => candidate.id === activeChat.id)
 		: undefined;
-	const activeChatRunning = activeChat ? (() => {
-		const latestRunEvent = [...(eventsBySession[activeChat.id] ?? [])]
-			.reverse()
-			.find((event) => event.eventKind.startsWith("run."));
-		if (
-			latestRunEvent?.eventKind === "run.completed" ||
-			latestRunEvent?.eventKind === "run.failed" ||
-			latestRunEvent?.eventKind === "run.cancelled"
-		) {
-			// A new turn can be accepted before a provider emits run.started. Do not
-			// let the preceding turn's terminal event hide Stop for that new turn.
-			// Sequence, unlike restored wall-clock timestamps, proves the user event
-			// belongs to a later turn.
-			const hasNewerUserTurn = (eventsBySession[activeChat.id] ?? []).some((event) =>
-				event.sequence > latestRunEvent.sequence &&
-				event.eventKind === "message.created" &&
-				event.payload?.role === "user"
-			);
-			if (activeChatSession?.status !== "running" || !hasNewerUserTurn) return false;
-		}
-		// A restored session record is authoritative. In particular, a stale
-		// run.started event must not resurrect Working after the app-server that
-		// owned that turn has exited or the desktop app has restarted. A terminal
-		// event is newer evidence and must clear a lagging running record.
-		if (activeChatSession) return activeChatSession.status === "running";
-		return latestRunEvent?.eventKind === "run.started";
-	})() : false;
+	// Session status + event arbitration — single selector, not an App.tsx IIFE.
+	const activeChatRunning = activeChat
+		? selectSessionRunning(activeChatSession, eventsBySession[activeChat.id] ?? [])
+		: false;
 	const activeChatWarmingUp = Boolean(
 		activeChatRunning &&
 		activeChatSession?.target.kind === "local" &&
@@ -1300,7 +1239,7 @@ export default function App() {
 					await nativeCodex.start(codexStartRequest(id, workspace, target, permissions, preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined));
 					const session = createCodexSession(id, target, null, workspace, title, permissions);
 					sessionsRef.current = [session, ...sessionsRef.current.filter((item) => item.id !== session.id)];
-					setSessions(sessionsRef.current);
+					upsertSession(session);
 					setView({ kind: "chat", chatId: session.id });
 					return session;
 				}
@@ -1392,11 +1331,11 @@ export default function App() {
 					// A retry reuses the same message id so the bubble is
 					// updated in place instead of duplicated.
 					const messageId = options?.messageId ?? `user-${sequence}`;
-					setEventsBySession((current) => ({ ...current, [sessionId]: appendEvent(current[sessionId] ?? [], {
+					dispatchRuntimeEvent({
 						schemaVersion: "synth.desktop-runtime-event.v1", sessionId, sequence,
 						eventKind: "message.created", payload: { messageId, role: "user", content: text },
 						createdAt: now, source: "local"
-					}) }));
+					});
 					const effort = turnStartEffortForExecutionTarget(executionTarget, modelKnobValues);
 					let started: CodexSessionInfo;
 					try {
@@ -1423,15 +1362,10 @@ export default function App() {
 					setFailedSend((current) => (current?.sessionId === sessionId ? null : current));
 					// Working only appears once a real turn exists. Without a
 					// turn id the run.started event promotes the status instead.
-					setSessions((current) => current.map((item) => {
-						if (item.id !== sessionId) return item;
-						return {
-							...item,
-							target: executionTarget,
-							status: started?.turnId ? "running" : item.status,
-							updatedAt: new Date().toISOString()
-						};
-					}));
+					dispatchTurnAccepted(sessionId, {
+						target: executionTarget,
+						turnId: started?.turnId
+					});
 					return true;
 				}
 				if (session?.target.kind === "intern" && nativeIntern) {
@@ -1496,9 +1430,12 @@ export default function App() {
 						await nativeCodex.resolveApproval(activeSessionId, approvalId, decision);
 					}
 					else throw new Error(`${kind} is not supported for a Codex session`);
-					if (kind === "close" || kind === "cancel" || kind === "pause") setSessions((current) => current.map((item) => item.id === activeSessionId
-						? { ...item, status: kind === "close" ? "completed" : "interrupted", updatedAt: new Date().toISOString() }
-						: item));
+					if (kind === "close" || kind === "cancel" || kind === "pause") {
+						dispatchLocalSessionStatus(
+							activeSessionId,
+							kind === "close" ? "completed" : "interrupted"
+						);
+					}
 					return;
 				}
 				if (session?.target.kind === "intern" && nativeIntern) {
