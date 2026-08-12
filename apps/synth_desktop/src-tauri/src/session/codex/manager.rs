@@ -8,7 +8,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::sync::{oneshot, Mutex, RwLock};
 
 use crate::credential_broker;
@@ -25,9 +25,9 @@ use super::home::{
 };
 use super::proto::{
     default_approval_policy, default_sandbox, is_detached_failure, CodexApprovalDecisionRequest,
-    CodexEvent, CodexSessionInfo, CodexSessionRecord, CodexSessionRequest, CodexSessionStartRequest,
+    CodexSessionInfo, CodexSessionRecord, CodexSessionRequest, CodexSessionStartRequest,
     CodexSteerRequest, CodexTurnFailure, CodexTurnSendRequest, CodexTurnStartRequest,
-    CompactWaiters, ProviderTransport, Session, SessionDetached, DETACHED_MESSAGE, EVENT_NAME, COMPACT_PROMPT,
+    CompactWaiters, ProviderTransport, Session, SessionDetached, DETACHED_MESSAGE, COMPACT_PROMPT,
 };
 use super::telemetry::{PerformanceTrackers, TurnPerformanceTracker, TurnTokenUsage};
 
@@ -422,17 +422,17 @@ impl CodexManager {
         let _ = self
             .reconcile_failed_turn_start(&session_id, "turn_start_detached")
             .await;
-        let _ = app.emit(
-            EVENT_NAME,
-            CodexEvent {
-                session_id: session_id.clone(),
-                method: "session/unhealthy".into(),
-                params: json!({
+        self.persistence
+            .notify_codex_event(
+                &app,
+                session_id.clone(),
+                "session/unhealthy",
+                json!({
                     "reason": "turn_start_detached",
                     "message": DETACHED_MESSAGE
                 }),
-            },
-        );
+            )
+            .await;
         Err(CodexTurnFailure::detached(
             &session_id,
             format!("{error:?}"),
@@ -750,17 +750,8 @@ impl CodexManager {
             "decision": request.decision,
             "appServerDecision": decision,
         });
-        let _ = app.emit(
-            EVENT_NAME,
-            CodexEvent {
-                session_id: request.session_id.clone(),
-                method: kind.into(),
-                params: payload.clone(),
-            },
-        );
-        let _ = self
-            .persistence
-            .append_and_emit(&app, EventAppend::codex(request.session_id, kind, payload))
+        self.persistence
+            .notify_codex_event(&app, request.session_id, kind, payload)
             .await;
         Ok(())
     }

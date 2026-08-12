@@ -182,8 +182,8 @@ export type EventSource =
 /**
  * Who produced a boundary event (Wave 2).
  * Matches Rust `contract::events::EventOrigin` — Provider (codex/app-server)
- * vs Desktop (synthetic session/approval/health). Full origin-tagged Event
- * enum + dual-channel collapse still pending.
+ * vs Desktop (synthetic session/approval/health). Live Codex notifications
+ * share the single origin-tagged `runtime:event` channel.
  */
 export type EventOrigin = "provider" | "desktop";
 

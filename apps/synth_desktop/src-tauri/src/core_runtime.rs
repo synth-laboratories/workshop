@@ -3,7 +3,7 @@
 use crate::cloud::intern::{
     InternProviderManager, InternRuntime, InternSessionBinding, PollerConfig, RuntimeKind,
 };
-use crate::contract::events::EventChannel;
+use crate::contract::events::{origin_for_source_and_kind, tag_event, EventChannel};
 use crate::domain::{RunService, RunStatus, SessionKind, SessionService, SessionStatus};
 use crate::data::{ContainerDeployment, ContainerRegisterRequest, DataStore};
 use crate::optimizers::OptimizerService;
@@ -410,7 +410,11 @@ impl CoreRuntime {
             loop {
                 match rx.recv().await {
                     Ok(event) => {
-                        let _ = app.emit(RUNTIME_EVENT_CHANNEL, &event);
+                        let tagged = tag_event(
+                            origin_for_source_and_kind(event.source.as_str(), &event.kind),
+                            event.clone(),
+                        );
+                        let _ = app.emit(RUNTIME_EVENT_CHANNEL, &tagged);
                         if event.kind == "visual.show" {
                             let _ = app.emit(VISUAL_SHOW_CHANNEL, &event);
                         }

@@ -10,4 +10,7 @@ pub mod events;
 pub mod specta;
 
 pub use commands::COMMANDS;
-pub use events::{tag_event, EventChannel, EventOrigin, OriginTagged, EVENT_CHANNELS};
+pub use events::{
+    origin_for_boundary_kind, origin_for_source_and_kind, tag_event, EventChannel, EventOrigin,
+    OriginTagged, EVENT_CHANNELS,
+};
