@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { LagunaStatus } from "../env";
+import type { LagunaStatus } from "../bridge";
 
 function compactModelName(value: string): string {
 	return value.split("/").at(-1)?.replace(/-mlx$/i, "") ?? value;

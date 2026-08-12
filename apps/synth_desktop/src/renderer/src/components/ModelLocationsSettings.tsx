@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { LagunaModelHit } from "../env";
+import type { LagunaModelHit } from "../bridge";
 
 function formatBytes(bytes: number): string {
 	if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";

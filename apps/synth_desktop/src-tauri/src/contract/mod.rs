@@ -8,4 +8,4 @@ pub mod commands;
 pub mod events;
 
 pub use commands::COMMANDS;
-pub use events::{EventChannel, EVENT_CHANNELS};
+pub use events::{tag_event, EventChannel, EventOrigin, OriginTagged, EVENT_CHANNELS};

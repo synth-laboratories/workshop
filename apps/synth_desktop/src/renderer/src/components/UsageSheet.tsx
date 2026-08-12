@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { UsageBreakdown, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
-import type { SynthAccountSummary } from "../env";
+import type { SynthAccountSummary } from "../bridge";
 import {
 	type AccountViewModel,
 	formatDate,

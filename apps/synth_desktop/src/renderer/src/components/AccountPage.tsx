@@ -1,4 +1,4 @@
-import type { SynthAccountSummary, SynthBackendSettings } from "../env";
+import type { SynthAccountSummary, SynthBackendSettings } from "../bridge";
 import {
 	type AccountViewModel,
 	formatDate,

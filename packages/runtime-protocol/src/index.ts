@@ -180,6 +180,14 @@ export type EventSource =
   | "visual";
 
 /**
+ * Who produced a boundary event (Wave 2).
+ * Matches Rust `contract::events::EventOrigin` — Provider (codex/app-server)
+ * vs Desktop (synthetic session/approval/health). Full origin-tagged Event
+ * enum + dual-channel collapse still pending.
+ */
+export type EventOrigin = "provider" | "desktop";
+
+/**
  * Unified durable journal event owned by the Rust CoreRuntime.
  * React projections and MCP must reconcile against committed AppEvents.
  */

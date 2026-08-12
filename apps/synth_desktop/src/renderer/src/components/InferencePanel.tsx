@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { COMMANDS, EVENT_CHANNELS, invokeCommand } from "../bridge";
 
 /**
  * Local inference monitor for the Laguna daemon on 127.0.0.1:7333.
@@ -349,26 +349,26 @@ export function defaultInferenceTransport(): InferenceTransport {
 	if (testTransport) return testTransport;
 	if (!isTauri()) return unavailableTransport;
 	tauriTransport ??= {
-		snapshot: () => invoke<InferenceSnapshot>("laguna_inference_snapshot"),
+		snapshot: () => invokeCommand<InferenceSnapshot>(COMMANDS.LAGUNA_INFERENCE_SNAPSHOT),
 		subscribe(onSnapshot, onError) {
 			let disposed = false;
 			let unlisten: (() => void) | undefined;
-			void listen<InferenceSnapshot>("laguna:inference", ({ payload }) => {
+			void listen<InferenceSnapshot>(EVENT_CHANNELS.LAGUNA_INFERENCE, ({ payload }) => {
 				if (!disposed) onSnapshot(payload);
 			}).then((next) => {
 				if (disposed) next();
 				else unlisten = next;
 			});
-			void invoke("laguna_inference_stream_start").catch((reason: unknown) => {
+			void invokeCommand(COMMANDS.LAGUNA_INFERENCE_STREAM_START).catch((reason: unknown) => {
 				if (!disposed) onError(describeFailure(reason));
 			});
 			return () => {
 				disposed = true;
 				unlisten?.();
-				void invoke("laguna_inference_stream_stop").catch(() => undefined);
+				void invokeCommand(COMMANDS.LAGUNA_INFERENCE_STREAM_STOP).catch(() => undefined);
 			};
 		},
-		unload: () => invoke<InferenceUnloadOutcome>("laguna_model_unload")
+		unload: () => invokeCommand<InferenceUnloadOutcome>(COMMANDS.LAGUNA_MODEL_UNLOAD)
 	};
 	return tauriTransport;
 }
