@@ -329,7 +329,7 @@ function composerPlaceholder(state: LandingState): string {
 	if (state.selectedTargetId === "local-laguna") {
 		return state.composerPlaceholder;
 	}
-	if (state.selectedTargetId === "synth-cloud-laguna-s") {
+	if (state.selectedTargetId.startsWith("synth-cloud-")) {
 		if (state.apiKeyConfigured !== true) return "Configure Synth API key in Settings → Account";
 		return state.cloudBlockedReason ?? "Ask anything…";
 	}
@@ -350,7 +350,7 @@ function composerPlaceholder(state: LandingState): string {
 }
 
 function composerEnabled(state: LandingState): boolean {
-	if (state.selectedTargetId === "synth-cloud-laguna-s") {
+	if (state.selectedTargetId.startsWith("synth-cloud-")) {
 		// Local models keep working when cloud spend is blocked; only the
 		// billable cloud target is closed off.
 		return state.apiKeyConfigured === true && !state.cloudBlockedReason;
@@ -456,11 +456,11 @@ function ModelMenu({
 											state.model.status === "starting" ||
 											state.model.status === "loading");
 									const needsSynthKey =
-										target.id === "synth-cloud-laguna-s" && state.apiKeyConfigured !== true;
+										target.id.startsWith("synth-cloud-") && state.apiKeyConfigured !== true;
 									const needsOpenRouterKey =
 										target.id.startsWith("openrouter-") && state.openrouterApiKeyConfigured !== true;
 									const allowanceBlocked =
-										target.id === "synth-cloud-laguna-s" && !needsSynthKey && Boolean(state.cloudBlockedReason);
+										target.id.startsWith("synth-cloud-") && !needsSynthKey && Boolean(state.cloudBlockedReason);
 									const localProgress =
 										target.id === "local-laguna"
 											? state.model.status === "downloading"

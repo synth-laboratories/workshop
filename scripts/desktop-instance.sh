@@ -19,6 +19,7 @@ usage() {
 Usage: ./scripts/desktop-instance.sh <command> [name]
 
   dev [name]       Run an isolated foreground Tauri/Vite development instance
+  cua [name]       Build and run a named debug .app for Computer Use
   status [name]    Show the exact process and instance paths
   stop [name]      Stop only the named instance
   clean [name]     Stop and move the named instance data to Trash
@@ -399,6 +400,21 @@ PY
   echo "[desktop:$NAME] data=$DATA_ROOT vite=$VITE_PORT laguna=$SYNTH_LAGUNA_BASE_URL home=$laguna_home"
   echo "[desktop:$NAME] provenance $SOURCE_REVISION digest=$(executable_digest)"
   cd "$ROOT/apps/synth_desktop"
+  if [[ "$COMMAND" == "cua" ]]; then
+    # Raw `tauri dev` binaries have no LaunchServices app identity, so macOS
+    # accessibility clients cannot address a named instance reliably. A debug
+    # bundle preserves the isolated environment and registers the unique ID.
+    npx tauri build --debug --config "$CONFIG"
+    local app_bundle="$CARGO_TARGET_DIR/debug/bundle/macos/$APP_TITLE.app"
+    local app_executable="$app_bundle/Contents/MacOS/synth-desktop"
+    if [[ ! -x "$app_executable" ]]; then
+      echo "[desktop:$NAME] expected CUA bundle executable missing: $app_executable" >&2
+      exit 1
+    fi
+    echo "[desktop:$NAME] CUA bundle $app_bundle"
+    echo "[desktop:$NAME] CUA target $BUNDLE_ID"
+    exec "$app_executable"
+  fi
   exec npx tauri dev --config "$CONFIG"
 }
 
@@ -418,7 +434,7 @@ clean_instance() {
 }
 
 case "$COMMAND" in
-  dev) dev_instance ;;
+  dev|cua) dev_instance ;;
   status) status_instance ;;
   stop) stop_instance ;;
   clean) clean_instance ;;

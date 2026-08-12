@@ -447,9 +447,17 @@ pub fn resolve() -> Result<ResolvedBackend> {
             "local" => "http://127.0.0.1:8000".into(),
             _ => "https://api.usesynth.ai".into(),
         });
-    // The dedicated Responses gateway is selected only from checked-in code.
-    // It is never derived from `endpoint`, process environment, or TOML.
-    let responses_gateway_url = lookup_default(DEFAULT_GATEWAYS, &profile);
+    // Named development instances may point their isolated cloud lane at a
+    // disposable local Responses backend. Canonical apps retain source-owned
+    // routing and deliberately ignore this process override.
+    let responses_gateway_url = if env::var_os(crate::instance::DATA_ROOT_ENV).is_some() {
+        env::var("SYNTH_RESPONSES_GATEWAY_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| lookup_default(DEFAULT_GATEWAYS, &profile))
+    } else {
+        lookup_default(DEFAULT_GATEWAYS, &profile)
+    };
     let env_file_raw = intern
         .and_then(|v| v.get("env_file"))
         .and_then(toml::Value::as_str)

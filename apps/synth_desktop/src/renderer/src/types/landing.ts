@@ -184,6 +184,7 @@ export const OPENROUTER_LAGUNA_S_MODEL = "poolside/laguna-s-2.1";
 export const OPENROUTER_MUSE_SPARK_MODEL = "meta/muse-spark-1.2";
 /** Fully qualified — bare `laguna-s-2.1` resolves to a different catalog entry server-side. */
 export const SYNTH_CLOUD_LAGUNA_S_MODEL = "openrouter/poolside/laguna-s-2.1";
+export const SYNTH_CLOUD_MUSE_SPARK_MODEL = "meta/muse-spark-1.2";
 
 export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 	{
@@ -213,6 +214,12 @@ export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 	{
 		id: "synth-cloud-laguna-s",
 		label: "Laguna S 2.1",
+		description: "Synth Cloud · usage tracked",
+		group: "cloud"
+	},
+	{
+		id: "synth-cloud-muse-spark",
+		label: "Muse Spark 1.2",
 		description: "Synth Cloud · usage tracked",
 		group: "cloud"
 	},

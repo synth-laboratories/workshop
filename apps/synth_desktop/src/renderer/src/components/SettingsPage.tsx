@@ -201,7 +201,10 @@ function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSett
 		);
 	}
 	if (connection?.apiKeyConfigured) {
-		models.push({ id: "synth-cloud-laguna-s", name: "Laguna S 2.1", provider: "Synth Cloud", providerMark: "synth", modelId: "openrouter/poolside/laguna-s-2.1", planMetered: true });
+		models.push(
+			{ id: "synth-cloud-laguna-s", name: "Laguna S 2.1", provider: "Synth Cloud", providerMark: "synth", modelId: "openrouter/poolside/laguna-s-2.1", planMetered: true },
+			{ id: "synth-cloud-muse-spark", name: "Muse Spark 1.2", provider: "Synth Cloud · Meta", providerMark: "meta", modelId: "meta/muse-spark-1.2", planMetered: true }
+		);
 	}
 	if (!models.length) return null;
 	const tariffFor = (model: AuthorizedModel) =>

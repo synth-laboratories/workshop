@@ -22,6 +22,7 @@ import {
 	OPENROUTER_LUNA_MODEL,
 	OPENROUTER_MUSE_SPARK_MODEL,
 	SYNTH_CLOUD_LAGUNA_S_MODEL,
+	SYNTH_CLOUD_MUSE_SPARK_MODEL,
 	isInternTargetId
 } from "./types/landing";
 import type { ArtifactRef } from "./types/landing";
@@ -133,6 +134,7 @@ type FailedSend = { sessionId: string; text: string; messageId: string; message:
 function performanceTargetId(summary: ModelPerformanceSummary): string | null {
 	if (summary.provider === "local-laguna") return "local-laguna";
 	if (summary.provider === "synth-cloud" && summary.modelId === SYNTH_CLOUD_LAGUNA_S_MODEL) return "synth-cloud-laguna-s";
+	if (summary.provider === "synth-cloud" && summary.modelId === SYNTH_CLOUD_MUSE_SPARK_MODEL) return "synth-cloud-muse-spark";
 	if (summary.provider !== "openrouter") return null;
 	if (summary.modelId === OPENROUTER_LUNA_MODEL) return "openrouter-luna";
 	if (summary.modelId === OPENROUTER_LAGUNA_S_MODEL) return "openrouter-laguna-s";

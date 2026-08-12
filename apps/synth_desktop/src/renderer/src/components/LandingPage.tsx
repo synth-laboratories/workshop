@@ -135,11 +135,11 @@ export function ModelPicker({
 								<div className="model-dropdown-group-label">{TARGET_GROUP_LABEL[group]}</div>
 								{items.map((target: ExecutionTargetOption) => {
 									const needsSynthKey =
-										target.id === "synth-cloud-laguna-s" && apiKeyConfigured !== true;
+										target.id.startsWith("synth-cloud-") && apiKeyConfigured !== true;
 									const needsOpenRouterKey =
 										target.id.startsWith("openrouter-") && openrouterApiKeyConfigured !== true;
 									const allowanceBlocked =
-										target.id === "synth-cloud-laguna-s" && !needsSynthKey && Boolean(cloudBlockedReason);
+										target.id.startsWith("synth-cloud-") && !needsSynthKey && Boolean(cloudBlockedReason);
 									if (allowanceBlocked) {
 										return (
 											<div
