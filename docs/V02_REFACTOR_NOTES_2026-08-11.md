@@ -304,6 +304,12 @@ DECIDE      contracts/research-v1.json — write the promised codegen or delete
 Full detail + grep-able conform checks + updater-agent protocol in the
 SynthStyle WORKSHOP CONFORMANCE AUDIT section. Summary (noun-aligned):
 
+Wave 0 enforcement entrypoint (local + CI): `./scripts/desktop.sh conform`
+(or `./scripts/conform-desktop.sh`). Prints labeled CONFORM CHECK counts for
+`apps/synth_desktop`; each count may only decrease. CI:
+`.github/workflows/desktop-conform.yml`. Paragons for this scaffolding lane:
+`objective_tests`, `real_fixtures`.
+
 | Wave | Work | Done when |
 | --- | --- | --- |
 | 0 | CI runs `desktop.sh verify` + conform-count script; paragons registered; grep-tests reclassified as lints | counts printed on every PR |
