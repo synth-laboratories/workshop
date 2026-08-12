@@ -4,6 +4,10 @@ use serde_json::Value;
 pub const APP_EVENT_SCHEMA_VERSION: &str = "synth.desktop-app-event.v1";
 pub const SCHEMA_VERSION: i64 = 7;
 
+fn default_session_kind() -> String {
+    "codex".into()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum EventSource {
@@ -69,6 +73,10 @@ pub struct AppEvent {
 pub struct SessionRecord {
     pub id: String,
     pub title: String,
+    /// SessionKind as a DB/wire string (`codex` | `intern`). Prefer
+    /// `SessionKind::parse` at call sites — do not re-read `target_json.kind`.
+    #[serde(default = "default_session_kind")]
+    pub kind: String,
     pub target_json: Value,
     pub project_id: Option<String>,
     pub remote_id: Option<String>,

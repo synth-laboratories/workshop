@@ -11,6 +11,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_6,
     MIGRATION_7,
     MIGRATION_8,
+    MIGRATION_9,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -642,6 +643,20 @@ CREATE INDEX IF NOT EXISTS usage_records_window
 ON usage_records(completed_at_ms DESC);
 "#;
 
+/// First-class SessionKind column. Authority moves off `target_json.kind`
+/// string checks (`metadata_bags_are_not_authority`). Backfill treats
+/// `"intern"` as Intern and everything else (including historical `"local"`
+/// Codex/Laguna bags) as Codex.
+const MIGRATION_9: &str = r#"
+ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'codex';
+
+UPDATE sessions
+SET kind = 'intern'
+WHERE json_extract(target_json, '$.kind') = 'intern';
+
+CREATE INDEX IF NOT EXISTS sessions_kind ON sessions(kind);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -691,7 +706,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 8);
+        assert_eq!(apply_migrations(&conn).unwrap(), 9);
         let updated_at: String = conn
             .query_row(
                 "SELECT updated_at FROM runs WHERE id = 'run-1'",
@@ -751,7 +766,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 8);
+        assert_eq!(apply_migrations(&conn).unwrap(), 9);
 
         let (ledger_rows, ledger_cost): (i64, f64) = conn
             .query_row(
@@ -803,7 +818,7 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 8);
+        assert_eq!(apply_migrations(&conn).unwrap(), 9);
 
         let imported: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
@@ -860,7 +875,7 @@ mod tests {
         conn.execute_batch(partial).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 7);
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 8);
+        assert_eq!(apply_migrations(&conn).unwrap(), 9);
         let (copies, leftovers): (i64, i64) = conn
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM usage_records WHERE request_id='req-1'),
@@ -875,6 +890,38 @@ mod tests {
 
     /// A migration that fails mid-flight must leave no half-applied state
     /// behind: its statements and its version stamp commit atomically.
+    #[test]
+    fn session_kind_backfills_from_target_json() {
+        let conn = seed_at_version(8);
+        conn.execute(
+            r#"INSERT INTO sessions(id, title, target_json, status, created_at, updated_at)
+               VALUES
+                 ('codex-1', 'Codex', '{"kind":"codex"}', 'ready', 'now', 'now'),
+                 ('local-1', 'Local', '{"kind":"local"}', 'ready', 'now', 'now'),
+                 ('intern-1', 'Intern', '{"kind":"intern","mode":"sync"}', 'ready', 'now', 'now')"#,
+            [],
+        )
+        .unwrap();
+        assert_eq!(apply_migrations(&conn).unwrap(), 9);
+        let kinds: Vec<(String, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, kind FROM sessions ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(
+            kinds,
+            vec![
+                ("codex-1".into(), "codex".into()),
+                ("intern-1".into(), "intern".into()),
+                ("local-1".into(), "codex".into()),
+            ]
+        );
+    }
+
     #[test]
     fn a_failing_migration_leaves_neither_data_nor_version_behind() {
         let conn = seed_at_version(7);
@@ -892,6 +939,6 @@ mod tests {
         assert_eq!(probe, 0, "the failed migration's table must roll back");
         assert_eq!(version, 7);
         // The connection stays usable and the real migration still applies.
-        assert_eq!(apply_migrations(&conn).unwrap(), 8);
+        assert_eq!(apply_migrations(&conn).unwrap(), 9);
     }
 }

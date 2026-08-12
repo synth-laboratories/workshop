@@ -1,7 +1,7 @@
 use crate::core_runtime::CoreRuntime;
 use crate::credential_broker::{self, CredentialBroker};
 use crate::domain::{
-    RunCreate, RunService, RunStatus, SessionCreate, SessionService, SessionStatus,
+    RunCreate, RunService, RunStatus, SessionCreate, SessionKind, SessionService, SessionStatus,
     SessionTitleOrigin,
 };
 use crate::storage::{
@@ -600,7 +600,7 @@ impl CodexManager {
                     .provider_title
                     .unwrap_or_else(|| "Synth Responses Provider".into()),
                 base_url: responses_base_url(&request.base_url),
-                status: "ready".into(),
+                status: SessionStatus::Ready.as_str().into(),
                 title: Some(title.clone()),
                 title_origin: Some(title_origin.clone()),
                 approval_policy: request
@@ -616,6 +616,7 @@ impl CodexManager {
             let persistence = service.create_or_update(SessionCreate {
                 id: request.session_id.clone(),
                 title,
+                kind: SessionKind::Codex,
                 target: json!({
                     "kind": "codex",
                     "model": session.model,
@@ -879,7 +880,8 @@ impl CodexManager {
                 }
             }
         }
-        self.set_status(&request.session_id, "running").await?;
+        self.set_status(&request.session_id, SessionStatus::Running)
+            .await?;
         Ok(session_info(&request.session_id, &session).await)
     }
 
@@ -1075,7 +1077,7 @@ impl CodexManager {
         }
         // The child is gone; its loopback lease must not outlive it.
         credential_broker::revoke_shared(session_id);
-        self.set_status(session_id, "closed").await?;
+        self.set_status(session_id, SessionStatus::Closed).await?;
         Ok(())
     }
 
@@ -1202,17 +1204,20 @@ impl CodexManager {
     }
 
     /// Brings durable state back in line after a turn could not be started.
-    /// The JSON record must never stay `running`, and any active SQLite run for
-    /// this session belongs to a turn nobody can finish.
+    /// The JSON cache must never stay `running`, and any active SQLite run for
+    /// this session belongs to a turn nobody can finish. SQLite session status
+    /// flows through `SessionService` / `RunService` transitions — not direct
+    /// string writes (`state_machines_have_explicit_transitions`).
     async fn reconcile_failed_turn_start(&self, session_id: &str, reason: &str) -> Result<()> {
         let was_running = self
             .records
             .read()
             .await
             .get(session_id)
-            .is_some_and(|record| record.status == "running");
+            .is_some_and(|record| SessionStatus::Running.equals_str(&record.status));
         if was_running {
-            self.set_status(session_id, "interrupted").await?;
+            self.set_status(session_id, SessionStatus::Interrupted)
+                .await?;
         }
         if let Some(core) = &self.core {
             let _ = interrupt_active_core_run(core, session_id, reason).await;
@@ -1220,11 +1225,33 @@ impl CodexManager {
         Ok(())
     }
 
-    async fn set_status(&self, session_id: &str, status: &str) -> Result<()> {
+    /// Updates the threads.json cache and, when CoreRuntime is bound, mirrors
+    /// the change through `SessionService::transition` so SQLite remains the
+    /// Session authority. Cache-only Desktop installs (no core) keep threads.json
+    /// as a temporary local mirror until Wave 4 demotes it entirely.
+    async fn set_status(&self, session_id: &str, status: SessionStatus) -> Result<()> {
         if let Some(record) = self.records.write().await.get_mut(session_id) {
-            record.status = status.into();
+            record.status = status.as_str().into();
         }
-        self.persist_records().await
+        self.persist_records().await?;
+        if let Some(core) = &self.core {
+            let sessions = SessionService::new(core.storage().database().clone());
+            match sessions
+                .transition(
+                    session_id.to_owned(),
+                    status,
+                    EventSource::Codex,
+                    json!({ "source": "codex_manager" }),
+                )
+                .await
+            {
+                Ok(mutation) => core.broadcast_committed(mutation.event),
+                // Missing SQLite row or no-op/illegal edge: cache already
+                // updated; run-terminal paths often already advanced status.
+                Err(_) => {}
+            }
+        }
+        Ok(())
     }
 
     async fn mark_detached_turn_interrupted(&self, session_id: &str) -> Result<()> {
@@ -1233,9 +1260,10 @@ impl CodexManager {
             .read()
             .await
             .get(session_id)
-            .is_some_and(|record| record.status == "running");
+            .is_some_and(|record| SessionStatus::Running.equals_str(&record.status));
         if should_change {
-            self.set_status(session_id, "interrupted").await?;
+            self.set_status(session_id, SessionStatus::Interrupted)
+                .await?;
             if let Some(core) = &self.core {
                 let _ = interrupt_active_core_run(core, session_id, "runtime_detached").await;
             }
@@ -1313,8 +1341,8 @@ impl CodexManager {
 }
 
 fn reconcile_detached_status(status: &mut String, attached: bool) -> bool {
-    if status == "running" && !attached {
-        *status = "interrupted".into();
+    if SessionStatus::Running.equals_str(status) && !attached {
+        *status = SessionStatus::Interrupted.as_str().into();
         true
     } else {
         false
@@ -1658,12 +1686,12 @@ async fn read_stdout<R: tauri::Runtime>(
                 .await
                 .remove(&session_id);
             let status = match method.as_str() {
-                "turn/completed" => "ready",
-                "turn/failed" => "failed",
-                _ => "interrupted",
+                "turn/completed" => SessionStatus::Ready,
+                "turn/failed" => SessionStatus::Failed,
+                _ => SessionStatus::Interrupted,
             };
             if let Some(record) = persistence.records.write().await.get_mut(&session_id) {
-                record.status = status.into();
+                record.status = status.as_str().into();
             }
             let _ = persist_records(&persistence.records, &persistence.state_path).await;
             if let Some(core) = &persistence.core {
@@ -1688,6 +1716,19 @@ async fn read_stdout<R: tauri::Runtime>(
                             if let Some(event) = mutation.event {
                                 let _ = core.publish_event(&app, event).await;
                             }
+                        }
+                    } else if let Ok(mutation) = sessions
+                        .transition(
+                            session_id.clone(),
+                            status,
+                            EventSource::Codex,
+                            params.clone(),
+                        )
+                        .await
+                    {
+                        // No active run: still advance Session through the machine.
+                        if let Some(event) = mutation.event {
+                            let _ = core.publish_event(&app, event).await;
                         }
                     }
                 }
@@ -1715,10 +1756,10 @@ async fn read_stdout<R: tauri::Runtime>(
     let was_running = {
         let mut records = persistence.records.write().await;
         records.get_mut(&session_id).is_some_and(|record| {
-            if record.status != "running" {
+            if !SessionStatus::Running.equals_str(&record.status) {
                 return false;
             }
-            record.status = "interrupted".into();
+            record.status = SessionStatus::Interrupted.as_str().into();
             true
         })
     };
@@ -2674,7 +2715,7 @@ fn automatic_thread_title(prompt: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{RunCreate, RunService, SessionCreate, SessionService};
+    use crate::domain::{RunCreate, RunService, SessionCreate, SessionKind, SessionService, SessionStatus};
     use crate::storage::UsageBreakdown;
     use std::path::Path;
     use tempfile::tempdir;
@@ -2977,6 +3018,7 @@ mod tests {
             .create_or_update(SessionCreate {
                 id: "orphan".into(),
                 title: "Orphaned local turn".into(),
+                kind: SessionKind::Codex,
                 target: json!({"kind":"codex"}),
                 project_id: None,
                 remote_id: None,
@@ -3008,7 +3050,7 @@ mod tests {
             provider_name: "local-laguna".into(),
             provider_title: "Laguna fixture".into(),
             base_url: "http://127.0.0.1:7333/v1".into(),
-            status: "running".into(),
+            status: SessionStatus::Running.as_str().into(),
             title: Some("Orphaned local turn".into()),
             title_origin: Some("automatic".into()),
             approval_policy: "never".into(),
@@ -3046,6 +3088,7 @@ mod tests {
             .create_or_update(SessionCreate {
                 id: "orphan-after-graceful-exit".into(),
                 title: "Partially reconciled local turn".into(),
+                kind: SessionKind::Codex,
                 target: json!({"kind":"codex"}),
                 project_id: None,
                 remote_id: None,
@@ -3077,7 +3120,7 @@ mod tests {
             provider_name: "local-laguna".into(),
             provider_title: "Laguna fixture".into(),
             base_url: "http://127.0.0.1:7333/v1".into(),
-            status: "interrupted".into(),
+            status: SessionStatus::Interrupted.as_str().into(),
             title: Some("Partially reconciled local turn".into()),
             title_origin: Some("automatic".into()),
             approval_policy: "never".into(),
@@ -3167,7 +3210,7 @@ mod tests {
         assert_eq!(first.thread_id, "thread-fixture");
         assert_eq!(
             manager.records.read().await[&request.session_id].status,
-            "running"
+            SessionStatus::Running.as_str()
         );
 
         arm_turn_start_exit(&codex_root, &request.session_id, "always");
@@ -3188,9 +3231,10 @@ mod tests {
         let status = manager.records.read().await[&request.session_id]
             .status
             .clone();
-        assert_ne!(status, "running");
+        assert_ne!(status, SessionStatus::Running.as_str());
         assert!(
-            status == "interrupted" || status == "ready",
+            status == SessionStatus::Interrupted.as_str()
+                || status == SessionStatus::Ready.as_str(),
             "unexpected reconciled status: {status}"
         );
         assert!(!manager
@@ -3236,7 +3280,7 @@ mod tests {
         assert_ne!(retried.turn_id.clone().unwrap(), first_turn);
         assert_eq!(
             manager.records.read().await[&request.session_id].status,
-            "running"
+            SessionStatus::Running.as_str()
         );
         let requests = fixture_requests(&codex_root, &request.session_id);
         assert!(requests.iter().any(|message| {
@@ -3268,7 +3312,7 @@ mod tests {
         assert!(info.turn_id.is_some());
         assert_eq!(
             manager.records.read().await[&request.session_id].status,
-            "running"
+            SessionStatus::Running.as_str()
         );
         manager.close(&request.session_id).await.unwrap();
     }
@@ -3289,7 +3333,7 @@ mod tests {
             provider_name: "local-laguna".into(),
             provider_title: "Laguna fixture".into(),
             base_url: "http://127.0.0.1:7333/v1".into(),
-            status: "running".into(),
+            status: SessionStatus::Running.as_str().into(),
             title: Some("Restored local turn".into()),
             title_origin: Some("automatic".into()),
             approval_policy: "never".into(),
@@ -3341,6 +3385,7 @@ mod tests {
             .create_or_update(SessionCreate {
                 id: "half-reconciled".into(),
                 title: "Half reconciled".into(),
+                kind: SessionKind::Codex,
                 target: json!({"kind":"codex"}),
                 project_id: None,
                 remote_id: None,
@@ -3372,7 +3417,7 @@ mod tests {
             provider_name: "local-laguna".into(),
             provider_title: "Laguna fixture".into(),
             base_url: "http://127.0.0.1:7333/v1".into(),
-            status: "interrupted".into(),
+            status: SessionStatus::Interrupted.as_str().into(),
             title: Some("Half reconciled".into()),
             title_origin: Some("automatic".into()),
             approval_policy: "never".into(),

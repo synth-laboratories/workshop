@@ -420,7 +420,7 @@ fn ensure_session(conn: &Connection, session_id: &str) -> Result<()> {
         params![
             session_id,
             format!("Session {session_id}"),
-            json!({"kind":"local","model":"laguna-xs-2.1","adapter":null}).to_string(),
+            json!({"kind":"codex","model":"laguna-xs-2.1","adapter":null}).to_string(),
             now
         ],
     )?;
