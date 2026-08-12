@@ -307,7 +307,8 @@ SynthStyle WORKSHOP CONFORMANCE AUDIT section. Summary (noun-aligned):
 Wave 0 enforcement entrypoint (local + CI): `./scripts/desktop.sh conform`
 (or `./scripts/conform-desktop.sh`). Prints labeled CONFORM CHECK counts for
 `apps/synth_desktop`; each count may only decrease. CI:
-`.github/workflows/desktop-conform.yml`. Paragons for this scaffolding lane:
+`scripts/ci/desktop-conform.yml` (copy into `.github/workflows/` with a token
+that has `workflow` scope). Paragons for this scaffolding lane:
 `objective_tests`, `real_fixtures`.
 
 | Wave | Work | Done when |
