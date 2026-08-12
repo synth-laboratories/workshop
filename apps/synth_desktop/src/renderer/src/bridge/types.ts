@@ -27,6 +27,7 @@ import type {
 	OptimizerAlgorithmInfo,
 	OptimizerRunRecord
 } from "@synth/runtime-protocol";
+import type { InstanceDiagnostics } from "../generated/protocol";
 
 export type RequestOptions = {
 	method?: "GET" | "POST" | "DELETE";
@@ -37,19 +38,13 @@ export type EventSubscription = {
 	close(): void;
 };
 
-export type DesktopInstanceDiagnostics = {
+/**
+ * Desktop identity payload. Narrows specta-generated `InstanceDiagnostics.mode`
+ * to the two runtime modes the UI branches on. Source of truth for fields is
+ * `generated/protocol.ts` (tauri-specta seed command).
+ */
+export type DesktopInstanceDiagnostics = Omit<InstanceDiagnostics, "mode"> & {
 	mode: "development" | "canonical";
-	name?: string | null;
-	displayName: string;
-	appVersion: string;
-	sourceRevision: string;
-	buildRevision: string;
-	buildTimestamp: string;
-	processId: number;
-	executable: string;
-	dataRoot: string;
-	viteUrl?: string | null;
-	manifest?: string | null;
 };
 
 export type RuntimeBridge = {

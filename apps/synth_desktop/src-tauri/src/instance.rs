@@ -1,4 +1,5 @@
 use serde::Serialize;
+use specta::Type;
 use std::{env, fs, path::PathBuf};
 
 pub const INSTANCE_ENV: &str = "SYNTH_DESKTOP_INSTANCE";
@@ -6,7 +7,7 @@ pub const DATA_ROOT_ENV: &str = "SYNTH_DESKTOP_DATA_ROOT";
 pub const MANIFEST_ENV: &str = "SYNTH_DESKTOP_INSTANCE_MANIFEST";
 pub const APP_NAME_ENV: &str = "SYNTH_DESKTOP_APP_NAME";
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InstanceDiagnostics {
     pub mode: String,

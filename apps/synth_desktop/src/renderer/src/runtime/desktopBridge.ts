@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { COMMANDS, EVENT_CHANNELS, invokeCommand } from "../bridge";
+import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
@@ -143,7 +144,7 @@ export function installDesktopBridge(): void {
 			})));
 		},
 		getInstanceDiagnostics: () => isTauri
-			? invokeCommand<DesktopInstanceDiagnostics>(COMMANDS.DESKTOP_INSTANCE_DIAGNOSTICS)
+			? spectaCommands.desktopInstanceDiagnostics().then((value) => value as DesktopInstanceDiagnostics)
 			: Promise.resolve({
 				mode: "development", name: "browser", displayName: "Synth Desktop · browser",
 				appVersion: desktopPackage.version, sourceRevision: "vite", buildRevision: "vite",

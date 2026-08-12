@@ -1,7 +1,8 @@
 /**
  * Boundary channel + command name constants (Wave 2 interim).
  * Keep in sync with `src-tauri/src/contract/{events,commands}.rs`.
- * Full tauri-specta codegen will replace hand maintenance later.
+ * Specta seed bindings: `src/renderer/src/generated/protocol.ts` (grow via
+ * `contract::specta::collect_commands!`); hand `COMMANDS` remains until cutover.
  * Drift: `scripts/check-desktop-contract-drift.sh` (via conform-desktop.sh).
  */
 

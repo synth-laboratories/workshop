@@ -39,7 +39,6 @@ use codex::{
     CodexTurnSendRequest, CodexTurnStartRequest,
 };
 pub use core_runtime::CoreRuntime;
-use instance::InstanceDiagnostics;
 use intern_api::{
     InternControlResult, InternSendResult, InternSessionControlRequest, InternSessionCreateRequest,
     InternSessionSendRequest, InternSessionWire,
@@ -76,11 +75,6 @@ use workspace_scope::{ConversationWorkspaceScope, WorkspaceAccessMode};
 #[tauri::command]
 fn core_diagnostics(state: State<'_, Arc<CoreRuntime>>) -> Result<CoreDiagnostics, AppError> {
     state.diagnostics().map_err(AppError::from)
-}
-
-#[tauri::command]
-fn desktop_instance_diagnostics() -> InstanceDiagnostics {
-    instance::diagnostics()
 }
 
 #[tauri::command]
@@ -1700,6 +1694,16 @@ fn terminal_close(
 }
 
 pub fn run() {
+    // Specta Builder is for TypeScript export only during the dual-path phase.
+    // Do NOT switch `.invoke_handler` to `specta_builder.invoke_handler()` until
+    // every command is listed in `collect_commands!` — that would drop the rest.
+    #[cfg(debug_assertions)]
+    {
+        if let Err(error) = contract::specta::export_typescript_bindings() {
+            eprintln!("specta protocol export skipped: {error}");
+        }
+    }
+
     tauri::Builder::default()
         // This must be the first plugin registered. All app state, IPC, and
         // SQLite ownership belongs to the original process.
@@ -1826,7 +1830,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            desktop_instance_diagnostics,
+            // Specta seed command (also collected in contract::specta::builder).
+            contract::specta::desktop_instance_diagnostics,
             desktop_image_preview,
             core_diagnostics,
             core_events_after,
