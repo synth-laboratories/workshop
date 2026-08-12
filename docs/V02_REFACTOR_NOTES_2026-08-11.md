@@ -344,26 +344,30 @@ specta (const event names, typed invoke map, `RuntimeTarget` enum).
 
 ### Wave 2 remaining (specta / full boundary)
 
-- ~~Scaffold tauri-specta~~ — landed 2026-08-11 (stretch): Cargo pins
-  (`specta` / `tauri-specta` `=2.0.0-rc.25`, `specta-typescript`),
-  `contract/specta.rs` dual-path builder (codegen only; `generate_handler!`
-  still registers the full set), seed command `desktop_instance_diagnostics`
-  exported to `src/renderer/src/generated/protocol.ts`, bridge subset wired via
-  `spectaCommands.desktopInstanceDiagnostics`. Regenerate:
-  `cargo test -p synth-desktop --lib export_specta_protocol_bindings`.
+- ~~Scaffold tauri-specta~~ — landed; seed `generated/protocol.ts` + dual-path builder.
 - Migrate remaining ~120 commands into `collect_commands!` + `#[specta::specta]`
-  (DTOs need `specta::Type`; `AppError` next). Cutover: replace
-  `generate_handler!` with `specta_builder.invoke_handler()` only when the
-  collected set is complete — see cutover sketch in `contract/specta.rs`.
-- Origin-tagged `Event` (`Provider | Desktop`); collapse dual `codex:event` + `runtime:event` emission
-  (Wave 2b stub: `EventOrigin` + `OriginTagged` / `tag_event` in `contract/events.rs`)
-- ~~Shrink `env.d.ts` to Window decls~~ — Window-only; DTOs in `bridge/types.ts` (wave 2b)
-- ~~CI drift check~~ — `scripts/check-desktop-contract-drift.sh` via conform-desktop.sh (wave 2b)
-- ~~Quarantine `window.__synthEval` / legacy `/v1/*` from packaged builds~~ — DEV-gated (wave 2b)
+  (DTOs need `specta::Type`; cut over `generate_handler!` only when complete).
+- ~~Origin-tagged single `runtime:event` channel~~ — landed (Provider|Desktop envelope;
+  legacy `codex:event` compat listen brief).
+- ~~Shrink `env.d.ts`~~ / ~~CI drift check~~ / ~~DEV-gate `__synthEval`~~ — landed (wave 2b).
 
-Synonyms still present in the SynthStyle audit text (`SessionTarget`,
-`ExecutionTarget`, `Inventory`): treat as historical; this section is
-authoritative for new work. Update the audit on the next style-doc pass.
+### Closeout landed (2026-08-11 tip)
+
+| Target | Result |
+| --- | --- |
+| App.tsx | **268** lines, **0** `useState` (`useAppController` + `ComposerDock`) |
+| Composer | **≤10** prop groups |
+| `window.synth` / `isTauri ?` | **0** (imported `bridges`) |
+| OnceLock authority globals | **0** (whisper + credential broker injected) |
+| Conform core counters | all **0** except `env.d.ts` **70** (&lt;100) |
+| `cargo test --lib` | **292** passed |
+| Renderer `*.test.mjs` | **127** passed |
+
+Follow-ons (not blockers): full specta cutover; delete Wave 1 reconciliation helpers;
+eval_driver onto LoopbackJsonServer; retire `packages/runtime-protocol` into generated.
+
+Synonyms in SynthStyle audit text (`SessionTarget`, `ExecutionTarget`, `Inventory`)
+are historical; this doc is authoritative for new work.
 
 ---
 
