@@ -106,7 +106,7 @@ async fn handle_connection(
     }
     let (status, reason, body) = match dispatch_http(&buffer, &core, &token).await {
         Ok(value) => (200, "OK", value),
-        Err(error) if error.to_string().contains("unauthorized") => {
+        Err(error) if crate::error::error_is::<crate::error::Unauthorized>(&error) => {
             (401, "Unauthorized", json!({"error": error.to_string()}))
         }
         Err(error) => (400, "Bad Request", json!({"error": error.to_string()})),
@@ -177,7 +177,8 @@ async fn dispatch_http(raw: &[u8], core: &CoreRuntime, token: &str) -> Result<Va
         }
     }
     if auth.as_deref() != Some(token) {
-        anyhow::bail!("unauthorized visuals IPC request");
+        return Err(anyhow::anyhow!(crate::error::Unauthorized)
+            .context("unauthorized visuals IPC request"));
     }
     let body = &raw[header_end..header_end + content_length];
     let json_body: Value = if body.is_empty() {

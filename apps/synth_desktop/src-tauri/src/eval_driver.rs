@@ -177,10 +177,10 @@ async fn handle_connection(
     }
     let (status, reason, body) = match dispatch_http(&buffer, &deps, &token).await {
         Ok(value) => (200, "OK", value),
-        Err(error) if error.to_string().contains("unauthorized") => {
+        Err(error) if crate::error::error_is::<crate::error::Unauthorized>(&error) => {
             (401, "Unauthorized", json!({"error": error.to_string()}))
         }
-        Err(error) if error.to_string().contains("protocol mismatch") => {
+        Err(error) if crate::error::error_is::<crate::error::ProtocolMismatch>(&error) => {
             (426, "Upgrade Required", json!({"error": error.to_string()}))
         }
         Err(error) => (400, "Bad Request", json!({"error": error.to_string()})),
@@ -242,11 +242,14 @@ async fn dispatch_http(raw: &[u8], deps: &EvalDriverDeps, token: &str) -> Result
         }
     }
     if auth.as_deref() != Some(token) {
-        bail!("unauthorized eval driver request");
+        return Err(anyhow!(crate::error::Unauthorized).context("unauthorized eval driver request"));
     }
     if let Some(version) = client_protocol {
         if version != PROTOCOL_VERSION {
-            bail!("protocol mismatch: expected {PROTOCOL_VERSION}, got {version}");
+            return Err(anyhow!(crate::error::ProtocolMismatch {
+                expected: PROTOCOL_VERSION,
+                got: version,
+            }));
         }
     }
     let body = &raw[header_end..header_end + content_length];

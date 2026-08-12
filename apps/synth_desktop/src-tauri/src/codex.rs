@@ -300,6 +300,10 @@ impl AppServer {
             Ok(Ok(Ok(value))) => Ok(value),
             Ok(Ok(Err(error))) if error.contains(STDOUT_CLOSED) => Err(anyhow!(SessionDetached)
                 .context(format!("codex app-server {method} lost its process"))),
+            Ok(Ok(Err(error))) if error.contains("database is locked") => Err(anyhow!(
+                crate::error::DatabaseLocked
+            )
+            .context(format!("codex app-server {method} error: {error}"))),
             Ok(Ok(Err(error))) => Err(anyhow!("codex app-server {method} error: {error}")),
             Ok(Err(_)) => Err(anyhow!(SessionDetached)
                 .context(format!("codex app-server stopped while handling {method}"))),
@@ -513,7 +517,7 @@ impl CodexManager {
             {
                 Ok(_) => break,
                 Err(error)
-                    if error.to_string().contains("database is locked")
+                    if crate::error::error_is::<crate::error::DatabaseLocked>(&error)
                         && initialize_attempts < 5 =>
                 {
                     initialize_attempts += 1;
@@ -547,7 +551,10 @@ impl CodexManager {
         let result = loop {
             match server.request(method, params.clone()).await {
                 Ok(result) => break result,
-                Err(error) if error.to_string().contains("database is locked") && attempts < 5 => {
+                Err(error)
+                    if crate::error::error_is::<crate::error::DatabaseLocked>(&error)
+                        && attempts < 5 =>
+                {
                     attempts += 1;
                     tokio::time::sleep(std::time::Duration::from_millis(200 * attempts)).await;
                 }

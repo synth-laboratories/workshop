@@ -30,10 +30,18 @@ fn connection_file() -> PathBuf {
         })
 }
 
+fn display_err(error: impl std::fmt::Display) -> String {
+    error.to_string()
+}
+
 fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+    request_inner(method, path, body).map_err(display_err)
+}
+
+fn request_inner(method: &str, path: &str, body: Option<Value>) -> Result<Value, synth_desktop_lib::error::AppError> {
     let connection: Connection =
-        serde_json::from_str(&fs::read_to_string(connection_file()).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        serde_json::from_str(&fs::read_to_string(connection_file()).map_err(synth_desktop_lib::error::AppError::from)?)
+            .map_err(synth_desktop_lib::error::AppError::from)?;
     let payload = body
         .map(|v| serde_json::to_vec(&v).unwrap_or_default())
         .unwrap_or_default();
@@ -44,8 +52,8 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
         .next()
         .unwrap_or_default()
         .parse::<std::net::SocketAddr>()
-        .map_err(|e| e.to_string())?;
-    let mut stream = std::net::TcpStream::connect(addr).map_err(|e| e.to_string())?;
+        .map_err(synth_desktop_lib::error::AppError::from)?;
+    let mut stream = std::net::TcpStream::connect(addr).map_err(synth_desktop_lib::error::AppError::from)?;
     let wire = format!(
         "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         connection.token,
@@ -54,16 +62,16 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
     stream
         .write_all(wire.as_bytes())
         .and_then(|_| stream.write_all(&payload))
-        .map_err(|e| e.to_string())?;
+        .map_err(synth_desktop_lib::error::AppError::from)?;
     let mut response = String::new();
-    io::Read::read_to_string(&mut stream, &mut response).map_err(|e| e.to_string())?;
+    io::Read::read_to_string(&mut stream, &mut response).map_err(synth_desktop_lib::error::AppError::from)?;
     serde_json::from_str(
         response
             .split("\r\n\r\n")
             .nth(1)
-            .ok_or("empty IPC response")?,
+            .ok_or_else(|| synth_desktop_lib::error::AppError::message("empty IPC response"))?,
     )
-    .map_err(|e| e.to_string())
+    .map_err(synth_desktop_lib::error::AppError::from)
 }
 
 fn tools() -> Value {

@@ -1,0 +1,208 @@
+//! Typed errors at the Tauri command edge.
+//!
+//! Paragon: [`crate::codex::CodexTurnFailure`] — stable `code` + user `message` +
+//! developer `detail`, so the renderer never string-matches prose.
+//!
+//! Marker causes below travel inside `anyhow` chains so transport/IPC layers can
+//! classify without substring matching on rendered error text.
+
+use serde::Serialize;
+use std::fmt;
+
+/// Informative error payload serialized across the Tauri boundary.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppError {
+    pub code: String,
+    pub message: String,
+    /// Developer-facing text. Keep out of user toasts.
+    pub detail: String,
+}
+
+pub const CODE_INTERNAL: &str = "internal";
+pub const CODE_INVALID_ARGUMENT: &str = "invalid_argument";
+pub const CODE_NOT_FOUND: &str = "not_found";
+pub const CODE_UNAUTHORIZED: &str = "unauthorized";
+pub const CODE_PROTOCOL_MISMATCH: &str = "protocol_mismatch";
+pub const CODE_CONFLICT: &str = "conflict";
+pub const CODE_IO: &str = "io";
+pub const CODE_CANCELLED: &str = "cancelled";
+pub const CODE_DATABASE_LOCKED: &str = "database_locked";
+
+impl AppError {
+    pub fn coded(code: &'static str, message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self {
+            code: code.into(),
+            message: message.clone(),
+            detail: message,
+        }
+    }
+
+    pub fn internal(error: impl fmt::Display + fmt::Debug) -> Self {
+        Self {
+            code: CODE_INTERNAL.into(),
+            message: error.to_string(),
+            detail: format!("{error:?}"),
+        }
+    }
+
+    pub fn message(message: impl Into<String>) -> Self {
+        Self::coded(CODE_INTERNAL, message)
+    }
+
+    pub fn invalid_argument(message: impl Into<String>) -> Self {
+        Self::coded(CODE_INVALID_ARGUMENT, message)
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::coded(CODE_NOT_FOUND, message)
+    }
+
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self::coded(CODE_UNAUTHORIZED, message)
+    }
+
+    pub fn protocol_mismatch(message: impl Into<String>) -> Self {
+        Self::coded(CODE_PROTOCOL_MISMATCH, message)
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::coded(CODE_CONFLICT, message)
+    }
+
+    pub fn io(message: impl Into<String>) -> Self {
+        Self::coded(CODE_IO, message)
+    }
+
+    pub fn cancelled(message: impl Into<String>) -> Self {
+        Self::coded(CODE_CANCELLED, message)
+    }
+
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = detail.into();
+        self
+    }
+}
+
+impl fmt::Display for AppError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for AppError {}
+
+impl From<anyhow::Error> for AppError {
+    fn from(error: anyhow::Error) -> Self {
+        if error_is::<Unauthorized>(&error) {
+            return Self::unauthorized(error.to_string())
+                .with_detail(format!("{error:?}"));
+        }
+        if error_is::<ProtocolMismatch>(&error) {
+            return Self::protocol_mismatch(error.to_string())
+                .with_detail(format!("{error:?}"));
+        }
+        if error_is::<DatabaseLocked>(&error) {
+            return Self::coded(CODE_DATABASE_LOCKED, error.to_string())
+                .with_detail(format!("{error:?}"));
+        }
+        Self::internal(error)
+    }
+}
+
+impl From<std::io::Error> for AppError {
+    fn from(error: std::io::Error) -> Self {
+        Self::io(error.to_string()).with_detail(format!("{error:?}"))
+    }
+}
+
+impl From<serde_json::Error> for AppError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::invalid_argument(error.to_string()).with_detail(format!("{error:?}"))
+    }
+}
+
+impl From<reqwest::Error> for AppError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::internal(error)
+    }
+}
+
+impl From<tokio::sync::oneshot::error::RecvError> for AppError {
+    fn from(error: tokio::sync::oneshot::error::RecvError) -> Self {
+        Self::cancelled(error.to_string()).with_detail(format!("{error:?}"))
+    }
+}
+
+impl From<tauri_plugin_opener::Error> for AppError {
+    fn from(error: tauri_plugin_opener::Error) -> Self {
+        Self::internal(error)
+    }
+}
+
+impl From<std::net::AddrParseError> for AppError {
+    fn from(error: std::net::AddrParseError) -> Self {
+        Self::invalid_argument(error.to_string()).with_detail(format!("{error:?}"))
+    }
+}
+
+impl From<String> for AppError {
+    fn from(message: String) -> Self {
+        Self::message(message)
+    }
+}
+
+impl From<&str> for AppError {
+    fn from(message: &str) -> Self {
+        Self::message(message)
+    }
+}
+
+/// IPC / loopback auth failure. Prefer `anyhow!(Unauthorized)` over prose bail.
+#[derive(Debug)]
+pub struct Unauthorized;
+
+impl fmt::Display for Unauthorized {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("unauthorized")
+    }
+}
+
+impl std::error::Error for Unauthorized {}
+
+/// Eval-driver protocol version disagreement.
+#[derive(Debug)]
+pub struct ProtocolMismatch {
+    pub expected: &'static str,
+    pub got: String,
+}
+
+impl fmt::Display for ProtocolMismatch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "protocol mismatch: expected {}, got {}",
+            self.expected, self.got
+        )
+    }
+}
+
+impl std::error::Error for ProtocolMismatch {}
+
+/// Codex app-server reported SQLite contention. Classified once at the
+/// transport boundary; callers retry via [`error_is`].
+#[derive(Debug)]
+pub struct DatabaseLocked;
+
+impl fmt::Display for DatabaseLocked {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("database is locked")
+    }
+}
+
+impl std::error::Error for DatabaseLocked {}
+
+pub fn error_is<E: std::error::Error + 'static>(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<E>())
+}
