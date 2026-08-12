@@ -1,10 +1,10 @@
-# Synth Desktop provenance — friends v0.1.0 (unnotarized)
+# Synth Desktop provenance — friends v0.1.0 path (unnotarized)
 
 Receipt for binding the published friends ZIP to Workshop source and the
 backend / Responses-gateway tips observed when this file was written.
 No secrets.
 
-**Recorded:** 2026-08-11 (~16:45 UTC)  
+**Recorded:** 2026-08-11 (~19:10 UTC)  
 **Linear:** [SYN-3183](https://linear.app/synth-ai/issue/SYN-3183/w5-bind-friends-zip-provenance-to-sourceexecbackendgateway-shas)
 
 ## Public artifact
@@ -13,83 +13,76 @@ No secrets.
 | --- | --- |
 | Product page | https://www.usesynth.ai/download |
 | Public ZIP | https://www.usesynth.ai/releases/v0.1.0/Synth-Desktop-v0.1.0-macOS-arm64-UNNOTARIZED.zip |
-| GitHub release | https://github.com/synth-laboratories/workshop/releases/tag/v0.1.0 |
+| Public path / URL contract | `v0.1.0` (filename unchanged) |
 | Asset name | `Synth-Desktop-v0.1.0-macOS-arm64-UNNOTARIZED.zip` |
-| Size (bytes) | `12879866` |
-| SHA-256 | `99c6a45ff9401de42b5ac596e546ad68e867ac20cef1397687163de279ea417f` |
+| Size (bytes) | `12870615` |
+| SHA-256 | `660a8e2b2f7985da54a66355b70437c7ec123c120d9978d017483ba248a5571b` |
+| Previous SHA-256 (superseded) | `99c6a45ff9401de42b5ac596e546ad68e867ac20cef1397687163de279ea417f` |
 | Signing | ad-hoc (`Signature=adhoc`, TeamIdentifier unset) — **not** Apple-notarized |
 | Bundle ID | `com.synth.desktop` |
-| CFBundleShortVersionString / CFBundleVersion | `0.1.0` / `0.1.0` |
+| CFBundleShortVersionString / CFBundleVersion | `0.2.0` / `0.2.0` |
 
-Verification (2026-08-11): downloaded both the public ZIP and the GitHub
-release asset; byte-identical; SHA-256 matched the published digest.
-`codesign --verify --deep --strict` on the extracted `.app` succeeded.
+This rebuild **overwrites** the friends download at the stable `v0.1.0` public
+path so existing download links keep working. Inner bundle version is `0.2.0`
+(routing / gateway work from workshop PRs #8 / #9); do not treat CFBundle as
+the public path version.
+
+Verification: local ad-hoc friends build receipt
+`workshop-077579a-friends-adhoc-20260811T190307Z`;
+`codesign --verify --deep --strict` on the staged `.app` succeeded
+(`codesign-verify.txt`).
 
 ## Workshop source that produced the ZIP
 
 | Field | Value |
 | --- | --- |
-| Tag | `v0.1.0` → `e562f7ee941666fe57f0a68c9ca72fd56e6ab361` |
-| Release `targetCommitish` | `e562f7ee941666fe57f0a68c9ca72fd56e6ab361` |
-| Qualified RC (identical tree) | `3c39cc61a0d2daa8c51d2e7e4b8d5bc130b3b96f` |
-| Tree OID (both commits) | `d458f0fe90883b9de111ef10d424d67707b38cd9` |
-| Merge message | Merge pull request #3 (`release/v0.1`) — freeze Synth Desktop v0.1 candidate |
+| Source SHA | `077579ab8be0852ee7958af707e1b51e50989d52` |
+| Includes | Workshop PRs **#8 / #9** Responses gateway routing (local / staging / production; unknown profiles fail closed) |
+| Build kind | Friends ad-hoc unnotarized macOS arm64 ZIP |
 
-`e562f7ee…` is the merge of the release candidate; its tree matches
-`3c39cc61…` exactly. The GitHub release body already names this pair.
+### Supersedes
 
-### Scope note (post-ZIP main tip)
-
-`origin/main` at receipt time was `0e8af0a` (includes PR #4 /
-`a133e70` — Synth Cloud Laguna → dedicated Responses gateway). **Those
-commits are not in the friends ZIP.** Friends installs are the tagged
-`v0.1.0` tree above unless a replacement artifact is published.
+Earlier friends ZIP at the same public path was cut from tagged `v0.1.0`
+(`e562f7ee941666fe57f0a68c9ca72fd56e6ab361` / tree `d458f0fe…`) and did **not**
+include dedicated gateway routing. That digest
+`99c6a45f…` is obsolete once the frontend overwrite + Vercel
+`SYNTH_DESKTOP_STABLE_ARTIFACT_SHA256` update land.
 
 ## Inner Mach-O digests (extracted app)
 
 Path relative to `Synth Desktop.app`. All are `Mach-O 64-bit executable arm64`.
+Digests from receipt `macho.sha256`; sizes from staged binaries.
 
 | Path | Size | SHA-256 |
 | --- | ---: | --- |
-| `Contents/MacOS/synth-desktop` | 28053024 | `2545eea0c06d155356a07078a06aee48080dd7d70937e937f69e3df002b31c17` |
-| `Contents/MacOS/synth_trace_import` | 6536608 | `1fa0f7a9f5369ef3dbf0282d033ef7f21b44b94284ba824873a13c45dcc709c2` |
-| `Contents/MacOS/synth-visuals-mcp` | 760080 | `cae92eeda0a3f2b17a4740b219101210e1a7a06707093277ceb186b5b91ab5cc` |
-| `Contents/MacOS/synth-optimizers-mcp` | 758672 | `3e5f914d3ce4247d338429842fff4fbbfcd2649697f620ac8dc242ea743f89b0` |
-| `Contents/MacOS/synth-containers-mcp` | 692512 | `cf5dafc42eb45c6a07588cd3227b8cb9586c2c710147b00fb55dd0de11997bff` |
+| `Contents/MacOS/synth-desktop` | 28038016 | `5b3d7feee34a7bb3ca76dde4fc734299c001a760bffb961903c06b79a1280a7f` |
+| `Contents/MacOS/synth_trace_import` | 6529904 | `a22ebfee5f769ff28def4912ae1193f646168469c258f6d60fe0166f0e2b8184` |
+| `Contents/MacOS/synth-visuals-mcp` | 759792 | `50103b4967649b0a439382d3aebad9816ceb762dc4757eda424d5ce06a0f8052` |
+| `Contents/MacOS/synth-optimizers-mcp` | 758368 | `463b2b9693b211e550954ea2bd375dc5e2a11744bb6ca195d00579384aba51f0` |
+| `Contents/MacOS/synth-containers-mcp` | 692224 | `59fe8aacae46fd760847b0a66ed65a9ff49444966b893b29b7a5dab824084ac2` |
 
-App code directory (adhoc):
+App code directory (adhoc), from `codesign-details.txt`:
 
 | Field | Value |
 | --- | --- |
-| CandidateCDHashFull (sha256) | `721fd1349b4739b656a5c739457f831b5f83455cc777ee22dcf55ada48f91adf` |
-| CDHash (truncated) | `721fd1349b4739b656a5c739457f831b5f83455c` |
+| CandidateCDHashFull (sha256) | `35d73ff1f3529c2c4b39f16377d8818a375ecbca0e5fe511cb49c1cdaf237abb` |
+| CDHash (truncated) | `35d73ff1f3529c2c4b39f16377d8818a375ecbca` |
 | CodeDirectory flags | `adhoc,runtime` |
-
-Bundled `Contents/Resources/services/laguna-daemon` is Python source (no
-additional Mach-O helpers under Resources at this build).
 
 ## Backend + Responses gateway tips (observed at receipt)
 
-These are the live service identities the friends build is expected to talk
-to for account / cloud Laguna (subject to W2 gateway tip decisions and
-later promote waves). Re-check `/version` before treating as still current.
+Re-check `/version` before treating as still current. This friends rebuild is
+expected to use source-owned gateway routing from `077579a` rather than the
+pre-#8/9 tree.
 
-| Surface | Endpoint | Observed identity |
+| Surface | Endpoint | Note |
 | --- | --- | --- |
-| Prod backend API | `https://api.usesynth.ai/version` | `git_sha` `3a44f1232874616eacc8c9a6e630d55681eadc57` (`environment=prod`) |
-| Staging backend API | `https://api-dev.usesynth.ai/version` | `git_sha` `9b7d26b8b42d5eee08fbb61561e6f1c4971f12ca` (`environment=dev`) — **not** the friends binding tip; recorded for contrast |
-| Prod Responses gateway | `https://synth-responses-gateway-prod-production.up.railway.app/version` | short `b69ece9` → full `b69ece94ce560163526cac4268dc2ab83cba9f1b` |
-| Staging Responses gateway | `https://synth-responses-gateway-staging-dev.up.railway.app/version` | short `b69ece9` → same full SHA |
+| Prod backend API | `https://api.usesynth.ai/version` | Re-check `git_sha` at promote time |
+| Staging backend API | `https://api-dev.usesynth.ai/version` | Contrast only |
+| Prod Responses gateway | Railway `/version` for production gateway | Must match profile routing in this build |
+| Staging Responses gateway | Railway `/version` for staging gateway | Must match profile routing in this build |
 
-Gateway source tip on `synth-responses-gateway` main at receipt
-(`59b5b8b20b2a45f4e09560c0e4c5d636fa97ab62`, memory metering) remains
-**ahead** of the deployed Railway short SHA — see W2 / H1.
-
-Desktop account/billing default backend for the frozen tree:
-`https://api.usesynth.ai`. The tagged friends ZIP predates dedicated gateway
-routing and cannot be repaired with a runtime override. Replacement artifacts
-must be cut from Workshop main after PR #7, where local, staging, and production
-Responses gateway routing is source-owned and unknown profiles fail closed.
+Desktop account/billing default backend remains `https://api.usesynth.ai`.
 
 ## Reproduce checks
 
@@ -97,22 +90,18 @@ Responses gateway routing is source-owned and unknown profiles fail closed.
 ZIP_URL="https://www.usesynth.ai/releases/v0.1.0/Synth-Desktop-v0.1.0-macOS-arm64-UNNOTARIZED.zip"
 curl -fsSL -o /tmp/Synth-Desktop-v0.1.0.zip "$ZIP_URL"
 shasum -a 256 /tmp/Synth-Desktop-v0.1.0.zip
-# expect 99c6a45ff9401de42b5ac596e546ad68e867ac20cef1397687163de279ea417f
+# expect 660a8e2b2f7985da54a66355b70437c7ec123c120d9978d017483ba248a5571b
 
-unzip -q /tmp/Synth-Desktop-v0.1.0.zip -d /tmp/synth-desktop-v0.1.0
-codesign --verify --deep --strict "/tmp/synth-desktop-v0.1.0/Synth Desktop.app"
-shasum -a 256 "/tmp/synth-desktop-v0.1.0/Synth Desktop.app/Contents/MacOS/"*
-
-curl -fsS https://api.usesynth.ai/version
-curl -fsS https://synth-responses-gateway-prod-production.up.railway.app/version
+# After extract:
+# CFBundleShortVersionString / CFBundleVersion == 0.2.0
+# codesign --verify --deep --strict "Synth Desktop.app"
 ```
 
-## Binding summary
+## Frontend / Vercel binding
 
-```text
-ZIP sha256:99c6a45f…417f  (12879866 B)
-  ← workshop tag v0.1.0 / e562f7ee…  tree d458f0fe…  (= RC 3c39cc61…)
-  ← main Mach-O synth-desktop sha256:2545eea0…1c17
-  ↔ prod backend 3a44f123…dc57
-  ↔ prod+staging gateway b69ece94…9f1b (short b69ece9)
-```
+- Frontend PR publishes the ZIP bytes under the same `public/releases/v0.1.0/…` path.
+- Production must set `SYNTH_DESKTOP_STABLE_ARTIFACT_SHA256` to
+  `660a8e2b2f7985da54a66355b70437c7ec123c120d9978d017483ba248a5571b` on Vercel
+  projects `frontend` and `synth-frontend` (team `synth-ff365c23`) **after** the
+  ZIP deploy lands. Keep `SYNTH_DESKTOP_STABLE_ARTIFACT_URL` on the same
+  `/releases/v0.1.0/…UNNOTARIZED.zip` HTTPS path.

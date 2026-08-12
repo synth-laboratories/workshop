@@ -207,9 +207,10 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
         residency = responses_service.residency()
         resident = bool(residency and residency["loaded"])
         loaded = cfg.default_model if resident else None
+        model_path = cfg.resolve_model_path(cfg.default_model)
+        model_installed = cfg.backend in {"mock", "external"} or model_path is not None
         memory = 0
         if resident:
-            model_path = cfg.resolve_model_path(cfg.default_model)
             if model_path is not None:
                 memory = sum(
                     file.stat().st_size
@@ -217,9 +218,10 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
                     if file.is_file()
                 )
         return {
-            # Weights load lazily on first use, so an unloaded daemon is still
-            # ready to serve; readiness is about the daemon, not residency.
-            "status": "ok",
+            # Weights load lazily on first use, but a daemon cannot serve when
+            # its configured local model does not exist.  Report that state
+            # explicitly so Desktop never labels missing weights as "ready".
+            "status": "ok" if model_installed else "not_installed",
             "responsesApi": True,
             "chatCompletionsApi": True,
             "modelsDirectory": str(cfg.models_dir),
