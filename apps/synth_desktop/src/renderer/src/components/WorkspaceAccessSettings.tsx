@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { bridges } from "../runtime/desktopBridge";
 
 export function WorkspaceAccessSettings() {
 	const [roots, setRoots] = useState<string[]>([]);
@@ -8,7 +9,7 @@ export function WorkspaceAccessSettings() {
 	const [saved, setSaved] = useState(false);
 
 	useEffect(() => {
-		void window.synthConfig?.getWorkspaceAccess()
+		void bridges.config?.getWorkspaceAccess()
 			.then((settings) => {
 				setRoots(settings.allowedRoots);
 				setSavedRoots(settings.allowedRoots);
@@ -21,7 +22,7 @@ export function WorkspaceAccessSettings() {
 		setError(null);
 		setSaved(false);
 		try {
-			const path = await window.synthDesktop.chooseWorkspaceDirectory();
+			const path = await bridges.desktop.chooseWorkspaceDirectory();
 			if (path) setRoots((current) => current.includes(path) ? current : [...current, path]);
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
@@ -33,7 +34,7 @@ export function WorkspaceAccessSettings() {
 		setError(null);
 		setSaved(false);
 		try {
-			const settings = await window.synthConfig?.updateWorkspaceAccess({ allowedRoots: roots });
+			const settings = await bridges.config?.updateWorkspaceAccess({ allowedRoots: roots });
 			if (settings) {
 				setRoots(settings.allowedRoots);
 				setSavedRoots(settings.allowedRoots);

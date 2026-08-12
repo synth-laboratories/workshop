@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { SynthBackendSettings } from "../bridge";
+import { bridges } from "../runtime/desktopBridge";
 
 type PairState =
 	| { kind: "idle" }
@@ -25,7 +26,7 @@ export function AccountSignIn() {
 	const pollTimer = useRef<number | null>(null);
 
 	const load = () => {
-		void window.synthConfig?.get().then(setSettings).catch(() => undefined);
+		void bridges.config?.get().then(setSettings).catch(() => undefined);
 	};
 	useEffect(() => {
 		load();
@@ -43,18 +44,18 @@ export function AccountSignIn() {
 	useEffect(() => stopPolling, []);
 
 	const beginSignIn = async () => {
-		if (!window.synthAccount) return;
+		if (!bridges.account) return;
 		try {
-			const begin = await window.synthAccount.beginSignIn();
+			const begin = await bridges.account.beginSignIn();
 			setPair({ kind: "pairing", verificationUri: begin.verificationUri });
 			stopPolling();
 			pollTimer.current = window.setInterval(() => {
-				void window.synthAccount?.pollSignIn().then((result) => {
+				void bridges.account?.pollSignIn().then((result) => {
 					if (result.status === "active") {
 						stopPolling();
 						setPair({ kind: "idle" });
 						setStatus("Signed in · runtime reconnected");
-						void window.synthConfig?.get().then((next) => {
+						void bridges.config?.get().then((next) => {
 							setSettings(next);
 							announceAccountChange(next);
 						});
@@ -74,13 +75,13 @@ export function AccountSignIn() {
 	const cancelSignIn = () => {
 		stopPolling();
 		setPair({ kind: "idle" });
-		void window.synthAccount?.cancelSignIn();
+		void bridges.account?.cancelSignIn();
 	};
 	const signOut = async () => {
-		if (!window.synthAccount) return;
+		if (!bridges.account) return;
 		setSaving(true);
 		try {
-			const next = await window.synthAccount.signOut();
+			const next = await bridges.account.signOut();
 			setSettings(next);
 			announceAccountChange(next);
 			setStatus("Signed out · cloud credentials removed");
@@ -162,7 +163,7 @@ export function BackendSettings() {
 	};
 	useEffect(() => {
 		const load = () => {
-			void window.synthConfig?.get().then(apply).catch((error) => setStatus(String(error)));
+			void bridges.config?.get().then(apply).catch((error) => setStatus(String(error)));
 		};
 		load();
 		// Sign-in and sign-out now happen in Devices & security; this panel must
@@ -173,11 +174,11 @@ export function BackendSettings() {
 	}, []);
 
 	const save = async () => {
-		if (!window.synthConfig) return;
+		if (!bridges.config) return;
 		setSaving(true);
 		setStatus(null);
 		try {
-			const next = await window.synthConfig.update({
+			const next = await bridges.config.update({
 				profile, backendUrl, envFile, apiKeyEnv
 			});
 			apply(next);

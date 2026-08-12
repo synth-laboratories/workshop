@@ -568,3 +568,70 @@ window.synthWorkspaceScope ??= isTauri
 		};
 	}
 }
+
+
+/** Quarantined window.synth* accessors — import these instead of reading window. */
+export const bridges = {
+	get desktop() {
+		return window.synthDesktop;
+	},
+	get runtime() {
+		return window.synthRuntime;
+	},
+	get laguna() {
+		return window.synthLaguna;
+	},
+	get whisper() {
+		return window.synthWhisper;
+	},
+	get skills() {
+		return window.synthSkills;
+	},
+	get config() {
+		return window.synthConfig;
+	},
+	get workspaceScope() {
+		return window.synthWorkspaceScope;
+	},
+	get account() {
+		return window.synthAccount;
+	},
+	get codex() {
+		return window.synthCodex;
+	},
+	get core() {
+		return window.synthCore;
+	},
+	get intern() {
+		return window.synthIntern;
+	},
+	get inventory() {
+		return window.synthInventory;
+	},
+	get modelPerformance() {
+		return window.synthModelPerformance;
+	},
+	get usage() {
+		return window.synthUsage;
+	},
+	get tariffs() {
+		return window.synthTariffs;
+	},
+	get updates() {
+		return window.synthUpdates;
+	},
+	get visuals() {
+		return window.synthVisuals;
+	},
+	get optimizers() {
+		return window.synthOptimizers;
+	},
+	get terminal() {
+		return window.synthTerminal;
+	}
+} as const;
+
+/** True when the renderer is running inside the packaged Tauri webview. */
+export function isDesktopApp(): boolean {
+	return window.location.protocol === "tauri:" || "__TAURI_INTERNALS__" in window;
+}

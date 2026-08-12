@@ -6,6 +6,8 @@ import type {
 	Session,
 	VisualInstanceRecord
 } from "@synth/runtime-protocol";
+import type { RuntimeBridge } from "../bridge";
+import { bridges } from "./desktopBridge";
 
 /**
  * Vite browser fixtures retain the old HTTP contract. The packaged Tauri app
@@ -13,8 +15,8 @@ import type {
  */
 export const browserRuntimeClient = {
 	bridge() {
-		if (!window.synthRuntime) throw new Error("Browser runtime fixture is unavailable");
-		return window.synthRuntime;
+		if (!bridges.runtime) throw new Error("Browser runtime fixture is unavailable");
+		return bridges.runtime;
 	},
 	async listSessions() {
 		return (await this.bridge().request<{ sessions: Session[] }>("/v1/sessions")).sessions;
@@ -45,7 +47,7 @@ export const browserRuntimeClient = {
 			`/v1/sessions/${encodeURIComponent(sessionId)}/events?after_sequence=${afterSequence}&limit=${limit}`
 		);
 	},
-	subscribe: (...args: Parameters<NonNullable<typeof window.synthRuntime>["subscribe"]>) =>
+	subscribe: (...args: Parameters<RuntimeBridge["subscribe"]>) =>
 		browserRuntimeClient.bridge().subscribe(...args),
 	simulateLive(kind: string) {
 		return this.bridge().request<{ visual: VisualInstanceRecord; eventCount: number }>(

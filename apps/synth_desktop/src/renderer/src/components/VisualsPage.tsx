@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import { artifactFromVisualRecord, VisualHost } from "./VisualHost";
+import { bridges } from "../runtime/desktopBridge";
 
 type Tab = "all" | "recent" | "live" | "templates";
 
@@ -28,7 +29,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 		async function load() {
 			setLoading(true);
 			try {
-				const bridge = window.synthVisuals;
+				const bridge = bridges.visuals;
 				if (!bridge) {
 					setError("Visual registry requires Synth Desktop");
 					setVisuals([]);
@@ -46,7 +47,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 			}
 		}
 		void load();
-		const unlisten = window.synthVisuals?.onEvent?.((event) => {
+		const unlisten = bridges.visuals?.onEvent?.((event) => {
 			if (event.kind.startsWith("visual.")) void load();
 		});
 		return () => {

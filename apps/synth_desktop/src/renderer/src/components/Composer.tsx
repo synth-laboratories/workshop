@@ -20,6 +20,7 @@ import { IconSparkle, SlashCommandMenu, type SlashCommandId, type SlashCommandMe
 import type { Skill } from "../runtime/skills";
 import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
+import { bridges } from "../runtime/desktopBridge";
 
 /** Permission chip + menus — injectable like InferenceTransport. */
 export type ComposerPermissions = {
@@ -829,8 +830,8 @@ export function Composer({
 	}, []);
 
 	useEffect(() => {
-		void window.synthWhisper?.getRuntimeStatus?.().then(setWhisperRuntime).catch(() => undefined);
-		return window.synthWhisper?.onRuntimeStatus?.(setWhisperRuntime);
+		void bridges.whisper?.getRuntimeStatus?.().then(setWhisperRuntime).catch(() => undefined);
+		return bridges.whisper?.onRuntimeStatus?.(setWhisperRuntime);
 	}, []);
 
 	const stopMicStream = () => {
@@ -849,7 +850,7 @@ export function Composer({
 			const recordedBlob = new Blob(chunks, { type: mimeType });
 			const wavBlob = await recordingToWhisperWav(recordedBlob);
 			const base64 = await blobToBase64(wavBlob);
-			const text = await window.synthWhisper?.transcribeAudio?.(base64, "audio/wav");
+			const text = await bridges.whisper?.transcribeAudio?.(base64, "audio/wav");
 			if (text?.trim()) {
 				setValue((current) => (current.trim().length ? `${current.trim()} ${text.trim()}` : text.trim()));
 			}
@@ -902,7 +903,7 @@ export function Composer({
 			return;
 		}
 		try {
-			const models = (await window.synthWhisper?.listModels()) ?? [];
+			const models = (await bridges.whisper?.listModels()) ?? [];
 			const selectedModel = models.find((model) => model.selected);
 			if (!selectedModel || (!selectedModel.path && !selectedModel.installedBytes)) {
 				onOpenVoiceSettings?.();
@@ -914,7 +915,7 @@ export function Composer({
 		}
 		// Load the model while the user is speaking, just like Laguna warms its
 		// inference model before the first token is needed.
-		void window.synthWhisper?.warmSelected?.().catch((reason) => {
+		void bridges.whisper?.warmSelected?.().catch((reason) => {
 			setVoiceError(reason instanceof Error ? reason.message : String(reason));
 		});
 		await startRecording();
@@ -1170,7 +1171,7 @@ export function Composer({
 				) : null}
 				<div className="composer-toolbar">
 					<div className="composer-left">
-						<button type="button" className="composer-icon-btn composer-image-button" aria-label={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Add screenshots — selected model does not support image input"} title={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Selected model does not support image input"} data-testid="composer-add-images" disabled={!enabled || submitting} onClick={() => void window.synthDesktop.chooseImageFiles().then((images) => {
+						<button type="button" className="composer-icon-btn composer-image-button" aria-label={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Add screenshots — selected model does not support image input"} title={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Selected model does not support image input"} data-testid="composer-add-images" disabled={!enabled || submitting} onClick={() => void bridges.desktop.chooseImageFiles().then((images) => {
 							setImageAttachments((current) => [...current, ...images.filter((image) => !current.some((item) => item.path === image.path))].slice(0, 4));
 							setAttachmentError(images.length && !modelSupportsImageInput(state.selectedTargetId) ? "This model does not support image input. Choose a multimodal model or remove the screenshots before sending." : null);
 						})}><IconImage />{!modelSupportsImageInput(state.selectedTargetId) ? <IconImageUnsupported /> : null}</button>

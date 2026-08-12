@@ -3,6 +3,7 @@ import { buildAccountView } from "../runtime/accountView";
 import { loadDeviceUsage } from "../runtime/deviceUsage";
 import type { DeviceUsageSummary } from "../components/UsageSheet";
 import type { SynthAccountSummary, SynthBackendSettings } from "../bridge";
+import { bridges } from "../runtime/desktopBridge";
 
 /**
  * Account / billing shell state. Keeps the Account Snapshot refresh path out of
@@ -16,7 +17,7 @@ export function useAccountShell(showToast: (message: string) => void) {
 	const [usageSheetOpen, setUsageSheetOpen] = useState(false);
 
 	const refreshAccountSummary = useCallback((force = false) => {
-		const bridge = window.synthAccount;
+		const bridge = bridges.account;
 		if (typeof bridge?.getSummary !== "function") {
 			setAccountSummary(null);
 			return;
@@ -40,7 +41,7 @@ export function useAccountShell(showToast: (message: string) => void) {
 
 	const openBilling = useCallback(
 		async (action: "upgrade" | "manage") => {
-			const bridge = window.synthAccount;
+			const bridge = bridges.account;
 			if (typeof bridge?.openBilling !== "function") {
 				showToast("Billing management requires Synth Desktop");
 				return;

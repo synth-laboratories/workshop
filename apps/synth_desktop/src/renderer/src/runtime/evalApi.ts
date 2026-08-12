@@ -11,6 +11,7 @@ import {
 } from "../limits";
 import { sessionIsLocalChat, sessionIsSync } from "./sessionView";
 import type { MainView } from "../routes";
+import { bridges } from "./desktopBridge";
 
 export type SemanticEvalApi = {
 	schemaVersion: "synth.desktop-eval-api.v1";
@@ -111,19 +112,19 @@ export function createSemanticEvalApi(host: SemanticEvalHost): SemanticEvalApi {
 			if (action === "open_visual") {
 				const visualId = args.visualId;
 				if (typeof visualId !== "string") throw new Error("open_visual requires visualId");
-				if (!window.synthVisuals) throw new Error("Rust visual registry is unavailable");
-				const visual = await window.synthVisuals.get(visualId);
+				if (!bridges.visuals) throw new Error("Rust visual registry is unavailable");
+				const visual = await bridges.visuals.get(visualId);
 				host.openVisualRecord(visual);
 				return visual;
 			}
 			if (action === "list_inventory") {
-				if (!window.synthInventory || !window.synthVisuals) {
+				if (!bridges.inventory || !bridges.visuals) {
 					throw new Error("Rust Data store is unavailable");
 				}
 				const [containers, traces, visuals] = await Promise.all([
-					window.synthInventory.listContainers(),
-					window.synthInventory.listTraces(),
-					window.synthVisuals.list({ limit: 500 })
+					bridges.inventory.listContainers(),
+					bridges.inventory.listTraces(),
+					bridges.visuals.list({ limit: 500 })
 				]);
 				return { containers, traces, visuals };
 			}
@@ -143,7 +144,7 @@ export function createSemanticEvalApi(host: SemanticEvalHost): SemanticEvalApi {
 				const sessionId =
 					typeof args.sessionId === "string" ? args.sessionId : host.activeSessionId;
 				if (!sessionId) throw new Error("wait_for_terminal requires sessionId");
-				if (!window.synthCore) throw new Error("Rust journal is unavailable");
+				if (!bridges.core) throw new Error("Rust journal is unavailable");
 				const timeoutMs =
 					typeof args.timeoutMs === "number" ? args.timeoutMs : EVAL_WAIT_TERMINAL_TIMEOUT_MS;
 				const pollMs =
@@ -151,7 +152,7 @@ export function createSemanticEvalApi(host: SemanticEvalHost): SemanticEvalApi {
 				const deadline = Date.now() + timeoutMs;
 				let after = 0;
 				while (Date.now() < deadline) {
-					const page = await window.synthCore.sessionEventsAfter(sessionId, after, 500);
+					const page = await bridges.core.sessionEventsAfter(sessionId, after, 500);
 					for (const event of page) {
 						after = Math.max(after, event.sessionSequence ?? event.sequence);
 						const kind = event.kind;
@@ -173,11 +174,11 @@ export function createSemanticEvalApi(host: SemanticEvalHost): SemanticEvalApi {
 				const sessionId =
 					typeof args.sessionId === "string" ? args.sessionId : host.activeSessionId;
 				if (!sessionId) throw new Error("export_session requires sessionId");
-				if (!window.synthCore) throw new Error("Rust journal is unavailable");
+				if (!bridges.core) throw new Error("Rust journal is unavailable");
 				const events = [];
 				let after = 0;
 				for (;;) {
-					const page = await window.synthCore.sessionEventsAfter(sessionId, after, 500);
+					const page = await bridges.core.sessionEventsAfter(sessionId, after, 500);
 					if (!page.length) break;
 					for (const event of page) {
 						after = Math.max(after, event.sessionSequence ?? event.sequence);

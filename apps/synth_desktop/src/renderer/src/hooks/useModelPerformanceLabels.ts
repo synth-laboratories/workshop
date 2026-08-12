@@ -7,6 +7,7 @@ import {
 	performanceTargetId
 } from "../runtime/modelPerformanceLabels";
 import type { InferenceMonitor } from "../components/InferencePanel";
+import { bridges } from "../runtime/desktopBridge";
 
 /**
  * Aggregates native model-performance summaries for composer/sidebar labels.
@@ -21,7 +22,7 @@ export function useModelPerformanceLabels(
 		let disposed = false;
 		const refresh = async () => {
 			try {
-				const summaries = await window.synthModelPerformance?.summaries();
+				const summaries = await bridges.modelPerformance?.summaries();
 				if (!disposed && summaries) setModelPerformance(summaries);
 			} catch {
 				// Optional telemetry must never block chat.
