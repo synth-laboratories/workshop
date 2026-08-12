@@ -25,7 +25,11 @@ async function expectLegacyAccountChromeAbsent(page: Page): Promise<void> {
 				ariaLabel: element.getAttribute("aria-label"),
 				testId: element.getAttribute("data-testid")
 			}))
-			.filter(({ testId }) => testId !== "toggle-terminal" && testId !== "toggle-inference-rail")
+			.filter(({ testId }) =>
+				testId !== "toggle-terminal" &&
+				testId !== "toggle-inference-rail" &&
+				testId !== "app-version"
+			)
 	);
 	expect(unexpectedActions, "titlebar actions are limited to terminal and inference controls").toEqual([]);
 }

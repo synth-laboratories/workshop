@@ -180,7 +180,7 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 	await expect(models.getByTestId("authorized-model-openrouter-muse-spark")).toContainText("$4.25");
 	await expect(models.getByTestId("authorized-model-synth-cloud-laguna-s")).toContainText("Plan");
 	const marks = models.locator(".authorized-model-mark");
-	await expect(marks).toHaveCount(4);
+	await expect(marks).toHaveCount(5);
 	const markBoxes = await marks.evaluateAll((elements) => elements.map((element) => {
 		const box = element.getBoundingClientRect();
 		return { width: box.width, height: box.height, centerX: box.left + box.width / 2 };
