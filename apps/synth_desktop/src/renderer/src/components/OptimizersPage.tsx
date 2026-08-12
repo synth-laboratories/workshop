@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { OptimizerAlgorithmInfo, OptimizerRunRecord } from "@synth/runtime-protocol";
+import { bridges } from "../runtime/desktopBridge";
 
 const BANKING77_RECIPE_ID = "gepa.banking77.smoke.v1";
 const BANKING77_SMOKE_COST_USD = 0.25;
@@ -83,20 +84,20 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 	const [sftLaunchConfirmed, setSftLaunchConfirmed] = useState(false);
 
 	const refresh = useCallback(async () => {
-		if (!window.synthOptimizers) {
+		if (!bridges.optimizers) {
 			setError("Optimizer bridge is unavailable");
 			return;
 		}
 		setError(null);
 		const [nextRuns, nextAlgorithms, nextRecipes] = await Promise.all([
-			window.synthOptimizers.list({
+			bridges.optimizers.list({
 				search: search.trim() || undefined,
 				status: status === "all" ? undefined : status,
 				algorithmId: algorithm === "all" ? undefined : algorithm,
 				source: source === "all" ? undefined : source
 			}),
-			window.synthOptimizers.listAlgorithms(),
-			window.synthOptimizers.listRecipes?.() ?? Promise.resolve([])
+			bridges.optimizers.listAlgorithms(),
+			bridges.optimizers.listRecipes?.() ?? Promise.resolve([])
 		]);
 		setRuns(nextRuns);
 		setAlgorithms(nextAlgorithms);
@@ -106,7 +107,7 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 
 	useEffect(() => {
 		void refresh().catch((reason) => setError(String(reason)));
-		const unlisten = window.synthOptimizers?.onEvent?.(() => {
+		const unlisten = bridges.optimizers?.onEvent?.(() => {
 			void refresh().catch(() => undefined);
 		});
 		return () => unlisten?.();
@@ -124,11 +125,11 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 	);
 
 	const seedFixture = async (fixture: string) => {
-		if (!window.synthOptimizers) return;
+		if (!bridges.optimizers) return;
 		setBusy(true);
 		setError(null);
 		try {
-			const run = await window.synthOptimizers.create({
+			const run = await bridges.optimizers.create({
 				algorithmId: fixture === "goex" ? "go-ex" : fixture,
 				seedFixture: fixture,
 				openVisual: true
@@ -145,10 +146,10 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 	};
 
 	const openSelectedVisual = async () => {
-		if (!selected || !window.synthOptimizers) return;
+		if (!selected || !bridges.optimizers) return;
 		setBusy(true);
 		try {
-			const run = await window.synthOptimizers.openVisual(selected.id);
+			const run = await bridges.optimizers.openVisual(selected.id);
 			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
 			if (visualId) onOpenVisual(visualId);
 			await refresh();
@@ -160,7 +161,7 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 	};
 
 	const importLocal = async () => {
-		if (!window.synthOptimizers) return;
+		if (!bridges.optimizers) return;
 		const path = window.prompt(
 			"Local OSS GEPA or optimizers-beta run path (workspace, run dir, or events.jsonl)"
 		);
@@ -168,7 +169,7 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 		setBusy(true);
 		setError(null);
 		try {
-			const run = await window.synthOptimizers.importLocal({
+			const run = await bridges.optimizers.importLocal({
 				path: path.trim(),
 				openVisual: true
 			});
@@ -184,11 +185,11 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 	};
 
 	const syncCloud = async () => {
-		if (!window.synthOptimizers) return;
+		if (!bridges.optimizers) return;
 		setBusy(true);
 		setError(null);
 		try {
-			const cloudRuns = await window.synthOptimizers.listCloud({ limit: 20 });
+			const cloudRuns = await bridges.optimizers.listCloud({ limit: 20 });
 			for (const item of cloudRuns) {
 				const runId =
 					item && typeof item === "object"
@@ -199,7 +200,7 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 							)
 						: "";
 				if (!runId) continue;
-				await window.synthOptimizers.reconcileCloud({
+				await bridges.optimizers.reconcileCloud({
 					optimizerRunId: runId,
 					afterSeq: 0,
 					openVisual: false
@@ -214,12 +215,12 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 	};
 
 	const launchBanking77Smoke = async () => {
-		if (!window.synthOptimizers) return;
+		if (!bridges.optimizers) return;
 		if (!launchConfirmed) return;
 		setBusy(true);
 		setError(null);
 		try {
-			const run = await window.synthOptimizers.startRecipe({
+			const run = await bridges.optimizers.startRecipe({
 				recipeId: BANKING77_RECIPE_ID,
 				openVisual: true
 			});
@@ -237,11 +238,11 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 	};
 
 	const launchCraftaxSftSmoke = async () => {
-		if (!window.synthOptimizers || !sftLaunchConfirmed) return;
+		if (!bridges.optimizers || !sftLaunchConfirmed) return;
 		setBusy(true);
 		setError(null);
 		try {
-			const run = await window.synthOptimizers.startRecipe({
+			const run = await bridges.optimizers.startRecipe({
 				recipeId: CRAFTAX_SFT_RECIPE_ID,
 				openVisual: true
 			});
@@ -269,16 +270,16 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 		: null;
 
 	const refreshSelected = async () => {
-		if (!selected || !window.synthOptimizers) return;
+		if (!selected || !bridges.optimizers) return;
 		setBusy(true);
 		try {
 			if (selected.source === "cloud") {
-				await window.synthOptimizers.reconcileCloud({
+				await bridges.optimizers.reconcileCloud({
 					optimizerRunId: selected.id,
 					openVisual: false
 				});
 			} else {
-				await window.synthOptimizers.refresh(selected.id);
+				await bridges.optimizers.refresh(selected.id);
 			}
 			await refresh();
 		} catch (reason) {
@@ -289,11 +290,11 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 	};
 
 	const controlSelected = async (action: "cancel" | "pause" | "resume") => {
-		if (!selected || !window.synthOptimizers) return;
+		if (!selected || !bridges.optimizers) return;
 		setBusy(true);
 		setError(null);
 		try {
-			const run = await window.synthOptimizers[action](selected.id);
+			const run = await bridges.optimizers[action](selected.id);
 			setSelectedId(run.id);
 			await refresh();
 		} catch (reason) {

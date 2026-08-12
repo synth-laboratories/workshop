@@ -121,7 +121,7 @@ export function LegacyMigrationSettings() {
 				<h3>Legacy Python runtime data</h3>
 				<p>Inspect and copy data into the Rust CoreRuntime. The legacy database is backed up and never changed or deleted.</p>
 			</header>
-			{!isTauri ? <p>This migration tool is available in the installed desktop app.</p> : null}
+			{!isTauri && <p>This migration tool is available in the installed desktop app.</p>}
 			{error ? <div className="model-locations-error" role="alert">{error}</div> : null}
 			{receipt ? (
 				<div className="finetune-base-card" role="status">

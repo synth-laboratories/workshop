@@ -3,6 +3,7 @@ import type { ArtifactRef } from "../types/landing";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import { propsFromBindings } from "@synth/visuals";
 import { loadVisualShell } from "../runtime/visualsLoader";
+import { bridges } from "../runtime/desktopBridge";
 
 type ShellProps = {
 	title?: string;
@@ -196,7 +197,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		const bindings = artifact.bindings as { slots?: Array<{ slot?: string; kind?: string; source?: string }> } | undefined;
 		const slot = bindings?.slots?.find((entry) => entry.slot === "optimizer_run" && entry.kind === "optimizer_run");
 		const optimizerRunId = slot?.source;
-		if (!optimizerRunId || !window.synthOptimizers) {
+		if (!optimizerRunId || !bridges.optimizers) {
 			setOptimizerPayload(null);
 			setOptimizerLoadError(optimizerRunId ? "Optimizer bridge is unavailable" : null);
 			return;
@@ -204,8 +205,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		const load = async () => {
 			try {
 				const [run, events] = await Promise.all([
-					window.synthOptimizers!.get(optimizerRunId),
-					window.synthOptimizers!.eventsAfter(optimizerRunId, 0)
+					bridges.optimizers!.get(optimizerRunId),
+					bridges.optimizers!.eventsAfter(optimizerRunId, 0)
 				]);
 				if (!cancelled) {
 					setOptimizerPayload({ run, events });
@@ -219,7 +220,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			}
 		};
 		void load();
-		const unlisten = window.synthOptimizers.onEvent((event) => {
+		const unlisten = bridges.optimizers.onEvent((event) => {
 			const eventRunId = typeof event.payload?.optimizerRunId === "string"
 				? event.payload.optimizerRunId
 				: typeof event.payload?.optimizer_run_id === "string" ? event.payload.optimizer_run_id : null;

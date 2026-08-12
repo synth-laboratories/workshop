@@ -3,6 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import type { TerminalEvent, TerminalInfo } from "../bridge";
+import { bridges } from "../runtime/desktopBridge";
 
 type Props = {
 	open: boolean;
@@ -40,9 +41,9 @@ export function TerminalPanel({
 	const resizeStart = useRef<{ y: number; height: number } | null>(null);
 
 	const createTerminal = useCallback(async () => {
-		if (!workspaceRoot || !window.synthTerminal.available) return;
+		if (!workspaceRoot || !bridges.terminal.available) return;
 		try {
-			const info = await window.synthTerminal.create({ workspaceId, workspaceRoot });
+			const info = await bridges.terminal.create({ workspaceId, workspaceRoot });
 			setTerminals((current) => [...current, info]); setActiveId(info.id); setError(null);
 		} catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
 	}, [workspaceId, workspaceRoot]);
@@ -54,9 +55,9 @@ export function TerminalPanel({
 	}, [createTerminal]);
 
 	useEffect(() => {
-		if (!open || !window.synthTerminal.available) return;
+		if (!open || !bridges.terminal.available) return;
 		let disposed = false;
-		void window.synthTerminal.list(workspaceId).then((items) => {
+		void bridges.terminal.list(workspaceId).then((items) => {
 			if (disposed) return; setTerminals(items);
 			if (items.length) setActiveId((current) => items.some((item) => item.id === current) ? current : items[0].id);
 			else void createTerminal();
@@ -114,10 +115,10 @@ export function TerminalPanel({
 				if (event.message) terminal.writeln(`\r\n[terminal error: ${event.message}]`);
 			}
 		};
-		const unlisten = window.synthTerminal.onEvent(apply);
-		void window.synthTerminal.snapshot(activeId).then((events) => events.sort((a, b) => a.sequence - b.sequence).forEach(apply));
-		const data = terminal.onData((value) => void window.synthTerminal.write(activeId, value));
-		const resize = new ResizeObserver(() => { addon.fit(); void window.synthTerminal.resize(activeId, terminal.cols, terminal.rows); });
+		const unlisten = bridges.terminal.onEvent(apply);
+		void bridges.terminal.snapshot(activeId).then((events) => events.sort((a, b) => a.sequence - b.sequence).forEach(apply));
+		const data = terminal.onData((value) => void bridges.terminal.write(activeId, value));
+		const resize = new ResizeObserver(() => { addon.fit(); void bridges.terminal.resize(activeId, terminal.cols, terminal.rows); });
 		resize.observe(viewport.current);
 		terminal.focus();
 		return () => { unlisten(); data.dispose(); resize.disconnect(); terminal.dispose(); xterm.current = null; fit.current = null; };
@@ -125,7 +126,7 @@ export function TerminalPanel({
 
 	const closeActive = async () => {
 		if (!activeId) return;
-		await window.synthTerminal.close(activeId).catch((reason) => setError(String(reason)));
+		await bridges.terminal.close(activeId).catch((reason) => setError(String(reason)));
 		setTerminals((current) => { const next = current.filter((item) => item.id !== activeId); setActiveId(next[0]?.id ?? null); return next; });
 	};
 
@@ -189,6 +190,6 @@ export function TerminalPanel({
 				<button type="button" className="terminal-action terminal-hide-action" aria-label="Hide terminal" title="Hide terminal (⌘J)" onClick={() => onOpenChange(false)}><span aria-hidden>⌄</span></button>
 			</div>
 		</header>
-		{!window.synthTerminal.available ? <div className="terminal-empty">Terminal is available in the desktop app.</div> : error ? <div className="terminal-empty" role="alert">{error}</div> : <div className="terminal-viewport" ref={viewport} />}
+		{!bridges.terminal.available ? <div className="terminal-empty">Terminal is available in the desktop app.</div> : error ? <div className="terminal-empty" role="alert">{error}</div> : <div className="terminal-viewport" ref={viewport} />}
 	</section>;
 }

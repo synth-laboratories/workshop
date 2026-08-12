@@ -58,7 +58,7 @@ status_magic="$(count_rg 'status == "|"running"|"interrupted"' src-tauri/src/ses
 target_json_kind="$(count_rg 'target_json\["kind"\]|\bkind\b == "codex"|== "intern"' src-tauri/src)"
 static_once_lock="$(count_rg 'static .*OnceLock' src-tauri/src)"
 client_new="$(count_rg 'Client::new\(\)' src-tauri/src)"
-window_synth="$(count_rg 'window\.synth' src/renderer/src --glob '!runtime/desktopBridge.ts')"
+window_synth="$(count_rg 'window\.synth' src/renderer/src --glob '!**/desktopBridge.ts')"
 is_tauri_ternary="$(count_rg 'isTauri \?' src/renderer/src)"
 env_d_ts_lines="$(wc -l < src/renderer/src/env.d.ts | tr -d '[:space:]')"
 use_state_app="$(count_rg 'useState' src/renderer/src/App.tsx)"

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ConversationWorkspaceScope, WorkspaceAccessMode, WorkspaceGrantRequest } from "../bridge";
+import { bridges } from "../runtime/desktopBridge";
 
 function compactPath(path: string): string {
 	const home = "/Users/";
@@ -41,47 +42,47 @@ export function WorkspaceScopeChip({ sessionId, ensureSession, fallbackWorkspace
 		document.addEventListener("keydown", escape);
 		return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", escape); };
 	}, [open]);
-	useEffect(() => { if (sessionId) void window.synthWorkspaceScope?.listGrants(sessionId).then(setGrants).catch(() => undefined); else setGrants([]); }, [sessionId, open]);
+	useEffect(() => { if (sessionId) void bridges.workspaceScope?.listGrants(sessionId).then(setGrants).catch(() => undefined); else setGrants([]); }, [sessionId, open]);
 	useEffect(() => {
 		if (!open) return;
-		void window.synthWorkspaceScope?.listRecentFolders().then(setRecentFolders).catch(() => setRecentFolders([]));
+		void bridges.workspaceScope?.listRecentFolders().then(setRecentFolders).catch(() => setRecentFolders([]));
 	}, [open]);
 
 	const add = async (access: WorkspaceAccessMode) => {
-		if (!window.synthWorkspaceScope) return;
+		if (!bridges.workspaceScope) return;
 		setBusy(true);
 		try {
 			const targetSessionId = sessionId ?? await ensureSession?.();
 			if (!targetSessionId) return;
-			const next = await window.synthWorkspaceScope.chooseAndAttach(targetSessionId, access);
+			const next = await bridges.workspaceScope.chooseAndAttach(targetSessionId, access);
 			if (next) onScopeChange(next);
 		} catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
 		finally { setBusy(false); }
 	};
 	const addRecent = async (path: string) => {
-		if (!window.synthWorkspaceScope) return;
+		if (!bridges.workspaceScope) return;
 		setBusy(true);
 		try {
 			const targetSessionId = sessionId ?? await ensureSession?.();
 			if (!targetSessionId) return;
-			onScopeChange(await window.synthWorkspaceScope.attachRecent(targetSessionId, path));
+			onScopeChange(await bridges.workspaceScope.attachRecent(targetSessionId, path));
 		} catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
 		finally { setBusy(false); }
 	};
 	const remove = async (path: string) => {
-		if (!sessionId || !window.synthWorkspaceScope) return;
+		if (!sessionId || !bridges.workspaceScope) return;
 		setBusy(true);
-		try { onScopeChange(await window.synthWorkspaceScope.removeAttachment(sessionId, path)); }
+		try { onScopeChange(await bridges.workspaceScope.removeAttachment(sessionId, path)); }
 		catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
 		finally { setBusy(false); }
 	};
 	const resolveGrant = async (request: WorkspaceGrantRequest, approve: boolean) => {
-		if (!window.synthWorkspaceScope) return;
+		if (!bridges.workspaceScope) return;
 		setBusy(true);
 		try {
-			if (approve) { const next=await window.synthWorkspaceScope.approveRequest(request.id); if(next) onScopeChange(next); }
-			else await window.synthWorkspaceScope.denyRequest(request.id);
-			if(sessionId) setGrants(await window.synthWorkspaceScope.listGrants(sessionId));
+			if (approve) { const next=await bridges.workspaceScope.approveRequest(request.id); if(next) onScopeChange(next); }
+			else await bridges.workspaceScope.denyRequest(request.id);
+			if(sessionId) setGrants(await bridges.workspaceScope.listGrants(sessionId));
 		} catch(reason){onError(reason instanceof Error?reason.message:String(reason));} finally{setBusy(false);}
 	};
 

@@ -100,15 +100,16 @@ import { loadDeviceUsage } from "./runtime/deviceUsage";
 import { createSemanticEvalApi } from "./runtime/evalApi";
 import { drainPromptQueues, nextQueuedPrompt, removeQueuedPrompt } from "./runtime/promptQueue";
 import { MainRoutes, type MainView } from "./routes";
+import { bridges } from "./runtime/desktopBridge";
 export default function App() {
 	const isDesktop = window.location.protocol === "tauri:" || "__TAURI_INTERNALS__" in window;
-	const nativeCodex = window.synthCodex;
+	const nativeCodex = bridges.codex;
 	// synthIntern is installed in browsers too as a demo adapter. Codex presence is
 	// the stable packaged-Tauri signal used here to select the Rust-owned path.
-	const nativeIntern = nativeCodex ? window.synthIntern : undefined;
+	const nativeIntern = nativeCodex ? bridges.intern : undefined;
 	const [appVersion, setAppVersion] = useState(desktopPackage.version);
 	useEffect(() => {
-		void window.synthDesktop.getInstanceDiagnostics()
+		void bridges.desktop.getInstanceDiagnostics()
 			.then((identity) => {
 				const runtimeVersion = identity.appVersion.trim();
 				if (runtimeVersion) setAppVersion(runtimeVersion);
@@ -280,12 +281,12 @@ export default function App() {
 	}, [nativeIntern]);
 
 	const refreshHealth = useCallback(async () => {
-		if (isDesktop && window.synthCore && window.synthConfig && window.synthInventory) {
+		if (isDesktop && bridges.core && bridges.config && bridges.inventory) {
 			const [core, config, counts, currentLaguna, usage] = await Promise.all([
-				window.synthCore.diagnostics(),
-				window.synthConfig.get(),
-				window.synthInventory.counts(),
-				window.synthLaguna?.getStatus() ?? Promise.resolve(null),
+				bridges.core.diagnostics(),
+				bridges.config.get(),
+				bridges.inventory.counts(),
+				bridges.laguna?.getStatus() ?? Promise.resolve(null),
 				loadDeviceUsage().catch(() => null)
 			]);
 			const next: RuntimeHealth = {
@@ -321,7 +322,7 @@ export default function App() {
 		}
 		const [next, config] = await Promise.all([
 			browserRuntimeClient.health(),
-			window.synthConfig?.get().catch(() => null) ?? Promise.resolve(null)
+			bridges.config?.get().catch(() => null) ?? Promise.resolve(null)
 		]);
 		if (config) {
 			setApiKeyConfigured(config.apiKeyConfigured);
@@ -343,7 +344,7 @@ export default function App() {
 	}, [refreshAccountSummary, refreshHealth]);
 
 	useEffect(() => {
-		void window.synthCodex?.defaultWorkspace().then(setDefaultWorkspace).catch(() => undefined);
+		void bridges.codex?.defaultWorkspace().then(setDefaultWorkspace).catch(() => undefined);
 	}, []);
 
 	useEffect(() => {
@@ -377,7 +378,7 @@ export default function App() {
 				const combined = [...restored, ...internSessions];
 				sessionsRef.current = combined;
 				replaceSessions(combined);
-				const core = window.synthCore;
+				const core = bridges.core;
 				if (!core) return;
 				const replay = await Promise.all(combined.map(async (session) => {
 					const rows = await core.sessionEventsAfter(session.id, 0, 2000);
@@ -418,7 +419,7 @@ export default function App() {
 	});
 
 	useEffect(() => {
-		const bridge = window.synthLaguna;
+		const bridge = bridges.laguna;
 		if (!bridge) return;
 		let disposed = false;
 		void bridge.getStatus().then((status) => {
@@ -435,7 +436,7 @@ export default function App() {
 
 	useEffect(() => {
 		const interval = window.setInterval(() => {
-			void window.synthLaguna?.getStatus().then(setLaguna).catch(() => undefined);
+			void bridges.laguna?.getStatus().then(setLaguna).catch(() => undefined);
 			// Tauri owns local/configured-provider sessions in Codex app-server and
 			// Inventory in CoreRuntime.  The legacy compatibility poll returns a
 			// different session universe and must never replace native state.
@@ -496,8 +497,8 @@ export default function App() {
 	useEffect(() => {
 		let disposed = false;
 		setWorkspaceScope(null);
-		if (!activeSessionId || !window.synthWorkspaceScope) return () => { disposed = true; };
-		void window.synthWorkspaceScope.get(activeSessionId).then((scope) => { if (!disposed) setWorkspaceScope(scope); }).catch(() => undefined);
+		if (!activeSessionId || !bridges.workspaceScope) return () => { disposed = true; };
+		void bridges.workspaceScope.get(activeSessionId).then((scope) => { if (!disposed) setWorkspaceScope(scope); }).catch(() => undefined);
 		return () => { disposed = true; };
 	}, [activeSessionId]);
 
@@ -701,12 +702,12 @@ export default function App() {
 			setContainerPaneExpanded(false);
 			return;
 		}
-		if (!window.synthInventory) {
+		if (!bridges.inventory) {
 			showToast("Container inventory requires Synth Desktop");
 			return;
 		}
 		try {
-			const container = await window.synthInventory.getContainer(id);
+			const container = await bridges.inventory.getContainer(id);
 			setOpenArtifactId(null);
 			setStandaloneVisual(null);
 			setOpenContainer(container);
@@ -716,9 +717,9 @@ export default function App() {
 	}, [openContainer?.id, showToast]);
 
 	const probeOpenContainer = useCallback(async () => {
-		if (!openContainer || !window.synthInventory) return;
+		if (!openContainer || !bridges.inventory) return;
 		try {
-			const container = await window.synthInventory.probeContainer(openContainer.id);
+			const container = await bridges.inventory.probeContainer(openContainer.id);
 			setOpenContainer(container);
 			showToast(`${container.name} · ${container.status}`);
 		} catch (reason) {
@@ -738,12 +739,12 @@ export default function App() {
 	}, []);
 
 	useEffect(() => {
-		const unlisten = window.synthVisuals?.onShow?.(async (event) => {
+		const unlisten = bridges.visuals?.onShow?.(async (event) => {
 			const visualId =
 				typeof event.payload?.visualId === "string" ? event.payload.visualId : null;
-			if (!visualId || !window.synthVisuals) return;
+			if (!visualId || !bridges.visuals) return;
 			try {
-				const visual = await window.synthVisuals.get(visualId);
+				const visual = await bridges.visuals.get(visualId);
 				openVisualRecord(visual);
 				showToast(`Opened visual · ${visual.title}`);
 			} catch (reason) {
@@ -755,7 +756,7 @@ export default function App() {
 
 	const ensureOpenRouterReady = useCallback(async (targetId: string): Promise<boolean> => {
 		if (!targetId.startsWith("openrouter-")) return true;
-		const config = await window.synthConfig?.get().catch(() => null);
+		const config = await bridges.config?.get().catch(() => null);
 		const configured = config?.openrouterApiKeyConfigured ?? health?.openrouter.mode === "ready";
 		if (configured) {
 			if (config) setBackendSettings(config);
@@ -1022,7 +1023,7 @@ export default function App() {
 	}, []);
 
 	useEffect(() => {
-		void window.synthSkills?.list()
+		void bridges.skills?.list()
 			.then((hits) => setComposerSkills(hits.map((hit) => ({
 				id: hit.id,
 				name: hit.name,
@@ -1079,7 +1080,7 @@ export default function App() {
 	}, [activeChatRunning, activeSessionId, laguna?.baseUrl, nativeCodex, preferences.agentContext.autoCompactTokenLimits, showToast]);
 
 	const onReloadLaguna = useCallback(async () => {
-		const bridge = window.synthLaguna;
+		const bridge = bridges.laguna;
 		if (!bridge) throw new Error("Laguna controls are unavailable in this build");
 		await bridge.reload();
 		const status = await bridge.getStatus();
@@ -1092,7 +1093,7 @@ export default function App() {
 	}, [refreshHealth]);
 
 	const onFreeLocalMemory = useCallback(async () => {
-		const bridge = window.synthLaguna;
+		const bridge = bridges.laguna;
 		if (!bridge?.freeMemory) throw new Error("Local model controls are unavailable in this build");
 		const outcome = await bridge.freeMemory();
 		if (outcome.conflict || !outcome.released) throw new Error(outcome.detail ?? "Local model memory could not be freed");
@@ -1254,12 +1255,12 @@ export default function App() {
 					onRetryAccount={() => refreshAccountSummary(true)}
 					onOpenAccount={() => setView({ kind: "settings", section: "account" })}
 					onSignOut={async () => {
-						if (!window.synthAccount) {
+						if (!bridges.account) {
 							setView({ kind: "settings", section: "account" });
 							return;
 						}
 						try {
-							const next = await window.synthAccount.signOut();
+							const next = await bridges.account.signOut();
 							setApiKeyConfigured(next.apiKeyConfigured);
 							refreshAccountSummary();
 							showToast("Signed out of Synth");

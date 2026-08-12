@@ -1,5 +1,6 @@
 import type { UsageBreakdown } from "@synth/runtime-protocol";
 import type { DeviceUsageSummary } from "../components/UsageSheet";
+import { bridges } from "./desktopBridge";
 
 /**
  * Compact device rollup for the Settings/Account pages, derived from the
@@ -9,7 +10,7 @@ import type { DeviceUsageSummary } from "../components/UsageSheet";
  * them separate and labeled.
  */
 export async function loadDeviceUsage(): Promise<DeviceUsageSummary | null> {
-	const bridge = window.synthUsage;
+	const bridge = bridges.usage;
 	if (!bridge) return null;
 	const [sevenDays, allTime] = await Promise.all([bridge.summary("7d"), bridge.summary("all")]);
 	const cost = (totals: UsageBreakdown) =>

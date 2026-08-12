@@ -8,6 +8,7 @@ import type {
 } from "@synth/runtime-protocol";
 
 import { CONTAINER_POLL_MS } from "../limits";
+import { bridges } from "../runtime/desktopBridge";
 
 export type DataTab = "containers" | "traces" | "visuals" | "usage" | "inference";
 
@@ -147,15 +148,15 @@ export function DataPage({
 	const refresh = useCallback(async () => {
 		setError(null);
 		try {
-			if (!window.synthInventory || !window.synthVisuals) {
+			if (!bridges.inventory || !bridges.visuals) {
 				throw new Error("Rust Data store is unavailable");
 			}
 			const [nextContainers, nextTraces, nextVisuals, nextUsage, nextCounts] = await Promise.all([
-				window.synthInventory.listContainers(),
-				window.synthInventory.listTraces(),
-				window.synthVisuals.list({ limit: 500 }),
-				window.synthInventory.listUsage(100),
-				window.synthInventory.counts()
+				bridges.inventory.listContainers(),
+				bridges.inventory.listTraces(),
+				bridges.visuals.list({ limit: 500 }),
+				bridges.inventory.listUsage(100),
+				bridges.inventory.counts()
 			]);
 			setContainers(nextContainers);
 			setTraces(nextTraces);
@@ -177,11 +178,11 @@ export function DataPage({
 		let cancelled = false;
 		const poll = async () => {
 			const candidates = containersRef.current.filter((container) => container.baseUrl && !archivedContainerIds.has(container.id));
-			if (!candidates.length || !window.synthInventory) return;
+			if (!candidates.length || !bridges.inventory) return;
 			const ids = new Set(candidates.map((container) => container.id));
 			setContainers((current) => current.map((container) => ids.has(container.id) ? { ...container, status: "pending" } : container));
 			const results = await Promise.all(candidates.map(async (container) => {
-				try { return await window.synthInventory!.probeContainer(container.id); }
+				try { return await bridges.inventory!.probeContainer(container.id); }
 				catch { return { ...container, status: "unhealthy" as const }; }
 			}));
 			if (cancelled) return;
@@ -215,7 +216,7 @@ export function DataPage({
 		setBusyId(containerId);
 		setError(null);
 		try {
-			const result = await window.synthInventory?.probeContainer(containerId);
+			const result = await bridges.inventory?.probeContainer(containerId);
 			if (result) {
 				setContainers((current) => current.map((container) => container.id === result.id ? result : container));
 				if (result.status === "ready") {
@@ -238,7 +239,7 @@ export function DataPage({
 		setBusyId("attach");
 		setError(null);
 		try {
-			const attached = await window.synthInventory?.registerContainer({ name: attachName, baseUrl: attachUrl, location: "local" });
+			const attached = await bridges.inventory?.registerContainer({ name: attachName, baseUrl: attachUrl, location: "local" });
 			if (attached) setArchivedContainerIds((current) => {
 				const next = new Set(current); next.delete(attached.id);
 				window.localStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next]));
@@ -254,11 +255,11 @@ export function DataPage({
 	const importTrace = async () => {
 		setError(null);
 		setTraceNotice(null);
-		const sourcePath = await window.synthInventory?.chooseTraceInput();
+		const sourcePath = await bridges.inventory?.chooseTraceInput();
 		if (!sourcePath) return;
 		setBusyId("trace-import");
 		try {
-			const result = await window.synthInventory?.ingestTraceBundle({
+			const result = await bridges.inventory?.ingestTraceBundle({
 				sourcePath,
 				sourceKind: "desktop_picker"
 			});
@@ -278,22 +279,22 @@ export function DataPage({
 		setBusyId(trace.id);
 		setTraceErrors((current) => { const next = { ...current }; delete next[trace.id]; return next; });
 		try {
-			if (!window.synthInventory || !window.synthVisuals) {
+			if (!bridges.inventory || !bridges.visuals) {
 				throw new Error("Trace visuals are unavailable");
 			}
 			let resolvedTrace = trace;
 			let projection;
 			try {
-				projection = await window.synthInventory.resolveTraceProjection(resolvedTrace.digest);
+				projection = await bridges.inventory.resolveTraceProjection(resolvedTrace.digest);
 			} catch (reason) {
 				const message = reason instanceof Error ? reason.message : String(reason);
 				if (!trace.path || !message.includes("trusted Trace V5 archive not found")) throw reason;
-				const migrated = await window.synthInventory.ingestTraceBundle({ sourcePath: trace.path, sourceKind: "legacy_catalog_open", title: trace.title });
+				const migrated = await bridges.inventory.ingestTraceBundle({ sourcePath: trace.path, sourceKind: "legacy_catalog_open", title: trace.title });
 				if (!migrated.trusted || !migrated.traces.length) {
 					throw new Error(`Legacy record is not an inspectable Trace V5 bundle (${migrated.compatibilityLevel}). Re-import its source archive to migrate it.`);
 				}
 				resolvedTrace = migrated.traces[0];
-				projection = await window.synthInventory.resolveTraceProjection(resolvedTrace.digest);
+				projection = await bridges.inventory.resolveTraceProjection(resolvedTrace.digest);
 				await refresh();
 			}
 			const visualId = `tracevis_${resolvedTrace.digest.replace(/^sha256:/, "")}`;
@@ -314,21 +315,21 @@ export function DataPage({
 
 			let existing: VisualRecord | null = null;
 			try {
-				existing = await window.synthVisuals.get(visualId);
+				existing = await bridges.visuals.get(visualId);
 			} catch {
 				// A missing deterministic id is the normal first-open path.
 			}
 			const visual = existing
 				? existing.metadata?.projectionDigest === projection.payloadDigest
 					? existing
-					: await window.synthVisuals.update(visualId, {
+					: await bridges.visuals.update(visualId, {
 						title: resolvedTrace.title,
 						traceId: resolvedTrace.id,
 						bindings,
 						metadata,
 						bumpRevision: true
 					})
-				: await window.synthVisuals.create({
+				: await bridges.visuals.create({
 					id: visualId,
 					templateId: "trace.rollout_inspector.v1",
 					title: resolvedTrace.title,

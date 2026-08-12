@@ -7,8 +7,7 @@ import {
 	dispatchRuntimeEvent,
 	replaceSessionEvents
 } from "../stores/sessionStore";
-
-type InternBridge = NonNullable<typeof window.synthIntern>;
+import type { InternBridge } from "../bridge";
 
 /**
  * Subscribe to non-Codex session event streams (Intern / browser fixture).

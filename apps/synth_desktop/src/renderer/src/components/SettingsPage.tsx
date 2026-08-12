@@ -20,6 +20,7 @@ import { GeneralPreferencesSettings } from "./GeneralPreferencesSettings";
 import { SettingsCard } from "./SettingsCard";
 import type { DesktopPreferences } from "../preferences";
 import { ProviderMark } from "./ProviderMark";
+import { bridges } from "../runtime/desktopBridge";
 
 type Props = {
 	onBack: () => void;
@@ -188,7 +189,7 @@ function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSett
 	// estimation uses — never from strings kept in the renderer.
 	const [tariffs, setTariffs] = useState<TariffCard[]>([]);
 	useEffect(() => {
-		void window.synthTariffs?.catalog()
+		void bridges.tariffs?.catalog()
 			.then(setTariffs)
 			.catch(() => setTariffs([]));
 	}, []);
@@ -246,7 +247,7 @@ function MultiAgentModelSettings() {
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
-		void window.synthConfig?.listModelMultiAgent()
+		void bridges.config?.listModelMultiAgent()
 			.then(setModels)
 			.catch((reason) => setError(String(reason)));
 	}, []);
@@ -255,7 +256,7 @@ function MultiAgentModelSettings() {
 		setBusyModel(modelId);
 		setError(null);
 		try {
-			const next = await window.synthConfig?.updateModelMultiAgent({ modelId, version });
+			const next = await bridges.config?.updateModelMultiAgent({ modelId, version });
 			if (next) setModels(next);
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
@@ -326,11 +327,11 @@ export function SettingsPage({
 	}, [initialSection]);
 
 	useEffect(() => {
-		void window.synthDesktop.getInstanceDiagnostics().then(setDesktopIdentity).catch(() => undefined);
+		void bridges.desktop.getInstanceDiagnostics().then(setDesktopIdentity).catch(() => undefined);
 	}, []);
 
 	useEffect(() => {
-		void window.synthUpdates?.status()
+		void bridges.updates?.status()
 			.then(setUpdateStatus)
 			.catch(() => setUpdateStatus(null));
 	}, []);
@@ -434,7 +435,7 @@ export function SettingsPage({
 											type="button"
 											className="settings-update-available"
 											data-testid="about-update-available"
-											onClick={() => void window.synthUpdates?.openDownload()}
+											onClick={() => void bridges.updates?.openDownload()}
 										>
 											{`Update available · v${updateStatus.latestVersion}`}
 										</button>

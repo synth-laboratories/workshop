@@ -26,6 +26,7 @@ import { VisualPane } from "./components/VisualHost";
 import { VisualsPage } from "./components/VisualsPage";
 import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
 import { sessionIsLocalChat, sessionIsSync } from "./runtime/sessionView";
+import { bridges } from "./runtime/desktopBridge";
 
 export type MainView =
 	| { kind: "landing" }
@@ -215,14 +216,14 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						onBack={() => setView({ kind: "landing" })}
 						onCreate={() => {
 							void (async () => {
-								if (!window.synthVisuals) {
+								if (!bridges.visuals) {
 									showToast("Visual registry requires Synth Desktop");
 									return;
 								}
 								try {
-									const templates = await window.synthVisuals.listTemplates();
+									const templates = await bridges.visuals.listTemplates();
 									const templateId = templates[0]?.id ?? "reward.breakdown.v1";
-									const visual = await window.synthVisuals.create({
+									const visual = await bridges.visuals.create({
 										templateId,
 										title: "New visual",
 										bindings: {},
@@ -247,12 +248,12 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					<OptimizersPage
 						onOpenVisual={(visualId) => {
 							void (async () => {
-								if (!window.synthVisuals) {
+								if (!bridges.visuals) {
 									showToast("Visual registry requires Synth Desktop");
 									return;
 								}
 								try {
-									const visual = await window.synthVisuals.get(visualId);
+									const visual = await bridges.visuals.get(visualId);
 									openVisualRecord(visual);
 								} catch (reason) {
 									showToast(String(reason));

@@ -8,6 +8,7 @@ import {
 	formatTokens,
 	formatUsd
 } from "../runtime/accountView";
+import { bridges } from "../runtime/desktopBridge";
 
 /**
  * Usage sheet: two sections that are never blended.
@@ -173,7 +174,7 @@ export function UsageSheet({
 
 	useEffect(() => {
 		if (!open) return;
-		const bridge = window.synthUsage;
+		const bridge = bridges.usage;
 		if (!bridge) {
 			setUsage(null);
 			setUsageFailed(true);
