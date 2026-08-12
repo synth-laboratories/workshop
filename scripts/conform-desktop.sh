@@ -54,7 +54,7 @@ cd "$DESKTOP"
 map_err_to_string="$(count_rg 'map_err\(\|e\| e\.to_string\(\)\)' src-tauri/src)"
 to_string_contains="$(count_rg '\.to_string\(\)\.contains\(' src-tauri/src)"
 # Pattern as published in SynthStyle CONFORM CHECKS (Wave 1 magic status strings).
-status_magic="$(count_rg 'status == "|"running"|"interrupted"' src-tauri/src/codex.rs)"
+status_magic="$(count_rg 'status == "|"running"|"interrupted"' src-tauri/src/session/codex src-tauri/src/codex.rs)"
 target_json_kind="$(count_rg 'target_json\["kind"\]|\bkind\b == "codex"|== "intern"' src-tauri/src)"
 static_once_lock="$(count_rg 'static .*OnceLock' src-tauri/src)"
 client_new="$(count_rg 'Client::new\(\)' src-tauri/src)"

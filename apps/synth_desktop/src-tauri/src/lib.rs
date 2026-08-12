@@ -19,6 +19,7 @@ mod limits;
 mod optimizers;
 mod runtime;
 mod services;
+mod session;
 mod skills;
 pub mod storage;
 mod synth_config;
