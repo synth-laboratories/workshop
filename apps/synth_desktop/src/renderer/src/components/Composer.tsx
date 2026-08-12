@@ -21,56 +21,84 @@ import type { Skill } from "../runtime/skills";
 import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
 
+/** Permission chip + menus — injectable like InferenceTransport. */
+export type ComposerPermissions = {
+	approvalPolicy: ApprovalPolicy;
+	sandboxMode: SandboxMode;
+	onSelect: (approvalPolicy: ApprovalPolicy, sandboxMode: SandboxMode) => void;
+};
+
+export type ComposerModelControls = {
+	knobValues: ModelKnobValues;
+	onSelectKnob: (targetId: string, knobId: string, value: ModelKnobTransportValue) => void;
+	/** Rolling median decode speed for the currently selected model. */
+	medianTpsLabel?: string | null;
+	/** Cross-session aggregate speeds keyed by model target id. */
+	aggregateTpsLabels?: Readonly<Record<string, string>>;
+};
+
+export type ComposerQueue = {
+	prompts?: Array<{ id: string; text: string }>;
+	onEnqueue?: (text: string) => void;
+	onEdit?: (id: string, text: string) => void;
+	onRemove?: (id: string) => void;
+	onPromote?: (id: string, text: string) => void | Promise<void>;
+	/** After stop, offer send-next / keep / remove for leftover queue items. */
+	afterStop?: boolean;
+	onSendNext?: () => void;
+	onKeep?: () => void;
+};
+
+/** In-flight turn controls (steer / enter action / send failure). */
+export type ComposerTurn = {
+	agentWorking?: boolean;
+	activeEnterAction?: "steer" | "enqueue";
+	steerSupported?: boolean;
+	steerError?: string | null;
+	onSteer?: (text: string) => void | Promise<void>;
+	/** Recoverable turn-start failure, rendered above the input inside its dock. */
+	sendFailure?: { message: string; onRetry: () => void } | null;
+};
+
+export type ComposerWorkspace = {
+	sessionId?: string | null;
+	onEnsureSession?: () => Promise<string | null>;
+	fallback?: string | null;
+	scope?: ConversationWorkspaceScope | null;
+	onScopeChange?: (scope: ConversationWorkspaceScope) => void;
+	onError?: (message: string) => void;
+};
+
+export type ComposerSlash = {
+	/** Skills selectable from the "/" menu; each attaches as a removable chip. */
+	skills?: Array<Skill>;
+	onNew?: () => void;
+	onMode?: () => void;
+	onModel?: () => void;
+	onMcp?: () => void;
+	onRename?: () => void;
+	onCompact?: () => void | Promise<void>;
+};
+
+export type ComposerAccountNav = {
+	onConfigureAccount?: () => void;
+	/** Opens the plan/billing recovery path when cloud spend is blocked. */
+	onResolveBilling?: () => void;
+	/** Opens Settings → Voice so the user can pick/download a Whisper model. */
+	onOpenVoiceSettings?: () => void;
+};
+
 type Props = {
 	state: LandingState;
 	onSend: (text: string, images?: ComposerImageAttachment[]) => void | Promise<void>;
 	onSelectTarget: (id: string) => void;
-	onConfigureAccount?: () => void;
-	/** Opens the plan/billing recovery path when cloud spend is blocked. */
-	onResolveBilling?: () => void;
-	approvalPolicy: ApprovalPolicy;
-	sandboxMode: SandboxMode;
-	onSelectPermissions: (approvalPolicy: ApprovalPolicy, sandboxMode: SandboxMode) => void;
-	modelKnobValues: ModelKnobValues;
-	onSelectModelKnob: (targetId: string, knobId: string, value: ModelKnobTransportValue) => void;
-	/** Rolling median decode speed for the currently selected model. */
-	modelMedianTpsLabel?: string | null;
-	/** Cross-session aggregate speeds keyed by model target id. */
-	aggregateModelTpsLabels?: Readonly<Record<string, string>>;
-	/** True while the active conversation has a non-terminal run. */
-	agentWorking?: boolean;
-	/** Preferred Enter action while working. */
-	activeEnterAction?: "steer" | "enqueue";
-	onSteer?: (text: string) => void | Promise<void>;
-	onEnqueue?: (text: string) => void;
-	queuedPrompts?: Array<{ id: string; text: string }>;
-	onEditQueuedPrompt?: (id: string, text: string) => void;
-	onRemoveQueuedPrompt?: (id: string) => void;
-	onPromoteQueuedPrompt?: (id: string, text: string) => void | Promise<void>;
-	/** After stop, offer send-next / keep / remove for leftover queue items. */
-	queueAfterStop?: boolean;
-	onSendNextQueued?: () => void;
-	onKeepQueued?: () => void;
-	steerSupported?: boolean;
-	steerError?: string | null;
-	/** Recoverable turn-start failure, rendered above the input inside its dock. */
-	sendFailure?: { message: string; onRetry: () => void } | null;
-	/** Opens Settings → Voice so the user can pick/download a Whisper model. */
-	onOpenVoiceSettings?: () => void;
-	/** Skills selectable from the "/" menu; each attaches as a removable chip. */
-	skills?: Array<Skill>;
-	onSlashNew?: () => void;
-	onSlashMode?: () => void;
-	onSlashModel?: () => void;
-	onSlashMcp?: () => void;
-	onSlashRename?: () => void;
-	onSlashCompact?: () => void | Promise<void>;
-	workspaceSessionId?: string | null;
-	onEnsureWorkspaceSession?: () => Promise<string | null>;
-	workspaceFallback?: string | null;
-	workspaceScope?: ConversationWorkspaceScope | null;
-	onWorkspaceScopeChange?: (scope: ConversationWorkspaceScope) => void;
-	onWorkspaceError?: (message: string) => void;
+	permissions: ComposerPermissions;
+	model: ComposerModelControls;
+	queue: ComposerQueue;
+	turn: ComposerTurn;
+	workspace: ComposerWorkspace;
+	slash: ComposerSlash;
+	account: ComposerAccountNav;
 };
 
 const APPROVAL_OPTIONS: Array<{ id: ApprovalPolicy; label: string; description: string }> = [
@@ -602,44 +630,57 @@ export function Composer({
 	state,
 	onSend,
 	onSelectTarget,
-	onConfigureAccount,
-	onResolveBilling,
-	approvalPolicy,
-	sandboxMode,
-	onSelectPermissions,
-	modelKnobValues,
-	onSelectModelKnob,
-	modelMedianTpsLabel,
-	aggregateModelTpsLabels,
-	agentWorking = false,
-	activeEnterAction = "enqueue",
-	onSteer,
-	onEnqueue,
-	queuedPrompts = [],
-	onEditQueuedPrompt,
-	onRemoveQueuedPrompt,
-	onPromoteQueuedPrompt,
-	queueAfterStop = false,
-	onSendNextQueued,
-	onKeepQueued,
-	steerSupported = false,
-	steerError = null,
-	sendFailure = null,
-	onOpenVoiceSettings,
-	skills = [],
-	onSlashNew,
-	onSlashMode,
-	onSlashModel,
-	onSlashMcp,
-	onSlashRename,
-	onSlashCompact,
-	workspaceSessionId,
-	onEnsureWorkspaceSession,
-	workspaceFallback,
-	workspaceScope,
-	onWorkspaceScopeChange,
-	onWorkspaceError
+	permissions,
+	model,
+	queue,
+	turn,
+	workspace,
+	slash,
+	account
 }: Props) {
+	const { approvalPolicy, sandboxMode, onSelect: onSelectPermissions } = permissions;
+	const {
+		knobValues: modelKnobValues,
+		onSelectKnob: onSelectModelKnob,
+		medianTpsLabel: modelMedianTpsLabel,
+		aggregateTpsLabels: aggregateModelTpsLabels
+	} = model;
+	const {
+		prompts: queuedPrompts = [],
+		onEnqueue,
+		onEdit: onEditQueuedPrompt,
+		onRemove: onRemoveQueuedPrompt,
+		onPromote: onPromoteQueuedPrompt,
+		afterStop: queueAfterStop = false,
+		onSendNext: onSendNextQueued,
+		onKeep: onKeepQueued
+	} = queue;
+	const {
+		agentWorking = false,
+		activeEnterAction = "enqueue",
+		steerSupported = false,
+		steerError = null,
+		onSteer,
+		sendFailure = null
+	} = turn;
+	const {
+		sessionId: workspaceSessionId,
+		onEnsureSession: onEnsureWorkspaceSession,
+		fallback: workspaceFallback,
+		scope: workspaceScope,
+		onScopeChange: onWorkspaceScopeChange,
+		onError: onWorkspaceError
+	} = workspace;
+	const {
+		skills = [],
+		onNew: onSlashNew,
+		onMode: onSlashMode,
+		onModel: onSlashModel,
+		onMcp: onSlashMcp,
+		onRename: onSlashRename,
+		onCompact: onSlashCompact
+	} = slash;
+	const { onConfigureAccount, onResolveBilling, onOpenVoiceSettings } = account;
 	const [value, setValue] = useState("");
 	const [submitting, setSubmitting] = useState(false);
 	const [recording, setRecording] = useState(false);

@@ -183,3 +183,22 @@ export function useSessionRunning(sessionId: string | null | undefined): boolean
 export function useWorkingChatIds(): Set<string> {
 	return useSessionStore((state) => selectWorkingChatIds(state.sessions));
 }
+
+/**
+ * Subscribe to one session's event list. Token events for other sessions do
+ * not change this selector's return value (same array reference stays cached
+ * in the store), so transcript views can rememoize per session.
+ */
+export function useSessionEvents(sessionId: string | null | undefined): RuntimeEvent[] {
+	return useSessionStore((state) => {
+		if (!sessionId) return EMPTY_EVENTS;
+		return state.eventsBySession[sessionId] ?? EMPTY_EVENTS;
+	});
+}
+
+export function useSession(sessionId: string | null | undefined): Session | null {
+	return useSessionStore((state) => {
+		if (!sessionId) return null;
+		return state.sessions.find((session) => session.id === sessionId) ?? null;
+	});
+}

@@ -115,12 +115,13 @@ test("renderer keeps the HTTP runtime bridge browser-only", () => {
 
 test("renderer uses Tauri commands for desktop capabilities", () => {
   const bridge = read("runtime/desktopBridge.ts");
-  assert.ok(bridge.includes('"workspace_choose_directory"'));
-  assert.ok(bridge.includes('"laguna_get_status"'));
+  const constants = read("bridge/protocolConstants.ts");
+  assert.ok(constants.includes("WORKSPACE_CHOOSE_DIRECTORY"));
+  assert.ok(constants.includes("LAGUNA_GET_STATUS"));
+  assert.ok(constants.includes("INTERN_SESSION_EVENTS_AFTER"));
+  assert.ok(constants.includes("CODEX_SESSIONS_LIST"));
   assert.ok(!bridge.includes('"core_projects_list"'));
-  assert.ok(bridge.includes('"intern_session_events_after"'));
-  assert.ok(bridge.includes('listen<AppEvent>("runtime:event"'));
-  assert.ok(bridge.includes('"codex_sessions_list"'));
+  assert.ok(bridge.includes("EVENT_CHANNELS.RUNTIME") || bridge.includes("listen<AppEvent>(EVENT_CHANNELS.RUNTIME"));
 });
 
 test("parked Projects feature is absent from the active renderer and IPC bridge", () => {
@@ -137,12 +138,13 @@ test("parked Projects feature is absent from the active renderer and IPC bridge"
 
 test("native Codex sessions use one sequence allocator and restore persisted sessions", () => {
   const app = read("App.tsx");
+  const codexBridge = read("hooks/useCodexEventBridge.ts");
   const nativeCodex = read("runtime/nativeCodex.ts");
-  assert.ok(app.includes("allocateNativeSequence(event.sessionId)"));
+  assert.ok(codexBridge.includes("allocateNativeSequence(event.sessionId)"));
   assert.ok(app.includes("allocateNativeSequence(sessionId)"));
   assert.ok(app.includes('persisted.filter((session) => session.status !== "closed").map(restoreCodexSession)'));
 	assert.ok(app.includes("await nativeCodex.start("));
-	assert.ok(app.includes("threadId: typeof session.metadata.threadId"));
+	assert.ok(app.includes("threadId: typeof session.metadata.threadId") || read("runtime/codexTurn.ts").includes("threadId: typeof session.metadata.threadId"));
   assert.ok(nativeCodex.includes('eventKind = "run.failed"'));
   assert.ok(nativeCodex.includes('eventKind = "run.cancelled"'));
 });
@@ -199,27 +201,27 @@ test("dormant native Intern cannot be selected from v0.1 App routes", () => {
 });
 
 test("native Intern projection changes refresh the renderer session cache", () => {
-  const app = read("App.tsx");
-  assert.ok(app.includes('event.eventKind === "intern.projection_updated"'));
-  assert.ok(app.includes('event.eventKind === "session.updated"'));
-  assert.ok(app.includes('event.eventKind === "command.resolved"'));
+  const foreignBridge = read("hooks/useForeignSessionEventBridge.ts");
+  assert.ok(foreignBridge.includes('event.eventKind === "intern.projection_updated"'));
+  assert.ok(foreignBridge.includes('event.eventKind === "session.updated"'));
+  assert.ok(foreignBridge.includes('event.eventKind === "command.resolved"'));
 });
 
 test("migrated demo async pins cannot mask the Rust singleton", () => {
-  // The App-side guard went out with the Async Intern pin (v0.1 removal
-  // contract); sessionView is now the single place the singleton is enforced.
+  // sessionView is the single place the singleton is enforced (per-session slice).
   const sessionView = read("runtime/sessionView.ts");
-  assert.ok(sessionView.includes('const isRustIntern = session.metadata.runtime === "rust-intern"'));
-  assert.ok(sessionView.includes("if (asyncIntern && !isRustIntern) continue"));
+  assert.ok(sessionView.includes('isRustIntern: session.metadata.runtime === "rust-intern"'));
+  assert.ok(sessionView.includes("if (asyncIntern && !slice.isRustIntern) continue"));
 });
 
 test("renderer exposes CoreRuntime visual registry bridge commands", () => {
   const bridge = read("runtime/desktopBridge.ts");
-  assert.ok(bridge.includes('"visuals_list"'));
-  assert.ok(bridge.includes('"visuals_create"'));
-  assert.ok(bridge.includes('"visuals_show"'));
+  const constants = read("bridge/protocolConstants.ts");
+  assert.ok(constants.includes("VISUALS_LIST"));
+  assert.ok(constants.includes("VISUALS_CREATE"));
+  assert.ok(constants.includes("VISUALS_SHOW"));
   assert.ok(bridge.includes("window.synthVisuals ??="));
-  assert.ok(bridge.includes('"visual:show"'));
+  assert.ok(constants.includes("VISUAL_SHOW"));
 });
 
 test("Rust run counts remain projected without a Runtime Settings surface", () => {
@@ -233,24 +235,26 @@ test("Rust run counts remain projected without a Runtime Settings surface", () =
 
 test("v0.2 Intern bridge remains typed while v0.1 creation stays unreachable", () => {
   const bridge = read("runtime/desktopBridge.ts");
+  const constants = read("bridge/protocolConstants.ts");
   const app = read("App.tsx");
+  const foreignBridge = read("hooks/useForeignSessionEventBridge.ts");
   for (const command of [
-    "intern_sessions_list",
-    "intern_session_create",
-    "intern_session_send",
-    "intern_session_control",
-    "intern_session_events_after",
-  ]) assert.ok(bridge.includes(`"${command}"`), command);
-  assert.ok(bridge.includes('listen<AppEvent>("runtime:event"'));
+    "INTERN_SESSIONS_LIST",
+    "INTERN_SESSION_CREATE",
+    "INTERN_SESSION_SEND",
+    "INTERN_SESSION_CONTROL",
+    "INTERN_SESSION_EVENTS_AFTER",
+  ]) assert.ok(constants.includes(command), command);
+  assert.ok(bridge.includes("EVENT_CHANNELS.RUNTIME") || bridge.includes("listen<AppEvent>(EVENT_CHANNELS.RUNTIME"));
 	assert.ok(app.includes("nativeIntern.createSession"));
 	assert.ok(!app.includes('setSelectedTargetId("intern-sync")'));
 	assert.ok(!app.includes('setSelectedTargetId("intern-async")'));
-  assert.ok(app.includes("nativeIntern.eventsAfter"));
-  assert.ok(app.includes("appEventToRuntimeEvent"));
+  assert.ok(foreignBridge.includes("nativeIntern.eventsAfter"));
+  assert.ok(app.includes("appEventToRuntimeEvent") || foreignBridge.includes("appEventToRuntimeEvent"));
 });
 
 test("stale Tauri binaries produce an actionable restart message", () => {
-  const app = read("App.tsx");
-  assert.ok(app.includes("Desktop backend was updated; fully quit and reopen Synth Desktop."));
-  assert.ok(app.includes("unknown command"));
+  const codexTurn = read("runtime/codexTurn.ts");
+  assert.ok(codexTurn.includes("Desktop backend was updated; fully quit and reopen Synth Desktop."));
+  assert.ok(codexTurn.includes("unknown command"));
 });
