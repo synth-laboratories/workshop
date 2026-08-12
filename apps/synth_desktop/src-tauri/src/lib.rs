@@ -1744,11 +1744,21 @@ pub fn run() {
                 crate::storage::app_data_root().join("migration-backups"),
             );
             let laguna = Arc::new(LagunaManager::new());
-            let codex = Arc::new(CodexManager::new(Some(core.clone())));
+            let receipts = Arc::new(credential_broker::ReceiptStore::new());
+            let broker = Arc::new(
+                credential_broker::CredentialBroker::start(receipts.clone()).map_err(|error| {
+                    std::io::Error::other(format!("start credential broker: {error}"))
+                })?,
+            );
+            let whisper = Arc::new(whisper::WhisperManager::new());
+            let codex = Arc::new(CodexManager::new(Some(core.clone()), broker.clone()));
             let supervisor = Arc::new(services::ServiceSupervisor::new());
             app.manage(core.clone());
             app.manage(migration);
             app.manage(codex.clone());
+            app.manage(broker);
+            app.manage(receipts);
+            app.manage(whisper);
             app.manage(Arc::new(TerminalManager::new()));
             app.manage(Arc::new(device_auth::DeviceAuthManager::new()));
             app.manage(Arc::new(account_cloud::AccountCloudClient::open()));

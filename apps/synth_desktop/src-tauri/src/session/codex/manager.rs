@@ -11,7 +11,7 @@ use std::{
 use tauri::AppHandle;
 use tokio::sync::{oneshot, Mutex, RwLock};
 
-use crate::credential_broker;
+use crate::credential_broker::{CredentialBroker, ReceiptStore};
 use crate::domain::{
     RunCreate, RuntimeTarget, SessionCreate, SessionKind, SessionStatus, SessionTitleOrigin,
 };
@@ -47,19 +47,31 @@ pub struct CodexManager {
     pub(crate) state_path: PathBuf,
     pub(crate) binary: PathBuf,
     pub(crate) persistence: crate::session::SessionPersistence,
+    /// Injected loopback credential proxy (composition root). Every cloud
+    /// session leases through this same Arc.
+    pub(crate) broker: Arc<CredentialBroker>,
 }
 
 impl CodexManager {
-    pub fn new(core: Option<Arc<crate::core_runtime::CoreRuntime>>) -> Self {
+    pub fn new(
+        core: Option<Arc<crate::core_runtime::CoreRuntime>>,
+        broker: Arc<CredentialBroker>,
+    ) -> Self {
         let root = codex_root();
         let binary = PathBuf::from(env::var("SYNTH_CODEX_BIN").unwrap_or_else(|_| "codex".into()));
-        Self::with_paths(crate::session::SessionPersistence::from_core(core), root, binary)
+        Self::with_paths(
+            crate::session::SessionPersistence::from_core(core),
+            root,
+            binary,
+            broker,
+        )
     }
 
     pub(crate) fn with_paths(
         persistence: crate::session::SessionPersistence,
         root: PathBuf,
         binary: PathBuf,
+        broker: Arc<CredentialBroker>,
     ) -> Self {
         let state_path = root.join("threads.json");
         let records = fs::read_to_string(&state_path)
@@ -77,7 +89,22 @@ impl CodexManager {
             state_path,
             binary,
             persistence,
+            broker,
         }
+    }
+
+    /// Receipt store shared with the broker's relay (composition-root Arc).
+    pub(crate) fn receipts(&self) -> Arc<ReceiptStore> {
+        self.broker.receipts()
+    }
+
+    /// Test helper: local broker + receipts, matching production injection.
+    #[cfg(test)]
+    pub(crate) fn test_broker() -> Arc<CredentialBroker> {
+        Arc::new(
+            CredentialBroker::start(Arc::new(ReceiptStore::new()))
+                .expect("bind test credential broker"),
+        )
     }
 
     pub async fn start<R: tauri::Runtime>(
@@ -125,9 +152,8 @@ impl CodexManager {
         let upstream_endpoint = request.base_url.clone();
         let upstream_credential = request.api_key.clone();
         if request.broker_credential {
-            let broker = credential_broker::shared()
-                .map_err(|error| anyhow!("credential broker unavailable: {error}"))?;
-            apply_brokered_credential(&mut request, &broker).map_err(|message| anyhow!(message))?;
+            apply_brokered_credential(&mut request, &self.broker)
+                .map_err(|message| anyhow!(message))?;
         }
         let home = self
             .root
@@ -151,6 +177,7 @@ impl CodexManager {
                 compact_waiters: self.compact_waiters.clone(),
                 pending_compact_sources: self.pending_compact_sources.clone(),
                 performance_trackers: self.performance_trackers.clone(),
+                receipts: self.receipts(),
                 attachment_id,
             },
         )
@@ -725,7 +752,7 @@ impl CodexManager {
             session.server.stop().await?;
         }
         // The child is gone; its loopback lease must not outlive it.
-        credential_broker::revoke_shared(session_id);
+        self.broker.revoke(session_id);
         self.set_status(session_id, SessionStatus::Closed).await?;
         Ok(())
     }

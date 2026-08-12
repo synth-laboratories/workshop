@@ -82,6 +82,7 @@ pub(crate) struct EventPumpState {
     pub compact_waiters: CompactWaiters,
     pub pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
     pub performance_trackers: PerformanceTrackers,
+    pub receipts: Arc<crate::credential_broker::ReceiptStore>,
     pub attachment_id: uuid::Uuid,
 }
 
@@ -266,6 +267,7 @@ async fn read_stdout<R: tauri::Runtime>(
         track_performance_event(
             &persistence.persistence,
             &persistence.performance_trackers,
+            &persistence.receipts,
             &session_id,
             &method,
             &params,
@@ -427,6 +429,7 @@ async fn read_stdout<R: tauri::Runtime>(
         finalize_performance_tracker(
             &persistence.persistence,
             &persistence.performance_trackers,
+            &persistence.receipts,
             &session_id,
             RunStatus::Interrupted.as_str(),
             None,
