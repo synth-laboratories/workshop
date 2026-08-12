@@ -11,6 +11,7 @@ import {
 	OPENROUTER_LUNA_MODEL,
 	OPENROUTER_MUSE_SPARK_MODEL,
 	SYNTH_CLOUD_LAGUNA_S_MODEL,
+	SYNTH_CLOUD_MUSE_SPARK_MODEL,
 	type ActivityEvent,
 	type ArtifactRef,
 	type AsyncInternPin,
@@ -99,6 +100,13 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 				model: SYNTH_CLOUD_LAGUNA_S_MODEL,
 				adapter
 			};
+		case "synth-cloud-muse-spark":
+			return {
+				kind: "remote",
+				provider: "synth-cloud",
+				model: SYNTH_CLOUD_MUSE_SPARK_MODEL,
+				adapter
+			};
 		case "intern-sync":
 			return { kind: "intern", mode: "sync" };
 		case "intern-async":
@@ -119,7 +127,9 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 		return target.mode === "async" ? "intern-async" : "intern-sync";
 	}
 	if (target.provider === "synth-cloud") {
-		return "synth-cloud-laguna-s";
+		return target.model === SYNTH_CLOUD_MUSE_SPARK_MODEL
+			? "synth-cloud-muse-spark"
+			: "synth-cloud-laguna-s";
 	}
 	if (target.model === OPENROUTER_LUNA_MODEL || target.model.includes("kimi")) {
 		return "openrouter-luna";

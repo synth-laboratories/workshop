@@ -1,6 +1,6 @@
 import { expect, test } from "./browser.fixture";
 
-test("Synth Cloud Laguna S appears under SYNTH CLOUD when api key is configured", async ({ page }) => {
+test("Synth Cloud hosted models appear under SYNTH CLOUD when api key is configured", async ({ page }) => {
 	await page.addInitScript(() => {
 		window.synthConfig = {
 			get: async () => ({
@@ -40,6 +40,10 @@ test("Synth Cloud Laguna S appears under SYNTH CLOUD when api key is configured"
 		.not.toContainText("usage tracked");
 	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-laguna-s"))
 		.not.toHaveAttribute("aria-disabled", "true");
+	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-muse-spark"))
+		.toHaveText(/Muse Spark 1\.2/);
+	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-muse-spark"))
+		.not.toHaveAttribute("aria-disabled", "true");
 
 	// OpenRouter Laguna stays under Remote · OpenRouter, not Synth Cloud.
 	const remoteGroup = menu.locator(".composer-model-group").filter({
@@ -49,8 +53,8 @@ test("Synth Cloud Laguna S appears under SYNTH CLOUD when api key is configured"
 	await expect(remoteGroup.getByTestId("composer-model-option-openrouter-muse-spark")).toHaveText(/Muse Spark 1\.2/);
 	await expect(cloudGroup.getByTestId("composer-model-option-openrouter-laguna-s")).toHaveCount(0);
 
-	await page.getByTestId("composer-model-option-synth-cloud-laguna-s").click();
-	await expect(page.getByTestId("composer-model")).toHaveAccessibleName(/Laguna S 2\.1/);
+	await page.getByTestId("composer-model-option-synth-cloud-muse-spark").click();
+	await expect(page.getByTestId("composer-model")).toHaveAccessibleName(/Muse Spark 1\.2/);
 	await page.getByTestId("composer-model").click();
 	const advanced = page.getByTestId("composer-model-advanced");
 	await advanced.locator("summary").click();
@@ -65,7 +69,7 @@ test("Synth Cloud Laguna S is gated when api key is missing", async ({ page }) =
 	await expect(option.getByRole("option")).toHaveAttribute("aria-disabled", "true");
 	await expect(option).toContainText("Configure Synth API key");
 
-	await page.getByTestId("composer-model-configure-synth-api-key").click();
+	await option.getByTestId("composer-model-configure-synth-api-key").click();
 	await expect(page.getByTestId("settings-page")).toBeVisible();
 	await expect(page.getByTestId("settings-account")).toBeVisible();
 });
