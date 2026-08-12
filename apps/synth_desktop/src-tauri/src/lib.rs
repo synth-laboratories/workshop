@@ -14,6 +14,7 @@ pub mod inventory;
 mod laguna;
 mod optimizers;
 mod runtime;
+mod session;
 mod skills;
 pub mod storage;
 mod synth_config;
@@ -1547,10 +1548,7 @@ async fn codex_turn_start(
     state: State<'_, Arc<CodexManager>>,
     request: CodexTurnStartRequest,
 ) -> Result<CodexSessionInfo, String> {
-    state
-        .start_turn(app, request)
-        .await
-        .map_err(|error| error.to_string())
+    state.start_turn(app, request).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1558,10 +1556,7 @@ async fn codex_turn_interrupt(
     state: State<'_, Arc<CodexManager>>,
     request: CodexSessionRequest,
 ) -> Result<(), String> {
-    state
-        .interrupt(&request.session_id)
-        .await
-        .map_err(|error| error.to_string())
+    state.interrupt(&request.session_id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1585,10 +1580,7 @@ async fn codex_turn_steer(
     state: State<'_, Arc<CodexManager>>,
     request: CodexSteerRequest,
 ) -> Result<(), String> {
-    state
-        .steer_turn(app, request)
-        .await
-        .map_err(|error| error.to_string())
+    state.steer_turn(app, request).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1597,10 +1589,7 @@ async fn codex_approval_resolve(
     state: State<'_, Arc<CodexManager>>,
     request: CodexApprovalDecisionRequest,
 ) -> Result<(), String> {
-    state
-        .resolve_approval(app, request)
-        .await
-        .map_err(|error| error.to_string())
+    state.resolve_approval(app, request).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
