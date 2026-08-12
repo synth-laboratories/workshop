@@ -322,6 +322,15 @@ that has `workflow` scope). Paragons for this scaffolding lane:
 | 6 | `AppError` taxonomy; kill substring classification | `map_err(to_string)` = 0; `.to_string().contains(` on error paths = 0 |
 | 7 | One `Data.UsageRecord` ledger; Laguna usage rows; Inventory→Data rename complete in UI + commands | one read model serves dashboard/allowance/feed; no user-facing "Inventory" |
 
+### Wave 7 landed (2026-08-11)
+
+- `inventory.rs` → `data.rs` (`DataStore` / `DataCounts`); Tauri commands `data_*`
+- Migration 11 folds `usage_ledger` into `usage_records` and drops the legacy table
+- Account allowance + Data → Usage feed read only `usage_records` (no UNION/SUM dual ledger)
+- UI noun **Data** (testids kept `inventory-*` for Playwright stability)
+- Laguna-local session turns already write `usage_records` via Codex finalize;
+  LagunaManager inference SSE remains telemetry-only (documented exemption)
+
 Lanes: 1, 2, 3 are independent and can run in parallel; 4 is cheaper after
 1; 0 first, always. Wave 2 has same-day interim wins that don't wait for
 specta (const event names, typed invoke map, `RuntimeTarget` enum).

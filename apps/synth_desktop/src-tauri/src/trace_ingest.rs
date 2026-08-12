@@ -4,7 +4,7 @@
 //! supplied bytes, consumes its versioned inspection result, and publishes only
 //! trusted, self-contained bundles into Desktop's trace CAS and catalog.
 
-use crate::inventory::{TraceBundleInspection, TraceRecord};
+use crate::data::{TraceBundleInspection, TraceRecord};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{

@@ -11,7 +11,7 @@ pub mod error;
 mod eval_driver;
 mod instance;
 mod intern_api;
-pub mod inventory;
+pub mod data;
 mod laguna;
 mod optimizers;
 mod runtime;
@@ -39,8 +39,8 @@ use intern_api::{
     InternControlResult, InternSendResult, InternSessionControlRequest, InternSessionCreateRequest,
     InternSessionSendRequest, InternSessionWire,
 };
-use inventory::{
-    ContainerDeployment, ContainerRegisterRequest, InventoryCounts, ResolvedTraceProjection,
+use data::{
+    ContainerDeployment, ContainerRegisterRequest, DataCounts, ResolvedTraceProjection,
     TraceRecord, UsageEntry,
 };
 use laguna::{LagunaManager, LagunaModelHit, LagunaStatus};
@@ -195,23 +195,23 @@ async fn intern_session_events_after(
 }
 
 #[tauri::command]
-async fn inventory_containers_list(
+async fn data_containers_list(
     state: State<'_, Arc<CoreRuntime>>,
 ) -> Result<Vec<ContainerDeployment>, AppError> {
     state
-        .inventory()
+        .data()
         .list_containers()
         .await
         .map_err(AppError::from)
 }
 
 #[tauri::command]
-async fn inventory_containers_get(
+async fn data_containers_get(
     state: State<'_, Arc<CoreRuntime>>,
     container_id: String,
 ) -> Result<ContainerDeployment, AppError> {
     state
-        .inventory()
+        .data()
         .get_container(container_id)
         .await
         .map_err(AppError::from)
@@ -343,7 +343,7 @@ async fn hydrate_container(
 }
 
 #[tauri::command]
-async fn inventory_containers_register(
+async fn data_containers_register(
     state: State<'_, Arc<CoreRuntime>>,
     request: ContainerRegisterRequest,
 ) -> Result<ContainerDeployment, AppError> {
@@ -366,12 +366,12 @@ async fn inventory_containers_register(
 }
 
 #[tauri::command]
-async fn inventory_containers_probe(
+async fn data_containers_probe(
     state: State<'_, Arc<CoreRuntime>>,
     container_id: String,
 ) -> Result<ContainerDeployment, AppError> {
     let container = state
-        .inventory()
+        .data()
         .get_container(container_id.clone())
         .await
         .map_err(AppError::from)?;
@@ -387,35 +387,35 @@ async fn inventory_containers_probe(
 }
 
 #[tauri::command]
-async fn inventory_traces_list(
+async fn data_traces_list(
     state: State<'_, Arc<CoreRuntime>>,
 ) -> Result<Vec<TraceRecord>, AppError> {
     state
-        .inventory()
+        .data()
         .list_traces()
         .await
         .map_err(AppError::from)
 }
 
 #[tauri::command]
-async fn inventory_traces_get(
+async fn data_traces_get(
     state: State<'_, Arc<CoreRuntime>>,
     trace_id: String,
 ) -> Result<TraceRecord, AppError> {
     state
-        .inventory()
+        .data()
         .get_trace(trace_id)
         .await
         .map_err(AppError::from)
 }
 
 #[tauri::command]
-async fn inventory_traces_ingest(
+async fn data_traces_ingest(
     state: State<'_, Arc<CoreRuntime>>,
     request: TraceBundleIngestRequest,
 ) -> Result<TraceBundleIngestResult, AppError> {
     let (result, event) = state
-        .inventory()
+        .data()
         .ingest_trace_bundle(request)
         .await
         .map_err(AppError::from)?;
@@ -424,25 +424,25 @@ async fn inventory_traces_ingest(
 }
 
 #[tauri::command]
-async fn inventory_trace_projection_resolve(
+async fn data_trace_projection_resolve(
     state: State<'_, Arc<CoreRuntime>>,
     trace_digest: String,
     projection_kind: String,
 ) -> Result<ResolvedTraceProjection, AppError> {
     state
-        .inventory()
+        .data()
         .resolve_trace_projection(trace_digest, projection_kind)
         .await
         .map_err(AppError::from)
 }
 
 #[tauri::command]
-async fn inventory_usage_list(
+async fn data_usage_list(
     state: State<'_, Arc<CoreRuntime>>,
     limit: Option<i64>,
 ) -> Result<Vec<UsageEntry>, AppError> {
     state
-        .inventory()
+        .data()
         .list_usage(limit.unwrap_or(100))
         .await
         .map_err(AppError::from)
@@ -498,9 +498,9 @@ async fn update_open_download(app: tauri::AppHandle) -> Result<(), AppError> {
 }
 
 #[tauri::command]
-async fn inventory_counts(state: State<'_, Arc<CoreRuntime>>) -> Result<InventoryCounts, AppError> {
+async fn data_counts(state: State<'_, Arc<CoreRuntime>>) -> Result<DataCounts, AppError> {
     state
-        .inventory()
+        .data()
         .counts()
         .await
         .map_err(AppError::from)
@@ -1843,21 +1843,21 @@ pub fn run() {
             intern_session_send,
             intern_session_control,
             intern_session_events_after,
-            inventory_containers_list,
-            inventory_containers_get,
-            inventory_containers_register,
-            inventory_containers_probe,
-            inventory_traces_list,
-            inventory_traces_get,
-            inventory_traces_ingest,
-            inventory_trace_projection_resolve,
-            inventory_usage_list,
+            data_containers_list,
+            data_containers_get,
+            data_containers_register,
+            data_containers_probe,
+            data_traces_list,
+            data_traces_get,
+            data_traces_ingest,
+            data_trace_projection_resolve,
+            data_usage_list,
             model_performance_summary,
             usage_summary,
             tariff_catalog,
             update_status,
             update_open_download,
-            inventory_counts,
+            data_counts,
             optimizers_algorithms_list,
             optimizers_recipes_list,
             optimizers_recipe_start,

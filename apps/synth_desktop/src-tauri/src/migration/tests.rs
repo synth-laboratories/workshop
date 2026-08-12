@@ -93,11 +93,11 @@ fn imports_every_compatible_domain_and_is_idempotent() {
     assert!(Path::new(&first.rollback.backup_database).is_file());
     assert!(Path::new(&first.rollback.receipt_path).is_file());
     assert!(legacy.is_file());
-    let counts:(i64,i64,i64,i64,i64,i64,i64,i64,i64)=target.query_row("SELECT (SELECT count(*) FROM projects),(SELECT count(*) FROM sessions),(SELECT count(*) FROM runs),(SELECT count(*) FROM events),(SELECT count(*) FROM source_cursors),(SELECT count(*) FROM containers),(SELECT count(*) FROM traces),(SELECT count(*) FROM visuals),(SELECT count(*) FROM usage_ledger)",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).unwrap();
+    let counts:(i64,i64,i64,i64,i64,i64,i64,i64,i64)=target.query_row("SELECT (SELECT count(*) FROM projects),(SELECT count(*) FROM sessions),(SELECT count(*) FROM runs),(SELECT count(*) FROM events),(SELECT count(*) FROM source_cursors),(SELECT count(*) FROM containers),(SELECT count(*) FROM traces),(SELECT count(*) FROM visuals),(SELECT count(*) FROM usage_records)",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).unwrap();
     assert_eq!(counts, (1, 1, 1, 1, 1, 1, 1, 1, 2));
     let orphan_session: Option<String> = target
         .query_row(
-            "SELECT session_id FROM usage_ledger WHERE id='use_orphan'",
+            "SELECT session_id FROM usage_records WHERE id='use_orphan'",
             [],
             |r| r.get(0),
         )

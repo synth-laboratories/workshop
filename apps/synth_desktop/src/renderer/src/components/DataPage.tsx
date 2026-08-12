@@ -7,7 +7,7 @@ import type {
 	VisualRecord
 } from "@synth/runtime-protocol";
 
-export type InventoryTab = "containers" | "traces" | "visuals" | "usage" | "inference";
+export type DataTab = "containers" | "traces" | "visuals" | "usage" | "inference";
 
 const CONTAINER_POLL_MS = 15_000;
 const CONTAINER_GONE_GRACE_MS = 30_000;
@@ -19,7 +19,7 @@ function visibleContainerStatus(status: ContainerDeployment["status"]): { label:
 }
 
 type Props = {
-	initialTab?: InventoryTab;
+	initialTab?: DataTab;
 	onOpenVisual: (visual: VisualRecord) => void;
 	onOpenContainer: (containerId: string) => void;
 	openContainerId?: string | null;
@@ -63,14 +63,14 @@ function formatDuration(durationMs: number): string {
 	return `${Math.floor(durationMs / 60_000)}m ${Math.round((durationMs % 60_000) / 1_000)}s`;
 }
 
-export function InventoryPage({
+export function DataPage({
 	initialTab = "containers",
 	onOpenVisual,
 	onOpenContainer,
 	openContainerId = null,
 	onBack
 }: Props) {
-	const [tab, setTab] = useState<InventoryTab>(initialTab);
+	const [tab, setTab] = useState<DataTab>(initialTab);
 	const [containers, setContainers] = useState<ContainerDeployment[]>([]);
 	const containersRef = useRef<ContainerDeployment[]>([]);
 	const goneSinceRef = useRef(new Map<string, number>());
@@ -147,7 +147,7 @@ export function InventoryPage({
 		setError(null);
 		try {
 			if (!window.synthInventory || !window.synthVisuals) {
-				throw new Error("Rust inventory is unavailable");
+				throw new Error("Rust Data store is unavailable");
 			}
 			const [nextContainers, nextTraces, nextVisuals, nextUsage, nextCounts] = await Promise.all([
 				window.synthInventory.listContainers(),
@@ -352,7 +352,7 @@ export function InventoryPage({
 					← Back
 				</button>
 				<div>
-					<h1>Inventory</h1>
+					<h1>Data</h1>
 					<p className="inventory-lede">
 						Local containers, Trace V5 records, and visual instances from the runtime vault.
 					</p>
@@ -368,7 +368,7 @@ export function InventoryPage({
 				</div>
 			) : null}
 
-			<div className="inventory-tabs" role="tablist" aria-label="Inventory sections">
+			<div className="inventory-tabs" role="tablist" aria-label="Data sections">
 				{(
 					[
 						["containers", "Containers", activeContainers.length],
@@ -579,7 +579,7 @@ export function InventoryPage({
 			{tab === "usage" ? (
 				<div className="inventory-panel" data-testid="inventory-usage">
 					<div className="storage-summary">
-						<strong>Rust CoreRuntime inventory</strong>
+						<strong>Rust CoreRuntime Data store</strong>
 						<span>{counts.containers} containers · {counts.traces} traces · {counts.usage} usage entries</span>
 					</div>
 					{usage.length === 0 ? <p className="inventory-empty">No usage entries yet.</p> : (

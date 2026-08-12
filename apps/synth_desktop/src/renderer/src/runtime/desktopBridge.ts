@@ -383,12 +383,12 @@ window.synthWorkspaceScope ??= isTauri
 		};
 	window.synthInventory ??= isTauri
 		? {
-			listContainers: () => invokeCommand<ContainerDeployment[]>(COMMANDS.INVENTORY_CONTAINERS_LIST),
-			getContainer: (containerId) => invokeCommand<ContainerDeployment>(COMMANDS.INVENTORY_CONTAINERS_GET, { containerId }),
-			registerContainer: (request) => invokeCommand<ContainerDeployment>(COMMANDS.INVENTORY_CONTAINERS_REGISTER, { request }),
-			probeContainer: (containerId) => invokeCommand<ContainerDeployment>(COMMANDS.INVENTORY_CONTAINERS_PROBE, { containerId }),
-			listTraces: () => invokeCommand<TraceV5Record[]>(COMMANDS.INVENTORY_TRACES_LIST),
-			getTrace: (traceId) => invokeCommand<TraceV5Record>(COMMANDS.INVENTORY_TRACES_GET, { traceId }),
+			listContainers: () => invokeCommand<ContainerDeployment[]>(COMMANDS.DATA_CONTAINERS_LIST),
+			getContainer: (containerId) => invokeCommand<ContainerDeployment>(COMMANDS.DATA_CONTAINERS_GET, { containerId }),
+			registerContainer: (request) => invokeCommand<ContainerDeployment>(COMMANDS.DATA_CONTAINERS_REGISTER, { request }),
+			probeContainer: (containerId) => invokeCommand<ContainerDeployment>(COMMANDS.DATA_CONTAINERS_PROBE, { containerId }),
+			listTraces: () => invokeCommand<TraceV5Record[]>(COMMANDS.DATA_TRACES_LIST),
+			getTrace: (traceId) => invokeCommand<TraceV5Record>(COMMANDS.DATA_TRACES_GET, { traceId }),
 			chooseTraceInput: async () => {
 				const selection = await open({
 					directory: false,
@@ -398,11 +398,11 @@ window.synthWorkspaceScope ??= isTauri
 				});
 				return typeof selection === "string" ? selection : null;
 			},
-			ingestTraceBundle: (request) => invokeCommand<TraceBundleIngestResult>(COMMANDS.INVENTORY_TRACES_INGEST, { request }),
+			ingestTraceBundle: (request) => invokeCommand<TraceBundleIngestResult>(COMMANDS.DATA_TRACES_INGEST, { request }),
 			resolveTraceProjection: (traceDigest, projectionKind = "rollout-inspector") =>
-				invokeCommand<ResolvedTraceProjection>(COMMANDS.INVENTORY_TRACE_PROJECTION_RESOLVE, { traceDigest, projectionKind }),
-			listUsage: (limit = 100) => invokeCommand<UsageLedgerEntry[]>(COMMANDS.INVENTORY_USAGE_LIST, { limit }),
-			counts: () => invokeCommand<InventoryCounts>(COMMANDS.INVENTORY_COUNTS)
+				invokeCommand<ResolvedTraceProjection>(COMMANDS.DATA_TRACE_PROJECTION_RESOLVE, { traceDigest, projectionKind }),
+			listUsage: (limit = 100) => invokeCommand<UsageLedgerEntry[]>(COMMANDS.DATA_USAGE_LIST, { limit }),
+			counts: () => invokeCommand<InventoryCounts>(COMMANDS.DATA_COUNTS)
 		}
 		: {
 			async listContainers() {

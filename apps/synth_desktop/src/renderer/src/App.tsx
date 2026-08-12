@@ -48,7 +48,7 @@ import { Composer } from "./components/Composer";
 import { ConnectorsPage } from "./components/ConnectorsPage";
 import { ConversationSearch } from "./components/ConversationSearch";
 import { formatTps, InferencePanel, useInferenceMonitor } from "./components/InferencePanel";
-import { InventoryPage } from "./components/InventoryPage";
+import { DataPage } from "./components/DataPage";
 import { LandingPage } from "./components/LandingPage";
 import { OptimizersPage } from "./components/OptimizersPage";
 import { PaneResizeHandle } from "./components/PaneResizeHandle";
@@ -1601,7 +1601,7 @@ export default function App() {
 			: view.kind === "optimizers"
 				? "Optimizers"
 			: view.kind === "inventory"
-				? "Inventory"
+				? "Data"
 				: view.kind === "async"
 					? "Intern · Background"
 					: view.kind === "sync"
@@ -1649,7 +1649,7 @@ export default function App() {
 					{
 						id: "open-inventory",
 						role: "button",
-						name: "Inventory",
+						name: "Data",
 						enabled: true
 					}
 				]
@@ -1692,7 +1692,7 @@ export default function App() {
 				}
 				if (action === "list_inventory") {
 					if (!window.synthInventory || !window.synthVisuals) {
-						throw new Error("Rust inventory is unavailable");
+						throw new Error("Rust Data store is unavailable");
 					}
 					const [containers, traces, visuals] = await Promise.all([
 						window.synthInventory.listContainers(),
@@ -2058,7 +2058,7 @@ export default function App() {
 							className={`inventory-workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}`}
 							style={{ "--container-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}
 						>
-							<InventoryPage
+							<DataPage
 								onOpenVisual={openVisualRecord}
 								onOpenContainer={(id) => void toggleContainer(id)}
 								openContainerId={openContainer?.id ?? null}

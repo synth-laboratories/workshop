@@ -1,4 +1,4 @@
-//! Rust-owned Inventory domain backed by the CoreRuntime SQLite store.
+//! Rust-owned Data domain backed by the CoreRuntime SQLite store.
 
 use crate::storage::{AppEvent, ContentStore, Database, EventAppend, EventSource};
 use crate::trace_ingest::{
@@ -206,19 +206,19 @@ pub struct UsageEntry {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct InventoryCounts {
+pub struct DataCounts {
     pub containers: i64,
     pub traces: i64,
     pub usage: i64,
 }
 
 #[derive(Clone)]
-pub struct InventoryStore {
+pub struct DataStore {
     db: Arc<Database>,
     content: ContentStore,
 }
 
-impl InventoryStore {
+impl DataStore {
     pub fn new(db: Arc<Database>, content: ContentStore) -> Self {
         Self { db, content }
     }
@@ -801,16 +801,16 @@ impl InventoryStore {
             .await
     }
 
-    pub async fn counts(&self) -> Result<InventoryCounts> {
+    pub async fn counts(&self) -> Result<DataCounts> {
         self.db
             .clone()
             .run(|conn| {
-                Ok(InventoryCounts {
+                Ok(DataCounts {
                     containers: conn
                         .query_row("SELECT COUNT(*) FROM containers", [], |row| row.get(0))?,
                     traces: conn.query_row("SELECT COUNT(*) FROM traces", [], |row| row.get(0))?,
                     usage: conn.query_row(
-                        "SELECT (SELECT COUNT(*) FROM usage_records) + (SELECT COUNT(*) FROM usage_ledger)",
+                        "SELECT COUNT(*) FROM usage_records",
                         [],
                         |row| row.get(0),
                     )?,
@@ -927,24 +927,20 @@ fn usage_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageEntry> {
     })
 }
 
-/// Raw request-level inspection feed: the authoritative `usage_records`
-/// ledger first-class, with any legacy `usage_ledger` rows preserved beside
-/// it. The exposed cost is the settled charge when one exists, otherwise the
-/// labeled-elsewhere estimate — never a mixture per request.
+/// Raw request-level inspection feed over the one authoritative
+/// `usage_records` ledger (legacy `usage_ledger` rows were folded in by
+/// migration 11). The exposed cost is the settled charge when one exists,
+/// otherwise the labeled estimate — never a mixture per request.
 fn list_usage(conn: &Connection, limit: i64) -> Result<Vec<UsageEntry>> {
     let mut statement = conn.prepare(
-        "SELECT id,provider,model,session_id,run_id,prompt_tokens,completion_tokens,total_tokens,cost_usd,created_at FROM (
-            SELECT id, provider, model_id AS model, session_id, run_id,
-                   COALESCE(input_tokens, 0) AS prompt_tokens,
-                   COALESCE(output_tokens, 0) AS completion_tokens,
-                   COALESCE(total_tokens, 0) AS total_tokens,
-                   COALESCE(billed_cost_usd, estimated_cost_usd) AS cost_usd,
-                   created_at
-            FROM usage_records
-            UNION ALL
-            SELECT id, provider, model, session_id, run_id, prompt_tokens, completion_tokens, total_tokens, cost_usd, created_at
-            FROM usage_ledger
-         ) ORDER BY created_at DESC, id LIMIT ?1",
+        "SELECT id, provider, model_id AS model, session_id, run_id,
+                COALESCE(input_tokens, 0) AS prompt_tokens,
+                COALESCE(output_tokens, 0) AS completion_tokens,
+                COALESCE(total_tokens, 0) AS total_tokens,
+                COALESCE(billed_cost_usd, estimated_cost_usd) AS cost_usd,
+                created_at
+         FROM usage_records
+         ORDER BY created_at DESC, id LIMIT ?1",
     )?;
     let rows = statement
         .query_map(params![limit], usage_from_row)?
@@ -966,16 +962,26 @@ mod tests {
         db.with_conn(|conn| {
             conn.execute("INSERT INTO containers(id,name,location,status,health_json,metadata_json,created_at,updated_at) VALUES('ctr_1','Local','local','ready','{\"ok\":true}','{}','2026-01-01','2026-01-02')", [])?;
             conn.execute("INSERT INTO traces(id,digest,title,source,metrics_json,metadata_json,created_at) VALUES('trace_1','digest_1','Trace','local','[]','{}','2026-01-03')", [])?;
-            conn.execute("INSERT INTO usage_ledger(id,provider,model,prompt_tokens,completion_tokens,total_tokens,created_at) VALUES('usage_1','openrouter','luna',2,3,5,'2026-01-04')", [])?;
+            conn.execute(
+                "INSERT INTO usage_records(
+                    id,provider,model_id,request_id,measurement_kind,status,
+                    started_at_ms,completed_at_ms,input_tokens,output_tokens,
+                    billed_cost_usd,estimated_cost_usd,cost_source,source,created_at
+                 ) VALUES(
+                    'usage_1','openrouter','luna','req-usage-1','provider_reported','completed',
+                    0,0,2,3,NULL,NULL,'none','test','2026-01-04'
+                 )",
+                [],
+            )?;
             Ok(())
         }).unwrap();
-        let inventory = InventoryStore::new(db, ContentStore::new(storage.content_root()));
-        assert_eq!(inventory.list_containers().await.unwrap()[0].id, "ctr_1");
-        assert_eq!(inventory.list_traces().await.unwrap()[0].id, "trace_1");
-        assert_eq!(inventory.list_usage(100).await.unwrap()[0].total_tokens, 5);
+        let data = DataStore::new(db, ContentStore::new(storage.content_root()));
+        assert_eq!(data.list_containers().await.unwrap()[0].id, "ctr_1");
+        assert_eq!(data.list_traces().await.unwrap()[0].id, "trace_1");
+        assert_eq!(data.list_usage(100).await.unwrap()[0].total_tokens, 5);
         assert_eq!(
-            inventory.counts().await.unwrap(),
-            InventoryCounts {
+            data.counts().await.unwrap(),
+            DataCounts {
                 containers: 1,
                 traces: 1,
                 usage: 1
@@ -992,9 +998,9 @@ mod tests {
             conn.execute("INSERT INTO containers(id,name,location,status,health_json,metadata_json,created_at,updated_at) VALUES('ctr_1','Local','local','starting','{}','{}','2026-01-01','2026-01-01')", [])?;
             Ok(())
         }).unwrap();
-        let inventory = InventoryStore::new(db.clone(), ContentStore::new(storage.content_root()));
+        let data = DataStore::new(db.clone(), ContentStore::new(storage.content_root()));
 
-        let (container, event) = inventory
+        let (container, event) = data
             .update_container_health(
                 "ctr_1".into(),
                 "ready".into(),
@@ -1033,9 +1039,9 @@ mod tests {
             )?;
             Ok(())
         }).unwrap();
-        let inventory = InventoryStore::new(db.clone(), ContentStore::new(storage.content_root()));
+        let data = DataStore::new(db.clone(), ContentStore::new(storage.content_root()));
 
-        assert!(inventory
+        assert!(data
             .update_container_health(
                 "ctr_1".into(),
                 "ready".into(),
@@ -1044,7 +1050,7 @@ mod tests {
             .await
             .is_err());
 
-        let unchanged = inventory.get_container("ctr_1".into()).await.unwrap();
+        let unchanged = data.get_container("ctr_1".into()).await.unwrap();
         assert_eq!(unchanged.status, "starting");
         assert_eq!(unchanged.health, serde_json::json!({}));
     }

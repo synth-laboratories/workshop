@@ -5,7 +5,7 @@ use crate::cloud::intern::{
 };
 use crate::contract::events::EventChannel;
 use crate::domain::{RunService, RunStatus, SessionKind, SessionService, SessionStatus};
-use crate::inventory::{ContainerDeployment, ContainerRegisterRequest, InventoryStore};
+use crate::data::{ContainerDeployment, ContainerRegisterRequest, DataStore};
 use crate::optimizers::OptimizerService;
 use crate::storage::{
     AppEvent, ContentStore, CoreDiagnostics, EventAppend, EventJournal, EventSource, SessionRecord,
@@ -27,7 +27,7 @@ pub struct CoreRuntime {
     journal: EventJournal,
     content: ContentStore,
     visuals: VisualRegistry,
-    inventory: InventoryStore,
+    data: DataStore,
     optimizers: OptimizerService,
     intern: Arc<InternRuntime>,
     intern_provider: Arc<InternProviderManager>,
@@ -55,7 +55,7 @@ impl CoreRuntime {
         let content = ContentStore::new(storage.content_root());
         let visuals =
             VisualRegistry::new(storage.database().clone(), journal.clone(), content.clone());
-        let inventory = InventoryStore::new(storage.database().clone(), content.clone());
+        let data = DataStore::new(storage.database().clone(), content.clone());
         let optimizers =
             OptimizerService::new(storage.database().clone(), journal.clone(), visuals.clone());
         let intern_provider = Arc::new(InternProviderManager::new(
@@ -70,7 +70,7 @@ impl CoreRuntime {
             journal,
             content,
             visuals,
-            inventory,
+            data,
             optimizers,
             intern,
             intern_provider,
@@ -108,8 +108,8 @@ impl CoreRuntime {
         &self.visuals
     }
 
-    pub fn inventory(&self) -> &InventoryStore {
-        &self.inventory
+    pub fn data(&self) -> &DataStore {
+        &self.data
     }
 
     pub fn optimizers(&self) -> &OptimizerService {
@@ -326,7 +326,7 @@ impl CoreRuntime {
         health: serde_json::Value,
     ) -> Result<ContainerDeployment> {
         let (container, event) = self
-            .inventory
+            .data
             .update_container_health(id, status, health)
             .await?;
         let _ = self.events_tx.send(event);
@@ -342,7 +342,7 @@ impl CoreRuntime {
         task_family: Option<String>,
     ) -> Result<ContainerDeployment> {
         let (container, event) = self
-            .inventory
+            .data
             .upsert_container(request, status, health, metadata, task_family)
             .await?;
         let _ = self.events_tx.send(event);
@@ -358,7 +358,7 @@ impl CoreRuntime {
         task_family: Option<String>,
     ) -> Result<ContainerDeployment> {
         let (container, event) = self
-            .inventory
+            .data
             .update_container_hydration(id, status, health, metadata, task_family)
             .await?;
         let _ = self.events_tx.send(event);
@@ -371,7 +371,7 @@ impl CoreRuntime {
         rollout_id: String,
     ) -> Result<ContainerDeployment> {
         let (container, event) = self
-            .inventory
+            .data
             .update_container_last_rollout(id, rollout_id)
             .await?;
         let _ = self.events_tx.send(event);

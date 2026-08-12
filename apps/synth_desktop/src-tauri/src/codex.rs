@@ -1973,6 +1973,12 @@ async fn finalize_performance_tracker(
     // on-device providers have no provider charge and their rows stay exactly
     // as the tracker built them — billed stays `None`, never $0.
     //
+    // Laguna-local turns (`ProviderClass::LocalLaguna` / `local-laguna`) write
+    // into this same `usage_records` ledger via finalize — tokens and
+    // throughput, no dollar charge. The LagunaManager inference SSE is
+    // telemetry for the Inference pane only and is intentionally exempt from
+    // writing usage rows (not a session turn authority).
+    //
     // Exactly-once contract: draining removes the receipts, and the
     // `(provider, request_id)` upsert key dedupes a replayed finalize. A
     // receipt landing after this drain (cancellation race) stays queued no

@@ -1,7 +1,7 @@
 //! Authenticated loopback IPC so the visual MCP adapter never opens SQLite.
 
 use crate::core_runtime::CoreRuntime;
-use crate::inventory::ContainerRegisterRequest;
+use crate::data::ContainerRegisterRequest;
 use crate::visuals::{VisualCreateRequest, VisualQuery, VisualUpdateRequest};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -235,7 +235,7 @@ fn percent_decode(value: &str) -> String {
 async fn register_hydrated_container(
     core: &CoreRuntime,
     request: ContainerRegisterRequest,
-) -> Result<crate::inventory::ContainerDeployment> {
+) -> Result<crate::data::ContainerDeployment> {
     if !(request.base_url.starts_with("http://") || request.base_url.starts_with("https://")) {
         anyhow::bail!("container baseUrl must start with http:// or https://");
     }
@@ -336,7 +336,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
     match (method, path) {
         ("GET", "/health") => Ok(json!({"ok": true, "service": "synth-visuals-ipc"})),
         ("GET", "/v1/containers") => {
-            Ok(json!({"containers": core.inventory().list_containers().await?}))
+            Ok(json!({"containers": core.data().list_containers().await?}))
         }
         ("POST", "/v1/containers") => {
             let request: ContainerRegisterRequest = serde_json::from_value(body)?;
@@ -345,14 +345,14 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
         }
         ("GET", path) if path.starts_with("/v1/containers/") && !path.ends_with("/probe") => {
             let id = path.trim_start_matches("/v1/containers/");
-            Ok(json!({"container": core.inventory().get_container(id.to_string()).await?}))
+            Ok(json!({"container": core.data().get_container(id.to_string()).await?}))
         }
         ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/probe") => {
             let id = path
                 .trim_start_matches("/v1/containers/")
                 .trim_end_matches("/probe")
                 .trim_end_matches('/');
-            let container = core.inventory().get_container(id.to_string()).await?;
+            let container = core.data().get_container(id.to_string()).await?;
             let base = container
                 .base_url
                 .as_deref()
@@ -437,7 +437,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .trim_start_matches("/v1/containers/")
                 .trim_end_matches("/rollouts")
                 .trim_end_matches('/');
-            let container = core.inventory().get_container(id.to_string()).await?;
+            let container = core.data().get_container(id.to_string()).await?;
             let base = container
                 .base_url
                 .as_deref()
