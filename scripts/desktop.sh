@@ -43,6 +43,7 @@ Usage: ./scripts/desktop.sh <command>
 
   dev [name] Run an isolated named Tauri/Vite development instance (default: codex)
   check     Run the fast local type and Rust compile checks
+  conform   Print SynthStyle CONFORM CHECK baseline counts (Wave 0; may only decrease)
   build     Typecheck and build the signed-app input bundle (no tests)
   verify    Run the full desktop type, Rust, and renderer release gates
   install   Build, install, sign, and launch /Applications (no tests)
@@ -281,6 +282,10 @@ command="${1:-}"
 case "$command" in
   dev)
     exec "$ROOT/scripts/desktop-instance.sh" dev "${2:-codex}"
+    ;;
+  conform)
+    # Lightweight Wave 0 lane: print counts only (no clean-tree gate; not an artifact).
+    exec "$ROOT/scripts/conform-desktop.sh"
     ;;
   verify)
     require_clean_worktree
