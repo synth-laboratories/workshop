@@ -2,6 +2,7 @@
  * Boundary channel + command name constants (Wave 2 interim).
  * Keep in sync with `src-tauri/src/contract/{events,commands}.rs`.
  * Full tauri-specta codegen will replace hand maintenance later.
+ * Drift: `scripts/check-desktop-contract-drift.sh` (via conform-desktop.sh).
  */
 
 export const EVENT_CHANNELS = {
@@ -17,6 +18,14 @@ export const EVENT_CHANNELS = {
 } as const;
 
 export type EventChannelName = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
+
+/** Matches Rust `contract::events::EventOrigin`. */
+export const EVENT_ORIGINS = {
+	PROVIDER: "provider",
+	DESKTOP: "desktop"
+} as const;
+
+export type EventOrigin = (typeof EVENT_ORIGINS)[keyof typeof EVENT_ORIGINS];
 
 export const COMMANDS = {
 	CORE_DIAGNOSTICS: "core_diagnostics",
@@ -65,6 +74,9 @@ export const COMMANDS = {
 	LAGUNA_MODEL_UNLOAD: "laguna_model_unload",
 	LAGUNA_INFERENCE_STREAM_START: "laguna_inference_stream_start",
 	LAGUNA_INFERENCE_STREAM_STOP: "laguna_inference_stream_stop",
+	LAGUNA_INFERENCE_SNAPSHOT: "laguna_inference_snapshot",
+	LAGUNA_SETTINGS_SNAPSHOT: "laguna_settings_snapshot",
+	LAGUNA_SETTINGS_UPDATE: "laguna_settings_update",
 	WHISPER_RUNTIME_STATUS: "whisper_runtime_status",
 	WHISPER_RUNTIME_WARM: "whisper_runtime_warm",
 	WHISPER_MODELS_LIST: "whisper_models_list",
@@ -90,6 +102,7 @@ export const COMMANDS = {
 	INVENTORY_USAGE_LIST: "inventory_usage_list",
 	INVENTORY_COUNTS: "inventory_counts",
 	MODEL_PERFORMANCE_SUMMARY: "model_performance_summary",
+	MODEL_PERFORMANCE_GET: "model_performance_get",
 	USAGE_SUMMARY: "usage_summary",
 	TARIFF_CATALOG: "tariff_catalog",
 	UPDATE_STATUS: "update_status",
@@ -129,6 +142,9 @@ export const COMMANDS = {
 	LAGUNA_MODELS_SET_DIRECTORY: "laguna_models_set_directory",
 	LAGUNA_MODELS_CLEAR_DIRECTORY: "laguna_models_clear_directory",
 	LAGUNA_MODEL_DELETE: "laguna_model_delete",
+	MIGRATION_SCAN: "migration_scan",
+	MIGRATION_PREPARE: "migration_prepare",
+	MIGRATION_APPLY: "migration_apply",
 	MIGRATION_CANCEL: "migration_cancel"
 } as const;
 

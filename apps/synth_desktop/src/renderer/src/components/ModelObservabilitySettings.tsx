@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { COMMANDS, invokeCommand } from "../bridge";
 import { formatCount, formatMs, formatTps, useInferenceMonitor } from "./InferencePanel";
 
 export type CloudModelPerformance = {
@@ -66,7 +66,7 @@ export function ModelObservabilitySettings() {
 	const refresh = useCallback(async () => {
 		setRefreshing(true);
 		try {
-			setCloud(await invoke<CloudModelPerformanceSnapshot>("model_performance_get", { windowMinutes: WINDOW_MINUTES }));
+			setCloud(await invokeCommand<CloudModelPerformanceSnapshot>(COMMANDS.MODEL_PERFORMANCE_GET, { windowMinutes: WINDOW_MINUTES }));
 			setCloudError(null);
 		} catch (reason) {
 			const raw = reason instanceof Error ? reason.message : String(reason);

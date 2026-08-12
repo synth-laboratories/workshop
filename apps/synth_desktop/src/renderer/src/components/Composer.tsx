@@ -18,7 +18,7 @@ import {
 } from "../runtime/modelCapabilities";
 import { IconSparkle, SlashCommandMenu, type SlashCommandId, type SlashCommandMenuHandle } from "./SlashCommandMenu";
 import type { Skill } from "../runtime/skills";
-import type { ComposerImageAttachment, ConversationWorkspaceScope } from "../env";
+import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
 
 type Props = {
@@ -644,7 +644,7 @@ export function Composer({
 	const [submitting, setSubmitting] = useState(false);
 	const [recording, setRecording] = useState(false);
 	const [transcribing, setTranscribing] = useState(false);
-	const [whisperRuntime, setWhisperRuntime] = useState<import("../env").WhisperRuntimeStatus | null>(null);
+	const [whisperRuntime, setWhisperRuntime] = useState<WhisperRuntimeStatus | null>(null);
 	const [voiceError, setVoiceError] = useState<string | null>(null);
 	const [imageAttachments, setImageAttachments] = useState<ComposerImageAttachment[]>([]);
 	const [attachmentError, setAttachmentError] = useState<string | null>(null);

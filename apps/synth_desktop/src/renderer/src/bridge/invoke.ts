@@ -1,6 +1,6 @@
 /**
  * Typed invoke skeleton (Wave 2 interim).
- * Prefer `invokeCommand(COMMANDS.X, args)` over raw `invoke("...")`.
+ * Prefer `invokeCommand(COMMANDS.X, args)` over raw string command names.
  * Full arg/result maps land with tauri-specta; this prevents new string drift.
  */
 

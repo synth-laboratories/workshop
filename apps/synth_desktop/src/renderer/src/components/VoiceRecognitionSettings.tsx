@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { WhisperDownloadProgress, WhisperModelHit } from "../env";
+import type { WhisperDownloadProgress, WhisperModelHit } from "../bridge";
 
 function formatBytes(bytes: number): string {
 	if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";

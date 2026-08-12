@@ -83,7 +83,7 @@ import {
 	planModelChipChange,
 	threadHasHistoryFromEvents
 } from "./runtime/modelSwitchPlan";
-import type { CodexBridge, CodexSessionInfo, CodexSessionStart, CodexTurnFailure, ComposerImageAttachment, ConversationWorkspaceScope, LagunaStatus, ModelPerformanceSummary, SynthAccountSummary, SynthBackendSettings } from "./env";
+import type { CodexBridge, CodexSessionInfo, CodexSessionStart, CodexTurnFailure, ComposerImageAttachment, ConversationWorkspaceScope, LagunaStatus, ModelPerformanceSummary, SynthAccountSummary, SynthBackendSettings } from "./bridge";
 import {
 	applyPreferencesToDocument,
 	archiveConversation,
@@ -1770,11 +1770,14 @@ export default function App() {
 				throw new Error(`Unknown semantic action: ${action}`);
 			}
 		};
-		window.__synthEval = api;
 		window.__synthPreferences = preferencesAdapter();
-		window.dispatchEvent(new CustomEvent("synth-eval-ready"));
+		// Eval driver is DEV/test-only; keep it out of packaged production builds.
+		if (import.meta.env.DEV) {
+			window.__synthEval = api;
+			window.dispatchEvent(new CustomEvent("synth-eval-ready"));
+		}
 		return () => {
-			if (window.__synthEval === api) delete window.__synthEval;
+			if (import.meta.env.DEV && window.__synthEval === api) delete window.__synthEval;
 			delete window.__synthPreferences;
 		};
 	}, [

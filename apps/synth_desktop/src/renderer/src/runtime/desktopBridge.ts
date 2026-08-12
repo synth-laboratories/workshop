@@ -3,7 +3,7 @@ import { COMMANDS, EVENT_CHANNELS, invokeCommand } from "../bridge";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../env";
+import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 
@@ -129,7 +129,7 @@ const unavailableLaguna: LagunaStatus = {
 
 /** Installs Rust-owned desktop bridges; HTTP runtime compatibility is browser-only. */
 export function installDesktopBridge(): void {
-	if (!isTauri) window.synthRuntime ??= browserRuntimeBridge();
+	if (!isTauri && import.meta.env.DEV) window.synthRuntime ??= browserRuntimeBridge();
 	window.synthDesktop ??= {
 		platform: navigator.platform,
 		chooseImageFiles: async () => {

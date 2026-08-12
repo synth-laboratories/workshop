@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ConversationWorkspaceScope, WorkspaceAccessMode, WorkspaceGrantRequest } from "../env";
+import type { ConversationWorkspaceScope, WorkspaceAccessMode, WorkspaceGrantRequest } from "../bridge";
 
 function compactPath(path: string): string {
 	const home = "/Users/";

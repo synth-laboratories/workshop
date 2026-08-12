@@ -17,7 +17,7 @@ import type {
 	SynthAccountPlan,
 	SynthAccountState,
 	SynthAccountSummary
-} from "../env";
+} from "../bridge";
 
 export type AccountViewModel = {
 	state: SynthAccountState;

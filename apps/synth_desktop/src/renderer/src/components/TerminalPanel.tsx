@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import type { TerminalEvent, TerminalInfo } from "../env";
+import type { TerminalEvent, TerminalInfo } from "../bridge";
 
 type Props = {
 	open: boolean;

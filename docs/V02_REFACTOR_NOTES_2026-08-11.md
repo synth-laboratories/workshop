@@ -337,9 +337,10 @@ specta (const event names, typed invoke map, `RuntimeTarget` enum).
 
 - Generate renderer bindings with tauri-specta for ~120 commands (retire hand `COMMANDS` map)
 - Origin-tagged `Event` (`Provider | Desktop`); collapse dual `codex:event` + `runtime:event` emission
-- Shrink `env.d.ts` to Window decls; retire or generate `packages/runtime-protocol`
-- CI drift check: fail when Rust command/event consts ≠ TS bridge consts
-- Quarantine `window.__synthEval` / legacy `/v1/*` from packaged builds
+  (Wave 2b stub: `EventOrigin` + `OriginTagged` / `tag_event` in `contract/events.rs`)
+- ~~Shrink `env.d.ts` to Window decls~~ — Window-only; DTOs in `bridge/types.ts` (wave 2b)
+- ~~CI drift check~~ — `scripts/check-desktop-contract-drift.sh` via conform-desktop.sh (wave 2b)
+- ~~Quarantine `window.__synthEval` / legacy `/v1/*` from packaged builds~~ — DEV-gated (wave 2b)
 
 Synonyms still present in the SynthStyle audit text (`SessionTarget`,
 `ExecutionTarget`, `Inventory`): treat as historical; this section is

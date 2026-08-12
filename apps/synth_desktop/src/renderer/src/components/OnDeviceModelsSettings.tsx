@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { LagunaDownloadProgress, LagunaModelHit, LagunaStatus } from "../env";
+import type { LagunaDownloadProgress, LagunaModelHit, LagunaStatus } from "../bridge";
 import { ProviderMark } from "./ProviderMark";
 
 function formatBytes(bytes: number): string {

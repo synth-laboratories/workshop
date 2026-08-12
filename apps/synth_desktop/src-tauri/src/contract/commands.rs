@@ -2,24 +2,20 @@
 //! `src/renderer/src/bridge/protocolConstants.ts`.
 //!
 //! Names match `#[tauri::command]` / `generate_handler!` identifiers.
+//! Drift: `scripts/check-desktop-contract-drift.sh`.
 
-/// Const map of high-traffic / bridge-facing command names.
+/// Const map of bridge-facing command names.
 pub struct Commands;
 
 impl Commands {
-    // Core / journal
     pub const CORE_DIAGNOSTICS: &'static str = "core_diagnostics";
     pub const CORE_EVENTS_AFTER: &'static str = "core_events_after";
     pub const CORE_SESSION_EVENTS_AFTER: &'static str = "core_session_events_after";
-
-    // Intern
     pub const INTERN_SESSIONS_LIST: &'static str = "intern_sessions_list";
     pub const INTERN_SESSION_CREATE: &'static str = "intern_session_create";
     pub const INTERN_SESSION_SEND: &'static str = "intern_session_send";
     pub const INTERN_SESSION_CONTROL: &'static str = "intern_session_control";
     pub const INTERN_SESSION_EVENTS_AFTER: &'static str = "intern_session_events_after";
-
-    // Codex
     pub const CODEX_DEFAULT_WORKSPACE: &'static str = "codex_default_workspace";
     pub const CODEX_SESSIONS_LIST: &'static str = "codex_sessions_list";
     pub const CODEX_SESSION_START: &'static str = "codex_session_start";
@@ -30,8 +26,6 @@ impl Commands {
     pub const CODEX_TURN_STEER: &'static str = "codex_turn_steer";
     pub const CODEX_APPROVAL_RESOLVE: &'static str = "codex_approval_resolve";
     pub const CODEX_SESSION_CLOSE: &'static str = "codex_session_close";
-
-    // Account
     pub const ACCOUNT_BEGIN_SIGN_IN: &'static str = "account_begin_sign_in";
     pub const ACCOUNT_POLL_SIGN_IN: &'static str = "account_poll_sign_in";
     pub const ACCOUNT_CANCEL_SIGN_IN: &'static str = "account_cancel_sign_in";
@@ -39,8 +33,6 @@ impl Commands {
     pub const ACCOUNT_GET_SUMMARY: &'static str = "account_get_summary";
     pub const ACCOUNT_REFRESH: &'static str = "account_refresh";
     pub const ACCOUNT_OPEN_BILLING: &'static str = "account_open_billing";
-
-    // Config / workspace
     pub const SYNTH_CONFIG_GET: &'static str = "synth_config_get";
     pub const SYNTH_CONFIG_UPDATE: &'static str = "synth_config_update";
     pub const MODEL_MULTI_AGENT_LIST: &'static str = "model_multi_agent_list";
@@ -55,8 +47,6 @@ impl Commands {
     pub const WORKSPACE_SCOPE_GRANTS_LIST: &'static str = "workspace_scope_grants_list";
     pub const WORKSPACE_SCOPE_APPROVE_REQUEST: &'static str = "workspace_scope_approve_request";
     pub const WORKSPACE_SCOPE_DENY_REQUEST: &'static str = "workspace_scope_deny_request";
-
-    // Laguna / whisper / terminal
     pub const LAGUNA_GET_STATUS: &'static str = "laguna_get_status";
     pub const LAGUNA_RELOAD: &'static str = "laguna_reload";
     pub const LAGUNA_MODELS_LIST: &'static str = "laguna_models_list";
@@ -64,6 +54,9 @@ impl Commands {
     pub const LAGUNA_MODEL_UNLOAD: &'static str = "laguna_model_unload";
     pub const LAGUNA_INFERENCE_STREAM_START: &'static str = "laguna_inference_stream_start";
     pub const LAGUNA_INFERENCE_STREAM_STOP: &'static str = "laguna_inference_stream_stop";
+    pub const LAGUNA_INFERENCE_SNAPSHOT: &'static str = "laguna_inference_snapshot";
+    pub const LAGUNA_SETTINGS_SNAPSHOT: &'static str = "laguna_settings_snapshot";
+    pub const LAGUNA_SETTINGS_UPDATE: &'static str = "laguna_settings_update";
     pub const WHISPER_RUNTIME_STATUS: &'static str = "whisper_runtime_status";
     pub const WHISPER_RUNTIME_WARM: &'static str = "whisper_runtime_warm";
     pub const WHISPER_MODELS_LIST: &'static str = "whisper_models_list";
@@ -78,23 +71,60 @@ impl Commands {
     pub const TERMINAL_WRITE: &'static str = "terminal_write";
     pub const TERMINAL_RESIZE: &'static str = "terminal_resize";
     pub const TERMINAL_CLOSE: &'static str = "terminal_close";
-
-    // Inventory / visuals / optimizers (partial — expand with specta)
     pub const INVENTORY_CONTAINERS_LIST: &'static str = "inventory_containers_list";
+    pub const INVENTORY_CONTAINERS_GET: &'static str = "inventory_containers_get";
+    pub const INVENTORY_CONTAINERS_REGISTER: &'static str = "inventory_containers_register";
+    pub const INVENTORY_CONTAINERS_PROBE: &'static str = "inventory_containers_probe";
+    pub const INVENTORY_TRACES_LIST: &'static str = "inventory_traces_list";
+    pub const INVENTORY_TRACES_GET: &'static str = "inventory_traces_get";
+    pub const INVENTORY_TRACES_INGEST: &'static str = "inventory_traces_ingest";
+    pub const INVENTORY_TRACE_PROJECTION_RESOLVE: &'static str = "inventory_trace_projection_resolve";
+    pub const INVENTORY_USAGE_LIST: &'static str = "inventory_usage_list";
     pub const INVENTORY_COUNTS: &'static str = "inventory_counts";
+    pub const MODEL_PERFORMANCE_SUMMARY: &'static str = "model_performance_summary";
+    pub const MODEL_PERFORMANCE_GET: &'static str = "model_performance_get";
     pub const USAGE_SUMMARY: &'static str = "usage_summary";
+    pub const TARIFF_CATALOG: &'static str = "tariff_catalog";
+    pub const UPDATE_STATUS: &'static str = "update_status";
+    pub const UPDATE_OPEN_DOWNLOAD: &'static str = "update_open_download";
+    pub const SKILLS_LIST: &'static str = "skills_list";
+    pub const VISUALS_TEMPLATES_LIST: &'static str = "visuals_templates_list";
+    pub const VISUALS_TEMPLATES_GET: &'static str = "visuals_templates_get";
     pub const VISUALS_LIST: &'static str = "visuals_list";
     pub const VISUALS_GET: &'static str = "visuals_get";
+    pub const VISUALS_REVISIONS: &'static str = "visuals_revisions";
+    pub const VISUALS_CREATE: &'static str = "visuals_create";
+    pub const VISUALS_UPDATE: &'static str = "visuals_update";
+    pub const VISUALS_SAVE: &'static str = "visuals_save";
+    pub const VISUALS_FORK: &'static str = "visuals_fork";
+    pub const VISUALS_ARCHIVE: &'static str = "visuals_archive";
     pub const VISUALS_SHOW: &'static str = "visuals_show";
+    pub const OPTIMIZERS_ALGORITHMS_LIST: &'static str = "optimizers_algorithms_list";
+    pub const OPTIMIZERS_RECIPES_LIST: &'static str = "optimizers_recipes_list";
+    pub const OPTIMIZERS_RECIPE_START: &'static str = "optimizers_recipe_start";
     pub const OPTIMIZERS_LIST: &'static str = "optimizers_list";
     pub const OPTIMIZERS_GET: &'static str = "optimizers_get";
-
+    pub const OPTIMIZERS_CREATE: &'static str = "optimizers_create";
+    pub const OPTIMIZERS_REFRESH: &'static str = "optimizers_refresh";
+    pub const OPTIMIZERS_EVENTS_AFTER: &'static str = "optimizers_events_after";
+    pub const OPTIMIZERS_GET_STATE: &'static str = "optimizers_get_state";
+    pub const OPTIMIZERS_GET_STATE_BATCH: &'static str = "optimizers_get_state_batch";
+    pub const OPTIMIZERS_CANCEL: &'static str = "optimizers_cancel";
+    pub const OPTIMIZERS_PAUSE: &'static str = "optimizers_pause";
+    pub const OPTIMIZERS_RESUME: &'static str = "optimizers_resume";
+    pub const OPTIMIZERS_OPEN_VISUAL: &'static str = "optimizers_open_visual";
+    pub const OPTIMIZERS_IMPORT_LOCAL: &'static str = "optimizers_import_local";
+    pub const OPTIMIZERS_RECONCILE_CLOUD: &'static str = "optimizers_reconcile_cloud";
+    pub const OPTIMIZERS_LIST_CLOUD: &'static str = "optimizers_list_cloud";
     pub const DESKTOP_IMAGE_PREVIEW: &'static str = "desktop_image_preview";
     pub const DESKTOP_INSTANCE_DIAGNOSTICS: &'static str = "desktop_instance_diagnostics";
     pub const WORKSPACE_CHOOSE_DIRECTORY: &'static str = "workspace_choose_directory";
     pub const LAGUNA_MODELS_SET_DIRECTORY: &'static str = "laguna_models_set_directory";
     pub const LAGUNA_MODELS_CLEAR_DIRECTORY: &'static str = "laguna_models_clear_directory";
     pub const LAGUNA_MODEL_DELETE: &'static str = "laguna_model_delete";
+    pub const MIGRATION_SCAN: &'static str = "migration_scan";
+    pub const MIGRATION_PREPARE: &'static str = "migration_prepare";
+    pub const MIGRATION_APPLY: &'static str = "migration_apply";
     pub const MIGRATION_CANCEL: &'static str = "migration_cancel";
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { SynthBackendSettings } from "../env";
+import type { SynthBackendSettings } from "../bridge";
 
 type PairState =
 	| { kind: "idle" }

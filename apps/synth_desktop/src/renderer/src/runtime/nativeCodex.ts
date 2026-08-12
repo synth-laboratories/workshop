@@ -1,5 +1,5 @@
 import type { AppEvent, ExecutionTarget, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexSessionStart, PersistedCodexSession } from "../env";
+import type { CodexEvent, CodexSessionStart, PersistedCodexSession } from "../bridge";
 
 export type ApprovalMode = "ask" | "accept-edits" | "allow-all";
 export type ApprovalPolicy = "untrusted" | "on-request" | "never";

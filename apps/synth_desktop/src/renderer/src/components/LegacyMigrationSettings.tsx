@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { COMMANDS, invokeCommand } from "../bridge";
 import { useEffect, useMemo, useState } from "react";
 
 type Detection = {
@@ -51,7 +51,7 @@ export function LegacyMigrationSettings() {
 		setBusy(true);
 		setError(null);
 		try {
-			const found = await invoke<Candidate[]>("migration_scan");
+			const found = await invokeCommand<Candidate[]>(COMMANDS.MIGRATION_SCAN);
 			setCandidates(found);
 			const eligible = found.find((item) => item.detection.isLegacyRuntime && !item.alreadyMigrated);
 			if (eligible) setSourcePath(eligible.detection.sourcePath);
@@ -76,7 +76,7 @@ export function LegacyMigrationSettings() {
 		setError(null);
 		setReceipt(null);
 		try {
-			setPlan(await invoke<MigrationPlan>("migration_prepare", { sourcePath }));
+			setPlan(await invokeCommand<MigrationPlan>(COMMANDS.MIGRATION_PREPARE, { sourcePath }));
 			setConfirmation("");
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
@@ -87,7 +87,7 @@ export function LegacyMigrationSettings() {
 
 	const cancel = async () => {
 		if (plan) {
-			await invoke("migration_cancel", { confirmationToken: plan.confirmationToken }).catch(() => undefined);
+			await invokeCommand(COMMANDS.MIGRATION_CANCEL, { confirmationToken: plan.confirmationToken }).catch(() => undefined);
 		}
 		setPlan(null);
 		setConfirmation("");
@@ -98,7 +98,7 @@ export function LegacyMigrationSettings() {
 		setBusy(true);
 		setError(null);
 		try {
-			const next = await invoke<MigrationReceipt>("migration_apply", {
+			const next = await invokeCommand<MigrationReceipt>(COMMANDS.MIGRATION_APPLY, {
 				request: {
 					confirmationToken: plan.confirmationToken,
 					confirmationPhrase: confirmation

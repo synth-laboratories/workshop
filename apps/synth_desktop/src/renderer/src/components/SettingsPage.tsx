@@ -8,7 +8,7 @@ import type {
 	SynthBackendSettings,
 	TariffCard,
 	UpdateStatus
-} from "../env";
+} from "../bridge";
 import type { AccountViewModel } from "../runtime/accountView";
 import type { DeviceUsageSummary } from "./UsageSheet";
 import { OnDeviceModelsSettings } from "./OnDeviceModelsSettings";
