@@ -196,7 +196,7 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 			return { fontSize: Number.parseFloat(style.fontSize), family: style.fontFamily };
 		})
 	);
-	expect(slugStyles).toHaveLength(4);
+	expect(slugStyles).toHaveLength(5);
 	for (const style of slugStyles) {
 		expect(style.fontSize, "model slugs stay subordinate to provider labels").toBeLessThanOrEqual(10);
 		expect(style.family).toMatch(/SFMono|Menlo|Monaco|Consolas|monospace/i);
