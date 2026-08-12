@@ -1017,7 +1017,7 @@ async fn run_policy_rollout(deps: &EvalDriverDeps, container_id: &str, body: Val
         "frame": {"enabled": false}
     }));
 
-    let client = reqwest::Client::builder()
+    let client = crate::http::http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(timeout_s))
         .build()?;

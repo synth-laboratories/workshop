@@ -1,0 +1,86 @@
+//! `ManagedService` vocabulary + supervisor registry.
+//!
+//! Wave 5 skeleton: one trait and a registry drained on
+//! [`tauri::RunEvent::ExitRequested`]. Concrete Laguna / Whisper / IPC adapters
+//! adopt the trait in follow-up work; quit already drains whatever is registered.
+
+#![allow(dead_code)]
+
+use anyhow::Result;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Shared lifecycle for Desktop-owned sidecars (Laguna, Whisper, loopback IPC, …).
+pub trait ManagedService: Send + Sync {
+    fn name(&self) -> &'static str;
+
+    fn spawn(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn probe(&self) -> BoxFuture<'_, Result<bool>> {
+        Box::pin(async { Ok(true) })
+    }
+
+    fn wait_ready(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn stop(&self) -> BoxFuture<'_, Result<()>>;
+
+    fn restart(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async {
+            self.stop().await?;
+            self.spawn().await
+        })
+    }
+}
+
+/// Process-wide registry of managed services. Injected via `app.manage`.
+#[derive(Default)]
+pub struct ServiceSupervisor {
+    services: Mutex<Vec<Arc<dyn ManagedService>>>,
+}
+
+impl ServiceSupervisor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&self, service: Arc<dyn ManagedService>) {
+        self.services
+            .lock()
+            .expect("service supervisor lock")
+            .push(service);
+    }
+
+    pub fn names(&self) -> Vec<&'static str> {
+        self.services
+            .lock()
+            .expect("service supervisor lock")
+            .iter()
+            .map(|service| service.name())
+            .collect()
+    }
+
+    /// Best-effort stop of every registered service. Failures are reported but
+    /// do not abort the remaining drain — quit must continue.
+    pub async fn drain_all(&self) {
+        let services = self
+            .services
+            .lock()
+            .expect("service supervisor lock")
+            .clone();
+        for service in services {
+            if let Err(error) = service.stop().await {
+                eprintln!(
+                    "synth-desktop: managed service '{}' failed to stop on exit: {error:#}",
+                    service.name()
+                );
+            }
+        }
+    }
+}

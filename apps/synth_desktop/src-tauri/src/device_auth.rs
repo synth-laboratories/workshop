@@ -92,11 +92,11 @@ impl DeviceAuthManager {
     pub fn new() -> Self {
         Self {
             pending: Mutex::new(None),
-            http: reqwest::Client::builder()
+            http: crate::http::http_client_builder()
                 // A redirect here means the pairing routes are auth-gated
                 // (misconfigured deploy); surface that instead of HTML.
                 .redirect(reqwest::redirect::Policy::none())
-                .timeout(Duration::from_secs(20))
+                .timeout(crate::limits::DEVICE_AUTH_TIMEOUT)
                 .build()
                 .expect("device-auth HTTP client"),
         }

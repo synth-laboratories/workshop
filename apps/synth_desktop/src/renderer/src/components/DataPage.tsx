@@ -7,9 +7,10 @@ import type {
 	VisualRecord
 } from "@synth/runtime-protocol";
 
+import { CONTAINER_POLL_MS } from "../limits";
+
 export type DataTab = "containers" | "traces" | "visuals" | "usage" | "inference";
 
-const CONTAINER_POLL_MS = 15_000;
 const CONTAINER_GONE_GRACE_MS = 30_000;
 
 function visibleContainerStatus(status: ContainerDeployment["status"]): { label: string; tone: "ready" | "unknown" | "gone" } {

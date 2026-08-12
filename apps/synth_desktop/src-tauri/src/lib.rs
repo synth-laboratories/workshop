@@ -9,12 +9,16 @@ mod device_auth;
 mod domain;
 pub mod error;
 mod eval_driver;
+mod http;
 mod instance;
 mod intern_api;
 pub mod data;
+pub mod ipc;
 mod laguna;
+mod limits;
 mod optimizers;
 mod runtime;
+mod services;
 mod skills;
 pub mod storage;
 mod synth_config;
@@ -56,7 +60,7 @@ use synth_config::{
     BackendSettings, BackendSettingsUpdate, ModelMultiAgentSetting, ModelMultiAgentUpdate,
     WorkspaceAccessSettings, WorkspaceAccessUpdate,
 };
-use tauri::{Emitter, Manager, State};
+use tauri::{Emitter, Manager, RunEvent, State};
 use tauri_plugin_dialog::DialogExt;
 use terminal::{TerminalCreateRequest, TerminalEvent, TerminalInfo, TerminalManager};
 use trace_ingest::{TraceBundleIngestRequest, TraceBundleIngestResult};
@@ -96,7 +100,7 @@ fn desktop_image_preview(path: String) -> Result<String, AppError> {
         _ => return Err("Screenshot format is unsupported".into()),
     };
     let metadata = std::fs::metadata(&path).map_err(|_| AppError::io("Screenshot is unavailable"))?;
-    if !metadata.is_file() || metadata.len() > 20 * 1024 * 1024 {
+    if !metadata.is_file() || metadata.len() > limits::IMAGE_PREVIEW_MAX_BYTES {
         return Err("Screenshot must be a file smaller than 20 MB".into());
     }
     let bytes = std::fs::read(path).map_err(|_| AppError::io("Screenshot could not be read"))?;
@@ -221,7 +225,7 @@ async fn hydrate_container(
     base_url: &str,
     existing_metadata: serde_json::Value,
 ) -> (String, serde_json::Value, serde_json::Value, Option<String>) {
-    let client = reqwest::Client::new();
+    let client = http::http_client_with_timeout(limits::CONTAINER_PROBE_TIMEOUT);
     let root = base_url.trim_end_matches('/');
     // Health is intentionally cheap and may run frequently. Contract/catalog
     // hydration is cached because task catalogs can contain thousands of rows.
@@ -233,14 +237,10 @@ async fn hydrate_container(
             chrono::Utc::now()
                 .signed_duration_since(hydrated.with_timezone(&chrono::Utc))
                 .num_seconds()
-                >= 300
+                >= limits::CONTAINER_METADATA_REFRESH.as_secs() as i64
         })
         .unwrap_or(true);
-    let health_result = client
-        .get(format!("{root}/health"))
-        .timeout(std::time::Duration::from_secs(3))
-        .send()
-        .await;
+    let health_result = client.get(format!("{root}/health")).send().await;
     let (status, health) = match health_result {
         Ok(response) => {
             let code = response.status();
@@ -264,12 +264,7 @@ async fn hydrate_container(
     if refresh_metadata {
         info = None;
         for route in ["info", "metadata"] {
-            if let Ok(response) = client
-                .get(format!("{root}/{route}"))
-                .timeout(std::time::Duration::from_secs(3))
-                .send()
-                .await
-            {
+            if let Ok(response) = client.get(format!("{root}/{route}")).send().await {
                 if response.status().is_success() {
                     info = response.json::<serde_json::Value>().await.ok();
                     if info.is_some() {
@@ -320,12 +315,7 @@ async fn hydrate_container(
             ("program", "program"),
             ("dataset", "dataset"),
         ] {
-            if let Ok(response) = client
-                .get(format!("{root}/{route}"))
-                .timeout(std::time::Duration::from_secs(3))
-                .send()
-                .await
-            {
+            if let Ok(response) = client.get(format!("{root}/{route}")).send().await {
                 if response.status().is_success() {
                     if let Ok(value) = response.json::<serde_json::Value>().await {
                         metadata.insert(key.into(), value);
@@ -978,9 +968,9 @@ async fn model_performance_get(
         "{}/api/v1/usage/model-performance?window_minutes={window_minutes}",
         backend.backend_url.trim_end_matches('/')
     );
-    let response = reqwest::Client::builder()
+    let response = http::http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(limits::MODEL_PERFORMANCE_TIMEOUT)
         .build()
         .map_err(AppError::from)?
         .get(url)
@@ -1750,13 +1740,15 @@ pub fn run() {
             );
             let laguna = Arc::new(LagunaManager::new());
             let codex = Arc::new(CodexManager::new(Some(core.clone())));
+            let supervisor = Arc::new(services::ServiceSupervisor::new());
             app.manage(core.clone());
             app.manage(migration);
             app.manage(codex.clone());
             app.manage(Arc::new(TerminalManager::new()));
             app.manage(Arc::new(device_auth::DeviceAuthManager::new()));
-            app.manage(Arc::new(account_cloud::AccountCloudClient::new()));
+            app.manage(Arc::new(account_cloud::AccountCloudClient::open()));
             app.manage(laguna.clone());
+            app.manage(supervisor);
 
             // All committed CoreRuntime events reach Tauri through this single
             // forwarder. Producers only journal and broadcast.
@@ -1954,6 +1946,14 @@ pub fn run() {
             terminal_resize,
             terminal_close
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Synth Desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building Synth Desktop")
+        .run(|app, event| {
+            if let RunEvent::ExitRequested { .. } = event {
+                if let Some(supervisor) = app.try_state::<Arc<services::ServiceSupervisor>>() {
+                    let supervisor = (*supervisor).clone();
+                    tauri::async_runtime::block_on(supervisor.drain_all());
+                }
+            }
+        });
 }

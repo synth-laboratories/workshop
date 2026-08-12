@@ -51,7 +51,7 @@ pub struct InternClient {
 }
 
 impl InternClient {
-    pub fn new(
+    pub fn connect(
         base_url: &str,
         api_key: impl Into<String>,
         timeout: Duration,
@@ -71,7 +71,7 @@ impl InternClient {
                 "backend URL must use http or https".into(),
             ));
         }
-        let http = Client::builder()
+        let http = crate::http::http_client_builder()
             .timeout(timeout)
             .user_agent(USER_AGENT)
             .build()

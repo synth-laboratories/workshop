@@ -34,7 +34,7 @@ impl Drop for WhisperWorker {
     }
 }
 
-const WHISPER_IDLE_UNLOAD_SECONDS: u64 = 15 * 60;
+const WHISPER_IDLE_UNLOAD_SECONDS: u64 = crate::limits::WHISPER_IDLE_UNLOAD.as_secs();
 
 #[derive(Default)]
 struct WhisperRuntime {

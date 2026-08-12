@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { COMMANDS, invokeCommand } from "../bridge";
 import { formatCount, formatMs, formatTps, useInferenceMonitor } from "./InferencePanel";
 
+import { MODEL_OBSERVABILITY_REFRESH_MS } from "../limits";
+
 export type CloudModelPerformance = {
 	modelId: string;
 	provider: string;
@@ -25,7 +27,7 @@ export type CloudModelPerformanceSnapshot = {
 };
 
 const WINDOW_MINUTES = 24 * 60;
-const REFRESH_MS = 15_000;
+const REFRESH_MS = MODEL_OBSERVABILITY_REFRESH_MS;
 
 export function formatTpm(value: number | null | undefined): string {
 	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "Unavailable";

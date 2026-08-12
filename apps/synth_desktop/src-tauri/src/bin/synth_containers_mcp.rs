@@ -1,9 +1,13 @@
 //! Stdio MCP adapter for Synth Desktop's local container registry.
 
+#[path = "../ipc/mcp_stdio.rs"]
+mod mcp_stdio;
+
+use mcp_stdio::{run_stdio_server, McpServerInfo};
 use serde_json::{json, Value};
 use std::{
-    env, fs,
-    io::{self, BufRead, Write},
+    env, fs, io,
+    io::Write,
     path::PathBuf,
 };
 
@@ -120,45 +124,14 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
 }
 
 fn main() {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
-    for line in stdin.lock().lines().map_while(Result::ok) {
-        let Ok(req) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        let id = req.get("id").cloned().unwrap_or(Value::Null);
-        let result = match req
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-        {
-            "initialize" => {
-                json!({"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"synth-containers-mcp","version":"0.1.0"}})
-            }
-            "tools/list" => tools(),
-            "tools/call" => {
-                let params = req.get("params").cloned().unwrap_or(json!({}));
-                let name = params
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                match call_tool(name, &args) {
-                    Ok(v) => {
-                        json!({"content":[{"type":"text","text":serde_json::to_string_pretty(&v).unwrap_or_default()}],"structuredContent":v})
-                    }
-                    Err(e) => json!({"content":[{"type":"text","text":e}],"isError":true}),
-                }
-            }
-            _ => continue,
-        };
-        let _ = writeln!(
-            stdout,
-            "{}",
-            json!({"jsonrpc":"2.0","id":id,"result":result})
-        );
-        let _ = stdout.flush();
-    }
+    run_stdio_server(
+        McpServerInfo {
+            name: "synth-containers-mcp",
+            version: "0.1.0",
+        },
+        tools,
+        |name, args| call_tool(name, args),
+    );
 }
 
 #[cfg(test)]

@@ -8,7 +8,6 @@
 //! "no update known", never an error surface.
 
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 /// Baked at build time. Stable and nightly are separate installed apps with
 /// separate bundle identifiers; a build only ever reads its own channel's
@@ -23,7 +22,6 @@ pub const CHANNEL: &str = match option_env!("SYNTH_DESKTOP_CHANNEL") {
 pub const DOWNLOAD_PAGE: &str = "https://usesynth.ai/download";
 
 const DEFAULT_MANIFEST_BASE: &str = "https://usesynth.ai/releases";
-const MANIFEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -68,10 +66,7 @@ pub async fn status() -> UpdateStatus {
 }
 
 async fn fetch_latest_version(url: &str) -> Option<String> {
-    let client = reqwest::Client::builder()
-        .timeout(MANIFEST_TIMEOUT)
-        .build()
-        .ok()?;
+    let client = crate::http::http_client_with_timeout(crate::limits::UPDATE_MANIFEST_TIMEOUT);
     let manifest = client
         .get(url)
         .send()

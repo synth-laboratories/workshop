@@ -277,17 +277,14 @@ pub struct AccountCloudClient {
 
 impl Default for AccountCloudClient {
     fn default() -> Self {
-        Self::new()
+        Self::open()
     }
 }
 
 impl AccountCloudClient {
-    pub fn new() -> Self {
+    pub fn open() -> Self {
         Self {
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(12))
-                .build()
-                .expect("account-snapshot HTTP client"),
+            http: crate::http::http_client_with_timeout(crate::limits::ACCOUNT_CLOUD_TIMEOUT),
             cache: Mutex::new(None),
         }
     }
@@ -575,7 +572,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_key_reads_as_unauthenticated_without_touching_the_network() {
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let read = client.read("http://127.0.0.1:1", None, false, now()).await;
         assert!(read.unauthenticated);
         assert!(read.snapshot.is_none());
@@ -585,7 +582,7 @@ mod tests {
     #[tokio::test]
     async fn a_fresh_snapshot_is_parsed_and_then_served_from_cache() {
         let (origin, served) = spawn_backend(vec![(200, snapshot_body("pro", 15_750))]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let first = client.read(&origin, Some("sk_test"), false, now()).await;
         let snapshot = first.snapshot.expect("snapshot parsed");
         assert_eq!(snapshot.plan.tier, "pro");
@@ -615,7 +612,7 @@ mod tests {
             (200, snapshot_body("pro", 20_000)),
             (503, r#"{"detail":"down"}"#.into()),
         ]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         let stale = client
             .read(
@@ -640,7 +637,7 @@ mod tests {
     #[tokio::test]
     async fn a_different_key_never_reads_another_accounts_cache() {
         let (origin, _) = spawn_backend(vec![(200, snapshot_body("pro", 20_000))]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_one"), false, now()).await;
         // The second key has no cache entry and the fake backend is exhausted,
         // so the read must fail rather than return the first account's plan.
@@ -653,7 +650,7 @@ mod tests {
     #[tokio::test]
     async fn an_unauthorized_snapshot_explains_itself_without_leaking_the_key() {
         let (origin, _) = spawn_backend(vec![(401, r#"{"detail":"bad key"}"#.into())]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let read = client.read(&origin, Some("sk_dead"), false, now()).await;
         let error = read.error.expect("error surfaced");
         assert_eq!(
@@ -668,7 +665,7 @@ mod tests {
         let body = snapshot_body("pro", 20_000)
             .replace("synth.desktop-account.v1", "synth.desktop-account.v2");
         let (origin, _) = spawn_backend(vec![(200, body)]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let read = client.read(&origin, Some("sk_test"), false, now()).await;
         assert!(read.snapshot.is_none());
         assert_eq!(
@@ -683,7 +680,7 @@ mod tests {
     async fn a_different_backend_never_reads_another_origins_cache_for_the_same_key() {
         let (first_origin, _) = spawn_backend(vec![(200, snapshot_body("pro", 20_000))]);
         let (second_origin, _) = spawn_backend(vec![(503, r#"{"detail":"down"}"#.into())]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client
             .read(&first_origin, Some("sk_same"), false, now())
             .await;
@@ -702,7 +699,7 @@ mod tests {
     #[tokio::test]
     async fn a_backend_without_the_snapshot_endpoint_gets_the_specific_update_copy() {
         let (origin, _) = spawn_backend(vec![(404, r#"{"detail":"missing"}"#.into())]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let read = client.read(&origin, Some("sk_test"), false, now()).await;
         assert!(read.snapshot.is_none());
         assert_eq!(
@@ -719,7 +716,7 @@ mod tests {
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", closed.local_addr().unwrap());
         drop(closed);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let read = client.read(&origin, Some("sk_test"), false, now()).await;
         assert_eq!(
             read.error.as_deref(),
@@ -733,7 +730,7 @@ mod tests {
     #[tokio::test]
     async fn an_outage_after_a_good_read_keeps_the_plan_and_marks_it_stale() {
         let (origin, _) = spawn_backend(vec![(200, snapshot_body("pro", 15_000))]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         // The scripted backend is exhausted and its listener is closed, so the
         // refresh fails at the transport layer.
@@ -766,10 +763,7 @@ mod tests {
             }
         });
         let client = AccountCloudClient {
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_millis(150))
-                .build()
-                .unwrap(),
+            http: crate::http::http_client_with_timeout(Duration::from_millis(150)),
             cache: Mutex::new(None),
         };
         let read = client.read(&origin, Some("sk_test"), false, now()).await;
@@ -782,7 +776,7 @@ mod tests {
     #[tokio::test]
     async fn a_two_hundred_that_is_not_a_snapshot_is_refused_with_stable_copy() {
         let (origin, _) = spawn_backend(vec![(200, r#"{"unexpected": true}"#.into())]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let read = client.read(&origin, Some("sk_test"), false, now()).await;
         assert!(read.snapshot.is_none());
         assert_eq!(
@@ -838,7 +832,7 @@ mod tests {
             (200, snapshot_body("starter", 2_000)),
             (500, r#"{"detail":"no provider"}"#.into()),
         ]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         let error = client
             .billing_url(&origin, Some("sk_test"), BillingAction::Upgrade, None)
@@ -854,7 +848,7 @@ mod tests {
             (200, snapshot_body("starter", 2_000)),
             (200, r#"{"not_a_url": true}"#.into()),
         ]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         let error = client
             .billing_url(&origin, Some("sk_test"), BillingAction::Manage, None)
@@ -876,7 +870,7 @@ mod tests {
                 r#"{"url":"https://checkout.test/session/abc","mode":"provider"}"#.into(),
             ),
         ]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         let url = client
             .billing_url(&origin, Some("sk_test"), BillingAction::Manage, None)
@@ -894,7 +888,7 @@ mod tests {
                 r#"{"url":"https://app.test/usage?upgrade=starter","mode":"hosted_web"}"#.into(),
             ),
         ]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         let error = client
             .billing_url(
@@ -921,7 +915,7 @@ mod tests {
                 r#"{"url":"https://checkout.test/session/abc","mode":"provider","session_id":"cs_test_1"}"#.into(),
             ),
         ]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         let url = client
             .billing_url(
@@ -944,7 +938,7 @@ mod tests {
                 r#"{"url":"https://checkout.test/session/abc","mode":"provider"}"#.into(),
             ),
         ]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         let error = client
             .billing_url(
@@ -964,7 +958,7 @@ mod tests {
 
     #[tokio::test]
     async fn billing_requires_a_signed_in_device() {
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let error = client
             .billing_url("http://127.0.0.1:1", None, BillingAction::Manage, None)
             .await

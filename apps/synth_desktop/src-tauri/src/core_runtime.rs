@@ -42,7 +42,11 @@ impl CoreRuntime {
         let backend = crate::synth_config::resolve().context("resolve Synth backend")?;
         let intern = Arc::new(match backend.api_key {
             Some(api_key) => {
-                InternRuntime::configured(&backend.backend_url, api_key, Duration::from_secs(30))
+                InternRuntime::configured(
+                    &backend.backend_url,
+                    api_key,
+                    crate::limits::INTERN_HTTP_TIMEOUT,
+                )
                     .context("configure Rust Intern runtime")?
             }
             None => InternRuntime::unconfigured(),
@@ -269,7 +273,11 @@ impl CoreRuntime {
         match backend.api_key {
             Some(api_key) => {
                 self.intern
-                    .reconfigure(&backend.backend_url, api_key, Duration::from_secs(30))
+                    .reconfigure(
+                        &backend.backend_url,
+                        api_key,
+                        crate::limits::INTERN_HTTP_TIMEOUT,
+                    )
                     .await
                     .context("reconfigure Rust Intern runtime")?;
                 self.resume_intern_providers_inner(false)
