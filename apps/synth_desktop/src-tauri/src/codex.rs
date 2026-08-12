@@ -1,8 +1,9 @@
 use crate::core_runtime::CoreRuntime;
 use crate::credential_broker::{self, CredentialBroker};
+use crate::contract::events::EventChannel;
 use crate::domain::{
-    RunCreate, RunService, RunStatus, SessionCreate, SessionKind, SessionService, SessionStatus,
-    SessionTitleOrigin,
+    RunCreate, RunService, RunStatus, RuntimeTarget, SessionCreate, SessionKind, SessionService,
+    SessionStatus, SessionTitleOrigin,
 };
 use crate::storage::{
     CostSource, EventAppend, EventSource, MeasurementKind, UsageRecord, UsageRecordsRepository,
@@ -29,7 +30,7 @@ use tokio::{
     sync::{oneshot, Mutex, RwLock},
 };
 
-const EVENT_NAME: &str = "codex:event";
+const EVENT_NAME: &str = EventChannel::CODEX;
 const MIN_AUTO_COMPACT_TOKEN_LIMIT: u64 = 16_000;
 const COMPACT_PROMPT: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION for a coding agent.\nWrite a handoff for another LLM that will continue the same workspace task.\nInclude:\n- Goal and acceptance criteria\n- Files read/changed (paths + one-line why)\n- Commands/tests run and outcomes\n- Decisions and constraints\n- Open bugs / next concrete steps\n- Any secrets-safe identifiers (branch names, ticket ids) needed to continue\nOmit raw file dumps, full command logs, and superseded plans.\nBe concise and structured (bullets).";
 
@@ -617,12 +618,10 @@ impl CodexManager {
                 id: request.session_id.clone(),
                 title,
                 kind: SessionKind::Codex,
-                target: json!({
-                    "kind": "codex",
-                    "model": session.model,
-                    "workspace": request.workspace,
-                    "threadId": thread_id,
-                }),
+                target: RuntimeTarget::from_codex_provider(
+                    &session.provider_name,
+                    &session.model,
+                ),
                 project_id: None,
                 remote_id: None,
                 codex_thread_id: Some(thread_id.clone()),
@@ -3019,7 +3018,7 @@ mod tests {
                 id: "orphan".into(),
                 title: "Orphaned local turn".into(),
                 kind: SessionKind::Codex,
-                target: json!({"kind":"codex"}),
+                target: RuntimeTarget::local_laguna(),
                 project_id: None,
                 remote_id: None,
                 codex_thread_id: Some("thread-orphan".into()),
@@ -3089,7 +3088,7 @@ mod tests {
                 id: "orphan-after-graceful-exit".into(),
                 title: "Partially reconciled local turn".into(),
                 kind: SessionKind::Codex,
-                target: json!({"kind":"codex"}),
+                target: RuntimeTarget::local_laguna(),
                 project_id: None,
                 remote_id: None,
                 codex_thread_id: Some("thread-partial".into()),
@@ -3386,7 +3385,7 @@ mod tests {
                 id: "half-reconciled".into(),
                 title: "Half reconciled".into(),
                 kind: SessionKind::Codex,
-                target: json!({"kind":"codex"}),
+                target: RuntimeTarget::local_laguna(),
                 project_id: None,
                 remote_id: None,
                 codex_thread_id: Some("thread-half".into()),

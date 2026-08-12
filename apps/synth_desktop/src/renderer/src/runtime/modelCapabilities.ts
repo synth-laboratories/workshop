@@ -28,7 +28,7 @@ export type ModelKnobSpec = {
 
 export type ModelCapabilitySpec = {
 	targetId: string;
-	target: { kind: "local" } | { kind: "remote"; models: string[] };
+	target: { kind: "local" } | { kind: "remote" | "cloud"; models: string[] };
 	knobs: ModelKnobSpec[];
 	/**
 	 * How the provider's reasoning payload may be shown in the transcript.
@@ -144,7 +144,7 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 	},
 	{
 		targetId: "synth-cloud-laguna-s",
-		target: { kind: "remote", models: [SYNTH_CLOUD_LAGUNA_S_MODEL] },
+		target: { kind: "cloud", models: [SYNTH_CLOUD_LAGUNA_S_MODEL] },
 		knobs: [{
 			id: "reasoning",
 			label: "Thinking",

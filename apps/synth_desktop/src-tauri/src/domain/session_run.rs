@@ -1,4 +1,4 @@
-use super::SessionKind;
+use super::{RuntimeTarget, SessionKind};
 use crate::storage::{
     append_event, AppEvent, CommandReceiptRecord, Database, EventAppend, EventSource, RunRecord,
     SessionRecord,
@@ -156,7 +156,7 @@ pub struct SessionCreate {
     pub id: String,
     pub title: String,
     pub kind: SessionKind,
-    pub target: Value,
+    pub target: RuntimeTarget,
     pub project_id: Option<String>,
     pub remote_id: Option<String>,
     pub codex_thread_id: Option<String>,
@@ -553,15 +553,18 @@ fn upsert_session(
             );
         }
     }
+    let target_json = input.target.to_json_value().to_string();
+    let runtime_target_kind = input.target.kind_str();
     conn.execute(
         "INSERT INTO sessions(
-            id, title, kind, target_json, project_id, remote_id, codex_thread_id, status,
+            id, title, kind, target_json, runtime_target_kind, project_id, remote_id, codex_thread_id, status,
             state_generation, latest_cursor, metadata_json, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?11)
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?12)
          ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
             target_json = excluded.target_json,
+            runtime_target_kind = excluded.runtime_target_kind,
             project_id = COALESCE(excluded.project_id, sessions.project_id),
             remote_id = COALESCE(excluded.remote_id, sessions.remote_id),
             codex_thread_id = COALESCE(excluded.codex_thread_id, sessions.codex_thread_id),
@@ -573,7 +576,8 @@ fn upsert_session(
             input.id,
             input.title,
             input.kind.as_str(),
-            input.target.to_string(),
+            target_json,
+            runtime_target_kind,
             input.project_id,
             input.remote_id,
             input.codex_thread_id,
@@ -815,7 +819,7 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> 
         id: row.get(0)?,
         title: row.get(1)?,
         kind: row.get(2)?,
-        target_json: json_value(row.get(3)?),
+        target: parse_target_json(row.get(3)?),
         project_id: row.get(4)?,
         remote_id: row.get(5)?,
         codex_thread_id: row.get(6)?,
@@ -906,6 +910,11 @@ fn json_value(raw: String) -> Value {
     serde_json::from_str(&raw).unwrap_or(Value::Null)
 }
 
+fn parse_target_json(raw: String) -> RuntimeTarget {
+    let value = json_value(raw);
+    RuntimeTarget::from_json_value_lenient(&value)
+}
+
 fn optional_json(raw: Option<String>) -> Option<Value> {
     raw.and_then(|value| serde_json::from_str(&value).ok())
 }
@@ -929,7 +938,7 @@ mod tests {
                 id: "session-1".into(),
                 title: "Test".into(),
                 kind: SessionKind::Codex,
-                target: json!({"kind":"codex"}),
+                target: RuntimeTarget::local_laguna(),
                 project_id: None,
                 remote_id: None,
                 codex_thread_id: Some("thread-1".into()),

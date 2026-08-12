@@ -232,9 +232,14 @@ fn attach_session(
             .query_row(
                 "SELECT id FROM sessions
                  WHERE remote_id = ?1
-                   AND json_extract(target_json, '$.kind') = 'intern'
-                   AND (json_extract(target_json, '$.mode') = 'async'
-                        OR json_extract(target_json, '$.intern.runtimeKind') = 'async')
+                   AND (
+                        runtime_target_kind = 'intern'
+                        OR json_extract(target_json, '$.kind') = 'intern'
+                   )
+                   AND (
+                        json_extract(target_json, '$.mode') = 'async'
+                        OR json_extract(target_json, '$.intern.runtimeKind') = 'async'
+                   )
                  ORDER BY updated_at DESC, id ASC LIMIT 1",
                 params![binding.runtime_id],
                 |row| row.get(0),
@@ -274,19 +279,14 @@ fn attach_session(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    let mut target = existing
-        .as_ref()
-        .and_then(|(target, _)| serde_json::from_str(target).ok())
-        .unwrap_or_else(|| json!({"kind": "intern"}));
-    let target_intern = object_entry(&mut target, "intern");
-    target_intern.insert(
-        "runtimeKind".into(),
-        serde_json::to_value(binding.runtime_kind)?,
-    );
-    target_intern.insert(
-        "runtimeId".into(),
-        Value::String(binding.runtime_id.clone()),
-    );
+    let mode = match binding.runtime_kind {
+        RuntimeKind::Sync => crate::domain::InternMode::Sync,
+        RuntimeKind::Async => crate::domain::InternMode::Async,
+    };
+    let target = crate::domain::RuntimeTarget::InternRuntime {
+        mode,
+        binding: None,
+    };
     let mut metadata = existing
         .as_ref()
         .and_then(|(_, metadata)| serde_json::from_str(metadata).ok())
@@ -302,13 +302,14 @@ fn attach_session(
     );
     conn.execute(
         "INSERT INTO sessions(
-            id, title, kind, target_json, remote_id, status, latest_cursor,
+            id, title, kind, target_json, runtime_target_kind, remote_id, status, latest_cursor,
             metadata_json, created_at, updated_at
-         ) VALUES (?1, ?2, 'intern', ?3, ?4, 'ready', 0, ?5, ?6, ?6)
+         ) VALUES (?1, ?2, 'intern', ?3, ?4, ?5, 'ready', 0, ?6, ?7, ?7)
          ON CONFLICT(id) DO UPDATE SET
             remote_id = excluded.remote_id,
             kind = excluded.kind,
             target_json = excluded.target_json,
+            runtime_target_kind = excluded.runtime_target_kind,
             metadata_json = excluded.metadata_json,
             updated_at = excluded.updated_at",
         params![
@@ -317,7 +318,8 @@ fn attach_session(
                 .title
                 .clone()
                 .unwrap_or_else(|| format!("Intern {}", binding.runtime_id)),
-            target.to_string(),
+            target.to_json_value().to_string(),
+            target.kind_str(),
             binding.runtime_id,
             metadata.to_string(),
             now,

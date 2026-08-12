@@ -326,6 +326,21 @@ Lanes: 1, 2, 3 are independent and can run in parallel; 4 is cheaper after
 1; 0 first, always. Wave 2 has same-day interim wins that don't wait for
 specta (const event names, typed invoke map, `RuntimeTarget` enum).
 
+### Wave 2 interim landed (2026-08-11)
+
+- Rust `domain/runtime_target.rs` + `SessionRecord.target: RuntimeTarget`
+- DB migration 9: `runtime_target_kind` column + legacy remote+synth-cloud → cloud
+- `contract/{events,commands}.rs` ↔ renderer `bridge/protocolConstants.ts`
+- Typed `invokeCommand` skeleton; `desktopBridge.ts` migrated off raw channel/command literals
+
+### Wave 2 remaining (specta / full boundary)
+
+- Generate renderer bindings with tauri-specta for ~120 commands (retire hand `COMMANDS` map)
+- Origin-tagged `Event` (`Provider | Desktop`); collapse dual `codex:event` + `runtime:event` emission
+- Shrink `env.d.ts` to Window decls; retire or generate `packages/runtime-protocol`
+- CI drift check: fail when Rust command/event consts ≠ TS bridge consts
+- Quarantine `window.__synthEval` / legacy `/v1/*` from packaged builds
+
 Synonyms still present in the SynthStyle audit text (`SessionTarget`,
 `ExecutionTarget`, `Inventory`): treat as historical; this section is
 authoritative for new work. Update the audit on the next style-doc pass.

@@ -1,8 +1,10 @@
+use crate::domain::RuntimeTarget;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const APP_EVENT_SCHEMA_VERSION: &str = "synth.desktop-app-event.v1";
-pub const SCHEMA_VERSION: i64 = 7;
+/// Matches `storage/migrations.rs` `MIGRATIONS.len()` after migrations 9+10.
+pub const SCHEMA_VERSION: i64 = 10;
 
 fn default_session_kind() -> String {
     "codex".into()
@@ -74,10 +76,11 @@ pub struct SessionRecord {
     pub id: String,
     pub title: String,
     /// SessionKind as a DB/wire string (`codex` | `intern`). Prefer
-    /// `SessionKind::parse` at call sites — do not re-read `target_json.kind`.
+    /// `SessionKind::parse` at call sites — do not re-read `target.kind`.
     #[serde(default = "default_session_kind")]
     pub kind: String,
-    pub target_json: Value,
+    /// Typed runtime substrate (DB column remains `target_json`).
+    pub target: RuntimeTarget,
     pub project_id: Option<String>,
     pub remote_id: Option<String>,
     pub codex_thread_id: Option<String>,
@@ -88,6 +91,13 @@ pub struct SessionRecord {
     pub metadata: Value,
     pub created_at: String,
     pub updated_at: String,
+}
+
+impl SessionRecord {
+    /// Opaque JSON bag for call sites that still need `Value` (prefer `target`).
+    pub fn target_json(&self) -> Value {
+        self.target.to_json_value()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

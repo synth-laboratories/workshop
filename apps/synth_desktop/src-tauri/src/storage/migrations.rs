@@ -12,6 +12,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_7,
     MIGRATION_8,
     MIGRATION_9,
+    MIGRATION_10,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -657,6 +658,38 @@ WHERE json_extract(target_json, '$.kind') = 'intern';
 CREATE INDEX IF NOT EXISTS sessions_kind ON sessions(kind);
 "#;
 
+/// Typed RuntimeTarget index + normalize legacy remote+synth-cloud bags to cloud.
+const MIGRATION_10: &str = r#"
+ALTER TABLE sessions ADD COLUMN runtime_target_kind TEXT NOT NULL DEFAULT 'local';
+
+UPDATE sessions SET runtime_target_kind = CASE
+    WHEN json_extract(target_json, '$.kind') = 'intern' THEN 'intern'
+    WHEN json_extract(target_json, '$.kind') = 'cloud' THEN 'cloud'
+    WHEN json_extract(target_json, '$.kind') = 'remote'
+         AND json_extract(target_json, '$.provider') = 'synth-cloud' THEN 'cloud'
+    WHEN json_extract(target_json, '$.kind') = 'remote' THEN 'remote'
+    WHEN json_extract(target_json, '$.kind') = 'local' THEN 'local'
+    WHEN json_extract(target_json, '$.kind') = 'codex' THEN 'local'
+    ELSE 'local'
+END;
+
+-- Canonical CloudRuntime wire: kind=cloud (drop provider=synth-cloud).
+UPDATE sessions
+SET target_json = json_object(
+    'kind', 'cloud',
+    'model', COALESCE(json_extract(target_json, '$.model'), ''),
+    'adapter', json_extract(target_json, '$.adapter')
+)
+WHERE runtime_target_kind = 'cloud'
+  AND (
+    json_extract(target_json, '$.kind') = 'remote'
+    OR json_extract(target_json, '$.provider') = 'synth-cloud'
+  );
+
+CREATE INDEX IF NOT EXISTS sessions_runtime_target_kind
+ON sessions(runtime_target_kind);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -706,7 +739,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 9);
+        assert_eq!(apply_migrations(&conn).unwrap(), 10);
         let updated_at: String = conn
             .query_row(
                 "SELECT updated_at FROM runs WHERE id = 'run-1'",
@@ -766,7 +799,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 9);
+        assert_eq!(apply_migrations(&conn).unwrap(), 10);
 
         let (ledger_rows, ledger_cost): (i64, f64) = conn
             .query_row(
@@ -818,7 +851,7 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 9);
+        assert_eq!(apply_migrations(&conn).unwrap(), 10);
 
         let imported: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
@@ -875,7 +908,7 @@ mod tests {
         conn.execute_batch(partial).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 7);
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 9);
+        assert_eq!(apply_migrations(&conn).unwrap(), 10);
         let (copies, leftovers): (i64, i64) = conn
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM usage_records WHERE request_id='req-1'),
@@ -902,7 +935,7 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(apply_migrations(&conn).unwrap(), 9);
+        assert_eq!(apply_migrations(&conn).unwrap(), 10);
         let kinds: Vec<(String, String)> = {
             let mut stmt = conn
                 .prepare("SELECT id, kind FROM sessions ORDER BY id")
@@ -939,6 +972,37 @@ mod tests {
         assert_eq!(probe, 0, "the failed migration's table must roll back");
         assert_eq!(version, 7);
         // The connection stays usable and the real migration still applies.
-        assert_eq!(apply_migrations(&conn).unwrap(), 9);
+        assert_eq!(apply_migrations(&conn).unwrap(), 10);
+    }
+
+    #[test]
+    fn migration_10_indexes_runtime_target_kind_and_normalizes_cloud() {
+        let conn = seed_at_version(9);
+        conn.execute(
+            "INSERT INTO sessions(id, title, target_json, status, created_at, updated_at)
+             VALUES ('cloud-1', 'Cloud', ?1, 'ready', 'now', 'now')",
+            [r#"{"kind":"remote","provider":"synth-cloud","model":"openrouter/poolside/laguna-s-2.1","adapter":null}"#],
+        )
+        .unwrap();
+        assert_eq!(apply_migrations(&conn).unwrap(), 10);
+        let (kind, target): (String, String) = conn
+            .query_row(
+                "SELECT runtime_target_kind, target_json FROM sessions WHERE id='cloud-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "cloud");
+        assert!(
+            target.contains(r#""kind":"cloud""#) || target.contains(r#""kind": "cloud""#)
+        );
+        let indexed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='sessions_runtime_target_kind'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 1);
     }
 }

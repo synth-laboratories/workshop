@@ -1,0 +1,11 @@
+//! Interlanguage boundary constants (Wave 2 interim).
+//!
+//! Full tauri-specta codegen lands later; until then event channel names and
+//! command strings are shared via these modules so Rust and TS stay aligned
+//! without hand-written string literals at call sites.
+
+pub mod commands;
+pub mod events;
+
+pub use commands::COMMANDS;
+pub use events::{EventChannel, EVENT_CHANNELS};

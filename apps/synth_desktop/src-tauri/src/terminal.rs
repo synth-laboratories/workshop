@@ -283,7 +283,7 @@ fn spawn_reader(app: AppHandle, session: Arc<TerminalSession>, mut reader: Box<d
                         },
                         size,
                     );
-                    let _ = app.emit("terminal:event", event);
+                    let _ = app.emit(crate::contract::events::EventChannel::TERMINAL, event);
                 }
                 Err(error) => {
                     let event = session.record(
@@ -297,7 +297,7 @@ fn spawn_reader(app: AppHandle, session: Arc<TerminalSession>, mut reader: Box<d
                         },
                         0,
                     );
-                    let _ = app.emit("terminal:event", event);
+                    let _ = app.emit(crate::contract::events::EventChannel::TERMINAL, event);
                     break;
                 }
             }
@@ -323,7 +323,7 @@ fn spawn_reader(app: AppHandle, session: Arc<TerminalSession>, mut reader: Box<d
             },
             0,
         );
-        let _ = app.emit("terminal:event", event);
+        let _ = app.emit(crate::contract::events::EventChannel::TERMINAL, event);
     });
 }
 

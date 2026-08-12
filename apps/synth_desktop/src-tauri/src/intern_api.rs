@@ -4,7 +4,8 @@ use crate::cloud::intern::{
 };
 use crate::core_runtime::CoreRuntime;
 use crate::domain::{
-    CommandReceiptInput, RunCreate, RunStatus, SessionCreate, SessionKind, SessionStatus,
+    CommandReceiptInput, InternMode, RunCreate, RunStatus, RuntimeTarget, SessionCreate,
+    SessionKind, SessionStatus,
 };
 use crate::storage::{EventSource, SessionRecord};
 use anyhow::{bail, Context, Result};
@@ -154,7 +155,15 @@ pub async fn create(
             "Background Intern".into()
         }
     });
-    let target = serde_json::to_value(&request.target)?;
+    let target = RuntimeTarget::InternRuntime {
+        mode: InternMode::parse(&request.target.mode).context("invalid Intern mode")?,
+        binding: Some(crate::domain::InternBinding {
+            factory_id: binding_request.factory_id.clone(),
+            project_id: binding_request.project_id.clone(),
+            effort_id: binding_request.effort_id.clone(),
+            run_id: binding_request.run_id.clone(),
+        }),
+    };
     let created = core
         .sessions()
         .create_or_update(SessionCreate {
@@ -270,12 +279,7 @@ async fn existing_async_binding(core: &CoreRuntime) -> Result<Option<SessionReco
                     .and_then(Value::as_str)
                     != Some("demo")
                 && session.kind == SessionKind::Intern.as_str()
-                && (session.target_json.get("mode").and_then(Value::as_str) == Some("async")
-                    || session
-                        .target_json
-                        .pointer("/intern/runtimeKind")
-                        .and_then(Value::as_str)
-                        == Some("async"))
+                && session.target.intern_mode() == Some(InternMode::Async)
         }))
 }
 
@@ -562,13 +566,10 @@ async fn finish_command(
 
 fn intern_identity(session: &SessionRecord) -> Result<(&str, String)> {
     let mode = session
-        .target_json
-        .get("mode")
-        .and_then(Value::as_str)
-        .context("Intern session mode is missing")?;
-    if !matches!(mode, "sync" | "async") {
-        bail!("invalid Intern session mode");
-    }
+        .target
+        .intern_mode()
+        .context("Intern session mode is missing")?
+        .as_str();
     let remote = session
         .remote_id
         .clone()
@@ -586,7 +587,7 @@ impl From<SessionRecord> for InternSessionWire {
         Self {
             id: value.id,
             title: value.title,
-            target: value.target_json,
+            target: value.target.to_json_value(),
             project_id: value.project_id,
             remote_id: value.remote_id,
             created_at: value.created_at,
@@ -887,7 +888,10 @@ mod tests {
                 id: "legacy-demo-async".into(),
                 title: "Async Intern".into(),
                 kind: SessionKind::Intern,
-                target: json!({"kind":"intern","mode":"async"}),
+                target: RuntimeTarget::InternRuntime {
+                    mode: InternMode::Async,
+                    binding: None,
+                },
                 project_id: None,
                 remote_id: Some("demo-async-org-singleton".into()),
                 codex_thread_id: None,

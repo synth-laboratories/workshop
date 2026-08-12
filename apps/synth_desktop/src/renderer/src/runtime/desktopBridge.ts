@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { COMMANDS, EVENT_CHANNELS, invokeCommand } from "../bridge";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
@@ -139,11 +139,11 @@ export function installDesktopBridge(): void {
 			return Promise.all(paths.map(async (path): Promise<ComposerImageAttachment> => ({
 				path,
 				name: path.split("/").at(-1) ?? "Screenshot",
-				previewUrl: await invoke<string>("desktop_image_preview", { path })
+				previewUrl: await invokeCommand<string>(COMMANDS.DESKTOP_IMAGE_PREVIEW, { path })
 			})));
 		},
 		getInstanceDiagnostics: () => isTauri
-			? invoke<DesktopInstanceDiagnostics>("desktop_instance_diagnostics")
+			? invokeCommand<DesktopInstanceDiagnostics>(COMMANDS.DESKTOP_INSTANCE_DIAGNOSTICS)
 			: Promise.resolve({
 				mode: "development", name: "browser", displayName: "Synth Desktop · browser",
 				appVersion: desktopPackage.version, sourceRevision: "vite", buildRevision: "vite",
@@ -152,7 +152,7 @@ export function installDesktopBridge(): void {
 			}),
 		chooseWorkspaceDirectory: async () => {
 			if (!isTauri) return null;
-			const selection = await invoke<string | null>("workspace_choose_directory").catch(() =>
+			const selection = await invokeCommand<string | null>(COMMANDS.WORKSPACE_CHOOSE_DIRECTORY).catch(() =>
 				open({ directory: true, multiple: false })
 			);
 			return typeof selection === "string" ? selection : null;
@@ -160,22 +160,22 @@ export function installDesktopBridge(): void {
 	};
 	window.synthLaguna ??= isTauri
 		? {
-			getStatus: () => invoke<LagunaStatus>("laguna_get_status"),
-			reload: () => invoke<LagunaStatus>("laguna_reload"),
-			freeMemory: () => invoke<{ released: boolean; conflict: boolean; detail: string | null }>("laguna_model_unload"),
-			listModels: () => invoke<LagunaModelHit[]>("laguna_models_list"),
+			getStatus: () => invokeCommand<LagunaStatus>(COMMANDS.LAGUNA_GET_STATUS),
+			reload: () => invokeCommand<LagunaStatus>(COMMANDS.LAGUNA_RELOAD),
+			freeMemory: () => invokeCommand<{ released: boolean; conflict: boolean; detail: string | null }>(COMMANDS.LAGUNA_MODEL_UNLOAD),
+			listModels: () => invokeCommand<LagunaModelHit[]>(COMMANDS.LAGUNA_MODELS_LIST),
 			chooseModelDirectory: async () => {
 				const selection = await open({ directory: true, multiple: false, title: "Choose a Laguna model folder" });
 				return typeof selection === "string" ? selection : null;
 			},
-			setModelDirectory: (path) => invoke<LagunaModelHit>("laguna_models_set_directory", { path }),
-			clearModelDirectory: () => invoke<void>("laguna_models_clear_directory"),
-			downloadModel: (modelId) => invoke<LagunaModelHit>("laguna_model_download", { modelId }),
-			deleteModel: (modelId) => invoke<void>("laguna_model_delete", { modelId }),
+			setModelDirectory: (path) => invokeCommand<LagunaModelHit>(COMMANDS.LAGUNA_MODELS_SET_DIRECTORY, { path }),
+			clearModelDirectory: () => invokeCommand<void>(COMMANDS.LAGUNA_MODELS_CLEAR_DIRECTORY),
+			downloadModel: (modelId) => invokeCommand<LagunaModelHit>(COMMANDS.LAGUNA_MODEL_DOWNLOAD, { modelId }),
+			deleteModel: (modelId) => invokeCommand<void>(COMMANDS.LAGUNA_MODEL_DELETE, { modelId }),
 			onDownloadProgress(listener) {
 				let disposed = false;
 				let unlisten: (() => void) | undefined;
-				void listen<LagunaDownloadProgress>("laguna:download", ({ payload }) => listener(payload)).then((next) => {
+				void listen<LagunaDownloadProgress>(EVENT_CHANNELS.LAGUNA_DOWNLOAD, ({ payload }) => listener(payload)).then((next) => {
 					if (disposed) next();
 					else unlisten = next;
 				});
@@ -185,12 +185,12 @@ export function installDesktopBridge(): void {
 				let disposed = false;
 				let unlisten: (() => void) | undefined;
 				const refresh = () => {
-					void invoke<LagunaStatus>("laguna_get_status").then((status) => {
+					void invokeCommand<LagunaStatus>(COMMANDS.LAGUNA_GET_STATUS).then((status) => {
 						if (!disposed) listener(status);
 					}).catch(() => undefined);
 				};
 				const poll = window.setInterval(refresh, 5_000);
-				void listen<LagunaStatus>("laguna:status", ({ payload }) => listener(payload)).then((next) => {
+				void listen<LagunaStatus>(EVENT_CHANNELS.LAGUNA_STATUS, ({ payload }) => listener(payload)).then((next) => {
 					if (disposed) next();
 					else unlisten = next;
 				});
@@ -211,30 +211,30 @@ export function installDesktopBridge(): void {
 		};
 	window.synthWhisper ??= isTauri
 		? {
-			getRuntimeStatus: () => invoke<WhisperRuntimeStatus>("whisper_runtime_status"),
-			warmSelected: () => invoke<WhisperRuntimeStatus>("whisper_runtime_warm"),
+			getRuntimeStatus: () => invokeCommand<WhisperRuntimeStatus>(COMMANDS.WHISPER_RUNTIME_STATUS),
+			warmSelected: () => invokeCommand<WhisperRuntimeStatus>(COMMANDS.WHISPER_RUNTIME_WARM),
 			onRuntimeStatus: (listener) => {
 				let unlisten: (() => void) | undefined;
-				void listen<WhisperRuntimeStatus>("whisper:runtime", (event) => listener(event.payload)).then((dispose) => { unlisten = dispose; });
+				void listen<WhisperRuntimeStatus>(EVENT_CHANNELS.WHISPER_RUNTIME, (event) => listener(event.payload)).then((dispose) => { unlisten = dispose; });
 				return () => unlisten?.();
 			},
-			listModels: () => invoke<WhisperModelHit[]>("whisper_models_list"),
-			downloadModel: (id) => invoke<WhisperModelHit>("whisper_model_download", { id }),
+			listModels: () => invokeCommand<WhisperModelHit[]>(COMMANDS.WHISPER_MODELS_LIST),
+			downloadModel: (id) => invokeCommand<WhisperModelHit>(COMMANDS.WHISPER_MODEL_DOWNLOAD, { id }),
 			onDownloadProgress(listener) {
 				let disposed = false;
 				let unlisten: (() => void) | undefined;
-				void listen<WhisperDownloadProgress>("whisper:download", ({ payload }) => listener(payload)).then((next) => {
+				void listen<WhisperDownloadProgress>(EVENT_CHANNELS.WHISPER_DOWNLOAD, ({ payload }) => listener(payload)).then((next) => {
 					if (disposed) next();
 					else unlisten = next;
 				});
 				return () => { disposed = true; unlisten?.(); };
 			},
-			setSelected: (id) => invoke<void>("whisper_models_set_selected", { id }),
-			clearModel: (id) => invoke<void>("whisper_models_clear", { id }),
+			setSelected: (id) => invokeCommand<void>(COMMANDS.WHISPER_MODELS_SET_SELECTED, { id }),
+			clearModel: (id) => invokeCommand<void>(COMMANDS.WHISPER_MODELS_CLEAR, { id }),
 			transcribe: (audioPath) =>
-				invoke<{ text: string }>("whisper_transcribe", { audioPath }).then((result) => result.text),
+				invokeCommand<{ text: string }>(COMMANDS.WHISPER_TRANSCRIBE, { audioPath }).then((result) => result.text),
 			transcribeAudio: (base64, mimeType) =>
-				invoke<{ text: string }>("whisper_transcribe_base64", { audioBase64: base64, mimeType }).then(
+				invokeCommand<{ text: string }>(COMMANDS.WHISPER_TRANSCRIBE_BASE64, { audioBase64: base64, mimeType }).then(
 					(result) => result.text
 				)
 		}
@@ -248,15 +248,15 @@ export function installDesktopBridge(): void {
 		};
 	window.synthCore ??= isTauri
 		? {
-			diagnostics: () => invoke<CoreDiagnostics>("core_diagnostics"),
+			diagnostics: () => invokeCommand<CoreDiagnostics>(COMMANDS.CORE_DIAGNOSTICS),
 			eventsAfter: (afterSequence = 0, limit) =>
-				invoke<AppEvent[]>("core_events_after", { afterSequence, limit }),
+				invokeCommand<AppEvent[]>(COMMANDS.CORE_EVENTS_AFTER, { afterSequence, limit }),
 			sessionEventsAfter: (sessionId, afterSequence = 0, limit) =>
-				invoke<AppEvent[]>("core_session_events_after", { sessionId, afterSequence, limit }),
+				invokeCommand<AppEvent[]>(COMMANDS.CORE_SESSION_EVENTS_AFTER, { sessionId, afterSequence, limit }),
 			onEvent(listener) {
 				let disposed = false;
 				let unlisten: (() => void) | undefined;
-				void listen<AppEvent>("runtime:event", ({ payload }) => listener(payload)).then((next) => {
+				void listen<AppEvent>(EVENT_CHANNELS.RUNTIME, ({ payload }) => listener(payload)).then((next) => {
 					if (disposed) next();
 					else unlisten = next;
 				});
@@ -266,16 +266,16 @@ export function installDesktopBridge(): void {
 		: browserCoreBridge();
 	window.synthIntern ??= isTauri
 		? {
-			listSessions: () => invoke<Session[]>("intern_sessions_list"),
-			createSession: (request) => invoke<Session>("intern_session_create", { request }),
-			send: (request) => invoke<{ runId: string }>("intern_session_send", { request }),
-			control: (request) => invoke<{ accepted: boolean; receipt?: unknown }>("intern_session_control", { request }),
+			listSessions: () => invokeCommand<Session[]>(COMMANDS.INTERN_SESSIONS_LIST),
+			createSession: (request) => invokeCommand<Session>(COMMANDS.INTERN_SESSION_CREATE, { request }),
+			send: (request) => invokeCommand<{ runId: string }>(COMMANDS.INTERN_SESSION_SEND, { request }),
+			control: (request) => invokeCommand<{ accepted: boolean; receipt?: unknown }>(COMMANDS.INTERN_SESSION_CONTROL, { request }),
 			eventsAfter: (sessionId, afterSequence = 0, limit) =>
-				invoke<AppEvent[]>("intern_session_events_after", { sessionId, afterSequence, limit }),
+				invokeCommand<AppEvent[]>(COMMANDS.INTERN_SESSION_EVENTS_AFTER, { sessionId, afterSequence, limit }),
 			onEvent(listener) {
 				let disposed = false;
 				let unlisten: (() => void) | undefined;
-				void listen<AppEvent>("runtime:event", ({ payload }) => {
+				void listen<AppEvent>(EVENT_CHANNELS.RUNTIME, ({ payload }) => {
 					if (payload.source === "intern") listener(payload);
 				}).then((next) => disposed ? next() : (unlisten = next));
 				return () => { disposed = true; unlisten?.(); };
@@ -284,13 +284,13 @@ export function installDesktopBridge(): void {
 		: browserInternBridge();
 	window.synthAccount ??= isTauri
 		? {
-			beginSignIn: () => invoke<SynthSignInBegin>("account_begin_sign_in"),
-			pollSignIn: () => invoke<SynthSignInPoll>("account_poll_sign_in"),
-			cancelSignIn: () => invoke<void>("account_cancel_sign_in"),
-			signOut: () => invoke<SynthBackendSettings>("account_sign_out"),
-			getSummary: () => invoke<SynthAccountSummary>("account_get_summary"),
-			refresh: () => invoke<SynthAccountSummary>("account_refresh"),
-			openBilling: (action, tier) => invoke<string>("account_open_billing", { action, tier })
+			beginSignIn: () => invokeCommand<SynthSignInBegin>(COMMANDS.ACCOUNT_BEGIN_SIGN_IN),
+			pollSignIn: () => invokeCommand<SynthSignInPoll>(COMMANDS.ACCOUNT_POLL_SIGN_IN),
+			cancelSignIn: () => invokeCommand<void>(COMMANDS.ACCOUNT_CANCEL_SIGN_IN),
+			signOut: () => invokeCommand<SynthBackendSettings>(COMMANDS.ACCOUNT_SIGN_OUT),
+			getSummary: () => invokeCommand<SynthAccountSummary>(COMMANDS.ACCOUNT_GET_SUMMARY),
+			refresh: () => invokeCommand<SynthAccountSummary>(COMMANDS.ACCOUNT_REFRESH),
+			openBilling: (action, tier) => invokeCommand<string>(COMMANDS.ACCOUNT_OPEN_BILLING, { action, tier })
 		}
 		: {
 			beginSignIn: async () => { throw new Error("Browser sign-in requires Synth Desktop"); },
@@ -303,12 +303,12 @@ export function installDesktopBridge(): void {
 		};
 window.synthConfig ??= isTauri
 		? {
-			get: () => invoke<SynthBackendSettings>("synth_config_get"),
-			update: (request) => invoke<SynthBackendSettings>("synth_config_update", { request }),
-			listModelMultiAgent: () => invoke<ModelMultiAgentSetting[]>("model_multi_agent_list"),
-			updateModelMultiAgent: (request) => invoke<ModelMultiAgentSetting[]>("model_multi_agent_update", { request }),
-			getWorkspaceAccess: () => invoke<WorkspaceAccessSettings>("workspace_access_get"),
-			updateWorkspaceAccess: (request) => invoke<WorkspaceAccessSettings>("workspace_access_update", { request })
+			get: () => invokeCommand<SynthBackendSettings>(COMMANDS.SYNTH_CONFIG_GET),
+			update: (request) => invokeCommand<SynthBackendSettings>(COMMANDS.SYNTH_CONFIG_UPDATE, { request }),
+			listModelMultiAgent: () => invokeCommand<ModelMultiAgentSetting[]>(COMMANDS.MODEL_MULTI_AGENT_LIST),
+			updateModelMultiAgent: (request) => invokeCommand<ModelMultiAgentSetting[]>(COMMANDS.MODEL_MULTI_AGENT_UPDATE, { request }),
+			getWorkspaceAccess: () => invokeCommand<WorkspaceAccessSettings>(COMMANDS.WORKSPACE_ACCESS_GET),
+			updateWorkspaceAccess: (request) => invokeCommand<WorkspaceAccessSettings>(COMMANDS.WORKSPACE_ACCESS_UPDATE, { request })
 		}
 		: {
 			get: async () => ({
@@ -336,14 +336,14 @@ window.synthConfig ??= isTauri
 		};
 window.synthWorkspaceScope ??= isTauri
 	? {
-		get: (sessionId) => invoke("workspace_scope_get", { sessionId }),
-		chooseAndAttach: (sessionId, proposedAccess) => invoke("workspace_scope_choose_and_attach", { sessionId, proposedAccess }),
-		listRecentFolders: () => invoke("workspace_scope_recent_folders"),
-		attachRecent: (sessionId, path) => invoke("workspace_scope_attach_recent", { sessionId, path }),
-		removeAttachment: (sessionId, path) => invoke("workspace_scope_remove_attachment", { sessionId, path }),
-		listGrants: (sessionId) => invoke("workspace_scope_grants_list", { sessionId }),
-		approveRequest: (requestId) => invoke("workspace_scope_approve_request", { requestId }),
-		denyRequest: (requestId) => invoke("workspace_scope_deny_request", { requestId })
+		get: (sessionId) => invokeCommand(COMMANDS.WORKSPACE_SCOPE_GET, { sessionId }),
+		chooseAndAttach: (sessionId, proposedAccess) => invokeCommand(COMMANDS.WORKSPACE_SCOPE_CHOOSE_AND_ATTACH, { sessionId, proposedAccess }),
+		listRecentFolders: () => invokeCommand(COMMANDS.WORKSPACE_SCOPE_RECENT_FOLDERS),
+		attachRecent: (sessionId, path) => invokeCommand(COMMANDS.WORKSPACE_SCOPE_ATTACH_RECENT, { sessionId, path }),
+		removeAttachment: (sessionId, path) => invokeCommand(COMMANDS.WORKSPACE_SCOPE_REMOVE_ATTACHMENT, { sessionId, path }),
+		listGrants: (sessionId) => invokeCommand(COMMANDS.WORKSPACE_SCOPE_GRANTS_LIST, { sessionId }),
+		approveRequest: (requestId) => invokeCommand(COMMANDS.WORKSPACE_SCOPE_APPROVE_REQUEST, { requestId }),
+		denyRequest: (requestId) => invokeCommand(COMMANDS.WORKSPACE_SCOPE_DENY_REQUEST, { requestId })
 	}
 	: {
 		get: async () => null,
@@ -358,16 +358,16 @@ window.synthWorkspaceScope ??= isTauri
 	window.synthTerminal ??= isTauri
 		? {
 			available: true,
-			create: (request) => invoke<TerminalInfo>("terminal_create", { request }),
-			list: (workspaceId) => invoke<TerminalInfo[]>("terminal_list", { workspaceId }),
-			snapshot: (terminalId, afterSequence = 0) => invoke<TerminalEvent[]>("terminal_snapshot", { terminalId, afterSequence }),
-			write: (terminalId, data) => invoke<void>("terminal_write", { terminalId, data }),
-			resize: (terminalId, cols, rows) => invoke<void>("terminal_resize", { terminalId, cols, rows }),
-			close: (terminalId) => invoke<void>("terminal_close", { terminalId }),
+			create: (request) => invokeCommand<TerminalInfo>(COMMANDS.TERMINAL_CREATE, { request }),
+			list: (workspaceId) => invokeCommand<TerminalInfo[]>(COMMANDS.TERMINAL_LIST, { workspaceId }),
+			snapshot: (terminalId, afterSequence = 0) => invokeCommand<TerminalEvent[]>(COMMANDS.TERMINAL_SNAPSHOT, { terminalId, afterSequence }),
+			write: (terminalId, data) => invokeCommand<void>(COMMANDS.TERMINAL_WRITE, { terminalId, data }),
+			resize: (terminalId, cols, rows) => invokeCommand<void>(COMMANDS.TERMINAL_RESIZE, { terminalId, cols, rows }),
+			close: (terminalId) => invokeCommand<void>(COMMANDS.TERMINAL_CLOSE, { terminalId }),
 			onEvent(listener) {
 				let unlisten: (() => void) | undefined;
 				let disposed = false;
-				void listen<TerminalEvent>("terminal:event", ({ payload }) => listener(payload)).then((next) => disposed ? next() : (unlisten = next));
+				void listen<TerminalEvent>(EVENT_CHANNELS.TERMINAL, ({ payload }) => listener(payload)).then((next) => disposed ? next() : (unlisten = next));
 				return () => { disposed = true; unlisten?.(); };
 			}
 		}
@@ -383,12 +383,12 @@ window.synthWorkspaceScope ??= isTauri
 		};
 	window.synthInventory ??= isTauri
 		? {
-			listContainers: () => invoke<ContainerDeployment[]>("inventory_containers_list"),
-			getContainer: (containerId) => invoke<ContainerDeployment>("inventory_containers_get", { containerId }),
-			registerContainer: (request) => invoke<ContainerDeployment>("inventory_containers_register", { request }),
-			probeContainer: (containerId) => invoke<ContainerDeployment>("inventory_containers_probe", { containerId }),
-			listTraces: () => invoke<TraceV5Record[]>("inventory_traces_list"),
-			getTrace: (traceId) => invoke<TraceV5Record>("inventory_traces_get", { traceId }),
+			listContainers: () => invokeCommand<ContainerDeployment[]>(COMMANDS.INVENTORY_CONTAINERS_LIST),
+			getContainer: (containerId) => invokeCommand<ContainerDeployment>(COMMANDS.INVENTORY_CONTAINERS_GET, { containerId }),
+			registerContainer: (request) => invokeCommand<ContainerDeployment>(COMMANDS.INVENTORY_CONTAINERS_REGISTER, { request }),
+			probeContainer: (containerId) => invokeCommand<ContainerDeployment>(COMMANDS.INVENTORY_CONTAINERS_PROBE, { containerId }),
+			listTraces: () => invokeCommand<TraceV5Record[]>(COMMANDS.INVENTORY_TRACES_LIST),
+			getTrace: (traceId) => invokeCommand<TraceV5Record>(COMMANDS.INVENTORY_TRACES_GET, { traceId }),
 			chooseTraceInput: async () => {
 				const selection = await open({
 					directory: false,
@@ -398,11 +398,11 @@ window.synthWorkspaceScope ??= isTauri
 				});
 				return typeof selection === "string" ? selection : null;
 			},
-			ingestTraceBundle: (request) => invoke<TraceBundleIngestResult>("inventory_traces_ingest", { request }),
+			ingestTraceBundle: (request) => invokeCommand<TraceBundleIngestResult>(COMMANDS.INVENTORY_TRACES_INGEST, { request }),
 			resolveTraceProjection: (traceDigest, projectionKind = "rollout-inspector") =>
-				invoke<ResolvedTraceProjection>("inventory_trace_projection_resolve", { traceDigest, projectionKind }),
-			listUsage: (limit = 100) => invoke<UsageLedgerEntry[]>("inventory_usage_list", { limit }),
-			counts: () => invoke<InventoryCounts>("inventory_counts")
+				invokeCommand<ResolvedTraceProjection>(COMMANDS.INVENTORY_TRACE_PROJECTION_RESOLVE, { traceDigest, projectionKind }),
+			listUsage: (limit = 100) => invokeCommand<UsageLedgerEntry[]>(COMMANDS.INVENTORY_USAGE_LIST, { limit }),
+			counts: () => invokeCommand<InventoryCounts>(COMMANDS.INVENTORY_COUNTS)
 		}
 		: {
 			async listContainers() {
@@ -427,12 +427,12 @@ window.synthWorkspaceScope ??= isTauri
 			}
 		};
 	window.synthModelPerformance ??= isTauri
-		? { summaries: () => invoke<ModelPerformanceSummary[]>("model_performance_summary") }
+		? { summaries: () => invokeCommand<ModelPerformanceSummary[]>(COMMANDS.MODEL_PERFORMANCE_SUMMARY) }
 		: { summaries: async () => [] };
 	window.synthUpdates ??= isTauri
 		? {
-			status: () => invoke<UpdateStatus>("update_status"),
-			openDownload: () => invoke<void>("update_open_download")
+			status: () => invokeCommand<UpdateStatus>(COMMANDS.UPDATE_STATUS),
+			openDownload: () => invokeCommand<void>(COMMANDS.UPDATE_OPEN_DOWNLOAD)
 		}
 		: {
 			status: async () => ({
@@ -445,14 +445,14 @@ window.synthWorkspaceScope ??= isTauri
 		};
 	if (isTauri) {
 		window.synthUsage ??= {
-			summary: (window: UsageWindow) => invoke<UsageSummary>("usage_summary", { window })
+			summary: (window: UsageWindow) => invokeCommand<UsageSummary>(COMMANDS.USAGE_SUMMARY, { window })
 		};
 		window.synthTariffs ??= {
-			catalog: () => invoke<TariffCard[]>("tariff_catalog")
+			catalog: () => invokeCommand<TariffCard[]>(COMMANDS.TARIFF_CATALOG)
 		};
 	}
 	window.synthSkills ??= isTauri
-		? { list: () => invoke<SkillHit[]>("skills_list") }
+		? { list: () => invokeCommand<SkillHit[]>(COMMANDS.SKILLS_LIST) }
 		: {
 			list: async () => [
 				{ id: "use-synth-containers", name: "use-synth-containers", description: "Synth container discovery and Trace V5 evidence." },
@@ -463,13 +463,13 @@ window.synthWorkspaceScope ??= isTauri
 		};
 	if (isTauri) {
 		window.synthCodex ??= {
-			defaultWorkspace: () => invoke<string>("codex_default_workspace"),
-			list: () => invoke<PersistedCodexSession[]>("codex_sessions_list"),
-			start: (request) => invoke<CodexSessionInfo>("codex_session_start", { request }),
+			defaultWorkspace: () => invokeCommand<string>(COMMANDS.CODEX_DEFAULT_WORKSPACE),
+			list: () => invokeCommand<PersistedCodexSession[]>(COMMANDS.CODEX_SESSIONS_LIST),
+			start: (request) => invokeCommand<CodexSessionInfo>(COMMANDS.CODEX_SESSION_START, { request }),
 			startTurn: (sessionId, prompt, effort) =>
-				invoke<CodexSessionInfo>("codex_turn_start", { request: { sessionId, prompt, effort } }),
+				invokeCommand<CodexSessionInfo>(COMMANDS.CODEX_TURN_START, { request: { sessionId, prompt, effort } }),
 			sendTurn: (start, prompt, effort, options) =>
-				invoke<CodexSessionInfo>("codex_turn_send", {
+				invokeCommand<CodexSessionInfo>(COMMANDS.CODEX_TURN_SEND, {
 					request: {
 						start,
 						prompt,
@@ -477,16 +477,16 @@ window.synthWorkspaceScope ??= isTauri
 						compactBeforeModelSwitch: Boolean(options?.compactBeforeModelSwitch)
 					}
 				}),
-			interrupt: (sessionId) => invoke<void>("codex_turn_interrupt", { request: { sessionId } }),
-			compact: (request) => invoke<void>("codex_thread_compact", { request }),
+			interrupt: (sessionId) => invokeCommand<void>(COMMANDS.CODEX_TURN_INTERRUPT, { request: { sessionId } }),
+			compact: (request) => invokeCommand<void>(COMMANDS.CODEX_THREAD_COMPACT, { request }),
 			steerTurn: (sessionId, text) =>
-				invoke<void>("codex_turn_steer", { request: { sessionId, text } }),
-			resolveApproval: (sessionId, approvalId, decision) => invoke<void>("codex_approval_resolve", { request: { sessionId, approvalId, decision } }),
-			close: (sessionId) => invoke<void>("codex_session_close", { request: { sessionId } }),
+				invokeCommand<void>(COMMANDS.CODEX_TURN_STEER, { request: { sessionId, text } }),
+			resolveApproval: (sessionId, approvalId, decision) => invokeCommand<void>(COMMANDS.CODEX_APPROVAL_RESOLVE, { request: { sessionId, approvalId, decision } }),
+			close: (sessionId) => invokeCommand<void>(COMMANDS.CODEX_SESSION_CLOSE, { request: { sessionId } }),
 			onEvent(listener) {
 				let disposed = false;
 				let unlisten: (() => void) | undefined;
-				void listen<CodexEvent>("codex:event", ({ payload }) => listener(payload)).then((next) => {
+				void listen<CodexEvent>(EVENT_CHANNELS.CODEX, ({ payload }) => listener(payload)).then((next) => {
 					if (disposed) next();
 					else unlisten = next;
 				});
@@ -494,23 +494,23 @@ window.synthWorkspaceScope ??= isTauri
 			}
 		};
 		window.synthVisuals ??= {
-			listTemplates: (genre) => invoke<VisualTemplateMeta[]>("visuals_templates_list", { genre: genre ?? null }),
-			getTemplate: (templateId) => invoke<VisualTemplateMeta>("visuals_templates_get", { templateId }),
-			list: (query) => invoke<VisualRecord[]>("visuals_list", { query: query ?? null }),
-			get: (visualId) => invoke<VisualRecord>("visuals_get", { visualId }),
-			revisions: (visualId) => invoke<VisualRevision[]>("visuals_revisions", { visualId }),
-			create: (request) => invoke<VisualRecord>("visuals_create", { request }),
-			update: (visualId, request) => invoke<VisualRecord>("visuals_update", { visualId, request }),
-			save: (visualId, tsx) => invoke<VisualRecord>("visuals_save", { visualId, tsx: tsx ?? null }),
+			listTemplates: (genre) => invokeCommand<VisualTemplateMeta[]>(COMMANDS.VISUALS_TEMPLATES_LIST, { genre: genre ?? null }),
+			getTemplate: (templateId) => invokeCommand<VisualTemplateMeta>(COMMANDS.VISUALS_TEMPLATES_GET, { templateId }),
+			list: (query) => invokeCommand<VisualRecord[]>(COMMANDS.VISUALS_LIST, { query: query ?? null }),
+			get: (visualId) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_GET, { visualId }),
+			revisions: (visualId) => invokeCommand<VisualRevision[]>(COMMANDS.VISUALS_REVISIONS, { visualId }),
+			create: (request) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_CREATE, { request }),
+			update: (visualId, request) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_UPDATE, { visualId, request }),
+			save: (visualId, tsx) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_SAVE, { visualId, tsx: tsx ?? null }),
 			fork: (visualId, title, sessionId) =>
-				invoke<VisualRecord>("visuals_fork", { visualId, title: title ?? null, sessionId: sessionId ?? null }),
-			archive: (visualId) => invoke<VisualRecord>("visuals_archive", { visualId }),
+				invokeCommand<VisualRecord>(COMMANDS.VISUALS_FORK, { visualId, title: title ?? null, sessionId: sessionId ?? null }),
+			archive: (visualId) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_ARCHIVE, { visualId }),
 			show: (visualId, sessionId) =>
-				invoke<VisualRecord>("visuals_show", { visualId, sessionId: sessionId ?? null }),
+				invokeCommand<VisualRecord>(COMMANDS.VISUALS_SHOW, { visualId, sessionId: sessionId ?? null }),
 			onEvent(listener) {
 				let disposed = false;
 				let unlisten: (() => void) | undefined;
-				void listen<AppEvent>("runtime:event", ({ payload }) => {
+				void listen<AppEvent>(EVENT_CHANNELS.RUNTIME, ({ payload }) => {
 					if (payload.kind.startsWith("visual.")) listener(payload);
 				}).then((next) => {
 					if (disposed) next();
@@ -521,7 +521,7 @@ window.synthWorkspaceScope ??= isTauri
 			onShow(listener) {
 				let disposed = false;
 				let unlisten: (() => void) | undefined;
-				void listen<AppEvent>("visual:show", ({ payload }) => listener(payload)).then((next) => {
+				void listen<AppEvent>(EVENT_CHANNELS.VISUAL_SHOW, ({ payload }) => listener(payload)).then((next) => {
 					if (disposed) next();
 					else unlisten = next;
 				});
@@ -529,27 +529,27 @@ window.synthWorkspaceScope ??= isTauri
 			}
 		};
 		window.synthOptimizers ??= {
-			listAlgorithms: () => invoke("optimizers_algorithms_list"),
-			listRecipes: () => invoke("optimizers_recipes_list"),
-			startRecipe: (request) => invoke("optimizers_recipe_start", { request }),
-			list: (query) => invoke("optimizers_list", { query: query ?? null }),
-			get: (optimizerRunId) => invoke("optimizers_get", { optimizerRunId }),
-			create: (request) => invoke("optimizers_create", { request }),
-			refresh: (optimizerRunId) => invoke("optimizers_refresh", { optimizerRunId }),
+			listAlgorithms: () => invokeCommand(COMMANDS.OPTIMIZERS_ALGORITHMS_LIST),
+			listRecipes: () => invokeCommand(COMMANDS.OPTIMIZERS_RECIPES_LIST),
+			startRecipe: (request) => invokeCommand(COMMANDS.OPTIMIZERS_RECIPE_START, { request }),
+			list: (query) => invokeCommand(COMMANDS.OPTIMIZERS_LIST, { query: query ?? null }),
+			get: (optimizerRunId) => invokeCommand(COMMANDS.OPTIMIZERS_GET, { optimizerRunId }),
+			create: (request) => invokeCommand(COMMANDS.OPTIMIZERS_CREATE, { request }),
+			refresh: (optimizerRunId) => invokeCommand(COMMANDS.OPTIMIZERS_REFRESH, { optimizerRunId }),
 			eventsAfter: (optimizerRunId, afterSeq = 0, limit) =>
-				invoke("optimizers_events_after", { optimizerRunId, afterSeq, limit: limit ?? null }),
+				invokeCommand(COMMANDS.OPTIMIZERS_EVENTS_AFTER, { optimizerRunId, afterSeq, limit: limit ?? null }),
 			getState: (optimizerRunId, sliceId, atSeq) =>
-				invoke("optimizers_get_state", { optimizerRunId, sliceId, atSeq: atSeq ?? null }),
+				invokeCommand(COMMANDS.OPTIMIZERS_GET_STATE, { optimizerRunId, sliceId, atSeq: atSeq ?? null }),
 			getStateBatch: (optimizerRunId, slices, atSeq) =>
-				invoke("optimizers_get_state_batch", { optimizerRunId, slices: slices ?? null, atSeq: atSeq ?? null }),
-			cancel: (optimizerRunId) => invoke("optimizers_cancel", { optimizerRunId }),
-			pause: (optimizerRunId) => invoke("optimizers_pause", { optimizerRunId }),
-			resume: (optimizerRunId) => invoke("optimizers_resume", { optimizerRunId }),
-			openVisual: (optimizerRunId) => invoke("optimizers_open_visual", { optimizerRunId }),
-			importLocal: (request) => invoke("optimizers_import_local", { request }),
-			reconcileCloud: (request) => invoke("optimizers_reconcile_cloud", { request }),
+				invokeCommand(COMMANDS.OPTIMIZERS_GET_STATE_BATCH, { optimizerRunId, slices: slices ?? null, atSeq: atSeq ?? null }),
+			cancel: (optimizerRunId) => invokeCommand(COMMANDS.OPTIMIZERS_CANCEL, { optimizerRunId }),
+			pause: (optimizerRunId) => invokeCommand(COMMANDS.OPTIMIZERS_PAUSE, { optimizerRunId }),
+			resume: (optimizerRunId) => invokeCommand(COMMANDS.OPTIMIZERS_RESUME, { optimizerRunId }),
+			openVisual: (optimizerRunId) => invokeCommand(COMMANDS.OPTIMIZERS_OPEN_VISUAL, { optimizerRunId }),
+			importLocal: (request) => invokeCommand(COMMANDS.OPTIMIZERS_IMPORT_LOCAL, { request }),
+			reconcileCloud: (request) => invokeCommand(COMMANDS.OPTIMIZERS_RECONCILE_CLOUD, { request }),
 			listCloud: (query) =>
-				invoke("optimizers_list_cloud", {
+				invokeCommand(COMMANDS.OPTIMIZERS_LIST_CLOUD, {
 					algorithm: query?.algorithm ?? null,
 					status: query?.status ?? null,
 					limit: query?.limit ?? null
@@ -557,7 +557,7 @@ window.synthWorkspaceScope ??= isTauri
 			onEvent(listener) {
 				let disposed = false;
 				let unlisten: (() => void) | undefined;
-				void listen<AppEvent>("runtime:event", ({ payload }) => {
+				void listen<AppEvent>(EVENT_CHANNELS.RUNTIME, ({ payload }) => {
 					if (payload.kind.startsWith("optimizer.")) listener(payload);
 				}).then((next) => {
 					if (disposed) next();
