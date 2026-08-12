@@ -7,6 +7,7 @@ pub mod contract;
 pub mod core_runtime;
 mod device_auth;
 mod domain;
+pub mod error;
 mod eval_driver;
 mod instance;
 mod intern_api;
@@ -63,12 +64,13 @@ use visuals::{
     TemplateMeta, VisualCreateRequest, VisualQuery, VisualRecord, VisualRevision,
     VisualUpdateRequest,
 };
+use error::AppError;
 use workspace_scope::WorkspaceGrantRequest;
 use workspace_scope::{ConversationWorkspaceScope, WorkspaceAccessMode};
 
 #[tauri::command]
-fn core_diagnostics(state: State<'_, Arc<CoreRuntime>>) -> Result<CoreDiagnostics, String> {
-    state.diagnostics().map_err(|error| error.to_string())
+fn core_diagnostics(state: State<'_, Arc<CoreRuntime>>) -> Result<CoreDiagnostics, AppError> {
+    state.diagnostics().map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -77,15 +79,15 @@ fn desktop_instance_diagnostics() -> InstanceDiagnostics {
 }
 
 #[tauri::command]
-fn desktop_image_preview(path: String) -> Result<String, String> {
+fn desktop_image_preview(path: String) -> Result<String, AppError> {
     let path = std::path::Path::new(&path)
         .canonicalize()
-        .map_err(|_| "Screenshot is unavailable".to_string())?;
+        .map_err(|_| AppError::io("Screenshot is unavailable"))?;
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase)
-        .ok_or_else(|| "Screenshot has no supported format".to_string())?;
+        .ok_or_else(|| AppError::message("Screenshot has no supported format"))?;
     let mime = match extension.as_str() {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
@@ -93,11 +95,11 @@ fn desktop_image_preview(path: String) -> Result<String, String> {
         "gif" => "image/gif",
         _ => return Err("Screenshot format is unsupported".into()),
     };
-    let metadata = std::fs::metadata(&path).map_err(|_| "Screenshot is unavailable".to_string())?;
+    let metadata = std::fs::metadata(&path).map_err(|_| AppError::io("Screenshot is unavailable"))?;
     if !metadata.is_file() || metadata.len() > 20 * 1024 * 1024 {
         return Err("Screenshot must be a file smaller than 20 MB".into());
     }
-    let bytes = std::fs::read(path).map_err(|_| "Screenshot could not be read".to_string())?;
+    let bytes = std::fs::read(path).map_err(|_| AppError::io("Screenshot could not be read"))?;
     Ok(format!(
         "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -109,12 +111,12 @@ async fn core_events_after(
     state: State<'_, Arc<CoreRuntime>>,
     after_sequence: i64,
     limit: Option<i64>,
-) -> Result<Vec<AppEvent>, String> {
+) -> Result<Vec<AppEvent>, AppError> {
     state
         .journal()
         .events_after(after_sequence, limit.unwrap_or(500).clamp(1, 2000))
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -123,7 +125,7 @@ async fn core_session_events_after(
     session_id: String,
     after_sequence: i64,
     limit: Option<i64>,
-) -> Result<Vec<AppEvent>, String> {
+) -> Result<Vec<AppEvent>, AppError> {
     state
         .journal()
         .session_events_after(
@@ -132,46 +134,46 @@ async fn core_session_events_after(
             limit.unwrap_or(500).clamp(1, 2000),
         )
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn intern_sessions_list(
     state: State<'_, Arc<CoreRuntime>>,
-) -> Result<Vec<InternSessionWire>, String> {
+) -> Result<Vec<InternSessionWire>, AppError> {
     intern_api::list(&state)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn intern_session_create(
     state: State<'_, Arc<CoreRuntime>>,
     request: InternSessionCreateRequest,
-) -> Result<InternSessionWire, String> {
+) -> Result<InternSessionWire, AppError> {
     intern_api::create(&state, request)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn intern_session_send(
     state: State<'_, Arc<CoreRuntime>>,
     request: InternSessionSendRequest,
-) -> Result<InternSendResult, String> {
+) -> Result<InternSendResult, AppError> {
     intern_api::send(&state, request)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn intern_session_control(
     state: State<'_, Arc<CoreRuntime>>,
     request: InternSessionControlRequest,
-) -> Result<InternControlResult, String> {
+) -> Result<InternControlResult, AppError> {
     intern_api::control(&state, request)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -180,7 +182,7 @@ async fn intern_session_events_after(
     session_id: String,
     after_sequence: i64,
     limit: Option<i64>,
-) -> Result<Vec<AppEvent>, String> {
+) -> Result<Vec<AppEvent>, AppError> {
     state
         .journal()
         .session_events_after(
@@ -189,30 +191,30 @@ async fn intern_session_events_after(
             limit.unwrap_or(500).clamp(1, 2_000),
         )
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn inventory_containers_list(
     state: State<'_, Arc<CoreRuntime>>,
-) -> Result<Vec<ContainerDeployment>, String> {
+) -> Result<Vec<ContainerDeployment>, AppError> {
     state
         .inventory()
         .list_containers()
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn inventory_containers_get(
     state: State<'_, Arc<CoreRuntime>>,
     container_id: String,
-) -> Result<ContainerDeployment, String> {
+) -> Result<ContainerDeployment, AppError> {
     state
         .inventory()
         .get_container(container_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 async fn hydrate_container(
@@ -344,7 +346,7 @@ async fn hydrate_container(
 async fn inventory_containers_register(
     state: State<'_, Arc<CoreRuntime>>,
     request: ContainerRegisterRequest,
-) -> Result<ContainerDeployment, String> {
+) -> Result<ContainerDeployment, AppError> {
     if !(request.base_url.starts_with("http://") || request.base_url.starts_with("https://")) {
         return Err("container baseUrl must start with http:// or https://".into());
     }
@@ -360,19 +362,19 @@ async fn inventory_containers_register(
     state
         .register_container(request, status, health, metadata, task_family)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn inventory_containers_probe(
     state: State<'_, Arc<CoreRuntime>>,
     container_id: String,
-) -> Result<ContainerDeployment, String> {
+) -> Result<ContainerDeployment, AppError> {
     let container = state
         .inventory()
         .get_container(container_id.clone())
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     let Some(base_url) = container.base_url.as_ref() else {
         return Ok(container);
     };
@@ -381,42 +383,42 @@ async fn inventory_containers_probe(
     state
         .update_container_hydration(container_id, status, health, metadata, task_family)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn inventory_traces_list(
     state: State<'_, Arc<CoreRuntime>>,
-) -> Result<Vec<TraceRecord>, String> {
+) -> Result<Vec<TraceRecord>, AppError> {
     state
         .inventory()
         .list_traces()
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn inventory_traces_get(
     state: State<'_, Arc<CoreRuntime>>,
     trace_id: String,
-) -> Result<TraceRecord, String> {
+) -> Result<TraceRecord, AppError> {
     state
         .inventory()
         .get_trace(trace_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn inventory_traces_ingest(
     state: State<'_, Arc<CoreRuntime>>,
     request: TraceBundleIngestRequest,
-) -> Result<TraceBundleIngestResult, String> {
+) -> Result<TraceBundleIngestResult, AppError> {
     let (result, event) = state
         .inventory()
         .ingest_trace_bundle(request)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     state.broadcast_committed(event);
     Ok(result)
 }
@@ -426,34 +428,34 @@ async fn inventory_trace_projection_resolve(
     state: State<'_, Arc<CoreRuntime>>,
     trace_digest: String,
     projection_kind: String,
-) -> Result<ResolvedTraceProjection, String> {
+) -> Result<ResolvedTraceProjection, AppError> {
     state
         .inventory()
         .resolve_trace_projection(trace_digest, projection_kind)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn inventory_usage_list(
     state: State<'_, Arc<CoreRuntime>>,
     limit: Option<i64>,
-) -> Result<Vec<UsageEntry>, String> {
+) -> Result<Vec<UsageEntry>, AppError> {
     state
         .inventory()
         .list_usage(limit.unwrap_or(100))
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn model_performance_summary(
     state: State<'_, Arc<CoreRuntime>>,
-) -> Result<Vec<ModelPerformanceSummary>, String> {
+) -> Result<Vec<ModelPerformanceSummary>, AppError> {
     ModelPerformanceRepository::new(state.storage().database().clone())
         .summaries()
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 /// Device-wide usage dashboard for one time window, aggregated in SQLite/Rust
@@ -463,14 +465,14 @@ async fn model_performance_summary(
 async fn usage_summary(
     state: State<'_, Arc<CoreRuntime>>,
     window: String,
-) -> Result<storage::UsageSummary, String> {
+) -> Result<storage::UsageSummary, AppError> {
     let now = chrono::Utc::now();
     let offset_seconds = chrono::Local::now().offset().local_minus_utc();
     let since_ms = storage::window_start_ms(&window, now, offset_seconds);
     storage::UsageRecordsRepository::new(state.storage().database().clone())
         .summary(window, since_ms)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 /// The provider price cards currently in force. Settings renders these
@@ -488,32 +490,32 @@ async fn update_status() -> update_check::UpdateStatus {
 /// Always the fixed public download page — the manifest never chooses the
 /// destination.
 #[tauri::command]
-async fn update_open_download(app: tauri::AppHandle) -> Result<(), String> {
+async fn update_open_download(app: tauri::AppHandle) -> Result<(), AppError> {
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_url(update_check::DOWNLOAD_PAGE, None::<String>)
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
-async fn inventory_counts(state: State<'_, Arc<CoreRuntime>>) -> Result<InventoryCounts, String> {
+async fn inventory_counts(state: State<'_, Arc<CoreRuntime>>) -> Result<InventoryCounts, AppError> {
     state
         .inventory()
         .counts()
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 async fn publish_optimizer_event(
     app: &tauri::AppHandle,
     state: &CoreRuntime,
     event: Option<AppEvent>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     if let Some(event) = event {
         state
             .publish_event(app, event)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(AppError::from)?;
     }
     Ok(())
 }
@@ -521,12 +523,12 @@ async fn publish_optimizer_event(
 #[tauri::command]
 async fn optimizers_algorithms_list(
     state: State<'_, Arc<CoreRuntime>>,
-) -> Result<Vec<Value>, String> {
+) -> Result<Vec<Value>, AppError> {
     Ok(state.optimizers().list_algorithms())
 }
 
 #[tauri::command]
-async fn optimizers_recipes_list(state: State<'_, Arc<CoreRuntime>>) -> Result<Vec<Value>, String> {
+async fn optimizers_recipes_list(state: State<'_, Arc<CoreRuntime>>) -> Result<Vec<Value>, AppError> {
     Ok(state.optimizers().list_recipes())
 }
 
@@ -535,12 +537,12 @@ async fn optimizers_recipe_start(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
     request: OptimizerRecipeRunRequest,
-) -> Result<OptimizerRunRecord, String> {
+) -> Result<OptimizerRunRecord, AppError> {
     let (run, event) = state
         .optimizers()
         .start_recipe(request)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     publish_optimizer_event(&app, &state, event).await?;
     Ok(run)
 }
@@ -549,24 +551,24 @@ async fn optimizers_recipe_start(
 async fn optimizers_list(
     state: State<'_, Arc<CoreRuntime>>,
     query: Option<OptimizerQuery>,
-) -> Result<Vec<OptimizerRunRecord>, String> {
+) -> Result<Vec<OptimizerRunRecord>, AppError> {
     state
         .optimizers()
         .list(query.unwrap_or_default())
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn optimizers_get(
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
-) -> Result<OptimizerRunRecord, String> {
+) -> Result<OptimizerRunRecord, AppError> {
     state
         .optimizers()
         .get(optimizer_run_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -574,12 +576,12 @@ async fn optimizers_create(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
     request: OptimizerCreateRequest,
-) -> Result<OptimizerRunRecord, String> {
+) -> Result<OptimizerRunRecord, AppError> {
     let (run, event) = state
         .optimizers()
         .create(request)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     publish_optimizer_event(&app, &state, event).await?;
     Ok(run)
 }
@@ -588,12 +590,12 @@ async fn optimizers_create(
 async fn optimizers_refresh(
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
-) -> Result<OptimizerRunRecord, String> {
+) -> Result<OptimizerRunRecord, AppError> {
     state
         .optimizers()
         .refresh(optimizer_run_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -602,12 +604,12 @@ async fn optimizers_events_after(
     optimizer_run_id: String,
     after_seq: Option<u64>,
     limit: Option<i64>,
-) -> Result<Vec<OptimizerEventEnvelope>, String> {
+) -> Result<Vec<OptimizerEventEnvelope>, AppError> {
     state
         .optimizers()
         .events_after(optimizer_run_id, after_seq.unwrap_or(0), limit)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -616,12 +618,12 @@ async fn optimizers_get_state(
     optimizer_run_id: String,
     slice_id: String,
     at_seq: Option<u64>,
-) -> Result<OptimizerStateSlice, String> {
+) -> Result<OptimizerStateSlice, AppError> {
     state
         .optimizers()
         .get_state(optimizer_run_id, slice_id, at_seq)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -630,24 +632,24 @@ async fn optimizers_get_state_batch(
     optimizer_run_id: String,
     slices: Option<Vec<String>>,
     at_seq: Option<u64>,
-) -> Result<Vec<OptimizerStateSlice>, String> {
+) -> Result<Vec<OptimizerStateSlice>, AppError> {
     state
         .optimizers()
         .get_state_batch(optimizer_run_id, slices, at_seq)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn optimizers_relationships(
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
-) -> Result<Vec<OptimizerRelationship>, String> {
+) -> Result<Vec<OptimizerRelationship>, AppError> {
     state
         .optimizers()
         .relationships(optimizer_run_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -655,12 +657,12 @@ async fn optimizers_cancel(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
-) -> Result<OptimizerRunRecord, String> {
+) -> Result<OptimizerRunRecord, AppError> {
     let (run, event) = state
         .optimizers()
         .cancel(optimizer_run_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     publish_optimizer_event(&app, &state, event).await?;
     Ok(run)
 }
@@ -670,12 +672,12 @@ async fn optimizers_pause(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
-) -> Result<OptimizerRunRecord, String> {
+) -> Result<OptimizerRunRecord, AppError> {
     let (run, event) = state
         .optimizers()
         .pause(optimizer_run_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     publish_optimizer_event(&app, &state, event).await?;
     Ok(run)
 }
@@ -685,12 +687,12 @@ async fn optimizers_resume(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
-) -> Result<OptimizerRunRecord, String> {
+) -> Result<OptimizerRunRecord, AppError> {
     let (run, event) = state
         .optimizers()
         .resume(optimizer_run_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     publish_optimizer_event(&app, &state, event).await?;
     Ok(run)
 }
@@ -700,12 +702,12 @@ async fn optimizers_open_visual(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
-) -> Result<OptimizerRunRecord, String> {
+) -> Result<OptimizerRunRecord, AppError> {
     let (run, event) = state
         .optimizers()
         .open_visual(optimizer_run_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     publish_optimizer_event(&app, &state, event).await?;
     if let Some(visual_id) = run
         .visual_refs
@@ -729,12 +731,12 @@ async fn optimizers_import_local(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
     request: OptimizerImportLocalRequest,
-) -> Result<OptimizerRunRecord, String> {
+) -> Result<OptimizerRunRecord, AppError> {
     let (run, event) = state
         .optimizers()
         .import_local(request)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     publish_optimizer_event(&app, &state, event).await?;
     Ok(run)
 }
@@ -744,12 +746,12 @@ async fn optimizers_reconcile_cloud(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
     request: OptimizerReconcileRequest,
-) -> Result<OptimizerRunRecord, String> {
+) -> Result<OptimizerRunRecord, AppError> {
     let (run, event) = state
         .optimizers()
         .reconcile_cloud(request)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     publish_optimizer_event(&app, &state, event).await?;
     Ok(run)
 }
@@ -760,81 +762,81 @@ async fn optimizers_list_cloud(
     algorithm: Option<String>,
     status: Option<String>,
     limit: Option<i64>,
-) -> Result<Vec<Value>, String> {
+) -> Result<Vec<Value>, AppError> {
     state
         .optimizers()
         .list_cloud(algorithm, status, limit)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 async fn publish_visual_event(
     app: &tauri::AppHandle,
     core: &CoreRuntime,
     event: serde_json::Value,
-) -> Result<(), String> {
-    let parsed: AppEvent = serde_json::from_value(event).map_err(|error| error.to_string())?;
+) -> Result<(), AppError> {
+    let parsed: AppEvent = serde_json::from_value(event).map_err(AppError::from)?;
     core.publish_event(app, parsed)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 fn visuals_templates_list(
     state: State<'_, Arc<CoreRuntime>>,
     genre: Option<String>,
-) -> Result<Vec<TemplateMeta>, String> {
+) -> Result<Vec<TemplateMeta>, AppError> {
     state
         .visuals()
         .list_templates(genre.as_deref())
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 fn visuals_templates_get(
     state: State<'_, Arc<CoreRuntime>>,
     template_id: String,
-) -> Result<TemplateMeta, String> {
+) -> Result<TemplateMeta, AppError> {
     state
         .visuals()
         .get_template(&template_id)
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn visuals_list(
     state: State<'_, Arc<CoreRuntime>>,
     query: Option<VisualQuery>,
-) -> Result<Vec<VisualRecord>, String> {
+) -> Result<Vec<VisualRecord>, AppError> {
     state
         .visuals()
         .list(query.unwrap_or_default())
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn visuals_get(
     state: State<'_, Arc<CoreRuntime>>,
     visual_id: String,
-) -> Result<VisualRecord, String> {
+) -> Result<VisualRecord, AppError> {
     state
         .visuals()
         .get(visual_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn visuals_revisions(
     state: State<'_, Arc<CoreRuntime>>,
     visual_id: String,
-) -> Result<Vec<VisualRevision>, String> {
+) -> Result<Vec<VisualRevision>, AppError> {
     state
         .visuals()
         .revisions(visual_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -842,12 +844,12 @@ async fn visuals_create(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
     request: VisualCreateRequest,
-) -> Result<VisualRecord, String> {
+) -> Result<VisualRecord, AppError> {
     let (visual, event) = state
         .visuals()
         .create(request)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     publish_visual_event(&app, &state, event).await?;
     Ok(visual)
 }
@@ -858,12 +860,12 @@ async fn visuals_update(
     state: State<'_, Arc<CoreRuntime>>,
     visual_id: String,
     request: VisualUpdateRequest,
-) -> Result<VisualRecord, String> {
+) -> Result<VisualRecord, AppError> {
     let (visual, event) = state
         .visuals()
         .update(visual_id, request)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     publish_visual_event(&app, &state, event).await?;
     Ok(visual)
 }
@@ -874,12 +876,12 @@ async fn visuals_save(
     state: State<'_, Arc<CoreRuntime>>,
     visual_id: String,
     tsx: Option<String>,
-) -> Result<VisualRecord, String> {
+) -> Result<VisualRecord, AppError> {
     let (visual, event) = state
         .visuals()
         .save(visual_id, tsx)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     publish_visual_event(&app, &state, event).await?;
     Ok(visual)
 }
@@ -891,12 +893,12 @@ async fn visuals_fork(
     visual_id: String,
     title: Option<String>,
     session_id: Option<String>,
-) -> Result<VisualRecord, String> {
+) -> Result<VisualRecord, AppError> {
     let (visual, event) = state
         .visuals()
         .fork(visual_id, title, session_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     publish_visual_event(&app, &state, event).await?;
     Ok(visual)
 }
@@ -906,12 +908,12 @@ async fn visuals_archive(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
     visual_id: String,
-) -> Result<VisualRecord, String> {
+) -> Result<VisualRecord, AppError> {
     let (visual, event) = state
         .visuals()
         .archive(visual_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     publish_visual_event(&app, &state, event).await?;
     Ok(visual)
 }
@@ -922,19 +924,19 @@ async fn visuals_show(
     state: State<'_, Arc<CoreRuntime>>,
     visual_id: String,
     session_id: Option<String>,
-) -> Result<VisualRecord, String> {
+) -> Result<VisualRecord, AppError> {
     let (visual, event) = state
         .visuals()
         .show(visual_id, session_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     publish_visual_event(&app, &state, event).await?;
     Ok(visual)
 }
 
 #[tauri::command]
-fn synth_config_get() -> Result<BackendSettings, String> {
-    synth_config::get().map_err(|error| error.to_string())
+fn synth_config_get() -> Result<BackendSettings, AppError> {
+    synth_config::get().map_err(AppError::from)
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -966,11 +968,11 @@ struct ModelPerformanceSnapshot {
 #[tauri::command]
 async fn model_performance_get(
     window_minutes: Option<u16>,
-) -> Result<ModelPerformanceSnapshot, String> {
-    let backend = synth_config::resolve().map_err(|error| error.to_string())?;
+) -> Result<ModelPerformanceSnapshot, AppError> {
+    let backend = synth_config::resolve().map_err(AppError::from)?;
     let api_key = backend
         .api_key
-        .ok_or_else(|| "Sign in to read Synth Cloud model telemetry".to_string())?;
+        .ok_or_else(|| AppError::message("Sign in to read Synth Cloud model telemetry"))?;
     let window_minutes = window_minutes.unwrap_or(60).clamp(1, 1_440);
     let url = format!(
         "{}/api/v1/usage/model-performance?window_minutes={window_minutes}",
@@ -980,7 +982,7 @@ async fn model_performance_get(
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(10))
         .build()
-        .map_err(|error| error.to_string())?
+        .map_err(AppError::from)?
         .get(url)
         .bearer_auth(api_key)
         .send()
@@ -994,35 +996,36 @@ async fn model_performance_get(
                 || detail.contains("timed out")
                 || detail.contains("error sending request")
             {
-                "Synth Cloud telemetry could not be reached. Check Account → Synth backend URL."
-                    .to_string()
+                AppError::message(
+                    "Synth Cloud telemetry could not be reached. Check Account → Synth backend URL.",
+                )
             } else {
-                format!("Synth Cloud telemetry request failed: {error}")
+                AppError::message(format!("Synth Cloud telemetry request failed: {error}"))
             }
         })?;
     let status = response.status();
     if !status.is_success() {
         let detail = response.text().await.unwrap_or_default();
-        return Err(format!(
+        return Err(AppError::message(format!(
             "Synth Cloud telemetry returned {status}: {}",
             detail.chars().take(240).collect::<String>()
-        ));
+        )));
     }
     response
         .json::<ModelPerformanceSnapshot>()
         .await
-        .map_err(|error| format!("Invalid Synth Cloud telemetry response: {error}"))
+        .map_err(|error| AppError::message(format!("Invalid Synth Cloud telemetry response: {error}")))
 }
 
 #[tauri::command]
 async fn synth_config_update(
     core: State<'_, Arc<CoreRuntime>>,
     request: BackendSettingsUpdate,
-) -> Result<BackendSettings, String> {
-    let settings = synth_config::update(request).map_err(|error| error.to_string())?;
+) -> Result<BackendSettings, AppError> {
+    let settings = synth_config::update(request).map_err(AppError::from)?;
     core.reload_intern_config()
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     Ok(settings)
 }
 
@@ -1032,16 +1035,16 @@ async fn synth_config_update(
 async fn account_begin_sign_in(
     app: tauri::AppHandle,
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
-) -> Result<device_auth::SignInBegin, String> {
+) -> Result<device_auth::SignInBegin, AppError> {
     let origin = device_auth::workshop_origin();
     let begin = manager
         .begin(&origin)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_url(begin.verification_uri.clone(), None::<String>)
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     Ok(begin)
 }
 
@@ -1053,16 +1056,16 @@ async fn account_poll_sign_in(
     core: State<'_, Arc<CoreRuntime>>,
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
-) -> Result<device_auth::SignInPoll, String> {
+) -> Result<device_auth::SignInPoll, AppError> {
     let origin = device_auth::workshop_origin();
     let result = manager
         .poll(&origin, |key| synth_config::store_api_key(key))
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     if matches!(result, device_auth::SignInPoll::Active) {
         core.reload_intern_config()
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(AppError::from)?;
         // A new key invalidates any cached snapshot, and the device is now
         // known to have paired at least once.
         cloud.clear_cache();
@@ -1074,7 +1077,7 @@ async fn account_poll_sign_in(
 #[tauri::command]
 fn account_cancel_sign_in(
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     manager.cancel();
     Ok(())
 }
@@ -1086,9 +1089,9 @@ async fn account_summary_now(
     core: &Arc<CoreRuntime>,
     cloud: &Arc<account_cloud::AccountCloudClient>,
     force: bool,
-) -> Result<account::AccountSummary, String> {
-    let settings = synth_config::get().map_err(|error| error.to_string())?;
-    let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
+) -> Result<account::AccountSummary, AppError> {
+    let settings = synth_config::get().map_err(AppError::from)?;
+    let resolved = synth_config::resolve().map_err(AppError::from)?;
     let origin = device_auth::workshop_origin();
     let now = chrono::Utc::now();
     let read = cloud
@@ -1107,14 +1110,14 @@ async fn account_summary_now(
         now,
         &read,
     )
-    .map_err(|error| error.to_string())
+    .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn account_get_summary(
     core: State<'_, Arc<CoreRuntime>>,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
-) -> Result<account::AccountSummary, String> {
+) -> Result<account::AccountSummary, AppError> {
     account_summary_now(&core, &cloud, false).await
 }
 
@@ -1124,7 +1127,7 @@ async fn account_get_summary(
 async fn account_refresh(
     core: State<'_, Arc<CoreRuntime>>,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
-) -> Result<account::AccountSummary, String> {
+) -> Result<account::AccountSummary, AppError> {
     account_summary_now(&core, &cloud, true).await
 }
 
@@ -1136,8 +1139,8 @@ async fn account_open_billing(
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
     action: account_cloud::BillingAction,
     tier: Option<String>,
-) -> Result<String, String> {
-    let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
+) -> Result<String, AppError> {
+    let resolved = synth_config::resolve().map_err(AppError::from)?;
     let url = cloud
         .billing_url(
             &resolved.backend_url,
@@ -1146,11 +1149,11 @@ async fn account_open_billing(
             tier.as_deref(),
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_url(url.clone(), None::<String>)
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     Ok(url)
 }
 
@@ -1158,45 +1161,45 @@ async fn account_open_billing(
 async fn account_sign_out(
     core: State<'_, Arc<CoreRuntime>>,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
-) -> Result<BackendSettings, String> {
-    synth_config::remove_api_key().map_err(|error| error.to_string())?;
+) -> Result<BackendSettings, AppError> {
+    synth_config::remove_api_key().map_err(AppError::from)?;
     // Cloud facts belong to the signed-out session; local history and the
     // device ledger stay untouched.
     cloud.clear_cache();
     core.reload_intern_config()
         .await
-        .map_err(|error| error.to_string())?;
-    synth_config::get().map_err(|error| error.to_string())
+        .map_err(AppError::from)?;
+    synth_config::get().map_err(AppError::from)
 }
 
 #[tauri::command]
-fn model_multi_agent_list() -> Result<Vec<ModelMultiAgentSetting>, String> {
-    synth_config::model_multi_agent_settings().map_err(|error| error.to_string())
+fn model_multi_agent_list() -> Result<Vec<ModelMultiAgentSetting>, AppError> {
+    synth_config::model_multi_agent_settings().map_err(AppError::from)
 }
 
 #[tauri::command]
 fn model_multi_agent_update(
     request: ModelMultiAgentUpdate,
-) -> Result<Vec<ModelMultiAgentSetting>, String> {
-    synth_config::update_model_multi_agent(request).map_err(|error| error.to_string())
+) -> Result<Vec<ModelMultiAgentSetting>, AppError> {
+    synth_config::update_model_multi_agent(request).map_err(AppError::from)
 }
 
 #[tauri::command]
-fn workspace_access_get() -> Result<WorkspaceAccessSettings, String> {
-    synth_config::workspace_access_settings().map_err(|error| error.to_string())
+fn workspace_access_get() -> Result<WorkspaceAccessSettings, AppError> {
+    synth_config::workspace_access_settings().map_err(AppError::from)
 }
 
 #[tauri::command]
 fn workspace_access_update(
     request: WorkspaceAccessUpdate,
-) -> Result<WorkspaceAccessSettings, String> {
-    synth_config::update_workspace_access(request).map_err(|error| error.to_string())
+) -> Result<WorkspaceAccessSettings, AppError> {
+    synth_config::update_workspace_access(request).map_err(AppError::from)
 }
 
 #[tauri::command]
-async fn laguna_get_status(state: State<'_, Arc<LagunaManager>>) -> Result<LagunaStatus, String> {
+async fn laguna_get_status(state: State<'_, Arc<LagunaManager>>) -> Result<LagunaStatus, AppError> {
     if state.status().await.phase == "unknown" {
-        let root = runtime::workshop_root().map_err(|error| error.to_string())?;
+        let root = runtime::workshop_root().map_err(AppError::from)?;
         if let Err(error) = state.ensure(&root).await {
             state.set_error(error.to_string()).await;
         }
@@ -1206,35 +1209,35 @@ async fn laguna_get_status(state: State<'_, Arc<LagunaManager>>) -> Result<Lagun
 }
 
 #[tauri::command]
-async fn laguna_reload(state: State<'_, Arc<LagunaManager>>) -> Result<LagunaStatus, String> {
-    let root = runtime::workshop_root().map_err(|error| error.to_string())?;
-    state.reload(&root).await.map_err(|error| error.to_string())
+async fn laguna_reload(state: State<'_, Arc<LagunaManager>>) -> Result<LagunaStatus, AppError> {
+    let root = runtime::workshop_root().map_err(AppError::from)?;
+    state.reload(&root).await.map_err(AppError::from)
 }
 
 #[tauri::command]
-fn laguna_models_list(state: State<'_, Arc<LagunaManager>>) -> Result<Vec<LagunaModelHit>, String> {
-    state.discover_models().map_err(|error| error.to_string())
+fn laguna_models_list(state: State<'_, Arc<LagunaManager>>) -> Result<Vec<LagunaModelHit>, AppError> {
+    state.discover_models().map_err(AppError::from)
 }
 
 #[tauri::command]
 fn laguna_models_set_directory(
     state: State<'_, Arc<LagunaManager>>,
     path: String,
-) -> Result<LagunaModelHit, String> {
+) -> Result<LagunaModelHit, AppError> {
     state
         .select_model(std::path::Path::new(&path))
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
-fn laguna_models_clear_directory(state: State<'_, Arc<LagunaManager>>) -> Result<(), String> {
+fn laguna_models_clear_directory(state: State<'_, Arc<LagunaManager>>) -> Result<(), AppError> {
     state
         .clear_selected_model()
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
-async fn workspace_choose_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
+async fn workspace_choose_directory(app: tauri::AppHandle) -> Result<Option<String>, AppError> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -1242,17 +1245,17 @@ async fn workspace_choose_directory(app: tauri::AppHandle) -> Result<Option<Stri
         .pick_folder(move |path| {
             let _ = sender.send(path.map(|value| value.to_string()));
         });
-    receiver.await.map_err(|error| error.to_string())
+    receiver.await.map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn workspace_scope_get(
     core: State<'_, Arc<CoreRuntime>>,
     session_id: String,
-) -> Result<Option<ConversationWorkspaceScope>, String> {
+) -> Result<Option<ConversationWorkspaceScope>, AppError> {
     workspace_scope::get(core.storage().database(), &session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -1262,7 +1265,7 @@ async fn workspace_scope_choose_and_attach(
     codex: State<'_, Arc<CodexManager>>,
     session_id: String,
     proposed_access: WorkspaceAccessMode,
-) -> Result<Option<ConversationWorkspaceScope>, String> {
+) -> Result<Option<ConversationWorkspaceScope>, AppError> {
     if proposed_access == WorkspaceAccessMode::ReadOnly {
         return Err("Read-only attachments are not yet supported by the macOS Codex sandbox; no access was granted".into());
     }
@@ -1273,7 +1276,7 @@ async fn workspace_scope_choose_and_attach(
         .pick_folder(move |path| {
             let _ = sender.send(path.map(|value| value.to_string()));
         });
-    let Some(path) = receiver.await.map_err(|error| error.to_string())? else {
+    let Some(path) = receiver.await.map_err(AppError::from)? else {
         return Ok(None);
     };
     let scope = workspace_scope::attach(
@@ -1284,23 +1287,23 @@ async fn workspace_scope_choose_and_attach(
         workspace_scope::AttachmentSource::UserPicker,
     )
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(AppError::from)?;
     // Scope is durable before the old process is fenced. Closing preserves
     // the thread record; the next send resumes it with the new revision.
     codex
         .close(&session_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     Ok(Some(scope))
 }
 
 #[tauri::command]
 async fn workspace_scope_recent_folders(
     core: State<'_, Arc<CoreRuntime>>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, AppError> {
     workspace_scope::recent_folders(core.storage().database())
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -1309,14 +1312,14 @@ async fn workspace_scope_attach_recent(
     codex: State<'_, Arc<CodexManager>>,
     session_id: String,
     path: String,
-) -> Result<ConversationWorkspaceScope, String> {
+) -> Result<ConversationWorkspaceScope, AppError> {
     let scope = workspace_scope::attach_recent(core.storage().database(), &session_id, &path)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     codex
         .close(&session_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     Ok(scope)
 }
 
@@ -1326,14 +1329,14 @@ async fn workspace_scope_remove_attachment(
     codex: State<'_, Arc<CodexManager>>,
     session_id: String,
     path: String,
-) -> Result<ConversationWorkspaceScope, String> {
+) -> Result<ConversationWorkspaceScope, AppError> {
     let scope = workspace_scope::remove_attachment(core.storage().database(), &session_id, &path)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     codex
         .close(&session_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     Ok(scope)
 }
 
@@ -1344,7 +1347,7 @@ async fn workspace_scope_request_agent_grant(
     path: String,
     access: WorkspaceAccessMode,
     reason: String,
-) -> Result<WorkspaceGrantRequest, String> {
+) -> Result<WorkspaceGrantRequest, AppError> {
     workspace_scope::request_grant(
         core.storage().database(),
         &session_id,
@@ -1353,27 +1356,27 @@ async fn workspace_scope_request_agent_grant(
         &reason,
     )
     .await
-    .map_err(|e| e.to_string())
+    .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn workspace_scope_grants_list(
     core: State<'_, Arc<CoreRuntime>>,
     session_id: String,
-) -> Result<Vec<WorkspaceGrantRequest>, String> {
+) -> Result<Vec<WorkspaceGrantRequest>, AppError> {
     workspace_scope::list_grants(core.storage().database(), &session_id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn workspace_scope_deny_request(
     core: State<'_, Arc<CoreRuntime>>,
     request_id: String,
-) -> Result<WorkspaceGrantRequest, String> {
+) -> Result<WorkspaceGrantRequest, AppError> {
     workspace_scope::deny_grant(core.storage().database(), &request_id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -1382,7 +1385,7 @@ async fn workspace_scope_approve_request(
     core: State<'_, Arc<CoreRuntime>>,
     codex: State<'_, Arc<CodexManager>>,
     request_id: String,
-) -> Result<Option<ConversationWorkspaceScope>, String> {
+) -> Result<Option<ConversationWorkspaceScope>, AppError> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -1390,16 +1393,16 @@ async fn workspace_scope_approve_request(
         .pick_folder(move |path| {
             let _ = sender.send(path.map(|v| v.to_string()));
         });
-    let Some(path) = receiver.await.map_err(|e| e.to_string())? else {
+    let Some(path) = receiver.await.map_err(AppError::from)? else {
         return Ok(None);
     };
     let scope = workspace_scope::approve_grant(core.storage().database(), &request_id, &path)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(AppError::from)?;
     codex
         .close(&scope.session_id)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(AppError::from)?;
     Ok(Some(scope))
 }
 
@@ -1409,16 +1412,16 @@ async fn prepare_codex_start(
     laguna: &LagunaManager,
     core: &CoreRuntime,
     mut request: CodexSessionStartRequest,
-) -> Result<CodexSessionStartRequest, String> {
+) -> Result<CodexSessionStartRequest, AppError> {
     // Never trust renderer-supplied roots. Rust persistence is authoritative.
     request.writable_roots.clear();
     let scope = workspace_scope::get(core.storage().database(), &request.session_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(AppError::from)?;
     let scope = match scope {
         Some(scope) => {
             let requested = workspace_scope::canonical_directory(&request.workspace)
-                .map_err(|error| error.to_string())?;
+                .map_err(AppError::from)?;
             if requested.to_string_lossy() != scope.workspace {
                 return Err(
                     "requested workspace does not match the conversation's persisted scope".into(),
@@ -1428,7 +1431,7 @@ async fn prepare_codex_start(
         }
         None => {
             request.workspace = workspace_scope::canonical_directory(&request.workspace)
-                .map_err(|error| error.to_string())?
+                .map_err(AppError::from)?
                 .to_string_lossy()
                 .into_owned();
             return prepare_codex_provider(laguna, request).await;
@@ -1442,11 +1445,11 @@ async fn prepare_codex_start(
 async fn prepare_codex_provider(
     laguna: &LagunaManager,
     mut request: CodexSessionStartRequest,
-) -> Result<CodexSessionStartRequest, String> {
+) -> Result<CodexSessionStartRequest, AppError> {
     if request.multi_agent_version.is_none() {
         request.multi_agent_version = Some(
             synth_config::resolve_model_multi_agent(&request.model)
-                .map_err(|error| error.to_string())?,
+                .map_err(AppError::from)?,
         );
     }
     // Exactly one preparation rule per provider class — see
@@ -1456,12 +1459,12 @@ async fn prepare_codex_provider(
     // reused child never invalidates the token that child is presenting.
     match codex::provider_class(request.provider_name.as_deref()) {
         codex::ProviderClass::LocalLaguna => {
-            let root = runtime::workshop_root().map_err(|error| error.to_string())?;
+            let root = runtime::workshop_root().map_err(AppError::from)?;
             request.base_url = laguna
                 .ensure(&root)
                 .await
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "Laguna Responses server is unavailable".to_string())?;
+                .map_err(AppError::from)?
+                .ok_or_else(|| AppError::message("Laguna Responses server is unavailable"))?;
             // The Laguna key is this process's loopback service token, not a
             // user credential: the child talks to the local daemon directly
             // and no broker lease is involved.
@@ -1469,17 +1472,18 @@ async fn prepare_codex_provider(
         }
         codex::ProviderClass::OpenRouter => {
             let key = synth_config::openrouter_api_key()
-                .map_err(|error| error.to_string())?
+                .map_err(AppError::from)?
                 .ok_or_else(|| {
-                    "OpenRouter API key is not configured. Add it in Synth backend settings."
-                        .to_string()
+                    AppError::message(
+                        "OpenRouter API key is not configured. Add it in Synth backend settings.",
+                    )
                 })?;
             // The OpenRouter key is the user's, and leaks into shell snapshots
             // the same way the Synth key did; it goes into native custody too.
             codex::stage_brokered_credential(&mut request, &key)?;
         }
         codex::ProviderClass::SynthCloud => {
-            let resolved = synth_config::resolve().map_err(|error| error.to_string())?;
+            let resolved = synth_config::resolve().map_err(AppError::from)?;
             // Only Codex's Responses traffic uses the dedicated, source-owned
             // gateway for the active profile; account and billing calls elsewhere
             // keep reading `resolved.backend_url` directly. A
@@ -1517,11 +1521,11 @@ async fn codex_turn_send(
     let session_id = request.start.session_id.clone();
     request.start = prepare_codex_start(&laguna, &core, request.start)
         .await
-        .map_err(|message| CodexTurnFailure {
+        .map_err(|error| CodexTurnFailure {
             code: "codex_provider_unavailable".into(),
-            message: message.clone(),
+            message: error.message.clone(),
             session_id,
-            detail: message,
+            detail: error.detail,
         })?;
     state.send_turn(app, request).await
 }
@@ -1533,12 +1537,12 @@ async fn codex_session_start(
     laguna: State<'_, Arc<LagunaManager>>,
     core: State<'_, Arc<CoreRuntime>>,
     request: CodexSessionStartRequest,
-) -> Result<CodexSessionInfo, String> {
+) -> Result<CodexSessionInfo, AppError> {
     let request = prepare_codex_start(&laguna, &core, request).await?;
     state
         .start(app, request)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -1546,22 +1550,22 @@ async fn codex_turn_start(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
     request: CodexTurnStartRequest,
-) -> Result<CodexSessionInfo, String> {
+) -> Result<CodexSessionInfo, AppError> {
     state
         .start_turn(app, request)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn codex_turn_interrupt(
     state: State<'_, Arc<CodexManager>>,
     request: CodexSessionRequest,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     state
         .interrupt(&request.session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -1571,12 +1575,12 @@ async fn codex_thread_compact(
     laguna: State<'_, Arc<LagunaManager>>,
     core: State<'_, Arc<CoreRuntime>>,
     request: CodexSessionStartRequest,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let request = prepare_codex_start(&laguna, &core, request).await?;
     state
         .compact(app, request)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -1584,11 +1588,11 @@ async fn codex_turn_steer(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
     request: CodexSteerRequest,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     state
         .steer_turn(app, request)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -1596,45 +1600,47 @@ async fn codex_approval_resolve(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
     request: CodexApprovalDecisionRequest,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     state
         .resolve_approval(app, request)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn codex_session_close(
     state: State<'_, Arc<CodexManager>>,
     request: CodexSessionRequest,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     state
         .close(&request.session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 async fn codex_sessions_list(
     state: State<'_, Arc<CodexManager>>,
-) -> Result<Vec<CodexSessionRecord>, String> {
+) -> Result<Vec<CodexSessionRecord>, AppError> {
     Ok(state.list().await)
 }
 
 #[tauri::command]
-fn codex_default_workspace() -> Result<String, String> {
-    let configured = synth_config::allowed_workspace_roots()
-        .map_err(|error| format!("Cannot read workspace access settings: {error}"))?;
+fn codex_default_workspace() -> Result<String, AppError> {
+    let configured = synth_config::allowed_workspace_roots().map_err(|error| {
+        AppError::message(format!("Cannot read workspace access settings: {error}"))
+    })?;
     let path = configured
         .first()
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("SYNTH_DESKTOP_WORKSPACE").map(std::path::PathBuf::from))
         .unwrap_or_else(|| crate::instance::state_root().join("workspaces/default"));
-    std::fs::create_dir_all(&path)
-        .map_err(|error| format!("Cannot create the default workspace: {error}"))?;
-    let path = path
-        .canonicalize()
-        .map_err(|error| format!("Default workspace is unavailable: {error}"))?;
+    std::fs::create_dir_all(&path).map_err(|error| {
+        AppError::io(format!("Cannot create the default workspace: {error}"))
+    })?;
+    let path = path.canonicalize().map_err(|error| {
+        AppError::io(format!("Default workspace is unavailable: {error}"))
+    })?;
     if !path.is_dir() {
         return Err("Default workspace must be a directory".into());
     }
@@ -1646,10 +1652,10 @@ fn terminal_create(
     app: tauri::AppHandle,
     state: State<'_, Arc<TerminalManager>>,
     request: TerminalCreateRequest,
-) -> Result<TerminalInfo, String> {
+) -> Result<TerminalInfo, AppError> {
     state
         .create(app, request)
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -1665,10 +1671,10 @@ fn terminal_snapshot(
     state: State<'_, Arc<TerminalManager>>,
     terminal_id: String,
     after_sequence: Option<u64>,
-) -> Result<Vec<TerminalEvent>, String> {
+) -> Result<Vec<TerminalEvent>, AppError> {
     state
         .snapshot(&terminal_id, after_sequence.unwrap_or(0))
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -1676,10 +1682,10 @@ fn terminal_write(
     state: State<'_, Arc<TerminalManager>>,
     terminal_id: String,
     data: String,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     state
         .write(&terminal_id, &data)
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -1688,18 +1694,18 @@ fn terminal_resize(
     terminal_id: String,
     cols: u16,
     rows: u16,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     state
         .resize(&terminal_id, cols, rows)
-        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 fn terminal_close(
     state: State<'_, Arc<TerminalManager>>,
     terminal_id: String,
-) -> Result<(), String> {
-    state.close(&terminal_id).map_err(|error| error.to_string())
+) -> Result<(), AppError> {
+    state.close(&terminal_id).map_err(AppError::from)
 }
 
 pub fn run() {
