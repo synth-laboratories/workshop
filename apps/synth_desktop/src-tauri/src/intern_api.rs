@@ -3,7 +3,9 @@ use crate::cloud::intern::{
     RuntimeKind, SyncCommandKind, SyncCommandRequest, SyncCreateRequest,
 };
 use crate::core_runtime::CoreRuntime;
-use crate::domain::{CommandReceiptInput, RunCreate, RunStatus, SessionCreate, SessionStatus};
+use crate::domain::{
+    CommandReceiptInput, RunCreate, RunStatus, SessionCreate, SessionKind, SessionStatus,
+};
 use crate::storage::{EventSource, SessionRecord};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -111,7 +113,7 @@ pub async fn list(core: &CoreRuntime) -> Result<Vec<InternSessionWire>> {
         .list(2_000)
         .await?
         .into_iter()
-        .filter(|session| session.target_json.get("kind").and_then(Value::as_str) == Some("intern"))
+        .filter(|session| session.kind == SessionKind::Intern.as_str())
         .map(Into::into)
         .collect())
 }
@@ -158,6 +160,7 @@ pub async fn create(
         .create_or_update(SessionCreate {
             id: session_id.clone(),
             title: title.clone(),
+            kind: SessionKind::Intern,
             target: target.clone(),
             project_id: request.project_id,
             remote_id: None,
@@ -221,6 +224,7 @@ pub async fn create(
         .create_or_update(SessionCreate {
             id: created.value.id,
             title: title.clone(),
+            kind: SessionKind::Intern,
             target,
             project_id: created.value.project_id,
             remote_id: Some(runtime_id.clone()),
@@ -265,7 +269,7 @@ async fn existing_async_binding(core: &CoreRuntime) -> Result<Option<SessionReco
                     .get("internTransport")
                     .and_then(Value::as_str)
                     != Some("demo")
-                && session.target_json.get("kind").and_then(Value::as_str) == Some("intern")
+                && session.kind == SessionKind::Intern.as_str()
                 && (session.target_json.get("mode").and_then(Value::as_str) == Some("async")
                     || session
                         .target_json
@@ -574,12 +578,11 @@ fn intern_identity(session: &SessionRecord) -> Result<(&str, String)> {
 
 impl From<SessionRecord> for InternSessionWire {
     fn from(value: SessionRecord) -> Self {
-        let status = match value.status.as_str() {
-            "interrupted" => "paused",
-            "closed" => "completed",
-            other => other,
-        }
-        .to_owned();
+        let status = match SessionStatus::parse(&value.status).unwrap_or(SessionStatus::Ready) {
+            SessionStatus::Interrupted => "paused".to_owned(),
+            SessionStatus::Closed => "completed".to_owned(),
+            other => other.as_str().to_owned(),
+        };
         Self {
             id: value.id,
             title: value.title,
@@ -883,6 +886,7 @@ mod tests {
             .create_or_update(SessionCreate {
                 id: "legacy-demo-async".into(),
                 title: "Async Intern".into(),
+                kind: SessionKind::Intern,
                 target: json!({"kind":"intern","mode":"async"}),
                 project_id: None,
                 remote_id: Some("demo-async-org-singleton".into()),

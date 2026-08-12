@@ -3,7 +3,7 @@
 use crate::cloud::intern::{
     InternProviderManager, InternRuntime, InternSessionBinding, PollerConfig, RuntimeKind,
 };
-use crate::domain::{RunService, RunStatus, SessionService};
+use crate::domain::{RunService, RunStatus, SessionKind, SessionService, SessionStatus};
 use crate::inventory::{ContainerDeployment, ContainerRegisterRequest, InventoryStore};
 use crate::optimizers::OptimizerService;
 use crate::storage::{
@@ -184,15 +184,10 @@ impl CoreRuntime {
     async fn resume_intern_providers_inner(&self, reconcile_restart: bool) -> Result<usize> {
         let mut resumed = 0;
         for session in self.sessions.list(2_000).await? {
-            if session.status == "closed" {
+            if session.status == SessionStatus::Closed.as_str() {
                 continue;
             }
-            if session
-                .target_json
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                != Some("intern")
-            {
+            if session.kind != SessionKind::Intern.as_str() {
                 continue;
             }
             let Some(runtime_id) = session.remote_id.clone() else {

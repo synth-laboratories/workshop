@@ -1,3 +1,4 @@
+use super::SessionKind;
 use crate::storage::{
     append_event, AppEvent, CommandReceiptRecord, Database, EventAppend, EventSource, RunRecord,
     SessionRecord,
@@ -56,7 +57,7 @@ impl SessionStatus {
         }
     }
 
-    fn parse(value: &str) -> Result<Self> {
+    pub fn parse(value: &str) -> Result<Self> {
         match value {
             "created" => Ok(Self::Created),
             "ready" => Ok(Self::Ready),
@@ -66,6 +67,10 @@ impl SessionStatus {
             "closed" => Ok(Self::Closed),
             _ => bail!("unknown session status: {value}"),
         }
+    }
+
+    pub fn equals_str(self, value: &str) -> bool {
+        self.as_str() == value
     }
 
     fn can_transition_to(self, next: Self) -> bool {
@@ -150,6 +155,7 @@ impl RunStatus {
 pub struct SessionCreate {
     pub id: String,
     pub title: String,
+    pub kind: SessionKind,
     pub target: Value,
     pub project_id: Option<String>,
     pub remote_id: Option<String>,
@@ -549,11 +555,12 @@ fn upsert_session(
     }
     conn.execute(
         "INSERT INTO sessions(
-            id, title, target_json, project_id, remote_id, codex_thread_id, status,
+            id, title, kind, target_json, project_id, remote_id, codex_thread_id, status,
             state_generation, latest_cursor, metadata_json, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?10)
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?11)
          ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
+            kind = excluded.kind,
             target_json = excluded.target_json,
             project_id = COALESCE(excluded.project_id, sessions.project_id),
             remote_id = COALESCE(excluded.remote_id, sessions.remote_id),
@@ -565,6 +572,7 @@ fn upsert_session(
         params![
             input.id,
             input.title,
+            input.kind.as_str(),
             input.target.to_string(),
             input.project_id,
             input.remote_id,
@@ -783,55 +791,42 @@ fn accept_command(
 
 fn load_session(conn: &Connection, id: &str) -> rusqlite::Result<SessionRecord> {
     conn.query_row(
-        "SELECT id, title, target_json, project_id, remote_id, codex_thread_id, status,
+        "SELECT id, title, kind, target_json, project_id, remote_id, codex_thread_id, status,
                 state_generation, latest_cursor, active_run_id, metadata_json, created_at, updated_at
          FROM sessions WHERE id = ?1",
         params![id],
-        |row| {
-            Ok(SessionRecord {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                target_json: json_value(row.get(2)?),
-                project_id: row.get(3)?,
-                remote_id: row.get(4)?,
-                codex_thread_id: row.get(5)?,
-                status: row.get(6)?,
-                state_generation: row.get(7)?,
-                latest_cursor: row.get(8)?,
-                active_run_id: row.get(9)?,
-                metadata: json_value(row.get(10)?),
-                created_at: row.get(11)?,
-                updated_at: row.get(12)?,
-            })
-        },
+        session_from_row,
     )
 }
 
 fn list_sessions(conn: &Connection, limit: i64) -> Result<Vec<SessionRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, target_json, project_id, remote_id, codex_thread_id, status,
+        "SELECT id, title, kind, target_json, project_id, remote_id, codex_thread_id, status,
                 state_generation, latest_cursor, active_run_id, metadata_json, created_at, updated_at
          FROM sessions ORDER BY updated_at DESC LIMIT ?1",
     )?;
-    let rows = stmt.query_map(params![limit], |row| {
-        Ok(SessionRecord {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            target_json: json_value(row.get(2)?),
-            project_id: row.get(3)?,
-            remote_id: row.get(4)?,
-            codex_thread_id: row.get(5)?,
-            status: row.get(6)?,
-            state_generation: row.get(7)?,
-            latest_cursor: row.get(8)?,
-            active_run_id: row.get(9)?,
-            metadata: json_value(row.get(10)?),
-            created_at: row.get(11)?,
-            updated_at: row.get(12)?,
-        })
-    })?;
+    let rows = stmt.query_map(params![limit], session_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
+    Ok(SessionRecord {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        kind: row.get(2)?,
+        target_json: json_value(row.get(3)?),
+        project_id: row.get(4)?,
+        remote_id: row.get(5)?,
+        codex_thread_id: row.get(6)?,
+        status: row.get(7)?,
+        state_generation: row.get(8)?,
+        latest_cursor: row.get(9)?,
+        active_run_id: row.get(10)?,
+        metadata: json_value(row.get(11)?),
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+    })
 }
 
 fn load_run(conn: &Connection, id: &str) -> rusqlite::Result<RunRecord> {
@@ -933,6 +928,7 @@ mod tests {
             .create_or_update(SessionCreate {
                 id: "session-1".into(),
                 title: "Test".into(),
+                kind: SessionKind::Codex,
                 target: json!({"kind":"codex"}),
                 project_id: None,
                 remote_id: None,

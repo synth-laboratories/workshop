@@ -302,11 +302,12 @@ fn attach_session(
     );
     conn.execute(
         "INSERT INTO sessions(
-            id, title, target_json, remote_id, status, latest_cursor,
+            id, title, kind, target_json, remote_id, status, latest_cursor,
             metadata_json, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, 'ready', 0, ?5, ?6, ?6)
+         ) VALUES (?1, ?2, 'intern', ?3, ?4, 'ready', 0, ?5, ?6, ?6)
          ON CONFLICT(id) DO UPDATE SET
             remote_id = excluded.remote_id,
+            kind = excluded.kind,
             target_json = excluded.target_json,
             metadata_json = excluded.metadata_json,
             updated_at = excluded.updated_at",
