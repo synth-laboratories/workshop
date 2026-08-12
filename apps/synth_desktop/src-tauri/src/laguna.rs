@@ -229,7 +229,7 @@ impl LagunaManager {
             inference: RwLock::new(None),
             inference_updates,
             inference_task: Mutex::new(None),
-            client: Client::new(),
+            client: crate::http::http_client(),
         }
     }
 

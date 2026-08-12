@@ -2,17 +2,15 @@
 
 use crate::core_runtime::CoreRuntime;
 use crate::inventory::ContainerRegisterRequest;
+use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
+use crate::limits;
 use crate::visuals::{VisualCreateRequest, VisualQuery, VisualUpdateRequest};
 use anyhow::{Context, Result};
+use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
-
-const MAX_HEADER_BYTES: usize = 32 * 1024;
-const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,7 +26,7 @@ pub fn connection_path(root: &std::path::Path) -> PathBuf {
 
 pub async fn spawn(core: Arc<CoreRuntime>, root: PathBuf) -> Result<VisualsIpcConnection> {
     let token = format!("synth_vis_{}", Uuid::new_v4());
-    let listener = TcpListener::bind("127.0.0.1:0")
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .context("bind visuals IPC")?;
     let addr = listener.local_addr()?;
@@ -48,143 +46,55 @@ pub async fn spawn(core: Arc<CoreRuntime>, root: PathBuf) -> Result<VisualsIpcCo
 
     let serve_core = core.clone();
     tauri::async_runtime::spawn(async move {
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                continue;
-            };
+        let result = serve_json(listener, move |request| {
             let core = serve_core.clone();
             let token = token.clone();
-            tauri::async_runtime::spawn(async move {
-                let _ = handle_connection(stream, core, token).await;
-            });
+            async move { route_request(request, &core, &token).await }
+        })
+        .await;
+        if let Err(error) = result {
+            eprintln!("synth-desktop: visuals IPC stopped: {error:#}");
         }
     });
     Ok(connection)
 }
 
-async fn handle_connection(
-    mut stream: TcpStream,
-    core: Arc<CoreRuntime>,
-    token: String,
-) -> Result<()> {
-    let mut buffer = Vec::new();
-    let mut chunk = [0u8; 4096];
-    let mut header_end = None;
-    let mut expected_len = None;
-    loop {
-        let n = stream.read(&mut chunk).await?;
-        if n == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&chunk[..n]);
-        if header_end.is_none() {
-            header_end = buffer
-                .windows(4)
-                .position(|window| window == b"\r\n\r\n")
-                .map(|i| i + 4);
-            if header_end.is_none() && buffer.len() > MAX_HEADER_BYTES {
-                anyhow::bail!("visuals IPC headers exceed limit");
-            }
-            if let Some(end) = header_end {
-                let headers = std::str::from_utf8(&buffer[..end])
-                    .context("visuals IPC headers are not UTF-8")?;
-                expected_len = Some(parse_content_length(headers)?);
-                if expected_len.unwrap_or(0) > MAX_BODY_BYTES {
-                    anyhow::bail!("visuals IPC body exceeds limit");
-                }
-            }
-        }
-        if let (Some(end), Some(length)) = (header_end, expected_len) {
-            if buffer.len() >= end + length {
-                buffer.truncate(end + length);
-                break;
-            }
-        }
-        if buffer.len() > MAX_HEADER_BYTES + MAX_BODY_BYTES {
-            break;
-        }
-    }
-    let (status, reason, body) = match dispatch_http(&buffer, &core, &token).await {
-        Ok(value) => (200, "OK", value),
+async fn route_request(
+    request: JsonHttpRequest,
+    core: &CoreRuntime,
+    token: &str,
+) -> JsonHttpResponse {
+    match dispatch_request(request, core, token).await {
+        Ok(value) => JsonHttpResponse::ok(value),
         Err(error) if error.to_string().contains("unauthorized") => {
-            (401, "Unauthorized", json!({"error": error.to_string()}))
+            JsonHttpResponse::error(StatusCode::UNAUTHORIZED, error.to_string())
         }
-        Err(error) => (400, "Bad Request", json!({"error": error.to_string()})),
-    };
-    let payload = serde_json::to_vec(&body)?;
-    let response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        payload.len()
-    );
-    stream.write_all(response.as_bytes()).await?;
-    stream.write_all(&payload).await?;
-    Ok(())
+        Err(error) => JsonHttpResponse::error(StatusCode::BAD_REQUEST, error.to_string()),
+    }
 }
 
-fn parse_content_length(headers: &str) -> Result<usize> {
-    for line in headers.lines().skip(1) {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        if name.eq_ignore_ascii_case("content-length") {
-            return value.trim().parse().context("invalid Content-Length");
-        }
-    }
-    Ok(0)
-}
-
-fn validated_loopback_rollout_base(base: &str) -> Result<String> {
-    let trimmed = base.trim_end_matches('/');
-    let parsed = reqwest::Url::parse(trimmed).context("invalid container base URL")?;
-    let local_host = matches!(
-        parsed.host_str(),
-        Some("127.0.0.1") | Some("localhost") | Some("::1") | Some("[::1]")
-    );
-    if parsed.scheme() != "http" || !local_host {
-        anyhow::bail!("live rollout execution is limited to registered loopback HTTP containers");
-    }
-    Ok(trimmed.to_string())
-}
-
-async fn dispatch_http(raw: &[u8], core: &CoreRuntime, token: &str) -> Result<Value> {
-    let header_end = raw
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .map(|index| index + 4)
-        .context("incomplete visuals IPC headers")?;
-    let headers =
-        std::str::from_utf8(&raw[..header_end]).context("visuals IPC headers are not UTF-8")?;
-    let content_length = parse_content_length(headers)?;
-    if raw.len() < header_end + content_length {
-        anyhow::bail!("incomplete visuals IPC body");
-    }
-    let mut lines = headers.lines();
-    let request_line = lines.next().unwrap_or_default();
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("GET");
-    let target = parts.next().unwrap_or("/");
-    let (path, query_string) = target.split_once('?').unwrap_or((target, ""));
-    let mut auth = None;
-    for line in lines.by_ref() {
-        if line.is_empty() {
-            break;
-        }
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        if name.eq_ignore_ascii_case("authorization") {
-            auth = value.trim().strip_prefix("Bearer ").map(str::to_string);
-        }
-    }
-    if auth.as_deref() != Some(token) {
+async fn dispatch_request(
+    request: JsonHttpRequest,
+    core: &CoreRuntime,
+    token: &str,
+) -> Result<Value> {
+    let auth = request
+        .authorization
+        .as_deref()
+        .and_then(|value| value.strip_prefix("Bearer ").map(str::trim));
+    if auth != Some(token) {
         anyhow::bail!("unauthorized visuals IPC request");
     }
-    let body = &raw[header_end..header_end + content_length];
-    let json_body: Value = if body.is_empty() {
+    let (path, query_string) = request
+        .path
+        .split_once('?')
+        .unwrap_or((request.path.as_str(), ""));
+    let json_body = if request.body.is_null() {
         query_json(query_string)
     } else {
-        serde_json::from_slice(body).context("invalid visuals IPC JSON body")?
+        request.body
     };
+    let method = request.method.as_str();
     if path.starts_with("/v1/optimizers") {
         return dispatch_optimizer(method, path, json_body, core).await;
     }
@@ -231,6 +141,19 @@ fn percent_decode(value: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+fn validated_loopback_rollout_base(base: &str) -> Result<String> {
+    let trimmed = base.trim_end_matches('/');
+    let parsed = reqwest::Url::parse(trimmed).context("invalid container base URL")?;
+    let local_host = matches!(
+        parsed.host_str(),
+        Some("127.0.0.1") | Some("localhost") | Some("::1") | Some("[::1]")
+    );
+    if parsed.scheme() != "http" || !local_host {
+        anyhow::bail!("live rollout execution is limited to registered loopback HTTP containers");
+    }
+    Ok(trimmed.to_string())
+}
+
 async fn register_hydrated_container(
     core: &CoreRuntime,
     request: ContainerRegisterRequest,
@@ -239,12 +162,8 @@ async fn register_hydrated_container(
         anyhow::bail!("container baseUrl must start with http:// or https://");
     }
     let base = request.base_url.trim_end_matches('/');
-    let client = reqwest::Client::new();
-    let health_response = client
-        .get(format!("{base}/health"))
-        .timeout(std::time::Duration::from_secs(3))
-        .send()
-        .await;
+    let client = crate::http::http_client_with_timeout(limits::CONTAINER_PROBE_TIMEOUT);
+    let health_response = client.get(format!("{base}/health")).send().await;
     let (status, health) = match health_response {
         Ok(response) => {
             let code = response.status();
@@ -262,12 +181,7 @@ async fn register_hydrated_container(
     };
     let mut info = None;
     for route in ["info", "metadata"] {
-        if let Ok(response) = client
-            .get(format!("{base}/{route}"))
-            .timeout(std::time::Duration::from_secs(3))
-            .send()
-            .await
-        {
+        if let Ok(response) = client.get(format!("{base}/{route}")).send().await {
             if response.status().is_success() {
                 info = response.json::<Value>().await.ok();
                 if info.is_some() {
@@ -307,12 +221,7 @@ async fn register_hydrated_container(
         ("program", "program"),
         ("dataset", "dataset"),
     ] {
-        if let Ok(response) = client
-            .get(format!("{base}/{route}"))
-            .timeout(std::time::Duration::from_secs(3))
-            .send()
-            .await
-        {
+        if let Ok(response) = client.get(format!("{base}/{route}")).send().await {
             if response.status().is_success() {
                 if let Ok(value) = response.json::<Value>().await {
                     metadata.insert(key.into(), value);
@@ -357,14 +266,11 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .as_deref()
                 .context("container has no base URL")?
                 .trim_end_matches('/');
-            let client = reqwest::Client::builder()
+            let client = crate::http::http_client_builder()
                 .redirect(reqwest::redirect::Policy::none())
+                .timeout(limits::CONTAINER_PROBE_TIMEOUT)
                 .build()?;
-            let health_response = client
-                .get(format!("{base}/health"))
-                .timeout(std::time::Duration::from_secs(3))
-                .send()
-                .await;
+            let health_response = client.get(format!("{base}/health")).send().await;
             let (status, health) = match health_response {
                 Ok(response) => {
                     let code = response.status();
@@ -380,12 +286,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 }
                 Err(error) => ("unhealthy", json!({"ok":false,"error":error.to_string()})),
             };
-            let info = match client
-                .get(format!("{base}/info"))
-                .timeout(std::time::Duration::from_secs(3))
-                .send()
-                .await
-            {
+            let info = match client.get(format!("{base}/info")).send().await {
                 Ok(response) if response.status().is_success() => {
                     response.json::<Value>().await.ok()
                 }
@@ -402,12 +303,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 ("program", "program"),
                 ("dataset", "dataset"),
             ] {
-                if let Ok(response) = client
-                    .get(format!("{base}/{route}"))
-                    .timeout(std::time::Duration::from_secs(3))
-                    .send()
-                    .await
-                {
+                if let Ok(response) = client.get(format!("{base}/{route}")).send().await {
                     if response.status().is_success() {
                         if let Ok(value) = response.json::<Value>().await {
                             metadata.insert(key.into(), value);
@@ -478,8 +374,9 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     anyhow::bail!("seeds must contain exactly count integer values");
                 }
             }
-            let client = reqwest::Client::builder()
+            let client = crate::http::http_client_builder()
                 .redirect(reqwest::redirect::Policy::none())
+                .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
                 .build()?;
             let mut rollouts = Vec::with_capacity(count as usize);
             for index in 0..count {
@@ -489,7 +386,6 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     .unwrap_or(index as i64 + 1);
                 let response = client
                     .post(format!("{base}/rollouts"))
-                    .timeout(std::time::Duration::from_secs(10))
                     .json(&json!({"seed":seed}))
                     .send()
                     .await?
@@ -514,7 +410,6 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     }
                     state = client
                         .post(format!("{base}/rollouts/{rollout_id}/step"))
-                        .timeout(std::time::Duration::from_secs(10))
                         .json(&json!({"action":action}))
                         .send()
                         .await?
@@ -524,7 +419,6 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 }
                 let events = client
                     .get(format!("{base}/rollouts/{rollout_id}/event_log"))
-                    .timeout(std::time::Duration::from_secs(10))
                     .send()
                     .await?
                     .error_for_status()?
@@ -757,11 +651,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_case_insensitive_lengths_and_query_values() {
-        assert_eq!(
-            parse_content_length("GET / HTTP/1.1\r\ncontent-length: 12\r\n\r\n").unwrap(),
-            12
-        );
+    fn parses_query_values() {
         assert_eq!(
             query_json("search=reward+chart&limit=5&offset=2"),
             json!({

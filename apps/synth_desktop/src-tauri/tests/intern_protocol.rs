@@ -132,7 +132,7 @@ async fn bearer_client_posts_typed_sync_command_and_checks_identity() {
         socket.write_all(response.as_bytes()).await.unwrap();
     });
 
-    let client = InternClient::new(
+    let client = InternClient::connect(
         &format!("http://{address}"),
         "secret-test-key",
         Duration::from_secs(2),
@@ -149,9 +149,9 @@ async fn bearer_client_posts_typed_sync_command_and_checks_identity() {
 
 #[tokio::test]
 async fn client_rejects_empty_credentials_and_unsafe_runtime_ids() {
-    assert!(InternClient::new("https://example.invalid", "", Duration::from_secs(1)).is_err());
+    assert!(InternClient::connect("https://example.invalid", "", Duration::from_secs(1)).is_err());
     let client =
-        InternClient::new("https://example.invalid", "secret", Duration::from_secs(1)).unwrap();
+        InternClient::connect("https://example.invalid", "secret", Duration::from_secs(1)).unwrap();
     assert!(client.get_sync("../unsafe").await.is_err());
     let binding = RuntimeBinding::default();
     assert!(binding.factory_id.is_none());

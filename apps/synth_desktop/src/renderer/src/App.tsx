@@ -41,6 +41,10 @@ import {
 	isInternTargetId
 } from "./types/landing";
 import type { ArtifactRef } from "./types/landing";
+import {
+	EVAL_WAIT_TERMINAL_POLL_MS,
+	EVAL_WAIT_TERMINAL_TIMEOUT_MS
+} from "./limits";
 import { ChatTranscript, OutputsPanel, outputContainerIds } from "./components/ChatTranscript";
 import { ContainerPane } from "./components/ContainerPane";
 // CloudDesk stays dormant for v0.2; see the removal contract at its route site.
@@ -1719,8 +1723,9 @@ export default function App() {
 					if (!sessionId) throw new Error("wait_for_terminal requires sessionId");
 					if (!window.synthCore) throw new Error("Rust journal is unavailable");
 					const timeoutMs =
-						typeof args.timeoutMs === "number" ? args.timeoutMs : 600_000;
-					const pollMs = typeof args.pollMs === "number" ? args.pollMs : 500;
+						typeof args.timeoutMs === "number" ? args.timeoutMs : EVAL_WAIT_TERMINAL_TIMEOUT_MS;
+					const pollMs =
+						typeof args.pollMs === "number" ? args.pollMs : EVAL_WAIT_TERMINAL_POLL_MS;
 					const deadline = Date.now() + timeoutMs;
 					let after = 0;
 					while (Date.now() < deadline) {

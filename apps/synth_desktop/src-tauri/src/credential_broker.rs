@@ -31,10 +31,7 @@ use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
-use hyper::server::conn::http1;
-use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -55,7 +52,7 @@ pub const REDACTED_ENV_KEYS: &[&str] = &[
 
 const REDACTION: &str = "<redacted-by-synth-desktop>";
 /// Cloud turns are long; the proxy must outlive a full streamed response.
-const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(900);
+const UPSTREAM_TIMEOUT: Duration = crate::limits::CREDENTIAL_UPSTREAM_TIMEOUT;
 
 /// A live authorization mapping: lease token -> real upstream credential.
 struct Lease {
@@ -143,10 +140,7 @@ impl CredentialBroker {
         let state = Arc::new(BrokerState {
             by_session: RwLock::new(HashMap::new()),
             leases: RwLock::new(HashMap::new()),
-            http: reqwest::Client::builder()
-                .timeout(UPSTREAM_TIMEOUT)
-                .build()
-                .context("build the credential proxy HTTP client")?,
+            http: crate::http::http_client_with_timeout(UPSTREAM_TIMEOUT),
         });
         Ok((Self { state, addr }, listener))
     }
@@ -618,25 +612,11 @@ impl Drop for MeteredRelay {
 }
 
 async fn serve(state: Arc<BrokerState>, listener: tokio::net::TcpListener) -> Result<()> {
-    loop {
-        // Retrying a failed accept forever turns a dead listener into a silent
-        // hot loop. Ending here makes every later lease fail visibly instead.
-        let (stream, _peer) = listener
-            .accept()
-            .await
-            .context("accept a connection on the Synth Desktop credential proxy")?;
+    crate::ipc::serve_connections(listener, move |request| {
         let state = state.clone();
-        tauri::async_runtime::spawn(async move {
-            let io = TokioIo::new(stream);
-            let service = service_fn(move |request| proxy(state.clone(), request));
-            // Reported rather than discarded: a connection that ends in an
-            // error took an agent's turn with it, and the reason is not
-            // recoverable from anywhere else.
-            if let Err(error) = http1::Builder::new().serve_connection(io, service).await {
-                eprintln!("synth-desktop: credential proxy connection ended: {error}");
-            }
-        });
-    }
+        async move { proxy(state, request).await }
+    })
+    .await
 }
 
 type ProxyBody = BoxBody<Bytes, std::io::Error>;
@@ -981,7 +961,7 @@ mod tests {
         let broker = CredentialBroker::start().unwrap();
         let handle = broker.lease("session-a", &upstream, SENTINEL);
 
-        let response = reqwest::Client::new()
+        let response = crate::http::http_client()
             .post(format!("{}/api/v1/responses", handle.origin))
             .bearer_auth(&handle.token)
             .json(&serde_json::json!({"model": "laguna-s", "input": "hi"}))
@@ -1009,7 +989,7 @@ mod tests {
     #[tokio::test]
     async fn the_proxy_refuses_a_token_it_never_issued() {
         let broker = CredentialBroker::start().unwrap();
-        let response = reqwest::Client::new()
+        let response = crate::http::http_client()
             .post(format!("{}/api/v1/responses", broker.origin()))
             .bearer_auth("sdl_not_a_real_lease")
             .send()
@@ -1026,7 +1006,7 @@ mod tests {
         let handle = broker.lease("session-a", &upstream, SENTINEL);
         broker.revoke("session-a");
 
-        let response = reqwest::Client::new()
+        let response = crate::http::http_client()
             .get(format!("{}/api/v1/responses", handle.origin))
             .bearer_auth(&handle.token)
             .send()
@@ -1043,7 +1023,7 @@ mod tests {
         drop(dead);
         let broker = CredentialBroker::start().unwrap();
         let handle = broker.lease("session-a", &origin, SENTINEL);
-        let response = reqwest::Client::new()
+        let response = crate::http::http_client()
             .post(format!("{}/api/v1/responses", handle.origin))
             .bearer_auth(&handle.token)
             .send()
@@ -1317,7 +1297,7 @@ mod tests {
         let broker = CredentialBroker::start().unwrap();
         let handle = broker.lease("session-json-e2e", &upstream, SENTINEL);
 
-        let response = reqwest::Client::new()
+        let response = crate::http::http_client()
             .post(format!("{}/api/v1/responses", handle.origin))
             .bearer_auth(&handle.token)
             .send()
@@ -1344,7 +1324,7 @@ mod tests {
         let broker = CredentialBroker::start().unwrap();
         let handle = broker.lease("session-sse-e2e", &upstream, SENTINEL);
 
-        let response = reqwest::Client::new()
+        let response = crate::http::http_client()
             .post(format!("{}/api/v1/responses", handle.origin))
             .bearer_auth(&handle.token)
             .send()
@@ -1368,7 +1348,7 @@ mod tests {
         let broker = CredentialBroker::start().unwrap();
         let handle = broker.lease("session-non2xx", &upstream, SENTINEL);
 
-        let response = reqwest::Client::new()
+        let response = crate::http::http_client()
             .post(format!("{}/api/v1/responses", handle.origin))
             .bearer_auth(&handle.token)
             .send()

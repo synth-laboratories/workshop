@@ -3,7 +3,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::time::Duration;
 
 #[derive(Clone)]
 pub struct CloudOptimizerClient {
@@ -23,10 +22,7 @@ impl CloudOptimizerClient {
 
     pub fn new(backend_url: impl Into<String>, api_key: impl Into<String>) -> Self {
         Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .expect("reqwest client"),
+            client: crate::http::http_client_with_timeout(crate::limits::OPTIMIZERS_CLOUD_TIMEOUT),
             base_url: backend_url.into().trim_end_matches('/').to_string(),
             api_key: api_key.into(),
         }
