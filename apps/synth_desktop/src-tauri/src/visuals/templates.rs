@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateMeta {
     pub schema_version: String,
@@ -23,8 +23,10 @@ pub struct TemplateMeta {
     #[serde(default)]
     pub shell_path: Option<String>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub example_binding: Option<Value>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub slots: Vec<Value>,
 }
 

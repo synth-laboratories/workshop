@@ -5,10 +5,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{
-        atomic::AtomicU64,
-        Arc,
-    },
+    sync::{atomic::AtomicU64, Arc},
 };
 use tauri::AppHandle;
 use tokio::{
@@ -37,7 +34,8 @@ use super::telemetry::{
 /// `export NAME=value`. These names are the ones a real provider credential
 /// lives under, so a value under any of them is refused at the spawn boundary —
 /// a `credential_broker` lease is the only thing that may cross it.
-pub(crate) const CREDENTIAL_ENV_NAMES: &[&str] = &["SYNTH_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"];
+pub(crate) const CREDENTIAL_ENV_NAMES: &[&str] =
+    &["SYNTH_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"];
 
 /// The single provider variable the Codex child is allowed to receive, if any.
 ///
@@ -148,12 +146,7 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             stderr_persistence
-                .notify_codex_event(
-                    &app,
-                    sid.clone(),
-                    "app-server/stderr",
-                    json!({"line":line}),
-                )
+                .notify_codex_event(&app, sid.clone(), "app-server/stderr", json!({"line":line}))
                 .await;
         }
     });
@@ -239,12 +232,7 @@ async fn read_stdout<R: tauri::Runtime>(
                     safe_approval_payload(&approval_id, &method, &params, &available_decisions);
                 persistence
                     .persistence
-                    .notify_codex_event(
-                        &app,
-                        session_id.clone(),
-                        "approval.requested",
-                        safe,
-                    )
+                    .notify_codex_event(&app, session_id.clone(), "approval.requested", safe)
                     .await;
                 continue;
             }
@@ -257,12 +245,7 @@ async fn read_stdout<R: tauri::Runtime>(
         }
         persistence
             .persistence
-            .notify_codex_event(
-                &app,
-                session_id.clone(),
-                method.clone(),
-                params.clone(),
-            )
+            .notify_codex_event(&app, session_id.clone(), method.clone(), params.clone())
             .await;
         track_performance_event(
             &persistence.persistence,
@@ -273,7 +256,10 @@ async fn read_stdout<R: tauri::Runtime>(
             &params,
         )
         .await;
-        if matches!(method.as_str(), "turn/completed" | "thread/compact/completed") {
+        if matches!(
+            method.as_str(),
+            "turn/completed" | "thread/compact/completed"
+        ) {
             if let Some(waiter) = persistence.compact_waiters.lock().await.remove(&session_id) {
                 let _ = waiter.send(Ok(()));
             }
@@ -384,11 +370,6 @@ async fn read_stdout<R: tauri::Runtime>(
             }
         }
     }
-    let mut pending = pending.lock().await;
-    for (_, sender) in pending.drain() {
-        let _ = sender.send(Err(STDOUT_CLOSED.into()));
-    }
-    drop(pending);
     let owned_attachment = {
         let mut sessions = persistence.sessions.write().await;
         let owns_current = sessions
@@ -399,49 +380,55 @@ async fn read_stdout<R: tauri::Runtime>(
         }
         owns_current
     };
-    if !owned_attachment {
-        return;
-    }
-    let was_running = {
-        let mut records = persistence.records.write().await;
-        records.get_mut(&session_id).is_some_and(|record| {
-            if !SessionStatus::Running.equals_str(&record.status) {
-                return false;
-            }
-            record.status = SessionStatus::Interrupted.as_str().into();
-            true
-        })
-    };
-    if was_running {
-        let _ = persist_records(&persistence.records, &persistence.state_path).await;
-        persistence
-            .persistence
-            .notify_codex_event(
-                &app,
-                session_id.clone(),
-                "session/unhealthy",
-                json!({
-                    "reason": "app_server_exited",
-                    "message": "The local agent process exited before the turn completed."
-                }),
+    if owned_attachment {
+        let was_running = {
+            let mut records = persistence.records.write().await;
+            records.get_mut(&session_id).is_some_and(|record| {
+                if !SessionStatus::Running.equals_str(&record.status) {
+                    return false;
+                }
+                record.status = SessionStatus::Interrupted.as_str().into();
+                true
+            })
+        };
+        if was_running {
+            let _ = persist_records(&persistence.records, &persistence.state_path).await;
+            persistence
+                .persistence
+                .notify_codex_event(
+                    &app,
+                    session_id.clone(),
+                    "session/unhealthy",
+                    json!({
+                        "reason": "app_server_exited",
+                        "message": "The local agent process exited before the turn completed."
+                    }),
+                )
+                .await;
+            finalize_performance_tracker(
+                &persistence.persistence,
+                &persistence.performance_trackers,
+                &persistence.receipts,
+                &session_id,
+                RunStatus::Interrupted.as_str(),
+                None,
             )
             .await;
-        finalize_performance_tracker(
-            &persistence.persistence,
-            &persistence.performance_trackers,
-            &persistence.receipts,
-            &session_id,
-            RunStatus::Interrupted.as_str(),
-            None,
-        )
-        .await;
-        if let Ok(Some(event)) = persistence
-            .persistence
-            .interrupt_active_run(&session_id, "app_server_exited")
-            .await
-        {
-            let _ = persistence.persistence.publish_event(&app, event).await;
+            if let Ok(Some(event)) = persistence
+                .persistence
+                .interrupt_active_run(&session_id, "app_server_exited")
+                .await
+            {
+                let _ = persistence.persistence.publish_event(&app, event).await;
+            }
         }
+    }
+    // Release failed requests only after the attachment owner has finalized
+    // its durable run. Command callers therefore observe authoritative state
+    // and do not need a second reconciliation path.
+    let mut pending = pending.lock().await;
+    for (_, sender) in pending.drain() {
+        let _ = sender.send(Err(STDOUT_CLOSED.into()));
     }
 }
 

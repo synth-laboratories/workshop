@@ -10,7 +10,7 @@ use serde::Serialize;
 use std::fmt;
 
 /// Informative error payload serialized across the Tauri boundary.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AppError {
     pub code: String,
@@ -96,12 +96,10 @@ impl std::error::Error for AppError {}
 impl From<anyhow::Error> for AppError {
     fn from(error: anyhow::Error) -> Self {
         if error_is::<Unauthorized>(&error) {
-            return Self::unauthorized(error.to_string())
-                .with_detail(format!("{error:?}"));
+            return Self::unauthorized(error.to_string()).with_detail(format!("{error:?}"));
         }
         if error_is::<ProtocolMismatch>(&error) {
-            return Self::protocol_mismatch(error.to_string())
-                .with_detail(format!("{error:?}"));
+            return Self::protocol_mismatch(error.to_string()).with_detail(format!("{error:?}"));
         }
         if error_is::<DatabaseLocked>(&error) {
             return Self::coded(CODE_DATABASE_LOCKED, error.to_string())

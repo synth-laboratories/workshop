@@ -25,14 +25,15 @@ struct PendingPair {
     expires_at_epoch_s: u64,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Clone, Debug, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SignInBegin {
     pub verification_uri: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub expires_at_epoch_s: u64,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Clone, Debug, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase", tag = "status")]
 pub enum SignInPoll {
     /// Browser approval not observed yet; keep polling.

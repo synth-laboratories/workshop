@@ -270,19 +270,27 @@ export type CodexBridge = {
 	defaultWorkspace(): Promise<string>;
 	list(): Promise<PersistedCodexSession[]>;
 	start(request: CodexSessionStart): Promise<CodexSessionInfo>;
-	startTurn(sessionId: string, prompt: string, effort?: string): Promise<CodexSessionInfo>;
+	startTurn(
+		sessionId: string,
+		prompt: string,
+		effort?: string,
+		options?: { clientMessageId?: string }
+	): Promise<CodexSessionInfo>;
 	/**
 	 * Atomic attach-or-resume plus turn start. Optional because browser demo
 	 * adapters and older test fixtures only implement start + startTurn.
 	 * `options.compactBeforeModelSwitch` asks Rust to run `thread/compact/start`
 	 * on the live source model before rebinding when the start request targets
 	 * a different model (see `modelSwitchPlan.ts`).
+	 * `options.clientMessageId` is the optimistic transcript bubble id; Rust
+	 * reuses it when journaling `message.created` so the host event collapses
+	 * onto the same bubble.
 	 */
 	sendTurn?(
 		request: CodexSessionStart,
 		prompt: string,
 		effort?: string,
-		options?: { compactBeforeModelSwitch?: boolean }
+		options?: { compactBeforeModelSwitch?: boolean; clientMessageId?: string }
 	): Promise<CodexSessionInfo>;
 	interrupt(sessionId: string): Promise<void>;
 	/** Atomically attaches/resumes a Codex thread and starts ad-hoc compaction. */

@@ -5,11 +5,7 @@ mod mcp_stdio;
 
 use mcp_stdio::{run_stdio_server, McpServerInfo};
 use serde_json::{json, Value};
-use std::{
-    env, fs, io,
-    io::Write,
-    path::PathBuf,
-};
+use std::{env, fs, io, io::Write, path::PathBuf};
 
 #[derive(serde::Deserialize)]
 struct Connection {
@@ -41,10 +37,15 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
     request_inner(method, path, body).map_err(display_err)
 }
 
-fn request_inner(method: &str, path: &str, body: Option<Value>) -> Result<Value, synth_desktop_lib::error::AppError> {
-    let connection: Connection =
-        serde_json::from_str(&fs::read_to_string(connection_file()).map_err(synth_desktop_lib::error::AppError::from)?)
-            .map_err(synth_desktop_lib::error::AppError::from)?;
+fn request_inner(
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value, synth_desktop_lib::error::AppError> {
+    let connection: Connection = serde_json::from_str(
+        &fs::read_to_string(connection_file()).map_err(synth_desktop_lib::error::AppError::from)?,
+    )
+    .map_err(synth_desktop_lib::error::AppError::from)?;
     let payload = body
         .map(|v| serde_json::to_vec(&v).unwrap_or_default())
         .unwrap_or_default();
@@ -56,14 +57,16 @@ fn request_inner(method: &str, path: &str, body: Option<Value>) -> Result<Value,
         .unwrap_or_default()
         .parse::<std::net::SocketAddr>()
         .map_err(synth_desktop_lib::error::AppError::from)?;
-    let mut stream = std::net::TcpStream::connect(addr).map_err(synth_desktop_lib::error::AppError::from)?;
+    let mut stream =
+        std::net::TcpStream::connect(addr).map_err(synth_desktop_lib::error::AppError::from)?;
     let wire = format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", connection.token, payload.len());
     stream
         .write_all(wire.as_bytes())
         .and_then(|_| stream.write_all(&payload))
         .map_err(synth_desktop_lib::error::AppError::from)?;
     let mut response = String::new();
-    io::Read::read_to_string(&mut stream, &mut response).map_err(synth_desktop_lib::error::AppError::from)?;
+    io::Read::read_to_string(&mut stream, &mut response)
+        .map_err(synth_desktop_lib::error::AppError::from)?;
     serde_json::from_str(
         response
             .split("\r\n\r\n")

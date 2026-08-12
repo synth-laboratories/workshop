@@ -49,7 +49,7 @@ pub const SOURCE_CLOUD: &str = "cloud";
 pub const SOURCE_DEV_SEED: &str = "dev_seed";
 pub const SOURCE_NONE: &str = "none";
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountPlan {
     pub name: String,
@@ -73,7 +73,7 @@ pub struct AccountPlan {
     pub source: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountOrganization {
     pub id: String,
@@ -83,14 +83,15 @@ pub struct AccountOrganization {
     pub role: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountUsageWindow {
+    #[specta(type = specta_typescript::Unknown)]
     pub events: i64,
     pub cost_usd: f64,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountCloudUsage {
     pub today: AccountUsageWindow,
@@ -98,7 +99,7 @@ pub struct AccountCloudUsage {
     pub thirty_days: AccountUsageWindow,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountBilling {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,7 +110,7 @@ pub struct AccountBilling {
     pub upgrade_tier: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountPlanOption {
     pub tier: String,
@@ -118,7 +119,7 @@ pub struct AccountPlanOption {
     pub monthly_allowance_usd: f64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountSummary {
     pub signed_in: bool,
@@ -577,7 +578,15 @@ mod tests {
     #[test]
     fn a_fresh_install_reads_as_local_only_not_signed_out() {
         let (_root, storage) = open_storage();
-        let summary = summary(&storage, "http://localhost:3000", "local", false, now(), &offline()).unwrap();
+        let summary = summary(
+            &storage,
+            "http://localhost:3000",
+            "local",
+            false,
+            now(),
+            &offline(),
+        )
+        .unwrap();
         assert!(!summary.signed_in);
         assert_eq!(summary.state, STATE_LOCAL_ONLY);
         assert_eq!(summary.environment, "local");
@@ -589,7 +598,15 @@ mod tests {
     fn a_device_that_has_paired_before_reads_as_signed_out() {
         let (_root, storage) = open_storage();
         mark_paired(&storage, now()).unwrap();
-        let summary = summary(&storage, "http://localhost:3000", "local", false, now(), &offline()).unwrap();
+        let summary = summary(
+            &storage,
+            "http://localhost:3000",
+            "local",
+            false,
+            now(),
+            &offline(),
+        )
+        .unwrap();
         assert_eq!(summary.state, STATE_SIGNED_OUT);
         assert!(summary.plan.is_none(), "signed out shows no plan dollars");
     }
@@ -676,7 +693,15 @@ mod tests {
         let mut cloud = cloud_snapshot("active", Some(20_000), 0);
         cloud.stale = true;
         cloud.error = Some("Synth Cloud is unavailable right now".into());
-        let summary = summary(&storage, "https://www.usesynth.ai", "prod", true, now(), &cloud).unwrap();
+        let summary = summary(
+            &storage,
+            "https://www.usesynth.ai",
+            "prod",
+            true,
+            now(),
+            &cloud,
+        )
+        .unwrap();
         assert!(summary.stale);
         assert_eq!(summary.state, STATE_ACTIVE);
         assert!(summary.error.is_some());
@@ -690,7 +715,15 @@ mod tests {
             error: Some("Synth Cloud is unavailable right now".into()),
             ..SnapshotRead::default()
         };
-        let summary = summary(&storage, "https://www.usesynth.ai", "prod", true, now(), &cloud).unwrap();
+        let summary = summary(
+            &storage,
+            "https://www.usesynth.ai",
+            "prod",
+            true,
+            now(),
+            &cloud,
+        )
+        .unwrap();
         assert!(summary.signed_in);
         assert_eq!(summary.state, STATE_ERROR);
         assert!(summary.plan.is_none(), "prod must not be seeded");
@@ -753,7 +786,15 @@ mod tests {
     #[test]
     fn dev_without_a_snapshot_seeds_the_200_dollar_stand_in_once() {
         let (_root, storage) = open_storage();
-        let first = summary(&storage, "http://localhost:3000", "local", true, now(), &offline()).unwrap();
+        let first = summary(
+            &storage,
+            "http://localhost:3000",
+            "local",
+            true,
+            now(),
+            &offline(),
+        )
+        .unwrap();
         let plan = first.plan.expect("dev plan seeded");
         assert_eq!(plan.name, "Synth Dev");
         assert_eq!(plan.source, SOURCE_DEV_SEED);
@@ -764,7 +805,15 @@ mod tests {
         assert_eq!(first.display_name.as_deref(), Some("Synth Dev"));
         assert_eq!(first.account_id.as_deref(), Some("dev-local"));
 
-        let second = summary(&storage, "http://localhost:3000", "local", true, now(), &offline()).unwrap();
+        let second = summary(
+            &storage,
+            "http://localhost:3000",
+            "local",
+            true,
+            now(),
+            &offline(),
+        )
+        .unwrap();
         assert_eq!(second.plan.unwrap(), plan);
     }
 
@@ -785,10 +834,17 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let plan = summary(&storage, "http://localhost:3000", "local", true, now(), &offline())
-            .unwrap()
-            .plan
-            .unwrap();
+        let plan = summary(
+            &storage,
+            "http://localhost:3000",
+            "local",
+            true,
+            now(),
+            &offline(),
+        )
+        .unwrap()
+        .plan
+        .unwrap();
         assert_eq!(plan.used_usd, Some(13.0));
         assert_eq!(plan.remaining_usd, Some(187.0));
     }
@@ -797,10 +853,17 @@ mod tests {
     fn the_dev_stand_in_clamps_at_zero_when_usage_exceeds_the_allowance() {
         let (_root, storage) = open_storage();
         charge(&storage, "big", 250.0, "2026-08-02T00:00:00+00:00");
-        let plan = summary(&storage, "http://localhost:3000", "local", true, now(), &offline())
-            .unwrap()
-            .plan
-            .unwrap();
+        let plan = summary(
+            &storage,
+            "http://localhost:3000",
+            "local",
+            true,
+            now(),
+            &offline(),
+        )
+        .unwrap()
+        .plan
+        .unwrap();
         assert_eq!(plan.used_usd, Some(250.0));
         assert_eq!(plan.remaining_usd, Some(0.0));
     }

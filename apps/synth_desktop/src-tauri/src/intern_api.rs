@@ -18,7 +18,7 @@ use uuid::Uuid;
 // and create two sessions for the same remote runtime.
 static ASYNC_BINDING_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternBindingRequest {
     pub factory_id: Option<String>,
@@ -44,16 +44,17 @@ impl From<Option<InternBindingRequest>> for RuntimeBinding {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternTarget {
     pub kind: String,
     pub mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(type = specta_typescript::Unknown)]
     pub binding: Option<Value>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternSessionCreateRequest {
     pub target: InternTarget,
@@ -62,46 +63,51 @@ pub struct InternSessionCreateRequest {
     pub project_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternSessionSendRequest {
     pub session_id: String,
     pub body: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternSessionControlRequest {
     pub session_id: String,
     pub kind: String,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub payload: Map<String, Value>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternSessionWire {
     pub id: String,
     pub title: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub target: Value,
     pub project_id: Option<String>,
     pub remote_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub status: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub state_generation: Option<i64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub latest_cursor: i64,
     pub active_run_id: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub metadata: Value,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternSendResult {
     pub run_id: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternControlResult {
     pub accepted: bool,

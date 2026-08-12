@@ -1,16 +1,42 @@
-use crate::domain::RuntimeTarget;
+use crate::domain::{InternBinding, InternMode, RuntimeTarget};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const APP_EVENT_SCHEMA_VERSION: &str = "synth.desktop-app-event.v1";
-/// Matches `storage/migrations.rs` `MIGRATIONS.len()` after migrations 9+10.
-pub const SCHEMA_VERSION: i64 = 10;
+/// Matches `storage/migrations.rs` `MIGRATIONS.len()`.
+pub const SCHEMA_VERSION: i64 = 12;
 
 fn default_session_kind() -> String {
     "codex".into()
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// Codegen-only mirror of RuntimeTarget's custom serde wire representation.
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "kind")]
+pub enum RuntimeTargetContract {
+    #[serde(rename = "local")]
+    Local {
+        model: String,
+        adapter: Option<String>,
+    },
+    #[serde(rename = "remote")]
+    Remote {
+        model: String,
+        adapter: Option<String>,
+    },
+    #[serde(rename = "cloud")]
+    Cloud {
+        model: String,
+        adapter: Option<String>,
+    },
+    #[serde(rename = "intern")]
+    Intern {
+        mode: InternMode,
+        binding: Option<InternBinding>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub enum EventSource {
     Local,
@@ -48,29 +74,33 @@ impl EventSource {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AppEvent {
     pub schema_version: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub sequence: i64,
     pub event_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(type = specta_typescript::Unknown)]
     pub session_sequence: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     pub source: EventSource,
     pub kind: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub payload: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(type = specta_typescript::Unknown)]
     pub remote_sequence: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command_id: Option<String>,
     pub created_at: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRecord {
     pub id: String,
@@ -80,14 +110,18 @@ pub struct SessionRecord {
     #[serde(default = "default_session_kind")]
     pub kind: String,
     /// Typed runtime substrate (DB column remains `target_json`).
+    #[specta(type = RuntimeTargetContract)]
     pub target: RuntimeTarget,
     pub project_id: Option<String>,
     pub remote_id: Option<String>,
     pub codex_thread_id: Option<String>,
     pub status: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub state_generation: Option<i64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub latest_cursor: i64,
     pub active_run_id: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub metadata: Value,
     pub created_at: String,
     pub updated_at: String,
@@ -100,18 +134,22 @@ impl SessionRecord {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RunRecord {
     pub id: String,
     pub session_id: String,
     pub mode: String,
     pub status: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub latest_cursor: i64,
+    #[specta(type = specta_typescript::Unknown)]
     pub checkpoint: Option<Value>,
+    #[specta(type = specta_typescript::Unknown)]
     pub outcome: Option<Value>,
     pub model: Option<String>,
     pub adapter: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub metadata: Value,
     pub created_at: String,
     pub started_at: Option<String>,
@@ -119,7 +157,7 @@ pub struct RunRecord {
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandReceiptRecord {
     pub command_id: String,
@@ -128,23 +166,31 @@ pub struct CommandReceiptRecord {
     pub source: EventSource,
     pub kind: String,
     pub status: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub request: Value,
+    #[specta(type = specta_typescript::Unknown)]
     pub response: Option<Value>,
+    #[specta(type = specta_typescript::Unknown)]
     pub remote_cursor: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CoreDiagnostics {
     pub database_path: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub schema_version: i64,
     pub integrity_ok: bool,
     pub content_store_path: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub journal_head: i64,
+    #[specta(type = specta_typescript::Unknown)]
     pub session_count: i64,
+    #[specta(type = specta_typescript::Unknown)]
     pub run_count: i64,
+    #[specta(type = specta_typescript::Unknown)]
     pub visual_count: i64,
     pub migration_complete: bool,
 }

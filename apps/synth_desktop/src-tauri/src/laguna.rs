@@ -83,20 +83,23 @@ fn model_spec(model_id: &str) -> Result<ModelSpec> {
         .ok_or_else(|| anyhow::anyhow!("Unknown on-device model `{model_id}`"))
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LagunaModelHit {
     pub path: String,
     pub models_root: String,
     pub model_id: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub shard_count: usize,
+    #[specta(type = specta_typescript::Unknown)]
     pub total_bytes: u64,
     pub selected: bool,
     pub runtime_ready: bool,
+    #[specta(type = specta_typescript::Unknown)]
     pub companion_bytes: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LagunaStatus {
     pub phase: String,
@@ -104,11 +107,17 @@ pub struct LagunaStatus {
     pub backend: Option<String>,
     pub loaded_model: Option<String>,
     pub detail: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub memory_bytes: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub idle_seconds: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub idle_unload_after_seconds: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub last_used_at: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub free_at: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub updated_at: u64,
 }
 
@@ -116,7 +125,7 @@ pub struct LagunaStatus {
 ///
 /// Every metric is `Option` on purpose: `null` from the daemon means the number
 /// is genuinely unavailable at this phase, and must never be rendered as zero.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase", default)]
 pub struct LagunaGeneration {
     pub generation_id: Option<String>,
@@ -129,8 +138,11 @@ pub struct LagunaGeneration {
     pub started_at: Option<f64>,
     pub first_token_at: Option<f64>,
     pub last_token_at: Option<f64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub prompt_tokens: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub cached_tokens: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub output_tokens: Option<u64>,
     pub cache_hit_ratio: Option<f64>,
     pub prefill_tokens_per_second: Option<f64>,
@@ -140,14 +152,20 @@ pub struct LagunaGeneration {
 
 /// Daemon-side rolling aggregates. Percentiles are absent until enough samples
 /// exist, which is reported as `null` rather than a fabricated value.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase", default)]
 pub struct LagunaRollingStats {
+    #[specta(type = specta_typescript::Unknown)]
     pub requests_completed: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub requests_failed: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub requests_cancelled: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub input_tokens: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub output_tokens: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub cached_tokens: Option<u64>,
     pub ttft_p50_ms: Option<f64>,
     pub ttft_p95_ms: Option<f64>,
@@ -159,11 +177,12 @@ pub struct LagunaRollingStats {
 
 /// One `GET /v1/synth/inference` payload, which is also the per-event shape of
 /// `GET /v1/synth/inference/stream`.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase", default)]
 pub struct LagunaInference {
     pub model: Option<String>,
     pub resident: bool,
+    #[specta(type = specta_typescript::Unknown)]
     pub resident_bytes: Option<u64>,
     pub queue_depth: Option<u32>,
     pub queue_capacity: Option<u32>,
@@ -174,7 +193,7 @@ pub struct LagunaInference {
 
 /// Result of `POST /v1/synth/model/unload`. A 409 is an expected answer (a
 /// generation holds the slot), not a transport failure.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LagunaUnloadOutcome {
     pub released: bool,
@@ -186,13 +205,14 @@ pub struct LagunaUnloadOutcome {
 /// daemon build that predates the runtime-settings API, and a 400 carries the
 /// daemon's typed validation envelope — both are data for the renderer, not
 /// transport failures.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LagunaSettingsExchange {
     pub supported: bool,
     pub status: u16,
     /// Parsed JSON body — the settings envelope on success, the typed error
     /// envelope on rejection, `null` when the body was not JSON.
+    #[specta(type = specta_typescript::Unknown)]
     pub body: Value,
 }
 
@@ -500,7 +520,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         write_env_sh(&api_key, &base_url)?;
         spawn_sidecar(workshop_root, &api_key, backend)?;
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        let deadline = tokio::time::Instant::now() + crate::limits::LAGUNA_READY_WAIT;
         while tokio::time::Instant::now() < deadline {
             if let Some(status) = self.probe(&base_url, &api_key).await {
                 let done = matches!(status.phase.as_str(), "ready" | "error" | "not_installed");
@@ -521,7 +541,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
             .client
             .get(format!("{base_url}/health"))
             .bearer_auth(api_key)
-            .timeout(Duration::from_millis(1200))
+            .timeout(crate::limits::LAGUNA_HEALTH_TIMEOUT)
             .send()
             .await
             .ok()?;
@@ -610,7 +630,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
             .client
             .get(format!("{base_url}{INFERENCE_PATH}"))
             .bearer_auth(self.api_key().unwrap_or_default())
-            .timeout(Duration::from_millis(2000))
+            .timeout(crate::limits::LAGUNA_ADMIN_TIMEOUT)
             .send()
             .await
             .with_context(|| format!("Laguna inference telemetry is unreachable at {base_url}"))?;
@@ -636,7 +656,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
             .client
             .post(format!("{base_url}{MODEL_UNLOAD_PATH}"))
             .bearer_auth(self.api_key().unwrap_or_default())
-            .timeout(Duration::from_secs(20))
+            .timeout(crate::limits::LAGUNA_INFERENCE_TIMEOUT)
             .send()
             .await
             .with_context(|| format!("Laguna is unreachable at {base_url}"))?;
@@ -657,7 +677,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
             .client
             .get(format!("{base_url}{SETTINGS_PATH}"))
             .bearer_auth(self.api_key().unwrap_or_default())
-            .timeout(Duration::from_millis(2000))
+            .timeout(crate::limits::LAGUNA_ADMIN_TIMEOUT)
             .send()
             .await
             .with_context(|| format!("Laguna settings are unreachable at {base_url}"))?;
@@ -675,7 +695,7 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
             .put(format!("{base_url}{SETTINGS_PATH}"))
             .bearer_auth(self.api_key().unwrap_or_default())
             .json(&patch)
-            .timeout(Duration::from_secs(10))
+            .timeout(crate::limits::LAGUNA_STOP_TIMEOUT)
             .send()
             .await
             .with_context(|| format!("Laguna settings are unreachable at {base_url}"))?;
@@ -764,6 +784,20 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
     }
 }
 
+impl crate::services::ManagedService for LagunaManager {
+    fn name(&self) -> &'static str {
+        "laguna"
+    }
+
+    fn stop(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async move {
+            self.stop_inference_stream().await;
+            stop_managed_sidecar()?;
+            Ok(())
+        })
+    }
+}
+
 /// Splits complete SSE frames out of `buffer` and returns their `data:` bodies.
 /// Partial frames stay in the buffer for the next chunk.
 fn take_sse_payloads(buffer: &mut String) -> Vec<String> {
@@ -828,6 +862,7 @@ fn unload_outcome(status: u16, body: &str) -> std::result::Result<LagunaUnloadOu
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn laguna_inference_snapshot(
     state: State<'_, Arc<LagunaManager>>,
 ) -> std::result::Result<LagunaInference, String> {
@@ -838,6 +873,7 @@ pub async fn laguna_inference_snapshot(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn laguna_inference_stream_start(
     app: AppHandle,
     state: State<'_, Arc<LagunaManager>>,
@@ -845,13 +881,17 @@ pub async fn laguna_inference_stream_start(
     let manager = state.inner().clone();
     manager
         .start_inference_stream(move |snapshot| {
-            let _ = app.emit(crate::contract::events::EventChannel::LAGUNA_INFERENCE, snapshot);
+            let _ = app.emit(
+                crate::contract::events::EventChannel::LAGUNA_INFERENCE,
+                snapshot,
+            );
         })
         .await;
     Ok(())
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn laguna_inference_stream_stop(
     state: State<'_, Arc<LagunaManager>>,
 ) -> std::result::Result<(), String> {
@@ -860,6 +900,7 @@ pub async fn laguna_inference_stream_stop(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn laguna_model_unload(
     state: State<'_, Arc<LagunaManager>>,
 ) -> std::result::Result<LagunaUnloadOutcome, String> {
@@ -870,6 +911,7 @@ pub async fn laguna_model_unload(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn laguna_settings_snapshot(
     state: State<'_, Arc<LagunaManager>>,
 ) -> std::result::Result<LagunaSettingsExchange, String> {
@@ -880,17 +922,19 @@ pub async fn laguna_settings_snapshot(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn laguna_settings_update(
     state: State<'_, Arc<LagunaManager>>,
-    patch: Value,
+    patch: crate::contract::specta::OpaqueJson,
 ) -> std::result::Result<LagunaSettingsExchange, String> {
     state
-        .settings_update(patch)
+        .settings_update(patch.0)
         .await
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn laguna_model_download(
     app: AppHandle,
     state: State<'_, Arc<LagunaManager>>,
@@ -926,11 +970,15 @@ pub async fn laguna_model_download(
         }
         Err(error) => serde_json::json!({"phase":"error","detail":error}),
     };
-    let _ = app.emit(crate::contract::events::EventChannel::LAGUNA_DOWNLOAD, payload);
+    let _ = app.emit(
+        crate::contract::events::EventChannel::LAGUNA_DOWNLOAD,
+        payload,
+    );
     result
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn laguna_model_delete(
     state: State<'_, Arc<LagunaManager>>,
     model_id: String,

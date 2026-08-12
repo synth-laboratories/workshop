@@ -311,6 +311,58 @@ test.describe("design debt (expected fail until fixed)", () => {
 		await expect(preview.getByTestId("visual-invalid")).toHaveCount(0);
 	});
 
+	test("malformed analysis blocks skip instead of crashing the visual host", async ({ page }) => {
+		// CUA found a persisted ranked-bars payload without `items`; the old
+		// shell cast and called `.map` on undefined. Normalize drops the bad
+		// block and still renders valid siblings.
+		await page.addInitScript(() => {
+			const visual = {
+				schemaVersion: "synth.desktop-visual.v1",
+				id: "malformed-ranked-bars",
+				currentRevision: 1,
+				title: "Malformed ranked bars",
+				templateId: "analysis.visual.v1",
+				status: "draft",
+				rendererKind: "template",
+				bindings: {
+					spec: {
+						title: "Malformed ranked bars",
+						blocks: [
+							{ type: "ranked-bars", title: "Broken" },
+							{ type: "note", text: "Still visible after skipping the bad block." }
+						]
+					}
+				},
+				sessionId: null,
+				messageId: null,
+				runId: null,
+				traceId: null,
+				parentVisualId: null,
+				sourceAgentId: "laguna",
+				sourceModel: "laguna-xs-2.1",
+				contentDigest: null,
+				previewDigest: null,
+				metadata: {},
+				createdAt: "2026-08-12T00:00:00.000Z",
+				updatedAt: "2026-08-12T00:00:00.000Z"
+			};
+			window.synthVisuals = {
+				listTemplates: async () => [{ id: "analysis.visual.v1", title: "Agent-authored analysis", genre: "analysis" }],
+				getTemplate: async () => ({ id: "analysis.visual.v1", title: "Agent-authored analysis" }),
+				list: async () => [visual], get: async () => visual, revisions: async () => [],
+				create: async () => visual, update: async () => visual, save: async () => visual,
+				fork: async () => visual, archive: async () => visual, show: async () => visual,
+				onEvent: () => () => undefined, onShow: () => () => undefined
+			} as typeof window.synthVisuals;
+		});
+		await page.reload();
+		await page.getByTestId("open-visuals").click();
+		const preview = page.getByTestId("visuals-preview");
+		await expect(preview.getByTestId("visual-analysis-spec")).toBeVisible();
+		await expect(preview.getByText("Still visible after skipping the bad block.")).toBeVisible();
+		await expect(preview.getByTestId("visual-invalid")).toHaveCount(0);
+	});
+
 	test("Attaching a container in the browser harness registers via inventory, not a dead POST", async ({ page }) => {
 		await page.addInitScript(() => {
 			const timestamp = "2026-08-09T00:00:00Z";

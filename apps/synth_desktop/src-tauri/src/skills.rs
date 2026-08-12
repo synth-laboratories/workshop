@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillHit {
     pub id: String,
@@ -70,6 +70,7 @@ pub fn list_skills() -> Vec<SkillHit> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn skills_list() -> Vec<SkillHit> {
     list_skills()
 }

@@ -56,15 +56,69 @@ function normalizeBlock(raw: unknown): Block | null {
       tone: block.tone === "caution" ? "caution" : "neutral"
     };
   }
-  if (kind === "metrics" && Array.isArray(block.items)) {
+  if (kind === "metrics") {
+    if (!Array.isArray(block.items)) return null;
     return {
       kind: "metrics",
       title: typeof block.title === "string" ? block.title : undefined,
       items: block.items as Extract<Block, { kind: "metrics" }>["items"]
     };
   }
-  if (kind === "ranked-bars" || kind === "frequency-diff" || kind === "table" || kind === "scatter") {
-    return { ...block, kind } as Block;
+  if (kind === "ranked-bars") {
+    if (typeof block.title !== "string" || !Array.isArray(block.items)) return null;
+    return {
+      kind: "ranked-bars",
+      title: block.title,
+      subtitle: typeof block.subtitle === "string" ? block.subtitle : undefined,
+      unit: typeof block.unit === "string" ? block.unit : undefined,
+      items: block.items as Extract<Block, { kind: "ranked-bars" }>["items"]
+    };
+  }
+  if (kind === "frequency-diff") {
+    if (
+      typeof block.title !== "string" ||
+      typeof block.baseline !== "string" ||
+      typeof block.comparison !== "string" ||
+      !Array.isArray(block.rows)
+    ) {
+      return null;
+    }
+    return {
+      kind: "frequency-diff",
+      title: block.title,
+      subtitle: typeof block.subtitle === "string" ? block.subtitle : undefined,
+      baseline: block.baseline,
+      comparison: block.comparison,
+      rows: block.rows as Extract<Block, { kind: "frequency-diff" }>["rows"]
+    };
+  }
+  if (kind === "table") {
+    if (typeof block.title !== "string" || !Array.isArray(block.columns) || !Array.isArray(block.rows)) {
+      return null;
+    }
+    return {
+      kind: "table",
+      title: block.title,
+      columns: block.columns as string[],
+      rows: block.rows as Extract<Block, { kind: "table" }>["rows"]
+    };
+  }
+  if (kind === "scatter") {
+    if (
+      typeof block.title !== "string" ||
+      typeof block.xLabel !== "string" ||
+      typeof block.yLabel !== "string" ||
+      !Array.isArray(block.points)
+    ) {
+      return null;
+    }
+    return {
+      kind: "scatter",
+      title: block.title,
+      xLabel: block.xLabel,
+      yLabel: block.yLabel,
+      points: block.points as Extract<Block, { kind: "scatter" }>["points"]
+    };
   }
   return null;
 }

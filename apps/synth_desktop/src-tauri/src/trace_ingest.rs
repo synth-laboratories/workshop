@@ -18,7 +18,7 @@ use uuid::Uuid;
 const MAX_INSPECTION_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PROJECTION_BYTES: usize = 64 * 1024 * 1024;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceBundleIngestRequest {
     pub source_path: String,
@@ -27,7 +27,7 @@ pub struct TraceBundleIngestRequest {
     pub source_uri: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceBundleIngestResult {
     pub compatibility_level: String,
@@ -37,6 +37,7 @@ pub struct TraceBundleIngestResult {
     pub bundle_digest: Option<String>,
     pub archive_digest: Option<String>,
     pub traces: Vec<TraceRecord>,
+    #[specta(type = specta_typescript::Unknown)]
     pub validation: serde_json::Value,
 }
 

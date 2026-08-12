@@ -81,6 +81,9 @@ test("design debt: agent-authored analysis shell normalizes persisted type-block
 	assert.match(shell, /normalizeBlock/);
 	assert.match(shell, /block\.type/);
 	assert.match(shell, /if \(kind === "note"\)/);
+	// Malformed ranked-bars without items must not cast-and-map (CUA crash).
+	assert.match(shell, /kind === "ranked-bars"/);
+	assert.match(shell, /!Array\.isArray\(block\.items\)/);
 });
 
 test("composer approval policy control is wired and test-addressable", () => {

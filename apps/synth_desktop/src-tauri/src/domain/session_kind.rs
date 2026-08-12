@@ -10,7 +10,7 @@ use serde_json::Value;
 
 /// Product routing kind for a Session. Persisted as a first-class SQLite column
 /// (`sessions.kind`); `target_json.kind` is legacy cache, not authority.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionKind {
     Codex,
@@ -81,6 +81,9 @@ mod tests {
             SessionKind::from_target_json(&json!({"kind": "local", "model": "laguna"})),
             SessionKind::Codex
         );
-        assert_eq!(SessionKind::from_target_json(&json!({})), SessionKind::Codex);
+        assert_eq!(
+            SessionKind::from_target_json(&json!({})),
+            SessionKind::Codex
+        );
     }
 }

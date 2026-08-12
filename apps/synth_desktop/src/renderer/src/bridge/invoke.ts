@@ -6,6 +6,7 @@
  */
 
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+export { commands as generatedCommands } from "../generated/protocol";
 import { COMMANDS, type CommandName } from "./protocolConstants";
 
 export type InvokeArgs = Record<string, unknown> | undefined;

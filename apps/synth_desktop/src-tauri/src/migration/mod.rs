@@ -34,7 +34,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "usage_ledger",
 ];
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LegacyDetection {
     pub source_path: String,
@@ -52,16 +52,20 @@ pub struct LegacyMigrationOptions {
     pub content_root: PathBuf,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct EntityCount {
+    #[specta(type = specta_typescript::Unknown)]
     pub found: u64,
+    #[specta(type = specta_typescript::Unknown)]
     pub imported: u64,
+    #[specta(type = specta_typescript::Unknown)]
     pub existing: u64,
+    #[specta(type = specta_typescript::Unknown)]
     pub skipped: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RollbackMetadata {
     pub source_database: String,
@@ -73,7 +77,7 @@ pub struct RollbackMetadata {
     pub delete_order: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationReceipt {
     pub schema_version: String,
@@ -87,6 +91,7 @@ pub struct MigrationReceipt {
     pub counts: BTreeMap<String, EntityCount>,
     pub warnings: Vec<String>,
     pub integrity_check: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub foreign_key_violations: u64,
     pub rollback: RollbackMetadata,
 }

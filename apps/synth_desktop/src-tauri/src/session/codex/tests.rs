@@ -9,23 +9,24 @@ use super::home::{
     responses_base_url, safe_component, supports_provider_compaction, toml_string,
     validate_reasoning_effort, validate_start, workspace_write_config, ProviderClass,
 };
-use super::manager::{reconcile_detached_status, CodexManager};
+use super::manager::CodexManager;
 use super::proto::{
     is_detached_failure, select_approval_decision, CodexSessionRecord, CodexSessionStartRequest,
     CodexSteerRequest, CodexTurnFailure, CodexTurnSendRequest, CodexTurnStartRequest,
     ProviderTransport, SessionDetached, CODEX_SESSION_DETACHED, CODEX_TURN_START_FAILED,
     DETACHED_MESSAGE, MIN_AUTO_COMPACT_TOKEN_LIMIT, STDOUT_CLOSED,
 };
-use super::telemetry::{extract_turn_usage, finalize_performance_tracker, is_output_delta,
-    settled_cost_from_receipts, PerformanceTrackers, TurnPerformanceTracker, TurnTokenUsage};
+use super::telemetry::{
+    extract_turn_usage, finalize_performance_tracker, is_output_delta, settled_cost_from_receipts,
+    PerformanceTrackers, TurnPerformanceTracker, TurnTokenUsage,
+};
 use crate::core_runtime::CoreRuntime;
 use crate::credential_broker::{self, CredentialBroker};
-use crate::domain::{
-    RunCreate, RunService, RunStatus, RuntimeTarget, SessionCreate, SessionKind, SessionService,
-    SessionStatus,
-};
+use crate::domain::{RunService, RunStatus, SessionService, SessionStatus};
 use crate::session::SessionPersistence;
-use crate::storage::{CostSource, EventSource, MeasurementKind, UsageBreakdown, UsageRecord, UsageRecordsRepository};
+use crate::storage::{
+    CostSource, EventSource, MeasurementKind, UsageBreakdown, UsageRecord, UsageRecordsRepository,
+};
 use crate::synth_config::MultiAgentVersion;
 use anyhow::anyhow;
 use serde_json::{json, Value};
@@ -118,8 +119,12 @@ async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
-    let manager =
-        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let request = test_request(temp.path(), "crash-resume");
@@ -136,6 +141,7 @@ async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
                 session_id: request.session_id.clone(),
                 prompt: "keep working until the process is killed".into(),
                 effort: Some("none".into()),
+                client_message_id: None,
             },
         )
         .await
@@ -151,7 +157,12 @@ async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
         .clone();
 
     first_attachment.server.stop().await.unwrap();
-    wait_for_record_status(&manager, &request.session_id, SessionStatus::Interrupted.as_str()).await;
+    wait_for_record_status(
+        &manager,
+        &request.session_id,
+        SessionStatus::Interrupted.as_str(),
+    )
+    .await;
     wait_for_run_status(&core, &first_turn, RunStatus::Interrupted.as_str()).await;
     assert!(!manager
         .sessions
@@ -184,6 +195,7 @@ async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
                 session_id: request.session_id.clone(),
                 prompt: "continue after reconnect".into(),
                 effort: Some("none".into()),
+                client_message_id: None,
             },
         )
         .await
@@ -193,8 +205,7 @@ async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
     assert_ne!(first_turn, second_turn);
     let requests = fixture_requests(&codex_root, &request.session_id);
     assert!(requests.iter().any(|message| {
-        message["method"] == "thread/resume"
-            && message["params"]["threadId"] == "thread-fixture"
+        message["method"] == "thread/resume" && message["params"]["threadId"] == "thread-fixture"
     }));
     manager.close(&request.session_id).await.unwrap();
 }
@@ -204,8 +215,12 @@ async fn steer_turn_sends_turn_steer_with_the_active_turn_id() {
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
-    let manager =
-        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let request = test_request(temp.path(), "steer-me");
@@ -221,6 +236,7 @@ async fn steer_turn_sends_turn_steer_with_the_active_turn_id() {
                 session_id: request.session_id.clone(),
                 prompt: "keep working on the task".into(),
                 effort: Some("none".into()),
+                client_message_id: None,
             },
         )
         .await
@@ -276,7 +292,12 @@ async fn compact_sends_thread_compact_start_for_the_attached_thread() {
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
-    let manager = CodexManager::with_paths(SessionPersistence::from_core(Some(core)), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core)),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
     let app = tauri::test::mock_app();
     let request = test_request(temp.path(), "compact-me");
 
@@ -300,8 +321,12 @@ async fn steer_turn_fails_when_there_is_no_active_turn() {
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
-    let manager =
-        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let request = test_request(temp.path(), "steer-without-turn");
@@ -324,155 +349,6 @@ async fn steer_turn_fails_when_there_is_no_active_turn() {
     assert!(error.to_string().contains("no active turn"));
 
     manager.close(&request.session_id).await.unwrap();
-}
-
-#[tokio::test]
-async fn startup_reconciles_an_orphaned_running_turn_in_sqlite() {
-    let temp = tempdir().unwrap();
-    let codex_root = temp.path().join("codex");
-    fs::create_dir_all(&codex_root).unwrap();
-    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
-    let sessions = SessionService::new(core.storage().database().clone());
-    sessions
-        .create_or_update(SessionCreate {
-            id: "orphan".into(),
-            title: "Orphaned local turn".into(),
-            kind: SessionKind::Codex,
-            target: RuntimeTarget::local_laguna(),
-            project_id: None,
-            remote_id: None,
-            codex_thread_id: Some("thread-orphan".into()),
-            status: SessionStatus::Ready,
-            state_generation: None,
-            metadata: json!({}),
-            source: EventSource::Codex,
-        })
-        .await
-        .unwrap();
-    RunService::new(core.storage().database().clone())
-        .start(RunCreate {
-            id: "turn-orphan".into(),
-            session_id: "orphan".into(),
-            mode: "codex_turn".into(),
-            model: Some("laguna".into()),
-            adapter: None,
-            metadata: json!({}),
-            source: EventSource::Codex,
-        })
-        .await
-        .unwrap();
-    let record = CodexSessionRecord {
-        session_id: "orphan".into(),
-        thread_id: "thread-orphan".into(),
-        workspace: temp.path().display().to_string(),
-        model: "laguna".into(),
-        provider_name: "local-laguna".into(),
-        provider_title: "Laguna fixture".into(),
-        base_url: "http://127.0.0.1:7333/v1".into(),
-        status: SessionStatus::Running.as_str().into(),
-        title: Some("Orphaned local turn".into()),
-        title_origin: Some("automatic".into()),
-        approval_policy: "never".into(),
-        sandbox: "workspace-write".into(),
-    };
-    fs::write(
-        codex_root.join("threads.json"),
-        serde_json::to_vec_pretty(&HashMap::from([("orphan".to_owned(), record)])).unwrap(),
-    )
-    .unwrap();
-
-    let restarted = CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root, fixture_binary(), CodexManager::test_broker());
-    assert_eq!(restarted.list().await[0].status, SessionStatus::Interrupted.as_str());
-    let run = RunService::new(core.storage().database().clone())
-        .get("turn-orphan".into())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(run.status, RunStatus::Interrupted.as_str());
-    assert_eq!(run.outcome.unwrap()["reason"], "desktop_restarted");
-    assert_eq!(
-        sessions.get("orphan".into()).await.unwrap().unwrap().status,
-        SessionStatus::Interrupted.as_str()
-    );
-}
-
-#[tokio::test]
-async fn startup_reconciles_sqlite_when_detached_record_is_already_interrupted() {
-    let temp = tempdir().unwrap();
-    let codex_root = temp.path().join("codex");
-    fs::create_dir_all(&codex_root).unwrap();
-    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
-    let sessions = SessionService::new(core.storage().database().clone());
-    sessions
-        .create_or_update(SessionCreate {
-            id: "orphan-after-graceful-exit".into(),
-            title: "Partially reconciled local turn".into(),
-            kind: SessionKind::Codex,
-            target: RuntimeTarget::local_laguna(),
-            project_id: None,
-            remote_id: None,
-            codex_thread_id: Some("thread-partial".into()),
-            status: SessionStatus::Ready,
-            state_generation: None,
-            metadata: json!({}),
-            source: EventSource::Codex,
-        })
-        .await
-        .unwrap();
-    RunService::new(core.storage().database().clone())
-        .start(RunCreate {
-            id: "turn-partial".into(),
-            session_id: "orphan-after-graceful-exit".into(),
-            mode: "codex_turn".into(),
-            model: Some("laguna".into()),
-            adapter: None,
-            metadata: json!({}),
-            source: EventSource::Codex,
-        })
-        .await
-        .unwrap();
-    let record = CodexSessionRecord {
-        session_id: "orphan-after-graceful-exit".into(),
-        thread_id: "thread-partial".into(),
-        workspace: temp.path().display().to_string(),
-        model: "laguna".into(),
-        provider_name: "local-laguna".into(),
-        provider_title: "Laguna fixture".into(),
-        base_url: "http://127.0.0.1:7333/v1".into(),
-        status: SessionStatus::Interrupted.as_str().into(),
-        title: Some("Partially reconciled local turn".into()),
-        title_origin: Some("automatic".into()),
-        approval_policy: "never".into(),
-        sandbox: "workspace-write".into(),
-    };
-    fs::write(
-        codex_root.join("threads.json"),
-        serde_json::to_vec_pretty(&HashMap::from([(
-            "orphan-after-graceful-exit".to_owned(),
-            record,
-        )]))
-        .unwrap(),
-    )
-    .unwrap();
-
-    let restarted = CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root, fixture_binary(), CodexManager::test_broker());
-    assert_eq!(restarted.list().await[0].status, SessionStatus::Interrupted.as_str());
-    let run = RunService::new(core.storage().database().clone())
-        .get("turn-partial".into())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(run.status, RunStatus::Interrupted.as_str());
-    assert_eq!(run.outcome.unwrap()["reason"], "desktop_restarted");
-    assert_eq!(
-        sessions
-            .get("orphan-after-graceful-exit".into())
-            .await
-            .unwrap()
-            .unwrap()
-            .status,
-        SessionStatus::Interrupted.as_str()
-    );
 }
 
 fn session_home(root: &Path, session_id: &str) -> PathBuf {
@@ -500,19 +376,63 @@ fn send_request(start: CodexSessionStartRequest, prompt: &str) -> CodexTurnSendR
         prompt: prompt.into(),
         effort: Some("none".into()),
         compact_before_model_switch: false,
+        client_message_id: None,
     }
 }
 
-/// The screenshot bug: the app-server exits between attach and turn/start.
-/// The renderer must get a typed detachment, and durable state must already
-/// be reconciled when it does. A later retry resumes the same thread.
 #[tokio::test]
-async fn turn_send_reports_detachment_and_reconciles_before_returning() {
+async fn turn_send_journals_the_renderer_message_id_once() {
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
-    let manager =
-        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root,
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let request = test_request(temp.path(), "one-user-message");
+    let mut send = send_request(request.clone(), "one logical submission");
+    send.client_message_id = Some("user-renderer-1".into());
+
+    manager
+        .send_turn(app.handle().clone(), send)
+        .await
+        .expect("turn starts");
+
+    let user_messages: Vec<_> = core
+        .journal()
+        .session_events_after(request.session_id.clone(), 0, 200)
+        .await
+        .expect("session events")
+        .into_iter()
+        .filter(|event| event.kind == "message.created" && event.payload["role"] == "user")
+        .collect();
+    assert_eq!(user_messages.len(), 1);
+    assert_eq!(user_messages[0].payload["messageId"], "user-renderer-1");
+    assert_eq!(
+        user_messages[0].payload["content"],
+        "one logical submission"
+    );
+
+    manager.close(&request.session_id).await.unwrap();
+}
+
+/// The screenshot bug: the app-server exits between attach and turn/start.
+/// The event pump owns process-exit finalization and completes it before the
+/// renderer gets the typed detachment. A later retry resumes the same thread.
+#[tokio::test]
+async fn turn_send_reports_detachment_after_event_pump_finalizes_the_run() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let request = test_request(temp.path(), "turn-send-detached");
@@ -546,15 +466,9 @@ async fn turn_send_reports_detachment_and_reconciles_before_returning() {
     // The raw session id belongs in debug detail, never in the message.
     assert!(!failure.message.contains(&request.session_id));
 
-    // Reconciliation already happened, so the UI can never show Working.
-    let status = manager.records.read().await[&request.session_id]
-        .status
-        .clone();
-    assert_ne!(status, SessionStatus::Running.as_str());
-    assert!(
-        status == SessionStatus::Interrupted.as_str()
-            || status == SessionStatus::Ready.as_str(),
-        "unexpected reconciled status: {status}"
+    assert_eq!(
+        manager.records.read().await[&request.session_id].status,
+        SessionStatus::Ready.as_str()
     );
     assert!(!manager
         .sessions
@@ -567,13 +481,7 @@ async fn turn_send_reports_detachment_and_reconciles_before_returning() {
         .unwrap()
         .unwrap();
     assert_eq!(run.status, RunStatus::Interrupted.as_str());
-    // Whichever of the exiting stdout task and this command wins the race,
-    // the run is closed with a lost-process reason and stops being active.
-    let reason = run.outcome.unwrap()["reason"].as_str().unwrap().to_owned();
-    assert!(
-        reason == "turn_start_detached" || reason == "app_server_exited",
-        "unexpected interruption reason: {reason}"
-    );
+    assert_eq!(run.outcome.unwrap()["reason"], "app_server_exited");
     assert_eq!(
         SessionService::new(core.storage().database().clone())
             .get(request.session_id.clone())
@@ -603,8 +511,7 @@ async fn turn_send_reports_detachment_and_reconciles_before_returning() {
     );
     let requests = fixture_requests(&codex_root, &request.session_id);
     assert!(requests.iter().any(|message| {
-        message["method"] == "thread/resume"
-            && message["params"]["threadId"] == "thread-fixture"
+        message["method"] == "thread/resume" && message["params"]["threadId"] == "thread-fixture"
     }));
     manager.close(&request.session_id).await.unwrap();
 }
@@ -615,7 +522,12 @@ async fn turn_send_reports_detachment_and_reconciles_before_returning() {
 async fn turn_send_retries_once_through_a_dying_app_server() {
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
-    let manager = CodexManager::with_paths(SessionPersistence::Null, codex_root.clone(), fixture_binary(), CodexManager::test_broker());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let request = test_request(temp.path(), "turn-send-retry");
@@ -665,8 +577,12 @@ async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() 
     )
     .unwrap();
 
-    let manager =
-        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
     assert!(!manager
         .sessions
         .read()
@@ -685,110 +601,21 @@ async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() 
     assert!(info.turn_id.is_some());
     let requests = fixture_requests(&codex_root, "restored-running");
     assert!(requests.iter().any(|message| {
-        message["method"] == "thread/resume"
-            && message["params"]["threadId"] == "thread-restored"
+        message["method"] == "thread/resume" && message["params"]["threadId"] == "thread-restored"
     }));
     manager.close("restored-running").await.unwrap();
-}
-
-/// The partially reconciled shape: JSON already says `interrupted` while
-/// SQLite still holds an active run. A rejected send must close that run.
-#[tokio::test]
-async fn turn_send_interrupts_an_active_run_when_the_record_is_already_interrupted() {
-    let temp = tempdir().unwrap();
-    let codex_root = temp.path().join("codex");
-    fs::create_dir_all(&codex_root).unwrap();
-    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
-    let sessions = SessionService::new(core.storage().database().clone());
-    sessions
-        .create_or_update(SessionCreate {
-            id: "half-reconciled".into(),
-            title: "Half reconciled".into(),
-            kind: SessionKind::Codex,
-            target: RuntimeTarget::local_laguna(),
-            project_id: None,
-            remote_id: None,
-            codex_thread_id: Some("thread-half".into()),
-            status: SessionStatus::Ready,
-            state_generation: None,
-            metadata: json!({}),
-            source: EventSource::Codex,
-        })
-        .await
-        .unwrap();
-    RunService::new(core.storage().database().clone())
-        .start(RunCreate {
-            id: "turn-half".into(),
-            session_id: "half-reconciled".into(),
-            mode: "codex_turn".into(),
-            model: Some("laguna".into()),
-            adapter: None,
-            metadata: json!({}),
-            source: EventSource::Codex,
-        })
-        .await
-        .unwrap();
-    let record = CodexSessionRecord {
-        session_id: "half-reconciled".into(),
-        thread_id: "thread-half".into(),
-        workspace: temp.path().display().to_string(),
-        model: "laguna".into(),
-        provider_name: "local-laguna".into(),
-        provider_title: "Laguna fixture".into(),
-        base_url: "http://127.0.0.1:7333/v1".into(),
-        status: SessionStatus::Interrupted.as_str().into(),
-        title: Some("Half reconciled".into()),
-        title_origin: Some("automatic".into()),
-        approval_policy: "never".into(),
-        sandbox: "workspace-write".into(),
-    };
-    fs::write(
-        codex_root.join("threads.json"),
-        serde_json::to_vec_pretty(&HashMap::from([("half-reconciled".to_owned(), record)]))
-            .unwrap(),
-    )
-    .unwrap();
-
-    let manager =
-        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
-    arm_turn_start_exit(&codex_root, "half-reconciled", "always");
-    let app = tauri::test::mock_app();
-    let request = test_request(temp.path(), "half-reconciled");
-    let failure = manager
-        .send_turn(
-            app.handle().clone(),
-            send_request(request, "try to continue"),
-        )
-        .await
-        .expect_err("the fixture never answers turn/start");
-    assert_eq!(failure.code, CODEX_SESSION_DETACHED);
-    assert_ne!(
-        manager.records.read().await["half-reconciled"].status,
-        SessionStatus::Running.as_str()
-    );
-    let run = RunService::new(core.storage().database().clone())
-        .get("turn-half".into())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(run.status, RunStatus::Interrupted.as_str());
-    assert_eq!(run.outcome.unwrap()["reason"], "turn_start_detached");
-    assert_eq!(
-        sessions
-            .get("half-reconciled".into())
-            .await
-            .unwrap()
-            .unwrap()
-            .active_run_id,
-        None
-    );
 }
 
 #[tokio::test]
 async fn rejected_turn_send_arguments_never_mark_the_session_running() {
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
-    let manager = CodexManager::with_paths(SessionPersistence::Null, codex_root, fixture_binary(), CodexManager::test_broker());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        codex_root,
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
     let app = tauri::test::mock_app();
     let request = test_request(temp.path(), "invalid-turn");
     let blank = manager
@@ -804,6 +631,7 @@ async fn rejected_turn_send_arguments_never_mark_the_session_running() {
                 prompt: "hello".into(),
                 effort: Some("ultra".into()),
                 compact_before_model_switch: false,
+                client_message_id: None,
             },
         )
         .await
@@ -824,8 +652,12 @@ async fn turn_send_compacts_on_source_model_before_rebind() {
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
-    let manager =
-        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let mut request = test_request(temp.path(), "compact-before-switch");
@@ -849,6 +681,7 @@ async fn turn_send_compacts_on_source_model_before_rebind() {
                 prompt: "continue on destination".into(),
                 effort: Some("medium".into()),
                 compact_before_model_switch: true,
+                client_message_id: None,
             },
         )
         .await
@@ -915,6 +748,70 @@ async fn turn_send_compacts_on_source_model_before_rebind() {
     );
 }
 
+/// Renderer optimistic bubbles and host journaling must share one message id.
+/// Divergent UUIDs were the CUA P1: every submitted prompt rendered twice.
+#[tokio::test]
+async fn turn_send_reuses_client_message_id_in_journalled_user_prompt() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root,
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let request = test_request(temp.path(), "client-message-id");
+    let client_message_id = "user-optimistic-42";
+
+    manager
+        .send_turn(
+            app.handle().clone(),
+            CodexTurnSendRequest {
+                start: request.clone(),
+                prompt: "one bubble please".into(),
+                effort: Some("none".into()),
+                compact_before_model_switch: false,
+                client_message_id: Some(client_message_id.into()),
+            },
+        )
+        .await
+        .expect("turn starts");
+
+    let events = core
+        .journal()
+        .session_events_after(request.session_id.clone(), 0, 50)
+        .await
+        .expect("session events");
+    let user_prompts: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            event.kind == "message.created"
+                && event.payload.get("role").and_then(Value::as_str) == Some("user")
+        })
+        .collect();
+    assert_eq!(
+        user_prompts.len(),
+        1,
+        "expected exactly one journalled user message.created, got {user_prompts:?}"
+    );
+    assert_eq!(
+        user_prompts[0]
+            .payload
+            .get("messageId")
+            .and_then(Value::as_str),
+        Some(client_message_id)
+    );
+    assert_eq!(
+        user_prompts[0]
+            .payload
+            .get("content")
+            .and_then(Value::as_str),
+        Some("one bubble please")
+    );
+}
+
 #[test]
 fn only_lost_process_failures_are_treated_as_detachment() {
     assert!(is_detached_failure(
@@ -929,7 +826,12 @@ fn only_lost_process_failures_are_treated_as_detachment() {
 async fn stale_attachment_exit_cannot_detach_its_replacement() {
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
-    let manager = CodexManager::with_paths(SessionPersistence::Null, codex_root, fixture_binary(), CodexManager::test_broker());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        codex_root,
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let request = test_request(temp.path(), "generation-fence");
@@ -1060,8 +962,9 @@ fn renders_additional_workspace_roots_for_codex() {
     let config =
         workspace_write_config(&["/Users/example/Documents/GitHub".into(), "/tmp/a\"b".into()]);
     assert!(config.contains("[sandbox_workspace_write]"));
-    assert!(config
-        .contains("writable_roots = [\"/Users/example/Documents/GitHub\", \"/tmp/a\\\"b\"]"));
+    assert!(
+        config.contains("writable_roots = [\"/Users/example/Documents/GitHub\", \"/tmp/a\\\"b\"]")
+    );
 }
 #[test]
 fn advertises_only_the_compact_visual_tool_to_codex() {
@@ -1130,7 +1033,9 @@ fn synth_cloud_provider_writes_expected_config() {
     let home = temp.path().join("home");
     let workspace = temp.path().join("workspace");
     fs::create_dir_all(&workspace).unwrap();
-    let (broker, _listener) = CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new())).unwrap();
+    let (broker, _listener) =
+        CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new()))
+            .unwrap();
     let mut request = test_request(&workspace, "synth-cloud-config");
     apply_synth_cloud_provider(
         &mut request,
@@ -1146,10 +1051,7 @@ fn synth_cloud_provider_writes_expected_config() {
     assert!(config.contains("model_provider = \"synth-cloud\""));
     assert!(config.contains("[model_providers.\"synth-cloud\"]"));
     // Codex is pointed at the native proxy, not at the backend directly.
-    assert!(config.contains(&format!(
-        "base_url = \"{}/api/v1\"",
-        broker.origin()
-    )));
+    assert!(config.contains(&format!("base_url = \"{}/api/v1\"", broker.origin())));
     assert!(config.contains("wire_api = \"responses\""));
     assert!(config.contains(&format!(
         "env_key = \"{}\"",
@@ -1195,8 +1097,7 @@ fn only_synth_cloud_gets_disable_response_storage() {
     local_laguna.base_url = "http://127.0.0.1:7333".into();
     let local_laguna_home = temp.path().join("local-laguna-home");
     ensure_home(&local_laguna_home, &local_laguna).unwrap();
-    let local_laguna_config =
-        fs::read_to_string(local_laguna_home.join("config.toml")).unwrap();
+    let local_laguna_config = fs::read_to_string(local_laguna_home.join("config.toml")).unwrap();
     assert!(!local_laguna_config.contains("disable_response_storage"));
 
     assert!(requires_disabled_response_storage(&{
@@ -1286,12 +1187,18 @@ fn leaves_compaction_to_openai_and_azure_responses_providers() {
 #[test]
 fn synth_cloud_provider_overwrites_renderer_api_key() {
     let temp = tempdir().unwrap();
-    let (broker, _listener) = CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new())).unwrap();
+    let (broker, _listener) =
+        CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new()))
+            .unwrap();
     let mut request = test_request(temp.path(), "synth-cloud-overwrite");
     request.api_key = "renderer-leaked-key".into();
     request.base_url = "https://evil.example/v1".into();
-    apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209/", Some("sk_dev_real_key"))
-        .unwrap();
+    apply_synth_cloud_provider(
+        &mut request,
+        "http://127.0.0.1:41209/",
+        Some("sk_dev_real_key"),
+    )
+    .unwrap();
     // Staging discards the renderer's value and endpoint outright.
     assert_eq!(request.api_key, "sk_dev_real_key");
     assert!(request.broker_credential);
@@ -1316,7 +1223,9 @@ fn synth_cloud_provider_overwrites_renderer_api_key() {
 #[test]
 fn synth_cloud_normalizes_a_local_bind_address_for_the_client() {
     let temp = tempdir().unwrap();
-    let (broker, _listener) = CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new())).unwrap();
+    let (broker, _listener) =
+        CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new()))
+            .unwrap();
     let mut request = test_request(temp.path(), "synth-cloud-loopback");
     apply_synth_cloud_provider(
         &mut request,
@@ -1342,7 +1251,12 @@ fn synth_cloud_normalizes_a_local_bind_address_for_the_client() {
 #[tokio::test]
 async fn reusing_a_live_child_leaves_its_lease_untouched() {
     let temp = tempdir().unwrap();
-    let manager = CodexManager::with_paths(SessionPersistence::Null, temp.path().join("codex"), fixture_binary(), CodexManager::test_broker());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        temp.path().join("codex"),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let mut request = test_request(temp.path(), "lease-live-reuse");
@@ -1377,12 +1291,21 @@ async fn reusing_a_live_child_leaves_its_lease_untouched() {
 #[tokio::test]
 async fn rebinding_a_session_spawns_the_new_child_with_a_live_lease() {
     let temp = tempdir().unwrap();
-    let manager = CodexManager::with_paths(SessionPersistence::Null, temp.path().join("codex"), fixture_binary(), CodexManager::test_broker());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        temp.path().join("codex"),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let mut request = test_request(temp.path(), "lease-rebind");
-    apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some("sk_dev_rebind"))
-        .unwrap();
+    apply_synth_cloud_provider(
+        &mut request,
+        "http://127.0.0.1:41209",
+        Some("sk_dev_rebind"),
+    )
+    .unwrap();
     manager
         .start(app_handle.clone(), request.clone())
         .await
@@ -1410,12 +1333,21 @@ async fn rebinding_a_session_spawns_the_new_child_with_a_live_lease() {
 #[tokio::test]
 async fn a_provider_name_change_alone_respawns_the_child() {
     let temp = tempdir().unwrap();
-    let manager = CodexManager::with_paths(SessionPersistence::Null, temp.path().join("codex"), fixture_binary(), CodexManager::test_broker());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        temp.path().join("codex"),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let mut request = test_request(temp.path(), "lease-provider-identity");
-    apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some("sk_dev_shared"))
-        .unwrap();
+    apply_synth_cloud_provider(
+        &mut request,
+        "http://127.0.0.1:41209",
+        Some("sk_dev_shared"),
+    )
+    .unwrap();
     manager
         .start(app_handle.clone(), request.clone())
         .await
@@ -1446,7 +1378,10 @@ async fn a_provider_name_change_alone_respawns_the_child() {
     assert!(!broker.resolves(&before));
     assert!(broker.resolves(&after));
     assert!(
-        manager.receipts().drain("lease-provider-identity").is_empty(),
+        manager
+            .receipts()
+            .drain("lease-provider-identity")
+            .is_empty(),
         "receipts born under the old provider name must not survive the switch"
     );
 }
@@ -1457,12 +1392,16 @@ async fn a_provider_name_change_alone_respawns_the_child() {
 #[tokio::test]
 async fn a_rotated_credential_respawns_the_child_with_a_fresh_lease() {
     let temp = tempdir().unwrap();
-    let manager = CodexManager::with_paths(SessionPersistence::Null, temp.path().join("codex"), fixture_binary(), CodexManager::test_broker());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        temp.path().join("codex"),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let mut request = test_request(temp.path(), "lease-rotation");
-    apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some("sk_dev_old"))
-        .unwrap();
+    apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some("sk_dev_old")).unwrap();
     manager
         .start(app_handle.clone(), request.clone())
         .await
@@ -1478,8 +1417,7 @@ async fn a_rotated_credential_respawns_the_child_with_a_fresh_lease() {
         .attachment_id;
 
     let mut rotated = test_request(temp.path(), "lease-rotation");
-    apply_synth_cloud_provider(&mut rotated, "http://127.0.0.1:41209", Some("sk_dev_new"))
-        .unwrap();
+    apply_synth_cloud_provider(&mut rotated, "http://127.0.0.1:41209", Some("sk_dev_new")).unwrap();
     manager.start(app_handle, rotated).await.unwrap();
     let new_attachment = manager
         .sessions
@@ -1518,8 +1456,7 @@ fn invalid_provider_endpoint_explains_the_fix_without_leaking_credentials() {
     let temp = tempdir().unwrap();
     let mut request = test_request(temp.path(), "invalid-provider-endpoint");
     request.provider_title = Some("Synth Cloud Responses".into());
-    request.base_url =
-        "http://user:secret-token@0.0.0.0:41209/api/v1?api_key=secret-token".into();
+    request.base_url = "http://user:secret-token@0.0.0.0:41209/api/v1?api_key=secret-token".into();
 
     let error = validate_start(&request).unwrap_err().to_string();
 
@@ -1536,7 +1473,9 @@ fn synth_cloud_home_redacts_api_key_from_generated_files() {
     let workspace = temp.path().join("workspace");
     fs::create_dir_all(&workspace).unwrap();
     let secret = "sk_dev_SYNTH_CLOUD_SECRET_VALUE_DO_NOT_LEAK";
-    let (broker, _listener) = CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new())).unwrap();
+    let (broker, _listener) =
+        CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new()))
+            .unwrap();
     let mut request = test_request(&workspace, "synth-cloud-redact");
     apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some(secret)).unwrap();
     apply_brokered_credential(&mut request, &broker).unwrap();
@@ -1569,7 +1508,9 @@ fn the_synth_credential_never_reaches_a_generated_codex_home() {
     let workspace = temp.path().join("workspace");
     fs::create_dir_all(&workspace).unwrap();
 
-    let (broker, _listener) = CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new())).unwrap();
+    let (broker, _listener) =
+        CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new()))
+            .unwrap();
     let mut request = test_request(&workspace, "session-sentinel");
     apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some(SENTINEL)).unwrap();
     apply_brokered_credential(&mut request, &broker).unwrap();
@@ -1584,7 +1525,11 @@ fn the_synth_credential_never_reaches_a_generated_codex_home() {
         .expect("the brokered lease is allowed across the spawn boundary")
         .map(|(name, value)| format!("export {name}={value}\n"))
         .unwrap_or_default();
-    fs::write(snapshots.join("snapshot.sh"), format!("#!/bin/sh\n{exported}")).unwrap();
+    fs::write(
+        snapshots.join("snapshot.sh"),
+        format!("#!/bin/sh\n{exported}"),
+    )
+    .unwrap();
     // Session logs and event payloads are the other things a home accumulates.
     fs::create_dir_all(home.join("sessions")).unwrap();
     fs::write(
@@ -1690,9 +1635,7 @@ fn validates_reasoning_effort_values() {
 #[test]
 fn derives_a_short_title_from_the_first_prompt() {
     assert_eq!(
-        automatic_thread_title(
-            "please add session descriptions to the Rust core. Then test it"
-        ),
+        automatic_thread_title("please add session descriptions to the Rust core. Then test it"),
         Some("Add session descriptions to the Rust core".into())
     );
     assert_eq!(
@@ -1701,21 +1644,6 @@ fn derives_a_short_title_from_the_first_prompt() {
         ),
         Some("Inspect Craftax and locate its real policy harness".into())
     );
-}
-
-#[test]
-fn detached_running_sessions_are_reconciled_as_interrupted() {
-    let mut running = SessionStatus::Running.as_str().to_owned();
-    assert!(reconcile_detached_status(&mut running, false));
-    assert_eq!(running, SessionStatus::Interrupted.as_str());
-
-    let mut attached = SessionStatus::Running.as_str().to_owned();
-    assert!(!reconcile_detached_status(&mut attached, true));
-    assert_eq!(attached, SessionStatus::Running.as_str());
-
-    let mut ready = SessionStatus::Ready.as_str().to_owned();
-    assert!(!reconcile_detached_status(&mut ready, false));
-    assert_eq!(ready, SessionStatus::Ready.as_str());
 }
 
 #[test]

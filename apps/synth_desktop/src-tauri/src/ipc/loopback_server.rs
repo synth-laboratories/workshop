@@ -34,7 +34,11 @@ where
         tauri::async_runtime::spawn(async move {
             let io = TokioIo::new(stream);
             let service = service_fn(move |request| on_request(request));
-            if let Err(error) = http1::Builder::new().serve_connection(io, service).await {
+            if let Err(error) = http1::Builder::new()
+                .max_buf_size(crate::limits::LOOPBACK_MAX_HEADER_BYTES)
+                .serve_connection(io, service)
+                .await
+            {
                 eprintln!("synth-desktop: loopback connection ended: {error}");
             }
         });
@@ -96,10 +100,23 @@ where
     F: Fn(JsonHttpRequest) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = JsonHttpResponse> + Send + 'static,
 {
+    serve_json_with_limit(listener, crate::limits::VISUALS_IPC_MAX_BODY_BYTES, handler).await
+}
+
+/// JSON server variant for protocols with a different request-body cap.
+pub async fn serve_json_with_limit<F, Fut>(
+    listener: tokio::net::TcpListener,
+    max_body_bytes: usize,
+    handler: F,
+) -> Result<()>
+where
+    F: Fn(JsonHttpRequest) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = JsonHttpResponse> + Send + 'static,
+{
     serve_connections(listener, move |request| {
         let handler = handler.clone();
         async move {
-            let parsed = match parse_json_request(request).await {
+            let parsed = match parse_json_request(request, max_body_bytes).await {
                 Ok(parsed) => parsed,
                 Err(response) => return Ok(response),
             };
@@ -120,7 +137,10 @@ where
     .await
 }
 
-async fn parse_json_request(request: Request<Incoming>) -> Result<JsonHttpRequest, Response<LoopbackBody>> {
+async fn parse_json_request(
+    request: Request<Incoming>,
+    max_body_bytes: usize,
+) -> Result<JsonHttpRequest, Response<LoopbackBody>> {
     let method = request.method().clone();
     let path = request
         .uri()
@@ -133,11 +153,17 @@ async fn parse_json_request(request: Request<Incoming>) -> Result<JsonHttpReques
         .and_then(|value| value.to_str().ok())
         .map(|value| value.trim().to_owned());
     let raw_headers = request.headers().clone();
-    let collected = request
-        .into_body()
+    let collected = http_body_util::Limited::new(request.into_body(), max_body_bytes)
         .collect()
         .await
-        .map_err(|_| json_response(StatusCode::BAD_GATEWAY, serde_json::json!({"error":"could not read request body"})))?;
+        .map_err(|error| {
+            let (status, message) = if error.is::<http_body_util::LengthLimitError>() {
+                (StatusCode::PAYLOAD_TOO_LARGE, "request body exceeds limit")
+            } else {
+                (StatusCode::BAD_GATEWAY, "could not read request body")
+            };
+            json_response(status, serde_json::json!({"error":message}))
+        })?;
     let bytes = collected.to_bytes();
     let body = if bytes.is_empty() {
         Value::Null

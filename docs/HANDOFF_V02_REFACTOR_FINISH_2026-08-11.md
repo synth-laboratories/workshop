@@ -11,6 +11,40 @@ This handoff is for an engineer picking up **remaining follow-ons**. Waves 0–7
 
 ---
 
+## CUA READY (independent tester)
+
+**First CUA pass: FAIL.** Blockers are claimed fixed in this tree; that claim is **not** Gate P. An independent rerun is still required. Full tester runbook: [`HANDOFF_CUA_REFACTOR_VS_PROD_QA_2026-08-11.md`](./HANDOFF_CUA_REFACTOR_VS_PROD_QA_2026-08-11.md).
+
+| Claimed fixed | Retest |
+| --- | --- |
+| CMP-01 duplicate user bubbles | One bubble per submit |
+| Migration 12 / `usage_ledger` | Isolated data roots; open candidate once before prod on any shared old DB |
+| Bad ranked-bars analysis visual | No crash |
+
+### Commit → install (clean tree required)
+
+`npm run desktop:install` / `scripts/desktop.sh install` refuse a dirty worktree (`require_clean_worktree`; root `README.md`).
+
+```bash
+cd /Users/joshuapurtell/Documents/GitHub/workshop
+git checkout josh/v02-architecture-refactor   # or dev after merge
+# commit WIP first — git status --porcelain must be empty
+git rev-parse HEAD
+
+./scripts/desktop.sh conform
+npm run desktop:check
+(cd apps/synth_desktop/src-tauri && cargo test --lib)
+NODE_PATH="$(pwd)/node_modules" node --test apps/synth_desktop/tests/*.test.mjs
+(cd apps/synth_desktop && npx playwright test)
+
+npm run desktop:install          # → /Applications/Synth Desktop.app
+# Prod friends ZIP → /Applications/Synth Desktop PROD.app
+```
+
+**Isolate data roots** (mandatory): named instance `./scripts/desktop-instance.sh cua candidate` → `~/.synth-desktop/instances/v02/candidate/data`, **or** launch the installed candidate with `SYNTH_DESKTOP_DATA_ROOT` / `SYNTH_DESKTOP_CONFIG` / `SYNTH_CODEX_HOME` pointing at a private dir. Leave prod on the default canonical roots. Details + env list in the CUA handoff / [`HANDOFF_ISOLATED_DEV_INSTANCES.md`](../apps/synth_desktop/HANDOFF_ISOLATED_DEV_INSTANCES.md).
+
+---
+
 ## 1. What you inherit (done)
 
 ### Locked product nouns (do not invent parallel names)
@@ -175,3 +209,87 @@ scripts/ci/desktop-conform.yml
 Small, mergeable slice of P0: annotate core domain types, export a non-seed command set, regenerate `generated/protocol.ts`, keep dual-path handler, prove drift + `desktop:check` + Playwright smoke (`design-debt` design locks + `synth-cloud-provider`).
 
 Then continue command batches until cutover is safe.
+
+---
+
+## 6. Finish-run update (2026-08-11)
+
+This handoff was executed through the safe cutover boundary.
+
+### Completed
+
+- All 120 commands currently registered by the Desktop handler are annotated
+  for Specta and collected by `contract/specta.rs`; their reachable DTO/result
+  graph derives `specta::Type`.
+- The Wave 1 Codex reconciliation helpers and list/restart repair paths were
+  deleted. Process-exit finalization now belongs to the attached transport and
+  completes before failed RPC waiters resume.
+- EvalDriver now uses the shared Hyper loopback JSON server; its hand-written
+  HTTP parser/framing is gone.
+- All three MCP binaries use `ipc/mcp_stdio.rs`.
+- Laguna and Whisper implement `ManagedService`, are registered with the
+  supervisor, and are drained by the composition root on exit.
+- The Desktop conform workflow is installed at
+  `.github/workflows/desktop-conform.yml`.
+
+### Specta cutover blocker
+
+The collected boundary compiles, but the current exporter refuses existing
+`i64`/`u64` command fields because JavaScript numbers cannot represent every
+value without precision loss. Enabling
+`Builder::dangerously_cast_bigints_to_number()` is not acceptable: besides the
+precision loss, this dependency version recursively traverses
+`serde_json::Value` and stack-overflows. The export test is therefore ignored
+with the blocker in its annotation; `generate_handler!`, the committed seed
+binding, and the const-based bridge remain authoritative until the DTO wire
+types are made JS-safe or Specta gains a safe serializer mapping.
+
+### Cleanup decisions
+
+- `packages/runtime-client` is not a zero-importer package:
+  `apps/_ref_first_pass/package.json` still depends on it, and the workspace
+  lock links it. It was not deleted.
+- The mock/reference apps and legacy Python services remain quarantined by
+  architecture and product rules. They were not moved because the repository
+  has no physical quarantine/exclusion convention and `apps/*` is still a root
+  workspace glob.
+- `contracts/research-v1.json` remains referenced by the handoff package and
+  legacy documentation, so deleting it would be a separate contract-retirement
+  decision rather than refactor cleanup.
+
+### Verification
+
+```text
+./scripts/desktop.sh conform                         green (118 / 9 / 2 drift)
+npm run desktop:check                               green
+cargo test --lib                                    288 passed, 1 ignored
+NODE_PATH="$(pwd)/node_modules" node --test ...     127 passed
+cd apps/synth_desktop && npx playwright test        150 passed
+```
+
+---
+
+## 7. CUA vs prod — blockers addressed in tree
+
+See **CUA READY** above for the tester install sequence. Engineer detail:
+
+| Blocker | Status |
+| --- | --- |
+| P1 duplicate user bubbles | **Fixed** — `clientMessageId` through `sendTurn`/`startTurn` → `record_user_prompt`. Tests: `user_message_ownership.test.mjs`, Rust `turn_send_reuses_client_message_id_in_journalled_user_prompt`, Playwright `session-lifecycle`. |
+| Migration 11 dropped `usage_ledger` | **Fixed** — migration 11 keeps empty ledger as rollback buffer; migration 12 recreates it for already-dropped DBs; each open folds rollback writes once. Open candidate once before expecting prod to open the same profile. |
+| Provenance drift | **Reconciled in docs** — `PROVENANCE.md` now records served ZIP `d31776…` / bundle `0.1.0`. Source SHA for those bytes still unbound; next friends cut must re-bind FE env + this file together. |
+| Malformed analysis visual | **Hardened** — `analysis.visual.v1` `normalizeBlock` rejects blocks missing required arrays instead of `.map` on undefined. |
+
+Receipt (FAIL): `/Users/joshuapurtell/Documents/Codex/2026-08-11/f/outputs/CUA_REFACTOR_VS_PROD_RECEIPT_2026-08-11.md`  
+Runbook: [`HANDOFF_CUA_REFACTOR_VS_PROD_QA_2026-08-11.md`](./HANDOFF_CUA_REFACTOR_VS_PROD_QA_2026-08-11.md)
+
+**Still required before promote:** independent Tier A–C CUA with isolated data roots after the WIP tip is committed and installed.
+
+### Implementation-session repair verification (2026-08-12)
+
+- A fresh native candidate turn rendered one user bubble, streamed to completion,
+  and returned to idle.
+- The previous production app launched against the schema-12 profile and opened
+  Inventory, including the Usage count, without `no such table: usage_ledger`.
+- Automated verification: conform green; desktop check green; 292 Rust tests,
+  129 renderer tests, and 152 Playwright tests passed.

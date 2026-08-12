@@ -1,4 +1,5 @@
 //! Codex request/response DTOs and the app-server ProviderTransport.
+use crate::synth_config::MultiAgentVersion;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -15,19 +16,18 @@ use tokio::{
     process::Child,
     sync::{oneshot, Mutex, RwLock},
 };
-use crate::synth_config::MultiAgentVersion;
 
 pub(crate) const MIN_AUTO_COMPACT_TOKEN_LIMIT: u64 = 16_000;
 pub(crate) const COMPACT_PROMPT: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION for a coding agent.\nWrite a handoff for another LLM that will continue the same workspace task.\nInclude:\n- Goal and acceptance criteria\n- Files read/changed (paths + one-line why)\n- Commands/tests run and outcomes\n- Decisions and constraints\n- Open bugs / next concrete steps\n- Any secrets-safe identifiers (branch names, ticket ids) needed to continue\nOmit raw file dumps, full command logs, and superseded plans.\nBe concise and structured (bullets).";
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionStartRequest {
     pub session_id: String,
-	pub workspace: String,
-	pub base_url: String,
-	#[serde(default)]
-	pub api_key: String,
+    pub workspace: String,
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
     pub model: String,
     pub provider_name: Option<String>,
     pub provider_title: Option<String>,
@@ -37,6 +37,7 @@ pub struct CodexSessionStartRequest {
     pub thread_id: Option<String>,
     pub multi_agent_version: Option<MultiAgentVersion>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub auto_compact_token_limit: Option<u64>,
     /// Rust-populated exact roots for this conversation. Renderer input is
     /// discarded by `prepare_codex_start` before launch.
@@ -74,18 +75,23 @@ impl fmt::Debug for CodexSessionStartRequest {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexTurnStartRequest {
     pub session_id: String,
     pub prompt: String,
     pub effort: Option<String>,
+    /// Renderer optimistic bubble id. When present, the journalled
+    /// `message.created` reuses it so the host event collapses onto the
+    /// already-visible bubble instead of minting a second UUID.
+    #[serde(default)]
+    pub client_message_id: Option<String>,
 }
 
 /// One atomic renderer intent: make sure the app-server is attached for this
 /// session and start the turn. The renderer never observes the intermediate
 /// state where an attachment exists but the turn has not started.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexTurnSendRequest {
     pub start: CodexSessionStartRequest,
@@ -97,11 +103,14 @@ pub struct CodexTurnSendRequest {
     /// has history; empty threads skip compact.
     #[serde(default)]
     pub compact_before_model_switch: bool,
+    /// Same ownership as [`CodexTurnStartRequest::client_message_id`].
+    #[serde(default)]
+    pub client_message_id: Option<String>,
 }
 
 /// Typed failure so the renderer can react to a lost app-server without
 /// parsing free-form text or leaking raw ids into a toast.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexTurnFailure {
     pub code: String,
@@ -154,13 +163,13 @@ pub(crate) fn is_detached_failure(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| cause.is::<SessionDetached>())
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionRequest {
     pub session_id: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexApprovalDecisionRequest {
     pub session_id: String,
@@ -168,14 +177,14 @@ pub struct CodexApprovalDecisionRequest {
     pub decision: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexSteerRequest {
     pub session_id: String,
     pub text: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionInfo {
     pub session_id: String,
@@ -183,7 +192,7 @@ pub struct CodexSessionInfo {
     pub turn_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionRecord {
     pub session_id: String,
@@ -220,7 +229,6 @@ pub(crate) type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, S
 pub(crate) type CompactWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<Result<(), String>>>>>;
 pub(crate) type PendingApprovals = Arc<Mutex<HashMap<String, PendingApproval>>>;
 
-
 pub(crate) struct AppServer {
     pub(crate) child: Mutex<Child>,
     pub(crate) stdin: Arc<Mutex<tokio::process::ChildStdin>>,
@@ -256,10 +264,10 @@ impl AppServer {
             Ok(Ok(Ok(value))) => Ok(value),
             Ok(Ok(Err(error))) if error.contains(STDOUT_CLOSED) => Err(anyhow!(SessionDetached)
                 .context(format!("codex app-server {method} lost its process"))),
-            Ok(Ok(Err(error))) if error.contains("database is locked") => Err(anyhow!(
-                crate::error::DatabaseLocked
-            )
-            .context(format!("codex app-server {method} error: {error}"))),
+            Ok(Ok(Err(error))) if error.contains("database is locked") => {
+                Err(anyhow!(crate::error::DatabaseLocked)
+                    .context(format!("codex app-server {method} error: {error}")))
+            }
             Ok(Ok(Err(error))) => Err(anyhow!("codex app-server {method} error: {error}")),
             Ok(Err(_)) => Err(anyhow!(SessionDetached)
                 .context(format!("codex app-server stopped while handling {method}"))),
@@ -271,7 +279,8 @@ impl AppServer {
     }
 
     pub(crate) async fn perform_notify(&self, method: &str) -> Result<()> {
-        super::event_pump::write_message(&self.stdin, &json!({"jsonrpc":"2.0","method":method})).await
+        super::event_pump::write_message(&self.stdin, &json!({"jsonrpc":"2.0","method":method}))
+            .await
     }
 
     pub(crate) async fn perform_stop(&self) -> Result<()> {
@@ -283,7 +292,11 @@ impl AppServer {
             .context("stop app-server")
     }
 
-    pub(crate) async fn perform_resolve_approval(&self, approval_id: &str, requested: &str) -> Result<String> {
+    pub(crate) async fn perform_resolve_approval(
+        &self,
+        approval_id: &str,
+        requested: &str,
+    ) -> Result<String> {
         let pending = self
             .approvals
             .lock()
@@ -339,7 +352,6 @@ impl ProviderTransport for AppServer {
         self.perform_resolve_approval(approval_id, requested).await
     }
 }
-
 
 pub(crate) fn select_approval_decision(available: &[String], requested: &str) -> Result<String> {
     let candidates: &[&str] = match requested {

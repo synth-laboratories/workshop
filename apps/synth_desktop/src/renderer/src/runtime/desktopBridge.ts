@@ -500,15 +500,23 @@ window.synthWorkspaceScope ??= isTauri
 			defaultWorkspace: () => invokeCommand<string>(COMMANDS.CODEX_DEFAULT_WORKSPACE),
 			list: () => invokeCommand<PersistedCodexSession[]>(COMMANDS.CODEX_SESSIONS_LIST),
 			start: (request) => invokeCommand<CodexSessionInfo>(COMMANDS.CODEX_SESSION_START, { request }),
-			startTurn: (sessionId, prompt, effort) =>
-				invokeCommand<CodexSessionInfo>(COMMANDS.CODEX_TURN_START, { request: { sessionId, prompt, effort } }),
+			startTurn: (sessionId, prompt, effort, options) =>
+				invokeCommand<CodexSessionInfo>(COMMANDS.CODEX_TURN_START, {
+					request: {
+						sessionId,
+						prompt,
+						effort,
+						clientMessageId: options?.clientMessageId
+					}
+				}),
 			sendTurn: (start, prompt, effort, options) =>
 				invokeCommand<CodexSessionInfo>(COMMANDS.CODEX_TURN_SEND, {
 					request: {
 						start,
 						prompt,
 						effort,
-						compactBeforeModelSwitch: Boolean(options?.compactBeforeModelSwitch)
+						compactBeforeModelSwitch: Boolean(options?.compactBeforeModelSwitch),
+						clientMessageId: options?.clientMessageId
 					}
 				}),
 			interrupt: (sessionId) => invokeCommand<void>(COMMANDS.CODEX_TURN_INTERRUPT, { request: { sessionId } }),

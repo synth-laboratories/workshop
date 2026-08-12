@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 pub const LOCAL_LAGUNA_MODEL: &str = "laguna-xs-2.1";
 
 /// Sync vs async Intern wire mode.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub enum InternMode {
     Sync,
@@ -35,7 +35,7 @@ impl InternMode {
 }
 
 /// Optional Intern factory / effort binding (renderer camelCase).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternBinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -234,7 +234,10 @@ fn parse_runtime_target_value(value: &Value) -> Result<RuntimeTarget, String> {
             adapter: optional_string(obj, "adapter"),
         }),
         "remote" => {
-            let provider = obj.get("provider").and_then(Value::as_str).unwrap_or("openrouter");
+            let provider = obj
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or("openrouter");
             let model = string_field(obj, "model")
                 .ok_or_else(|| "RuntimeTarget.model is required for remote/cloud".to_string())?;
             let adapter = optional_string(obj, "adapter");

@@ -4,8 +4,8 @@ use crate::cloud::intern::{
     InternProviderManager, InternRuntime, InternSessionBinding, PollerConfig, RuntimeKind,
 };
 use crate::contract::events::{origin_for_source_and_kind, tag_event, EventChannel};
-use crate::domain::{RunService, RunStatus, SessionKind, SessionService, SessionStatus};
 use crate::data::{ContainerDeployment, ContainerRegisterRequest, DataStore};
+use crate::domain::{RunService, RunStatus, SessionKind, SessionService, SessionStatus};
 use crate::optimizers::OptimizerService;
 use crate::storage::{
     AppEvent, ContentStore, CoreDiagnostics, EventAppend, EventJournal, EventSource, SessionRecord,
@@ -41,14 +41,12 @@ impl CoreRuntime {
         let storage = Storage::open(root)?;
         let backend = crate::synth_config::resolve().context("resolve Synth backend")?;
         let intern = Arc::new(match backend.api_key {
-            Some(api_key) => {
-                InternRuntime::configured(
-                    &backend.backend_url,
-                    api_key,
-                    crate::limits::INTERN_HTTP_TIMEOUT,
-                )
-                    .context("configure Rust Intern runtime")?
-            }
+            Some(api_key) => InternRuntime::configured(
+                &backend.backend_url,
+                api_key,
+                crate::limits::INTERN_HTTP_TIMEOUT,
+            )
+            .context("configure Rust Intern runtime")?,
             None => InternRuntime::unconfigured(),
         });
         Ok(Self::from_parts(storage, intern))

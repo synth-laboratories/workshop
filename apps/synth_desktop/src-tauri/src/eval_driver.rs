@@ -9,6 +9,7 @@
 
 use crate::codex::{self, CodexManager, CodexSessionStartRequest, CodexTurnSendRequest};
 use crate::core_runtime::CoreRuntime;
+use crate::ipc::{serve_json_with_limit, JsonHttpRequest, JsonHttpResponse};
 use crate::laguna::LagunaManager;
 use crate::storage::{EventAppend, EventSource};
 use crate::synth_config;
@@ -16,18 +17,16 @@ use crate::trace_ingest::TraceBundleIngestRequest;
 use crate::visuals::{VisualCreateRequest, VisualUpdateRequest};
 use crate::visuals_ipc;
 use anyhow::{anyhow, bail, Context, Result};
+use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 use tauri::AppHandle;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use uuid::Uuid;
 
 pub const PROTOCOL_VERSION: &str = "synth.eval-driver.v1";
-const MAX_HEADER_BYTES: usize = 32 * 1024;
-const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 const OPENROUTER_CHAT_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_POLICY_ACTIONS: &[&str] = &["do", "left", "do", "up", "do", "right", "do", "down"];
 
@@ -92,18 +91,18 @@ pub async fn spawn(deps: EvalDriverDeps, root: PathBuf) -> Result<EvalDriverConn
     let serve = Arc::new(deps);
     let serve_token = token.clone();
     tauri::async_runtime::spawn(async move {
-        loop {
-            let Ok((stream, peer)) = listener.accept().await else {
-                continue;
-            };
-            if !peer.ip().is_loopback() {
-                continue;
-            }
-            let deps = serve.clone();
-            let token = serve_token.clone();
-            tauri::async_runtime::spawn(async move {
-                let _ = handle_connection(stream, deps, token).await;
-            });
+        let result = serve_json_with_limit(
+            listener,
+            crate::limits::EVAL_DRIVER_MAX_BODY_BYTES,
+            move |request| {
+                let deps = serve.clone();
+                let token = serve_token.clone();
+                async move { route_request(request, &deps, &token).await }
+            },
+        )
+        .await;
+        if let Err(error) = result {
+            eprintln!("synth-desktop: eval driver stopped: {error:#}");
         }
     });
     Ok(connection)
@@ -133,132 +132,62 @@ fn patch_instance_manifest(connection: &EvalDriverConnection) {
     }
 }
 
-async fn handle_connection(
-    mut stream: TcpStream,
-    deps: Arc<EvalDriverDeps>,
-    token: String,
-) -> Result<()> {
-    let mut buffer = Vec::new();
-    let mut chunk = [0u8; 4096];
-    let mut header_end = None;
-    let mut expected_len = None;
-    loop {
-        let n = stream.read(&mut chunk).await?;
-        if n == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&chunk[..n]);
-        if header_end.is_none() {
-            header_end = buffer
-                .windows(4)
-                .position(|window| window == b"\r\n\r\n")
-                .map(|i| i + 4);
-            if header_end.is_none() && buffer.len() > MAX_HEADER_BYTES {
-                bail!("eval driver headers exceed limit");
-            }
-            if let Some(end) = header_end {
-                let headers = std::str::from_utf8(&buffer[..end])
-                    .context("eval driver headers are not UTF-8")?;
-                expected_len = Some(parse_content_length(headers)?);
-                if expected_len.unwrap_or(0) > MAX_BODY_BYTES {
-                    bail!("eval driver body exceeds limit");
-                }
-            }
-        }
-        if let (Some(end), Some(length)) = (header_end, expected_len) {
-            if buffer.len() >= end + length {
-                buffer.truncate(end + length);
-                break;
-            }
-        }
-        if buffer.len() > MAX_HEADER_BYTES + MAX_BODY_BYTES {
-            break;
-        }
-    }
-    let (status, reason, body) = match dispatch_http(&buffer, &deps, &token).await {
-        Ok(value) => (200, "OK", value),
+async fn route_request(
+    request: JsonHttpRequest,
+    deps: &EvalDriverDeps,
+    token: &str,
+) -> JsonHttpResponse {
+    let result = dispatch_request(request, deps, token).await;
+    let mut response = match result {
+        Ok(value) => JsonHttpResponse::ok(value),
         Err(error) if crate::error::error_is::<crate::error::Unauthorized>(&error) => {
-            (401, "Unauthorized", json!({"error": error.to_string()}))
+            JsonHttpResponse::error(StatusCode::UNAUTHORIZED, error.to_string())
         }
         Err(error) if crate::error::error_is::<crate::error::ProtocolMismatch>(&error) => {
-            (426, "Upgrade Required", json!({"error": error.to_string()}))
+            JsonHttpResponse::error(StatusCode::UPGRADE_REQUIRED, error.to_string())
         }
-        Err(error) => (400, "Bad Request", json!({"error": error.to_string()})),
+        Err(error) => JsonHttpResponse::error(StatusCode::BAD_REQUEST, error.to_string()),
     };
-    let payload = serde_json::to_vec(&body)?;
-    let response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-Synth-Eval-Driver: {PROTOCOL_VERSION}\r\nConnection: close\r\n\r\n",
-        payload.len()
-    );
-    stream.write_all(response.as_bytes()).await?;
-    stream.write_all(&payload).await?;
-    Ok(())
+    response
+        .extra_headers
+        .push(("x-synth-eval-driver", PROTOCOL_VERSION.to_owned()));
+    response
 }
 
-fn parse_content_length(headers: &str) -> Result<usize> {
-    for line in headers.lines().skip(1) {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        if name.eq_ignore_ascii_case("content-length") {
-            return value.trim().parse().context("invalid Content-Length");
-        }
-    }
-    Ok(0)
-}
-
-async fn dispatch_http(raw: &[u8], deps: &EvalDriverDeps, token: &str) -> Result<Value> {
-    let header_end = raw
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .map(|index| index + 4)
-        .context("incomplete eval driver headers")?;
-    let headers =
-        std::str::from_utf8(&raw[..header_end]).context("eval driver headers are not UTF-8")?;
-    let content_length = parse_content_length(headers)?;
-    if raw.len() < header_end + content_length {
-        bail!("incomplete eval driver body");
-    }
-    let mut lines = headers.lines();
-    let request_line = lines.next().unwrap_or_default();
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("GET");
-    let target = parts.next().unwrap_or("/");
-    let (path, query_string) = target.split_once('?').unwrap_or((target, ""));
-    let mut auth = None;
-    let mut client_protocol = None;
-    for line in lines.by_ref() {
-        if line.is_empty() {
-            break;
-        }
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        if name.eq_ignore_ascii_case("authorization") {
-            auth = value.trim().strip_prefix("Bearer ").map(str::to_string);
-        }
-        if name.eq_ignore_ascii_case("x-synth-eval-driver") {
-            client_protocol = Some(value.trim().to_string());
-        }
-    }
-    if auth.as_deref() != Some(token) {
+async fn dispatch_request(
+    request: JsonHttpRequest,
+    deps: &EvalDriverDeps,
+    token: &str,
+) -> Result<Value> {
+    let auth = request
+        .authorization
+        .as_deref()
+        .and_then(|value| value.strip_prefix("Bearer ").map(str::trim));
+    if auth != Some(token) {
         return Err(anyhow!(crate::error::Unauthorized).context("unauthorized eval driver request"));
     }
-    if let Some(version) = client_protocol {
+    if let Some(version) = request
+        .raw_headers
+        .get("x-synth-eval-driver")
+        .and_then(|value| value.to_str().ok())
+    {
         if version != PROTOCOL_VERSION {
             return Err(anyhow!(crate::error::ProtocolMismatch {
                 expected: PROTOCOL_VERSION,
-                got: version,
+                got: version.to_owned(),
             }));
         }
     }
-    let body = &raw[header_end..header_end + content_length];
-    let json_body: Value = if body.is_empty() {
+    let (path, query_string) = request
+        .path
+        .split_once('?')
+        .unwrap_or((request.path.as_str(), ""));
+    let json_body = if request.body.is_null() {
         query_json(query_string)
     } else {
-        serde_json::from_slice(body).context("invalid eval driver JSON body")?
+        request.body
     };
-    dispatch(method, path, json_body, deps).await
+    dispatch(request.method.as_str(), path, json_body, deps).await
 }
 
 fn query_json(query: &str) -> Value {
@@ -600,6 +529,7 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
                 prompt,
                 effort,
                 compact_before_model_switch: false,
+                client_message_id: None,
             },
         )
         .await
@@ -727,10 +657,7 @@ async fn open_visual(core: &CoreRuntime, body: Value) -> Result<Value> {
         metadata: body.get("metadata").cloned(),
     };
     let (visual, event) = core.visuals().create(create).await?;
-    let (shown, show_event) = core
-        .visuals()
-        .show(visual.id.clone(), session_id)
-        .await?;
+    let (shown, show_event) = core.visuals().show(visual.id.clone(), session_id).await?;
     core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
     core.broadcast_committed(Some(serde_json::from_value(show_event.clone())?));
     Ok(json!({
@@ -903,8 +830,9 @@ async fn resolve_policy_target(
 ) -> Result<PolicyTarget> {
     match codex::provider_class(Some(provider)) {
         codex::ProviderClass::OpenRouter => {
-            let api_key = synth_config::openrouter_api_key()?
-                .ok_or_else(|| anyhow!("OpenRouter API key is not configured on the Workshop host"))?;
+            let api_key = synth_config::openrouter_api_key()?.ok_or_else(|| {
+                anyhow!("OpenRouter API key is not configured on the Workshop host")
+            })?;
             let (chat_url, wire) = policy_chat_url("openrouter", OPENROUTER_CHAT_URL);
             Ok(PolicyTarget {
                 provider: "openrouter".into(),
@@ -915,10 +843,9 @@ async fn resolve_policy_target(
         }
         codex::ProviderClass::SynthCloud => {
             let resolved = synth_config::resolve()?;
-            let api_key = resolved
-                .api_key
-                .clone()
-                .ok_or_else(|| anyhow!("Synth Cloud API key is not configured on the Workshop host"))?;
+            let api_key = resolved.api_key.clone().ok_or_else(|| {
+                anyhow!("Synth Cloud API key is not configured on the Workshop host")
+            })?;
             // Same split as Codex's own session-start path: only Responses
             // traffic uses the source-owned profile gateway, and an unknown
             // profile fails closed rather than silently reusing
@@ -959,12 +886,13 @@ async fn resolve_policy_target(
     }
 }
 
-async fn run_policy_rollout(deps: &EvalDriverDeps, container_id: &str, body: Value) -> Result<Value> {
+async fn run_policy_rollout(
+    deps: &EvalDriverDeps,
+    container_id: &str,
+    body: Value,
+) -> Result<Value> {
     let core = &deps.core;
-    let container = core
-        .data()
-        .get_container(container_id.to_string())
-        .await?;
+    let container = core.data().get_container(container_id.to_string()).await?;
     let base = container
         .base_url
         .as_deref()
@@ -1527,24 +1455,27 @@ async fn policy_actions_from_model(
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| {
-                response.get("output").and_then(Value::as_array).and_then(|items| {
-                    for item in items {
-                        if let Some(parts) = item.get("content").and_then(Value::as_array) {
-                            for part in parts {
-                                if let Some(text) = part
-                                    .get("text")
-                                    .and_then(Value::as_str)
-                                    .or_else(|| part.pointer("/text").and_then(Value::as_str))
-                                {
-                                    if !text.trim().is_empty() {
-                                        return Some(text.to_string());
+                response
+                    .get("output")
+                    .and_then(Value::as_array)
+                    .and_then(|items| {
+                        for item in items {
+                            if let Some(parts) = item.get("content").and_then(Value::as_array) {
+                                for part in parts {
+                                    if let Some(text) = part
+                                        .get("text")
+                                        .and_then(Value::as_str)
+                                        .or_else(|| part.pointer("/text").and_then(Value::as_str))
+                                    {
+                                        if !text.trim().is_empty() {
+                                            return Some(text.to_string());
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    None
-                })
+                        None
+                    })
             })
             .unwrap_or_default()
     } else {
@@ -1734,17 +1665,11 @@ mod tests {
         );
         assert_eq!(
             policy_chat_url("synth-cloud", "https://api.synth.dev"),
-            (
-                "https://api.synth.dev/api/v1/responses".into(),
-                "responses"
-            )
+            ("https://api.synth.dev/api/v1/responses".into(), "responses")
         );
         assert_eq!(
             policy_chat_url("local-laguna", "http://127.0.0.1:17301"),
-            (
-                "http://127.0.0.1:17301/v1/chat/completions".into(),
-                "chat"
-            )
+            ("http://127.0.0.1:17301/v1/chat/completions".into(), "chat")
         );
     }
 

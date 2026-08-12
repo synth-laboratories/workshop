@@ -1,10 +1,7 @@
 //! `ManagedService` vocabulary + supervisor registry.
 //!
-//! Wave 5 skeleton: one trait and a registry drained on
-//! [`tauri::RunEvent::ExitRequested`]. Concrete Laguna / Whisper / IPC adapters
-//! adopt the trait in follow-up work; quit already drains whatever is registered.
-
-#![allow(dead_code)]
+//! Laguna and Whisper implement the trait directly. The composition root drains
+//! registered services on [`tauri::RunEvent::ExitRequested`].
 
 use anyhow::Result;
 use std::future::Future;
@@ -82,5 +79,40 @@ impl ServiceSupervisor {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ManagedService, ServiceSupervisor};
+    use anyhow::Result;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    struct FlagService(Arc<AtomicBool>);
+
+    impl ManagedService for FlagService {
+        fn name(&self) -> &'static str {
+            "flag"
+        }
+
+        fn stop(&self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+            Box::pin(async move {
+                self.0.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn drain_stops_every_registered_service() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let supervisor = ServiceSupervisor::new();
+        supervisor.register(Arc::new(FlagService(stopped.clone())));
+        assert_eq!(supervisor.names(), vec!["flag"]);
+        supervisor.drain_all().await;
+        assert!(stopped.load(Ordering::SeqCst));
     }
 }

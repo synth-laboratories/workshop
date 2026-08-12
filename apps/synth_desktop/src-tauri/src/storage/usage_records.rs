@@ -21,7 +21,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 /// Who vouches for a request's dollar figure. Ordered by authority: a settled
 /// provider charge beats a Synth Cloud figure beats a tariff estimate.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum CostSource {
     ProviderReported,
@@ -91,18 +91,26 @@ pub struct UsageRecord {
 /// contributes nothing); cache, reasoning, cost, and throughput fields stay
 /// `None` until at least one request actually reported them, so the UI can
 /// say "Unavailable" instead of a fabricated zero.
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageBreakdown {
     pub provider: String,
     pub model_id: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub requests: i64,
+    #[specta(type = specta_typescript::Unknown)]
     pub input_tokens: i64,
+    #[specta(type = specta_typescript::Unknown)]
     pub cached_input_tokens: Option<i64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub non_cached_input_tokens: Option<i64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub cache_write_tokens: Option<i64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub reasoning_tokens: Option<i64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub output_tokens: i64,
+    #[specta(type = specta_typescript::Unknown)]
     pub total_tokens: i64,
     pub cache_hit_rate: Option<f64>,
     pub billed_cost_usd: Option<f64>,
@@ -114,10 +122,11 @@ pub struct UsageBreakdown {
     pub end_to_end_tps_p95: Option<f64>,
     pub ttft_ms_p50: Option<f64>,
     pub ttft_ms_p95: Option<f64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub perf_sample_count: i64,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSummary {
     pub window: String,
@@ -362,11 +371,12 @@ impl Bucket {
             (Some(cached), input) if input > 0 => Some(cached as f64 / input as f64),
             _ => None,
         };
-        let non_cached = self
-            .cached
-            .map(|cached| (self.input - cached).max(0));
-        let perf_sample_count =
-            self.decode_tps.len().max(self.e2e_tps.len()).max(self.ttft.len()) as i64;
+        let non_cached = self.cached.map(|cached| (self.input - cached).max(0));
+        let perf_sample_count = self
+            .decode_tps
+            .len()
+            .max(self.e2e_tps.len())
+            .max(self.ttft.len()) as i64;
         let mut decode_p95 = self.decode_tps.clone();
         let mut e2e_p95 = self.e2e_tps.clone();
         let mut ttft_p95 = self.ttft.clone();

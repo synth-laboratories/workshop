@@ -66,7 +66,7 @@ test("execution targets include Laguna local + OpenRouter Luna/Laguna + Synth Cl
   assert.ok(composer.includes('data-testid={`${knob.testId}-select`}'));
   assert.ok(composer.includes('data-testid={`${knob.testId}-menu`}'));
   assert.ok(capabilities.includes('testId: "reasoning-effort"'));
-  assert.ok(bridge.includes("request: { sessionId, prompt, effort }"));
+  assert.ok(bridge.includes("clientMessageId: options?.clientMessageId"));
 });
 
 test("v0.1 exposes remote Muse Spark while excluding local Muse Glimmer, GGUF, and DFlash", () => {

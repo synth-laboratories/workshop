@@ -14,6 +14,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_9,
     MIGRATION_10,
     MIGRATION_11,
+    MIGRATION_12,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -44,7 +45,23 @@ pub fn apply_migrations(conn: &Connection) -> Result<i64> {
         [],
         |row| row.get(0),
     )?;
+    if version >= 12 {
+        fold_rollback_usage_rows(conn)?;
+    }
     Ok(version)
+}
+
+/// Migration 11 keeps an empty legacy table as a rollback write buffer. A v10
+/// binary can therefore launch against a v11 database and keep recording local
+/// dev charges. The next current-binary launch folds those rows into the authoritative
+/// ledger and clears the buffer atomically, so neither binary double-counts.
+fn fold_rollback_usage_rows(conn: &Connection) -> Result<()> {
+    let batch = format!("BEGIN IMMEDIATE;\n{FOLD_LEGACY_USAGE_ROWS}\nCOMMIT;");
+    if let Err(error) = conn.execute_batch(&batch) {
+        let _ = conn.execute_batch("ROLLBACK;");
+        return Err(anyhow::Error::from(error).context("fold rollback usage rows"));
+    }
+    Ok(())
 }
 
 /// One migration and its version stamp commit as a single transaction: a
@@ -60,8 +77,7 @@ fn apply_one(conn: &Connection, version: i64, sql: &str) -> Result<()> {
         // A failed batch can leave its transaction open on the shared
         // connection; roll it back so the caller's error path still works.
         let _ = conn.execute_batch("ROLLBACK;");
-        return Err(anyhow::Error::from(error)
-            .context(format!("apply schema migration {version}")));
+        return Err(anyhow::Error::from(error).context(format!("apply schema migration {version}")));
     }
     Ok(())
 }
@@ -690,11 +706,11 @@ CREATE INDEX IF NOT EXISTS sessions_runtime_target_kind
 ON sessions(runtime_target_kind);
 "#;
 
-/// Fold the legacy `usage_ledger` into the authoritative `usage_records`
-/// ledger, then drop it. One read model serves dashboard, allowance, and the
-/// Data → Usage feed. Orphan session/run FKs are nulled so the copy cannot
-/// fail under `PRAGMA foreign_keys=ON`.
-const MIGRATION_11: &str = r#"
+/// Shared copy used by migration 11 and by every later open. Rows are deleted
+/// only after their stable legacy request id exists in `usage_records`; an
+/// unexpected primary-key collision therefore retains the source row rather
+/// than silently losing accounting data.
+const FOLD_LEGACY_USAGE_ROWS: &str = r#"
 INSERT OR IGNORE INTO usage_records (
     id, provider, model_id, session_id, run_id, request_id,
     measurement_kind, status, started_at_ms, completed_at_ms,
@@ -732,7 +748,38 @@ SELECT
     created_at
 FROM usage_ledger;
 
-DROP TABLE usage_ledger;
+-- A primary-key collision with an unrelated usage record must not discard the
+-- rollback row. Leave it buffered unless its legacy request identity landed.
+DELETE FROM usage_ledger
+WHERE EXISTS (
+    SELECT 1 FROM usage_records
+    WHERE request_id = 'legacy-ledger:' || usage_ledger.id
+      AND provider = usage_ledger.provider
+      AND source = 'legacy_usage_ledger'
+);
+"#;
+
+/// Fold the legacy ledger into `usage_records`, then retain its empty schema as
+/// a rollback write buffer. The previous production binary reads and writes
+/// this table; dropping it makes rollback fail with `no such table`.
+const MIGRATION_11: &str = FOLD_LEGACY_USAGE_ROWS;
+
+/// Additive repair for databases already stamped at the original migration 11,
+/// which dropped `usage_ledger`. Fresh upgrades retain the migration-1 table;
+/// already-upgraded QA databases recreate the exact legacy schema here.
+const MIGRATION_12: &str = r#"
+CREATE TABLE IF NOT EXISTS usage_ledger (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+    run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL,
+    created_at TEXT NOT NULL
+);
 "#;
 
 #[cfg(test)]
@@ -784,7 +831,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 11);
+        assert_eq!(apply_migrations(&conn).unwrap(), 12);
         let updated_at: String = conn
             .query_row(
                 "SELECT updated_at FROM runs WHERE id = 'run-1'",
@@ -816,7 +863,8 @@ mod tests {
             .unwrap();
         assert_eq!(accounting_tables, 1);
         // The performance table was folded into usage_records by migration 8;
-        // migration 11 drops usage_ledger after folding it in.
+        // Migration 11 folds the legacy rows; migration 12 guarantees the
+        // empty rollback staging schema for already-upgraded QA databases.
         let performance_tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'model_performance_samples'",
@@ -832,7 +880,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(ledger_tables, 0);
+        assert_eq!(
+            ledger_tables, 1,
+            "rollback staging schema remains available"
+        );
     }
 
     /// A v7 database imports performance samples into `usage_records`, then
@@ -853,7 +904,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 11);
+        assert_eq!(apply_migrations(&conn).unwrap(), 12);
 
         let ledger_tables: i64 = conn
             .query_row(
@@ -862,7 +913,11 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(ledger_tables, 0);
+        assert_eq!(ledger_tables, 1);
+        let staged: i64 = conn
+            .query_row("SELECT COUNT(*) FROM usage_ledger", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(staged, 0, "folded rows are cleared from rollback staging");
         let (billed, cost_source, source): (f64, String, String) = conn
             .query_row(
                 "SELECT billed_cost_usd, cost_source, source
@@ -884,6 +939,102 @@ mod tests {
             .unwrap();
         assert_eq!((input, cached, total), (100, 40, 150));
         assert_eq!(cost_source, "none");
+    }
+
+    /// Candidate builds already applied the original migration 11, which
+    /// folded rows and dropped the table. Migration 12 repairs that database
+    /// for rollback. This query is copied from the pre-Wave-7 account summary:
+    /// the old binary sums both ledgers, so compatibility must not mirror rows
+    /// into both places or historical usage would double-count.
+    #[test]
+    fn migration_12_repairs_original_v11_and_folds_rollback_writes_once() {
+        let conn = seed_at_version(10);
+        conn.execute(
+            "INSERT INTO usage_ledger(id,provider,model,prompt_tokens,completion_tokens,total_tokens,cost_usd,created_at)
+             VALUES('before-v11','openrouter','luna',10,20,30,0.5,'2026-08-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        // Exact original candidate migration-11 shape: fold, drop, stamp.
+        conn.execute_batch(&format!(
+            "BEGIN IMMEDIATE;\n{FOLD_LEGACY_USAGE_ROWS}\nDROP TABLE usage_ledger;\nINSERT INTO schema_migrations(version, applied_at) VALUES (11, datetime('now'));\nCOMMIT;"
+        ))
+        .unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 11);
+
+        assert_eq!(apply_migrations(&conn).unwrap(), 12);
+        let old_binary_sum = |conn: &Connection| -> f64 {
+            conn.query_row(
+                "SELECT
+                    (SELECT COALESCE(SUM(COALESCE(billed_cost_usd, estimated_cost_usd)), 0)
+                     FROM usage_records
+                     WHERE COALESCE(billed_cost_usd, estimated_cost_usd) IS NOT NULL)
+                    +
+                    (SELECT COALESCE(SUM(cost_usd), 0)
+                     FROM usage_ledger
+                     WHERE cost_usd IS NOT NULL)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        let old_inventory_count = |conn: &Connection| -> i64 {
+            conn.query_row(
+                "SELECT (SELECT COUNT(*) FROM usage_records) + (SELECT COUNT(*) FROM usage_ledger)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert!((old_binary_sum(&conn) - 0.5).abs() < 1e-9);
+        assert_eq!(old_inventory_count(&conn), 1);
+
+        // A rolled-back v10 binary can write the legacy schema without error.
+        conn.execute(
+            "INSERT INTO usage_ledger(id,provider,model,prompt_tokens,completion_tokens,total_tokens,cost_usd,created_at)
+             VALUES('during-rollback','synth','laguna-s',4,6,10,0.25,'2026-08-02T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        assert!((old_binary_sum(&conn) - 0.75).abs() < 1e-9);
+        assert_eq!(old_inventory_count(&conn), 2);
+
+        // Relaunching v12 folds and clears staging. The union remains exactly
+        // the same, proving neither data loss nor a transient double charge.
+        assert_eq!(apply_migrations(&conn).unwrap(), 12);
+        assert!((old_binary_sum(&conn) - 0.75).abs() < 1e-9);
+        assert_eq!(old_inventory_count(&conn), 2);
+        let old_inventory_ids: Vec<String> = {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id FROM (
+                        SELECT id, created_at FROM usage_records
+                        UNION ALL
+                        SELECT id, created_at FROM usage_ledger
+                     ) ORDER BY created_at DESC, id",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(
+            old_inventory_ids,
+            vec!["during-rollback".to_string(), "before-v11".to_string()]
+        );
+        let (staged, folded): (i64, i64) = conn
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM usage_ledger),
+                    (SELECT COUNT(*) FROM usage_records WHERE request_id='legacy-ledger:during-rollback')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((staged, folded), (0, 1));
     }
 
     /// A realistic v7 history — a large sample backlog and samples with
@@ -915,7 +1066,7 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 11);
+        assert_eq!(apply_migrations(&conn).unwrap(), 12);
 
         let imported: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
@@ -950,7 +1101,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(totals_ok, 1_200);
-        assert_eq!(ledger_tables, 0, "legacy ledger table is dropped after fold");
+        assert_eq!(ledger_tables, 1, "rollback staging schema remains");
         assert_eq!(folded, 1, "legacy ledger rows land in usage_records");
     }
 
@@ -977,7 +1128,7 @@ mod tests {
         conn.execute_batch(partial).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 7);
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 11);
+        assert_eq!(apply_migrations(&conn).unwrap(), 12);
         let (copies, leftovers): (i64, i64) = conn
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM usage_records WHERE request_id='req-1'),
@@ -1004,7 +1155,7 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(apply_migrations(&conn).unwrap(), 11);
+        assert_eq!(apply_migrations(&conn).unwrap(), 12);
         let kinds: Vec<(String, String)> = {
             let mut stmt = conn
                 .prepare("SELECT id, kind FROM sessions ORDER BY id")
@@ -1041,7 +1192,7 @@ mod tests {
         assert_eq!(probe, 0, "the failed migration's table must roll back");
         assert_eq!(version, 7);
         // The connection stays usable and the real migration still applies.
-        assert_eq!(apply_migrations(&conn).unwrap(), 11);
+        assert_eq!(apply_migrations(&conn).unwrap(), 12);
     }
 
     #[test]
@@ -1053,7 +1204,7 @@ mod tests {
             [r#"{"kind":"remote","provider":"synth-cloud","model":"openrouter/poolside/laguna-s-2.1","adapter":null}"#],
         )
         .unwrap();
-        assert_eq!(apply_migrations(&conn).unwrap(), 11);
+        assert_eq!(apply_migrations(&conn).unwrap(), 12);
         let (kind, target): (String, String) = conn
             .query_row(
                 "SELECT runtime_target_kind, target_json FROM sessions WHERE id='cloud-1'",
@@ -1062,9 +1213,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kind, "cloud");
-        assert!(
-            target.contains(r#""kind":"cloud""#) || target.contains(r#""kind": "cloud""#)
-        );
+        assert!(target.contains(r#""kind":"cloud""#) || target.contains(r#""kind": "cloud""#));
         let indexed: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='sessions_runtime_target_kind'",

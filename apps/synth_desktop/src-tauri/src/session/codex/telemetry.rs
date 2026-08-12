@@ -7,7 +7,6 @@ use tokio::sync::Mutex;
 
 use super::home::ProviderClass;
 
-
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TurnTokenUsage {
     pub(crate) input_tokens: Option<i64>,
@@ -66,11 +65,21 @@ pub(crate) fn usage_from_object(value: &Value) -> Option<TurnTokenUsage> {
     Some(TurnTokenUsage {
         input_tokens: positive_i64(integer_field(
             value,
-            &["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"],
+            &[
+                "input_tokens",
+                "inputTokens",
+                "prompt_tokens",
+                "promptTokens",
+            ],
         )),
         cached_input_tokens: positive_i64(integer_field(
             value,
-            &["cached_input_tokens", "cachedInputTokens", "cached_tokens", "cachedTokens"],
+            &[
+                "cached_input_tokens",
+                "cachedInputTokens",
+                "cached_tokens",
+                "cachedTokens",
+            ],
         )),
         cache_write_tokens: positive_i64(integer_field(
             value,
@@ -82,7 +91,10 @@ pub(crate) fn usage_from_object(value: &Value) -> Option<TurnTokenUsage> {
             ],
         )),
         reasoning_tokens: details.and_then(|details| {
-            positive_i64(integer_field(details, &["reasoning_tokens", "reasoningTokens"]))
+            positive_i64(integer_field(
+                details,
+                &["reasoning_tokens", "reasoningTokens"],
+            ))
         }),
         output_tokens,
     })
@@ -131,7 +143,10 @@ pub(crate) async fn track_performance_event(
     params: &Value,
 ) {
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let terminal = matches!(method, "turn/completed" | "turn/failed" | "turn/interrupted");
+    let terminal = matches!(
+        method,
+        "turn/completed" | "turn/failed" | "turn/interrupted"
+    );
     {
         let mut trackers = trackers.lock().await;
         let Some(tracker) = trackers.get_mut(session_id) else {

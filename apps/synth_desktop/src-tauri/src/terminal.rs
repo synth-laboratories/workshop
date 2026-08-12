@@ -20,7 +20,7 @@ const MAX_TERMINALS_PER_WORKSPACE: usize = 8;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_SCROLLBACK_BYTES: usize = 2 * 1024 * 1024;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalCreateRequest {
     pub workspace_id: String,
@@ -30,7 +30,7 @@ pub struct TerminalCreateRequest {
     pub rows: Option<u16>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalInfo {
     pub id: String,
@@ -39,14 +39,16 @@ pub struct TerminalInfo {
     pub shell: String,
     pub title: String,
     pub status: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub created_at: u64,
     pub exit_code: Option<u32>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalEvent {
     pub terminal_id: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub sequence: u64,
     pub kind: String,
     pub data_base64: Option<String>,

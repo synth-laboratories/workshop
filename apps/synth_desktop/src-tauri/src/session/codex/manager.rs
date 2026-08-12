@@ -1,13 +1,7 @@
 //! CodexManager — SessionKind::Codex transport authority over app-server attachments.
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
-use std::{
-    collections::HashMap,
-    env, fs,
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, env, fs, path::PathBuf, sync::Arc, time::Duration};
 use tauri::AppHandle;
 use tokio::sync::{oneshot, Mutex, RwLock};
 
@@ -19,7 +13,7 @@ use crate::storage::{EventAppend, EventSource};
 
 use super::event_pump::{spawn_server, EventPumpState, SpawnServerRequest};
 use super::home::{
-    apply_brokered_credential, automatic_thread_title, auto_compact_token_limit, codex_root,
+    apply_brokered_credential, auto_compact_token_limit, automatic_thread_title, codex_root,
     ensure_home, nested_id, responses_base_url, safe_component, session_info,
     validate_reasoning_effort, validate_start,
 };
@@ -27,7 +21,7 @@ use super::proto::{
     default_approval_policy, default_sandbox, is_detached_failure, CodexApprovalDecisionRequest,
     CodexSessionInfo, CodexSessionRecord, CodexSessionRequest, CodexSessionStartRequest,
     CodexSteerRequest, CodexTurnFailure, CodexTurnSendRequest, CodexTurnStartRequest,
-    CompactWaiters, ProviderTransport, Session, SessionDetached, DETACHED_MESSAGE, COMPACT_PROMPT,
+    CompactWaiters, ProviderTransport, Session, SessionDetached, COMPACT_PROMPT, DETACHED_MESSAGE,
 };
 use super::telemetry::{PerformanceTrackers, TurnPerformanceTracker, TurnTokenUsage};
 
@@ -297,10 +291,7 @@ impl CodexManager {
             id: request.session_id.clone(),
             title,
             kind: SessionKind::Codex,
-            target: RuntimeTarget::from_codex_provider(
-                &session.provider_name,
-                &session.model,
-            ),
+            target: RuntimeTarget::from_codex_provider(&session.provider_name, &session.model),
             project_id: None,
             remote_id: None,
             codex_thread_id: Some(thread_id.clone()),
@@ -353,9 +344,8 @@ impl CodexManager {
     /// A single per-session lock covers both halves, and one silent retry
     /// covers the remaining live race: the app-server can exit after `start`
     /// observes the attachment and before `turn/start` reaches it. When the
-    /// process is really gone the durable JSON record and the SQLite run are
-    /// reconciled *before* the typed error reaches the renderer, so the UI can
-    /// never be left showing `Working` with `Stop`.
+    /// process is really gone the event pump finalizes the durable run before
+    /// releasing the failed request back to this caller.
     pub async fn send_turn<R: tauri::Runtime>(
         &self,
         app: AppHandle<R>,
@@ -377,16 +367,20 @@ impl CodexManager {
         let _guard = lock.lock().await;
 
         // The user prompt is journalled once, up front, so a rejected turn
-        // still preserves the text the operator typed.
-        self.record_user_prompt(&app, &session_id, &request.prompt)
-            .await;
+        // still preserves the text the operator typed. Reuse the renderer's
+        // optimistic message id when provided so the transcript does not grow
+        // a second bubble for the same submission.
+        self.record_user_prompt(
+            &app,
+            &session_id,
+            &request.prompt,
+            request.client_message_id.as_deref(),
+        )
+        .await;
 
         // Compact-on-send model switch: while the live attachment is still the
         // source model, summarize before start() closes it and resumes as B.
         if let Err(error) = self.maybe_compact_before_model_switch(&request).await {
-            let _ = self
-                .reconcile_failed_turn_start(&session_id, "model_switch_compact_failed")
-                .await;
             return Err(CodexTurnFailure::rejected(&session_id, &error));
         }
 
@@ -416,6 +410,7 @@ impl CodexManager {
                         session_id: session_id.clone(),
                         prompt: request.prompt.clone(),
                         effort: request.effort.clone(),
+                        client_message_id: request.client_message_id.clone(),
                     },
                     false,
                 )
@@ -441,14 +436,8 @@ impl CodexManager {
 
         let error = failure.unwrap_or_else(|| anyhow!("the turn could not be started"));
         if !is_detached_failure(&error) {
-            let _ = self
-                .reconcile_failed_turn_start(&session_id, "turn_start_failed")
-                .await;
             return Err(CodexTurnFailure::rejected(&session_id, &error));
         }
-        let _ = self
-            .reconcile_failed_turn_start(&session_id, "turn_start_detached")
-            .await;
         self.persistence
             .notify_codex_event(
                 &app,
@@ -482,8 +471,13 @@ impl CodexManager {
             .transpose()?;
         let session = self.session(&request.session_id).await?;
         if record_prompt {
-            self.record_user_prompt(&app, &request.session_id, &request.prompt)
-                .await;
+            self.record_user_prompt(
+                &app,
+                &request.session_id,
+                &request.prompt,
+                request.client_message_id.as_deref(),
+            )
+            .await;
         }
         let mut turn_params = json!({
             "threadId": session.thread_id,
@@ -529,10 +523,20 @@ impl CodexManager {
             }
         };
         let Some(turn_id) = nested_id(&result, "turnId") else {
-            self.performance_trackers.lock().await.remove(&request.session_id);
-            return Err(anyhow!("Codex turn/start response missing turn id: {result}"));
+            self.performance_trackers
+                .lock()
+                .await
+                .remove(&request.session_id);
+            return Err(anyhow!(
+                "Codex turn/start response missing turn id: {result}"
+            ));
         };
-        if let Some(tracker) = self.performance_trackers.lock().await.get_mut(&request.session_id) {
+        if let Some(tracker) = self
+            .performance_trackers
+            .lock()
+            .await
+            .get_mut(&request.session_id)
+        {
             if tracker.turn_id == pending_turn_id {
                 tracker.turn_id = turn_id.clone();
             }
@@ -628,13 +632,10 @@ impl CodexManager {
 
     pub async fn interrupt(&self, session_id: &str) -> Result<()> {
         let Some(session) = self.sessions.read().await.get(session_id).cloned() else {
-            // Stop is idempotent. A persisted running record can outlive its
-            // in-memory app-server after a desktop restart or process crash.
-            self.mark_detached_turn_interrupted(session_id).await?;
+            // Stop is idempotent once no live transport owns the turn.
             return Ok(());
         };
         let Some(turn_id) = session.turn_id.read().await.clone() else {
-            self.mark_detached_turn_interrupted(session_id).await?;
             return Ok(());
         };
         session
@@ -730,7 +731,7 @@ impl CodexManager {
                 request.session_id
             ));
         };
-        self.record_user_prompt(&app, &request.session_id, &request.text)
+        self.record_user_prompt(&app, &request.session_id, &request.text, None)
             .await;
         session
             .server
@@ -784,35 +785,6 @@ impl CodexManager {
     }
 
     pub async fn list(&self) -> Vec<CodexSessionRecord> {
-        let attached = self.sessions.read().await;
-        let mut changed = false;
-        let mut detached = Vec::new();
-        {
-            let mut records = self.records.write().await;
-            for record in records.values_mut() {
-                let is_attached = attached.contains_key(&record.session_id);
-                let reconciled = reconcile_detached_status(&mut record.status, is_attached);
-                changed |= reconciled;
-                if !is_attached {
-                    detached.push(record.session_id.clone());
-                }
-            }
-        }
-        drop(attached);
-        if changed {
-            let _ = self.persist_records().await;
-        }
-        // Reconcile the durable run independently of the attachment record.
-        // During a graceful desktop shutdown the stdout task can persist the
-        // JSON record as interrupted and then lose the race with process exit
-        // before it transitions SQLite. On the next launch that record no
-        // longer changes, but its active run still needs to be interrupted.
-        for session_id in detached {
-            let _ = self
-                .persistence
-                .interrupt_active_run(&session_id, "desktop_restarted")
-                .await;
-        }
         let mut records: Vec<_> = self.records.read().await.values().cloned().collect();
         records.sort_by(|left, right| left.session_id.cmp(&right.session_id));
         records
@@ -841,14 +813,20 @@ impl CodexManager {
         app: &AppHandle<R>,
         session_id: &str,
         prompt: &str,
+        client_message_id: Option<&str>,
     ) {
+        let message_id = client_message_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(|id| id.to_owned())
+            .unwrap_or_else(|| format!("user-{}", uuid::Uuid::new_v4()));
         let persist = self.persistence.append_and_emit(
             app,
             EventAppend::codex(
                 session_id.to_owned(),
                 "message.created",
                 json!({
-                    "messageId": format!("user-{}", uuid::Uuid::new_v4()),
+                    "messageId": message_id,
                     "role": "user",
                     "content": prompt,
                 }),
@@ -867,29 +845,6 @@ impl CodexManager {
         if matches {
             sessions.remove(session_id);
         }
-    }
-
-    /// Brings durable state back in line after a turn could not be started.
-    /// The JSON cache must never stay `running`, and any active SQLite run for
-    /// this session belongs to a turn nobody can finish. SQLite session status
-    /// flows through `SessionService` / `RunService` transitions — not direct
-    /// string writes (`state_machines_have_explicit_transitions`).
-    async fn reconcile_failed_turn_start(&self, session_id: &str, reason: &str) -> Result<()> {
-        let was_running = self
-            .records
-            .read()
-            .await
-            .get(session_id)
-            .is_some_and(|record| SessionStatus::Running.equals_str(&record.status));
-        if was_running {
-            self.set_status(session_id, SessionStatus::Interrupted)
-                .await?;
-        }
-        let _ = self
-            .persistence
-            .interrupt_active_run(session_id, reason)
-            .await;
-        Ok(())
     }
 
     /// Updates the threads.json cache and, when CoreRuntime is bound, mirrors
@@ -912,24 +867,6 @@ impl CodexManager {
             .await
         {
             self.persistence.broadcast_committed(mutation.event);
-        }
-        Ok(())
-    }
-
-    async fn mark_detached_turn_interrupted(&self, session_id: &str) -> Result<()> {
-        let should_change = self
-            .records
-            .read()
-            .await
-            .get(session_id)
-            .is_some_and(|record| SessionStatus::Running.equals_str(&record.status));
-        if should_change {
-            self.set_status(session_id, SessionStatus::Interrupted)
-                .await?;
-            let _ = self
-                .persistence
-                .interrupt_active_run(session_id, "runtime_detached")
-                .await;
         }
         Ok(())
     }
@@ -998,14 +935,5 @@ impl CodexManager {
 
     async fn persist_records(&self) -> Result<()> {
         super::home::persist_records(&self.records, &self.state_path).await
-    }
-}
-
-pub(crate) fn reconcile_detached_status(status: &mut String, attached: bool) -> bool {
-    if SessionStatus::Running.equals_str(status) && !attached {
-        *status = SessionStatus::Interrupted.as_str().into();
-        true
-    } else {
-        false
     }
 }

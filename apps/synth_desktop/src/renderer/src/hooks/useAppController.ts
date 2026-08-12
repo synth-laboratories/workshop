@@ -883,16 +883,21 @@ export function useAppController() {
 						// app-server cannot exit in a gap the renderer can see.
 						// Model switches compact on the source model inside sendTurn
 						// before rebind (see modelSwitchPlan.ts).
+						// Pass the optimistic messageId so Rust journals the same id
+						// and eventsToMessages collapses host+optimistic into one bubble.
 						started = nativeCodex.sendTurn
 							? await nativeCodex.sendTurn(
 								startRequest,
 								text,
 								effort,
-								{ compactBeforeModelSwitch: sendPlan.kind === "model_switch_then_turn" ? sendPlan.compact : false }
+								{
+									compactBeforeModelSwitch: sendPlan.kind === "model_switch_then_turn" ? sendPlan.compact : false,
+									clientMessageId: messageId
+								}
 							)
 							: await (async () => {
 								await nativeCodex.start(startRequest);
-								return nativeCodex.startTurn(sessionId, text, effort);
+								return nativeCodex.startTurn(sessionId, text, effort, { clientMessageId: messageId });
 							})();
 					} catch (reason) {
 						failTurnStart(sessionId, text, messageId, reason);

@@ -27,7 +27,7 @@ const CREDITS_UNKNOWN_PATH: &str = "/api/v1/billing/credits-unknown";
 const CACHE_TTL_SECONDS: i64 = 60;
 pub const SCHEMA_VERSION: &str = "synth.desktop-account.v1";
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudAccount {
     pub id: String,
     #[serde(default)]
@@ -38,7 +38,7 @@ pub struct CloudAccount {
     pub avatar_url: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudOrganization {
     pub id: String,
     #[serde(default)]
@@ -47,12 +47,13 @@ pub struct CloudOrganization {
     pub role: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudPlan {
     pub tier: String,
     pub display_name: String,
     pub state: String,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub price_cents: i64,
     #[serde(default)]
     pub renews_at: Option<String>,
@@ -60,15 +61,18 @@ pub struct CloudPlan {
     pub is_paid: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudAllowance {
     /// `None` means the backend does not meter this account in dollars. The UI
     /// must then show no dollar figure at all.
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub limit_cents: Option<i64>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub used_cents: Option<i64>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub remaining_cents: Option<i64>,
     #[serde(default)]
     pub resets_at: Option<String>,
@@ -76,17 +80,20 @@ pub struct CloudAllowance {
     pub source: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudUsageWindow {
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub events: i64,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub billed_cents: i64,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub nominal_cents: i64,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudUsageWindows {
     #[serde(default)]
     pub today: CloudUsageWindow,
@@ -96,7 +103,7 @@ pub struct CloudUsageWindows {
     pub thirty_days: CloudUsageWindow,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudBillingActions {
     #[serde(default)]
     pub checkout_url: Option<String>,
@@ -106,17 +113,19 @@ pub struct CloudBillingActions {
     pub upgrade_tier: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudPlanOption {
     pub tier: String,
     pub display_name: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub price_cents: i64,
+    #[specta(type = specta_typescript::Unknown)]
     pub monthly_allowance_cents: i64,
     #[serde(default)]
     pub interval: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudSnapshot {
     #[serde(default)]
     pub schema_version: String,
@@ -151,7 +160,7 @@ pub struct SnapshotRead {
     pub unauthenticated: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum BillingAction {
     Upgrade,
@@ -194,7 +203,9 @@ fn connection_identity(backend_url: &str, api_key: &str) -> u64 {
 #[derive(Clone, Debug)]
 pub enum AccountError {
     /// Connection refused, DNS failure, TLS failure, or timeout.
-    Unreachable { detail: String },
+    Unreachable {
+        detail: String,
+    },
     Unauthorized,
     /// The backend answered, but does not serve the account contract.
     MissingRoute,
@@ -204,9 +215,13 @@ pub enum AccountError {
     UnexpectedStatus(u16),
     /// A schema this build does not speak. The reported version is backend text
     /// and stays out of the copy.
-    UnsupportedSchema { reported: String },
+    UnsupportedSchema {
+        reported: String,
+    },
     /// A 200 whose body is not an account snapshot.
-    Malformed { detail: String },
+    Malformed {
+        detail: String,
+    },
 }
 
 impl AccountError {
@@ -509,7 +524,6 @@ impl AccountCloudClient {
         }
         Ok(session.url)
     }
-
 }
 
 #[cfg(test)]

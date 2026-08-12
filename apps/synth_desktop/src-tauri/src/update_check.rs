@@ -23,7 +23,7 @@ pub const DOWNLOAD_PAGE: &str = "https://usesynth.ai/download";
 
 const DEFAULT_MANIFEST_BASE: &str = "https://usesynth.ai/releases";
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStatus {
     pub current_version: String,
@@ -204,7 +204,10 @@ mod tests {
     async fn a_live_manifest_yields_its_version() {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/stable/latest.json", listener.local_addr().unwrap());
+        let url = format!(
+            "http://{}/stable/latest.json",
+            listener.local_addr().unwrap()
+        );
         std::thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut buf = [0u8; 4096];

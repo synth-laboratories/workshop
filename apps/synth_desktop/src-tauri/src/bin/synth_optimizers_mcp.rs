@@ -1,9 +1,13 @@
 //! Stdio MCP adapter for Synth optimizers. Forwards tools through Desktop visuals IPC.
 
+#[path = "../ipc/mcp_stdio.rs"]
+mod mcp_stdio;
+
+use mcp_stdio::{run_stdio_server, McpServerInfo};
 use serde_json::{json, Value};
 use std::{
     env, fs,
-    io::{self, BufRead, Write},
+    io::{self, Write},
     path::PathBuf,
 };
 
@@ -38,10 +42,15 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
     request_inner(method, path, body).map_err(display_err)
 }
 
-fn request_inner(method: &str, path: &str, body: Option<Value>) -> Result<Value, synth_desktop_lib::error::AppError> {
-    let connection: Connection =
-        serde_json::from_str(&fs::read_to_string(connection_file()).map_err(synth_desktop_lib::error::AppError::from)?)
-            .map_err(synth_desktop_lib::error::AppError::from)?;
+fn request_inner(
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value, synth_desktop_lib::error::AppError> {
+    let connection: Connection = serde_json::from_str(
+        &fs::read_to_string(connection_file()).map_err(synth_desktop_lib::error::AppError::from)?,
+    )
+    .map_err(synth_desktop_lib::error::AppError::from)?;
     let payload = body
         .map(|v| serde_json::to_vec(&v).unwrap_or_default())
         .unwrap_or_default();
@@ -53,7 +62,8 @@ fn request_inner(method: &str, path: &str, body: Option<Value>) -> Result<Value,
         .unwrap_or_default()
         .parse::<std::net::SocketAddr>()
         .map_err(synth_desktop_lib::error::AppError::from)?;
-    let mut stream = std::net::TcpStream::connect(addr).map_err(synth_desktop_lib::error::AppError::from)?;
+    let mut stream =
+        std::net::TcpStream::connect(addr).map_err(synth_desktop_lib::error::AppError::from)?;
     let wire = format!(
         "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         connection.token,
@@ -64,7 +74,8 @@ fn request_inner(method: &str, path: &str, body: Option<Value>) -> Result<Value,
         .and_then(|_| stream.write_all(&payload))
         .map_err(synth_desktop_lib::error::AppError::from)?;
     let mut response = String::new();
-    io::Read::read_to_string(&mut stream, &mut response).map_err(synth_desktop_lib::error::AppError::from)?;
+    io::Read::read_to_string(&mut stream, &mut response)
+        .map_err(synth_desktop_lib::error::AppError::from)?;
     serde_json::from_str(
         response
             .split("\r\n\r\n")
@@ -225,59 +236,14 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
 }
 
 fn main() {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let request: Value = match serde_json::from_str(&line) {
-            Ok(value) => value,
-            Err(error) => {
-                let _ = writeln!(
-                    stdout,
-                    "{}",
-                    json!({"jsonrpc":"2.0","error":{"code":-32700,"message":error.to_string()}})
-                );
-                continue;
-            }
-        };
-        let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request.get("method").and_then(Value::as_str).unwrap_or("");
-        let response = match method {
-            "initialize" => json!({
-                "jsonrpc":"2.0","id":id,
-                "result":{
-                    "protocolVersion":"2024-11-05",
-                    "capabilities":{"tools":{}},
-                    "serverInfo":{"name":"synth-optimizers-mcp","version":"0.1.0"}
-                }
-            }),
-            "tools/list" => json!({"jsonrpc":"2.0","id":id,"result":tools()}),
-            "tools/call" => {
-                let params = request.get("params").cloned().unwrap_or(json!({}));
-                let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-                let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                match call_tool(name, &args) {
-                    Ok(result) => json!({
-                        "jsonrpc":"2.0","id":id,
-                        "result":{"content":[{"type":"text","text":serde_json::to_string_pretty(&result).unwrap_or_default()}],"structuredContent":result}
-                    }),
-                    Err(error) => json!({
-                        "jsonrpc":"2.0","id":id,
-                        "error":{"code":-32000,"message":error}
-                    }),
-                }
-            }
-            "notifications/initialized" | "notifications/cancelled" => continue,
-            _ => {
-                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":format!("method not found: {method}")}})
-            }
-        };
-        let _ = writeln!(stdout, "{response}");
-        let _ = stdout.flush();
-    }
+    run_stdio_server(
+        McpServerInfo {
+            name: "synth-optimizers-mcp",
+            version: "0.1.0",
+        },
+        tools,
+        call_tool,
+    );
 }
 
 #[cfg(test)]

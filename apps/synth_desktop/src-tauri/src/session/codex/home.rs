@@ -13,7 +13,8 @@ use crate::credential_broker::{self, CredentialBroker};
 use crate::synth_config::MultiAgentVersion;
 
 use super::proto::{
-    CodexSessionInfo, CodexSessionRecord, CodexSessionStartRequest, Session, MIN_AUTO_COMPACT_TOKEN_LIMIT,
+    CodexSessionInfo, CodexSessionRecord, CodexSessionStartRequest, Session,
+    MIN_AUTO_COMPACT_TOKEN_LIMIT,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -571,4 +572,3 @@ pub(crate) fn automatic_thread_title(prompt: &str) -> Option<String> {
     let first = chars.next()?;
     Some(first.to_uppercase().collect::<String>() + chars.as_str())
 }
-

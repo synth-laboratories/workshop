@@ -2,9 +2,10 @@ mod account;
 mod account_cloud;
 mod cloud;
 mod codex;
-mod credential_broker;
 pub mod contract;
 pub mod core_runtime;
+mod credential_broker;
+pub mod data;
 mod device_auth;
 mod domain;
 pub mod error;
@@ -12,7 +13,6 @@ mod eval_driver;
 mod http;
 mod instance;
 mod intern_api;
-pub mod data;
 pub mod ipc;
 mod laguna;
 mod limits;
@@ -39,13 +39,14 @@ use codex::{
     CodexTurnSendRequest, CodexTurnStartRequest,
 };
 pub use core_runtime::CoreRuntime;
-use intern_api::{
-    InternControlResult, InternSendResult, InternSessionControlRequest, InternSessionCreateRequest,
-    InternSessionSendRequest, InternSessionWire,
-};
 use data::{
     ContainerDeployment, ContainerRegisterRequest, DataCounts, ResolvedTraceProjection,
     TraceRecord, UsageEntry,
+};
+use error::AppError;
+use intern_api::{
+    InternControlResult, InternSendResult, InternSessionControlRequest, InternSessionCreateRequest,
+    InternSessionSendRequest, InternSessionWire,
 };
 use laguna::{LagunaManager, LagunaModelHit, LagunaStatus};
 use optimizers::{
@@ -68,16 +69,17 @@ use visuals::{
     TemplateMeta, VisualCreateRequest, VisualQuery, VisualRecord, VisualRevision,
     VisualUpdateRequest,
 };
-use error::AppError;
 use workspace_scope::WorkspaceGrantRequest;
 use workspace_scope::{ConversationWorkspaceScope, WorkspaceAccessMode};
 
 #[tauri::command]
+#[specta::specta]
 fn core_diagnostics(state: State<'_, Arc<CoreRuntime>>) -> Result<CoreDiagnostics, AppError> {
     state.diagnostics().map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 fn desktop_image_preview(path: String) -> Result<String, AppError> {
     let path = std::path::Path::new(&path)
         .canonicalize()
@@ -94,7 +96,8 @@ fn desktop_image_preview(path: String) -> Result<String, AppError> {
         "gif" => "image/gif",
         _ => return Err("Screenshot format is unsupported".into()),
     };
-    let metadata = std::fs::metadata(&path).map_err(|_| AppError::io("Screenshot is unavailable"))?;
+    let metadata =
+        std::fs::metadata(&path).map_err(|_| AppError::io("Screenshot is unavailable"))?;
     if !metadata.is_file() || metadata.len() > limits::IMAGE_PREVIEW_MAX_BYTES {
         return Err("Screenshot must be a file smaller than 20 MB".into());
     }
@@ -106,46 +109,51 @@ fn desktop_image_preview(path: String) -> Result<String, AppError> {
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn core_events_after(
     state: State<'_, Arc<CoreRuntime>>,
-    after_sequence: i64,
-    limit: Option<i64>,
+    after_sequence: contract::specta::OpaqueInteger<i64>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
 ) -> Result<Vec<AppEvent>, AppError> {
     state
         .journal()
-        .events_after(after_sequence, limit.unwrap_or(500).clamp(1, 2000))
-        .await
-        .map_err(AppError::from)
-}
-
-#[tauri::command]
-async fn core_session_events_after(
-    state: State<'_, Arc<CoreRuntime>>,
-    session_id: String,
-    after_sequence: i64,
-    limit: Option<i64>,
-) -> Result<Vec<AppEvent>, AppError> {
-    state
-        .journal()
-        .session_events_after(
-            session_id,
-            after_sequence,
-            limit.unwrap_or(500).clamp(1, 2000),
+        .events_after(
+            after_sequence.0,
+            limit.map(|value| value.0).unwrap_or(500).clamp(1, 2000),
         )
         .await
         .map_err(AppError::from)
 }
 
 #[tauri::command]
-async fn intern_sessions_list(
+#[specta::specta]
+async fn core_session_events_after(
     state: State<'_, Arc<CoreRuntime>>,
-) -> Result<Vec<InternSessionWire>, AppError> {
-    intern_api::list(&state)
+    session_id: String,
+    after_sequence: contract::specta::OpaqueInteger<i64>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<Vec<AppEvent>, AppError> {
+    state
+        .journal()
+        .session_events_after(
+            session_id,
+            after_sequence.0,
+            limit.map(|value| value.0).unwrap_or(500).clamp(1, 2000),
+        )
         .await
         .map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
+async fn intern_sessions_list(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<Vec<InternSessionWire>, AppError> {
+    intern_api::list(&state).await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn intern_session_create(
     state: State<'_, Arc<CoreRuntime>>,
     request: InternSessionCreateRequest,
@@ -156,6 +164,7 @@ async fn intern_session_create(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn intern_session_send(
     state: State<'_, Arc<CoreRuntime>>,
     request: InternSessionSendRequest,
@@ -166,6 +175,7 @@ async fn intern_session_send(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn intern_session_control(
     state: State<'_, Arc<CoreRuntime>>,
     request: InternSessionControlRequest,
@@ -176,35 +186,34 @@ async fn intern_session_control(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn intern_session_events_after(
     state: State<'_, Arc<CoreRuntime>>,
     session_id: String,
-    after_sequence: i64,
-    limit: Option<i64>,
+    after_sequence: contract::specta::OpaqueInteger<i64>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
 ) -> Result<Vec<AppEvent>, AppError> {
     state
         .journal()
         .session_events_after(
             session_id,
-            after_sequence,
-            limit.unwrap_or(500).clamp(1, 2_000),
+            after_sequence.0,
+            limit.map(|value| value.0).unwrap_or(500).clamp(1, 2_000),
         )
         .await
         .map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn data_containers_list(
     state: State<'_, Arc<CoreRuntime>>,
 ) -> Result<Vec<ContainerDeployment>, AppError> {
-    state
-        .data()
-        .list_containers()
-        .await
-        .map_err(AppError::from)
+    state.data().list_containers().await.map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn data_containers_get(
     state: State<'_, Arc<CoreRuntime>>,
     container_id: String,
@@ -328,6 +337,7 @@ async fn hydrate_container(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn data_containers_register(
     state: State<'_, Arc<CoreRuntime>>,
     request: ContainerRegisterRequest,
@@ -351,6 +361,7 @@ async fn data_containers_register(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn data_containers_probe(
     state: State<'_, Arc<CoreRuntime>>,
     container_id: String,
@@ -372,17 +383,15 @@ async fn data_containers_probe(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn data_traces_list(
     state: State<'_, Arc<CoreRuntime>>,
 ) -> Result<Vec<TraceRecord>, AppError> {
-    state
-        .data()
-        .list_traces()
-        .await
-        .map_err(AppError::from)
+    state.data().list_traces().await.map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn data_traces_get(
     state: State<'_, Arc<CoreRuntime>>,
     trace_id: String,
@@ -395,6 +404,7 @@ async fn data_traces_get(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn data_traces_ingest(
     state: State<'_, Arc<CoreRuntime>>,
     request: TraceBundleIngestRequest,
@@ -409,6 +419,7 @@ async fn data_traces_ingest(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn data_trace_projection_resolve(
     state: State<'_, Arc<CoreRuntime>>,
     trace_digest: String,
@@ -422,18 +433,20 @@ async fn data_trace_projection_resolve(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn data_usage_list(
     state: State<'_, Arc<CoreRuntime>>,
-    limit: Option<i64>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
 ) -> Result<Vec<UsageEntry>, AppError> {
     state
         .data()
-        .list_usage(limit.unwrap_or(100))
+        .list_usage(limit.map(|value| value.0).unwrap_or(100))
         .await
         .map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn model_performance_summary(
     state: State<'_, Arc<CoreRuntime>>,
 ) -> Result<Vec<ModelPerformanceSummary>, AppError> {
@@ -447,6 +460,7 @@ async fn model_performance_summary(
 /// over the authoritative per-request `usage_records` ledger — the renderer
 /// never reduces raw rows itself.
 #[tauri::command]
+#[specta::specta]
 async fn usage_summary(
     state: State<'_, Arc<CoreRuntime>>,
     window: String,
@@ -463,11 +477,13 @@ async fn usage_summary(
 /// The provider price cards currently in force. Settings renders these
 /// numbers; the renderer never carries its own copy of a rate.
 #[tauri::command]
+#[specta::specta]
 fn tariff_catalog() -> Vec<tariffs::TariffCard> {
     tariffs::cards_in_force(chrono::Utc::now().timestamp_millis())
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn update_status() -> update_check::UpdateStatus {
     update_check::status().await
 }
@@ -475,6 +491,7 @@ async fn update_status() -> update_check::UpdateStatus {
 /// Always the fixed public download page — the manifest never chooses the
 /// destination.
 #[tauri::command]
+#[specta::specta]
 async fn update_open_download(app: tauri::AppHandle) -> Result<(), AppError> {
     use tauri_plugin_opener::OpenerExt;
     app.opener()
@@ -483,12 +500,9 @@ async fn update_open_download(app: tauri::AppHandle) -> Result<(), AppError> {
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn data_counts(state: State<'_, Arc<CoreRuntime>>) -> Result<DataCounts, AppError> {
-    state
-        .data()
-        .counts()
-        .await
-        .map_err(AppError::from)
+    state.data().counts().await.map_err(AppError::from)
 }
 
 async fn publish_optimizer_event(
@@ -506,18 +520,33 @@ async fn publish_optimizer_event(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_algorithms_list(
     state: State<'_, Arc<CoreRuntime>>,
-) -> Result<Vec<Value>, AppError> {
-    Ok(state.optimizers().list_algorithms())
+) -> Result<Vec<contract::specta::OpaqueJson>, AppError> {
+    Ok(state
+        .optimizers()
+        .list_algorithms()
+        .into_iter()
+        .map(contract::specta::OpaqueJson)
+        .collect())
 }
 
 #[tauri::command]
-async fn optimizers_recipes_list(state: State<'_, Arc<CoreRuntime>>) -> Result<Vec<Value>, AppError> {
-    Ok(state.optimizers().list_recipes())
+#[specta::specta]
+async fn optimizers_recipes_list(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<Vec<contract::specta::OpaqueJson>, AppError> {
+    Ok(state
+        .optimizers()
+        .list_recipes()
+        .into_iter()
+        .map(contract::specta::OpaqueJson)
+        .collect())
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_recipe_start(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -533,6 +562,7 @@ async fn optimizers_recipe_start(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_list(
     state: State<'_, Arc<CoreRuntime>>,
     query: Option<OptimizerQuery>,
@@ -545,6 +575,7 @@ async fn optimizers_list(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_get(
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
@@ -557,6 +588,7 @@ async fn optimizers_get(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_create(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -572,6 +604,7 @@ async fn optimizers_create(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_refresh(
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
@@ -584,48 +617,56 @@ async fn optimizers_refresh(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_events_after(
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
-    after_seq: Option<u64>,
-    limit: Option<i64>,
+    after_seq: Option<contract::specta::OpaqueInteger<u64>>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
 ) -> Result<Vec<OptimizerEventEnvelope>, AppError> {
     state
         .optimizers()
-        .events_after(optimizer_run_id, after_seq.unwrap_or(0), limit)
+        .events_after(
+            optimizer_run_id,
+            after_seq.map(|value| value.0).unwrap_or(0),
+            limit.map(|value| value.0),
+        )
         .await
         .map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_get_state(
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
     slice_id: String,
-    at_seq: Option<u64>,
+    at_seq: Option<contract::specta::OpaqueInteger<u64>>,
 ) -> Result<OptimizerStateSlice, AppError> {
     state
         .optimizers()
-        .get_state(optimizer_run_id, slice_id, at_seq)
+        .get_state(optimizer_run_id, slice_id, at_seq.map(|value| value.0))
         .await
         .map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_get_state_batch(
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
     slices: Option<Vec<String>>,
-    at_seq: Option<u64>,
+    at_seq: Option<contract::specta::OpaqueInteger<u64>>,
 ) -> Result<Vec<OptimizerStateSlice>, AppError> {
     state
         .optimizers()
-        .get_state_batch(optimizer_run_id, slices, at_seq)
+        .get_state_batch(optimizer_run_id, slices, at_seq.map(|value| value.0))
         .await
         .map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_relationships(
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
@@ -638,6 +679,7 @@ async fn optimizers_relationships(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_cancel(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -653,6 +695,7 @@ async fn optimizers_cancel(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_pause(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -668,6 +711,7 @@ async fn optimizers_pause(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_resume(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -683,6 +727,7 @@ async fn optimizers_resume(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_open_visual(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -712,6 +757,7 @@ async fn optimizers_open_visual(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_import_local(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -727,6 +773,7 @@ async fn optimizers_import_local(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_reconcile_cloud(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -742,16 +789,23 @@ async fn optimizers_reconcile_cloud(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn optimizers_list_cloud(
     state: State<'_, Arc<CoreRuntime>>,
     algorithm: Option<String>,
     status: Option<String>,
-    limit: Option<i64>,
-) -> Result<Vec<Value>, AppError> {
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<Vec<contract::specta::OpaqueJson>, AppError> {
     state
         .optimizers()
-        .list_cloud(algorithm, status, limit)
+        .list_cloud(algorithm, status, limit.map(|value| value.0))
         .await
+        .map(|values| {
+            values
+                .into_iter()
+                .map(contract::specta::OpaqueJson)
+                .collect()
+        })
         .map_err(AppError::from)
 }
 
@@ -767,6 +821,7 @@ async fn publish_visual_event(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn visuals_templates_list(
     state: State<'_, Arc<CoreRuntime>>,
     genre: Option<String>,
@@ -778,6 +833,7 @@ fn visuals_templates_list(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn visuals_templates_get(
     state: State<'_, Arc<CoreRuntime>>,
     template_id: String,
@@ -789,6 +845,7 @@ fn visuals_templates_get(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn visuals_list(
     state: State<'_, Arc<CoreRuntime>>,
     query: Option<VisualQuery>,
@@ -801,18 +858,16 @@ async fn visuals_list(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn visuals_get(
     state: State<'_, Arc<CoreRuntime>>,
     visual_id: String,
 ) -> Result<VisualRecord, AppError> {
-    state
-        .visuals()
-        .get(visual_id)
-        .await
-        .map_err(AppError::from)
+    state.visuals().get(visual_id).await.map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn visuals_revisions(
     state: State<'_, Arc<CoreRuntime>>,
     visual_id: String,
@@ -825,6 +880,7 @@ async fn visuals_revisions(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn visuals_create(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -840,6 +896,7 @@ async fn visuals_create(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn visuals_update(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -856,6 +913,7 @@ async fn visuals_update(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn visuals_save(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -872,6 +930,7 @@ async fn visuals_save(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn visuals_fork(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -889,6 +948,7 @@ async fn visuals_fork(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn visuals_archive(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -904,6 +964,7 @@ async fn visuals_archive(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn visuals_show(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -920,19 +981,25 @@ async fn visuals_show(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn synth_config_get() -> Result<BackendSettings, AppError> {
     synth_config::get().map_err(AppError::from)
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
 struct ModelPerformanceMetric {
     model_id: String,
     provider: String,
+    #[specta(type = specta_typescript::Unknown)]
     sample_count: u64,
+    #[specta(type = specta_typescript::Unknown)]
     input_tokens: u64,
+    #[specta(type = specta_typescript::Unknown)]
     cached_input_tokens: u64,
+    #[specta(type = specta_typescript::Unknown)]
     output_tokens: u64,
+    #[specta(type = specta_typescript::Unknown)]
     total_tokens: u64,
     output_tps_p50: f64,
     output_tps_p95: f64,
@@ -942,7 +1009,7 @@ struct ModelPerformanceMetric {
     latency_ms_p95: f64,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
 struct ModelPerformanceSnapshot {
     window_minutes: u16,
@@ -951,6 +1018,7 @@ struct ModelPerformanceSnapshot {
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn model_performance_get(
     window_minutes: Option<u16>,
 ) -> Result<ModelPerformanceSnapshot, AppError> {
@@ -999,33 +1067,32 @@ async fn model_performance_get(
     response
         .json::<ModelPerformanceSnapshot>()
         .await
-        .map_err(|error| AppError::message(format!("Invalid Synth Cloud telemetry response: {error}")))
+        .map_err(|error| {
+            AppError::message(format!("Invalid Synth Cloud telemetry response: {error}"))
+        })
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn synth_config_update(
     core: State<'_, Arc<CoreRuntime>>,
     request: BackendSettingsUpdate,
 ) -> Result<BackendSettings, AppError> {
     let settings = synth_config::update(request).map_err(AppError::from)?;
-    core.reload_intern_config()
-        .await
-        .map_err(AppError::from)?;
+    core.reload_intern_config().await.map_err(AppError::from)?;
     Ok(settings)
 }
 
 /// Begin (or resume) browser sign-in via Workshop device pairing and open the
 /// system browser. Returns display-safe state only.
 #[tauri::command]
+#[specta::specta]
 async fn account_begin_sign_in(
     app: tauri::AppHandle,
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
 ) -> Result<device_auth::SignInBegin, AppError> {
     let origin = device_auth::workshop_origin();
-    let begin = manager
-        .begin(&origin)
-        .await
-        .map_err(AppError::from)?;
+    let begin = manager.begin(&origin).await.map_err(AppError::from)?;
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_url(begin.verification_uri.clone(), None::<String>)
@@ -1037,6 +1104,7 @@ async fn account_begin_sign_in(
 /// synth_config and the Intern runtime reloads; the key never reaches the
 /// renderer.
 #[tauri::command]
+#[specta::specta]
 async fn account_poll_sign_in(
     core: State<'_, Arc<CoreRuntime>>,
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
@@ -1048,9 +1116,7 @@ async fn account_poll_sign_in(
         .await
         .map_err(AppError::from)?;
     if matches!(result, device_auth::SignInPoll::Active) {
-        core.reload_intern_config()
-            .await
-            .map_err(AppError::from)?;
+        core.reload_intern_config().await.map_err(AppError::from)?;
         // A new key invalidates any cached snapshot, and the device is now
         // known to have paired at least once.
         cloud.clear_cache();
@@ -1060,6 +1126,7 @@ async fn account_poll_sign_in(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn account_cancel_sign_in(
     manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
 ) -> Result<(), AppError> {
@@ -1099,6 +1166,7 @@ async fn account_summary_now(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn account_get_summary(
     core: State<'_, Arc<CoreRuntime>>,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
@@ -1109,6 +1177,7 @@ async fn account_get_summary(
 /// Force a snapshot refetch — used after returning from hosted checkout and by
 /// the explicit retry in the account menu.
 #[tauri::command]
+#[specta::specta]
 async fn account_refresh(
     core: State<'_, Arc<CoreRuntime>>,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
@@ -1119,6 +1188,7 @@ async fn account_refresh(
 /// Open a backend-issued hosted billing URL in the system browser. Desktop
 /// never renders a payment form and never receives card data.
 #[tauri::command]
+#[specta::specta]
 async fn account_open_billing(
     app: tauri::AppHandle,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
@@ -1143,6 +1213,7 @@ async fn account_open_billing(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn account_sign_out(
     core: State<'_, Arc<CoreRuntime>>,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
@@ -1151,18 +1222,18 @@ async fn account_sign_out(
     // Cloud facts belong to the signed-out session; local history and the
     // device ledger stay untouched.
     cloud.clear_cache();
-    core.reload_intern_config()
-        .await
-        .map_err(AppError::from)?;
+    core.reload_intern_config().await.map_err(AppError::from)?;
     synth_config::get().map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 fn model_multi_agent_list() -> Result<Vec<ModelMultiAgentSetting>, AppError> {
     synth_config::model_multi_agent_settings().map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 fn model_multi_agent_update(
     request: ModelMultiAgentUpdate,
 ) -> Result<Vec<ModelMultiAgentSetting>, AppError> {
@@ -1170,11 +1241,13 @@ fn model_multi_agent_update(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn workspace_access_get() -> Result<WorkspaceAccessSettings, AppError> {
     synth_config::workspace_access_settings().map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 fn workspace_access_update(
     request: WorkspaceAccessUpdate,
 ) -> Result<WorkspaceAccessSettings, AppError> {
@@ -1182,6 +1255,7 @@ fn workspace_access_update(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn laguna_get_status(state: State<'_, Arc<LagunaManager>>) -> Result<LagunaStatus, AppError> {
     if state.status().await.phase == "unknown" {
         let root = runtime::workshop_root().map_err(AppError::from)?;
@@ -1194,17 +1268,22 @@ async fn laguna_get_status(state: State<'_, Arc<LagunaManager>>) -> Result<Lagun
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn laguna_reload(state: State<'_, Arc<LagunaManager>>) -> Result<LagunaStatus, AppError> {
     let root = runtime::workshop_root().map_err(AppError::from)?;
     state.reload(&root).await.map_err(AppError::from)
 }
 
 #[tauri::command]
-fn laguna_models_list(state: State<'_, Arc<LagunaManager>>) -> Result<Vec<LagunaModelHit>, AppError> {
+#[specta::specta]
+fn laguna_models_list(
+    state: State<'_, Arc<LagunaManager>>,
+) -> Result<Vec<LagunaModelHit>, AppError> {
     state.discover_models().map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 fn laguna_models_set_directory(
     state: State<'_, Arc<LagunaManager>>,
     path: String,
@@ -1215,13 +1294,13 @@ fn laguna_models_set_directory(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn laguna_models_clear_directory(state: State<'_, Arc<LagunaManager>>) -> Result<(), AppError> {
-    state
-        .clear_selected_model()
-        .map_err(AppError::from)
+    state.clear_selected_model().map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn workspace_choose_directory(app: tauri::AppHandle) -> Result<Option<String>, AppError> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog()
@@ -1234,6 +1313,7 @@ async fn workspace_choose_directory(app: tauri::AppHandle) -> Result<Option<Stri
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn workspace_scope_get(
     core: State<'_, Arc<CoreRuntime>>,
     session_id: String,
@@ -1244,6 +1324,7 @@ async fn workspace_scope_get(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn workspace_scope_choose_and_attach(
     app: tauri::AppHandle,
     core: State<'_, Arc<CoreRuntime>>,
@@ -1275,14 +1356,12 @@ async fn workspace_scope_choose_and_attach(
     .map_err(AppError::from)?;
     // Scope is durable before the old process is fenced. Closing preserves
     // the thread record; the next send resumes it with the new revision.
-    codex
-        .close(&session_id)
-        .await
-        .map_err(AppError::from)?;
+    codex.close(&session_id).await.map_err(AppError::from)?;
     Ok(Some(scope))
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn workspace_scope_recent_folders(
     core: State<'_, Arc<CoreRuntime>>,
 ) -> Result<Vec<String>, AppError> {
@@ -1292,6 +1371,7 @@ async fn workspace_scope_recent_folders(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn workspace_scope_attach_recent(
     core: State<'_, Arc<CoreRuntime>>,
     codex: State<'_, Arc<CodexManager>>,
@@ -1301,14 +1381,12 @@ async fn workspace_scope_attach_recent(
     let scope = workspace_scope::attach_recent(core.storage().database(), &session_id, &path)
         .await
         .map_err(AppError::from)?;
-    codex
-        .close(&session_id)
-        .await
-        .map_err(AppError::from)?;
+    codex.close(&session_id).await.map_err(AppError::from)?;
     Ok(scope)
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn workspace_scope_remove_attachment(
     core: State<'_, Arc<CoreRuntime>>,
     codex: State<'_, Arc<CodexManager>>,
@@ -1318,14 +1396,12 @@ async fn workspace_scope_remove_attachment(
     let scope = workspace_scope::remove_attachment(core.storage().database(), &session_id, &path)
         .await
         .map_err(AppError::from)?;
-    codex
-        .close(&session_id)
-        .await
-        .map_err(AppError::from)?;
+    codex.close(&session_id).await.map_err(AppError::from)?;
     Ok(scope)
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn workspace_scope_request_agent_grant(
     core: State<'_, Arc<CoreRuntime>>,
     session_id: String,
@@ -1345,6 +1421,7 @@ async fn workspace_scope_request_agent_grant(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn workspace_scope_grants_list(
     core: State<'_, Arc<CoreRuntime>>,
     session_id: String,
@@ -1355,6 +1432,7 @@ async fn workspace_scope_grants_list(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn workspace_scope_deny_request(
     core: State<'_, Arc<CoreRuntime>>,
     request_id: String,
@@ -1365,6 +1443,7 @@ async fn workspace_scope_deny_request(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn workspace_scope_approve_request(
     app: tauri::AppHandle,
     core: State<'_, Arc<CoreRuntime>>,
@@ -1405,8 +1484,8 @@ async fn prepare_codex_start(
         .map_err(AppError::from)?;
     let scope = match scope {
         Some(scope) => {
-            let requested = workspace_scope::canonical_directory(&request.workspace)
-                .map_err(AppError::from)?;
+            let requested =
+                workspace_scope::canonical_directory(&request.workspace).map_err(AppError::from)?;
             if requested.to_string_lossy() != scope.workspace {
                 return Err(
                     "requested workspace does not match the conversation's persisted scope".into(),
@@ -1432,10 +1511,8 @@ async fn prepare_codex_provider(
     mut request: CodexSessionStartRequest,
 ) -> Result<CodexSessionStartRequest, AppError> {
     if request.multi_agent_version.is_none() {
-        request.multi_agent_version = Some(
-            synth_config::resolve_model_multi_agent(&request.model)
-                .map_err(AppError::from)?,
-        );
+        request.multi_agent_version =
+            Some(synth_config::resolve_model_multi_agent(&request.model).map_err(AppError::from)?);
     }
     // Exactly one preparation rule per provider class — see
     // `codex::ProviderClass` for the endpoint/credential/custody table. User
@@ -1496,6 +1573,7 @@ async fn prepare_codex_provider(
 /// the turn. Splitting these into two commands let the child exit in between,
 /// which stranded the UI in `Working` with a live `Stop`.
 #[tauri::command]
+#[specta::specta]
 async fn codex_turn_send(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
@@ -1516,6 +1594,7 @@ async fn codex_turn_send(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn codex_session_start(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
@@ -1524,25 +1603,21 @@ async fn codex_session_start(
     request: CodexSessionStartRequest,
 ) -> Result<CodexSessionInfo, AppError> {
     let request = prepare_codex_start(&laguna, &core, request).await?;
-    state
-        .start(app, request)
-        .await
-        .map_err(AppError::from)
+    state.start(app, request).await.map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn codex_turn_start(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
     request: CodexTurnStartRequest,
 ) -> Result<CodexSessionInfo, AppError> {
-    state
-        .start_turn(app, request)
-        .await
-        .map_err(AppError::from)
+    state.start_turn(app, request).await.map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn codex_turn_interrupt(
     state: State<'_, Arc<CodexManager>>,
     request: CodexSessionRequest,
@@ -1554,6 +1629,7 @@ async fn codex_turn_interrupt(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn codex_thread_compact(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
@@ -1562,25 +1638,21 @@ async fn codex_thread_compact(
     request: CodexSessionStartRequest,
 ) -> Result<(), AppError> {
     let request = prepare_codex_start(&laguna, &core, request).await?;
-    state
-        .compact(app, request)
-        .await
-        .map_err(AppError::from)
+    state.compact(app, request).await.map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn codex_turn_steer(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
     request: CodexSteerRequest,
 ) -> Result<(), AppError> {
-    state
-        .steer_turn(app, request)
-        .await
-        .map_err(AppError::from)
+    state.steer_turn(app, request).await.map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn codex_approval_resolve(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
@@ -1593,6 +1665,7 @@ async fn codex_approval_resolve(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn codex_session_close(
     state: State<'_, Arc<CodexManager>>,
     request: CodexSessionRequest,
@@ -1604,6 +1677,7 @@ async fn codex_session_close(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn codex_sessions_list(
     state: State<'_, Arc<CodexManager>>,
 ) -> Result<Vec<CodexSessionRecord>, AppError> {
@@ -1611,6 +1685,7 @@ async fn codex_sessions_list(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn codex_default_workspace() -> Result<String, AppError> {
     let configured = synth_config::allowed_workspace_roots().map_err(|error| {
         AppError::message(format!("Cannot read workspace access settings: {error}"))
@@ -1620,12 +1695,11 @@ fn codex_default_workspace() -> Result<String, AppError> {
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("SYNTH_DESKTOP_WORKSPACE").map(std::path::PathBuf::from))
         .unwrap_or_else(|| crate::instance::state_root().join("workspaces/default"));
-    std::fs::create_dir_all(&path).map_err(|error| {
-        AppError::io(format!("Cannot create the default workspace: {error}"))
-    })?;
-    let path = path.canonicalize().map_err(|error| {
-        AppError::io(format!("Default workspace is unavailable: {error}"))
-    })?;
+    std::fs::create_dir_all(&path)
+        .map_err(|error| AppError::io(format!("Cannot create the default workspace: {error}")))?;
+    let path = path
+        .canonicalize()
+        .map_err(|error| AppError::io(format!("Default workspace is unavailable: {error}")))?;
     if !path.is_dir() {
         return Err("Default workspace must be a directory".into());
     }
@@ -1633,17 +1707,17 @@ fn codex_default_workspace() -> Result<String, AppError> {
 }
 
 #[tauri::command]
+#[specta::specta]
 fn terminal_create(
     app: tauri::AppHandle,
     state: State<'_, Arc<TerminalManager>>,
     request: TerminalCreateRequest,
 ) -> Result<TerminalInfo, AppError> {
-    state
-        .create(app, request)
-        .map_err(AppError::from)
+    state.create(app, request).map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 fn terminal_list(
     state: State<'_, Arc<TerminalManager>>,
     workspace_id: Option<String>,
@@ -1652,28 +1726,32 @@ fn terminal_list(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn terminal_snapshot(
     state: State<'_, Arc<TerminalManager>>,
     terminal_id: String,
-    after_sequence: Option<u64>,
+    after_sequence: Option<contract::specta::OpaqueInteger<u64>>,
 ) -> Result<Vec<TerminalEvent>, AppError> {
     state
-        .snapshot(&terminal_id, after_sequence.unwrap_or(0))
+        .snapshot(
+            &terminal_id,
+            after_sequence.map(|value| value.0).unwrap_or(0),
+        )
         .map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 fn terminal_write(
     state: State<'_, Arc<TerminalManager>>,
     terminal_id: String,
     data: String,
 ) -> Result<(), AppError> {
-    state
-        .write(&terminal_id, &data)
-        .map_err(AppError::from)
+    state.write(&terminal_id, &data).map_err(AppError::from)
 }
 
 #[tauri::command]
+#[specta::specta]
 fn terminal_resize(
     state: State<'_, Arc<TerminalManager>>,
     terminal_id: String,
@@ -1686,6 +1764,7 @@ fn terminal_resize(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn terminal_close(
     state: State<'_, Arc<TerminalManager>>,
     terminal_id: String,
@@ -1694,9 +1773,7 @@ fn terminal_close(
 }
 
 pub fn run() {
-    // Specta Builder is for TypeScript export only during the dual-path phase.
-    // Do NOT switch `.invoke_handler` to `specta_builder.invoke_handler()` until
-    // every command is listed in `collect_commands!` — that would drop the rest.
+    let specta = contract::specta::builder();
     #[cfg(debug_assertions)]
     {
         if let Err(error) = contract::specta::export_typescript_bindings() {
@@ -1753,6 +1830,8 @@ pub fn run() {
             let whisper = Arc::new(whisper::WhisperManager::new());
             let codex = Arc::new(CodexManager::new(Some(core.clone()), broker.clone()));
             let supervisor = Arc::new(services::ServiceSupervisor::new());
+            supervisor.register(laguna.clone());
+            supervisor.register(whisper.clone());
             app.manage(core.clone());
             app.manage(migration);
             app.manage(codex.clone());
@@ -1773,7 +1852,8 @@ pub fn run() {
             let status_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 while let Ok(status) = status_updates.recv().await {
-                    let _ = status_handle.emit(crate::contract::events::EventChannel::LAGUNA_STATUS, status);
+                    let _ = status_handle
+                        .emit(crate::contract::events::EventChannel::LAGUNA_STATUS, status);
                 }
             });
 
@@ -1839,129 +1919,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            // Specta seed command (also collected in contract::specta::builder).
-            contract::specta::desktop_instance_diagnostics,
-            desktop_image_preview,
-            core_diagnostics,
-            core_events_after,
-            core_session_events_after,
-            intern_sessions_list,
-            intern_session_create,
-            intern_session_send,
-            intern_session_control,
-            intern_session_events_after,
-            data_containers_list,
-            data_containers_get,
-            data_containers_register,
-            data_containers_probe,
-            data_traces_list,
-            data_traces_get,
-            data_traces_ingest,
-            data_trace_projection_resolve,
-            data_usage_list,
-            model_performance_summary,
-            usage_summary,
-            tariff_catalog,
-            update_status,
-            update_open_download,
-            data_counts,
-            optimizers_algorithms_list,
-            optimizers_recipes_list,
-            optimizers_recipe_start,
-            optimizers_list,
-            optimizers_get,
-            optimizers_create,
-            optimizers_refresh,
-            optimizers_events_after,
-            optimizers_get_state,
-            optimizers_get_state_batch,
-            optimizers_relationships,
-            optimizers_cancel,
-            optimizers_pause,
-            optimizers_resume,
-            optimizers_open_visual,
-            optimizers_import_local,
-            optimizers_reconcile_cloud,
-            optimizers_list_cloud,
-            visuals_templates_list,
-            visuals_templates_get,
-            visuals_list,
-            visuals_get,
-            visuals_revisions,
-            visuals_create,
-            visuals_update,
-            visuals_save,
-            visuals_fork,
-            visuals_archive,
-            visuals_show,
-            synth_config_get,
-            synth_config_update,
-            model_performance_get,
-            account_begin_sign_in,
-            account_get_summary,
-            account_refresh,
-            account_open_billing,
-            account_poll_sign_in,
-            account_cancel_sign_in,
-            account_sign_out,
-            model_multi_agent_list,
-            model_multi_agent_update,
-            workspace_access_get,
-            workspace_access_update,
-            workspace_scope_get,
-            workspace_scope_choose_and_attach,
-            workspace_scope_recent_folders,
-            workspace_scope_attach_recent,
-            workspace_scope_remove_attachment,
-            workspace_scope_request_agent_grant,
-            workspace_scope_grants_list,
-            workspace_scope_approve_request,
-            workspace_scope_deny_request,
-            crate::storage::legacy_migration::commands::migration_scan,
-            crate::storage::legacy_migration::commands::migration_prepare,
-            crate::storage::legacy_migration::commands::migration_apply,
-            crate::storage::legacy_migration::commands::migration_cancel,
-            laguna_get_status,
-            laguna_reload,
-            laguna_models_list,
-            laguna_models_set_directory,
-            laguna_models_clear_directory,
-            laguna::laguna_inference_snapshot,
-            laguna::laguna_inference_stream_start,
-            laguna::laguna_inference_stream_stop,
-            laguna::laguna_model_unload,
-            laguna::laguna_model_download,
-            laguna::laguna_model_delete,
-            laguna::laguna_settings_snapshot,
-            laguna::laguna_settings_update,
-            whisper::whisper_models_list,
-            whisper::whisper_model_download,
-            whisper::whisper_models_set_selected,
-            whisper::whisper_models_clear,
-            whisper::whisper_runtime_status,
-            whisper::whisper_runtime_warm,
-            whisper::whisper_transcribe,
-            whisper::whisper_transcribe_base64,
-            skills::skills_list,
-            workspace_choose_directory,
-            codex_session_start,
-            codex_turn_start,
-            codex_turn_send,
-            codex_turn_interrupt,
-            codex_thread_compact,
-            codex_turn_steer,
-            codex_approval_resolve,
-            codex_session_close,
-            codex_sessions_list,
-            codex_default_workspace,
-            terminal_create,
-            terminal_list,
-            terminal_snapshot,
-            terminal_write,
-            terminal_resize,
-            terminal_close
-        ])
+        .invoke_handler(specta.invoke_handler())
         .build(tauri::generate_context!())
         .expect("error while building Synth Desktop")
         .run(|app, event| {

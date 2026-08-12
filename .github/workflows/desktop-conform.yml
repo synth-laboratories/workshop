@@ -1,0 +1,25 @@
+# Deploy-independent Wave 0 lane: SynthStyle CONFORM CHECK counts for
+# apps/synth_desktop. Full `desktop.sh verify` (cargo test + Playwright) is
+# intentionally not run here — keep this job cheap on every PR.
+name: Desktop conform
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - josh/v02-architecture-refactor
+
+jobs:
+  conform:
+    name: Conform counts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Print SynthStyle CONFORM CHECK counts
+        run: ./scripts/desktop.sh conform

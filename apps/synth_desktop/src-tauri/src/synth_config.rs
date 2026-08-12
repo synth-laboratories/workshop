@@ -50,7 +50,7 @@ fn lookup_default(table: &[(&str, &str)], profile: &str) -> Option<String> {
         .map(|(_, url)| (*url).to_owned())
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "lowercase")]
 pub enum MultiAgentVersion {
     None,
@@ -58,7 +58,7 @@ pub enum MultiAgentVersion {
     V2,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelMultiAgentSetting {
     pub model_id: String,
@@ -68,20 +68,20 @@ pub struct ModelMultiAgentSetting {
     pub overridden: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelMultiAgentUpdate {
     pub model_id: String,
     pub version: Option<MultiAgentVersion>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceAccessSettings {
     pub allowed_roots: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceAccessUpdate {
     pub allowed_roots: Vec<String>,
@@ -96,7 +96,7 @@ const MODEL_MULTI_AGENT_PRESETS: &[(&str, &str, MultiAgentVersion)] = &[
     ("muse-spark-1.2", "Muse Spark 1.2", MultiAgentVersion::None),
 ];
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BackendSettings {
     pub config_path: String,
@@ -113,7 +113,7 @@ pub struct BackendSettings {
     pub openrouter_api_key_source: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BackendSettingsUpdate {
     pub profile: String,

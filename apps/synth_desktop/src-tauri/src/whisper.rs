@@ -91,7 +91,10 @@ impl WhisperManager {
         if payload.loaded_model.is_none() {
             payload.loaded_model = model.map(str::to_owned);
         }
-        let _ = app.emit(crate::contract::events::EventChannel::WHISPER_RUNTIME, payload);
+        let _ = app.emit(
+            crate::contract::events::EventChannel::WHISPER_RUNTIME,
+            payload,
+        );
     }
 
     fn schedule_idle_unload(self: &Arc<Self>, generation: u64) {
@@ -108,7 +111,12 @@ impl WhisperManager {
         });
     }
 
-    fn warm_runtime(self: &Arc<Self>, python: &Path, model_dir: &Path, model_id: &str) -> Result<()> {
+    fn warm_runtime(
+        self: &Arc<Self>,
+        python: &Path,
+        model_dir: &Path,
+        model_id: &str,
+    ) -> Result<()> {
         let mut runtime = self
             .runtime
             .lock()
@@ -217,17 +225,44 @@ impl WhisperManager {
         let _ = fs::remove_file(&temp_path);
         result
     }
+
+    fn stop_runtime(&self) -> Result<()> {
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Whisper runtime lock was poisoned"))?;
+        runtime.generation = runtime.generation.wrapping_add(1);
+        runtime.worker = None;
+        runtime.loaded_model = None;
+        runtime.last_used_at = None;
+        Ok(())
+    }
 }
 
-#[derive(Clone, Debug, Serialize)]
+impl crate::services::ManagedService for WhisperManager {
+    fn name(&self) -> &'static str {
+        "whisper"
+    }
+
+    fn stop(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async move { self.stop_runtime() })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct WhisperRuntimeStatus {
     pub phase: String,
     pub loaded_model: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub idle_seconds: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub idle_unload_after_seconds: u64,
+    #[specta(type = specta_typescript::Unknown)]
     pub last_used_at: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub free_at: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub updated_at: u64,
 }
 
@@ -299,7 +334,7 @@ fn catalog_entry(id: &str) -> Result<&'static WhisperCatalogEntry> {
     })
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct WhisperModelHit {
     pub id: String,
@@ -307,14 +342,16 @@ pub struct WhisperModelHit {
     pub description: String,
     pub recommended: bool,
     pub multilingual: bool,
+    #[specta(type = specta_typescript::Unknown)]
     pub download_bytes: u64,
+    #[specta(type = specta_typescript::Unknown)]
     pub installed_bytes: Option<u64>,
     pub path: Option<String>,
     pub selected: bool,
     pub models_root: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct WhisperTranscription {
     pub text: String,
@@ -765,11 +802,13 @@ fn extension_for_mime(mime_type: &str) -> &'static str {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn whisper_models_list() -> Vec<WhisperModelHit> {
     list_models()
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn whisper_model_download(
     app: AppHandle,
     id: String,
@@ -805,21 +844,27 @@ pub async fn whisper_model_download(
         }
         Err(error) => serde_json::json!({"phase":"error","id":id,"detail":error}),
     };
-    let _ = app.emit(crate::contract::events::EventChannel::WHISPER_DOWNLOAD, payload);
+    let _ = app.emit(
+        crate::contract::events::EventChannel::WHISPER_DOWNLOAD,
+        payload,
+    );
     result
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn whisper_models_set_selected(id: String) -> std::result::Result<WhisperModelHit, String> {
     set_selected(&id).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn whisper_models_clear(id: String) -> std::result::Result<(), String> {
     clear_model(&id).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn whisper_runtime_status(
     whisper: State<'_, Arc<WhisperManager>>,
 ) -> std::result::Result<WhisperRuntimeStatus, String> {
@@ -827,6 +872,7 @@ pub fn whisper_runtime_status(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn whisper_runtime_warm(
     app: AppHandle,
     whisper: State<'_, Arc<WhisperManager>>,
@@ -855,6 +901,7 @@ pub async fn whisper_runtime_warm(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn whisper_transcribe(
     app: AppHandle,
     whisper: State<'_, Arc<WhisperManager>>,
@@ -876,6 +923,7 @@ pub async fn whisper_transcribe(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn whisper_transcribe_base64(
     app: AppHandle,
     whisper: State<'_, Arc<WhisperManager>>,

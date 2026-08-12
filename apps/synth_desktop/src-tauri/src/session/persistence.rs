@@ -151,9 +151,7 @@ impl SessionPersistence {
             return Ok(None);
         };
         Ok(Some(
-            core.sessions()
-                .set_title(session_id, title, origin)
-                .await?,
+            core.sessions().set_title(session_id, title, origin).await?,
         ))
     }
 

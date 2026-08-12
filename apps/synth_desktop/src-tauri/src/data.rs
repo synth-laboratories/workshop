@@ -14,17 +14,18 @@ use sha2::{Digest, Sha256};
 use std::{io::Read, sync::Arc};
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ContainerRegisterRequest {
     pub name: Option<String>,
     pub base_url: String,
     pub location: Option<String>,
     pub task_family: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub metadata: Option<Value>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ContainerDeployment {
     pub id: String,
@@ -35,13 +36,15 @@ pub struct ContainerDeployment {
     pub pool_id: Option<String>,
     pub task_family: Option<String>,
     pub last_rollout_id: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub health: Value,
+    #[specta(type = specta_typescript::Unknown)]
     pub metadata: Value,
     pub created_at: String,
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceRecord {
     pub id: String,
@@ -52,13 +55,15 @@ pub struct TraceRecord {
     pub session_id: Option<String>,
     pub run_id: Option<String>,
     pub reward: Option<f64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub metrics: Value,
     pub path: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub metadata: Value,
     pub created_at: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedTraceProjection {
     pub trace_digest: String,
@@ -66,10 +71,11 @@ pub struct ResolvedTraceProjection {
     pub projection_schema: String,
     pub payload_digest: String,
     pub relative_path: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub payload: Value,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 pub struct TraceBundleInspection {
     pub schema_version: String,
     pub input_kind: String,
@@ -84,6 +90,7 @@ pub struct TraceBundleInspection {
     #[serde(default)]
     pub trusted: bool,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub validation: Value,
     #[serde(default)]
     pub traces: Vec<InspectedTrace>,
@@ -93,7 +100,7 @@ pub struct TraceBundleInspection {
     pub projections: Vec<InspectedProjection>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 pub struct InspectedTrace {
     #[serde(alias = "id")]
     pub trace_id: String,
@@ -124,6 +131,7 @@ pub struct InspectedTrace {
     #[serde(default)]
     pub task_id: Option<String>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub seed: Option<i64>,
     #[serde(default)]
     pub terminal_reason: Option<String>,
@@ -136,26 +144,33 @@ pub struct InspectedTrace {
     #[serde(default)]
     pub cost_usd: Option<f64>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub prompt_tokens: Option<i64>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub completion_tokens: Option<i64>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub span_count: Option<i64>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub event_count: Option<i64>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub tool_call_count: Option<i64>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub error_count: Option<i64>,
     #[serde(default)]
     pub started_at: Option<String>,
     #[serde(default)]
     pub ended_at: Option<String>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub duration_ms: Option<i64>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 pub struct InspectedAsset {
     #[serde(alias = "path")]
     pub relative_path: String,
@@ -167,6 +182,7 @@ pub struct InspectedAsset {
     pub semantic_digest: Option<String>,
     pub media_type: String,
     #[serde(alias = "size")]
+    #[specta(type = specta_typescript::Unknown)]
     pub byte_size: Option<i64>,
     #[serde(default)]
     pub available: bool,
@@ -174,7 +190,7 @@ pub struct InspectedAsset {
     pub verified: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 pub struct InspectedProjection {
     pub path: String,
     #[serde(alias = "payload_digest", alias = "projection_digest")]
@@ -189,7 +205,7 @@ pub struct InspectedProjection {
     pub verified: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageEntry {
     pub id: String,
@@ -197,18 +213,24 @@ pub struct UsageEntry {
     pub model: String,
     pub session_id: Option<String>,
     pub run_id: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub prompt_tokens: i64,
+    #[specta(type = specta_typescript::Unknown)]
     pub completion_tokens: i64,
+    #[specta(type = specta_typescript::Unknown)]
     pub total_tokens: i64,
     pub cost_usd: Option<f64>,
     pub created_at: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DataCounts {
+    #[specta(type = specta_typescript::Unknown)]
     pub containers: i64,
+    #[specta(type = specta_typescript::Unknown)]
     pub traces: i64,
+    #[specta(type = specta_typescript::Unknown)]
     pub usage: i64,
 }
 
@@ -809,11 +831,8 @@ impl DataStore {
                     containers: conn
                         .query_row("SELECT COUNT(*) FROM containers", [], |row| row.get(0))?,
                     traces: conn.query_row("SELECT COUNT(*) FROM traces", [], |row| row.get(0))?,
-                    usage: conn.query_row(
-                        "SELECT COUNT(*) FROM usage_records",
-                        [],
-                        |row| row.get(0),
-                    )?,
+                    usage: conn
+                        .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))?,
                 })
             })
             .await

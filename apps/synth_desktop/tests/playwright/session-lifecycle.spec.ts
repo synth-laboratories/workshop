@@ -129,7 +129,7 @@ test("a rejected turn start clears Working, keeps the typed text and retries", a
 	await page.addInitScript(() => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
 		const testWindow = window as typeof window & {
-			__codexSendTurnCalls?: { prompt: string }[];
+			__codexSendTurnCalls?: { prompt: string; clientMessageId?: string }[];
 			__codexAllowSend?: boolean;
 			synthLaguna?: unknown;
 			synthCodex?: unknown;
@@ -152,8 +152,16 @@ test("a rejected turn start clears Working, keeps the typed text and retries", a
 			}],
 			start: async () => ({ sessionId: "922c25f7-0000-4000-8000-000000000001", threadId: "laguna-thread" }),
 			startTurn: async () => { throw new Error("startTurn must not be used once sendTurn exists"); },
-			sendTurn: async (_request: unknown, prompt: string) => {
-				testWindow.__codexSendTurnCalls!.push({ prompt });
+			sendTurn: async (
+				_request: unknown,
+				prompt: string,
+				_effort?: string,
+				options?: { clientMessageId?: string }
+			) => {
+				testWindow.__codexSendTurnCalls!.push({
+					prompt,
+					clientMessageId: options?.clientMessageId
+				});
 				if (!testWindow.__codexAllowSend) {
 					// Shape of the typed `codex_turn_send` rejection.
 					throw {
@@ -217,12 +225,63 @@ test("a rejected turn start clears Working, keeps the typed text and retries", a
 	await expect(page.getByTestId("send-retry")).toHaveCount(0);
 	await expect(page.getByTestId("model-working")).toBeVisible();
 	// The same prompt was resent, and only once per attempt.
-	const calls = await page.evaluate(() => (window as typeof window & { __codexSendTurnCalls?: { prompt: string }[] }).__codexSendTurnCalls ?? []);
+	const calls = await page.evaluate(() => (window as typeof window & { __codexSendTurnCalls?: { prompt: string; clientMessageId?: string }[] }).__codexSendTurnCalls ?? []);
 	expect(calls.map((call) => call.prompt)).toEqual([
 		"summarize the lifecycle handoff",
 		"summarize the lifecycle handoff"
 	]);
+	// Optimistic id must be forwarded so Rust can journal the same bubble.
+	expect(calls[0]?.clientMessageId).toMatch(/^user-/);
+	expect(calls[1]?.clientMessageId).toBe(calls[0]?.clientMessageId);
 	// The retry reuses the original message id, so the text is not duplicated.
 	const transcript = await page.getByTestId("chat-transcript").innerText();
 	expect(transcript.split("summarize the lifecycle handoff").length - 1).toBe(1);
+});
+
+test("a host-backed user event collapses onto the optimistic submission", async ({ page }) => {
+	await page.addInitScript(() => {
+		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
+		let listener: ((event: Event) => void) | undefined;
+		const sessionId = "single-user-message";
+		(window as typeof window & { synthLaguna?: unknown }).synthLaguna = {
+			getStatus: async () => ({ phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm", loadedModel: "poolside/Laguna-XS-2.1-NVFP4-mlx", detail: "Laguna XS ready", memoryBytes: null, updatedAt: Date.now() }),
+			onStatus: () => () => undefined,
+			listModels: async () => []
+		};
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "single-message-thread", workspace: "/workspaces/default",
+				model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
+				providerTitle: "Laguna XS Responses", baseUrl: "http://127.0.0.1:7333/v1",
+				status: "ready", approvalPolicy: "untrusted", sandbox: "workspace-write"
+			}],
+			start: async () => ({ sessionId, threadId: "single-message-thread" }),
+			startTurn: async () => { throw new Error("sendTurn owns this submission"); },
+			sendTurn: async (
+				_request: unknown,
+				prompt: string,
+				_effort: string | undefined,
+				options: { clientMessageId?: string } | undefined
+			) => {
+				listener?.({
+					sessionId,
+					method: "message.created",
+					params: { messageId: options?.clientMessageId, role: "user", content: prompt }
+				});
+				return { sessionId, threadId: "single-message-thread", turnId: "turn-single-message" };
+			},
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: (next: (event: Event) => void) => { listener = next; return () => { listener = undefined; }; }
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-single-user-message").click();
+	await page.getByTestId("composer-input").fill("render this submission once");
+	await page.getByTestId("composer-send").click();
+
+	const transcript = page.getByTestId("chat-transcript");
+	await expect(transcript.getByText("render this submission once", { exact: true })).toHaveCount(1);
+	await expect(transcript.locator('[data-testid^="user-message-user-"]')).toHaveCount(1);
 });
