@@ -6,7 +6,12 @@
  */
 
 export const EVENT_CHANNELS = {
+	/** Single origin-tagged session/runtime stream (Provider | Desktop). */
 	RUNTIME: "runtime:event",
+	/**
+	 * @deprecated Producers no longer emit here. Compat listen only — remove
+	 * once no leftover emitters remain.
+	 */
 	CODEX: "codex:event",
 	VISUAL_SHOW: "visual:show",
 	TERMINAL: "terminal:event",

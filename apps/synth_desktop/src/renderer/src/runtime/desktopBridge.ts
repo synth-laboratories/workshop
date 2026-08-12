@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { COMMANDS, EVENT_CHANNELS, invokeCommand } from "../bridge";
+import { COMMANDS, EVENT_CHANNELS, invokeCommand, type EventOrigin } from "../bridge";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
@@ -12,6 +12,48 @@ import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestRes
 // so treating it as the only signal can accidentally install the browser/
 // legacy-runtime bridge inside the desktop app.
 const isTauri = window.location.protocol === "tauri:" || "__TAURI_INTERNALS__" in window;
+
+/** Wire envelope for `runtime:event` after the dual-channel collapse. */
+type OriginTaggedAppEvent = { origin: EventOrigin; payload: AppEvent };
+
+function unwrapRuntimeEvent(payload: AppEvent | OriginTaggedAppEvent): AppEvent {
+	if (
+		payload &&
+		typeof payload === "object" &&
+		"origin" in payload &&
+		"payload" in payload &&
+		payload.payload &&
+		typeof payload.payload === "object" &&
+		"schemaVersion" in payload.payload
+	) {
+		return payload.payload;
+	}
+	return payload as AppEvent;
+}
+
+function appEventToCodexEvent(event: AppEvent): CodexEvent | null {
+	if (!event.sessionId || event.source !== "codex") return null;
+	const params =
+		event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+			? (event.payload as Record<string, unknown>)
+			: {};
+	return { sessionId: event.sessionId, method: event.kind, params };
+}
+
+function listenRuntimeAppEvents(listener: (event: AppEvent) => void): () => void {
+	let disposed = false;
+	let unlisten: (() => void) | undefined;
+	void listen<AppEvent | OriginTaggedAppEvent>(EVENT_CHANNELS.RUNTIME, ({ payload }) => {
+		listener(unwrapRuntimeEvent(payload));
+	}).then((next) => {
+		if (disposed) next();
+		else unlisten = next;
+	});
+	return () => {
+		disposed = true;
+		unlisten?.();
+	};
+}
 
 function browserRuntimeBridge(): RuntimeBridge {
 	return {
@@ -254,13 +296,7 @@ export function installDesktopBridge(): void {
 			sessionEventsAfter: (sessionId, afterSequence = 0, limit) =>
 				invokeCommand<AppEvent[]>(COMMANDS.CORE_SESSION_EVENTS_AFTER, { sessionId, afterSequence, limit }),
 			onEvent(listener) {
-				let disposed = false;
-				let unlisten: (() => void) | undefined;
-				void listen<AppEvent>(EVENT_CHANNELS.RUNTIME, ({ payload }) => listener(payload)).then((next) => {
-					if (disposed) next();
-					else unlisten = next;
-				});
-				return () => { disposed = true; unlisten?.(); };
+				return listenRuntimeAppEvents(listener);
 			}
 		}
 		: browserCoreBridge();
@@ -273,12 +309,9 @@ export function installDesktopBridge(): void {
 			eventsAfter: (sessionId, afterSequence = 0, limit) =>
 				invokeCommand<AppEvent[]>(COMMANDS.INTERN_SESSION_EVENTS_AFTER, { sessionId, afterSequence, limit }),
 			onEvent(listener) {
-				let disposed = false;
-				let unlisten: (() => void) | undefined;
-				void listen<AppEvent>(EVENT_CHANNELS.RUNTIME, ({ payload }) => {
+				return listenRuntimeAppEvents((payload) => {
 					if (payload.source === "intern") listener(payload);
-				}).then((next) => disposed ? next() : (unlisten = next));
-				return () => { disposed = true; unlisten?.(); };
+				});
 			}
 		}
 		: browserInternBridge();
@@ -485,12 +518,23 @@ window.synthWorkspaceScope ??= isTauri
 			close: (sessionId) => invokeCommand<void>(COMMANDS.CODEX_SESSION_CLOSE, { request: { sessionId } }),
 			onEvent(listener) {
 				let disposed = false;
-				let unlisten: (() => void) | undefined;
+				const unsubs: Array<() => void> = [];
+				// Primary: single origin-tagged runtime:event stream.
+				unsubs.push(
+					listenRuntimeAppEvents((appEvent) => {
+						const codex = appEventToCodexEvent(appEvent);
+						if (codex) listener(codex);
+					})
+				);
+				// Compat: legacy codex:event (flagged for removal — producers no longer emit).
 				void listen<CodexEvent>(EVENT_CHANNELS.CODEX, ({ payload }) => listener(payload)).then((next) => {
 					if (disposed) next();
-					else unlisten = next;
+					else unsubs.push(next);
 				});
-				return () => { disposed = true; unlisten?.(); };
+				return () => {
+					disposed = true;
+					for (const unsub of unsubs) unsub();
+				};
 			}
 		};
 		window.synthVisuals ??= {
@@ -508,15 +552,9 @@ window.synthWorkspaceScope ??= isTauri
 			show: (visualId, sessionId) =>
 				invokeCommand<VisualRecord>(COMMANDS.VISUALS_SHOW, { visualId, sessionId: sessionId ?? null }),
 			onEvent(listener) {
-				let disposed = false;
-				let unlisten: (() => void) | undefined;
-				void listen<AppEvent>(EVENT_CHANNELS.RUNTIME, ({ payload }) => {
+				return listenRuntimeAppEvents((payload) => {
 					if (payload.kind.startsWith("visual.")) listener(payload);
-				}).then((next) => {
-					if (disposed) next();
-					else unlisten = next;
 				});
-				return () => { disposed = true; unlisten?.(); };
 			},
 			onShow(listener) {
 				let disposed = false;
@@ -555,15 +593,9 @@ window.synthWorkspaceScope ??= isTauri
 					limit: query?.limit ?? null
 				}),
 			onEvent(listener) {
-				let disposed = false;
-				let unlisten: (() => void) | undefined;
-				void listen<AppEvent>(EVENT_CHANNELS.RUNTIME, ({ payload }) => {
+				return listenRuntimeAppEvents((payload) => {
 					if (payload.kind.startsWith("optimizer.")) listener(payload);
-				}).then((next) => {
-					if (disposed) next();
-					else unlisten = next;
 				});
-				return () => { disposed = true; unlisten?.(); };
 			}
 		};
 	}

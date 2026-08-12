@@ -15,10 +15,8 @@ use tokio::{
     process::Child,
     sync::{oneshot, Mutex, RwLock},
 };
-use crate::contract::events::EventChannel;
 use crate::synth_config::MultiAgentVersion;
 
-pub(crate) const EVENT_NAME: &str = EventChannel::CODEX;
 pub(crate) const MIN_AUTO_COMPACT_TOKEN_LIMIT: u64 = 16_000;
 pub(crate) const COMPACT_PROMPT: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION for a coding agent.\nWrite a handoff for another LLM that will continue the same workspace task.\nInclude:\n- Goal and acceptance criteria\n- Files read/changed (paths + one-line why)\n- Commands/tests run and outcomes\n- Decisions and constraints\n- Open bugs / next concrete steps\n- Any secrets-safe identifiers (branch names, ticket ids) needed to continue\nOmit raw file dumps, full command logs, and superseded plans.\nBe concise and structured (bullets).";
 
@@ -206,12 +204,10 @@ pub struct CodexSessionRecord {
     pub sandbox: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CodexEvent {
-    pub(crate) session_id: String,
-    pub(crate) method: String,
-    pub(crate) params: Value,
+#[derive(Clone, Debug)]
+pub(crate) struct PendingApproval {
+    pub(crate) rpc_id: Value,
+    pub(crate) available_decisions: Vec<String>,
 }
 
 pub(crate) type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
@@ -222,13 +218,6 @@ pub(crate) type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, S
 /// that terminal event can consume the user's destination prompt as the
 /// compaction turn and leave no answer.
 pub(crate) type CompactWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<Result<(), String>>>>>;
-
-#[derive(Clone, Debug)]
-pub(crate) struct PendingApproval {
-    pub(crate) rpc_id: Value,
-    pub(crate) available_decisions: Vec<String>,
-}
-
 pub(crate) type PendingApprovals = Arc<Mutex<HashMap<String, PendingApproval>>>;
 
 

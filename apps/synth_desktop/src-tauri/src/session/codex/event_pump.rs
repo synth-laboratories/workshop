@@ -10,7 +10,7 @@ use std::{
         Arc,
     },
 };
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Command,
@@ -19,13 +19,13 @@ use tokio::{
 
 use crate::domain::{RunStatus, SessionStatus, SessionTitleOrigin};
 use crate::session::SessionPersistence;
-use crate::storage::{EventAppend, EventSource};
+use crate::storage::EventSource;
 
 use super::home::persist_records;
 use super::proto::{
-    default_approval_policy, select_approval_decision, AppServer, CodexEvent, CodexSessionRecord,
+    default_approval_policy, select_approval_decision, AppServer, CodexSessionRecord,
     CodexSessionStartRequest, CompactWaiters, Pending, PendingApproval, PendingApprovals, Session,
-    EVENT_NAME, STDOUT_CLOSED,
+    STDOUT_CLOSED,
 };
 use super::telemetry::{
     finalize_performance_tracker, is_context_compaction_notification, track_performance_event,
@@ -140,19 +140,20 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
         pending,
         approvals,
         approval_policy,
-        pump,
+        pump.clone(),
     ));
+    let stderr_persistence = pump.persistence.clone();
     tauri::async_runtime::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let _ = app.emit(
-                EVENT_NAME,
-                CodexEvent {
-                    session_id: sid.clone(),
-                    method: "app-server/stderr".into(),
-                    params: json!({"line":line}),
-                },
-            );
+            stderr_persistence
+                .notify_codex_event(
+                    &app,
+                    sid.clone(),
+                    "app-server/stderr",
+                    json!({"line":line}),
+                )
+                .await;
         }
     });
     Ok(server)
@@ -235,19 +236,13 @@ async fn read_stdout<R: tauri::Runtime>(
                 );
                 let safe =
                     safe_approval_payload(&approval_id, &method, &params, &available_decisions);
-                let _ = app.emit(
-                    EVENT_NAME,
-                    CodexEvent {
-                        session_id: session_id.clone(),
-                        method: "approval.requested".into(),
-                        params: safe.clone(),
-                    },
-                );
-                let _ = persistence
+                persistence
                     .persistence
-                    .append_and_emit(
+                    .notify_codex_event(
                         &app,
-                        EventAppend::codex(session_id.clone(), "approval.requested", safe),
+                        session_id.clone(),
+                        "approval.requested",
+                        safe,
                     )
                     .await;
                 continue;
@@ -259,14 +254,15 @@ async fn read_stdout<R: tauri::Runtime>(
             })).await;
             continue;
         }
-        let _ = app.emit(
-            EVENT_NAME,
-            CodexEvent {
-                session_id: session_id.clone(),
-                method: method.clone(),
-                params: params.clone(),
-            },
-        );
+        persistence
+            .persistence
+            .notify_codex_event(
+                &app,
+                session_id.clone(),
+                method.clone(),
+                params.clone(),
+            )
+            .await;
         track_performance_event(
             &persistence.persistence,
             &persistence.performance_trackers,
@@ -284,13 +280,6 @@ async fn read_stdout<R: tauri::Runtime>(
                 let _ = waiter.send(Err(format!("context compaction ended with {method}")));
             }
         }
-        let _ = persistence
-            .persistence
-            .append_and_emit(
-                &app,
-                EventAppend::codex(session_id.clone(), method.clone(), params.clone()),
-            )
-            .await;
         if method == "thread/name/updated" {
             if let Some(title) = params
                 .get("threadName")
@@ -423,17 +412,18 @@ async fn read_stdout<R: tauri::Runtime>(
     };
     if was_running {
         let _ = persist_records(&persistence.records, &persistence.state_path).await;
-        let _ = app.emit(
-            EVENT_NAME,
-            CodexEvent {
-                session_id: session_id.clone(),
-                method: "session/unhealthy".into(),
-                params: json!({
+        persistence
+            .persistence
+            .notify_codex_event(
+                &app,
+                session_id.clone(),
+                "session/unhealthy",
+                json!({
                     "reason": "app_server_exited",
                     "message": "The local agent process exited before the turn completed."
                 }),
-            },
-        );
+            )
+            .await;
         finalize_performance_tracker(
             &persistence.persistence,
             &persistence.performance_trackers,

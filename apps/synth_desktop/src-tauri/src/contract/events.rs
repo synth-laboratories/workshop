@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 pub struct EventChannel;
 
 impl EventChannel {
+    /// Single origin-tagged session/runtime stream (Provider | Desktop).
     pub const RUNTIME: &'static str = "runtime:event";
+    /// Deprecated alias — producers must not emit here. Renderer may still
+    /// listen during transition; remove once compat listen is deleted.
     pub const CODEX: &'static str = "codex:event";
     pub const VISUAL_SHOW: &'static str = "visual:show";
     pub const TERMINAL: &'static str = "terminal:event";
@@ -36,10 +39,8 @@ pub const EVENT_CHANNELS: &[&str] = &[
 
 /// Who produced a boundary event.
 ///
-/// Wave 2b stub: new emission paths should tag `Provider` (codex/app-server)
-/// vs `Desktop` (synthetic session/approval/health). Full dual-channel collapse
-/// (`codex:event` + `runtime:event` → one origin-tagged stream) lands after
-/// renderer consumers migrate off the parallel channels.
+/// `Provider` = codex/app-server wire notifications.
+/// `Desktop` = synthetic session/approval/health (and non-codex sources).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventOrigin {
@@ -59,8 +60,7 @@ impl EventOrigin {
     }
 }
 
-/// Envelope for origin-tagged payloads. Prefer this over bare channel emits
-/// once consumers read `origin`.
+/// Envelope for origin-tagged payloads on [`EventChannel::RUNTIME`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OriginTagged<T> {
     pub origin: EventOrigin,
@@ -83,8 +83,31 @@ impl<T> OriginTagged<T> {
     }
 }
 
-/// Stub emission helper: wraps `payload` with origin. Call sites still choose
-/// the channel until dual emission is collapsed.
+/// Wrap `payload` with origin for the single runtime emission channel.
 pub fn tag_event<T>(origin: EventOrigin, payload: T) -> OriginTagged<T> {
     OriginTagged { origin, payload }
+}
+
+/// Classify a Codex boundary method / journal kind as Provider vs Desktop.
+pub fn origin_for_boundary_kind(kind: &str) -> EventOrigin {
+    if kind.starts_with("approval.")
+        || kind.starts_with("session.")
+        || kind.starts_with("run.")
+        || kind == "session/unhealthy"
+        || kind == "app-server/stderr"
+        || kind == "message.created"
+    {
+        EventOrigin::Desktop
+    } else {
+        EventOrigin::Provider
+    }
+}
+
+/// Classify a journaled / forwarded AppEvent by its source + kind.
+pub fn origin_for_source_and_kind(source: &str, kind: &str) -> EventOrigin {
+    if source == "codex" {
+        origin_for_boundary_kind(kind)
+    } else {
+        EventOrigin::Desktop
+    }
 }

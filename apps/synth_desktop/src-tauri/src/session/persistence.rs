@@ -3,6 +3,7 @@
 //! Replaces `Option<Arc<CoreRuntime>>` + per-call persistence branches in Codex.
 //! `Null` no-ops every method so call sites always go through one type.
 
+use crate::contract::events::{origin_for_boundary_kind, tag_event, EventChannel};
 use crate::core_runtime::CoreRuntime;
 use crate::domain::{
     DomainMutation, RunCreate, RunService, RunStatus, SessionCreate, SessionService, SessionStatus,
@@ -10,12 +11,14 @@ use crate::domain::{
 };
 use crate::storage::{
     AppEvent, Database, EventAppend, EventSource, RunRecord, SessionRecord, UsageRecord,
-    UsageRecordsRepository,
+    UsageRecordsRepository, APP_EVENT_SCHEMA_VERSION,
 };
 use anyhow::Result;
+use chrono::Utc;
 use serde_json::Value;
 use std::sync::Arc;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
+use uuid::Uuid;
 
 /// Capability surface Codex (and later Intern) use instead of holding CoreRuntime.
 #[derive(Clone)]
@@ -47,6 +50,36 @@ impl SessionPersistence {
         match self {
             Self::Core(core) => Ok(Some(core.append_and_emit(app, append).await?)),
             Self::Null => Ok(None),
+        }
+    }
+
+    /// One emission channel for Codex boundary notifications.
+    ///
+    /// Journals (when Core is bound) so the forwarder emits a single
+    /// origin-tagged `runtime:event`. With Null persistence, emits the same
+    /// envelope once directly — never also on deprecated `codex:event`.
+    pub async fn notify_codex_event<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: impl Into<String>,
+        method: impl Into<String>,
+        params: Value,
+    ) {
+        let session_id = session_id.into();
+        let method = method.into();
+        let origin = origin_for_boundary_kind(&method);
+        match self
+            .append_and_emit(
+                app,
+                EventAppend::codex(session_id.clone(), method.clone(), params.clone()),
+            )
+            .await
+        {
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => {
+                let event = ephemeral_codex_app_event(&session_id, &method, params);
+                let _ = app.emit(EventChannel::RUNTIME, &tag_event(origin, event));
+            }
         }
     }
 
@@ -177,5 +210,22 @@ impl SessionPersistence {
         };
         let repository = UsageRecordsRepository::new(core.storage().database().clone());
         repository.record(record).await
+    }
+}
+
+fn ephemeral_codex_app_event(session_id: &str, method: &str, params: Value) -> AppEvent {
+    AppEvent {
+        schema_version: APP_EVENT_SCHEMA_VERSION.to_string(),
+        sequence: 0,
+        event_id: format!("evt_{}", Uuid::new_v4()),
+        session_id: Some(session_id.to_owned()),
+        session_sequence: None,
+        run_id: None,
+        source: EventSource::Codex,
+        kind: method.to_owned(),
+        payload: params,
+        remote_sequence: None,
+        command_id: None,
+        created_at: Utc::now().to_rfc3339(),
     }
 }
