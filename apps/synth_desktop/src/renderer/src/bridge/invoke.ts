@@ -1,7 +1,8 @@
 /**
  * Typed invoke skeleton (Wave 2 interim).
  * Prefer `invokeCommand(COMMANDS.X, args)` over raw string command names.
- * Full arg/result maps land with tauri-specta; this prevents new string drift.
+ * Specta seed bindings live in `generated/protocol.ts`; migrate call sites
+ * command-by-command onto `spectaCommands` without dropping this helper.
  */
 
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";

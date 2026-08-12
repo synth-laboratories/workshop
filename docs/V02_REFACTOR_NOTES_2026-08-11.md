@@ -344,7 +344,17 @@ specta (const event names, typed invoke map, `RuntimeTarget` enum).
 
 ### Wave 2 remaining (specta / full boundary)
 
-- Generate renderer bindings with tauri-specta for ~120 commands (retire hand `COMMANDS` map)
+- ~~Scaffold tauri-specta~~ — landed 2026-08-11 (stretch): Cargo pins
+  (`specta` / `tauri-specta` `=2.0.0-rc.25`, `specta-typescript`),
+  `contract/specta.rs` dual-path builder (codegen only; `generate_handler!`
+  still registers the full set), seed command `desktop_instance_diagnostics`
+  exported to `src/renderer/src/generated/protocol.ts`, bridge subset wired via
+  `spectaCommands.desktopInstanceDiagnostics`. Regenerate:
+  `cargo test -p synth-desktop --lib export_specta_protocol_bindings`.
+- Migrate remaining ~120 commands into `collect_commands!` + `#[specta::specta]`
+  (DTOs need `specta::Type`; `AppError` next). Cutover: replace
+  `generate_handler!` with `specta_builder.invoke_handler()` only when the
+  collected set is complete — see cutover sketch in `contract/specta.rs`.
 - Origin-tagged `Event` (`Provider | Desktop`); collapse dual `codex:event` + `runtime:event` emission
   (Wave 2b stub: `EventOrigin` + `OriginTagged` / `tag_event` in `contract/events.rs`)
 - ~~Shrink `env.d.ts` to Window decls~~ — Window-only; DTOs in `bridge/types.ts` (wave 2b)
