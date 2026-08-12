@@ -119,7 +119,7 @@ async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
     let manager =
-        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary());
+        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let request = test_request(temp.path(), "crash-resume");
@@ -205,7 +205,7 @@ async fn steer_turn_sends_turn_steer_with_the_active_turn_id() {
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
     let manager =
-        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary());
+        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let request = test_request(temp.path(), "steer-me");
@@ -276,7 +276,7 @@ async fn compact_sends_thread_compact_start_for_the_attached_thread() {
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
-    let manager = CodexManager::with_paths(SessionPersistence::from_core(Some(core)), codex_root.clone(), fixture_binary());
+    let manager = CodexManager::with_paths(SessionPersistence::from_core(Some(core)), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
     let app = tauri::test::mock_app();
     let request = test_request(temp.path(), "compact-me");
 
@@ -301,7 +301,7 @@ async fn steer_turn_fails_when_there_is_no_active_turn() {
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
     let manager =
-        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary());
+        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let request = test_request(temp.path(), "steer-without-turn");
@@ -381,7 +381,7 @@ async fn startup_reconciles_an_orphaned_running_turn_in_sqlite() {
     )
     .unwrap();
 
-    let restarted = CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root, fixture_binary());
+    let restarted = CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root, fixture_binary(), CodexManager::test_broker());
     assert_eq!(restarted.list().await[0].status, SessionStatus::Interrupted.as_str());
     let run = RunService::new(core.storage().database().clone())
         .get("turn-orphan".into())
@@ -455,7 +455,7 @@ async fn startup_reconciles_sqlite_when_detached_record_is_already_interrupted()
     )
     .unwrap();
 
-    let restarted = CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root, fixture_binary());
+    let restarted = CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root, fixture_binary(), CodexManager::test_broker());
     assert_eq!(restarted.list().await[0].status, SessionStatus::Interrupted.as_str());
     let run = RunService::new(core.storage().database().clone())
         .get("turn-partial".into())
@@ -512,7 +512,7 @@ async fn turn_send_reports_detachment_and_reconciles_before_returning() {
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
     let manager =
-        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary());
+        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let request = test_request(temp.path(), "turn-send-detached");
@@ -615,7 +615,7 @@ async fn turn_send_reports_detachment_and_reconciles_before_returning() {
 async fn turn_send_retries_once_through_a_dying_app_server() {
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
-    let manager = CodexManager::with_paths(SessionPersistence::Null, codex_root.clone(), fixture_binary());
+    let manager = CodexManager::with_paths(SessionPersistence::Null, codex_root.clone(), fixture_binary(), CodexManager::test_broker());
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let request = test_request(temp.path(), "turn-send-retry");
@@ -666,7 +666,7 @@ async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() 
     .unwrap();
 
     let manager =
-        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary());
+        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
     assert!(!manager
         .sessions
         .read()
@@ -750,7 +750,7 @@ async fn turn_send_interrupts_an_active_run_when_the_record_is_already_interrupt
     .unwrap();
 
     let manager =
-        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary());
+        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
     arm_turn_start_exit(&codex_root, "half-reconciled", "always");
     let app = tauri::test::mock_app();
     let request = test_request(temp.path(), "half-reconciled");
@@ -788,7 +788,7 @@ async fn turn_send_interrupts_an_active_run_when_the_record_is_already_interrupt
 async fn rejected_turn_send_arguments_never_mark_the_session_running() {
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
-    let manager = CodexManager::with_paths(SessionPersistence::Null, codex_root, fixture_binary());
+    let manager = CodexManager::with_paths(SessionPersistence::Null, codex_root, fixture_binary(), CodexManager::test_broker());
     let app = tauri::test::mock_app();
     let request = test_request(temp.path(), "invalid-turn");
     let blank = manager
@@ -825,7 +825,7 @@ async fn turn_send_compacts_on_source_model_before_rebind() {
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
     let manager =
-        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary());
+        CodexManager::with_paths(SessionPersistence::from_core(Some(core.clone())), codex_root.clone(), fixture_binary(), CodexManager::test_broker());
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let mut request = test_request(temp.path(), "compact-before-switch");
@@ -929,7 +929,7 @@ fn only_lost_process_failures_are_treated_as_detachment() {
 async fn stale_attachment_exit_cannot_detach_its_replacement() {
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
-    let manager = CodexManager::with_paths(SessionPersistence::Null, codex_root, fixture_binary());
+    let manager = CodexManager::with_paths(SessionPersistence::Null, codex_root, fixture_binary(), CodexManager::test_broker());
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let request = test_request(temp.path(), "generation-fence");
@@ -1130,7 +1130,7 @@ fn synth_cloud_provider_writes_expected_config() {
     let home = temp.path().join("home");
     let workspace = temp.path().join("workspace");
     fs::create_dir_all(&workspace).unwrap();
-    let (broker, _listener) = CredentialBroker::bind().unwrap();
+    let (broker, _listener) = CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new())).unwrap();
     let mut request = test_request(&workspace, "synth-cloud-config");
     apply_synth_cloud_provider(
         &mut request,
@@ -1286,7 +1286,7 @@ fn leaves_compaction_to_openai_and_azure_responses_providers() {
 #[test]
 fn synth_cloud_provider_overwrites_renderer_api_key() {
     let temp = tempdir().unwrap();
-    let (broker, _listener) = CredentialBroker::bind().unwrap();
+    let (broker, _listener) = CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new())).unwrap();
     let mut request = test_request(temp.path(), "synth-cloud-overwrite");
     request.api_key = "renderer-leaked-key".into();
     request.base_url = "https://evil.example/v1".into();
@@ -1316,7 +1316,7 @@ fn synth_cloud_provider_overwrites_renderer_api_key() {
 #[test]
 fn synth_cloud_normalizes_a_local_bind_address_for_the_client() {
     let temp = tempdir().unwrap();
-    let (broker, _listener) = CredentialBroker::bind().unwrap();
+    let (broker, _listener) = CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new())).unwrap();
     let mut request = test_request(temp.path(), "synth-cloud-loopback");
     apply_synth_cloud_provider(
         &mut request,
@@ -1342,7 +1342,7 @@ fn synth_cloud_normalizes_a_local_bind_address_for_the_client() {
 #[tokio::test]
 async fn reusing_a_live_child_leaves_its_lease_untouched() {
     let temp = tempdir().unwrap();
-    let manager = CodexManager::with_paths(SessionPersistence::Null, temp.path().join("codex"), fixture_binary());
+    let manager = CodexManager::with_paths(SessionPersistence::Null, temp.path().join("codex"), fixture_binary(), CodexManager::test_broker());
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let mut request = test_request(temp.path(), "lease-live-reuse");
@@ -1353,7 +1353,7 @@ async fn reusing_a_live_child_leaves_its_lease_untouched() {
         .start(app_handle.clone(), request.clone())
         .await
         .unwrap();
-    let broker = credential_broker::shared().unwrap();
+    let broker = manager.broker.clone();
     let token = broker
         .token_for("lease-live-reuse")
         .expect("spawning the child mints its lease");
@@ -1377,7 +1377,7 @@ async fn reusing_a_live_child_leaves_its_lease_untouched() {
 #[tokio::test]
 async fn rebinding_a_session_spawns_the_new_child_with_a_live_lease() {
     let temp = tempdir().unwrap();
-    let manager = CodexManager::with_paths(SessionPersistence::Null, temp.path().join("codex"), fixture_binary());
+    let manager = CodexManager::with_paths(SessionPersistence::Null, temp.path().join("codex"), fixture_binary(), CodexManager::test_broker());
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let mut request = test_request(temp.path(), "lease-rebind");
@@ -1387,7 +1387,7 @@ async fn rebinding_a_session_spawns_the_new_child_with_a_live_lease() {
         .start(app_handle.clone(), request.clone())
         .await
         .unwrap();
-    let broker = credential_broker::shared().unwrap();
+    let broker = manager.broker.clone();
     let before = broker.token_for("lease-rebind").unwrap();
 
     let mut switched = request.clone();
@@ -1410,7 +1410,7 @@ async fn rebinding_a_session_spawns_the_new_child_with_a_live_lease() {
 #[tokio::test]
 async fn a_provider_name_change_alone_respawns_the_child() {
     let temp = tempdir().unwrap();
-    let manager = CodexManager::with_paths(SessionPersistence::Null, temp.path().join("codex"), fixture_binary());
+    let manager = CodexManager::with_paths(SessionPersistence::Null, temp.path().join("codex"), fixture_binary(), CodexManager::test_broker());
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let mut request = test_request(temp.path(), "lease-provider-identity");
@@ -1420,9 +1420,9 @@ async fn a_provider_name_change_alone_respawns_the_child() {
         .start(app_handle.clone(), request.clone())
         .await
         .unwrap();
-    let broker = credential_broker::shared().unwrap();
+    let broker = manager.broker.clone();
     let before = broker.token_for("lease-provider-identity").unwrap();
-    credential_broker::push_settled_receipt(credential_broker::SettledReceipt {
+    manager.receipts().push(credential_broker::SettledReceipt {
         session_id: "lease-provider-identity".into(),
         provider_response_id: "resp-born-under-old-name".into(),
         model: None,
@@ -1446,7 +1446,7 @@ async fn a_provider_name_change_alone_respawns_the_child() {
     assert!(!broker.resolves(&before));
     assert!(broker.resolves(&after));
     assert!(
-        credential_broker::drain_settled_receipts("lease-provider-identity").is_empty(),
+        manager.receipts().drain("lease-provider-identity").is_empty(),
         "receipts born under the old provider name must not survive the switch"
     );
 }
@@ -1457,7 +1457,7 @@ async fn a_provider_name_change_alone_respawns_the_child() {
 #[tokio::test]
 async fn a_rotated_credential_respawns_the_child_with_a_fresh_lease() {
     let temp = tempdir().unwrap();
-    let manager = CodexManager::with_paths(SessionPersistence::Null, temp.path().join("codex"), fixture_binary());
+    let manager = CodexManager::with_paths(SessionPersistence::Null, temp.path().join("codex"), fixture_binary(), CodexManager::test_broker());
     let app = tauri::test::mock_app();
     let app_handle = app.handle().clone();
     let mut request = test_request(temp.path(), "lease-rotation");
@@ -1467,7 +1467,7 @@ async fn a_rotated_credential_respawns_the_child_with_a_fresh_lease() {
         .start(app_handle.clone(), request.clone())
         .await
         .unwrap();
-    let broker = credential_broker::shared().unwrap();
+    let broker = manager.broker.clone();
     let old_token = broker.token_for("lease-rotation").unwrap();
     let old_attachment = manager
         .sessions
@@ -1536,7 +1536,7 @@ fn synth_cloud_home_redacts_api_key_from_generated_files() {
     let workspace = temp.path().join("workspace");
     fs::create_dir_all(&workspace).unwrap();
     let secret = "sk_dev_SYNTH_CLOUD_SECRET_VALUE_DO_NOT_LEAK";
-    let (broker, _listener) = CredentialBroker::bind().unwrap();
+    let (broker, _listener) = CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new())).unwrap();
     let mut request = test_request(&workspace, "synth-cloud-redact");
     apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some(secret)).unwrap();
     apply_brokered_credential(&mut request, &broker).unwrap();
@@ -1569,7 +1569,7 @@ fn the_synth_credential_never_reaches_a_generated_codex_home() {
     let workspace = temp.path().join("workspace");
     fs::create_dir_all(&workspace).unwrap();
 
-    let (broker, _listener) = CredentialBroker::bind().unwrap();
+    let (broker, _listener) = CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new())).unwrap();
     let mut request = test_request(&workspace, "session-sentinel");
     apply_synth_cloud_provider(&mut request, "http://127.0.0.1:41209", Some(SENTINEL)).unwrap();
     apply_brokered_credential(&mut request, &broker).unwrap();
@@ -1804,13 +1804,27 @@ fn settled_receipt(
     }
 }
 
-async fn finalize_turn(core: &Arc<CoreRuntime>, session_id: &str, provider: &str, turn: &str) {
+async fn finalize_turn(
+    core: &Arc<CoreRuntime>,
+    receipts: &credential_broker::ReceiptStore,
+    session_id: &str,
+    provider: &str,
+    turn: &str,
+) {
     let trackers: PerformanceTrackers = Arc::default();
     trackers
         .lock()
         .await
         .insert(session_id.to_owned(), tracker_for(provider, turn));
-    finalize_performance_tracker(&SessionPersistence::from_core(Some(core.clone())), &trackers, session_id, "completed", Some(2_000)).await;
+    finalize_performance_tracker(
+        &SessionPersistence::from_core(Some(core.clone())),
+        &trackers,
+        receipts,
+        session_id,
+        "completed",
+        Some(2_000),
+    )
+    .await;
 }
 
 async fn usage_totals(core: &Arc<CoreRuntime>) -> UsageBreakdown {
@@ -1841,13 +1855,14 @@ fn settled_cost_sums_only_receipts_that_carried_money() {
 async fn a_synth_cloud_turn_records_the_sum_of_its_settled_receipts() {
     let temp = tempdir().unwrap();
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let receipts = credential_broker::ReceiptStore::new();
     let session = "wp4-cloud-settles";
     // One turn may make several upstream requests; their settled charges
     // sum, and a token-only receipt contributes no invented money.
-    credential_broker::push_settled_receipt(settled_receipt(session, "resp-1", Some(0.01)));
-    credential_broker::push_settled_receipt(settled_receipt(session, "resp-2", Some(0.02)));
-    credential_broker::push_settled_receipt(settled_receipt(session, "resp-3", None));
-    finalize_turn(&core, session, "synth-cloud", "turn-1").await;
+    receipts.push(settled_receipt(session, "resp-1", Some(0.01)));
+    receipts.push(settled_receipt(session, "resp-2", Some(0.02)));
+    receipts.push(settled_receipt(session, "resp-3", None));
+    finalize_turn(&core, &receipts, session, "synth-cloud", "turn-1").await;
 
     let totals = usage_totals(&core).await;
     assert_eq!(totals.requests, 1);
@@ -1859,16 +1874,17 @@ async fn a_synth_cloud_turn_records_the_sum_of_its_settled_receipts() {
     assert_eq!(totals.output_tokens, 200);
     assert_eq!(totals.estimated_cost_usd, None);
     // Drained: a replayed finalize finds nothing to double-bill.
-    assert!(credential_broker::drain_settled_receipts(session).is_empty());
+    assert!(receipts.drain(session).is_empty());
 }
 
 #[tokio::test]
 async fn cloud_receipts_without_money_leave_billed_unset() {
     let temp = tempdir().unwrap();
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let receipts = credential_broker::ReceiptStore::new();
     let session = "wp4-cloud-token-only";
-    credential_broker::push_settled_receipt(settled_receipt(session, "resp-1", None));
-    finalize_turn(&core, session, "synth-cloud", "turn-1").await;
+    receipts.push(settled_receipt(session, "resp-1", None));
+    finalize_turn(&core, &receipts, session, "synth-cloud", "turn-1").await;
 
     let totals = usage_totals(&core).await;
     assert_eq!(totals.requests, 1);
@@ -1881,11 +1897,12 @@ async fn cloud_receipts_without_money_leave_billed_unset() {
 async fn local_turns_neither_drain_receipts_nor_carry_any_charge() {
     let temp = tempdir().unwrap();
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let receipts = credential_broker::ReceiptStore::new();
     let session = "wp4-local-untouched";
     // Even a stray receipt under a local session's id must not turn an
     // on-device row into a billed one — billed stays None, never $0.
-    credential_broker::push_settled_receipt(settled_receipt(session, "resp-1", Some(0.42)));
-    finalize_turn(&core, session, "local-laguna", "turn-1").await;
+    receipts.push(settled_receipt(session, "resp-1", Some(0.42)));
+    finalize_turn(&core, &receipts, session, "local-laguna", "turn-1").await;
 
     let totals = usage_totals(&core).await;
     assert_eq!(totals.requests, 1);
@@ -1893,7 +1910,7 @@ async fn local_turns_neither_drain_receipts_nor_carry_any_charge() {
     assert_eq!(totals.estimated_cost_usd, None);
     assert_eq!(totals.cost_source, CostSource::None);
     // The local finalize did not consume the queue.
-    assert_eq!(credential_broker::drain_settled_receipts(session).len(), 1);
+    assert_eq!(receipts.drain(session).len(), 1);
 }
 
 /// The cancellation-race contract: a receipt landing after its turn
@@ -1903,16 +1920,17 @@ async fn local_turns_neither_drain_receipts_nor_carry_any_charge() {
 async fn a_late_receipt_waits_for_the_next_finalize_and_never_invents_a_row() {
     let temp = tempdir().unwrap();
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let receipts = credential_broker::ReceiptStore::new();
     let session = "wp4-late-receipt";
-    finalize_turn(&core, session, "synth-cloud", "turn-1").await;
+    finalize_turn(&core, &receipts, session, "synth-cloud", "turn-1").await;
     let totals = usage_totals(&core).await;
     assert_eq!((totals.requests, totals.billed_cost_usd), (1, None));
 
-    credential_broker::push_settled_receipt(settled_receipt(session, "resp-late", Some(0.05)));
+    receipts.push(settled_receipt(session, "resp-late", Some(0.05)));
     // Still exactly one row: a queued receipt is not a usage record.
     assert_eq!(usage_totals(&core).await.requests, 1);
 
-    finalize_turn(&core, session, "synth-cloud", "turn-2").await;
+    finalize_turn(&core, &receipts, session, "synth-cloud", "turn-2").await;
     let totals = usage_totals(&core).await;
     assert_eq!(totals.requests, 2);
     assert!((totals.billed_cost_usd.unwrap() - 0.05).abs() < 1e-12);

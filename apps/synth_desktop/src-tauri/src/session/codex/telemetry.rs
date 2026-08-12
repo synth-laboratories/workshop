@@ -1,5 +1,4 @@
 //! Turn performance / usage telemetry for the Codex app-server pump.
-use crate::credential_broker;
 use crate::domain::RunStatus;
 use crate::storage::{CostSource, MeasurementKind, UsageRecord};
 use serde_json::Value;
@@ -126,6 +125,7 @@ pub(crate) fn is_output_delta(method: &str, params: &Value) -> bool {
 pub(crate) async fn track_performance_event(
     persistence: &crate::session::SessionPersistence,
     trackers: &PerformanceTrackers,
+    receipts: &crate::credential_broker::ReceiptStore,
     session_id: &str,
     method: &str,
     params: &Value,
@@ -153,13 +153,22 @@ pub(crate) async fn track_performance_event(
             "turn/failed" => RunStatus::Failed.as_str(),
             _ => RunStatus::Interrupted.as_str(),
         };
-        finalize_performance_tracker(persistence, trackers, session_id, status, Some(now_ms)).await;
+        finalize_performance_tracker(
+            persistence,
+            trackers,
+            receipts,
+            session_id,
+            status,
+            Some(now_ms),
+        )
+        .await;
     }
 }
 
 pub(crate) async fn finalize_performance_tracker(
     persistence: &crate::session::SessionPersistence,
     trackers: &PerformanceTrackers,
+    receipts: &crate::credential_broker::ReceiptStore,
     session_id: &str,
     status: &str,
     completed_at_ms: Option<i64>,
@@ -215,11 +224,11 @@ pub(crate) async fn finalize_performance_tracker(
     // receipt landing after this drain (cancellation race) stays queued no
     // longer than the session's next finalize; if the session closes first,
     // the broker logs one line and drops it rather than inventing a row.
-    // The drain reads a module-level store — it never starts a broker.
+    // The drain reads the injected receipt store — it never starts a broker.
     let settled_cost_usd = if super::home::provider_class(Some(&tracker.provider))
         == super::home::ProviderClass::SynthCloud
     {
-        settled_cost_from_receipts(&credential_broker::drain_settled_receipts(session_id))
+        settled_cost_from_receipts(&receipts.drain(session_id))
     } else {
         None
     };
@@ -270,7 +279,9 @@ pub(crate) async fn finalize_performance_tracker(
 /// span several upstream requests, so several receipts sum into one figure.
 /// `None` when no receipt reported money — token-only receipts never fabricate
 /// a $0 settled charge.
-pub(crate) fn settled_cost_from_receipts(receipts: &[credential_broker::SettledReceipt]) -> Option<f64> {
+pub(crate) fn settled_cost_from_receipts(
+    receipts: &[crate::credential_broker::SettledReceipt],
+) -> Option<f64> {
     receipts
         .iter()
         .filter_map(|receipt| receipt.cost_usd)
