@@ -66,7 +66,7 @@ async fn route_request(
 ) -> JsonHttpResponse {
     match dispatch_request(request, core, token).await {
         Ok(value) => JsonHttpResponse::ok(value),
-        Err(error) if error.to_string().contains("unauthorized") => {
+        Err(error) if crate::error::error_is::<crate::error::Unauthorized>(&error) => {
             JsonHttpResponse::error(StatusCode::UNAUTHORIZED, error.to_string())
         }
         Err(error) => JsonHttpResponse::error(StatusCode::BAD_REQUEST, error.to_string()),
@@ -83,7 +83,7 @@ async fn dispatch_request(
         .as_deref()
         .and_then(|value| value.strip_prefix("Bearer ").map(str::trim));
     if auth != Some(token) {
-        anyhow::bail!("unauthorized visuals IPC request");
+        return Err(anyhow::Error::new(crate::error::Unauthorized));
     }
     let (path, query_string) = request
         .path

@@ -8,11 +8,11 @@
  * and view states are rendered through the injectable `controller` prop.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { transformSync } from "esbuild";
+import { buildSync } from "esbuild";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -23,16 +23,16 @@ mkdirSync(compiledDir, { recursive: true });
 function compile(relative, outName) {
 	const source = join(appRoot, relative);
 	const compiled = join(compiledDir, outName);
-	writeFileSync(
-		compiled,
-		transformSync(readFileSync(source, "utf8"), {
-			loader: "tsx",
-			jsx: "automatic",
-			format: "esm",
-			target: "es2022",
-			sourcefile: source
-		}).code
-	);
+	buildSync({
+		entryPoints: [source],
+		bundle: true,
+		format: "esm",
+		target: "es2022",
+		platform: "neutral",
+		jsx: "automatic",
+		outfile: compiled,
+		external: ["react", "react/jsx-runtime", "react-dom", "react-dom/server", "@tauri-apps/*"]
+	});
 	return pathToFileURL(compiled).href;
 }
 

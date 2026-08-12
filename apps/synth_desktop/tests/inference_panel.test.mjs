@@ -8,11 +8,11 @@
  * against `attachInferenceFeed` — the exact function the hook's effect returns.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { transformSync } from "esbuild";
+import { buildSync } from "esbuild";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -20,21 +20,21 @@ const appRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const source = join(appRoot, "src/renderer/src/components/InferencePanel.tsx");
 const sourceText = readFileSync(source, "utf8");
 
-// Compiled inside node_modules so bare "react" / "@tauri-apps/api" imports keep
-// resolving, and so nothing generated lands in the tracked tree.
+// Bundle into node_modules cache so relative ../bridge resolves, while bare
+// react / @tauri-apps stay external. Nothing generated lands in the tracked tree.
 const compiledDir = join(appRoot, "node_modules/.cache/synth-desktop-tests");
 mkdirSync(compiledDir, { recursive: true });
 const compiled = join(compiledDir, "InferencePanel.mjs");
-writeFileSync(
-	compiled,
-	transformSync(sourceText, {
-		loader: "tsx",
-		jsx: "automatic",
-		format: "esm",
-		target: "es2022",
-		sourcefile: source
-	}).code
-);
+buildSync({
+	entryPoints: [source],
+	bundle: true,
+	format: "esm",
+	target: "es2022",
+	platform: "neutral",
+	jsx: "automatic",
+	outfile: compiled,
+	external: ["react", "react/jsx-runtime", "react-dom", "react-dom/server", "@tauri-apps/*"]
+});
 
 const {
 	InferencePanel,
