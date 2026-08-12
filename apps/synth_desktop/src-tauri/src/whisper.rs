@@ -101,7 +101,7 @@ fn emit_runtime(app: &AppHandle, phase: &str, model: Option<&str>) {
     if payload.loaded_model.is_none() {
         payload.loaded_model = model.map(str::to_owned);
     }
-    let _ = app.emit("whisper:runtime", payload);
+    let _ = app.emit(crate::contract::events::EventChannel::WHISPER_RUNTIME, payload);
 }
 
 #[derive(Debug)]
@@ -766,7 +766,7 @@ pub async fn whisper_model_download(
     let result = tauri::async_runtime::spawn_blocking(move || {
         download_model_with_progress(&download_id, |phase, downloaded_bytes, total_bytes| {
             let _ = progress_app.emit(
-                "whisper:download",
+                crate::contract::events::EventChannel::WHISPER_DOWNLOAD,
                 serde_json::json!({
                     "phase": phase,
                     "id": download_id,
@@ -792,7 +792,7 @@ pub async fn whisper_model_download(
         }
         Err(error) => serde_json::json!({"phase":"error","id":id,"detail":error}),
     };
-    let _ = app.emit("whisper:download", payload);
+    let _ = app.emit(crate::contract::events::EventChannel::WHISPER_DOWNLOAD, payload);
     result
 }
 

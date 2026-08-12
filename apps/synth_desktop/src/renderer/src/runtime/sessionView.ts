@@ -94,8 +94,7 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 			};
 		case "synth-cloud-laguna-s":
 			return {
-				kind: "remote",
-				provider: "synth-cloud",
+				kind: "cloud",
 				model: SYNTH_CLOUD_LAGUNA_S_MODEL,
 				adapter
 			};
@@ -118,7 +117,7 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 	if (target.kind === "intern") {
 		return target.mode === "async" ? "intern-async" : "intern-sync";
 	}
-	if (target.provider === "synth-cloud") {
+	if (target.kind === "cloud") {
 		return "synth-cloud-laguna-s";
 	}
 	if (target.model === OPENROUTER_LUNA_MODEL || target.model.includes("kimi")) {
@@ -129,7 +128,7 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 }
 
 export function sessionIsLocalChat(session: Session): boolean {
-	return session.target.kind === "local" || session.target.kind === "remote";
+	return session.target.kind === "local" || session.target.kind === "remote" || session.target.kind === "cloud";
 }
 
 export function sessionIsSync(session: Session): boolean {

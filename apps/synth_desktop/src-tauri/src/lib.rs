@@ -3,6 +3,7 @@ mod account_cloud;
 mod cloud;
 mod codex;
 mod credential_broker;
+pub mod contract;
 pub mod core_runtime;
 mod device_auth;
 mod domain;
@@ -1759,7 +1760,7 @@ pub fn run() {
             let status_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 while let Ok(status) = status_updates.recv().await {
-                    let _ = status_handle.emit("laguna:status", status);
+                    let _ = status_handle.emit(crate::contract::events::EventChannel::LAGUNA_STATUS, status);
                 }
             });
 

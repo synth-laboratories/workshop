@@ -845,7 +845,7 @@ pub async fn laguna_inference_stream_start(
     let manager = state.inner().clone();
     manager
         .start_inference_stream(move |snapshot| {
-            let _ = app.emit("laguna:inference", snapshot);
+            let _ = app.emit(crate::contract::events::EventChannel::LAGUNA_INFERENCE, snapshot);
         })
         .await;
     Ok(())
@@ -898,7 +898,7 @@ pub async fn laguna_model_download(
 ) -> std::result::Result<LagunaModelHit, String> {
     let spec = model_spec(&model_id).map_err(|error| error.to_string())?;
     let _ = app.emit(
-        "laguna:download",
+        crate::contract::events::EventChannel::LAGUNA_DOWNLOAD,
         serde_json::json!({"phase":"downloading","detail":format!("Downloading {} from Hugging Face…", spec.title), "modelId":model_id}),
     );
     let manager = state.inner().clone();
@@ -906,7 +906,7 @@ pub async fn laguna_model_download(
     let result = tauri::async_runtime::spawn_blocking(move || {
         manager.download_model_with_progress(spec.id, |phase, detail, downloaded, total| {
             let _ = progress_app.emit(
-                "laguna:download",
+                crate::contract::events::EventChannel::LAGUNA_DOWNLOAD,
                 serde_json::json!({
                     "phase": phase,
                     "detail": detail,
@@ -926,7 +926,7 @@ pub async fn laguna_model_download(
         }
         Err(error) => serde_json::json!({"phase":"error","detail":error}),
     };
-    let _ = app.emit("laguna:download", payload);
+    let _ = app.emit(crate::contract::events::EventChannel::LAGUNA_DOWNLOAD, payload);
     result
 }
 

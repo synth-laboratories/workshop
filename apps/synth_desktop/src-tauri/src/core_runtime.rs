@@ -3,6 +3,7 @@
 use crate::cloud::intern::{
     InternProviderManager, InternRuntime, InternSessionBinding, PollerConfig, RuntimeKind,
 };
+use crate::contract::events::EventChannel;
 use crate::domain::{RunService, RunStatus, SessionService};
 use crate::inventory::{ContainerDeployment, ContainerRegisterRequest, InventoryStore};
 use crate::optimizers::OptimizerService;
@@ -17,8 +18,8 @@ use std::{sync::Arc, time::Duration};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::broadcast;
 
-pub const RUNTIME_EVENT_CHANNEL: &str = "runtime:event";
-pub const VISUAL_SHOW_CHANNEL: &str = "visual:show";
+pub const RUNTIME_EVENT_CHANNEL: &str = EventChannel::RUNTIME;
+pub const VISUAL_SHOW_CHANNEL: &str = EventChannel::VISUAL_SHOW;
 
 #[derive(Clone)]
 pub struct CoreRuntime {
@@ -187,28 +188,18 @@ impl CoreRuntime {
             if session.status == "closed" {
                 continue;
             }
-            if session
-                .target_json
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                != Some("intern")
-            {
+            if !session.target.is_intern() {
                 continue;
             }
             let Some(runtime_id) = session.remote_id.clone() else {
                 continue;
             };
-            let Some(mode) = session
-                .target_json
-                .get("mode")
-                .and_then(serde_json::Value::as_str)
-            else {
+            let Some(mode) = session.target.intern_mode() else {
                 continue;
             };
             let runtime_kind = match mode {
-                "sync" => RuntimeKind::Sync,
-                "async" => RuntimeKind::Async,
-                _ => continue,
+                crate::domain::InternMode::Sync => RuntimeKind::Sync,
+                crate::domain::InternMode::Async => RuntimeKind::Async,
             };
             if reconcile_restart {
                 self.reconcile_intern_active_run(&session).await?;

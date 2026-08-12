@@ -46,13 +46,10 @@ export function codexStartRequest(
 			autoCompactTokenLimit, ...approval
 		};
 	}
-	if (target.kind !== "remote") throw new Error("Unsupported Codex execution target");
-	const autoCompactTokenLimit = target.model.includes("gpt-5.6-luna")
-		? autoCompactTokenLimits.luna ?? 250_000
-		: target.model.includes("muse-spark-1.2")
-			? 250_000
+	if (target.kind === "cloud") {
+		const autoCompactTokenLimit = target.model.includes("gpt-5.6-luna")
+			? autoCompactTokenLimits.luna ?? 250_000
 			: autoCompactTokenLimits.lagunaS ?? 250_000;
-	if (target.provider === "synth-cloud") {
 		return {
 			// baseUrl and providerEnvKey are both overwritten by the Rust host,
 			// which routes this provider through the native credential broker;
@@ -62,6 +59,12 @@ export function codexStartRequest(
 			providerEnvKey: "SYNTH_API_KEY", autoCompactTokenLimit, ...approval
 		};
 	}
+	if (target.kind !== "remote") throw new Error("Unsupported Codex execution target");
+	const autoCompactTokenLimit = target.model.includes("gpt-5.6-luna")
+		? autoCompactTokenLimits.luna ?? 250_000
+		: target.model.includes("muse-spark-1.2")
+			? 250_000
+			: autoCompactTokenLimits.lagunaS ?? 250_000;
 	return {
 		sessionId, workspace, baseUrl: "https://openrouter.ai/api/v1",
 		model: target.model, providerName: "openrouter", providerTitle: "OpenRouter Responses",
@@ -76,7 +79,7 @@ export function createCodexSession(
 	const approvalMode = approvalModeFromConfig(approval.approvalPolicy, approval.sandbox);
 	const now = new Date().toISOString();
 	return {
-		id, title: title || (target.kind === "local" ? "Laguna XS" : target.kind === "remote" ? target.model : "Intern"), target,
+		id, title: title || (target.kind === "local" ? "Laguna XS" : target.kind === "intern" ? "Intern" : target.model), target,
 		projectId, createdAt: now, updatedAt: now, status: "ready", latestCursor: 0,
 		metadata: { runtime: "codex-app-server", workspace, approvalMode, ...approval }
 	};
@@ -88,12 +91,14 @@ export function restoreCodexSession(value: PersistedCodexSession): Session {
 	const synthCloud = value.providerName === "synth-cloud";
 	const target: ExecutionTarget = local
 		? { kind: "local", model: "laguna-xs-2.1", adapter: null }
-		: {
-			kind: "remote",
-			provider: synthCloud ? "synth-cloud" : "openrouter",
-			model: value.model,
-			adapter: null
-		};
+		: synthCloud
+			? { kind: "cloud", model: value.model, adapter: null }
+			: {
+				kind: "remote",
+				provider: "openrouter",
+				model: value.model,
+				adapter: null
+			};
 	const allowedStatuses = new Set<Session["status"]>([
 		"created", "ready", "running", "waiting_for_input", "paused", "interrupted", "completed", "failed", "cancelled", "configuration_required"
 	]);

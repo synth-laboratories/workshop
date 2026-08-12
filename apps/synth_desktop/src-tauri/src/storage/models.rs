@@ -1,8 +1,10 @@
+use crate::domain::RuntimeTarget;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const APP_EVENT_SCHEMA_VERSION: &str = "synth.desktop-app-event.v1";
-pub const SCHEMA_VERSION: i64 = 7;
+/// Matches `storage/migrations.rs` `MIGRATIONS.len()` after migration 9.
+pub const SCHEMA_VERSION: i64 = 9;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -69,7 +71,8 @@ pub struct AppEvent {
 pub struct SessionRecord {
     pub id: String,
     pub title: String,
-    pub target_json: Value,
+    /// Typed runtime substrate (DB column remains `target_json`).
+    pub target: RuntimeTarget,
     pub project_id: Option<String>,
     pub remote_id: Option<String>,
     pub codex_thread_id: Option<String>,
@@ -80,6 +83,13 @@ pub struct SessionRecord {
     pub metadata: Value,
     pub created_at: String,
     pub updated_at: String,
+}
+
+impl SessionRecord {
+    /// Opaque JSON bag for call sites that still need `Value` (prefer `target`).
+    pub fn target_json(&self) -> Value {
+        self.target.to_json_value()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
