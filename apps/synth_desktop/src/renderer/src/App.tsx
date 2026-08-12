@@ -1,18 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
 import { appEventToRuntimeEvent } from "@synth/runtime-protocol";
 import desktopPackage from "../../../package.json";
 import type {
 	CodexActivityEvent,
 	ContainerDeployment,
-	EventPage,
-	ExecutionTarget,
 	RuntimeControlKind,
 	RuntimeEvent,
 	RuntimeHealth,
-	SemanticUiSnapshot,
 	Session,
-	UsageBreakdown,
 	VisualInstanceRecord,
 	VisualRecord
 } from "@synth/runtime-protocol";
@@ -23,7 +18,6 @@ import {
 	mergeInternSessions,
 	mergeSessionReplay,
 	patchSessionMetadata,
-	replaceSessionEvents,
 	replaceSessions,
 	selectSessionRunning,
 	selectWorkingChatIds,
@@ -33,34 +27,21 @@ import {
 } from "./stores/sessionStore";
 import {
 	EXECUTION_TARGETS,
-	OPENROUTER_LAGUNA_S_MODEL,
-	OPENROUTER_LUNA_MODEL,
-	OPENROUTER_MUSE_SPARK_MODEL,
-	SYNTH_CLOUD_LAGUNA_S_MODEL,
-	SYNTH_CLOUD_MUSE_SPARK_MODEL,
 	isInternTargetId
 } from "./types/landing";
 import type { ArtifactRef } from "./types/landing";
-import { ChatTranscript, OutputsPanel, outputContainerIds } from "./components/ChatTranscript";
-import { ContainerPane } from "./components/ContainerPane";
-// CloudDesk stays dormant for v0.2; see the removal contract at its route site.
+import { AppTitlebar } from "./components/AppTitlebar";
 import { Composer } from "./components/Composer";
-import { ConnectorsPage } from "./components/ConnectorsPage";
-import { ConversationSearch } from "./components/ConversationSearch";
-import { formatTps, InferencePanel, useInferenceMonitor } from "./components/InferencePanel";
-import { InventoryPage } from "./components/InventoryPage";
-import { LandingPage } from "./components/LandingPage";
-import { OptimizersPage } from "./components/OptimizersPage";
-import { PaneResizeHandle } from "./components/PaneResizeHandle";
-import { SettingsPage } from "./components/SettingsPage";
+import { AppOverlays } from "./components/AppOverlays";
+import { formatTps, useInferenceMonitor } from "./components/InferencePanel";
 import { Sidebar } from "./components/Sidebar";
-import { UsageSheet, type DeviceUsageSummary } from "./components/UsageSheet";
-import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
-import { buildAccountView } from "./runtime/accountView";
-import { SynthLogo } from "./components/SynthLogo";
 import { TerminalPanel } from "./components/TerminalPanel";
-import { artifactFromVisualRecord, VisualPane } from "./components/VisualHost";
-import { VisualsPage } from "./components/VisualsPage";
+import { artifactFromVisualRecord } from "./components/VisualHost";
+import { useAccountShell } from "./hooks/useAccountShell";
+import { useShellLayout } from "./hooks/useShellLayout";
+import { useCodexEventBridge } from "./hooks/useCodexEventBridge";
+import { useForeignSessionEventBridge } from "./hooks/useForeignSessionEventBridge";
+import { useModelPerformanceLabels } from "./hooks/useModelPerformanceLabels";
 import {
 	buildLandingState,
 	executionTargetToUiId,
@@ -70,7 +51,7 @@ import {
 	targetIdToExecutionTarget,
 	visualRecordToArtifact
 } from "./runtime/sessionView";
-import { approvalModeConfig, approvalModeFromConfig, codexEventToRuntime, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode, type ApprovalPolicy, type SandboxMode } from "./runtime/nativeCodex";
+import { approvalModeConfig, approvalModeFromConfig, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode, type ApprovalPolicy, type SandboxMode } from "./runtime/nativeCodex";
 import {
 	loadModelKnobValues,
 	modelKnobForTarget,
@@ -83,19 +64,21 @@ import {
 	planModelChipChange,
 	threadHasHistoryFromEvents
 } from "./runtime/modelSwitchPlan";
-import type { CodexBridge, CodexSessionInfo, CodexSessionStart, CodexTurnFailure, ComposerImageAttachment, ConversationWorkspaceScope, LagunaStatus, ModelPerformanceSummary, SynthAccountSummary, SynthBackendSettings } from "./env";
+import type {
+	CodexSessionInfo,
+	ComposerImageAttachment,
+	ConversationWorkspaceScope,
+	LagunaStatus
+} from "./env";
 import {
 	applyPreferencesToDocument,
 	archiveConversation,
 	enqueuePrompt,
-	getPreferences,
 	loadPreferences,
-	nextQueuedPrompt,
 	normalizeLayoutSnapshot,
 	pinConversation,
 	preferencesAdapter,
 	promptsForConversation,
-	removeQueuedPrompt,
 	renameConversation,
 	saveLayout,
 	setPermissionPreferences,
@@ -105,222 +88,18 @@ import {
 	updateQueuedPrompt,
 	type DesktopPreferences
 } from "./preferences";
-
-/**
- * User-facing copy for a lost app-server. The typed code and the session id
- * stay in debug logs; a raw UUID in a toast tells an operator nothing.
- */
-const AGENT_DISCONNECTED_MESSAGE =
-	"The local agent process disconnected before the turn started. Retry to reconnect.";
-
-/** Legacy untyped rejections from the pre-`codex_turn_send` bridge path. */
-const DETACHED_ERROR_TEXT = /codex session not started|is not attached|app-server (stopped|stdout closed)/i;
-
-/** Normalizes both the typed Tauri rejection and any thrown Error. */
-function codexTurnFailure(sessionId: string, reason: unknown): CodexTurnFailure {
-	if (reason && typeof reason === "object" && !(reason instanceof Error) && "code" in reason) {
-		const value = reason as Partial<CodexTurnFailure>;
-		return {
-			code: typeof value.code === "string" ? value.code : "codex_turn_start_failed",
-			message: typeof value.message === "string" ? value.message : "The turn could not be started.",
-			sessionId: typeof value.sessionId === "string" ? value.sessionId : sessionId,
-			detail: typeof value.detail === "string" ? value.detail : String(reason)
-		};
-	}
-	const message = reason instanceof Error ? reason.message : String(reason);
-	return {
-		code: DETACHED_ERROR_TEXT.test(message) ? "codex_session_detached" : "codex_turn_start_failed",
-		message,
-		sessionId,
-		detail: message
-	};
-}
-
-function turnFailureMessage(failure: CodexTurnFailure): string {
-	if (failure.code === "codex_session_detached" || DETACHED_ERROR_TEXT.test(failure.message)) {
-		return AGENT_DISCONNECTED_MESSAGE;
-	}
-	return failure.message;
-}
-
-/** A user message that reached no app-server, kept so it can be retried. */
-type FailedSend = { sessionId: string; text: string; messageId: string; message: string };
-
-function performanceTargetId(summary: ModelPerformanceSummary): string | null {
-	if (summary.provider === "local-laguna") return "local-laguna";
-	if (summary.provider === "synth-cloud" && summary.modelId === SYNTH_CLOUD_LAGUNA_S_MODEL) return "synth-cloud-laguna-s";
-	if (summary.provider === "synth-cloud" && summary.modelId === SYNTH_CLOUD_MUSE_SPARK_MODEL) return "synth-cloud-muse-spark";
-	if (summary.provider !== "openrouter") return null;
-	if (summary.modelId === OPENROUTER_LUNA_MODEL) return "openrouter-luna";
-	if (summary.modelId === OPENROUTER_LAGUNA_S_MODEL) return "openrouter-laguna-s";
-	if (summary.modelId === OPENROUTER_MUSE_SPARK_MODEL) return "openrouter-muse-spark";
-	return null;
-}
-
-function performanceKindLabel(kind: ModelPerformanceSummary["measurementKind"]): string {
-	if (kind === "decode") return "decode";
-	if (kind === "provider_reported") return "provider";
-	if (kind === "end_to_end") return "end-to-end";
-	return "observed";
-}
-
-function performancePreference(summary: ModelPerformanceSummary, targetId: string): number {
-	if (targetId === "local-laguna" && summary.measurementKind === "decode") return 4;
-	if (summary.measurementKind === "observed_stream") return 3;
-	if (summary.measurementKind === "provider_reported") return 2;
-	return 1;
-}
-
-/**
- * Compact device rollup for the Settings/Account pages, derived from the
- * native `usage_summary` aggregation — never by reducing raw ledger rows in
- * the renderer. Billed money and unbilled estimates are combined here only
- * because these pages show a single indicative figure; the Usage sheet keeps
- * them separate and labeled.
- */
-async function loadDeviceUsage(): Promise<DeviceUsageSummary | null> {
-	const bridge = window.synthUsage;
-	if (!bridge) return null;
-	const [sevenDays, allTime] = await Promise.all([bridge.summary("7d"), bridge.summary("all")]);
-	const cost = (totals: UsageBreakdown) => (totals.billedCostUsd ?? 0) + (totals.estimatedCostUsd ?? 0);
-	return {
-		weeklyTokens: sevenDays.totals.totalTokens,
-		weeklyCostUsd: cost(sevenDays.totals),
-		totalTokens: allTime.totals.totalTokens,
-		totalCostUsd: cost(allTime.totals),
-		entries: allTime.totals.requests
-	};
-}
-
-function isCodexCompactionEvent(event: { method: string; params: Record<string, unknown> }): boolean {
-	if (event.method === "thread/compacted") return true;
-	const item = event.params.item;
-	return Boolean(item && typeof item === "object" && (item as Record<string, unknown>).type === "contextCompaction");
-}
-
-/** Rebuild a start request for an existing session (compaction path — no model switch). */
-async function codexResumeRequest(
-	nativeCodex: CodexBridge,
-	session: Session,
-	autoCompactTokenLimits: Record<string, number>,
-	localBaseUrl?: string
-): Promise<CodexSessionStart> {
-	if (session.metadata.runtime !== "codex-app-server") {
-		throw new Error(`Session ${session.id} is not owned by Codex app-server`);
-	}
-	const workspace = typeof session.metadata.workspace === "string"
-		? session.metadata.workspace
-		: await nativeCodex.defaultWorkspace();
-	const storedApprovalMode = typeof session.metadata.approvalMode === "string"
-		? session.metadata.approvalMode as ApprovalMode
-		: approvalModeFromConfig(
-			typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : undefined,
-			typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : undefined
-		);
-	const storedApproval = approvalModeConfig(storedApprovalMode);
-	return {
-		...codexStartRequest(session.id, workspace, session.target, "ask", autoCompactTokenLimits, localBaseUrl),
-		approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : storedApproval.approvalPolicy,
-		sandbox: typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : storedApproval.sandbox,
-		threadId: typeof session.metadata.threadId === "string" ? session.metadata.threadId : undefined
-	};
-}
-
-type MainView =
-	| { kind: "landing" }
-	| { kind: "chat"; chatId: string }
-	| { kind: "sync"; sessionId: string }
-	| { kind: "async"; sessionId: string }
-	| { kind: "settings"; section?: "general" | "models" | "inference" | "voice" | "account" | "about" }
-	| { kind: "connectors" }
-	| { kind: "inventory" }
-	| { kind: "visuals" }
-	| { kind: "optimizers" };
-
-type SemanticEvalApi = {
-	schemaVersion: "synth.desktop-eval-api.v1";
-	getState(): SemanticUiSnapshot;
-	listActions(): string[];
-	invoke(action: string, argumentsValue?: Record<string, unknown>): Promise<unknown>;
-};
-
-function truncate(label: string, max = 22) {
-	if (label.length <= max) return label;
-	return `${label.slice(0, max - 1)}…`;
-}
-
-function appendCodexActivity(
-	events: CodexActivityEvent[],
-	event: CodexActivityEvent
-): CodexActivityEvent[] {
-	if (events.some((candidate) =>
-		candidate.executionId === event.executionId && candidate.streamId === event.streamId
-	)) return events;
-	return [...events, event];
-}
-
-function desktopBootError(reason: unknown): string {
-	const message = reason instanceof Error ? reason.message : String(reason);
-	if (/command\s+.+not found|unknown command/i.test(message)) {
-		return "Desktop backend was updated; fully quit and reopen Synth Desktop.";
-	}
-	return message;
-}
-
-// Vite browser fixtures retain the old HTTP contract. The packaged Tauri app
-// never installs this bridge and therefore cannot call the Python runtime.
-const browserRuntimeClient = {
-	bridge() {
-		if (!window.synthRuntime) throw new Error("Browser runtime fixture is unavailable");
-		return window.synthRuntime;
-	},
-	async listSessions() {
-		return (await this.bridge().request<{ sessions: Session[] }>("/v1/sessions")).sessions;
-	},
-	health() { return this.bridge().request<RuntimeHealth>("/v1/health"); },
-	createSession(target: ExecutionTarget, title?: string, objective?: string) {
-		return this.bridge().request<Session>("/v1/sessions", { method: "POST", body: { target, title, projectId: null, objective } });
-	},
-	sendMessage(sessionId: string, body: string) {
-		return this.bridge().request<{ runId: string }>(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`, { method: "POST", body: { body } });
-	},
-	control(sessionId: string, kind: RuntimeControlKind, payload: Record<string, unknown>) {
-		return this.bridge().request<{ accepted: boolean }>(`/v1/sessions/${encodeURIComponent(sessionId)}/commands`, { method: "POST", body: { kind, payload } });
-	},
-	events(sessionId: string, afterSequence: number, limit: number) {
-		return this.bridge().request<EventPage>(`/v1/sessions/${encodeURIComponent(sessionId)}/events?after_sequence=${afterSequence}&limit=${limit}`);
-	},
-	subscribe: (...args: Parameters<NonNullable<typeof window.synthRuntime>["subscribe"]>) =>
-		browserRuntimeClient.bridge().subscribe(...args),
-	simulateLive(kind: string) {
-		return this.bridge().request<{ visual: VisualInstanceRecord; eventCount: number }>("/v1/visuals/simulate-live", { method: "POST", body: { kind } });
-	}
-};
-
-function IconSidePanel() {
-	return (
-		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<rect x="2.5" y="2.5" width="11" height="11" rx="2" stroke="currentColor" strokeWidth="1.3" />
-			<path d="M10 2.5v11" stroke="currentColor" strokeWidth="1.3" />
-		</svg>
-	);
-}
-
-function IconTerminal() {
-	return (
-		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<rect x="2.5" y="3" width="11" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
-			<path
-				d="M5 6.2l2 1.8L5 9.8M8.2 10.2H11"
-				stroke="currentColor"
-				strokeWidth="1.3"
-				strokeLinecap="round"
-				strokeLinejoin="round"
-			/>
-		</svg>
-	);
-}
-
+import { browserRuntimeClient } from "./runtime/browserRuntimeClient";
+import {
+	codexResumeRequest,
+	codexTurnFailure,
+	desktopBootError,
+	turnFailureMessage,
+	type FailedSend
+} from "./runtime/codexTurn";
+import { loadDeviceUsage } from "./runtime/deviceUsage";
+import { createSemanticEvalApi } from "./runtime/evalApi";
+import { drainPromptQueues, nextQueuedPrompt, removeQueuedPrompt } from "./runtime/promptQueue";
+import { MainRoutes, type MainView } from "./routes";
 export default function App() {
 	const isDesktop = window.location.protocol === "tauri:" || "__TAURI_INTERNALS__" in window;
 	const nativeCodex = window.synthCodex;
@@ -347,37 +126,19 @@ export default function App() {
 		// v0.1 pickers hide Intern; never leave a hidden target selected.
 		if (isInternTargetId(selectedTargetId)) setSelectedTargetId("local-laguna");
 	}, [selectedTargetId]);
-	const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
-	/** Connection facts for the Account page's Devices and Advanced sections. */
-	const [backendSettings, setBackendSettings] = useState<SynthBackendSettings | null>(null);
-	const [accountUsage, setAccountUsage] = useState<DeviceUsageSummary | null>(null);
-	const [accountSummary, setAccountSummary] = useState<SynthAccountSummary | null>(null);
-	const [usageSheetOpen, setUsageSheetOpen] = useState(false);
-	const refreshAccountSummary = useCallback((force = false) => {
-		const bridge = window.synthAccount;
-		if (typeof bridge?.getSummary !== "function") {
-			setAccountSummary(null);
-			return;
-		}
-		// `refresh` skips the host cache; older hosts only expose `getSummary`.
-		const read = force && typeof bridge.refresh === "function"
-			? bridge.refresh()
-			: bridge.getSummary();
-		void read
-			.then(setAccountSummary)
-			.catch(() => setAccountSummary(null));
-	}, []);
-	useEffect(() => {
-		refreshAccountSummary();
-		void loadDeviceUsage()
-			.then(setAccountUsage)
-			.catch(() => setAccountUsage(null));
-	}, [refreshAccountSummary]);
-	const accountView = useMemo(
-		() => buildAccountView(accountSummary, apiKeyConfigured),
-		[accountSummary, apiKeyConfigured]
-	);
 	const [preferences, setPreferences] = useState<DesktopPreferences>(() => loadPreferences());
+	const shellLayout = useShellLayout(setPreferences);
+	const {
+		sidebarVisible, setSidebarVisible,
+		sidebarWidth, setSidebarWidth,
+		terminalOpen, setTerminalOpen,
+		viewportWidth,
+		inventoryContainerWidth, setInventoryContainerWidth,
+		sidePanelOpen, setSidePanelOpen,
+		sidePanelTab, setSidePanelTab,
+		containerPaneExpanded, setContainerPaneExpanded,
+		persistLayoutSnapshot
+	} = shellLayout;
 	const [, setApprovalMode] = useState<ApprovalMode>(() => loadPreferences().approvalMode);
 	const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>(() => loadPreferences().approvalPolicy);
 	const [sandboxMode, setSandboxMode] = useState<SandboxMode>(() => loadPreferences().sandboxMode);
@@ -406,81 +167,14 @@ export default function App() {
 	const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
 	const [standaloneVisual, setStandaloneVisual] = useState<ArtifactRef | null>(null);
 	const [openContainer, setOpenContainer] = useState<ContainerDeployment | null>(null);
-	const [containerPaneExpanded, setContainerPaneExpanded] = useState(false);
-	// Local inference is a first-class part of the workbench. Default the MLX
-	// sidecar rail open once for existing installs, while preserving explicit
-	// show/hide choices after that migration.
-	const [sidePanelOpen, setSidePanelOpen] = useState(
-		() => {
-			if (window.localStorage.getItem("synth.inferenceRailDefaultV2") !== "1") {
-				window.localStorage.setItem("synth.inferenceRailDefaultV2", "1");
-				window.localStorage.setItem("synth.inferenceRailOpen", "1");
-				return true;
-			}
-			return window.localStorage.getItem("synth.inferenceRailOpen") !== "0";
-		}
-	);
-	const [sidePanelTab, setSidePanelTab] = useState<"outputs" | "inference">("inference");
 	const inferenceMonitor = useInferenceMonitor({ visible: selectedTargetId === "local-laguna" });
-	const [modelPerformance, setModelPerformance] = useState<ModelPerformanceSummary[]>([]);
-	useEffect(() => {
-		let disposed = false;
-		const refresh = async () => {
-			try {
-				const summaries = await window.synthModelPerformance?.summaries();
-				if (!disposed && summaries) setModelPerformance(summaries);
-			} catch {
-				// Optional telemetry must never block chat.
-			}
-		};
-		void refresh();
-		const timer = window.setInterval(() => void refresh(), 10_000);
-		return () => {
-			disposed = true;
-			window.clearInterval(timer);
-		};
-	}, []);
-	const persistedPerformanceByTarget = useMemo(() => {
-		const chosen = new Map<string, ModelPerformanceSummary>();
-		for (const summary of modelPerformance) {
-			if (summary.tpsP50 == null || summary.sampleCount < 1) continue;
-			const targetId = performanceTargetId(summary);
-			if (!targetId) continue;
-			const current = chosen.get(targetId);
-			if (!current || performancePreference(summary, targetId) > performancePreference(current, targetId)) chosen.set(targetId, summary);
-		}
-		return chosen;
-	}, [modelPerformance]);
-	const selectedModelMedianTps = selectedTargetId === "local-laguna"
-		? inferenceMonitor.snapshot?.rolling.decodeTpsP50 ?? null
-		: null;
-	const selectedPersistedPerformance = persistedPerformanceByTarget.get(selectedTargetId);
-	const selectedModelMedianTpsLabel = selectedModelMedianTps == null
-		? selectedPersistedPerformance?.tpsP50 == null
-			? null
-			: `${formatTps(selectedPersistedPerformance.tpsP50)} tok/s ${performanceKindLabel(selectedPersistedPerformance.measurementKind)} p50`
-		: `${formatTps(selectedModelMedianTps)} tok/s p50`;
-	const aggregateModelTpsLabels = useMemo(() => {
-		const labels: Record<string, string> = {};
-		for (const [targetId, summary] of persistedPerformanceByTarget) {
-			if (summary.tpsP50 == null) continue;
-			labels[targetId] = `${formatTps(summary.tpsP50)} tok/s ${performanceKindLabel(summary.measurementKind)} p50 · ${summary.sampleCount} ${summary.sampleCount === 1 ? "request" : "requests"} · all sessions`;
-		}
-		if (!labels["local-laguna"] && selectedModelMedianTpsLabel) labels["local-laguna"] = `${selectedModelMedianTpsLabel} · daemon lifetime`;
-		return labels;
-	}, [persistedPerformanceByTarget, selectedModelMedianTpsLabel]);
-	const [inventoryContainerWidth, setInventoryContainerWidth] = useState(() => loadPreferences().layout.last.outputPaneWidth);
+	const {
+		persistedPerformanceByTarget,
+		selectedModelMedianTpsLabel,
+		aggregateModelTpsLabels
+	} = useModelPerformanceLabels(selectedTargetId, inferenceMonitor);
 	const [busy, setBusy] = useState(false);
 	const [bootError, setBootError] = useState<string | null>(null);
-	const [terminalOpen, setTerminalOpen] = useState(() => loadPreferences().layout.last.bottomPanelVisible);
-	const [sidebarVisible, setSidebarVisible] = useState(() => loadPreferences().layout.last.sidebarVisible);
-	const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
-	useEffect(() => {
-		const onResize = () => setViewportWidth(window.innerWidth);
-		window.addEventListener("resize", onResize);
-		return () => window.removeEventListener("resize", onResize);
-	}, []);
-	const [sidebarWidth, setSidebarWidth] = useState(() => loadPreferences().layout.last.sidebarWidth);
 	const [steerError, setSteerError] = useState<string | null>(null);
 	const [composerSkills, setComposerSkills] = useState<Array<{ id: string; name: string; description: string }>>([]);
 	const [queueAfterStop, setQueueAfterStop] = useState(false);
@@ -490,8 +184,6 @@ export default function App() {
 	const nativeSequencesRef = useRef(new Map<string, number>());
 	const autoOpenedSubagentsRef = useRef(new Set<string>());
 	const [failedSend, setFailedSend] = useState<FailedSend | null>(null);
-	// Sessions whose last turn start was rejected. A late `run.started` from the
-	// process that just died must not resurrect Working for them.
 	const staleRunFenceRef = useRef(new Set<string>());
 	const manualCompactionPendingRef = useRef(new Set<string>());
 	const queuedCompactionRef = useRef(new Set<string>());
@@ -511,25 +203,20 @@ export default function App() {
 		window.setTimeout(() => setToast(null), 2200);
 	}, []);
 
-	/**
-	 * Billing always leaves the app: the host opens a backend-issued hosted URL
-	 * in the system browser. On return the snapshot is refetched so a completed
-	 * checkout shows up without a restart.
-	 */
-	const openBilling = useCallback(async (action: "upgrade" | "manage") => {
-		const bridge = window.synthAccount;
-		if (typeof bridge?.openBilling !== "function") {
-			showToast("Billing management requires Synth Desktop");
-			return;
-		}
-		try {
-			await bridge.openBilling(action, accountSummary?.billing?.upgradeTier);
-			showToast(action === "upgrade" ? "Finish your upgrade in the browser" : "Manage billing opened in your browser");
-			window.setTimeout(() => refreshAccountSummary(true), 4_000);
-		} catch (reason) {
-			showToast(reason instanceof Error ? reason.message : String(reason));
-		}
-	}, [accountSummary?.billing?.upgradeTier, refreshAccountSummary, showToast]);
+	const {
+		apiKeyConfigured,
+		setApiKeyConfigured,
+		backendSettings,
+		setBackendSettings,
+		accountUsage,
+		setAccountUsage,
+		accountSummary,
+		usageSheetOpen,
+		setUsageSheetOpen,
+		refreshAccountSummary,
+		accountView,
+		openBilling
+	} = useAccountShell(showToast);
 
 	useEffect(() => subscribePreferences((next) => {
 		setPreferences(next);
@@ -561,30 +248,6 @@ export default function App() {
 		return () => window.removeEventListener("resize", onResize);
 	}, [preferences.layout.last]);
 
-	const persistLayoutSnapshot = useCallback((patch: Partial<DesktopPreferences["layout"]["last"]>) => {
-		const current = getPreferences().layout.last;
-		const next = normalizeLayoutSnapshot({ ...current, ...patch });
-		const unchanged =
-			next.sidebarVisible === current.sidebarVisible &&
-			next.sidebarWidth === current.sidebarWidth &&
-			next.outputPaneVisible === current.outputPaneVisible &&
-			next.outputPaneWidth === current.outputPaneWidth &&
-			next.bottomPanelVisible === current.bottomPanelVisible &&
-			next.bottomPanelHeight === current.bottomPanelHeight &&
-			next.selectedConversationId === current.selectedConversationId &&
-			next.selectedOutputTab === current.selectedOutputTab;
-		if ("sidebarVisible" in patch) setSidebarVisible(next.sidebarVisible);
-		if ("sidebarWidth" in patch) setSidebarWidth(next.sidebarWidth);
-		if ("outputPaneWidth" in patch) setInventoryContainerWidth(next.outputPaneWidth);
-		if ("bottomPanelVisible" in patch) setTerminalOpen(next.bottomPanelVisible);
-		if (!unchanged) setPreferences(saveLayout(next));
-	}, []);
-
-	/**
-	 * A turn that never started must leave no trace of Working: no `running`
-	 * status, no Stop, an enabled composer, and the typed text kept for Retry.
-	 * The Rust command has already reconciled the durable record and the run.
-	 */
 	const failTurnStart = useCallback((sessionId: string, text: string, messageId: string, reason: unknown) => {
 		const failure = codexTurnFailure(sessionId, reason);
 		console.debug("[codex] turn start rejected", {
@@ -742,49 +405,17 @@ export default function App() {
 		};
 	}, [nativeCodex, nativeIntern, refreshHealth, refreshSessions]);
 
-	useEffect(() => {
-		if (!nativeCodex) return;
-		return nativeCodex.onEvent((event) => {
-			const manualCompaction = isCodexCompactionEvent(event)
-				&& manualCompactionPendingRef.current.delete(event.sessionId);
-			const normalizedEvent = manualCompaction
-				? { ...event, params: { ...event.params, source: "manual" } }
-				: event;
-			const sequence = allocateNativeSequence(event.sessionId);
-			const runtimeEvent = codexEventToRuntime(normalizedEvent, sequence);
-			const updatedThreadName = event.method === "thread/name/updated"
-				&& typeof event.params.threadName === "string"
-				? event.params.threadName.trim()
-				: null;
-			// A turn start that was already rejected fences its own replay: the
-			// process that emitted this run.started is the one that just died.
-			const fenced = runtimeEvent.eventKind === "run.started"
-				&& staleRunFenceRef.current.has(event.sessionId);
-			if (runtimeEvent.eventKind === "run.failed" || runtimeEvent.eventKind === "run.cancelled") {
-				manualCompactionPendingRef.current.delete(event.sessionId);
-			}
-			if (
-				(runtimeEvent.eventKind === "run.completed" || runtimeEvent.eventKind === "run.failed" || runtimeEvent.eventKind === "run.cancelled")
-				&& queuedCompactionRef.current.delete(event.sessionId)
-				&& nativeCodex.compact
-			) {
-				manualCompactionPendingRef.current.add(event.sessionId);
-				const session = sessionsRef.current.find((candidate) => candidate.id === event.sessionId);
-				if (!session) return;
-				void codexResumeRequest(nativeCodex, session, preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined)
-					.then((request) => nativeCodex.compact!(request))
-					.then(() => showToast("Compacting context…"))
-					.catch((reason) => {
-						manualCompactionPendingRef.current.delete(event.sessionId);
-						showToast(reason instanceof Error ? reason.message : String(reason));
-					});
-			}
-			dispatchRuntimeEvent(runtimeEvent, {
-				fenced,
-				title: updatedThreadName
-			});
-		});
-	}, [allocateNativeSequence, laguna?.baseUrl, nativeCodex, preferences.agentContext.autoCompactTokenLimits, showToast]);
+	useCodexEventBridge({
+		nativeCodex,
+		allocateNativeSequence,
+		sessionsRef,
+		manualCompactionPendingRef,
+		queuedCompactionRef,
+		staleRunFenceRef,
+		autoCompactTokenLimits: preferences.agentContext.autoCompactTokenLimits,
+		localBaseUrl: laguna?.baseUrl ?? undefined,
+		showToast
+	});
 
 	useEffect(() => {
 		const bridge = window.synthLaguna;
@@ -847,9 +478,6 @@ export default function App() {
 		void nativeCodex?.close(activeSessionId).catch((reason) => showToast(reason instanceof Error ? reason.message : String(reason)));
 	}, [activeSessionId, nativeCodex, showToast]);
 
-	// The composer describes the active conversation, not merely the global
-	// default. Keep its label synchronized with the policy that will actually be
-	// sent when a persisted Codex conversation is resumed.
 	useEffect(() => {
 		if (!activeSessionId) return;
 		const session = sessions.find((candidate) => candidate.id === activeSessionId);
@@ -873,83 +501,14 @@ export default function App() {
 		return () => { disposed = true; };
 	}, [activeSessionId]);
 
-	useEffect(() => {
-		let disposed = false;
-		let subscription: { close(): void } | null = null;
-		if (!activeSessionId) return () => undefined;
-		const sessionId = activeSessionId;
-		const selected = sessions.find((session) => session.id === sessionId);
-		if (selected?.metadata.runtime === "codex-app-server") return () => undefined;
-
-		async function connect() {
-			try {
-				if (selected?.target.kind === "intern" && nativeIntern) {
-					const rows = await nativeIntern.eventsAfter(sessionId, 0, 500);
-					if (disposed) return;
-					replaceSessionEvents(
-						sessionId,
-						rows.map(appEventToRuntimeEvent).filter((event): event is RuntimeEvent => event !== null)
-					);
-					const unlisten = nativeIntern.onEvent((appEvent) => {
-						if (disposed || appEvent.sessionId !== sessionId) return;
-						const event = appEventToRuntimeEvent(appEvent);
-						if (!event) return;
-						dispatchRuntimeEvent(event);
-						if (
-							event.eventKind.startsWith("run.") ||
-							event.eventKind === "command.receipt" ||
-							event.eventKind === "command.resolved" ||
-							event.eventKind === "session.updated" ||
-							event.eventKind === "intern.projection_updated"
-						) {
-							void refreshSessions().catch(() => undefined);
-						}
-					});
-					subscription = { close: unlisten };
-					return;
-				}
-				const page = await browserRuntimeClient.events(sessionId, 0, 500);
-				if (disposed) return;
-				replaceSessionEvents(sessionId, page.events);
-				subscription = await browserRuntimeClient.subscribe(
-					sessionId,
-					page.nextSequence,
-					(event) => {
-						if (disposed) return;
-						dispatchRuntimeEvent(event);
-						if (
-							event.eventKind.startsWith("run.") ||
-							event.eventKind === "usage.recorded" ||
-							event.eventKind === "command.receipt" ||
-							event.eventKind === "command.resolved" ||
-							event.eventKind === "session.updated" ||
-							event.eventKind === "intern.projection_updated"
-						) {
-							void refreshSessions().catch(() => undefined);
-						}
-					},
-					undefined,
-					(event) => {
-						if (disposed) return;
-						setCodexActivityBySession((current) => ({
-							...current,
-							[sessionId]: appendCodexActivity(current[sessionId] ?? [], event)
-						}));
-					}
-				);
-			} catch (reason) {
-				if (!disposed) {
-					showToast(reason instanceof Error ? reason.message : String(reason));
-				}
-			}
-		}
-
-		void connect();
-		return () => {
-			disposed = true;
-			subscription?.close();
-		};
-	}, [activeSessionId, nativeIntern, refreshSessions, sessions, showToast]);
+	useForeignSessionEventBridge({
+		activeSessionId,
+		sessions,
+		nativeIntern,
+		refreshSessions,
+		showToast,
+		setCodexActivityBySession
+	});
 
 	const state = useMemo(() => {
 		const base = buildLandingState({
@@ -1036,20 +595,11 @@ export default function App() {
 	}, [sessions, view]);
 
 	useEffect(() => {
-		for (const session of sessions) {
-			const previous = queueDrainStatusesRef.current.get(session.id);
-			const finished = session.status === "ready" || session.status === "interrupted" || session.status === "completed" || session.status === "failed";
-			if (previous === "running" && finished) {
-				const next = nextQueuedPrompt(session.id);
-				if (next && !queueDrainingRef.current.has(session.id)) {
-					queueDrainingRef.current.add(session.id);
-					void sendToSessionRef.current(session.id, next.text).then((accepted) => {
-						if (accepted) setPreferences(removeQueuedPrompt(next.id));
-					}).finally(() => queueDrainingRef.current.delete(session.id));
-				}
-			}
-			queueDrainStatusesRef.current.set(session.id, session.status);
-		}
+		drainPromptQueues(sessions, {
+			refs: { statuses: queueDrainStatusesRef.current, draining: queueDrainingRef.current },
+			send: (sessionId, text) => sendToSessionRef.current(sessionId, text),
+			onAccepted: (promptId) => setPreferences(removeQueuedPrompt(promptId))
+		});
 	}, [sessions]);
 
 	useEffect(() => {
@@ -1077,14 +627,6 @@ export default function App() {
 		(laguna?.phase === "loading" || !laguna?.loadedModel)
 	);
 	const activeLocalModel = activeChatSession?.target.kind === "local";
-	/*
-	 * The rail takes a fixed-ish column out of the workbench. Below this width
-	 * it squeezed the transcript until the composer fell under its 320px usable
-	 * floor and slid beneath the rail. Unmount rather than `display: none` so
-	 * the pane genuinely does not exist for layout, measurement, or a11y.
-	 * 368px = the composer's 320px floor plus the transcript's 24px gutters;
-	 * 300px = the rail's own minimum column.
-	 */
 	const workbenchWidth = viewportWidth - (sidebarVisible ? sidebarWidth : 0);
 	const sidePanelFits = workbenchWidth >= 368 + 300;
 	const showSidePanel = sidePanelOpen && sidePanelFits && (sidePanelTab === "outputs" || activeLocalModel);
@@ -1613,163 +1155,24 @@ export default function App() {
 	const showComposer = view.kind === "landing" || view.kind === "chat";
 
 	useEffect(() => {
-		const inventoryTab =
-			view.kind === "inventory" ? ("containers" as const) : null;
 		const visibleEvents = activeSessionId
 			? (eventsBySessionRef.current[activeSessionId] ?? [])
 			: [];
-		const api: SemanticEvalApi = {
-			schemaVersion: "synth.desktop-eval-api.v1",
-			getState: () => ({
-				schemaVersion: "synth.desktop-semantic-ui.v1",
-				selectedSessionId: activeSessionId,
-				sessions,
-				visibleEvents,
-				openVisualId: openArtifactId,
-				inventoryTab,
-				controls: [
-					{
-						id: "new-conversation",
-						role: "button",
-						name: "New conversation",
-						enabled: !busy
-					},
-					{
-						id: "composer-input",
-						role: "textbox",
-						name: "Message composer",
-						enabled: showComposer && !busy
-					},
-					{
-						id: "composer-send",
-						role: "button",
-						name: "Send",
-						enabled: showComposer && !busy
-					},
-					{
-						id: "open-inventory",
-						role: "button",
-						name: "Inventory",
-						enabled: true
-					}
-				]
-			}),
-			listActions: () => [
-				"create_session",
-				"send_message",
-				"open_visual",
-				"list_inventory",
-				"select_session",
-				"wait_for_terminal",
-				"export_session"
-			],
-			invoke: async (action, args = {}) => {
-				if (action === "create_session") {
-					const target =
-						typeof args.targetId === "string"
-							? args.targetId
-							: typeof args.target === "string"
-								? args.target
-								: selectedTargetId;
-					const objective = typeof args.objective === "string" ? args.objective : undefined;
-					return createConversation(target, undefined, objective);
-				}
-				if (action === "send_message") {
-					if (typeof args.body !== "string") throw new Error("send_message requires body");
-					const sessionId =
-						typeof args.sessionId === "string" ? args.sessionId : activeSessionId;
-					if (!sessionId) throw new Error("send_message requires an active session");
-					await sendToSession(sessionId, args.body);
-					return { ok: true };
-				}
-				if (action === "open_visual") {
-					const visualId = args.visualId;
-					if (typeof visualId !== "string") throw new Error("open_visual requires visualId");
-					if (!window.synthVisuals) throw new Error("Rust visual registry is unavailable");
-					const visual = await window.synthVisuals.get(visualId);
-					openVisualRecord(visual);
-					return visual;
-				}
-				if (action === "list_inventory") {
-					if (!window.synthInventory || !window.synthVisuals) {
-						throw new Error("Rust inventory is unavailable");
-					}
-					const [containers, traces, visuals] = await Promise.all([
-						window.synthInventory.listContainers(),
-						window.synthInventory.listTraces(),
-						window.synthVisuals.list({ limit: 500 })
-					]);
-					return { containers, traces, visuals };
-				}
-				if (action === "select_session") {
-					const sessionId = args.sessionId;
-					if (typeof sessionId !== "string") {
-						throw new Error("select_session requires sessionId");
-					}
-					const session = sessions.find((s) => s.id === sessionId);
-					if (!session) throw new Error("session not found");
-					if (sessionIsLocalChat(session)) openChat(sessionId);
-					else if (sessionIsSync(session)) setView({ kind: "sync", sessionId });
-					else setView({ kind: "async", sessionId });
-					return { selectedSessionId: sessionId };
-				}
-				if (action === "wait_for_terminal") {
-					const sessionId =
-						typeof args.sessionId === "string" ? args.sessionId : activeSessionId;
-					if (!sessionId) throw new Error("wait_for_terminal requires sessionId");
-					if (!window.synthCore) throw new Error("Rust journal is unavailable");
-					const timeoutMs =
-						typeof args.timeoutMs === "number" ? args.timeoutMs : 600_000;
-					const pollMs = typeof args.pollMs === "number" ? args.pollMs : 500;
-					const deadline = Date.now() + timeoutMs;
-					let after = 0;
-					while (Date.now() < deadline) {
-						const page = await window.synthCore.sessionEventsAfter(sessionId, after, 500);
-						for (const event of page) {
-							after = Math.max(after, event.sessionSequence ?? event.sequence);
-							const kind = event.kind;
-							if (
-								kind === "run.completed" ||
-								kind === "run.failed" ||
-								kind === "run.cancelled" ||
-								kind === "session.run.completed" ||
-								kind === "session.run.failed"
-							) {
-								return { terminal: true, kind, event, sessionId };
-							}
-						}
-						await new Promise((resolve) => setTimeout(resolve, pollMs));
-					}
-					return { terminal: false, timedOut: true, sessionId, afterSequence: after };
-				}
-				if (action === "export_session") {
-					const sessionId =
-						typeof args.sessionId === "string" ? args.sessionId : activeSessionId;
-					if (!sessionId) throw new Error("export_session requires sessionId");
-					if (!window.synthCore) throw new Error("Rust journal is unavailable");
-					const events = [];
-					let after = 0;
-					for (;;) {
-						const page = await window.synthCore.sessionEventsAfter(sessionId, after, 500);
-						if (!page.length) break;
-						for (const event of page) {
-							after = Math.max(after, event.sessionSequence ?? event.sequence);
-						}
-						events.push(...page);
-						if (events.length > 50_000) break;
-					}
-					const session = sessions.find((s) => s.id === sessionId) ?? null;
-					return {
-						schemaVersion: "synth.eval-session-export.v1",
-						sessionId,
-						session,
-						events,
-						eventCount: events.length
-					};
-				}
-				throw new Error(`Unknown semantic action: ${action}`);
-			}
-		};
+		const api = createSemanticEvalApi({
+			activeSessionId,
+			sessions,
+			visibleEvents,
+			openArtifactId,
+			view,
+			busy,
+			showComposer,
+			selectedTargetId,
+			createConversation,
+			sendToSession,
+			openVisualRecord,
+			openChat,
+			setView
+		});
 		window.__synthEval = api;
 		window.__synthPreferences = preferencesAdapter();
 		window.dispatchEvent(new CustomEvent("synth-eval-ready"));
@@ -1788,14 +1191,12 @@ export default function App() {
 		sendToSession,
 		sessions,
 		showComposer,
-		view.kind
+		view
 	]);
 
 	return (
 		<div className="app-shell">
 			<div className="body-row">
-					{/* Settings owns the whole left rail; the conversation sidebar and its
-					    persisted visibility/width return untouched when Settings closes. */}
 					{view.kind !== "settings" ? <Sidebar
 						state={state}
 						lagunaStatus={laguna}
@@ -1868,75 +1269,32 @@ export default function App() {
 				/> : null}
 
 				<main className="main-pane">
-					<header className="titlebar" data-testid="titlebar" data-tauri-drag-region="">
-						<div className="titlebar-tabs" data-tauri-drag-region="">
-							<div className="tab tab-active" role="tab" aria-selected data-tauri-drag-region="">
-								<SynthLogo className="tab-logo" compact />
-								<span>{truncate(tabLabel, 28)}</span>
-								<button
-									type="button"
-									className="tab-close"
-									aria-label="Close tab"
-									onClick={() => {
-										setView({ kind: "landing" });
-										showToast("Back to landing");
-									}}
-								>
-									×
-								</button>
-							</div>
-							{activeLocalModel ? <button
-								type="button"
-								className="tab-new"
-								aria-label="New tab"
-								onClick={onNewConversation}
-							>
-								+
-							</button> : null}
-						</div>
-						<div className="titlebar-actions">
-							<button
-								type="button"
-								className="titlebar-icon-btn"
-								aria-label={terminalOpen ? "Hide terminal" : "Show terminal"}
-								title="Toggle terminal (⌘J)"
-								data-testid="toggle-terminal"
-								onClick={() => {
-									setTerminalOpen((current) => {
-										const next = !current;
-										persistLayoutSnapshot({ bottomPanelVisible: next });
-										return next;
-									});
-								}}
-							>
-								<IconTerminal />
-							</button>
-							{activeLocalModel ? <button
-								type="button"
-								className={`titlebar-icon-btn${sidePanelOpen && sidePanelTab === "inference" ? " active" : ""}`}
-								aria-label={sidePanelOpen && sidePanelTab === "inference" ? "Hide inference panel" : "Show inference panel"}
-								aria-pressed={sidePanelOpen && sidePanelTab === "inference"}
-								title="Local inference panel"
-								data-testid="toggle-inference-rail"
-								onClick={() => {
-									const next = !(sidePanelOpen && sidePanelTab === "inference");
-									setSidePanelTab("inference");
-									setSidePanelOpen(next);
-										window.localStorage.setItem("synth.inferenceRailOpen", next ? "1" : "0");
-								}}
-							>
-								<IconSidePanel />
-							</button> : null}
-							<span
-								className="titlebar-version"
-								data-testid="app-version"
-								aria-label={`Synth Desktop version ${appVersion}`}
-								title={`Synth Desktop v${appVersion}`}
-							>
-								v{appVersion}
-							</span>
-						</div>
-					</header>
+					<AppTitlebar
+						tabLabel={tabLabel}
+						appVersion={appVersion}
+						activeLocalModel={Boolean(activeLocalModel)}
+						terminalOpen={terminalOpen}
+						sidePanelOpen={sidePanelOpen}
+						sidePanelTab={sidePanelTab}
+						onCloseTab={() => {
+							setView({ kind: "landing" });
+							showToast("Back to landing");
+						}}
+						onNewConversation={onNewConversation}
+						onToggleTerminal={() => {
+							setTerminalOpen((current) => {
+								const next = !current;
+								persistLayoutSnapshot({ bottomPanelVisible: next });
+								return next;
+							});
+						}}
+						onToggleInference={() => {
+							const next = !(sidePanelOpen && sidePanelTab === "inference");
+							setSidePanelTab("inference");
+							setSidePanelOpen(next);
+							window.localStorage.setItem("synth.inferenceRailOpen", next ? "1" : "0");
+						}}
+					/>
 
 					{bootError ? (
 						<div className="boot-error" role="alert">
@@ -1944,294 +1302,98 @@ export default function App() {
 						</div>
 					) : null}
 
-					{view.kind === "settings" ? (
-						<SettingsPage
-							account={{
-								view: accountView,
-								summary: accountSummary,
-								deviceUsage: accountUsage,
-								connection: backendSettings,
-								onBilling: (action) => void openBilling(action),
-								onRefresh: () => refreshAccountSummary(true),
-								onOpenDeviceUsage: () => setView({ kind: "inventory" })
-							}}
-							key={view.section ?? "general"}
-							onBack={() => setView({ kind: "landing" })}
-							onReloadLaguna={onReloadLaguna}
-							lagunaPhase={laguna?.phase}
-							initialSection={view.section}
-							preferences={preferences}
-							onPreferencesChange={(next) => {
-								setPreferences(next);
-								applyPreferencesToDocument(next);
-								setSidebarVisible(next.layout.last.sidebarVisible);
-								setSidebarWidth(next.layout.last.sidebarWidth);
-								setInventoryContainerWidth(next.layout.last.outputPaneWidth);
-								setTerminalOpen(next.layout.last.bottomPanelVisible);
-								setApprovalMode(next.approvalMode);
-								setApprovalPolicy(next.approvalPolicy);
-								setSandboxMode(next.sandboxMode);
-							}}
-						/>
-					) : null}
-
-					{view.kind === "connectors" ? (
-						<ConnectorsPage
-							onBack={() => setView({ kind: "landing" })}
-							onConfigure={(name) => showToast(name === "Synth Containers" || name === "Synth Visuals"
-								? `${name} is provisioned automatically for every agent`
-								: `${name} setup is not installed in this build`)}
-						/>
-					) : null}
-
-					{view.kind === "visuals" ? (
-						<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`}>
-							<VisualsPage
-								onOpenVisual={openVisualRecord}
-								onGoToChat={(sessionId) => {
-									const session = sessions.find((item) => item.id === sessionId);
-									if (!session) return;
-									if (sessionIsLocalChat(session)) openChat(sessionId);
-									else if (sessionIsSync(session)) setView({ kind: "sync", sessionId });
-									else setView({ kind: "async", sessionId });
-								}}
-								onBack={() => setView({ kind: "landing" })}
-								onCreate={() => {
-									void (async () => {
-										if (!window.synthVisuals) {
-											showToast("Visual registry requires Synth Desktop");
-											return;
-										}
-										try {
-											const templates = await window.synthVisuals.listTemplates();
-											const templateId = templates[0]?.id ?? "reward.breakdown.v1";
-											const visual = await window.synthVisuals.create({
-												templateId,
-												title: "New visual",
-												bindings: {},
-												sessionId: activeSessionId ?? undefined
-											});
-											openVisualRecord(visual);
-											showToast(`Created visual · ${visual.title}`);
-										} catch (reason) {
-											showToast(String(reason));
-										}
-									})();
-								}}
-							/>
-							{openArtifact ? (
-								<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
-							) : null}
-						</div>
-					) : null}
-
-					{view.kind === "optimizers" ? (
-						<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`}>
-							<OptimizersPage
-								onOpenVisual={(visualId) => {
-									void (async () => {
-										if (!window.synthVisuals) {
-											showToast("Visual registry requires Synth Desktop");
-											return;
-										}
-										try {
-											const visual = await window.synthVisuals.get(visualId);
-											openVisualRecord(visual);
-										} catch (reason) {
-											showToast(String(reason));
-										}
-									})();
-								}}
-								onBack={() => setView({ kind: "landing" })}
-							/>
-							{openArtifact ? (
-								<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
-							) : null}
-						</div>
-					) : null}
-
-					{view.kind === "inventory" ? (
-						<div
-							className={`inventory-workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}`}
-							style={{ "--container-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}
-						>
-							<InventoryPage
-								onOpenVisual={openVisualRecord}
-								onOpenContainer={(id) => void toggleContainer(id)}
-								openContainerId={openContainer?.id ?? null}
-								onBack={() => setView({ kind: "landing" })}
-							/>
-							{openArtifact ? (
-								<VisualPane
-									artifact={openArtifact}
-									onClose={() => toggleArtifact(null)}
-								/>
-							) : null}
-							{openContainer ? (
-								<>
-									<PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => {
-										setInventoryContainerWidth(width);
-										persistLayoutSnapshot({ outputPaneWidth: width });
-									}} />
-									<ContainerPane
-										container={openContainer}
-										expanded={containerPaneExpanded}
-										onExpandedChange={setContainerPaneExpanded}
-										onProbe={() => void probeOpenContainer()}
-										onClose={() => void toggleContainer(null)}
-									/>
-								</>
-							) : null}
-						</div>
-					) : null}
-
-					{view.kind === "landing" ? (
-						<LandingPage
-							state={state}
-							selectedTargetId={selectedTargetId}
-							onSelectTarget={onSelectTarget}
-							onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
-							onResolveBilling={() => setUsageSheetOpen(true)}
-						/>
-					) : null}
-
-					{view.kind === "chat" && activeChat ? (
-						<div className={`workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}${showSidePanel ? " with-side-panel" : ""}`}>
-								<ChatTranscript
-									chat={activeChat}
-									openArtifactId={openArtifactId}
-									onOpenArtifact={toggleArtifact}
-									openContainerId={openContainer?.id ?? null}
-									onOpenContainer={(id) => void toggleContainer(id)}
-									onApprove={(approvalId) => void controlActive("approve", { approvalId })}
-									onAlwaysAllow={(approvalId) => void controlActive("approve", { approvalId, decision: "always" })}
-										onReject={(approvalId) => void controlActive("reject", { approvalId })}
-										running={activeChatRunning}
-										warmingUp={activeChatWarmingUp}
-										onStop={() => {
-											setQueueAfterStop(promptsForConversation(activeChat.id).length > 0);
-											void controlActive("cancel");
-										}}
-										activityMode={preferences.toolActivity.mode}
-									onActivityModeChange={(mode) => setPreferences(setToolActivityMode(mode))}
-									outputsOpen={showSidePanel && sidePanelTab === "outputs"}
-									onToggleOutputs={() => {
-										const next = !(showSidePanel && sidePanelTab === "outputs");
-										setSidePanelTab("outputs");
-										setSidePanelOpen(next);
-									}}
-							/>
-							{openArtifact ? (
-								<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
-							) : null}
-							{openContainer ? (
-								<ContainerPane
-									container={openContainer}
-									expanded={containerPaneExpanded}
-									onExpandedChange={setContainerPaneExpanded}
-									onProbe={() => void probeOpenContainer()}
-									onClose={() => void toggleContainer(null)}
-								/>
-							) : null}
-							{showSidePanel ? (
-								<WorkbenchSidePanel
-									activeTabId={sidePanelTab}
-									onTabChange={(tabId) => setSidePanelTab(tabId as "outputs" | "inference")}
-									onClose={() => setSidePanelOpen(false)}
-									tabs={[
-										{
-											id: "outputs",
-											label: "Outputs",
-											badge: outputContainerIds(activeChat).length + (activeChat.artifacts?.length ?? 0),
-											content: <OutputsPanel chat={activeChat} openArtifactId={openArtifactId} onOpenArtifact={toggleArtifact} openContainerId={openContainer?.id ?? null} onOpenContainer={(id) => void toggleContainer(id)} />
-										},
-										...(activeLocalModel ? [{
-											id: "inference",
-											label: "Inference",
-											content: <InferencePanel visible monitor={inferenceMonitor} observedPerformance={persistedPerformanceByTarget.get("local-laguna") ?? null} turnRunning={Boolean(activeChatRunning && activeChatSession?.target.kind === "local")} warmingUp={activeChatWarmingUp} onOpenSettings={() => setView({ kind: "settings", section: "inference" })} />
-										}] : [])
-									]}
-								/>
-							) : null}
-						</div>
-					) : null}
-
-					{/*
-					 * v0.1 removal contract: the CloudDesk sync/async routes are the
-					 * Intern surface and stay unmounted. components/CloudDesk.tsx is
-					 * retained dormant so v0.2 re-entry is a routing change, not a
-					 * rewrite.
-					 */}
+					<MainRoutes
+						view={view}
+						setView={setView}
+						state={state}
+						sessions={sessions}
+						selectedTargetId={selectedTargetId}
+						onSelectTarget={onSelectTarget}
+						activeChat={activeChat}
+						activeChatSession={activeChatSession}
+						activeChatRunning={activeChatRunning}
+						activeChatWarmingUp={activeChatWarmingUp}
+						activeLocalModel={Boolean(activeLocalModel)}
+						activeSessionId={activeSessionId}
+						openArtifact={openArtifact}
+						openArtifactId={openArtifactId}
+						openContainer={openContainer}
+						containerPaneExpanded={containerPaneExpanded}
+						setContainerPaneExpanded={setContainerPaneExpanded}
+						inventoryContainerWidth={inventoryContainerWidth}
+						setInventoryContainerWidth={setInventoryContainerWidth}
+						persistLayoutSnapshot={persistLayoutSnapshot}
+						showSidePanel={showSidePanel}
+						sidePanelTab={sidePanelTab}
+						setSidePanelTab={setSidePanelTab}
+						setSidePanelOpen={setSidePanelOpen}
+						inferenceMonitor={inferenceMonitor}
+						persistedPerformanceByTarget={persistedPerformanceByTarget}
+						preferences={preferences}
+						setPreferences={setPreferences}
+						accountView={accountView}
+						accountSummary={accountSummary}
+						accountUsage={accountUsage}
+						backendSettings={backendSettings}
+						laguna={laguna}
+						onReloadLaguna={onReloadLaguna}
+						openBilling={openBilling}
+						refreshAccountSummary={refreshAccountSummary}
+						setUsageSheetOpen={setUsageSheetOpen}
+						setSidebarVisible={setSidebarVisible}
+						setSidebarWidth={setSidebarWidth}
+						setTerminalOpen={setTerminalOpen}
+						setApprovalMode={setApprovalMode}
+						setApprovalPolicy={setApprovalPolicy}
+						setSandboxMode={setSandboxMode}
+						showToast={showToast}
+						openChat={openChat}
+						openVisualRecord={openVisualRecord}
+						toggleArtifact={toggleArtifact}
+						toggleContainer={toggleContainer}
+						probeOpenContainer={probeOpenContainer}
+						controlActive={controlActive}
+						setQueueAfterStop={setQueueAfterStop}
+						promptsForConversationLength={(chatId) => promptsForConversation(chatId).length}
+						onActivityModeChange={(mode) => setPreferences(setToolActivityMode(mode))}
+					/>
 
 					{showComposer ? (
 						<Composer
 							state={state}
-							workspaceSessionId={activeSessionId}
-							onEnsureWorkspaceSession={async () => {
-								if (activeSessionId) return activeSessionId;
-								if (view.kind !== "landing") return null;
-								const session = await createConversation(selectedTargetId);
-								return session.id;
-							}}
-							workspaceFallback={activeSessionId ? (sessions.find((item) => item.id === activeSessionId)?.metadata.workspace as string | undefined) ?? defaultWorkspace : defaultWorkspace}
-							workspaceScope={workspaceScope}
-							onWorkspaceScopeChange={setWorkspaceScope}
-							onWorkspaceError={showToast}
 							onSend={(text) => void onComposerSend(text)}
 							onSelectTarget={onSelectTarget}
-							onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
-							onResolveBilling={() => setUsageSheetOpen(true)}
-							onOpenVoiceSettings={() => setView({ kind: "settings", section: "voice" })}
-							skills={composerSkills}
-							onSlashNew={onNewConversation}
-							onSlashMcp={() => setView({ kind: "connectors" })}
-							onSlashRename={onSlashRename}
-							onSlashCompact={onSlashCompact}
-							approvalPolicy={approvalPolicy}
-							sandboxMode={sandboxMode}
-							onSelectPermissions={selectActivePermissions}
-							modelKnobValues={modelKnobValues}
-							onSelectModelKnob={selectModelKnob}
-							modelMedianTpsLabel={selectedModelMedianTpsLabel}
-							aggregateModelTpsLabels={aggregateModelTpsLabels}
-							agentWorking={Boolean(activeChatRunning)}
-							activeEnterAction={preferences.submission.activeEnterAction}
-							steerSupported={Boolean(nativeCodex?.steerTurn)}
-							steerError={steerError}
-							sendFailure={failedSend && failedSend.sessionId === activeChat?.id
-								? { message: failedSend.message, onRetry: retryFailedSend }
-								: null}
-							onSteer={async (text) => {
-								if (!activeSessionId || !nativeCodex?.steerTurn) {
-									setSteerError("Steer is not supported by the current runtime. Queue the prompt or wait for the turn to finish.");
-									return;
-								}
-								try {
-									await nativeCodex.steerTurn(activeSessionId, text);
+							permissions={{
+								approvalPolicy,
+								sandboxMode,
+								onSelect: selectActivePermissions
+							}}
+							model={{
+								knobValues: modelKnobValues,
+								onSelectKnob: selectModelKnob,
+								medianTpsLabel: selectedModelMedianTpsLabel,
+								aggregateTpsLabels: aggregateModelTpsLabels
+							}}
+							queue={{
+								prompts: activeSessionId ? promptsForConversation(activeSessionId, preferences) : [],
+								onEnqueue: (text) => {
+									const conversationId = activeSessionId;
+									if (!conversationId) {
+										showToast("No active conversation to queue into");
+										return;
+									}
 									setSteerError(null);
-								} catch (reason) {
-									setSteerError(reason instanceof Error ? reason.message : String(reason));
-								}
-							}}
-							onEnqueue={(text) => {
-								const conversationId = activeSessionId;
-								if (!conversationId) {
-									showToast("No active conversation to queue into");
-									return;
-								}
-								setSteerError(null);
-								setPreferences(enqueuePrompt(conversationId, text));
-							}}
-							queuedPrompts={activeSessionId ? promptsForConversation(activeSessionId, preferences) : []}
-							onEditQueuedPrompt={(id, text) => {
-								try {
-									setPreferences(updateQueuedPrompt(id, text));
-								} catch (reason) {
-									showToast(reason instanceof Error ? reason.message : String(reason));
-								}
-							}}
-								onRemoveQueuedPrompt={(id) => setPreferences(removeQueuedPrompt(id))}
-								onPromoteQueuedPrompt={async (id, text) => {
+									setPreferences(enqueuePrompt(conversationId, text));
+								},
+								onEdit: (id, text) => {
+									try {
+										setPreferences(updateQueuedPrompt(id, text));
+									} catch (reason) {
+										showToast(reason instanceof Error ? reason.message : String(reason));
+									}
+								},
+								onRemove: (id) => setPreferences(removeQueuedPrompt(id)),
+								onPromote: async (id, text) => {
 									if (!activeSessionId || !nativeCodex?.steerTurn) {
 										setSteerError("Steer is not supported by the current runtime. Keep the prompt queued or wait for the turn to finish.");
 										return;
@@ -2243,16 +1405,63 @@ export default function App() {
 									} catch (reason) {
 										setSteerError(reason instanceof Error ? reason.message : String(reason));
 									}
-								}}
-								queueAfterStop={queueAfterStop}
-							onKeepQueued={() => setQueueAfterStop(false)}
-							onSendNextQueued={() => {
-								if (!activeSessionId) return;
-								const next = nextQueuedPrompt(activeSessionId);
-								setQueueAfterStop(false);
-								if (next) void sendToSession(activeSessionId, next.text).then((accepted) => {
-									if (accepted) setPreferences(removeQueuedPrompt(next.id));
-								});
+								},
+								afterStop: queueAfterStop,
+								onKeep: () => setQueueAfterStop(false),
+								onSendNext: () => {
+									if (!activeSessionId) return;
+									const next = nextQueuedPrompt(activeSessionId);
+									setQueueAfterStop(false);
+									if (next) void sendToSession(activeSessionId, next.text).then((accepted) => {
+										if (accepted) setPreferences(removeQueuedPrompt(next.id));
+									});
+								}
+							}}
+							turn={{
+								agentWorking: Boolean(activeChatRunning),
+								activeEnterAction: preferences.submission.activeEnterAction,
+								steerSupported: Boolean(nativeCodex?.steerTurn),
+								steerError,
+								sendFailure: failedSend && failedSend.sessionId === activeChat?.id
+									? { message: failedSend.message, onRetry: retryFailedSend }
+									: null,
+								onSteer: async (text) => {
+									if (!activeSessionId || !nativeCodex?.steerTurn) {
+										setSteerError("Steer is not supported by the current runtime. Queue the prompt or wait for the turn to finish.");
+										return;
+									}
+									try {
+										await nativeCodex.steerTurn(activeSessionId, text);
+										setSteerError(null);
+									} catch (reason) {
+										setSteerError(reason instanceof Error ? reason.message : String(reason));
+									}
+								}
+							}}
+							workspace={{
+								sessionId: activeSessionId,
+								onEnsureSession: async () => {
+									if (activeSessionId) return activeSessionId;
+									if (view.kind !== "landing") return null;
+									const session = await createConversation(selectedTargetId);
+									return session.id;
+								},
+								fallback: activeSessionId ? (sessions.find((item) => item.id === activeSessionId)?.metadata.workspace as string | undefined) ?? defaultWorkspace : defaultWorkspace,
+								scope: workspaceScope,
+								onScopeChange: setWorkspaceScope,
+								onError: showToast
+							}}
+							slash={{
+								skills: composerSkills,
+								onNew: onNewConversation,
+								onMcp: () => setView({ kind: "connectors" }),
+								onRename: onSlashRename,
+								onCompact: onSlashCompact
+							}}
+							account={{
+								onConfigureAccount: () => setView({ kind: "settings", section: "account" }),
+								onResolveBilling: () => setUsageSheetOpen(true),
+								onOpenVoiceSettings: () => setView({ kind: "settings", section: "voice" })
 							}}
 						/>
 					) : null}
@@ -2272,36 +1481,27 @@ export default function App() {
 		</main>
 	</div>
 
-	{searchOpen ? (
-		<ConversationSearch
-			state={state}
-			onClose={closeSearch}
-			onOpenChat={(id) => openChat(id)}
-		/>
-	) : null}
-
-	<UsageSheet
-		open={usageSheetOpen}
-		view={accountView}
-		summary={accountSummary}
-		onClose={() => setUsageSheetOpen(false)}
+	<AppOverlays
+		searchOpen={searchOpen}
+		state={state}
+		onCloseSearch={closeSearch}
+		onOpenChat={(id) => openChat(id)}
+		usageSheetOpen={usageSheetOpen}
+		accountView={accountView}
+		accountSummary={accountSummary}
+		onCloseUsage={() => setUsageSheetOpen(false)}
 		onSignIn={() => {
 			setUsageSheetOpen(false);
 			setView({ kind: "settings", section: "account" });
 		}}
 		onBilling={(action) => void openBilling(action)}
-		onRetry={() => refreshAccountSummary(true)}
+		onRetryAccount={() => refreshAccountSummary(true)}
 		onOpenDeviceUsage={() => {
 			setUsageSheetOpen(false);
 			setView({ kind: "inventory" });
 		}}
+		toast={toast}
 	/>
-
-			{toast ? (
-				<div className="toast" role="status" key={toast}>
-					{toast}
-				</div>
-			) : null}
 		</div>
 	);
 }

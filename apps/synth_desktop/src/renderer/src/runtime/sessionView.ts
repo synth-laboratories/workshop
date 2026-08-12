@@ -1298,6 +1298,132 @@ export function healthToModelStatus(
 	};
 }
 
+/**
+ * Per-session view slice cache.
+ *
+ * Token events append to one session's events array (new reference for that
+ * key only). Caching by `(session, events, codexActivity)` identity means
+ * `buildLandingState` recomputes only the dirty session on each store commit
+ * instead of O(sessions × events) for every token.
+ *
+ * Partial: the LandingState aggregate still reallocates the chats/sync arrays
+ * on every call; only the expensive events→messages/activity/artifacts work is
+ * memoized per session. Prefer `useSessionEvents` + `buildSessionViewSlice` in
+ * active-chat surfaces when you need a single-session subscription.
+ */
+type SessionViewSliceCacheKey = {
+	session: Session;
+	events: RuntimeEvent[];
+	codexActivity: CodexActivityEvent[];
+	reasoningDisplay: "none" | "summary" | "full";
+};
+
+type SessionViewSlice =
+	| { kind: "chat"; chat: LocalChat }
+	| { kind: "sync"; session: SyncSession }
+	| { kind: "async"; intern: AsyncInternPin; isRustIntern: boolean };
+
+const sessionViewSliceCache = new WeakMap<object, { key: SessionViewSliceCacheKey; value: SessionViewSlice | null }>();
+
+function artifactEventsForSession(
+	events: RuntimeEvent[],
+	codexActivity: CodexActivityEvent[]
+): RuntimeEvent[] {
+	return [
+		...events,
+		...codexActivity.map(
+			(event, index): RuntimeEvent => ({
+				schemaVersion: "synth.desktop-runtime-event.v1",
+				sessionId: event.sessionId,
+				sequence: events.length + index + 1,
+				eventKind: event.eventKind,
+				payload: event.payload,
+				createdAt: event.createdAt,
+				source: "intern"
+			})
+		)
+	].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+/** Build (or reuse) the expensive per-session projection. */
+export function buildSessionViewSlice(
+	session: Session,
+	events: RuntimeEvent[],
+	codexActivity: CodexActivityEvent[] = []
+): SessionViewSlice | null {
+	const reasoningDisplay =
+		modelCapabilitiesForExecutionTarget(session.target)?.reasoningDisplay ?? "none";
+	const cached = sessionViewSliceCache.get(events);
+	if (
+		cached &&
+		cached.key.session === session &&
+		cached.key.events === events &&
+		cached.key.codexActivity === codexActivity &&
+		cached.key.reasoningDisplay === reasoningDisplay
+	) {
+		return cached.value;
+	}
+
+	const messages = eventsToMessages(events);
+	const artifacts = eventsToArtifacts(artifactEventsForSession(events, codexActivity));
+	let value: SessionViewSlice | null = null;
+
+	if (sessionIsLocalChat(session)) {
+		value = {
+			kind: "chat",
+			chat: {
+				id: session.id,
+				title: session.title,
+				messages,
+				artifacts,
+				activityByMessageId: eventsToLocalActivity(events, messages, reasoningDisplay)
+			}
+		};
+	} else if (sessionIsSync(session)) {
+		value = {
+			kind: "sync",
+			session: {
+				id: session.id,
+				title: session.title,
+				status: mapSessionStatus(session.status),
+				remoteId: session.remoteId ?? session.id,
+				cursor: session.latestCursor,
+				messages,
+				activity: eventsToActivity(events, codexActivity),
+				artifacts
+			}
+		};
+	} else if (sessionIsAsync(session)) {
+		const activity = eventsToActivity(events, codexActivity);
+		const phase = mapAsyncPhase(session.status, events);
+		value = {
+			kind: "async",
+			isRustIntern: session.metadata.runtime === "rust-intern",
+			intern: {
+				phase,
+				summary:
+					session.status === "waiting_for_input"
+						? "Waiting for operator input"
+						: phase === "sleeping"
+							? "Checkpoint saved · waiting for the next cycle"
+							: session.title,
+				needsInput: session.status === "waiting_for_input",
+				leaveSafe: true,
+				remoteId: session.remoteId ?? session.id,
+				cursor: session.latestCursor,
+				messages,
+				activity
+			}
+		};
+	}
+
+	sessionViewSliceCache.set(events, {
+		key: { session, events, codexActivity, reasoningDisplay },
+		value
+	});
+	return value;
+}
+
 export function buildLandingState(args: {
 	health: RuntimeHealth | null;
 	sessions: Session[];
@@ -1321,74 +1447,22 @@ export function buildLandingState(args: {
 	for (const session of args.sessions) {
 		const events = args.eventsBySession[session.id] ?? [];
 		const codexActivity = args.codexActivityBySession?.[session.id] ?? [];
-		const messages = eventsToMessages(events);
-		const artifactEvents = [
-			...events,
-			...codexActivity.map((event, index): RuntimeEvent => ({
-				schemaVersion: "synth.desktop-runtime-event.v1",
-				sessionId: event.sessionId,
-				sequence: events.length + index + 1,
-				eventKind: event.eventKind,
-				payload: event.payload,
-				createdAt: event.createdAt,
-				source: "intern"
-			}))
-		].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
-		const artifacts = eventsToArtifacts(artifactEvents);
+		const slice = buildSessionViewSlice(session, events, codexActivity);
+		if (!slice) continue;
 
-		if (sessionIsLocalChat(session)) {
-			chats.push({
-				id: session.id,
-				title: session.title,
-				messages,
-				artifacts,
-				activityByMessageId: eventsToLocalActivity(
-					events,
-					messages,
-					modelCapabilitiesForExecutionTarget(session.target)?.reasoningDisplay ?? "none"
-				)
-			});
+		if (slice.kind === "chat") {
+			chats.push(slice.chat);
 			continue;
 		}
-
-		if (sessionIsSync(session)) {
-			syncSessions.push({
-				id: session.id,
-				title: session.title,
-				status: mapSessionStatus(session.status),
-				remoteId: session.remoteId ?? session.id,
-				cursor: session.latestCursor,
-				messages,
-				activity: eventsToActivity(events, codexActivity),
-				artifacts
-			});
+		if (slice.kind === "sync") {
+			syncSessions.push(slice.session);
 			continue;
 		}
-
-		if (sessionIsAsync(session)) {
-			// A migrated demo pin may coexist with the real organization singleton.
-			// Once a Rust-backed binding exists it is the canonical Background
-			// Intern projection and must not be overwritten by historical demo data.
-			const isRustIntern = session.metadata.runtime === "rust-intern";
-			if (asyncIntern && !isRustIntern) continue;
-			const activity = eventsToActivity(events, codexActivity);
-			const phase = mapAsyncPhase(session.status, events);
-			asyncIntern = {
-				phase,
-				summary:
-					session.status === "waiting_for_input"
-						? "Waiting for operator input"
-						: phase === "sleeping"
-							? "Checkpoint saved · waiting for the next cycle"
-						: session.title,
-				needsInput: session.status === "waiting_for_input",
-				leaveSafe: true,
-				remoteId: session.remoteId ?? session.id,
-				cursor: session.latestCursor,
-				messages,
-				activity
-			};
-		}
+		// A migrated demo pin may coexist with the real organization singleton.
+		// Once a Rust-backed binding exists it is the canonical Background
+		// Intern projection and must not be overwritten by historical demo data.
+		if (asyncIntern && !slice.isRustIntern) continue;
+		asyncIntern = slice.intern;
 	}
 
 	return {

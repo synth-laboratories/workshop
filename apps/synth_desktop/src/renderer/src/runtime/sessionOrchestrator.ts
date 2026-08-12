@@ -1,9 +1,9 @@
 /**
- * Session orchestration seam (Wave 3 stub).
+ * Session orchestration seam (Wave 3).
  *
- * Hosts will grow prompt-queue drain, compaction scheduling, and ensure-active
- * session flows here. For now it re-exports the session store writers so App
- * can migrate call sites without inventing a second status path.
+ * Owns the prompt-queue drain helper and re-exports session store writers so
+ * App can migrate call sites without inventing a second status path. Compaction
+ * scheduling and ensure-active session flows continue to land here.
  */
 
 export {
@@ -19,5 +19,26 @@ export {
 	replaceSessionEvents,
 	replaceSessions,
 	resetSessionStore,
-	upsertSession
+	upsertSession,
+	useSession,
+	useSessionEvents,
+	useSessionRunning,
+	useSessions,
+	useWorkingChatIds
 } from "../stores/sessionStore";
+
+export {
+	drainPromptQueues,
+	nextQueuedPrompt,
+	removeQueuedPrompt,
+	type PromptQueueDrainDeps,
+	type PromptQueueDrainRefs
+} from "./promptQueue";
+
+export {
+	buildLandingState,
+	buildSessionViewSlice,
+	sessionIsAsync,
+	sessionIsLocalChat,
+	sessionIsSync
+} from "./sessionView";

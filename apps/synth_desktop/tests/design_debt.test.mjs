@@ -50,7 +50,7 @@ test("Landing Set up an agent card is removed; Laguna reload stays a typed bridg
 	assert.match(app, /onReloadLaguna=\{onReloadLaguna\}/);
 	assert.doesNotMatch(app, /Reload Laguna — stub/);
 	const bridge = read("runtime/desktopBridge.ts");
-	assert.match(bridge, /invoke<LagunaStatus>\("laguna_reload"\)/);
+	assert.match(bridge, /invokeCommand<LagunaStatus>\(COMMANDS\.LAGUNA_RELOAD\)/);
 	const rust = readFileSync(join(appRoot, "src-tauri/src/lib.rs"), "utf8");
 	assert.match(rust, /async fn laguna_reload/);
 });
