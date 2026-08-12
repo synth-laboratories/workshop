@@ -274,9 +274,9 @@ test("the panel header renders a labelled settings button only when a target exi
 });
 
 test("the settings button deep-links to the Settings view without duplicative rail commentary", () => {
-	const app = readFileSync(join(appRoot, "src/renderer/src/App.tsx"), "utf8");
-	assert.match(app, /onOpenSettings=\{\(\) => setView\(\{ kind: "settings", section: "inference" \}\)\}/);
-	assert.doesNotMatch(app, /MLX sidecar|Owns local model memory, prompt caches, and the single-GPU queue\./);
+	const routes = readFileSync(join(appRoot, "src/renderer/src/routes.tsx"), "utf8");
+	assert.match(routes, /onOpenSettings=\{\(\) =>\s*\n?\s*setView\(\{ kind: "settings", section: "inference" \}\)/);
+	assert.doesNotMatch(routes, /MLX sidecar|Owns local model memory, prompt caches, and the single-GPU queue\./);
 });
 
 test("Settings hosts an Inference section after Models and follows deep links", () => {

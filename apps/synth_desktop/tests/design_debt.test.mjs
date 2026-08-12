@@ -47,7 +47,7 @@ test("Landing Set up an agent card is removed; Laguna reload stays a typed bridg
 	assert.doesNotMatch(landing, /quick-setup-agent/);
 	assert.doesNotMatch(landing, /Set up an agent/);
 	assert.doesNotMatch(landing, /onSetupAgent/);
-	assert.match(app, /onReloadLaguna=\{onReloadLaguna\}/);
+	assert.match(app, /onReloadLaguna=\{c\.onReloadLaguna\}/);
 	assert.doesNotMatch(app, /Reload Laguna — stub/);
 	const bridge = read("runtime/desktopBridge.ts");
 	assert.match(bridge, /invokeCommand<LagunaStatus>\(COMMANDS\.LAGUNA_RELOAD\)/);
@@ -112,7 +112,7 @@ test("intended design: deferred LoRA support leaves no fixture catalog or placeh
 });
 
 test("intended design: Inventory Attach defaults to GameBench Craftax :8098", () => {
-	const inventory = read("components/InventoryPage.tsx");
+	const inventory = read("components/DataPage.tsx");
 	assert.match(inventory, /127\.0\.0\.1:8098/);
 	assert.match(inventory, /data-testid="attach-container"/);
 	assert.match(inventory, /data-testid="import-trace-v5"/);
