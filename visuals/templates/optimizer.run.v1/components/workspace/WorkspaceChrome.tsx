@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 /**
  * Algorithm-agnostic optimizer workspace chrome: a sticky run header and a
  * semantic stage timeline. GEPA assembles these today; SFT and GELO templates
@@ -25,6 +27,7 @@ export function WorkspaceHeader({
   detail,
   metrics,
   lanes,
+  receipt,
   testId
 }: {
   statusText: string;
@@ -34,6 +37,7 @@ export function WorkspaceHeader({
   detail?: string;
   metrics: WorkspaceMetric[];
   lanes?: WorkspaceLane[];
+  receipt?: ReactNode;
   testId?: string;
 }) {
   return (
@@ -64,6 +68,7 @@ export function WorkspaceHeader({
           </div>
         ))}
       </div>
+      {receipt}
     </header>
   );
 }

@@ -113,7 +113,15 @@ function EvidenceIntegrity({ gepa }: { gepa: NonNullable<ProjectedState["gepa"]>
   );
 }
 
-function JobTerminationNotice({ gepa }: { gepa: NonNullable<ProjectedState["gepa"]> }) {
+function JobTerminationNotice({
+  gepa,
+  runId,
+  durableEventCount
+}: {
+  gepa: NonNullable<ProjectedState["gepa"]>;
+  runId: string;
+  durableEventCount: number;
+}) {
   const job = gepa.runtime.job;
   if (!job || !["terminated", "failed", "cancelled"].includes(job.state)) return null;
   const reason = job.reason?.replaceAll("_", " ") ?? job.message ?? "The job ended before completion.";
@@ -121,13 +129,16 @@ function JobTerminationNotice({ gepa }: { gepa: NonNullable<ProjectedState["gepa
     ? `${(job.rollingFailureRate * 100).toFixed(2)}% rolling failure rate exceeded ${(job.tolerance * 100).toFixed(2)}% tolerance.`
     : undefined;
   return (
-    <section role="alert" aria-label="Optimizer job termination" data-testid="gepa-job-termination" style={{ margin: "0 0 12px", border: "1px solid #d7a39f", borderLeft: "4px solid #b23830", borderRadius: 9, padding: "10px 12px", background: "#fff8f7" }}>
+    <section role="alert" aria-label="Optimizer terminal receipt" data-testid="gepa-job-termination" className="sv-terminal-receipt">
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
-        <strong style={{ color: "#8f2923" }}>Job {job.state}</strong>
+        <strong style={{ color: "#8f2923" }}>Terminal receipt</strong>
         <span className="sv-mono" style={{ color: "var(--sv-text-muted)", fontSize: 10 }}>{job.eventType ?? "runtime terminal event"}</span>
         {job.occurredAt ? <time style={{ marginLeft: "auto", color: "var(--sv-text-faint)", fontSize: 10 }}>{new Date(job.occurredAt).toLocaleString()}</time> : null}
       </div>
       <div style={{ marginTop: 4, fontSize: 12 }}>{reason}{rate ? ` · ${rate}` : ""}</div>
+      <div className="sv-terminal-receipt-provenance sv-mono" title={`Run ${runId} · ${durableEventCount} durable events`}>
+        Run {runId} · {durableEventCount} durable events
+      </div>
       {gepa.heldout?.reward == null ? <div style={{ marginTop: 4, color: "var(--sv-text-muted)", fontSize: 11 }}>Heldout was not run; no score was imputed.</div> : null}
     </section>
   );
@@ -294,7 +305,7 @@ export function GepaWorkspace({
       : undefined);
 
   const metrics: WorkspaceMetric[] = [
-    { label: "Job", value: gepa.runtime.job?.state ? gepa.runtime.job.state[0].toUpperCase() + gepa.runtime.job.state.slice(1) : terminal ? "Ended" : "Running", title: gepa.runtime.job?.reason?.replaceAll("_", " ") },
+    ...(!terminal ? [{ label: "Job", value: "Running" }] : []),
     { label: "Best train", value: bestScore != null ? bestScore.toFixed(2) : "—" },
     { label: "Heldout", value: heldoutValue },
     {
@@ -369,10 +380,11 @@ export function GepaWorkspace({
           statusText={presentation.text}
           statusTone={presentation.tone}
           live={presentation.dot}
-          headline={gepa.activity.label}
+          headline={terminal ? (gepa.runtime.job?.reason?.replaceAll("_", " ") ?? "Run ended") : gepa.activity.label}
           detail={gepa.activity.detail !== gepa.activity.label ? gepa.activity.detail : undefined}
           metrics={metrics}
           lanes={lanes}
+          receipt={<JobTerminationNotice gepa={gepa} runId={run.id} durableEventCount={projected.cursorSeq} />}
           testId="gepa-run-header"
         />
       ) : null}
@@ -385,7 +397,6 @@ export function GepaWorkspace({
         }}
         testId="gepa-stage-timeline"
       />
-      <JobTerminationNotice gepa={gepa} />
       <SearchOverviewPanel gepa={gepa} />
       <EvidenceIntegrity gepa={gepa} />
       <HillClimbPanel gepa={gepa} onSelect={setSelectedCandidate} />
