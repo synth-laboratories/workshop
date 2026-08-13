@@ -44,6 +44,7 @@
     "test:legacy-runtime": "PYTHONPATH=services/local-runtime/src python3 -m unittest discover -s services/local-runtime/tests -v",
     "test:visuals": "node --experimental-strip-types --test visuals/tests/*.test.mjs",
     "test:a11y": "node --test apps/synth_desktop/tests/*.test.mjs",
+    "test:modern-stack": "python3 -m unittest scripts.tests.test_modern_stack_dogfood -v",
     "test:ui": "npm run build --workspace @synth/synth-desktop && playwright test --config apps/synth_desktop/playwright.config.ts",
     "test:playwright": "npm run build --workspace @synth/synth-desktop && playwright test --config apps/synth_desktop/playwright.config.ts",
     "test:legacy-bombadil": "npm run build --workspace @synth/synth-desktop && node apps/synth_desktop/tests/bombadil/run.mjs",

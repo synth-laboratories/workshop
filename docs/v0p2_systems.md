@@ -6,6 +6,16 @@
 
 The product move is: one durable eval/trace log per rollout, one optimizer log per campaign, Workshop as a consumer that must be ready before mutation and must still reopen after compute is gone.
 
+> **Implementation amendment (2026-08-12 evening).** The “today” snapshots below
+> describe commit `7804a3d` and are retained as the architectural baseline. The
+> local completion branches add four edges: native GELO→Containers child rollouts,
+> hosted SFT checkpoint sampling behind an optimizer-owned opaque endpoint, pinned
+> Harbor bundles plus a private Dock content adapter, and a visual-first receipt
+> driver. They do **not** turn unavailable external credentials or a broken Docker
+> daemon into passing live receipts. See
+> [`MODERN_OPTIMIZER_STACK_STATUS_2026-08-12.md`](./MODERN_OPTIMIZER_STACK_STATUS_2026-08-12.md)
+> for the reconciled code/proof state.
+
 ---
 
 ## 1. Three surfaces, two logs, one clock
@@ -166,6 +176,7 @@ Templates (same reducer, different kinds):
 | Harbor | `live.harbor_eval.v1` | trial start |
 | dig.bench | `live.digbench.v1` | `start_session` (token starts there) |
 | GEPA | `optimizer.gepa.*.v1` | first mutating search step |
+| GELO | `optimizer.run.v1` + `go-ex` overlay | first mutating proposal/evaluation step |
 | SFT | `optimizer.sft.*.v1` | training start (A6) |
 
 Guessed `/events` is refused. Slot `live` or `jobs` is refused. A visual scoped to one campaign/rollout cannot import another lane’s usage, frames, or selection.
@@ -195,21 +206,32 @@ flowchart LR
     ScoreB --> Search
 ```
 
-Two algorithms, same multiplex proof, different state machines:
+Three algorithms, same multiplex proof, different state machines:
 
 | Algorithm | Where it should run | Child evals |
 | --- | --- | --- |
 | `gepa` | synth-optimizers sidecar (`algorithm_id: "gepa"`) | Banking77 classify rollouts |
 | `sft` | hosted Tinker optimizer (**not** `goex.sft.v1`) | checkpoint eval campaigns |
+| `goex` / GELO | optimizers-beta native Containers runtime | Craftax rollout refs and nullable `/reward` |
 
-`goex.sft.v1` / hosted GELO is a **plugin** with the same visual primitives and a different machine. A GELO Craftax `goex` run is not A3. JSONL SFT smokes are not A4/A6.
+`goex.sft.v1` is a plugin; native hosted GELO uses the same visual primitives and a
+different machine. A GELO Craftax `goex` run is not A3. JSONL SFT smokes are not
+A4/A6. Native GELO now emits child rollout resource refs into `optimizer_event.v1`,
+retries stream subscription/backfill, validates the terminal envelope, and preserves
+the Workshop `event_type` during projection.
 
 Workshop split:
 
 - `OptimizerManager` — install, pin, health, start/stop. Stopping it must not delete mirrored events or visuals.
 - `OptimizerService` — one spool per `optimizer_run_id`, cursor, ingest, projection.
 
-What is in tree today: manager lifecycle, two concurrent `gepa` recipe workers keyed by `optimizer_run_id`, G1 `proposer.delta` producer, standalone `algorithm_id: "sft"` parent with typed `queued` (`accelerator_busy`) and checkpoint-eval `synth.resource-ref.v1` children (`optimizers-beta-sft`, mocks). What is not: two live Banking77 GEPA jobs Luna vs Sol (A3), a hosted Tinker `sft` job (A4/A6).
+What is in the completion branches: manager lifecycle; two concurrent `gepa` recipe
+workers keyed by `optimizer_run_id`; G1 `proposer.delta`; native GELO child refs;
+standalone `algorithm_id: "sft"` with one-accelerator typed `queued`
+(`accelerator_busy`); isolated campaign identities; and Tinker checkpoint sampling
+through an optimizer-owned endpoint. Containers receives only an opaque run bearer,
+never a provider key. What still needs external proof is a fresh paid GEPA/GELO run,
+a hosted Tinker A4/A6 run, Docker Harbor A2, and token-backed dig.bench A8.
 
 ---
 
@@ -409,4 +431,3 @@ The AFTER diagrams are the target. **Core code** closes the edges that can be cl
 | Agent operator | Skills refuse guessed `/events`; visual first; Harbor/dig.bench pins named; stop on tool fail | Fresh-workspace Sol run (W1–W3) |
 
 Do not claim the right-hand column from the left-hand column.
-
