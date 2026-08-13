@@ -223,10 +223,16 @@ def run_optimizer(args: argparse.Namespace, client: IpcClient, receipt: ReceiptB
         return 2
     receipt.checks["recipe_advertised"] = True
     receipt.checks["recipe_available"] = selected.get("availability") == "available"
+    if not receipt.checks["recipe_available"]:
+        prerequisites = selected.get("prerequisites") or []
+        receipt.blocker(
+            "recipe_unavailable",
+            ", ".join(str(item) for item in prerequisites) or "catalog reported unavailable",
+        )
+        receipt.finish("BLOCKED", preflightOnly=True, executionAuthorized=bool(args.execute))
+        return 2
     if not args.execute:
         receipt.blocker("execution_authorization_required", "rerun with --execute")
-        if not receipt.checks["recipe_available"]:
-            receipt.blocker("recipe_unavailable", ", ".join(selected.get("prerequisites") or []))
         receipt.finish("BLOCKED", preflightOnly=True)
         return 2
 

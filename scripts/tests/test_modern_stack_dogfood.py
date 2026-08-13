@@ -19,6 +19,8 @@ class FakeWorkshop(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     calls: list[tuple[str, str, dict]] = []
     visual: dict = {}
+    recipe_availability = "available"
+    recipe_prerequisites: list[str] = []
 
     def log_message(self, *_args):
         return
@@ -44,8 +46,8 @@ class FakeWorkshop(BaseHTTPRequestHandler):
                     "recipes": [
                         {
                             "id": "gepa.banking77.luna.v1",
-                            "availability": "available",
-                            "prerequisites": [],
+                            "availability": type(self).recipe_availability,
+                            "prerequisites": type(self).recipe_prerequisites,
                         }
                     ]
                 }
@@ -192,6 +194,8 @@ class ModernStackDogfoodTest(unittest.TestCase):
     def setUp(self):
         FakeWorkshop.calls = []
         FakeWorkshop.visual = {}
+        FakeWorkshop.recipe_availability = "available"
+        FakeWorkshop.recipe_prerequisites = []
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), FakeWorkshop)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -238,6 +242,33 @@ class ModernStackDogfoodTest(unittest.TestCase):
         self.assertNotIn("super-secret-workshop-token", "".join(p.read_text() for p in receipt.glob("*.*")))
         for expected in dogfood.ReceiptBundle.STANDARD:
             self.assertTrue((receipt / expected).is_file(), expected)
+
+    def test_optimizer_execute_fails_closed_when_catalog_reports_unavailable(self):
+        FakeWorkshop.recipe_availability = "unavailable"
+        FakeWorkshop.recipe_prerequisites = ["TINKER_API_KEY", "hosted sampler"]
+        receipt = self.root / "optimizer-unavailable"
+
+        code = dogfood.main(
+            [
+                "--connection",
+                str(self.connection),
+                "--receipt-dir",
+                str(receipt),
+                "optimizer",
+                "--recipe",
+                "gepa.banking77.luna.v1",
+                "--execute",
+            ]
+        )
+
+        self.assertEqual(code, 2)
+        result = json.loads((receipt / "receipt.json").read_text())
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertTrue(result["executionAuthorized"])
+        self.assertEqual(result["blockers"][0]["code"], "recipe_unavailable")
+        self.assertFalse(
+            any(path == "/v1/optimizers/recipes/run" for _, path, _ in FakeWorkshop.calls)
+        )
 
     def test_container_prepare_stops_for_review_then_resumes_exact_stream(self):
         receipt = self.root / "harbor"
