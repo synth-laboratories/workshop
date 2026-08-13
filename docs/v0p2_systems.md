@@ -209,7 +209,7 @@ Workshop split:
 - `OptimizerManager` — install, pin, health, start/stop. Stopping it must not delete mirrored events or visuals.
 - `OptimizerService` — one spool per `optimizer_run_id`, cursor, ingest, projection.
 
-What is in tree today: manager lifecycle, two concurrent `gepa` recipe workers keyed by `optimizer_run_id`, G1 `proposer.delta` producer, standalone `algorithm_id: "sft"` parent with typed `queued` (`accelerator_busy`) and checkpoint-eval `synth.resource-ref.v1` children (`optimizers-beta-sft`, mocks). What is not: two live Banking77 GEPA jobs Luna vs Sol (A3), a hosted Tinker `sft` job (A4/A6).
+What is in tree today: manager lifecycle, two concurrent `gepa` recipe workers keyed by `optimizer_run_id`, G1 `proposer.delta` producer, standalone `algorithm_id: "sft"` parent with mocked `queued` (`accelerator_busy`) and checkpoint-eval `synth.resource-ref.v1` children (`optimizers-beta-sft`). What is not: A3 — clean-tip Luna+Sol started through the manager (`a3gepa`) but visuals IPC never ingested producer events (`~/.gepa/index.jsonl` concurrent-write 404). Disk jsonl has `proposer.delta` and child refs; that is not an IPC multiplex proof. Clean-tip hosted Tinker (`11238d1`): A4 **FAIL** — two trainers ran at once, no `accelerator_busy`; A6 **PARTIAL** — child refs attached, every `/reward` stayed null.
 
 ---
 
@@ -325,7 +325,7 @@ BEFORE (today)                                      AFTER (A3, A4→A6, proposer
                                                            → same child shape
 ```
 
-Remainder: two live Banking77 `gepa` jobs (A3) and hosted Tinker `sft` jobs (A4 then A6). Core spawn, `proposer.delta` producer, and SFT parent/queued/resource-refs are in tree. GELO/JSONL stay off this diagram.
+Remainder: A3 still open — manager spawned two live Banking77 `gepa` runs, but IPC ingest 404'd on a raced `~/.gepa/index.jsonl`. Hosted Tinker on the clean tip did not pass A4 (second job was not `accelerator_busy`) and A6 stayed partial (null checkpoint `/reward`). GELO/JSONL stay off this diagram.
 
 ### 11.3 Content on one Desktop bind
 
@@ -403,8 +403,8 @@ The AFTER diagrams are the target. **Core code** closes the edges that can be cl
 | Visual-first Craftax HTTP | One bind clock: register → visual on slot `stream` → declared poll until `stream.subscribed` → start; 10-lane pins seeds 0–9 without a paid call; spool reopen | Paid Luna med ×10 (A1+A5) |
 | Harbor in-app | Same clock; `live.harbor_eval.v1` before trial start; pins `luna_med` + `sol_med`; `live_frames=native` fails register | Docker packaged GameBench trial (A2) |
 | dig.bench Desktop | Same clock; `live.digbench.v1` before `start_session`; basic ReAct + agentic Codex+MCP pins; no frames; token refused in log | Public game + token (A8) |
-| Two GEPA parent | Manager-spawned two `algorithm_id: "gepa"` workers + distinct spools; child `resource-ref`; G1 `proposer.delta` producer | Banking77 Luna vs Sol paid (A3) |
-| Tinker SFT parent | `algorithm_id: "sft"` in `optimizers-beta-sft`: one-accelerator `queued` (`accelerator_busy`), distinct logs, checkpoint evals as `synth.resource-ref.v1`; OpenAI FT refused (mocks, no live Tinker) | Hosted Tinker jobs (A4 then A6) |
+| Two GEPA parent | Manager-spawned two `algorithm_id: "gepa"` workers + distinct spools; G1 disk producer emits `proposer.delta` and child `resource-ref`. Live IPC ingest on `a3gepa` 404'd (`~/.gepa/index.jsonl` race) | Banking77 Luna vs Sol paid, mirrored in Workshop (A3) |
+| Tinker SFT parent | `algorithm_id: "sft"` in `optimizers-beta-sft`: mocks queue with `accelerator_busy` and attach checkpoint `synth.resource-ref.v1`; OpenAI FT refused. Live hosted submit (`train_a`/`train_b` on `:8881`): two Tinker trainers at once; A6 child refs + null `/reward` | A4 queue gate, then scored checkpoint evals (A6) |
 | Failure motion | Cursor/409/digest already in-process | Kill SSE/container; paid exactly-once |
 | Agent operator | Skills refuse guessed `/events`; visual first; Harbor/dig.bench pins named; stop on tool fail | Fresh-workspace Sol run (W1–W3) |
 

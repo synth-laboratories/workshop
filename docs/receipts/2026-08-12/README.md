@@ -15,8 +15,12 @@ fixes listed below. Containers façades on loopback; optimizers-beta on
 | [`a4.json`](./a4.json) | A4 two hosted Tinker SFT in parallel | **PASS** — 8/8 assertions |
 | [`a5.json`](./a5.json) | A5 durable stream contract | **PASS** — 8/8 checks |
 | [`a6.json`](./a6.json) | A6 hosted multi-checkpoint SFT campaign | **PARTIAL** — 7/7 structure checks; campaign rollouts scored `null` |
-| — | A2 Harbor Docker GameBench | **NOT DONE** |
+| — | A2 Harbor Docker GameBench | **NOT DONE** — and now also blocked: the Docker daemon cannot start containers |
 | — | A8 dig.bench capstone | **BLOCKED** — no `DIGBENCH_API_TOKEN` on this machine |
+
+Suite state at close, after access was restored: Workshop Rust **392 passed**
+(1 paid test ignored), visuals **65 passed**, Containers **278 passed / 8
+skipped / 1 failed** — the single failure being the Docker fault above.
 
 A7 (OpenEnv Echo) is out of this cut.
 
@@ -131,12 +135,27 @@ While chasing this, the Banking77 runtime was changed to carry a secret-free
 real Harbor-packaged GameBench task and its agent and verifier roles run as
 distinct `docker run --rm` executions. But `harbor_docker.py` still only knows
 the alpine public fixture; it has no path for a pinned Harbor bundle, so
-nothing about this reached Workshop. Two findings from the direct trial:
+nothing about this reached Workshop. Two findings from the one trial that
+completed (~19:20):
 
 - the verifier needs the GameBench task tree at
   `/workspace/gamebench/tasks/<task>`; the bundle does not carry it
 - on a missing hillclimb runner the bundle's own `test.sh` writes
   `reward 0.0`, which is a missing-≠-0 violation inside the Harbor package
+
+**No native verifier score was obtained.** Three later attempts with the task
+tree staged all produced empty output, and the cause is environmental, not the
+bundle: the Docker daemon on this machine stopped being able to *start*
+containers. `docker info` and `docker images` answer normally and containers
+started 23–33 hours ago keep running, but every new `docker run` — including a
+bare `alpine:3.20 echo` — hangs with the container stuck in `Created`. Twenty
+containers across unrelated images (minio, postgres, temporal, backend-api,
+sublinear) are wedged the same way, so this predates and outlives this work.
+
+`tests/test_harbor_docker.py::test_harbor_docker_live_agent_and_verifier_are_distinct`
+fails for the same reason and is **not** a code regression. Restarting Docker
+Desktop would likely clear it, but that kills the long-running services other
+sessions are using, so it was left alone.
 
 ## A8 — blocked
 

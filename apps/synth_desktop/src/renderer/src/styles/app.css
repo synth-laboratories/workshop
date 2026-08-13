@@ -5366,14 +5366,14 @@ a,
 }
 
 .inventory-workbench.with-visual .inventory-page {
-	flex: 0 0 42%;
-	max-width: 42%;
+	flex: 1 1 auto;
+	max-width: none;
 	min-width: 360px;
 }
 
 .inventory-workbench.with-visual .visual-pane {
-	flex: 1 1 58%;
-	min-width: 0;
+	flex: 0 0 min(var(--visual-pane-width, 420px), calc(100% - 360px));
+	min-width: 340px;
 	border-left: 1px solid var(--color-border);
 }
 
@@ -5937,9 +5937,14 @@ a,
 .visuals-layout {
 	display: grid;
 	grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
-	gap: 16px;
+	gap: 0;
 	min-height: 420px;
 }
+
+.visuals-layout > .visuals-grid { margin-right: 12px; }
+.visuals-layout > .visuals-preview { margin-left: 12px; }
+.primary-resize-handle { width: 8px; height: 100%; min-height: 420px; justify-self: stretch; }
+.primary-resize-handle::after { left: 3px; right: auto; }
 
 .visuals-layout.focus {
 	display: block;
@@ -5962,6 +5967,7 @@ a,
 }
 
 .visuals-card {
+	align-self: start;
 	border: 1px solid var(--color-border);
 	border-radius: 12px;
 	background: var(--color-surface);
@@ -6017,6 +6023,7 @@ a,
 	border: 0;
 	border-radius: 0;
 	background: transparent;
+	margin-left: 0;
 }
 
 .visuals-layout.focus .visuals-preview > header {
