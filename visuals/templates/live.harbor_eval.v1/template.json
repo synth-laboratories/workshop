@@ -14,7 +14,7 @@
       "description": "Declared live SSE or fixture with trial/verifier events",
       "accepts": ["live_sse", "fixture", "inline"],
       "required": true,
-      "schema": "synth.visual.live_eval_events.v1"
+      "schema": "synth.trace-stream-event.v1"
     }
   ]
 }

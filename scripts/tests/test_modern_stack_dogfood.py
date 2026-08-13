@@ -300,6 +300,13 @@ class ModernStackDogfoodTest(unittest.TestCase):
         post_paths = [path for method, path, _ in FakeWorkshop.calls if method == "POST"]
         self.assertLess(post_paths.index("/v1/visuals"), post_paths.index("/v1/visuals/vis_harbor/show"))
         self.assertFalse(any(path.endswith("/rollouts/start") for path in post_paths))
+        visual_create = next(
+            body
+            for method, path, body in FakeWorkshop.calls
+            if method == "POST" and path == "/v1/visuals"
+        )
+        self.assertNotIn("runId", visual_create)
+        self.assertEqual(visual_create["metadata"]["rolloutId"], "roll_harbor")
 
         FakeWorkshop.visual["metadata"]["qualityGate"] = {"ready": True, "revision": 1}
         start = dogfood.main(

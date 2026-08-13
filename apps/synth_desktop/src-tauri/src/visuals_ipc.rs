@@ -564,7 +564,11 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "liveEval": container.metadata.get("liveEval").cloned().unwrap_or(Value::Null),
             }))
         }
-        ("GET", path) if path.starts_with("/v1/containers/") && !path.ends_with("/probe") => {
+        ("GET", path)
+            if path.starts_with("/v1/containers/")
+                && !path.ends_with("/probe")
+                && !path.contains("/rollouts/") =>
+        {
             let id = path.trim_start_matches("/v1/containers/");
             Ok(json!({"container": core.data().get_container(id.to_string()).await?}))
         }

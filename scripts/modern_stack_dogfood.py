@@ -414,7 +414,6 @@ def prepare_container(args: argparse.Namespace, client: IpcClient, receipt: Rece
         {
             "templateId": template,
             "title": args.title or f"{args.name or args.family} · {rollout_id}",
-            "runId": rollout_id,
             "sourceAgentId": "modern-stack-dogfood",
             "bindings": {"schemaVersion": "synth.visual-bindings.v1", "slots": [binding]},
             "metadata": {

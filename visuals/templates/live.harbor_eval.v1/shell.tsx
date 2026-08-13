@@ -97,12 +97,24 @@ export function Shell(props: ShellProps) {
   const hasSource = Boolean(sseUrl || stream.events);
   const { events, live, error, ready } = useLiveEvalStream({ sseUrl, fixtureEvents, replayMs: stream.replay_ms });
   const [showFullStream, setShowFullStream] = useState(false);
-  const projection = projectLiveEval(events);
-  const trials = useMemo(() => foldTrials(events), [events]);
-  const status = [...events].reverse().find((event) => event.kind === "status");
+  const [eventCutoff, setEventCutoff] = useState<number | null>(null);
+  const [selectedEventIndex, setSelectedEventIndex] = useState<number | null>(null);
+  const liveEdge = Math.max(0, events.length - 1);
+  const effectiveCutoff = eventCutoff == null ? liveEdge : Math.min(eventCutoff, liveEdge);
+  const visibleEvents = useMemo(
+    () => events.slice(0, events.length ? effectiveCutoff + 1 : 0),
+    [effectiveCutoff, events]
+  );
+  const selectedEvent =
+    selectedEventIndex != null && selectedEventIndex < visibleEvents.length
+      ? visibleEvents[selectedEventIndex]
+      : visibleEvents.at(-1);
+  const projection = projectLiveEval(visibleEvents);
+  const trials = useMemo(() => foldTrials(visibleEvents), [visibleEvents]);
+  const status = [...visibleEvents].reverse().find((event) => event.kind === "status");
   const statusText = String(status?.payload.status ?? "");
   const terminal = ["completed", "finished", "failed", "cancelled"].includes(statusText.toLowerCase());
-  const tools = events.filter((event) => event.kind === "tools" || event.kind === "stdout" || event.kind === "stderr");
+  const tools = visibleEvents.filter((event) => event.kind === "tools" || event.kind === "stdout" || event.kind === "stderr");
   const visibleTools = showFullStream ? tools : tools.slice(-STREAM_WINDOW);
   const verifiedCount = trials.filter((trial) => trial.status === "verified").length;
 
@@ -132,6 +144,31 @@ export function Shell(props: ShellProps) {
           {error}
         </p>
       ) : null}
+
+      <section className="sv-section" aria-label="Replay controls" data-testid="harbor-replay-controls">
+        <div className="sv-section-head">
+          <h3>Event replay</h3>
+          <span className="sv-mono">{events.length ? `${effectiveCutoff + 1}/${events.length}` : "0/0"}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <input
+            aria-label="Event timeline"
+            type="range"
+            min={0}
+            max={liveEdge}
+            value={effectiveCutoff}
+            disabled={events.length === 0}
+            onChange={(event) => {
+              setEventCutoff(Number(event.currentTarget.value));
+              setSelectedEventIndex(null);
+            }}
+            style={{ flex: 1 }}
+          />
+          <button type="button" className="sv-btn" onClick={() => setEventCutoff(null)} disabled={eventCutoff == null}>
+            Live edge
+          </button>
+        </div>
+      </section>
 
       <section className="sv-section" aria-label="Trials" data-testid="harbor-trials">
         <div className="sv-section-head">
@@ -190,6 +227,40 @@ export function Shell(props: ShellProps) {
             <li style={{ color: "var(--sv-text-faint)" }}>Waiting for tools…</li>
           ) : null}
         </ol>
+      </section>
+
+      <section className="sv-section" aria-label="Full trace" data-testid="harbor-full-trace">
+        <div className="sv-section-head">
+          <h3>Full trace</h3>
+          <span className="sv-mono">{visibleEvents.length} events</span>
+        </div>
+        {visibleEvents.length ? (
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(150px, 0.8fr) minmax(220px, 1.2fr)", gap: 8 }}>
+            <ol style={{ listStyle: "none", margin: 0, padding: 0, maxHeight: 260, overflow: "auto", border: "1px solid var(--sv-border)", borderRadius: 8 }}>
+              {visibleEvents.slice(-100).map((event, offset) => {
+                const index = Math.max(0, visibleEvents.length - 100) + offset;
+                return (
+                  <li key={`${event.ts ?? event.occurred_at ?? "event"}-${index}`}>
+                    <button
+                      type="button"
+                      className="sv-btn"
+                      aria-pressed={selectedEvent === event}
+                      onClick={() => setSelectedEventIndex(index)}
+                      style={{ width: "100%", border: 0, borderRadius: 0, textAlign: "left" }}
+                    >
+                      <span className="sv-mono">{event.sequence ?? index + 1}</span> · {event.kind}
+                    </button>
+                  </li>
+                );
+              })}
+            </ol>
+            <pre aria-label="Selected event payload" style={{ margin: 0, padding: 10, maxHeight: 260, overflow: "auto", border: "1px solid var(--sv-border)", borderRadius: 8, fontSize: 11, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+              {JSON.stringify(selectedEvent, null, 2)}
+            </pre>
+          </div>
+        ) : (
+          <p style={{ margin: 0, color: "var(--sv-text-faint)", fontSize: 12 }}>Waiting for the first trace event…</p>
+        )}
       </section>
     </VisualChrome>
   );
