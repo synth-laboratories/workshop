@@ -4126,11 +4126,11 @@ a,
 .systems-dynamic-group { fill: rgba(23, 31, 42, .42); stroke: #354255; stroke-width: 1.5; }
 .systems-dynamic-group-label { fill: #7f91a8; font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .09em; text-transform: uppercase; }
 .systems-dynamic-node { fill: #10161f; stroke: #718096; stroke-width: 1.5; }
-.systems-dynamic-node-label { fill: #edf2f7; font: 500 15px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.systems-dynamic-node-label { fill: #edf2f7; font: 500 14px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; pointer-events: none; }
 .systems-dynamic-note { fill: #121923; stroke: #718096; stroke-width: 1.25; }
-.systems-dynamic-note-label { fill: #d9e2ec; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.systems-dynamic-note-label { fill: #d9e2ec; font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; pointer-events: none; }
 .systems-dynamic-edge { fill: none; stroke: #7f91a8; stroke-width: 1.5; }
-.systems-dynamic-edge-label { fill: #aebdce; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; paint-order: stroke; stroke: #080b10; stroke-width: 5px; }
+.systems-dynamic-edge-label { fill: #aebdce; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; paint-order: stroke; stroke: #080b10; stroke-width: 6px; stroke-linejoin: round; }
 .systems-dynamic-stage .is-emphasized .systems-dynamic-node { stroke: #5eead4; stroke-width: 2.5; filter: drop-shadow(0 0 8px rgba(94, 234, 212, .3)); }
 .systems-dynamic-stage .is-emphasized .systems-dynamic-edge { stroke: #5eead4; stroke-width: 2.5; stroke-dasharray: 8 6; animation: systems-flow 800ms linear infinite; }
 .systems-dynamic-stage :is(.style-warning) :is(.systems-dynamic-node,.systems-dynamic-group,.systems-dynamic-note,.systems-dynamic-edge) { stroke: #f59e0b; }

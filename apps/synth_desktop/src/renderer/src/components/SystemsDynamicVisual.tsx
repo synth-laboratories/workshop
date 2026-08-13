@@ -63,6 +63,46 @@ function styleClass(style: string | undefined): string {
 	return ["warning", "success", "missing", "unproven", "accent", "muted", "dashed"].includes(style ?? "") ? ` style-${style}` : "";
 }
 
+function wrapLabel(label: string | undefined, width: number, height: number, fontSize = 14): string[] {
+	if (!label) return [];
+	const normalized = label.replace(/\s+/g, " ").trim();
+	const maxChars = Math.max(6, Math.floor((width - 24) / (fontSize * 0.62)));
+	const maxLines = Math.max(1, Math.floor((height - 18) / (fontSize * 1.3)));
+	const words = normalized.split(" ");
+	const lines: string[] = [];
+	let line = "";
+	for (const word of words) {
+		const pieces = word.length > maxChars
+			? Array.from({ length: Math.ceil(word.length / maxChars) }, (_, index) => word.slice(index * maxChars, (index + 1) * maxChars))
+			: [word];
+		for (const piece of pieces) {
+			const candidate = line ? `${line} ${piece}` : piece;
+			if (candidate.length <= maxChars) line = candidate;
+			else { if (line) lines.push(line); line = piece; }
+		}
+	}
+	if (line) lines.push(line);
+	if (lines.length <= maxLines) return lines;
+	const visible = lines.slice(0, maxLines);
+	visible[maxLines - 1] = `${visible[maxLines - 1].slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+	return visible;
+}
+
+function SvgWrappedLabel({ label, x, y, width, height, className, fontSize = 14 }: { label?: string; x: number; y: number; width: number; height: number; className: string; fontSize?: number }) {
+	const lines = wrapLabel(label, width, height, fontSize);
+	const lineHeight = fontSize * 1.3;
+	const firstY = y + height / 2 - ((lines.length - 1) * lineHeight) / 2;
+	return <text className={className} x={x + width / 2} y={firstY} textAnchor="middle" dominantBaseline="middle" aria-label={label}>
+		{label ? <title>{label}</title> : null}
+		{lines.map((line, index) => <tspan key={`${line}-${index}`} x={x + width / 2} dy={index === 0 ? 0 : lineHeight}>{line}</tspan>)}
+	</text>;
+}
+
+function compactEdgeLabel(label: string): string {
+	const normalized = label.replace(/\s+/g, " ").trim();
+	return normalized.length <= 24 ? normalized : `${normalized.slice(0, 23).trimEnd()}…`;
+}
+
 function edgeGeometry(from: RectItem & Change, to: RectItem & Change, route: Edge["route"]): { path: string; labelX: number; labelY: number } {
 	const ac = { x: from.x + from.width / 2, y: from.y + from.height / 2 };
 	const bc = { x: to.x + to.width / 2, y: to.y + to.height / 2 };
@@ -183,9 +223,9 @@ export function SystemsDynamicVisual({ artifact }: { artifact: ArtifactRef }) {
 						<svg viewBox={`0 0 ${scene.canvas.width} ${scene.canvas.height}`} role="img" aria-label={artifact.title}>
 							<defs><marker id={`arrow-${artifact.id}`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>
 							{scene.groups?.map((group) => { const state = stateAt(scene, group.id, timeMs, group); return state.visible === false ? null : <g key={group.id} opacity={state.opacity ?? 1} className={`${state.emphasis ? "is-emphasized" : ""}${styleClass(state.style)}`}><rect className="systems-dynamic-group" x={state.x} y={state.y} width={state.width} height={state.height} rx="12"/><text className="systems-dynamic-group-label" x={state.x + 14} y={state.y + 24}>{state.label}</text></g>; })}
-							{scene.edges?.map((edge, index) => { const from = nodeMap.get(edge.from); const to = nodeMap.get(edge.to); const state = stateAt(scene, edge.id ?? `${edge.from}-${edge.to}`, timeMs, edge); if (!from || !to || state.visible === false) return null; const geometry = edgeGeometry(from, to, state.route); return <g key={edge.id ?? index} opacity={state.opacity ?? 1} className={`${state.emphasis ? "is-emphasized" : ""}${styleClass(state.style)}`}><path className="systems-dynamic-edge" d={geometry.path} markerEnd={state.directed === false ? undefined : `url(#arrow-${artifact.id})`}/>{edge.label ? <text className="systems-dynamic-edge-label" x={geometry.labelX} y={geometry.labelY} textAnchor="middle">{edge.label}</text> : null}</g>; })}
-							{scene.nodes.map((node) => { const state = nodeMap.get(node.id)!; return state.visible === false ? null : <g key={node.id} opacity={state.opacity ?? 1} className={`${state.emphasis ? "is-emphasized" : ""}${styleClass(state.style)}`}><rect className="systems-dynamic-node" x={state.x} y={state.y} width={state.width} height={state.height} rx="8"/><text className="systems-dynamic-node-label" x={state.x + state.width/2} y={state.y + state.height/2} dominantBaseline="middle" textAnchor="middle">{state.label}</text></g>; })}
-							{scene.notes?.map((note, index) => { const target = note.id ?? `note-${index}`; const state = stateAt(scene, target, timeMs, note); return state.visible === false ? null : <g key={target} opacity={state.opacity ?? 1} className={`${state.emphasis ? "is-emphasized" : ""}${styleClass(state.style)}`}><rect className="systems-dynamic-note" x={state.x} y={state.y} width={state.width} height="38" rx="6"/><text className="systems-dynamic-note-label" x={state.x + 10} y={state.y + 24}>{state.text}</text></g>; })}
+							{scene.edges?.map((edge, index) => { const from = nodeMap.get(edge.from); const to = nodeMap.get(edge.to); const state = stateAt(scene, edge.id ?? `${edge.from}-${edge.to}`, timeMs, edge); if (!from || !to || state.visible === false) return null; const geometry = edgeGeometry(from, to, state.route); return <g key={edge.id ?? index} opacity={state.opacity ?? 1} className={`${state.emphasis ? "is-emphasized" : ""}${styleClass(state.style)}`}><title>{edge.label}</title><path className="systems-dynamic-edge" d={geometry.path} markerEnd={state.directed === false ? undefined : `url(#arrow-${artifact.id})`}/>{edge.label ? <text className="systems-dynamic-edge-label" x={geometry.labelX} y={geometry.labelY} textAnchor="middle">{compactEdgeLabel(edge.label)}</text> : null}</g>; })}
+							{scene.nodes.map((node) => { const state = nodeMap.get(node.id)!; return state.visible === false ? null : <g key={node.id} opacity={state.opacity ?? 1} className={`${state.emphasis ? "is-emphasized" : ""}${styleClass(state.style)}`}><rect className="systems-dynamic-node" x={state.x} y={state.y} width={state.width} height={state.height} rx="8"/><SvgWrappedLabel className="systems-dynamic-node-label" label={state.label} x={state.x} y={state.y} width={state.width} height={state.height}/></g>; })}
+							{scene.notes?.map((note, index) => { const target = note.id ?? `note-${index}`; const state = stateAt(scene, target, timeMs, note); const noteHeight = 56; return state.visible === false ? null : <g key={target} opacity={state.opacity ?? 1} className={`${state.emphasis ? "is-emphasized" : ""}${styleClass(state.style)}`}><rect className="systems-dynamic-note" x={state.x} y={state.y} width={state.width} height={noteHeight} rx="6"/><SvgWrappedLabel className="systems-dynamic-note-label" label={state.text} x={state.x} y={state.y} width={state.width} height={noteHeight} fontSize={12}/></g>; })}
 						</svg>
 					</div>
 					<div className="systems-dynamic-timeline">
