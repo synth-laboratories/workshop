@@ -15,8 +15,8 @@ Author in five passes:
 After every create or update:
 
 1. Call `show`, then `authoring_context`; resolve every automated finding.
-2. Capture the rendered Desktop pane at a wide viewport and at a compact viewport.
-3. Open and inspect both screenshots. Fail the review for any touching/overlapping text, ambiguous truncation, label crossing, hidden primary claim, or poster state with more than roughly 5–7 focal elements.
+2. Call `capture_review` at a wide viewport and at a compact viewport. It attaches each PNG directly to the tool result and returns its absolute review path.
+3. Inspect both attached images. Fail the review for any touching/overlapping text, ambiguous truncation, label crossing, hidden primary claim, or poster state with more than roughly 5–7 focal elements. Do not search the filesystem for screenshots.
 4. Update the same visual ID and repeat. Record the real screenshot paths with `review`; call `mark_ready` only after both images pass.
 
 JSON validity and bounded rectangles are not visual approval. A review without an inspected rendered screenshot is invalid.

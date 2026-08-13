@@ -40,6 +40,7 @@ or filesystem search to discover this tool.
 | `fork` | `{ "visual_id": string, "title"?: string }` |
 | `archive` | `{ "visual_id": string }` |
 | `authoring_context` | `{ "visual_id": string }` |
+| `capture_review` | `{ "visual_id": string, "viewport": {"width": number, "height": number} }` — returns an attached PNG plus `screenshot_path` |
 | `review` | `{ "visual_id": string, "revision": number, "viewport": {"width": number, "height": number}, "checks": object, "findings": string[], "screenshot_path"?: string }` (`screenshot_path` is required for systems visuals) |
 | `mark_ready` | `{ "visual_id": string, "revision": number }` |
 
@@ -58,7 +59,7 @@ other clients but are intentionally not advertised to Codex.
 5. Show exact units and provenance. Preserve small costs rather than rounding them to `$0.00`.
 6. Call the `show` operation after creation or update so the result opens in the Desktop pane.
 7. Inspect the rendered visual in Desktop canvas mode. Fix clipped labels, empty sections, misleading encodings, weak hierarchy, and excessive whitespace.
-8. Perform at least two explicit render-and-critique iterations at distinct viewport widths. Capture and open the rendered screenshots, pass their real paths to `review`, and do not reuse a review after the visual revision changes. For systems visuals, resolve every deterministic finding returned by `authoring_context` before readiness.
+8. Perform at least two explicit render-and-critique iterations at distinct viewport widths. Call `capture_review` for each viewport and inspect the PNG attached to the tool result. Pass its returned `screenshot_path` to `review`; never shell-search for captures, invent a path, or submit checks without looking at the image. Do not reuse a review after the visual revision changes. For systems visuals, resolve every deterministic finding returned by `authoring_context` before readiness.
 9. Call `mark_ready` only when all required landmarks pass. A trusted live template is configured through `visual_config`; saved arbitrary TSX is retained as source evidence but is never executed by Desktop.
 
 ## Composition rules

@@ -7,9 +7,10 @@
 #[path = "../ipc/mcp_stdio.rs"]
 mod mcp_stdio;
 
+use base64::Engine;
 use mcp_stdio::{run_stdio_server, McpServerInfo};
 use serde_json::{json, Value};
-use std::{env, fs, io, path::PathBuf};
+use std::{env, fs, io, path::PathBuf, process::Command};
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,6 +113,10 @@ mod tests {
         assert_eq!(managed_tool_name("show").unwrap(), "visual_show");
         assert_eq!(managed_tool_name("render").unwrap(), "visual_render");
         assert_eq!(
+            managed_tool_name("capture_review").unwrap(),
+            "visual_capture_review"
+        );
+        assert_eq!(
             managed_tool_name("authoring_context").unwrap(),
             "visual_authoring_context"
         );
@@ -178,6 +183,7 @@ fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
         "save" => Ok("visual_save"),
         "show" => Ok("visual_show"),
         "render" => Ok("visual_render"),
+        "capture_review" => Ok("visual_capture_review"),
         "authoring_context" => Ok("visual_authoring_context"),
         "review" => Ok("visual_review"),
         "mark_ready" => Ok("visual_mark_ready"),
@@ -190,7 +196,7 @@ fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
 fn tools() -> Value {
     let mut result = json!({
         "tools": [
-            {"name":"visual_manage","description":"Direct tool for Synth visuals; do not call MCP resources or search the filesystem. For a diagram, load author-synth-diagrams, create diagram.mermaid.v1 with Mermaid source in arguments.content, then show the returned visual.id.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Operation to run. Mermaid path: create, then show.","enum":["list_templates","list","get","create","update","bind","show","fork","archive","authoring_context","review","mark_ready","render"]},"arguments":{"type":"object","description":"Operation arguments. Mermaid create requires template_id=diagram.mermaid.v1 and content; show requires visual_id.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+            {"name":"visual_manage","description":"Direct tool for Synth visuals; do not call MCP resources or search the filesystem. For a diagram, load author-synth-diagrams, create with arguments.content, show, then capture_review and inspect its returned image before review.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Operation to run. Diagram path: create, show, capture_review, inspect, review.","enum":["list_templates","list","get","create","update","bind","show","fork","archive","authoring_context","review","mark_ready","render","capture_review"]},"arguments":{"type":"object","description":"capture_review requires visual_id and viewport {width,height}; it returns a PNG image and absolute screenshot_path.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
             {"name":"visual_list_templates","description":"List Synth visual templates","inputSchema":{"type":"object","properties":{"genre":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_get","description":"Get a visual by id","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
@@ -203,6 +209,7 @@ fn tools() -> Value {
             {"name":"visual_fork","description":"Fork a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_authoring_context","description":"Get the template contract, example evidence, revision, presentation, and outstanding quality gate for one visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_review","description":"Record one rendered-view critique for the current revision. Include viewport and explicit landmark checks.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"revision":{"type":"integer"},"viewport":{"type":"object"},"checks":{"type":"object"},"findings":{"type":"array","items":{"type":"string"}},"screenshot_path":{"type":"string"}},"required":["visual_id","revision","viewport","checks","findings"],"additionalProperties":false}},
+            {"name":"visual_capture_review","description":"Render the current visual revision to a real PNG review image at the requested viewport. Returns the PNG as tool image content and an absolute screenshot_path for visual_review.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"viewport":{"type":"object","properties":{"width":{"type":"integer","minimum":320,"maximum":2400},"height":{"type":"integer","minimum":400,"maximum":1800}},"required":["width","height"],"additionalProperties":false}},"required":["visual_id","viewport"],"additionalProperties":false}},
             {"name":"visual_mark_ready","description":"Mark the current revision ready after at least two passing rendered-view reviews","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"revision":{"type":"integer"}},"required":["visual_id","revision"],"additionalProperties":false}},
             {"name":"visual_archive","description":"Archive a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}}
         ]
@@ -369,6 +376,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .ok_or("visual_id required")?;
             request("POST", &format!("/v1/visuals/{id}/render"), None)
         }
+        "visual_capture_review" => capture_review(args),
         "visual_authoring_context" => {
             let id = args
                 .get("visual_id")
@@ -422,6 +430,117 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         }
         other => Err(format!("unknown tool {other}")),
     }
+}
+
+fn capture_review(args: &Value) -> Result<Value, String> {
+    let id = args
+        .get("visual_id")
+        .and_then(Value::as_str)
+        .ok_or("visual_id required")?;
+    let viewport = args
+        .get("viewport")
+        .and_then(Value::as_object)
+        .ok_or("viewport required")?;
+    let width = viewport
+        .get("width")
+        .and_then(Value::as_u64)
+        .ok_or("viewport.width required")?;
+    let height = viewport
+        .get("height")
+        .and_then(Value::as_u64)
+        .ok_or("viewport.height required")?;
+    if !(320..=2400).contains(&width) || !(400..=1800).contains(&height) {
+        return Err("review viewport must be within 320x400 and 2400x1800".into());
+    }
+    let rendered = request("POST", &format!("/v1/visuals/{id}/render"), None)?;
+    let revision = rendered
+        .pointer("/visual/currentRevision")
+        .and_then(Value::as_i64)
+        .ok_or("render response missing revision")?;
+    let rendition = request(
+        "GET",
+        &format!("/v1/visuals/{id}/renditions/svg"),
+        Some(json!({"theme":"dark","size":"pane"})),
+    )?;
+    let svg_b64 = rendition
+        .pointer("/rendition/base64")
+        .and_then(Value::as_str)
+        .ok_or("SVG rendition missing base64")?;
+    let svg = base64::engine::general_purpose::STANDARD
+        .decode(svg_b64)
+        .map_err(|error| error.to_string())?;
+    let root = connection_file()
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("visual-review-captures");
+    fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    let stem = format!("{id}-r{revision}-{width}x{height}");
+    let svg_path = root.join(format!("{stem}.svg"));
+    let png_path = root.join(format!("{stem}.png"));
+    fs::write(&svg_path, &svg).map_err(|error| error.to_string())?;
+    // Fit the complete SVG inside the requested viewport. Cropping a square
+    // QuickLook thumbnail made valid wide diagrams look clipped and taught the
+    // reviewing agent the wrong thing about the actual renderer.
+    let svg_text = String::from_utf8_lossy(&svg);
+    let view_box = svg_text
+        .split("viewBox=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .ok_or("SVG review capture missing viewBox")?;
+    let view_box_values = view_box
+        .split_whitespace()
+        .map(str::parse::<f64>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("invalid SVG review viewBox: {error}"))?;
+    if view_box_values.len() != 4 || view_box_values[2] <= 0.0 || view_box_values[3] <= 0.0 {
+        return Err("SVG review capture has invalid viewBox dimensions".into());
+    }
+    let scale = (width as f64 / view_box_values[2]).min(height as f64 / view_box_values[3]);
+    let fitted_width = (view_box_values[2] * scale).round().max(1.0) as u64;
+    let fitted_height = (view_box_values[3] * scale).round().max(1.0) as u64;
+    let raster = Command::new("sips")
+        .args([
+            "-s", "format", "png", "-z",
+            &fitted_height.to_string(),
+            &fitted_width.to_string(),
+        ])
+        .arg(&svg_path)
+        .args(["--out"])
+        .arg(&png_path)
+        .status()
+        .map_err(|error| format!("launch sips SVG rasterizer: {error}"))?;
+    if !raster.success() || !png_path.is_file() {
+        return Err("sips failed to rasterize PNG review capture".into());
+    }
+    if fitted_width != width || fitted_height != height {
+        let padded_path = root.join(format!("{stem}.padded.png"));
+        let pad = Command::new("sips")
+            .args([
+                "--padToHeightWidth",
+                &height.to_string(),
+                &width.to_string(),
+                "--padColor", "090A0C",
+            ])
+            .arg(&png_path)
+            .args(["--out"])
+            .arg(&padded_path)
+            .status()
+            .map_err(|error| format!("launch sips viewport pad: {error}"))?;
+        if !pad.success() || !padded_path.is_file() {
+            return Err("sips failed to pad PNG review capture".into());
+        }
+        fs::rename(&padded_path, &png_path).map_err(|error| error.to_string())?;
+    }
+    let png = fs::read(&png_path).map_err(|error| error.to_string())?;
+    Ok(json!({
+        "visual_id": id,
+        "revision": revision,
+        "viewport": {"width":width,"height":height},
+        "screenshot_path": png_path.to_string_lossy(),
+        "instruction": "Inspect the attached PNG image before submitting visual_review. If any collision, truncation, crossing, weak hierarchy, or excessive density is visible, update and capture again.",
+        "_mcpImage": {"data":base64::engine::general_purpose::STANDARD.encode(png),"mimeType":"image/png"}
+    }))
 }
 
 fn main() {

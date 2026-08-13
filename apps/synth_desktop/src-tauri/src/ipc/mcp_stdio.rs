@@ -51,15 +51,31 @@ pub fn run_stdio_server(
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 match call_tool(name, &args) {
-                    Ok(result) => {
+                    Ok(mut result) => {
+                        let image = result
+                            .as_object_mut()
+                            .and_then(|object| object.remove("_mcpImage"));
+                        let mut content = vec![json!({
+                            "type": "text",
+                            "text": serde_json::to_string_pretty(&result).unwrap_or_default()
+                        })];
+                        if let Some(image) = image {
+                            if let (Some(data), Some(mime_type)) = (
+                                image.get("data").and_then(Value::as_str),
+                                image.get("mimeType").and_then(Value::as_str),
+                            ) {
+                                content.push(json!({
+                                    "type": "image",
+                                    "data": data,
+                                    "mimeType": mime_type,
+                                }));
+                            }
+                        }
                         json!({
                             "jsonrpc": "2.0",
                             "id": id,
                             "result": {
-                                "content": [{
-                                    "type": "text",
-                                    "text": serde_json::to_string_pretty(&result).unwrap_or_default()
-                                }],
+                                "content": content,
                                 "structuredContent": result
                             }
                         })
