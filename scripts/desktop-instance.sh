@@ -7,6 +7,18 @@ COMMAND="${1:-dev}"
 NAME="${2:-${SYNTH_DESKTOP_INSTANCE:-codex}}"
 RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.2}"
 APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.2.0}"
+SIGNED_IN_LAUNCH=0
+
+case "$COMMAND" in
+  cua-signed-in)
+    SIGNED_IN_LAUNCH=1
+    COMMAND="cua"
+    ;;
+  cua-run-signed-in)
+    SIGNED_IN_LAUNCH=1
+    COMMAND="cua-run"
+    ;;
+esac
 
 if [[ "$RELEASE_LINE" != "v0.2" ]]; then
   echo "[desktop:$NAME] invalid release line; this branch only builds v0.2 instances" >&2
@@ -22,6 +34,12 @@ Usage: ./scripts/desktop-instance.sh <command> [name]
   cua [name]       Build and run a named debug .app for Computer Use
   cua-build [name] Build and sign the named debug .app without launching it
   cua-run [name]   Run the existing signed CUA app without rebuilding
+  cua-signed-in [name]
+                   Build and run with Synth login seeded from the explicit key file
+  cua-run-signed-in [name]
+                   Run an existing CUA app with the explicit Synth login seed
+  sign-in-file [name]
+                   Seed Synth login without launching (useful for setup and tests)
   status [name]    Show the exact process and instance paths
   stage [name]     Stage protected-folder-free runtime inputs without launching
   stop [name]      Stop only the named instance
@@ -29,6 +47,11 @@ Usage: ./scripts/desktop-instance.sh <command> [name]
   print [name]     Print the resolved instance contract without launching
 
 Names must match [a-z][a-z0-9-]{0,31}. The default name is "codex".
+
+Signed-in commands require SYNTH_DESKTOP_DEV_SYNTH_API_KEY_FILE to name an
+absolute, mode-0600 file containing exactly one Synth API key. The key is
+copied into the named instance's isolated native-host secrets file; it is never
+printed, placed in command arguments, or stored in Keychain.
 EOF
 }
 
@@ -260,6 +283,56 @@ print_contract() {
   cat "$MANIFEST"
 }
 
+seed_synth_login() {
+  local source="${SYNTH_DESKTOP_DEV_SYNTH_API_KEY_FILE:-}"
+  local source_mode
+  if [[ -z "$source" ]]; then
+    echo "[desktop:$NAME] ERROR signed-in launch requires SYNTH_DESKTOP_DEV_SYNTH_API_KEY_FILE" >&2
+    return 2
+  fi
+  if [[ "$source" != /* || ! -f "$source" || -L "$source" ]]; then
+    echo "[desktop:$NAME] ERROR Synth API key file must be an absolute regular file (not a symlink)" >&2
+    return 2
+  fi
+  source_mode="$(stat -f '%Lp' "$source")"
+  if [[ "$source_mode" != "600" && "$source_mode" != "400" ]]; then
+    echo "[desktop:$NAME] ERROR Synth API key file must have mode 0600 or 0400 (found $source_mode)" >&2
+    return 2
+  fi
+
+  # Python receives only file paths. The secret never appears in argv or the
+  # process environment, and the destination is replaced atomically at 0600.
+  python3 - "$source" "$DATA_ROOT/.env" <<'PY'
+import os
+import re
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+secret = source.read_text(encoding="utf-8").strip()
+if not re.fullmatch(r"[A-Za-z0-9._-]+", secret):
+    raise SystemExit("Synth API key file must contain exactly one non-empty API key")
+
+existing = destination.read_text(encoding="utf-8").splitlines() if destination.exists() else []
+kept = [line for line in existing if not re.match(r"^\s*(?:export\s+)?SYNTH_API_KEY=", line)]
+payload = "\n".join([*kept, f"SYNTH_API_KEY='{secret}'"]).strip() + "\n"
+temporary = destination.with_name(destination.name + ".signed-in.tmp")
+fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    handle.write(payload)
+os.chmod(temporary, 0o600)
+os.replace(temporary, destination)
+PY
+  echo "[desktop:$NAME] Synth login seeded into the isolated native-host secrets file"
+}
+
+seed_login_only() {
+  write_contract
+  seed_synth_login
+  echo "[desktop:$NAME] ready for a signed-in launch"
+}
+
 stop_instance() {
   local rows pids
   rows="$(instance_processes)"
@@ -374,6 +447,9 @@ dev_instance() {
   if [[ -n "$(instance_processes)" ]]; then
     echo "[desktop:$NAME] already running; use desktop:instance:stop first" >&2
     exit 1
+  fi
+  if [[ "$SIGNED_IN_LAUNCH" == "1" ]]; then
+    seed_synth_login
   fi
 
   # Capture provenance before any compile so a mid-build dirty tree fails closed.
@@ -553,6 +629,7 @@ clean_instance() {
 
 case "$COMMAND" in
   dev|cua|cua-build|cua-run) dev_instance ;;
+  sign-in-file) seed_login_only ;;
   status) status_instance ;;
   stage) stage_instance ;;
   stop) stop_instance ;;

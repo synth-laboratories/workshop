@@ -34,6 +34,29 @@ npm run desktop:instance:stop -- alpha
 npm run desktop:instance:clean -- alpha
 ```
 
+### Start an instance already signed in to Synth
+
+Keep the test key in a private one-line file, then use the explicit signed-in
+launcher. The key is copied into only that named instance's `0600` native-host
+secrets file; it is not printed, passed as a command argument, or stored in
+Keychain.
+
+```bash
+chmod 600 /absolute/path/to/synth-test-api-key
+
+# Build, sign, and launch a fresh test app.
+SYNTH_DESKTOP_DEV_SYNTH_API_KEY_FILE=/absolute/path/to/synth-test-api-key \
+  ./scripts/desktop-instance.sh cua-signed-in auth-test
+
+# Relaunch an already-built app without rebuilding.
+SYNTH_DESKTOP_DEV_SYNTH_API_KEY_FILE=/absolute/path/to/synth-test-api-key \
+  ./scripts/desktop-instance.sh cua-run-signed-in auth-test
+```
+
+For setup without launching, use `sign-in-file auth-test` with the same
+environment variable. Normal named instances remain isolated and signed out
+unless their own secrets file already contains a key.
+
 Names must match:
 
 ```text

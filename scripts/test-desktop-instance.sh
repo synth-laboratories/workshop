@@ -49,6 +49,8 @@ awk '
 ' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'if \(\$0 == exe \|\| \$0 == cua_exe\)' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_DEV_OAUTH_FILE' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'cua-run-signed-in' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'SYNTH_DESKTOP_DEV_SYNTH_API_KEY_FILE' "$ROOT/scripts/desktop-instance.sh"
 if rg -q 'SYNTH_DESKTOP_DEV_SHARE_CANONICAL_OAUTH|synth-desktop-dev-\$NAME' "$ROOT/scripts/desktop-instance.sh"; then
   echo "Desktop CUA launcher still contains a Keychain credential path" >&2
   exit 1
@@ -67,6 +69,28 @@ if "$ROOT/scripts/desktop-instance.sh" print '../unsafe' >/dev/null 2>&1; then
 fi
 if SYNTH_DESKTOP_RELEASE_LINE=v0.1 "$ROOT/scripts/desktop-instance.sh" print alpha >/dev/null 2>&1; then
   echo "non-v0.2 release line was accepted by the v0.2 launcher" >&2
+  exit 1
+fi
+
+# Signed-in test startup consumes a private one-line key file, writes only to
+# the named instance's isolated 0600 env file, and never prints the key.
+TEST_SYNTH_KEY_FILE="$TEST_ROOT/synth-api-key"
+TEST_SYNTH_KEY="sk_test_instance_seed_42"
+printf '%s\n' "$TEST_SYNTH_KEY" >"$TEST_SYNTH_KEY_FILE"
+chmod 600 "$TEST_SYNTH_KEY_FILE"
+signed_output="$(SYNTH_DESKTOP_DEV_SYNTH_API_KEY_FILE="$TEST_SYNTH_KEY_FILE" \
+  "$ROOT/scripts/desktop-instance.sh" sign-in-file signed-test)"
+SIGNED_ENV="$TEST_ROOT/instances/v02/signed-test/data/.env"
+[[ -f "$SIGNED_ENV" ]]
+[[ "$(stat -f '%Lp' "$SIGNED_ENV")" == "600" ]]
+rg -q "^SYNTH_API_KEY='$TEST_SYNTH_KEY'$" "$SIGNED_ENV"
+if printf '%s' "$signed_output" | rg -q -F "$TEST_SYNTH_KEY"; then
+  echo "signed-in instance flow printed the Synth API key" >&2
+  exit 1
+fi
+if SYNTH_DESKTOP_DEV_SYNTH_API_KEY_FILE="$TEST_ROOT/missing-key" \
+  "$ROOT/scripts/desktop-instance.sh" sign-in-file missing-key >/dev/null 2>&1; then
+  echo "signed-in instance flow accepted a missing key file" >&2
   exit 1
 fi
 
