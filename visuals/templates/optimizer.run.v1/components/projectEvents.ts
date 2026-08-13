@@ -355,6 +355,38 @@ export type ProjectedState = {
     compute: Record<string, unknown>;
     examples: Array<Record<string, unknown>>;
     lineage?: Record<string, unknown>;
+    /**
+     * Phase A — the unchanged student scored on frozen baseline seeds. Absent
+     * until the producer emits it; never synthesized from training metrics.
+     */
+    baseline?: {
+      splitDigest?: string;
+      seeds: SftSeedResult[];
+    };
+    /**
+     * Phases B/C — teacher collection and the curation funnel. Counts stay null
+     * when the producer has not reported them; a null is not a zero.
+     */
+    curation: {
+      collected: number | null;
+      considered: number | null;
+      accepted: number | null;
+      rejected: number | null;
+      rejectionsByReason: Record<string, number>;
+      seedsCovered: number | null;
+      achievementsCovered: string[];
+      candidates: SftCurationCandidate[];
+    };
+    /**
+     * Phase G — the paired base-vs-promoted comparison on untouched heldout
+     * seeds. This is the only evidence that licenses an uplift claim.
+     */
+    comparison?: {
+      splitDigest?: string;
+      baseLabel: string;
+      trainedLabel: string;
+      pairs: SftComparisonPair[];
+    };
   };
 };
 
@@ -372,6 +404,109 @@ function optimizerFailureDetail(error: unknown): string | undefined {
     .split("\n")
     .map((line) => line.trim())
     .find((line) => line && !line.includes("resource_tracker") && !line.startsWith("warnings.warn"));
+}
+
+/** One evaluated seed for a single policy arm. */
+export type SftSeedResult = {
+  seed: string;
+  reward: number | null;
+  steps?: number;
+  achievements?: string[];
+  rolloutId?: string;
+  traceDigest?: string;
+  status?: string;
+};
+
+/** One trajectory considered by the curator, with its accept/reject reason. */
+export type SftCurationCandidate = {
+  id: string;
+  seed?: string;
+  score: number | null;
+  reward: number | null;
+  steps?: number;
+  achievements?: string[];
+  accepted: boolean;
+  reason?: string;
+  traceDigest?: string;
+};
+
+/** The same heldout seed scored by both arms. Either side may be missing. */
+export type SftComparisonPair = {
+  seed: string;
+  base: SftSeedResult | null;
+  trained: SftSeedResult | null;
+};
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.map((entry) => String(entry));
+}
+
+/**
+ * Normalize one evaluated seed. Reward is deliberately `null` — not `0` — when
+ * the producer did not report an authoritative score, so a missing measurement
+ * can never be averaged in as a real zero.
+ */
+function seedResult(raw: unknown): SftSeedResult | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const rec = raw as Record<string, unknown>;
+  const seed = rec.seed ?? rec.world ?? rec.seed_id ?? rec.id;
+  if (seed == null) return null;
+  return {
+    seed: String(seed),
+    reward: numberOrNull(rec.reward ?? rec.total_reward ?? rec.score),
+    steps: optionalNumber(rec.steps ?? rec.episode_length ?? rec.step_count),
+    achievements: stringList(rec.achievements),
+    rolloutId: typeof rec.rollout_id === "string" ? rec.rollout_id : undefined,
+    traceDigest: typeof rec.trace_v5_digest === "string"
+      ? rec.trace_v5_digest
+      : typeof rec.trace_digest === "string" ? rec.trace_digest : undefined,
+    status: typeof rec.status === "string" ? rec.status : undefined
+  };
+}
+
+/** Pull the per-seed detail list off either arm of a paired payload. */
+function armDetails(raw: unknown): { label?: string; seeds: SftSeedResult[] } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { seeds: [] };
+  const rec = raw as Record<string, unknown>;
+  const list = rec.details ?? rec.seeds ?? rec.rollouts;
+  const seeds = Array.isArray(list)
+    ? list.map(seedResult).filter((entry): entry is SftSeedResult => entry != null)
+    : [];
+  return { label: typeof rec.label === "string" ? rec.label : undefined, seeds };
+}
+
+function curationCandidate(raw: unknown): SftCurationCandidate | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const rec = raw as Record<string, unknown>;
+  const id = rec.id ?? rec.candidate_id ?? rec.rollout_id ?? rec.trace_id;
+  if (id == null) return null;
+  const decision = rec.decision ?? rec.status;
+  const accepted = rec.accepted === true
+    || decision === "accepted"
+    || decision === "accept"
+    || decision === "retained";
+  return {
+    id: String(id),
+    seed: rec.seed == null ? undefined : String(rec.seed),
+    score: numberOrNull(rec.score ?? rec.rank_score),
+    reward: numberOrNull(rec.reward ?? rec.total_reward),
+    steps: optionalNumber(rec.steps ?? rec.episode_length),
+    achievements: stringList(rec.achievements),
+    accepted,
+    reason: typeof rec.reason === "string"
+      ? rec.reason
+      : typeof rec.curation_reason === "string" ? rec.curation_reason : undefined,
+    traceDigest: typeof rec.trace_v5_digest === "string" ? rec.trace_v5_digest : undefined
+  };
 }
 
 export function isContainerRolloutRef(value: unknown): value is ContainerRolloutRef {
@@ -521,6 +656,16 @@ export function projectAtCursor(
   let compute: Record<string, unknown> = {};
   let examples: Array<Record<string, unknown>> = [];
   let lineage: Record<string, unknown> = {};
+  const baselineSeeds = new Map<string, SftSeedResult>();
+  let baselineSplitDigest: string | undefined;
+  const curationCandidates = new Map<string, SftCurationCandidate>();
+  let curationFunnel: Record<string, unknown> = {};
+  let teacherRolloutCount = 0;
+  const comparisonBase = new Map<string, SftSeedResult>();
+  const comparisonTrained = new Map<string, SftSeedResult>();
+  let comparisonSplitDigest: string | undefined;
+  let comparisonBaseLabel: string | undefined;
+  let comparisonTrainedLabel: string | undefined;
   let status = run.status;
   let summary = { ...(run.summary ?? {}) };
 
@@ -1774,11 +1919,87 @@ export function projectAtCursor(
     if (event.type === "sft.compute.updated") {
       compute = { ...(event.snapshot ?? event.delta ?? {}) };
     }
+    // ── Phase A · baseline ──────────────────────────────────────────────
+    // Per-seed rollouts of the unchanged student, plus an optional summary
+    // that carries the frozen split digest.
+    if (event.type === "sft.baseline_rollout.completed") {
+      const entry = seedResult({ ...(event.delta ?? {}), ...(event.item?.raw ?? {}) });
+      if (entry) baselineSeeds.set(entry.seed, entry);
+    }
+    if (
+      event.type === "sft.baseline_evaluation.completed" ||
+      event.type === "sft.baseline_eval.completed"
+    ) {
+      const payload = (event.snapshot ?? event.delta ?? {}) as Record<string, unknown>;
+      const digest = payload.split_digest ?? payload.seed_manifest_digest;
+      if (typeof digest === "string") baselineSplitDigest = digest;
+      for (const entry of armDetails(payload).seeds) baselineSeeds.set(entry.seed, entry);
+    }
+
+    // ── Phase B · teacher collection ────────────────────────────────────
+    if (event.type === "sft.teacher_rollout.completed") teacherRolloutCount += 1;
+
+    // ── Phase C · curation ──────────────────────────────────────────────
+    if (
+      event.type === "sft.curation.candidate_evaluated" ||
+      event.type === "sft.curation.case_completed"
+    ) {
+      const candidate = curationCandidate({ ...(event.delta ?? {}), ...(event.item?.raw ?? {}) });
+      if (candidate) curationCandidates.set(candidate.id, candidate);
+    }
+    if (event.type === "sft.curation.completed" || event.type === "sft.curation.validated") {
+      const payload = (event.snapshot ?? event.delta ?? {}) as Record<string, unknown>;
+      curationFunnel = { ...curationFunnel, ...payload };
+      const list = payload.candidates;
+      if (Array.isArray(list)) {
+        for (const raw of list) {
+          const candidate = curationCandidate(raw);
+          if (candidate) curationCandidates.set(candidate.id, candidate);
+        }
+      }
+    }
+
+    // ── Phase G · paired heldout comparison ─────────────────────────────
+    // `sft.heldout_evaluation.*` is the canonical name; `sft.heldout_eval.*`
+    // is the older alias that shipped in fixtures. Accept both so a producer
+    // on either name is projected instead of silently dropped.
+    if (
+      event.type === "sft.heldout_evaluation.completed" ||
+      event.type === "sft.heldout_eval.completed"
+    ) {
+      const payload = (event.snapshot ?? event.delta ?? {}) as Record<string, unknown>;
+      const digest = payload.split_digest ?? payload.seed_manifest_digest;
+      if (typeof digest === "string") comparisonSplitDigest = digest;
+      const baseArm = armDetails(payload.base);
+      const trainedArm = armDetails(payload.trained ?? payload.sft ?? payload.promoted);
+      if (baseArm.label) comparisonBaseLabel = baseArm.label;
+      if (trainedArm.label) comparisonTrainedLabel = trainedArm.label;
+      for (const entry of baseArm.seeds) comparisonBase.set(entry.seed, entry);
+      for (const entry of trainedArm.seeds) comparisonTrained.set(entry.seed, entry);
+    }
+    if (event.type === "sft.heldout_rollout.completed") {
+      const payload = { ...(event.delta ?? {}), ...(event.item?.raw ?? {}) } as Record<string, unknown>;
+      const entry = seedResult(payload);
+      const arm = String(payload.arm ?? payload.policy ?? payload.label ?? "");
+      if (entry && arm) {
+        if (arm === "base") comparisonBase.set(entry.seed, entry);
+        else comparisonTrained.set(entry.seed, entry);
+      }
+    }
+
     if (
       event.type === "sft.checkpoint_eval.completed" ||
+      event.type === "sft.heldout_evaluation.completed" ||
       event.type === "sft.heldout_eval.completed" ||
       event.type === "sft.checkpoint_evaluation.completed"
     ) {
+      // A paired heldout payload carries arms, not a scalar metric; it is
+      // already projected into `comparison`. Only summarize events that
+      // actually report a metric or score.
+      const hasScalar = event.delta?.metric != null
+        || event.delta?.score != null
+        || event.delta?.accuracy != null;
+      if (!hasScalar && event.type.includes("heldout")) continue;
       evaluations.push({
         sequence: event.sequenceNumber,
         role: event.delta?.role ?? (event.type.includes("heldout") ? "heldout" : "selection"),
@@ -2022,6 +2243,25 @@ export function projectAtCursor(
       rollouts
     };
   } else if (run.algorithmId === "sft") {
+    const candidates = [...curationCandidates.values()];
+    const acceptedCount = candidates.filter((candidate) => candidate.accepted).length;
+    const rejectionsByReason: Record<string, number> = {};
+    for (const candidate of candidates) {
+      if (candidate.accepted) continue;
+      const reason = candidate.reason ?? "unspecified";
+      rejectionsByReason[reason] = (rejectionsByReason[reason] ?? 0) + 1;
+    }
+    const achievementsCovered = [...new Set(
+      candidates.filter((candidate) => candidate.accepted).flatMap((candidate) => candidate.achievements ?? [])
+    )].sort();
+    const seedsCovered = new Set(
+      candidates.filter((candidate) => candidate.accepted && candidate.seed != null).map((candidate) => candidate.seed)
+    ).size;
+    // A count the producer never reported stays null. Only fall back to a
+    // derived count when candidates were actually observed.
+    const reported = (key: string): number | null => numberOrNull(curationFunnel[key]);
+    const pairedSeeds = [...new Set([...comparisonBase.keys(), ...comparisonTrained.keys()])];
+
     projected.sft = {
       curves,
       points,
@@ -2031,7 +2271,34 @@ export function projectAtCursor(
       dataset,
       compute,
       examples,
-      lineage
+      lineage,
+      baseline: baselineSeeds.size > 0 || baselineSplitDigest
+        ? { splitDigest: baselineSplitDigest, seeds: [...baselineSeeds.values()] }
+        : undefined,
+      curation: {
+        collected: reported("collected") ?? (teacherRolloutCount > 0 ? teacherRolloutCount : null),
+        considered: reported("considered") ?? (candidates.length > 0 ? candidates.length : null),
+        accepted: reported("accepted") ?? (candidates.length > 0 ? acceptedCount : null),
+        rejected: reported("rejected") ?? (candidates.length > 0 ? candidates.length - acceptedCount : null),
+        rejectionsByReason,
+        seedsCovered: candidates.length > 0 ? seedsCovered : null,
+        achievementsCovered,
+        candidates
+      },
+      comparison: pairedSeeds.length > 0
+        ? {
+            splitDigest: comparisonSplitDigest,
+            baseLabel: comparisonBaseLabel ?? "Base student",
+            trainedLabel: comparisonTrainedLabel ?? "Promoted checkpoint",
+            pairs: pairedSeeds
+              .sort((a, b) => (Number(a) - Number(b)) || a.localeCompare(b))
+              .map((seed) => ({
+                seed,
+                base: comparisonBase.get(seed) ?? null,
+                trained: comparisonTrained.get(seed) ?? null
+              }))
+          }
+        : undefined
     };
   }
 

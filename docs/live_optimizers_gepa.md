@@ -472,6 +472,52 @@ optimizer.artifact.created
 optimizer.run.completed | failed | cancelled
 ```
 
+#### Uplift-experiment additions (Craftax trace-to-SFT)
+
+The catalog above covers training onward. A trace-to-SFT uplift run
+(`HANDOFF_CRAFTAX_SFT_UPLIFT_2026-08-13.md`) also has a data-generation front half
+and a paired final comparison, and those had no events. Workshop's SFT visual
+projects the following; a producer that does not emit them leaves the
+corresponding panels in an explicit "not emitted" state rather than blank.
+
+```text
+sft.baseline_rollout.completed
+sft.baseline_evaluation.completed
+
+sft.teacher_rollout.completed
+sft.curation.candidate_evaluated
+sft.curation.completed
+
+sft.heldout_rollout.completed
+```
+
+`sft.baseline_evaluation.completed` and `sft.heldout_evaluation.completed` carry a
+seed-level payload, not a scalar. Reward is `null` when the evaluator returned no
+authoritative score; Workshop excludes those seeds from every statistic and reports
+them as unpaired. It never substitutes `0`.
+
+```json
+{
+  "split_digest": "sha256:...",
+  "base":    { "label": "Base student",     "details": [{ "seed": 101, "reward": 1.0, "steps": 40, "achievements": ["collect_wood"], "rollout_id": "...", "trace_v5_digest": "..." }] },
+  "trained": { "label": "Promoted ckpt_20", "details": [{ "seed": 101, "reward": 3.0, "steps": 52, "achievements": ["collect_wood", "place_table"] }] }
+}
+```
+
+This matches the arm shape already produced by `scripts/run_craftax_sft_uplift.py`
+(`eval_policy` → `{label, mean_reward, details[]}`), so the hosted producer can port
+that loop without inventing a second representation.
+
+A curation candidate carries its decision and the reason for it:
+
+```json
+{ "id": "...", "seed": 11, "reward": 4.0, "score": 0.91, "decision": "accepted|rejected", "reason": "...", "achievements": [], "trace_v5_digest": "..." }
+```
+
+**Naming note.** The canonical name is `sft.heldout_evaluation.*`. Fixtures and the
+Workshop projector shipped `sft.heldout_eval.*` for a period; the projector now accepts
+both, but producers must emit the canonical spelling.
+
 Use `sft.training.metrics`, not parallel event names per provider. A metrics event contains
 one aligned observation:
 

@@ -12,6 +12,40 @@
   --sv-text-muted: #5c6573;
   --sv-text-faint: #687180;
   --sv-radius: 10px;
+
+  /* ── Scale ── the vocabulary components consume instead of inline literals.
+     Same discipline as the desktop renderer: six sizes, six spaces, three
+     radii. If a value is not here, reuse its nearest neighbour. */
+  --sv-sp-1: 4px;
+  --sv-sp-2: 8px;
+  --sv-sp-3: 12px;
+  --sv-sp-4: 16px;
+  --sv-sp-5: 20px;
+  --sv-sp-6: 28px;
+
+  --sv-fs-micro: 10px;
+  --sv-fs-meta: 11px;
+  --sv-fs-body: 12px;
+  --sv-fs-strong: 13px;
+  --sv-fs-title: 15px;
+  --sv-fs-hero: 18px;
+
+  --sv-radius-sm: 7px;
+  --sv-radius-lg: 12px;
+
+  /* ── Tone ── status colors as pairs, so a component never mixes its own.
+     These are the values the chips already used, lifted into tokens. */
+  --sv-ok-bg: #ecf7f0;
+  --sv-ok-fg: #1e7a43;
+  --sv-ok-edge: #b7dcc4;
+  --sv-bad-bg: #fbefee;
+  --sv-bad-fg: #b23830;
+  --sv-bad-edge: #ecc4c0;
+  --sv-warn-bg: #fbf5e7;
+  --sv-warn-fg: #92660c;
+  --sv-warn-edge: #ecd9b0;
+  /* The neutral second series on charts and the base arm in comparisons. */
+  --sv-series-b: #5c6573;
   --sv-font: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
   --sv-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -458,3 +492,230 @@
   background: var(--sv-accent-hot);
   animation: sv-stage-pulse 1.4s ease-in-out infinite;
 }
+
+/* ── Evidence panels ──────────────────────────────────────────────────────
+   Shared parts for the optimizer workspaces. Built on the scale above; no
+   literal sizes or colors below this line. */
+
+.sv-panel {
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius);
+  background: var(--sv-surface);
+  overflow: hidden;
+}
+
+.sv-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sv-sp-3);
+  padding: var(--sv-sp-3) var(--sv-sp-4);
+  border-bottom: 1px solid var(--sv-border);
+  background: var(--sv-surface-muted);
+}
+
+.sv-panel-head h4 {
+  margin: 0;
+  font-size: var(--sv-fs-strong);
+  font-weight: 650;
+}
+
+.sv-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-sp-4);
+  padding: var(--sv-sp-4);
+}
+
+/* Small uppercase label above a group. One per group, never per row. */
+.sv-micro-label {
+  display: block;
+  font-size: var(--sv-fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--sv-text-muted);
+}
+
+/* The honest empty state: says what would appear and why it has not. */
+.sv-empty {
+  margin: 0;
+  padding: var(--sv-sp-4);
+  border: 1px dashed var(--sv-border-strong);
+  border-radius: var(--sv-radius-sm);
+  color: var(--sv-text-faint);
+  font-size: var(--sv-fs-body);
+  line-height: 1.5;
+}
+
+/* Label / value rows for identity and provenance. */
+.sv-kv {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0;
+  margin: 0;
+}
+
+.sv-kv dt,
+.sv-kv dd {
+  margin: 0;
+  padding: var(--sv-sp-2) 0;
+  border-bottom: 1px solid var(--sv-border);
+  font-size: var(--sv-fs-body);
+}
+
+.sv-kv dt { color: var(--sv-text-faint); }
+
+.sv-kv dd {
+  text-align: right;
+  color: var(--sv-text);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* Side-by-side arm statistics in a comparison. */
+.sv-arms {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--sv-sp-2);
+}
+
+.sv-arm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-sp-1);
+  padding: var(--sv-sp-3);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-muted);
+}
+
+.sv-arm strong {
+  font-size: var(--sv-fs-hero);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+
+.sv-arm[data-arm="trained"] {
+  border-color: var(--sv-accent);
+  background: var(--sv-accent-soft);
+}
+
+/* A signed delta. Direction is carried by the sign and the word, not by hue
+   alone — the tone is a second channel, never the only one. */
+.sv-delta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sv-sp-2);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.sv-delta[data-dir="up"] { color: var(--sv-ok-fg); }
+.sv-delta[data-dir="down"] { color: var(--sv-bad-fg); }
+.sv-delta[data-dir="flat"] { color: var(--sv-text-muted); }
+.sv-delta[data-dir="unknown"] { color: var(--sv-text-faint); }
+
+/* Horizontal proportion bar for funnels and win/loss splits. */
+.sv-bar {
+  display: flex;
+  height: 8px;
+  border-radius: var(--sv-radius-sm);
+  overflow: hidden;
+  background: var(--sv-surface-muted);
+}
+
+.sv-bar span { display: block; height: 100%; }
+.sv-bar span[data-tone="ok"] { background: var(--sv-ok-fg); }
+.sv-bar span[data-tone="bad"] { background: var(--sv-bad-fg); }
+.sv-bar span[data-tone="flat"] { background: var(--sv-border-strong); }
+.sv-bar span[data-tone="accent"] { background: var(--sv-accent); }
+
+.sv-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-sp-3);
+  font-size: var(--sv-fs-meta);
+  color: var(--sv-text-muted);
+}
+
+.sv-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sv-sp-1);
+}
+
+.sv-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+/* Rows in the checkpoint rail and other single-line records. */
+.sv-rail-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-sp-2);
+  padding: var(--sv-sp-3);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+}
+
+.sv-rail-row[data-promoted="true"] {
+  border-color: var(--sv-accent);
+  background: var(--sv-accent-soft);
+}
+
+.sv-rail-row-end {
+  margin-left: auto;
+  display: inline-flex;
+  gap: var(--sv-sp-1);
+}
+
+/* Coverage chips — one per achievement/seed, wrapping. */
+.sv-coverage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-sp-1);
+}
+
+.sv-coverage code {
+  padding: 2px var(--sv-sp-2);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-muted);
+  color: var(--sv-text-muted);
+  font-family: var(--sv-mono);
+  font-size: var(--sv-fs-micro);
+}
+
+.sv-coverage code[data-state="gained"] {
+  background: var(--sv-ok-bg);
+  color: var(--sv-ok-fg);
+}
+
+.sv-coverage code[data-state="lost"] {
+  background: var(--sv-bad-bg);
+  color: var(--sv-bad-fg);
+}
+
+/* Per-seed outcome cell in the paired matrix. */
+.sv-outcome {
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.sv-outcome[data-outcome="win"] { color: var(--sv-ok-fg); }
+.sv-outcome[data-outcome="loss"] { color: var(--sv-bad-fg); }
+.sv-outcome[data-outcome="tie"] { color: var(--sv-text-muted); }
+.sv-outcome[data-outcome="unpaired"] { color: var(--sv-text-faint); }
+
+.sv-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-sp-3);
+  min-width: 0;
+}
+
+.sv-stack-tight { gap: var(--sv-sp-2); }
