@@ -97,9 +97,6 @@ export function DataPage({
 	const [traceCreated, setTraceCreated] = useState("all");
 	const [traceSource, setTraceSource] = useState("all");
 	const [traceEvidence, setTraceEvidence] = useState("all");
-	const [traceNotice, setTraceNotice] = useState<string | null>(null);
-	const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
-	const [traceErrors, setTraceErrors] = useState<Record<string, string>>({});
 	const activeContainers = useMemo(() => containers.filter((container) => !archivedContainerIds.has(container.id)), [containers, archivedContainerIds]);
 	const archivedContainers = useMemo(() => containers.filter((container) => archivedContainerIds.has(container.id)), [containers, archivedContainerIds]);
 
@@ -275,101 +272,6 @@ export function DataPage({
 		} finally { setBusyId(null); }
 	};
 
-	const importTrace = async () => {
-		setError(null);
-		setTraceNotice(null);
-		const sourcePath = await bridges.inventory?.chooseTraceInput();
-		if (!sourcePath) return;
-		setBusyId("trace-import");
-		try {
-			const result = await bridges.inventory?.ingestTraceBundle({
-				sourcePath,
-				sourceKind: "desktop_picker"
-			});
-			if (!result) throw new Error("Trace import did not return a result");
-			setTraceNotice(result.trusted
-				? `${result.duplicate ? "Already imported" : "Imported"} ${result.traces.length} trusted trace${result.traces.length === 1 ? "" : "s"}.`
-				: `Input quarantined (${result.compatibilityLevel}); it was not added to the trusted trace catalog.`);
-			await refresh();
-		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
-		} finally {
-			setBusyId(null);
-		}
-	};
-
-	const openTrace = async (trace: TraceV5Record) => {
-		setBusyId(trace.id);
-		setTraceErrors((current) => { const next = { ...current }; delete next[trace.id]; return next; });
-		try {
-			if (!bridges.inventory || !bridges.visuals) {
-				throw new Error("Trace visuals are unavailable");
-			}
-			let resolvedTrace = trace;
-			let projection;
-			try {
-				projection = await bridges.inventory.resolveTraceProjection(resolvedTrace.digest);
-			} catch (reason) {
-				const message = reason instanceof Error ? reason.message : String(reason);
-				if (!trace.path || !message.includes("trusted Trace V5 archive not found")) throw reason;
-				const migrated = await bridges.inventory.ingestTraceBundle({ sourcePath: trace.path, sourceKind: "legacy_catalog_open", title: trace.title });
-				if (!migrated.trusted || !migrated.traces.length) {
-					throw new Error(`Legacy record is not an inspectable Trace V5 bundle (${migrated.compatibilityLevel}). Re-import its source archive to migrate it.`);
-				}
-				resolvedTrace = migrated.traces[0];
-				projection = await bridges.inventory.resolveTraceProjection(resolvedTrace.digest);
-				await refresh();
-			}
-			const visualId = `tracevis_${resolvedTrace.digest.replace(/^sha256:/, "")}`;
-			const bindings = {
-				schemaVersion: "synth.visual-bindings.v1" as const,
-				slots: [{
-					slot: "projection",
-					kind: "inline",
-					schema: projection.projectionSchema,
-					data: projection.payload
-				}]
-			};
-			const metadata = {
-				traceDigest: resolvedTrace.digest,
-				projectionDigest: projection.payloadDigest,
-				projectionSchema: projection.projectionSchema
-			};
-
-			let existing: VisualRecord | null = null;
-			try {
-				existing = await bridges.visuals.get(visualId);
-			} catch {
-				// A missing deterministic id is the normal first-open path.
-			}
-			const visual = existing
-				? existing.metadata?.projectionDigest === projection.payloadDigest
-					? existing
-					: await bridges.visuals.update(visualId, {
-						title: resolvedTrace.title,
-						traceId: resolvedTrace.id,
-						bindings,
-						metadata,
-						bumpRevision: true
-					})
-				: await bridges.visuals.create({
-					id: visualId,
-					templateId: "trace.rollout_inspector.v1",
-					title: resolvedTrace.title,
-					traceId: resolvedTrace.id,
-					bindings,
-					metadata
-				});
-			setSelectedTraceId(trace.id);
-			onOpenVisual(visual);
-		} catch (reason) {
-			setTraceErrors((current) => ({ ...current, [trace.id]: reason instanceof Error ? reason.message : String(reason) }));
-		} finally {
-			setBusyId(null);
-		}
-	};
-
-
 	return (
 		<div className="ws-page" data-testid="inventory-page">
 			<header className="ws-page-head">
@@ -484,8 +386,8 @@ export function DataPage({
 					<section className="ws-card ws-card-split" aria-label="Trace catalog summary">
 						<div className="ws-card-body">
 							<span className="ws-eyebrow">TRACE V5 CATALOG</span>
-							<h2 className="ws-card-title">Inspect runs, not files</h2>
-							<p className="ws-card-text">Select a trace to open its event timeline, tool output, evidence, usage, and provenance in the right pane.</p>
+							<h2 className="ws-card-title">Recorded run catalog</h2>
+							<p className="ws-card-text">v0.2 lists locally recorded trace identity and metadata. Trace import and inspection are not included in the friends build.</p>
 						</div>
 						<div className="ws-metrics">
 							<div className="ws-metric"><strong>{traces.length}</strong><span>traces</span></div>
@@ -505,15 +407,7 @@ export function DataPage({
 								data-testid="filter-traces"
 							/>
 						</label>
-						<button
-							type="button"
-							className="ws-btn ws-btn-primary"
-							disabled={busyId === "trace-import"}
-							onClick={() => void importTrace()}
-							data-testid="import-trace-v5"
-						>
-							{busyId === "trace-import" ? "Importing…" : "+ Import Trace V5"}
-						</button>
+						<span className="ws-tag" data-testid="trace-catalog-read-only">Catalog only in v0.2</span>
 					</div>
 					<div className="ws-toolbar ws-toolbar-wrap" aria-label="Trace filters">
 						<label className="ws-field"><span>Container</span><select className="ws-select" aria-label="Related container" value={traceContainer} onChange={(event) => setTraceContainer(event.target.value)} data-testid="filter-traces-container"><option value="all">All containers</option>{traceContainerOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></label>
@@ -524,7 +418,6 @@ export function DataPage({
 						<div className="ws-muted" role="status"><strong>{filteredTraces.length}</strong> of {traces.length}</div>
 						{traceFiltersActive ? <button type="button" className="ws-btn ws-btn-ghost" onClick={resetTraceFilters}>Clear filters</button> : null}
 					</div>
-					{traceNotice ? <p className="ws-note" role="status">{traceNotice}</p> : null}
 					{traces.length === 0 ? (
 						<div className="ws-empty"><p>No traces yet.</p></div>
 					) : filteredTraces.length === 0 ? (
@@ -536,7 +429,7 @@ export function DataPage({
 							{filteredTraces.map((t) => {
 								const meta = traceMeta(t);
 								const containerName = t.containerId ? containers.find((container) => container.id === t.containerId)?.name ?? t.containerId : null;
-								return <li key={t.id} className={`ws-item ws-item-table${selectedTraceId === t.id ? " is-selected" : ""}`} data-testid={`inventory-trace-${t.id}`}>
+								return <li key={t.id} className="ws-item ws-item-table" data-testid={`inventory-trace-${t.id}`}>
 									<div className="ws-item-main">
 										<div className="ws-item-meta">
 											<span className="ws-tag">{t.source}</span>
@@ -545,7 +438,6 @@ export function DataPage({
 										</div>
 										<strong className="ws-item-title">{t.title}</strong>
 										<span className="ws-item-meta ws-mono">#{shortDigest(t.digest)} · {meta.schemaVersion ?? "Trace V5"}</span>
-										{traceErrors[t.id] ? <span className="ws-item-meta" role="alert" title={traceErrors[t.id]}>{traceErrors[t.id]}</span> : null}
 									</div>
 									<div className="ws-item-main ws-table-optional"><strong className="ws-item-title">{meta.model ?? "Unknown model"}</strong><span className="ws-item-meta">{containerName ? `container · ${containerName}` : "no related container"}</span>{meta.benchmark ? <span className="ws-item-meta">{meta.benchmark}</span> : null}</div>
 									<div className="ws-item-meta ws-table-optional">
@@ -556,15 +448,7 @@ export function DataPage({
 										{meta.costUsd != null ? <span><strong>${meta.costUsd.toFixed(4)}</strong></span> : null}
 									</div>
 									<time className="ws-item-meta ws-table-optional">{formatWhen(t.createdAt)}</time>
-									<button
-										type="button"
-										className="ws-btn ws-btn-secondary ws-btn-small"
-										disabled={busyId === t.id}
-										onClick={() => void openTrace(t)}
-										data-testid={`open-trace-${t.id}`}
-									>
-										{busyId === t.id ? "Opening…" : traceErrors[t.id] ? "Retry migration" : selectedTraceId === t.id ? "Inspector open →" : "Inspect trace →"}
-									</button>
+									<span className="ws-item-meta ws-table-optional">Read-only</span>
 								</li>;
 							})}
 						</ul>

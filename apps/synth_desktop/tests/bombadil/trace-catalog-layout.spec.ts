@@ -12,19 +12,19 @@ const traceLayout = extract((state: any) => {
 		return value ? { x: value.left + value.width / 2, y: value.top + value.height / 2 } : null;
 	};
 	const panelRect = rect(traces);
-	const inspectActions = [...document.querySelectorAll<HTMLElement>('[data-testid^="open-trace-"]')];
+	const traceRows = [...document.querySelectorAll<HTMLElement>('[data-testid^="inventory-trace-"]')];
 	return {
 		inventoryVisible: Boolean(inventory),
 		tracesVisible: Boolean(traces),
 		openInventoryPoint: point(openInventory),
 		tracesTabPoint: point(tracesTab),
-		hasTraceRows: inspectActions.length > 0,
-		actionsContained: inspectActions.every((action) => {
-			const actionRect = action.getBoundingClientRect();
+		hasTraceRows: traceRows.length > 0,
+		rowsContained: traceRows.every((row) => {
+			const rowRect = row.getBoundingClientRect();
 			return Boolean(panelRect
-				&& actionRect.left >= panelRect.left
-				&& actionRect.right <= panelRect.right + 1
-				&& actionRect.right <= state.window.innerWidth - 8);
+				&& rowRect.left >= panelRect.left
+				&& rowRect.right <= panelRect.right + 1
+				&& rowRect.right <= state.window.innerWidth - 8);
 		}),
 		noHorizontalOverflow: document.documentElement.scrollWidth <= state.window.innerWidth + 1
 	};
@@ -48,9 +48,9 @@ export const populated_trace_catalog_is_exercised = eventually(() =>
 	traceLayout.current.tracesVisible && traceLayout.current.hasTraceRows
 ).within(8, "seconds");
 
-/** CUA 2026-08-10: every Inspect trace button was clipped at the right edge. */
-export const trace_catalog_keeps_inspect_actions_inside_the_viewport = always(() =>
+/** CUA 2026-08-10: trace catalog rows clipped at the right edge. */
+export const trace_catalog_keeps_rows_inside_the_viewport = always(() =>
 	!traceLayout.current.tracesVisible || (
-		traceLayout.current.actionsContained && traceLayout.current.noHorizontalOverflow
+		traceLayout.current.rowsContained && traceLayout.current.noHorizontalOverflow
 	)
 );

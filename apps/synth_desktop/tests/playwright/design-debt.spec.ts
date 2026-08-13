@@ -69,10 +69,11 @@ test.describe("design locks (must pass)", () => {
 		await expect(form.locator("input").first()).toHaveValue("Craftax Rust");
 	});
 
-	test("Inventory Traces exposes Import Trace V5 control", async ({ page }) => {
+	test("Inventory Traces honestly scopes the v0.2 catalog as read-only", async ({ page }) => {
 		await page.getByTestId("open-inventory").click();
 		await page.getByTestId("inventory-tab-traces").click();
-		await expect(page.getByTestId("import-trace-v5")).toBeVisible();
+		await expect(page.getByTestId("trace-catalog-read-only")).toBeVisible();
+		await expect(page.getByTestId("import-trace-v5")).toHaveCount(0);
 		await expect(page.getByTestId("filter-traces")).toBeVisible();
 	});
 
