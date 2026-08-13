@@ -10,11 +10,9 @@ fixes listed below. Containers façades on loopback; optimizers-beta on
 
 This index preserves the original Aug 12 run notes. The later
 [`w1-w3-cua.json`](./w1-w3-cua.json) receipt supersedes the original W1–W3
-row only: W1 and W2 passed on isolated dirty-tree Desktop instance `w1final`;
-W3 has one passed safe-stop drill and three quota-blocked drills. It does not
-close the installed-binary Tier 4 gate. The clean-candidate preparation and
-auth blocker are recorded separately in
-[`../2026-08-13/w1-w3-tier4-preflight.json`](../2026-08-13/w1-w3-tier4-preflight.json).
+row for dirty-tree CUA. The clean installed-candidate run now closes Tier 4
+and the remaining three W3 drills; see
+[`../2026-08-13/w1-w3-tier4-installed.json`](../2026-08-13/w1-w3-tier4-installed.json).
 
 | Receipt | Test | Result |
 | --- | --- | --- |
@@ -25,7 +23,7 @@ auth blocker are recorded separately in
 | [`a6.json`](./a6.json) | A6 hosted multi-checkpoint SFT campaign | **PARTIAL** — 7/7 structure checks; campaign rollouts scored `null` |
 | — | A2 Harbor Docker GameBench | **NOT DONE** |
 | — | A8 dig.bench capstone | **BLOCKED** — no `DIGBENCH_API_TOKEN` on this machine |
-| [`w1-w3-cua.json`](./w1-w3-cua.json) | W1–W3 agent golden path with GPT-5.6 Sol | **W1 PASS / W2 PASS / W3 PARTIAL** — 10/10 real Craftax rollouts and a pre-start visual revision passed on dirty-tree CUA; missing-Visuals-MCP stopped safely; poll-503, frame-404, and policy-pin-refusal remain quota-blocked |
+| [`w1-w3-cua.json`](./w1-w3-cua.json) + [`Tier 4 installed`](../2026-08-13/w1-w3-tier4-installed.json) | W1–W3 agent golden path with GPT-5.6 Sol | **PASS** — installed candidate completed 10/10 real Craftax rollouts, a substantive revision-2 wide/compact visual gate, and all three remaining scoped W3 recovery drills with exactly one W3 engine start |
 
 A7 (OpenEnv Echo) is out of this cut.
 

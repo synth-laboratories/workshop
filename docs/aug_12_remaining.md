@@ -84,13 +84,11 @@ Validation on this dirty WIP tip:
 | **V6** accessibility | **Implemented for the Craftax reference/template floor.** Accessible names, semantic row labels, focus visibility, status text beyond color, reduced motion, compact responsive inspector. A formal axe/screen-reader receipt remains external. |
 | **O1–O4** operations | Existing budget, credential-broker, redaction, durable-spool, reconnect, and cancellation primitives are covered by unit/conformance tests, but the destructive parallel-budget/cancellation/auth-rotation drills below remain acceptance work. |
 | **O5** rebuild identity | **Implemented and script-tested.** Named CUA bundles use one persistent local signer and `cua-run` relaunches the existing signed app. No rebuild/relaunch was performed in this pass, specifically to avoid causing another Keychain prompt while the mixed tree is dirty. |
-| **W1–W3** agent workflow | **W1 PASS / W2 PASS / W3 PARTIAL** on fresh isolated dirty-tree instance `w1final` with legitimate GPT-5.6 Sol. W1 discovered and registered the declared Craftax façade, created the visual first, and completed exactly 10/10 real rollouts with no retries or replacements. W2 completed a real revision with wide and compact rendered proofs before paid start. W3 missing-Visuals-MCP stopped safely with zero mutation; poll-503, frame-404, and policy-pin-refusal were not run because a new Sol task hit quota before tool use (reset shown as Aug 18, 2026 9:45 PM). For Tier 4, clean `v02golden` candidate `859110f` passed deterministic preflight and plain CUA launch; startup auth refresh was fixed, but the canonical ChatGPT refresh token was rejected, so no clean-candidate prompt or paid rollout ran. Receipts: [`w1-w3-cua.json`](./receipts/2026-08-12/w1-w3-cua.json), [`w1-w3-tier4-preflight.json`](./receipts/2026-08-13/w1-w3-tier4-preflight.json). |
+| **W1–W3** agent workflow | **PASS on installed Tier 4 candidate.** Clean-source, signed isolated `v02golden` at `859110f` used legitimate GPT-5.6 Sol after operator-confirmed ChatGPT re-sync. W1 discovered/registered Craftax and completed exactly 10/10 real rollouts with no retries or replacements. W2 produced a substantive revision 2 with passing 1280×900 and 768×1024 reviews, then a one-start post-revision control smoke on the same installed SHA. W3 completed poll-503, immutable-frame-404, and policy-pin-403 through a fresh proxy-only registration with same-resource recovery and exactly one W3 engine start. Receipt: [`w1-w3-tier4-installed.json`](./receipts/2026-08-13/w1-w3-tier4-installed.json). |
 
-The external drills are intentionally still described below. They are acceptance
-receipts, not missing happy-path product code, and must run from isolated data
-roots. The later W1 receipt did make paid provider calls; the remaining W3 proxy
-drills made none. A clean-tree signed or friends-class installed `.app` must
-repeat the golden path for Tier 4 release qualification.
+The external drills remain described below as the acceptance contract. The
+installed Tier 4 receipt now records their completion from an isolated data
+root; they are no longer open golden-path work.
 
 The biggest gap in [aug_12_update.md](/Users/joshuapurtell/Documents/GitHub/workshop/docs/aug_12_update.md) was that A1–A8 proved major integrations, but did not sufficiently test the viewer, recovery behavior, isolation, or operational failures.
 

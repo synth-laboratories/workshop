@@ -1,0 +1,130 @@
+{
+  "schema": "workshop.agent-golden-path-tier4-installed.v1",
+  "capturedAt": "2026-08-13T16:28:10Z",
+  "result": "PASS",
+  "candidate": {
+    "sourceRevision": "859110f6a316f282445f6a6f71cad07df4fc8833",
+    "sourceCleanAtBuild": true,
+    "appVersion": "0.2.0",
+    "instance": "v02golden",
+    "bundleId": "com.synth.desktop.v02.dev.v02golden",
+    "artifactClass": "isolated_ad_hoc_signed_debug_cua",
+    "signature": "adhoc",
+    "cdHash": "9e754e1b4225d829064ae8927284c10a2645f54c",
+    "executableSha256": "b44ad5f93bdd8a191c2556895249c2f287d3681bb0784627027ff1139b733cf7",
+    "codesignVerifyDeepStrict": "PASS"
+  },
+  "auth": {
+    "provider": "ChatGPT subscription",
+    "model": "gpt-5.6-sol",
+    "resyncExplicitlyConfirmedByOperator": true,
+    "resyncResult": "PASS",
+    "credentialOrTokenCaptured": false
+  },
+  "w1": {
+    "result": "PASS",
+    "prompt": "Find the Craftax Rust container, register it, run ten rollouts, and visualize them.",
+    "containerId": "ctr_ad31b0b5243d4b289bbb713c1056e069",
+    "endpoint": "http://127.0.0.1:8298",
+    "engine": "http://127.0.0.1:18098",
+    "policy": {
+      "harness": "react",
+      "config": "muse_spark_medium",
+      "model": "meta/muse-spark-1.1",
+      "provider": "OpenRouter",
+      "reasoning": "medium"
+    },
+    "rollouts": {
+      "requested": 10,
+      "started": 10,
+      "completed": 10,
+      "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+      "retries": 0,
+      "replacementStarts": 0,
+      "deaths": 7,
+      "stepCap": 3,
+      "totalReward": -6.0
+    },
+    "usage": {
+      "modelCalls": 66,
+      "tokens": 411365,
+      "costUsd": 0.58977355
+    },
+    "evidence": {
+      "nativePngReplayCanvases": 10,
+      "streamsClosed": 10,
+      "fabricatedFrames": 0,
+      "sealedTraceV5Available": false,
+      "sealedTraceV5Note": "The target exposed closed event journals but did not expose sealed Trace V5 identities; the agent recorded the limitation instead of inventing them.",
+      "sessionJournal": "/Users/joshuapurtell/.synth-desktop/instances/v02/v02golden/data/codex/homes/7f3b6d9b-5461-4d52-93b2-c6b1c160f51e/sessions/2026/08/13/rollout-2026-08-13T11-02-04-019ffba5-0782-7651-a831-cfe12ea6f03e.jsonl"
+    }
+  },
+  "w2": {
+    "result": "PASS",
+    "visualId": "vis_18079a182bd544548294b473c6ff5c39",
+    "revision": 2,
+    "status": "saved",
+    "ready": true,
+    "substantiveChange": "Reframed lifecycle completion into an outcome-first decision surface that leads with 1/10 positive reward, 3/10 step-cap, and 7/10 deaths while retaining exact per-seed evidence and provenance.",
+    "reviews": [
+      {"width": 1280, "height": 900, "result": "PASS"},
+      {"width": 768, "height": 1024, "result": "PASS"}
+    ],
+    "paidStartsDuringRevisionTask": 0,
+    "associatedPostRevisionSmoke": "w3frame_v02golden_20260813",
+    "associatedPostRevisionSmokeStarts": 1,
+    "readyAt": "2026-08-13T15:34:45.757312Z",
+    "sessionJournal": "/Users/joshuapurtell/.synth-desktop/instances/v02/v02golden/data/codex/homes/c25c4722-85a4-4a12-a16b-b74a2d9eb00e/sessions/2026/08/13/rollout-2026-08-13T11-29-54-019ffbbe-8272-71c1-84e4-8bc721b9abc5.jsonl"
+  },
+  "w3": {
+    "result": "PASS",
+    "freshContainerId": "ctr_06bb39a67c7d494493bfc6653a43646f",
+    "proxyEndpoint": "http://127.0.0.1:18097",
+    "protectedContainerModified": false,
+    "policy": "react/muse_spark_medium",
+    "totalEngineStarts": 1,
+    "finalFaultState": {},
+    "drills": {
+      "poll503": {
+        "result": "PASS",
+        "rolloutId": "w3poll_v02golden_20260813",
+        "url": "http://127.0.0.1:18097/rollouts/w3poll_v02golden_20260813/events?after=0",
+        "injectedStatus": 503,
+        "recoveryStatus": 200,
+        "sameResourceRecovery": true,
+        "starts": 0,
+        "finalRolloutStatus": "prepared"
+      },
+      "frame404": {
+        "result": "PASS",
+        "rolloutId": "w3frame_v02golden_20260813",
+        "url": "http://127.0.0.1:18097/rollouts/w3frame_v02golden_20260813/frames/0.png",
+        "declaredDigest": "82ff38880fc3480a",
+        "injectedStatus": 404,
+        "recoveryStatus": 200,
+        "recoveryContentType": "image/png",
+        "recoveryBytes": 6058,
+        "sameResourceRecovery": true,
+        "starts": 1,
+        "finalRolloutStatus": "completed",
+        "steps": 30
+      },
+      "policyPin403": {
+        "result": "PASS",
+        "rolloutId": "w3pin_v02golden_20260813",
+        "url": "http://127.0.0.1:18097/rollouts",
+        "injectedStatus": 403,
+        "error": "bind_refused",
+        "affordance": "bind_policy_config",
+        "policyChanged": false,
+        "replacementIdCreated": false,
+        "startReplayed": false,
+        "starts": 0,
+        "finalRolloutStatus": "prepared"
+      }
+    },
+    "sessionJournal": "/Users/joshuapurtell/.synth-desktop/instances/v02/v02golden/data/codex/homes/246ed811-7815-4f20-8c38-0cd39fab6f8e/sessions/2026/08/13/rollout-2026-08-13T11-37-59-019ffbc5-e90b-7c53-b060-40e8bcc83656.jsonl"
+  },
+  "fabricatedEvidence": false,
+  "remainingGoldenPathWork": []
+}
