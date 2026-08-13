@@ -8,7 +8,7 @@ use crate::data::{TraceBundleInspection, TraceRecord};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
     process::Stdio,
 };
@@ -17,6 +17,11 @@ use uuid::Uuid;
 
 const MAX_INSPECTION_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PROJECTION_BYTES: usize = 64 * 1024 * 1024;
+const SYNTH_CONTAINERS_VERSION: &str = include_str!("../synth-containers-version.txt");
+
+fn synth_containers_version() -> &'static str {
+    SYNTH_CONTAINERS_VERSION.trim()
+}
 
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -75,7 +80,7 @@ pub(crate) async fn inspect_input(
     let staging = staging_root.join(format!("inspect-{}", Uuid::new_v4().simple()));
     fs::create_dir(&staging)?;
     let archive_path = staging.join("bundle.zip");
-    let cli = resolve_trace_cli();
+    let cli = resolve_trace_cli()?;
     let output = Command::new(cli)
         .arg("inspect-input")
         .arg(&source)
@@ -85,7 +90,12 @@ pub(crate) async fn inspect_input(
         .kill_on_drop(true)
         .output()
         .await
-        .context("run synth-trace inspect-input; install a compatible synth-containers build or set SYNTH_TRACE_CLI")?;
+        .with_context(|| {
+            format!(
+                "run synth-trace inspect-input from registered synth-containers {}",
+                synth_containers_version()
+            )
+        })?;
 
     let result = (|| -> Result<InspectedInput> {
         if output.stdout.len() > MAX_INSPECTION_BYTES {
@@ -124,26 +134,35 @@ pub(crate) async fn inspect_input(
 }
 
 /// Resolve the format-authority CLI without assuming a Finder-launched app has
-/// inherited the user's interactive shell PATH. Release packaging can place the
-/// executable under Resources/bin; local dogfood installs also recognize the
-/// stable Synth data location and the conventional sibling development checkout.
-pub(crate) fn resolve_trace_cli() -> PathBuf {
-    if let Some(explicit) = env::var_os("SYNTH_TRACE_CLI") {
-        return PathBuf::from(explicit);
-    }
+/// inherited the user's interactive shell PATH. A release must bundle its CLI;
+/// a local build must use the exact checked-in Containers version registered in
+/// the stable machine-local Synth development registry. There is no PATH or
+/// environment fallback because either could silently select incompatible code.
+pub(crate) fn resolve_trace_cli() -> Result<PathBuf> {
     let mut candidates = Vec::new();
-    if let Ok(executable) = env::current_exe() {
+    if let Ok(executable) = std::env::current_exe() {
         if let Some(contents) = executable.parent().and_then(Path::parent) {
             candidates.push(contents.join("Resources/bin/synth-trace"));
         }
     }
     if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join(".synth-desktop/bin/synth-trace"));
+        candidates.push(registered_trace_cli(&home));
     }
     candidates
         .into_iter()
         .find(|candidate| candidate.is_file())
-        .unwrap_or_else(|| PathBuf::from("synth-trace"))
+        .ok_or_else(|| {
+            anyhow!(
+                "synth-containers {} is not registered; run ./scripts/register-local-dev-build.sh in the Containers checkout",
+                synth_containers_version()
+            )
+        })
+}
+
+fn registered_trace_cli(home: &Path) -> PathBuf {
+    home.join(".synth-desktop/dev-builds/synth-containers")
+        .join(synth_containers_version())
+        .join("current/.venv/bin/synth-trace")
 }
 
 /// Derive a consumer projection from a trusted Trace V5 archive on demand.
@@ -167,7 +186,7 @@ pub(crate) async fn project_trace_archive(
     let staging = staging_root.join(format!("project-{}", Uuid::new_v4().simple()));
     fs::create_dir(&staging)?;
     let bundle_path = staging.join("bundle");
-    let cli = resolve_trace_cli();
+    let cli = resolve_trace_cli()?;
 
     let result = async {
         let extracted = Command::new(&cli)
@@ -283,4 +302,21 @@ pub(crate) fn qualified_sha256(value: &str) -> Result<String> {
         return Err(anyhow!("invalid sha256 digest: {value}"));
     }
     Ok(format!("sha256:{}", hex.to_ascii_lowercase()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registered_trace_cli_is_exactly_versioned() {
+        let path = registered_trace_cli(Path::new("/machine-home"));
+        assert_eq!(
+            path,
+            Path::new("/machine-home/.synth-desktop/dev-builds/synth-containers")
+                .join(synth_containers_version())
+                .join("current/.venv/bin/synth-trace")
+        );
+        assert_eq!(synth_containers_version(), "0.4.0.20260730");
+    }
 }
