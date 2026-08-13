@@ -24,15 +24,17 @@ Do not use `aug_12_notes.md` (chat dump).
 | SFT | `~/Documents/GitHub/optimizers-beta-sft` | `josh/aug12-sft` | `11238d1` | ahead of `origin/dev` by 1. |
 | **leave alone** | `optimizers` (`main`), `optimizers-beta` (MAPO), backend, synth-dev | | | |
 
-Core code for the AFTER bind/parent floor is in those four tips. Live jobs from
-the dirty tip do **not** count.
+Core code for the AFTER bind/parent floor is in those four tips. Dirty-tip jobs
+do **not** qualify the A1–A8 clean-tip cut. The W1/W2 operator-loop proof is a
+separate, explicitly dirty-tree CUA receipt and does not qualify an installed
+binary for Tier 4.
 
 Uncommitted on workshop that *this* lane owns: `docs/receipts/2026-08-12-clean/`
 and this handoff. Leave the Composer/specta/css dirty files to the other lane.
 
 ---
 
-## 2. Scoreboard (clean tip only)
+## 2. Scoreboard (clean-tip A1–A8 plus separately scoped W1–W3)
 
 Receipts: [`receipts/2026-08-12-clean/`](./receipts/2026-08-12-clean/).
 
@@ -46,7 +48,7 @@ Receipts: [`receipts/2026-08-12-clean/`](./receipts/2026-08-12-clean/).
 | **A6** | **PASS** | Fresh bounded Tinker run `sft_banking77_a6pass_223234`: checkpoint `ckpt-10`, one Banking77 child with declared `stream_id` + `reward_url`, numeric environment reward **0.0** (`status=scored`, campaign `scored=1/1`), then `ckpt-10` promoted. Root cause of prior nulls was an unexported `TINKER_API_KEY` in the Banking77 child plus missing `jinja2`; zero here is a real wrong-classification score, not missing coerced to zero. |
 | **A7** | **out of cut** | Unmodified Echo image. |
 | **A8** | **blocked** | No `DIGBENCH_API_TOKEN`. Headless mock 18/18. **NOT A8.** |
-| **W1–W3** | **W1/W2 pass; W3 partial** | Fresh isolated `w1final` CUA with legitimate ChatGPT GPT-5.6 Sol completed W2 before paid work, then exactly 10 real `react/muse_spark_medium` Craftax rollouts through façade `:8298`: 10/10 completed, rewards sum 18.6, no retries or fabricated evidence, and every stream/frame was reviewed. W3 missing-Visuals-MCP safe-stop passed. The remaining scoped poll-503/frame-404/policy-pin drills did not run because a new required Sol task hit the explicit ChatGPT usage limit before tool use (reset shown as Aug 18, 2026 9:45 PM); proxy state was restored and the proxy stopped, with zero extra paid rollouts. Receipt: [`w1-w3-cua.json`](./receipts/2026-08-12/w1-w3-cua.json). |
+| **W1–W3** | **W1/W2 pass; W3 partial (dirty-tree CUA)** | Fresh isolated `w1final` CUA with legitimate ChatGPT GPT-5.6 Sol completed W2 before paid work, then exactly 10 real `react/muse_spark_medium` Craftax rollouts through façade `:8298`: 10/10 completed, rewards sum 18.6, no retries or fabricated evidence, and every stream/frame was reviewed. W3 missing-Visuals-MCP safe-stop passed. The remaining scoped poll-503/frame-404/policy-pin drills did not run because a new required Sol task hit the explicit ChatGPT usage limit before tool use (reset shown as Aug 18, 2026 9:45 PM); proxy state was restored and the proxy stopped, with zero extra paid rollouts. This proves the operator loop, not the installed-binary Tier 4 gate. A clean `v02golden` candidate at `859110f` now exists and passed deterministic preflight, but its canonical ChatGPT credential refresh failed, so no clean-candidate prompt was sent. Receipts: [`w1-w3-cua.json`](./receipts/2026-08-12/w1-w3-cua.json), [`w1-w3-tier4-preflight.json`](./receipts/2026-08-13/w1-w3-tier4-preflight.json). |
 
 ---
 
@@ -173,7 +175,15 @@ replace the stream.
   before trial start, pins `luna_med` + `sol_med`. Restart OrbStack first.
 - A8: `DIGBENCH_API_TOKEN`, visual `live.digbench.v1` before `start_session`,
   both harnesses, no frames.
-- W1–W3: fresh-workspace Sol, skills refuse guessed `/events`, stop on tool fail.
+- W1/W2 dirty-tree CUA: **complete** in `w1final` with the agent golden-path
+  receipt above.
+- W3: missing-Visuals-MCP safe-stop **complete**; poll-503, frame-404, and
+  policy-pin-refusal wait on the explicit Sol quota reset. Use the scoped proxy
+  in [`W3_FAILURE_INJECTION_RUNBOOK.md`](./W3_FAILURE_INJECTION_RUNBOOK.md),
+  never a shared registration.
+- Installed-binary Tier 4: **open**. Repeat W1 and W2 on a clean-tree signed or
+  friends-class installed `.app`, isolated data root, legitimate GPT-5.6 Sol,
+  and an independent tester. The dirty-tree receipt is not publication proof.
 
 A7 stays out.
 
@@ -205,7 +215,10 @@ A1+A5 SYN-3203 · A2 SYN-3204 · A3 SYN-3205 · A4→A6 SYN-3206 · A8 SYN-3207.
 2. ~~**SFT shared occupancy** on hosted `POST /v1/runs`~~ — complete; A4 PASS.
 3. ~~Isolated **A1 10/10**~~ — complete on `a1final`.
 4. Re-run **A3**. ~~Fresh scored **A6** campaign~~ — complete.
-5. OrbStack restart, then CUA **A2**; token then **A8**; **W1–W3**.
+5. OrbStack restart, then CUA **A2**; token then **A8**.
+6. After Sol quota resets, finish the three scoped **W3** proxy drills.
+7. On the release candidate, run installed-binary Tier 4 **W1/W2** (and the
+   missing-MCP subset if no later W3 receipt supersedes it).
 
 Do not start more core bind/parent work. The floor is in the four tips above.
 The remainder is these defects plus paid/CUA proofs.

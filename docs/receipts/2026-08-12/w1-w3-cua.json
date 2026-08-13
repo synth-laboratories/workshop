@@ -4,6 +4,8 @@
   "acceptanceDate": "2026-08-12",
   "workshopRevision": "ef50724ba41ce3dc5b85b49377929c482f4c88ac",
   "instance": "w1final",
+  "executionClass": "dirty-tree-cua",
+  "qualificationScope": "Agent golden-path/operator-loop evidence from an isolated Desktop instance; this is not an installed-binary Tier 4 receipt.",
   "model": {
     "provider": "openai-codex-oauth",
     "id": "gpt-5.6-sol"
@@ -75,6 +77,11 @@
       "blocker": "Required ChatGPT GPT-5.6 Sol task stopped before tool use with: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 18th, 2026 9:45 PM.",
       "additionalPaidRollouts": 0
     }
+  },
+  "installedBinaryTier4": {
+    "result": "PREPARED_BLOCKED",
+    "reason": "A clean isolated v0.2.0 CUA candidate was built from 859110f6a316f282445f6a6f71cad07df4fc8833 and passed deterministic preflight. Its canonical ChatGPT credential could not refresh, and the required Sol allowance remains reset-gated, so no Tier 4 prompt or rollout ran.",
+    "preflightReceipt": "../2026-08-13/w1-w3-tier4-preflight.json"
   },
   "a2Safety": {
     "orbstackRestarted": false,

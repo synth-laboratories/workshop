@@ -8,6 +8,14 @@ Workshop instance `livecraftax` at `b087418a7c72-dirty` plus the uncommitted
 fixes listed below. Containers façades on loopback; optimizers-beta on
 `127.0.0.1:8881`; hosted training on Tinker.
 
+This index preserves the original Aug 12 run notes. The later
+[`w1-w3-cua.json`](./w1-w3-cua.json) receipt supersedes the original W1–W3
+row only: W1 and W2 passed on isolated dirty-tree Desktop instance `w1final`;
+W3 has one passed safe-stop drill and three quota-blocked drills. It does not
+close the installed-binary Tier 4 gate. The clean-candidate preparation and
+auth blocker are recorded separately in
+[`../2026-08-13/w1-w3-tier4-preflight.json`](../2026-08-13/w1-w3-tier4-preflight.json).
+
 | Receipt | Test | Result |
 | --- | --- | --- |
 | [`a1.json`](./a1.json) | A1 Craftax Luna med 10× | **PASS** — 10/10 paid lanes |
@@ -17,7 +25,7 @@ fixes listed below. Containers façades on loopback; optimizers-beta on
 | [`a6.json`](./a6.json) | A6 hosted multi-checkpoint SFT campaign | **PARTIAL** — 7/7 structure checks; campaign rollouts scored `null` |
 | — | A2 Harbor Docker GameBench | **NOT DONE** |
 | — | A8 dig.bench capstone | **BLOCKED** — no `DIGBENCH_API_TOKEN` on this machine |
-| [`w1-w3-cua.json`](./w1-w3-cua.json) | W1–W3 fresh-workspace Sol workflow | **PARTIAL** — safe W1/W3 refusal; W2 not reached |
+| [`w1-w3-cua.json`](./w1-w3-cua.json) | W1–W3 agent golden path with GPT-5.6 Sol | **W1 PASS / W2 PASS / W3 PARTIAL** — 10/10 real Craftax rollouts and a pre-start visual revision passed on dirty-tree CUA; missing-Visuals-MCP stopped safely; poll-503, frame-404, and policy-pin-refusal remain quota-blocked |
 
 A7 (OpenEnv Echo) is out of this cut.
 
