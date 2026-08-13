@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "optimizer.gepa.candidate.v1",
+  "title": "GEPA candidate",
+  "genre": "optimizer",
+  "version": "1.0.0",
+  "description": "GEPA candidate lineage and prompt diff.",
+  "accent": "#F05F22",
+  "shell": "shell.tsx",
+  "tags": ["optimizer", "gepa", "candidate"],
+  "slots": [
+    {
+      "name": "optimizer_run",
+      "description": "Optimizer run + optimizer_event.v1 candidate lineage",
+      "accepts": ["optimizer_run", "fixture", "inline"],
+      "required": true,
+      "schema": "optimizer_event.v1"
+    }
+  ]
+}

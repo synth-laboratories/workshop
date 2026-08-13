@@ -1,4 +1,7 @@
-//! Synth Cloud hosted optimizer client (GEPA OSS + optimizers-beta / GELO).
+//! Synth Cloud hosted optimizer client (GEPA OSS + optimizers-beta / GELO / SFT).
+//!
+//! SFT is hosted in optimizers-beta, not a public package. Workshop mirrors
+//! incremental `optimizer_event.v1` pages into the local OptimizerService.
 
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Client;

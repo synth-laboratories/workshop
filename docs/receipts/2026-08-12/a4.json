@@ -1,0 +1,289 @@
+{
+  "schema": "synth.workshop.a4-receipt.v1",
+  "test": "A4 \u2014 two hosted Tinker SFT runs in parallel",
+  "recipeId": "sft.banking77.nemotron-lightning.tinker.v1",
+  "lanes": [
+    {
+      "runId": "sft_banking77_train_a_c3a155e0",
+      "algorithmId": "sft",
+      "algorithmVersion": "banking77-nemotron-lightning-tinker-v1",
+      "source": "hosted",
+      "status": "completed",
+      "baseModel": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+      "datasetShard": "train_a",
+      "datasetDigest": "sha256:33d7f95662e5c3ab0e88a9ece1800e2c52ecec67ea88e110f7e02e59af58c189",
+      "checkpoints": [
+        "ckpt-10",
+        "ckpt-20",
+        "ckpt-30"
+      ],
+      "eventCount": 69,
+      "visualRefs": [
+        {
+          "id": "vis_2b09cce8212c477087b380309f989573",
+          "kind": "visual",
+          "metadata": {
+            "templateId": "optimizer.sft.live.v1"
+          },
+          "role": "primary",
+          "title": "SFT \u00b7 Banking77 intent SFT \u00b7 hosted Tinker \u00b7 banking77_classify checkpoint campaigns"
+        }
+      ],
+      "executionBindings": [
+        {
+          "id": "http://127.0.0.1:8881",
+          "kind": "optimizers_beta",
+          "label": "optimizers-beta hosted SFT",
+          "metadata": {
+            "backend": "tinker",
+            "baseModel": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+            "datasetFile": "file_train_banking77_train_a_c3a155e0",
+            "datasetShard": "train_a",
+            "recipeId": "sft.banking77.nemotron-lightning.tinker.v1"
+          },
+          "status": "starting"
+        },
+        {
+          "id": "http://127.0.0.1:8110",
+          "kind": "local_slot",
+          "label": "banking77_classify container",
+          "metadata": {
+            "evaluationPlanRef": "banking77_eval.v1",
+            "role": "checkpoint_evaluation",
+            "worldRef": "world:banking77@heldout"
+          },
+          "status": "leased"
+        }
+      ],
+      "usage": {
+        "completionTokens": 0,
+        "costUsd": null,
+        "extra": {},
+        "promptTokens": 0,
+        "rollouts": 0,
+        "wallTimeMs": 0
+      },
+      "slices": {
+        "run.usage": {
+          "completionTokens": 0,
+          "costUsd": null,
+          "extra": {},
+          "promptTokens": 0,
+          "rollouts": 0,
+          "wallTimeMs": 0
+        },
+        "run.execution": {
+          "bindings": [
+            {
+              "id": "http://127.0.0.1:8881",
+              "kind": "optimizers_beta",
+              "label": "optimizers-beta hosted SFT",
+              "metadata": {
+                "backend": "tinker",
+                "baseModel": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+                "datasetFile": "file_train_banking77_train_a_c3a155e0",
+                "datasetShard": "train_a",
+                "recipeId": "sft.banking77.nemotron-lightning.tinker.v1"
+              },
+              "status": "starting"
+            },
+            {
+              "id": "http://127.0.0.1:8110",
+              "kind": "local_slot",
+              "label": "banking77_classify container",
+              "metadata": {
+                "evaluationPlanRef": "banking77_eval.v1",
+                "role": "checkpoint_evaluation",
+                "worldRef": "world:banking77@heldout"
+              },
+              "status": "leased"
+            }
+          ]
+        },
+        "sft.checkpoints": {
+          "checkpoints": [
+            {
+              "id": "tinker:sft_banking77_train_a_c3a155e0",
+              "kind": "training_job",
+              "raw": {
+                "provider": "tinker"
+              },
+              "ready": true,
+              "status": "running"
+            },
+            {
+              "id": "ckpt-10",
+              "kind": "checkpoint",
+              "raw": {
+                "promoted": false
+              },
+              "status": "ready"
+            },
+            {
+              "id": "ckpt-20",
+              "kind": "checkpoint",
+              "raw": {
+                "promoted": false
+              },
+              "status": "ready"
+            },
+            {
+              "id": "ckpt-30",
+              "kind": "checkpoint",
+              "raw": {
+                "promoted": false
+              },
+              "status": "ready"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "runId": "sft_banking77_train_b_166973c0",
+      "algorithmId": "sft",
+      "algorithmVersion": "banking77-nemotron-lightning-tinker-v1",
+      "source": "hosted",
+      "status": "completed",
+      "baseModel": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+      "datasetShard": "train_b",
+      "datasetDigest": "sha256:1fec11734dbd42bcd25d5a28bc9835f4acd42f12a87512b2a1b051f48f2fd057",
+      "checkpoints": [
+        "ckpt-10",
+        "ckpt-20",
+        "ckpt-30"
+      ],
+      "eventCount": 69,
+      "visualRefs": [
+        {
+          "id": "vis_cc48449fc7e74541bc4ab74fbe8d22a5",
+          "kind": "visual",
+          "metadata": {
+            "templateId": "optimizer.sft.live.v1"
+          },
+          "role": "primary",
+          "title": "SFT \u00b7 Banking77 intent SFT \u00b7 hosted Tinker \u00b7 banking77_classify checkpoint campaigns"
+        }
+      ],
+      "executionBindings": [
+        {
+          "id": "http://127.0.0.1:8881",
+          "kind": "optimizers_beta",
+          "label": "optimizers-beta hosted SFT",
+          "metadata": {
+            "backend": "tinker",
+            "baseModel": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+            "datasetFile": "file_train_banking77_train_b_166973c0",
+            "datasetShard": "train_b",
+            "recipeId": "sft.banking77.nemotron-lightning.tinker.v1"
+          },
+          "status": "starting"
+        },
+        {
+          "id": "http://127.0.0.1:8110",
+          "kind": "local_slot",
+          "label": "banking77_classify container",
+          "metadata": {
+            "evaluationPlanRef": "banking77_eval.v1",
+            "role": "checkpoint_evaluation",
+            "worldRef": "world:banking77@heldout"
+          },
+          "status": "leased"
+        }
+      ],
+      "usage": {
+        "completionTokens": 0,
+        "costUsd": null,
+        "extra": {},
+        "promptTokens": 0,
+        "rollouts": 0,
+        "wallTimeMs": 0
+      },
+      "slices": {
+        "run.usage": {
+          "completionTokens": 0,
+          "costUsd": null,
+          "extra": {},
+          "promptTokens": 0,
+          "rollouts": 0,
+          "wallTimeMs": 0
+        },
+        "run.execution": {
+          "bindings": [
+            {
+              "id": "http://127.0.0.1:8881",
+              "kind": "optimizers_beta",
+              "label": "optimizers-beta hosted SFT",
+              "metadata": {
+                "backend": "tinker",
+                "baseModel": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+                "datasetFile": "file_train_banking77_train_b_166973c0",
+                "datasetShard": "train_b",
+                "recipeId": "sft.banking77.nemotron-lightning.tinker.v1"
+              },
+              "status": "starting"
+            },
+            {
+              "id": "http://127.0.0.1:8110",
+              "kind": "local_slot",
+              "label": "banking77_classify container",
+              "metadata": {
+                "evaluationPlanRef": "banking77_eval.v1",
+                "role": "checkpoint_evaluation",
+                "worldRef": "world:banking77@heldout"
+              },
+              "status": "leased"
+            }
+          ]
+        },
+        "sft.checkpoints": {
+          "checkpoints": [
+            {
+              "id": "tinker:sft_banking77_train_b_166973c0",
+              "kind": "training_job",
+              "raw": {
+                "provider": "tinker"
+              },
+              "ready": true,
+              "status": "running"
+            },
+            {
+              "id": "ckpt-10",
+              "kind": "checkpoint",
+              "raw": {
+                "promoted": false
+              },
+              "status": "ready"
+            },
+            {
+              "id": "ckpt-20",
+              "kind": "checkpoint",
+              "raw": {
+                "promoted": false
+              },
+              "status": "ready"
+            },
+            {
+              "id": "ckpt-30",
+              "kind": "checkpoint",
+              "raw": {
+                "promoted": false
+              },
+              "status": "ready"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "assertions": {
+    "bothAlgorithmSft": true,
+    "notGoexSft": true,
+    "distinctRunIds": true,
+    "distinctDatasetDigests": true,
+    "distinctEventLogs": true,
+    "distinctVisuals": true,
+    "distinctCheckpoints": true,
+    "bothInFlightOrHonestlyQueued": true
+  }
+}

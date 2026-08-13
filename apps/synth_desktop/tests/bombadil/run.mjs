@@ -58,12 +58,13 @@ const includeShellContainment = specificationPath.endsWith("shell-containment.sp
 const includeInferenceHonesty = specificationPath.endsWith("inference-state-honesty.spec.ts");
 const includeRunSummarySanity = specificationPath.endsWith("run-summary-sanity.spec.ts");
 const includeVisualContracts = specificationPath.endsWith("v0.1-visual-contracts.spec.ts");
+const includeChatgptBranding = specificationPath.endsWith("chatgpt-branding.spec.ts");
 // Five seconds covers every directed/eventual horizon in layout.spec.ts. Longer
 // runs intermittently wedge the current Chromiumoxide transport after the
 // properties have already been exercised, turning a clean trace into a harness
 // watchdog failure. Nightly exploration can still opt into a longer duration.
 const timeLimit = process.env.BOMBADIL_TIME_LIMIT
-	|| (includeBlankWorkedTurn || includeComposerToolbar || includeTerminalPolish || includeVisualContracts
+	|| (includeBlankWorkedTurn || includeComposerToolbar || includeTerminalPolish || includeVisualContracts || includeChatgptBranding
 		? "10s"
 		: "5s");
 const timeLimitMatch = /^(\d+(?:\.\d+)?)(ms|s|m)$/.exec(timeLimit);
@@ -367,6 +368,13 @@ ${includeInferenceHonesty ? `window.synthCodex.list = async () => [{
 }];` : ""}
 ${includeComposerToolbar ? composerToolbarBridgeScript() : ""}
 ${includeTerminalPolish ? terminalPolishBridgeScript() : ""}
+${includeChatgptBranding ? `window.synthCodexOauth = {
+  begin: async () => { throw new Error("not used"); },
+  completeManual: async () => ({ configured: true, accountHint: "test@openai.com" }),
+  status: async () => ({ configured: true, accountHint: "test@openai.com" }),
+  disconnect: async () => ({ configured: false }),
+  cancel: async () => undefined
+};` : ""}
 ${includeVisualContracts ? `window.synthConfig = {
   get: async () => ({
     configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod",
@@ -540,11 +548,13 @@ try {
 	if (!address || typeof address === "string") throw new Error("Renderer server did not bind");
 	const origin = `http://127.0.0.1:${address.port}`;
 
+	const remoteDebugger = process.env.BOMBADIL_REMOTE_DEBUGGER;
 	bombadilProcess = spawn(bombadil, [
-		"browser", "test",
+		"browser", remoteDebugger ? "test-external" : "test",
+		...(remoteDebugger ? ["--remote-debugger", remoteDebugger, "--create-target"] : []),
 		origin,
 		specificationPath,
-		"--headless",
+		...(remoteDebugger ? [] : ["--headless"]),
 		"--width", "1280",
 		"--height", "840",
 		"--chrome-grant-permissions", "",

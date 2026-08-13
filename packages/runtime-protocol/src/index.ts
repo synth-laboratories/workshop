@@ -14,7 +14,7 @@ export type LocalRuntimeTarget = {
 export type RemoteRuntimeTarget = {
   kind: "remote";
   /** Present on wire for renderer compatibility; always openrouter when set. */
-  provider?: "openrouter";
+  provider?: "openrouter" | "openai-codex-oauth";
   model: string;
   adapter: string | null;
 };
@@ -58,7 +58,7 @@ export type LocalExecutionTarget = LocalRuntimeTarget;
  */
 export type RemoteExecutionTarget = {
   kind: "remote";
-  provider: "openrouter" | "synth-cloud";
+  provider: "openrouter" | "synth-cloud" | "openai-codex-oauth";
   model: string;
   adapter: string | null;
 };
@@ -218,7 +218,7 @@ export type AppEventPage = {
 };
 
 export type VisualStatus = "draft" | "live" | "saved" | "failed" | "archived";
-export type RendererKind = "template" | "tsx" | "html";
+export type RendererKind = "template" | "tsx" | "html" | "mermaid";
 export type VisualBindingKind = "inline" | "trace_v5" | "local_cas" | "run_ref" | "live_sse" | "fixture" | "optimizer_run";
 export type VisualBinding = {
   slot: string;

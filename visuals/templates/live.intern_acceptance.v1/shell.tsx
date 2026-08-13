@@ -2,7 +2,6 @@ import { useMemo } from "react";
 import { VisualChrome, MetricStrip } from "../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../chrome/useLiveEvalStream.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../runtime/types.ts";
-import liveFixture from "../../fixtures/live_eval_events.json";
 
 type StreamPayload = { events?: LiveEvalEvent[]; sse_url?: string };
 
@@ -17,7 +16,7 @@ export type ShellProps = {
 
 function asStream(raw: unknown): StreamPayload {
   if (raw && typeof raw === "object") return raw as StreamPayload;
-  return liveFixture as StreamPayload;
+  return {};
 }
 
 const DECISION_COLOR: Record<string, string> = {
@@ -28,16 +27,17 @@ const DECISION_COLOR: Record<string, string> = {
 };
 
 export function Shell(props: ShellProps) {
-  const stream = asStream(props.data ?? props.acceptance ?? liveFixture);
+  const stream = asStream(props.data ?? props.acceptance);
   const sseUrl =
     props.sseUrl ??
     stream.sse_url ??
     props.bindings?.find((b) => b.slot === "acceptance" && b.kind === "live_sse")?.source;
 
   const fixtureEvents = useMemo(
-    () => (sseUrl ? undefined : stream.events ?? (liveFixture as { events: LiveEvalEvent[] }).events),
+    () => (sseUrl ? undefined : stream.events),
     [sseUrl, stream.events]
   );
+  const hasSource = Boolean(sseUrl || stream.events);
 
   const { events, live, error } = useLiveEvalStream({ sseUrl, fixtureEvents });
   const cells = events.filter((e) => e.kind === "acceptance");
@@ -58,7 +58,7 @@ export function Shell(props: ShellProps) {
           { label: "Cells", value: String(cells.length) },
           { label: "Pass", value: String(passes) },
           { label: "Fail", value: String(fails) },
-          { label: "Mode", value: live ? "live" : "idle" }
+          { label: "Mode", value: live ? "live" : hasSource ? "idle" : "awaiting source" }
         ]}
       />
 

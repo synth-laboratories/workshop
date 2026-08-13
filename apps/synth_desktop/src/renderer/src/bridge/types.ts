@@ -236,6 +236,7 @@ export type CodexSessionStart = {
 	providerEnvKey: string;
 	approvalPolicy?: string;
 	sandbox?: string;
+	serviceTier?: "default" | "fast";
 	threadId?: string;
 	multiAgentVersion?: MultiAgentVersion;
 	autoCompactTokenLimit: number;
@@ -415,12 +416,36 @@ export type VisualsBridge = {
 		status?: string;
 		traceId?: string;
 		metadata?: Record<string, unknown>;
+		content?: string;
 	}): Promise<VisualRecord>;
 	update(visualId: string, request: Record<string, unknown>): Promise<VisualRecord>;
 	save(visualId: string, tsx?: string | null): Promise<VisualRecord>;
 	fork(visualId: string, title?: string | null, sessionId?: string | null): Promise<VisualRecord>;
 	archive(visualId: string): Promise<VisualRecord>;
 	show(visualId: string, sessionId?: string | null): Promise<VisualRecord>;
+	content(visualId: string): Promise<{
+		visualId: string;
+		revision: number;
+		format: string;
+		mediaType: string;
+		digest: string;
+		base64: string;
+	}>;
+	renditions(visualId: string): Promise<Array<Record<string, unknown>>>;
+	rendition(
+		visualId: string,
+		format?: string | null,
+		theme?: string | null,
+		sizeClass?: string | null
+	): Promise<{
+		visualId: string;
+		revision: number;
+		format: string;
+		mediaType: string;
+		digest: string;
+		base64: string;
+	}>;
+	render(visualId: string): Promise<VisualRecord>;
 	onEvent(listener: (event: AppEvent) => void): () => void;
 	onShow(listener: (event: AppEvent) => void): () => void;
 };
@@ -435,7 +460,7 @@ export type OptimizersBridge = {
 		availability: string;
 		limits: Record<string, number>;
 	}>>;
-	startRecipe(request: { recipeId: string; sessionRef?: string; openVisual?: boolean }): Promise<OptimizerRunRecord>;
+	startRecipe(request: { recipeId: string; sessionRef?: string; openVisual?: boolean; baseModel?: string }): Promise<OptimizerRunRecord>;
 	list(query?: {
 		status?: string;
 		algorithmId?: string;
@@ -613,4 +638,24 @@ export type SynthAccountBridge = {
 	refresh?(): Promise<SynthAccountSummary>;
 	/** Opens a backend-issued hosted URL in the system browser. */
 	openBilling?(action: SynthBillingAction, tier?: string): Promise<string>;
+};
+
+export type CodexOauthBegin = {
+	authorizeUrl: string;
+	mode: "auto" | "manual";
+};
+
+export type CodexOauthStatus = {
+	configured: boolean;
+	accountHint?: string | null;
+	lastRefresh?: string | null;
+	expiresAt?: string | null;
+};
+
+export type CodexOauthBridge = {
+	begin(): Promise<CodexOauthBegin>;
+	completeManual(redirectUrl: string): Promise<CodexOauthStatus>;
+	status(): Promise<CodexOauthStatus>;
+	disconnect(): Promise<CodexOauthStatus>;
+	cancel(): Promise<void>;
 };

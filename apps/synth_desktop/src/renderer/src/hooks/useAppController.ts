@@ -39,7 +39,7 @@ import { useInferenceMonitor } from "../components/InferencePanel";
 import { artifactFromVisualRecord } from "../components/VisualHost";
 import { useAccountShell } from "./useAccountShell";
 import { useShellLayout } from "./useShellLayout";
-import { useCodexEventBridge } from "./useCodexEventBridge";
+import { useCodexEventBridge, type CodexUsageSnapshot } from "./useCodexEventBridge";
 import { useForeignSessionEventBridge } from "./useForeignSessionEventBridge";
 import { useModelPerformanceLabels } from "./useModelPerformanceLabels";
 import {
@@ -56,6 +56,7 @@ import {
 	loadModelKnobValues,
 	modelKnobForTarget,
 	modelKnobKey,
+	serviceTierForExecutionTarget,
 	turnStartEffortForExecutionTarget,
 	type ModelKnobTransportValue
 } from "../runtime/modelCapabilities";
@@ -180,6 +181,8 @@ export function useAppController() {
 	const nativeSequencesRef = useRef(new Map<string, number>());
 	const autoOpenedSubagentsRef = useRef(new Set<string>());
 	const [failedSend, setFailedSend] = useState<FailedSend | null>(null);
+	const [codexOauthConfigured, setCodexOauthConfigured] = useState(false);
+	const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
 	const staleRunFenceRef = useRef(new Set<string>());
 	const manualCompactionPendingRef = useRef(new Set<string>());
 	const queuedCompactionRef = useRef(new Set<string>());
@@ -226,6 +229,27 @@ export function useAppController() {
 	useEffect(() => {
 		applyPreferencesToDocument(preferences);
 	}, [preferences]);
+
+	useEffect(() => {
+		const refreshOauthStatus = () => {
+			void bridges.codexOauth?.status().then((status) => {
+				setCodexOauthConfigured(status.configured);
+			}).catch(() => undefined);
+		};
+		// The Tauri bridge can attach just after the first renderer commit in a
+		// packaged app. Retry once so the sidebar identity does not stay stale.
+		refreshOauthStatus();
+		const retry = window.setTimeout(refreshOauthStatus, 750);
+		const changed = (event: Event) => {
+			const configured = (event as CustomEvent<{ configured?: boolean }>).detail?.configured;
+			if (typeof configured === "boolean") setCodexOauthConfigured(configured);
+		};
+		window.addEventListener("codex-oauth-changed", changed);
+		return () => {
+			window.clearTimeout(retry);
+			window.removeEventListener("codex-oauth-changed", changed);
+		};
+	}, []);
 
 	useEffect(() => {
 		const onResize = () => {
@@ -410,7 +434,12 @@ export function useAppController() {
 		staleRunFenceRef,
 		autoCompactTokenLimits: preferences.agentContext.autoCompactTokenLimits,
 		localBaseUrl: laguna?.baseUrl ?? undefined,
-		showToast
+		showToast,
+		onOauthReauthRequired: () => {
+			setCodexOauthConfigured(false);
+			setCodexUsage(null);
+		},
+		onCodexUsage: setCodexUsage
 	});
 
 	useEffect(() => {
@@ -516,6 +545,7 @@ export function useAppController() {
 			laguna,
 			apiKeyConfigured,
 			openrouterApiKeyConfigured: backendSettings?.openrouterApiKeyConfigured,
+			codexOauthConfigured,
 			cloudBlockedReason: accountView.cloudBlockedReason
 		});
 		const archived = new Set(
@@ -539,6 +569,8 @@ export function useAppController() {
 		accountView.cloudBlockedReason,
 		apiKeyConfigured,
 		backendSettings?.openrouterApiKeyConfigured,
+		codexOauthConfigured,
+		codexUsage,
 		downloadPaused,
 		eventsBySession,
 		codexActivityBySession,
@@ -762,6 +794,19 @@ export function useAppController() {
 		return false;
 	}, [health?.openrouter.mode, showToast]);
 
+	const ensureCodexOauthReady = useCallback(async (targetId: string): Promise<boolean> => {
+		if (!targetId.startsWith("chatgpt-")) return true;
+		const status = await bridges.codexOauth?.status().catch(() => null);
+		if (status?.configured) {
+			setCodexOauthConfigured(true);
+			return true;
+		}
+		setCodexOauthConfigured(false);
+		showToast("Connect ChatGPT subscription in Settings — message was not sent");
+		setView({ kind: "settings", section: "models" });
+		return false;
+	}, [showToast]);
+
 	const createConversation = useCallback(
 		async (targetId: string = selectedTargetId, title?: string, objective?: string) => {
 			setBusy(true);
@@ -776,7 +821,7 @@ export function useAppController() {
 					// Every local/configured-provider task starts in the configured safe workspace.
 					const workspace = await nativeCodex.defaultWorkspace();
 					const permissions = { approvalPolicy, sandbox: sandboxMode };
-					await nativeCodex.start(codexStartRequest(id, workspace, target, permissions, preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined));
+					await nativeCodex.start(codexStartRequest(id, workspace, target, permissions, preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined, serviceTierForExecutionTarget(target, modelKnobValues) ?? "default"));
 					const session = createCodexSession(id, target, null, workspace, title, permissions);
 					sessionsRef.current = [session, ...sessionsRef.current.filter((item) => item.id !== session.id)];
 					upsertSession(session);
@@ -796,13 +841,19 @@ export function useAppController() {
 				}
 				return session;
 			} catch (reason) {
-				showToast(reason instanceof Error ? reason.message : String(reason));
-				throw reason;
+				// Tauri serializes `AppError` as a plain object. Preserve its safe
+				// message here; otherwise a provider/session-start rejection becomes
+				// the unusable "[object Object]" in the composer toast.
+				const message = reason instanceof Error
+					? reason.message
+					: turnFailureMessage(codexTurnFailure("new-session", reason));
+				showToast(message);
+				throw new Error(message);
 			} finally {
 				setBusy(false);
 			}
 		},
-		[approvalPolicy, sandboxMode, laguna?.baseUrl, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
+		[approvalPolicy, sandboxMode, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
 	);
 
 	const ensureActiveSession = useCallback(async (objective: string): Promise<{ sessionId: string; objectiveConsumed: boolean } | null> => {
@@ -826,6 +877,7 @@ export function useAppController() {
 				const sessionTargetId = session ? executionTargetToUiId(session.target) : selectedTargetId;
 				const pendingTargetId = isInternTargetId(selectedTargetId) ? sessionTargetId : selectedTargetId;
 				if (!await ensureOpenRouterReady(pendingTargetId)) return false;
+				if (!await ensureCodexOauthReady(pendingTargetId)) return false;
 				setBusy(true);
 				if (nativeCodex && (!session || session.target.kind !== "intern")) {
 					if (!session) throw new Error(`Native Codex session is not registered: ${sessionId}`);
@@ -858,7 +910,7 @@ export function useAppController() {
 						);
 					const storedApproval = approvalModeConfig(storedApprovalMode);
 					const startRequest = {
-						...codexStartRequest(sessionId, workspace, executionTarget, "ask", preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined),
+						...codexStartRequest(sessionId, workspace, executionTarget, "ask", preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined, serviceTierForExecutionTarget(executionTarget, modelKnobValues) ?? "default"),
 						// Restored pre-policy sessions can carry only the human mode. Never
 						// turn that into an undefined request which Rust then treats as Ask.
 						approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : storedApproval.approvalPolicy,
@@ -927,7 +979,7 @@ export function useAppController() {
 				setBusy(false);
 			}
 		},
-		[allocateNativeSequence, ensureOpenRouterReady, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
+		[allocateNativeSequence, ensureCodexOauthReady, ensureOpenRouterReady, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
 	);
 	sendToSessionRef.current = sendToSession;
 
@@ -942,6 +994,7 @@ export function useAppController() {
 		async (text: string, images: ComposerImageAttachment[] = []) => {
 			try {
 				if (!await ensureOpenRouterReady(selectedTargetId)) return;
+				if (!await ensureCodexOauthReady(selectedTargetId)) return;
 				const ensured = await ensureActiveSession(text);
 				if (!ensured) {
 					showToast("No active session");
@@ -956,7 +1009,7 @@ export function useAppController() {
 				/* toast already shown */
 			}
 		},
-		[ensureActiveSession, ensureOpenRouterReady, selectedTargetId, sendToSession, showToast]
+		[ensureActiveSession, ensureCodexOauthReady, ensureOpenRouterReady, selectedTargetId, sendToSession, showToast]
 	);
 
 	const controlActive = useCallback(
@@ -1293,6 +1346,7 @@ export function useAppController() {
 		persistedPerformanceByTarget,
 		selectedModelMedianTpsLabel,
 		aggregateModelTpsLabels,
+		codexUsage,
 		busy,
 		steerError,
 		setSteerError,

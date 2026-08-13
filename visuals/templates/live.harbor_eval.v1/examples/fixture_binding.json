@@ -1,0 +1,9 @@
+{
+  "bindings": [
+    {
+      "slot": "stream",
+      "kind": "fixture",
+      "source": "templates/live.harbor_eval.v1/examples/events.json"
+    }
+  ]
+}

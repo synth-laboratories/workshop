@@ -15,6 +15,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_10,
     MIGRATION_11,
     MIGRATION_12,
+    MIGRATION_13,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -782,6 +783,25 @@ CREATE TABLE IF NOT EXISTS usage_ledger (
 );
 "#;
 
+const MIGRATION_13: &str = r#"
+CREATE TABLE IF NOT EXISTS visual_renditions (
+    visual_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    format TEXT NOT NULL,
+    theme TEXT NOT NULL,
+    size_class TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    renderer_version TEXT NOT NULL,
+    width_px INTEGER,
+    height_px INTEGER,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (visual_id, revision, format, theme, size_class),
+    FOREIGN KEY (visual_id, revision)
+        REFERENCES visual_revisions(visual_id, revision)
+);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -831,7 +851,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 12);
+        assert_eq!(apply_migrations(&conn).unwrap(), 13);
         let updated_at: String = conn
             .query_row(
                 "SELECT updated_at FROM runs WHERE id = 'run-1'",
@@ -904,7 +924,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 12);
+        assert_eq!(apply_migrations(&conn).unwrap(), 13);
 
         let ledger_tables: i64 = conn
             .query_row(
@@ -963,7 +983,7 @@ mod tests {
         .unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 11);
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 12);
+        assert_eq!(apply_migrations(&conn).unwrap(), 13);
         let old_binary_sum = |conn: &Connection| -> f64 {
             conn.query_row(
                 "SELECT
@@ -1002,7 +1022,7 @@ mod tests {
 
         // Relaunching v12 folds and clears staging. The union remains exactly
         // the same, proving neither data loss nor a transient double charge.
-        assert_eq!(apply_migrations(&conn).unwrap(), 12);
+        assert_eq!(apply_migrations(&conn).unwrap(), 13);
         assert!((old_binary_sum(&conn) - 0.75).abs() < 1e-9);
         assert_eq!(old_inventory_count(&conn), 2);
         let old_inventory_ids: Vec<String> = {
@@ -1066,7 +1086,7 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 12);
+        assert_eq!(apply_migrations(&conn).unwrap(), 13);
 
         let imported: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
@@ -1128,7 +1148,7 @@ mod tests {
         conn.execute_batch(partial).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 7);
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 12);
+        assert_eq!(apply_migrations(&conn).unwrap(), 13);
         let (copies, leftovers): (i64, i64) = conn
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM usage_records WHERE request_id='req-1'),
@@ -1155,7 +1175,7 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(apply_migrations(&conn).unwrap(), 12);
+        assert_eq!(apply_migrations(&conn).unwrap(), 13);
         let kinds: Vec<(String, String)> = {
             let mut stmt = conn
                 .prepare("SELECT id, kind FROM sessions ORDER BY id")
@@ -1192,7 +1212,7 @@ mod tests {
         assert_eq!(probe, 0, "the failed migration's table must roll back");
         assert_eq!(version, 7);
         // The connection stays usable and the real migration still applies.
-        assert_eq!(apply_migrations(&conn).unwrap(), 12);
+        assert_eq!(apply_migrations(&conn).unwrap(), 13);
     }
 
     #[test]
@@ -1204,7 +1224,7 @@ mod tests {
             [r#"{"kind":"remote","provider":"synth-cloud","model":"openrouter/poolside/laguna-s-2.1","adapter":null}"#],
         )
         .unwrap();
-        assert_eq!(apply_migrations(&conn).unwrap(), 12);
+        assert_eq!(apply_migrations(&conn).unwrap(), 13);
         let (kind, target): (String, String) = conn
             .query_row(
                 "SELECT runtime_target_kind, target_json FROM sessions WHERE id='cloud-1'",

@@ -33,6 +33,11 @@ impl Commands {
     pub const ACCOUNT_GET_SUMMARY: &'static str = "account_get_summary";
     pub const ACCOUNT_REFRESH: &'static str = "account_refresh";
     pub const ACCOUNT_OPEN_BILLING: &'static str = "account_open_billing";
+    pub const CODEX_OAUTH_BEGIN: &'static str = "codex_oauth_begin";
+    pub const CODEX_OAUTH_COMPLETE_MANUAL: &'static str = "codex_oauth_complete_manual";
+    pub const CODEX_OAUTH_STATUS: &'static str = "codex_oauth_status";
+    pub const CODEX_OAUTH_DISCONNECT: &'static str = "codex_oauth_disconnect";
+    pub const CODEX_OAUTH_CANCEL: &'static str = "codex_oauth_cancel";
     pub const SYNTH_CONFIG_GET: &'static str = "synth_config_get";
     pub const SYNTH_CONFIG_UPDATE: &'static str = "synth_config_update";
     pub const MODEL_MULTI_AGENT_LIST: &'static str = "model_multi_agent_list";
@@ -99,6 +104,10 @@ impl Commands {
     pub const VISUALS_FORK: &'static str = "visuals_fork";
     pub const VISUALS_ARCHIVE: &'static str = "visuals_archive";
     pub const VISUALS_SHOW: &'static str = "visuals_show";
+    pub const VISUALS_CONTENT: &'static str = "visuals_content";
+    pub const VISUALS_RENDITIONS: &'static str = "visuals_renditions";
+    pub const VISUALS_RENDITION: &'static str = "visuals_rendition";
+    pub const VISUALS_RENDER: &'static str = "visuals_render";
     pub const OPTIMIZERS_ALGORITHMS_LIST: &'static str = "optimizers_algorithms_list";
     pub const OPTIMIZERS_RECIPES_LIST: &'static str = "optimizers_recipes_list";
     pub const OPTIMIZERS_RECIPE_START: &'static str = "optimizers_recipe_start";
@@ -116,6 +125,12 @@ impl Commands {
     pub const OPTIMIZERS_IMPORT_LOCAL: &'static str = "optimizers_import_local";
     pub const OPTIMIZERS_RECONCILE_CLOUD: &'static str = "optimizers_reconcile_cloud";
     pub const OPTIMIZERS_LIST_CLOUD: &'static str = "optimizers_list_cloud";
+    pub const OPTIMIZER_SIDECAR_STATUS: &'static str = "optimizer_sidecar_status";
+    pub const OPTIMIZER_SIDECAR_INSTALL: &'static str = "optimizer_sidecar_install";
+    pub const OPTIMIZER_SIDECAR_START: &'static str = "optimizer_sidecar_start";
+    pub const OPTIMIZER_SIDECAR_STOP: &'static str = "optimizer_sidecar_stop";
+    pub const OPTIMIZER_SIDECAR_VERSION: &'static str = "optimizer_sidecar_version";
+    pub const OPTIMIZER_SIDECAR_UNINSTALL: &'static str = "optimizer_sidecar_uninstall";
     pub const DESKTOP_IMAGE_PREVIEW: &'static str = "desktop_image_preview";
     pub const DESKTOP_INSTANCE_DIAGNOSTICS: &'static str = "desktop_instance_diagnostics";
     pub const WORKSPACE_CHOOSE_DIRECTORY: &'static str = "workspace_choose_directory";

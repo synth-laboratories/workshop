@@ -245,6 +245,29 @@ export function DataPage({
 				window.localStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next]));
 				return next;
 			});
+			const liveEval = attached?.metadata?.liveEval as { templateId?: string; family?: string } | undefined;
+			if (attached && liveEval?.templateId && bridges.visuals) {
+				const visual = await bridges.visuals.create({
+					templateId: liveEval.templateId,
+					title: attached.name,
+					bindings: {
+						schemaVersion: "synth.visual-bindings.v1",
+						slots: [{
+							slot: "stream",
+							kind: "inline",
+							schema: "synth.trace-stream-event.v1",
+							data: { events: [] }
+						}]
+					},
+					metadata: {
+						containerId: attached.id,
+						family: liveEval.family,
+						streamState: "awaiting_rollout_prepare"
+					}
+				});
+				await bridges.visuals.show(visual.id);
+				onOpenVisual(visual);
+			}
 			await refresh();
 			setAttachOpen(false);
 		} catch (reason) {

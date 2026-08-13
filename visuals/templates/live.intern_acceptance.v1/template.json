@@ -12,7 +12,7 @@
     {
       "name": "acceptance",
       "description": "Live SSE or fixture with acceptance / cell decisions",
-      "accepts": ["live_sse", "fixture"],
+      "accepts": ["live_sse", "fixture", "inline"],
       "required": true,
       "schema": "synth.visual.live_eval_events.v1"
     }

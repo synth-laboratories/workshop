@@ -72,6 +72,8 @@ export default function App() {
 						onSearch={c.openSearch}
 						onSettings={() => c.setView({ kind: "settings" })}
 						account={c.accountView}
+						codexOauthConfigured={c.state.codexOauthConfigured}
+						codexUsage={c.codexUsage}
 						onOpenUsage={() => c.setUsageSheetOpen(true)}
 						onBilling={(action) => void c.openBilling(action)}
 						onRetryAccount={() => c.refreshAccountSummary(true)}
@@ -100,6 +102,7 @@ export default function App() {
 						tabLabel={c.tabLabel}
 						appVersion={c.appVersion}
 						activeLocalModel={Boolean(c.activeLocalModel)}
+						brand={c.view.kind === "settings" && c.view.section === "models" ? "openai" : "synth"}
 						terminalOpen={c.terminalOpen}
 						sidePanelOpen={c.sidePanelOpen}
 						sidePanelTab={c.sidePanelTab}

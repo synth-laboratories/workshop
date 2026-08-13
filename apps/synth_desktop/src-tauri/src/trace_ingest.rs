@@ -139,7 +139,6 @@ pub(crate) fn resolve_trace_cli() -> PathBuf {
     }
     if let Some(home) = dirs::home_dir() {
         candidates.push(home.join(".synth-desktop/bin/synth-trace"));
-        candidates.push(home.join("Documents/GitHub/containers/.venv/bin/synth-trace"));
     }
     candidates
         .into_iter()

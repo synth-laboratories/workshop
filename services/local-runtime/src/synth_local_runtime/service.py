@@ -491,7 +491,7 @@ class RuntimeService:
             {
                 "templateId": {
                     "eval": "live.eval_stream.v1",
-                    "dock": "live.dock_harbor.v1",
+                    "harbor": "live.harbor_eval.v1",
                     "intern": "live.intern_acceptance.v1",
                 }.get(kind, "live.eval_stream.v1"),
                 "title": f"Live {kind} stream",

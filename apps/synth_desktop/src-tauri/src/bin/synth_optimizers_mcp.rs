@@ -90,7 +90,7 @@ fn tools() -> Value {
         {"name":"optimizer_manage","description":"Operate Synth optimizer runs. Load the use-synth-optimizers skill for operation arguments and safe recipe sequencing.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_algorithms","list_recipes","start_recipe","list_runs","get_run","watch_run","get_state","reconcile_cloud","cancel_run","open_visual"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
         {"name":"optimizer_list_algorithms","description":"List optimizer algorithms and availability","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"optimizer_list_recipes","description":"List product-owned bounded optimizer recipes and their hard limits","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-        {"name":"optimizer_start_recipe","description":"Start an allowlisted optimizer recipe. No commands, paths, credentials, or arbitrary config are accepted.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.smoke.v1","sft.craftax.gpt-oss.smoke.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"}},"required":["recipe_id"],"additionalProperties":false}},
+        {"name":"optimizer_start_recipe","description":"Start an allowlisted optimizer recipe. No commands, paths, credentials, or arbitrary config are accepted. Optional base_model must be an id from docs/sft_tinker_base_models.toml.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.luna.v1","gepa.banking77.sol.v1","gelo.craftax.hosted.v1","sft.craftax.gpt-oss.smoke.v1","sft.hosted.fixture.v1","sft.craftax.nemotron-nano.tinker.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"}},"required":["recipe_id"],"additionalProperties":false}},
         {"name":"optimizer_list_runs","description":"List local optimizer run mirrors","inputSchema":{"type":"object","properties":{"status":{"type":"string"},"algorithm_id":{"type":"string"},"source":{"type":"string"},"search":{"type":"string"}},"additionalProperties":false}},
         {"name":"optimizer_get_run","description":"Get one optimizer run mirror","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
         {"name":"optimizer_create_run","description":"Create an optimizer run (local stub, cloud-hosted, fixture, or local path import)","inputSchema":{"type":"object","properties":{"algorithm_id":{"type":"string"},"objective":{"type":"string"},"session_ref":{"type":"string"},"source":{"type":"string","enum":["local","cloud"]},"local_path":{"type":"string"},"seed_fixture":{"type":"string"},"cloud_config":{"type":"object"},"open_visual":{"type":"boolean"}},"required":["algorithm_id"],"additionalProperties":false}},
@@ -140,7 +140,8 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             Some(json!({
                 "recipeId": args.get("recipe_id"),
                 "sessionRef": args.get("session_ref"),
-                "openVisual": args.get("open_visual").cloned().unwrap_or(json!(true))
+                "openVisual": args.get("open_visual").cloned().unwrap_or(json!(true)),
+                "baseModel": args.get("base_model")
             })),
         ),
         "optimizer_list_runs" => request(
@@ -256,8 +257,11 @@ mod tests {
         let tools = catalog["tools"].as_array().unwrap();
         assert!(tools.iter().any(|tool| tool["name"] == "optimizer_manage"));
         let encoded = catalog.to_string();
-        assert!(encoded.contains("gepa.banking77.smoke.v1"));
+        assert!(encoded.contains("gepa.banking77.luna.v1"));
+        assert!(encoded.contains("gepa.banking77.sol.v1"));
         assert!(encoded.contains("sft.craftax.gpt-oss.smoke.v1"));
+        assert!(encoded.contains("sft.hosted.fixture.v1"));
+        assert!(encoded.contains("sft.craftax.nemotron-nano.tinker.v1"));
         assert!(!encoded.contains("api_key"));
     }
 }

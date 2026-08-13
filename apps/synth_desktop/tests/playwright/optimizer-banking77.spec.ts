@@ -35,7 +35,8 @@ test.beforeEach(async ({ page }) => {
 				const run = makeRun(request.id ?? "banking77-smoke"); runs = [run]; return run;
 			},
 			listRecipes: async () => [
-				{ id: "gepa.banking77.smoke.v1", title: "Banking77 GEPA smoke", availability: "available", limits: { maxTotalRollouts: 8, maxCostUsd: 0.25 } },
+				{ id: "gepa.banking77.luna.v1", title: "Banking77 GEPA · Luna medium", availability: "available", limits: { maxTotalRollouts: 240, maxCostUsd: 2.45 } },
+				{ id: "gepa.banking77.sol.v1", title: "Banking77 GEPA · Sol medium", availability: "available", limits: { maxTotalRollouts: 240, maxCostUsd: 2.45 } },
 				{ id: "sft.craftax.gpt-oss.smoke.v1", title: "Craftax GPT-OSS SFT smoke", availability: "available", limits: { maxTotalEnvironmentRollouts: 8, trainSteps: 4 } }
 			],
 			startRecipe: async (request: any) => {
@@ -128,7 +129,8 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 	await page.getByTestId("open-optimizer-visual").click();
 	await expect(page.getByTestId("optimizer-candidate-cand_seed")).toContainText("0.50");
 	await page.getByTestId("optimizer-candidate-cand_seed").click();
-	await expect(page.getByTestId("gepa-pareto-frontier")).toContainText("cand_seed");
+	// The frontier canvas names candidates semantically; the seed candidate reads "Seed".
+	await expect(page.getByTestId("gepa-pareto-frontier")).toContainText("Seed");
 	await expect(page.getByLabel("Usage")).toContainText("4");
 	await expect(page.getByLabel("Usage")).toContainText("105");
 	await expect(page.getByLabel("Artifacts")).toContainText("result_manifest.json");
@@ -148,13 +150,15 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 });
 
 test("CUA can review and explicitly start the bounded Banking77 GEPA recipe", async ({ page }) => {
-	await expect(page.getByTestId("banking77-gepa-launch-card")).toContainText("at most 8 rollouts");
+	await expect(page.getByTestId("banking77-gepa-launch-card")).toContainText("At most 480 total rollouts");
 	expect(await page.evaluate(() => (window as any).__optimizerCreateCount)).toBe(0);
 
 	await page.getByTestId("configure-banking77-gepa-smoke").click();
 	const dialog = page.getByTestId("banking77-gepa-launch-dialog");
 	await expect(dialog).toBeVisible();
-	await expect(page.getByTestId("banking77-gepa-bounds")).toContainText("$0.25");
+	await expect(page.getByTestId("banking77-gepa-bounds")).toContainText("480 total");
+	await expect(page.getByTestId("banking77-gepa-bounds")).toContainText("$4.90 total");
+	await expect(dialog).toContainText("20-example minibatches");
 	await expect(page.getByTestId("start-banking77-gepa-smoke")).toBeDisabled();
 	await page.getByTestId("confirm-banking77-gepa-cost").check();
 	await page.getByTestId("start-banking77-gepa-smoke").click();
@@ -163,7 +167,7 @@ test("CUA can review and explicitly start the bounded Banking77 GEPA recipe", as
 	await expect(page.getByTestId("optimizer-run-banking77_cua_smoke")).toBeVisible();
 	await expect(page.getByTestId("optimizer-execution-mode")).toContainText("Banking77 local container");
 	const request = await page.evaluate(() => (window as any).__optimizerCreateRequest);
-	expect(request.recipeId).toBe("gepa.banking77.smoke.v1");
+	expect(request.recipeId).toBe("gepa.banking77.sol.v1");
 	expect(request.openVisual).toBe(true);
 
 	await expect(page.getByTestId("visual-pane")).toBeVisible();
@@ -187,6 +191,13 @@ test("CUA can review and explicitly start the bounded Craftax SFT recipe", async
 	await expect(page.getByTestId("optimizer-run-craftax_sft_cua_smoke")).toBeVisible();
 	const request = await page.evaluate(() => (window as any).__optimizerCreateRequest);
 	expect(request).toEqual({ recipeId: "sft.craftax.gpt-oss.smoke.v1", openVisual: true });
+});
+
+test("Craftax Nemotron Tinker SFT stays disabled when the recipe is unavailable", async ({ page }) => {
+	const card = page.getByTestId("craftax-nemotron-sft-launch-card");
+	await expect(card).toContainText("local Craftax slot");
+	await expect(page.getByTestId("start-craftax-nemotron-sft")).toBeDisabled();
+	expect(await page.evaluate(() => (window as any).__optimizerCreateCount)).toBe(0);
 });
 
 test("an unresolved live optimizer binding is honest and never renders GEPA demo candidates", async ({ page }) => {

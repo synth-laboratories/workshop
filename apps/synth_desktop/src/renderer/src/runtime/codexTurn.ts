@@ -28,13 +28,24 @@ export type FailedSend = {
 
 /** Normalizes both the typed Tauri rejection and any thrown Error. */
 export function codexTurnFailure(sessionId: string, reason: unknown): CodexTurnFailure {
-	if (reason && typeof reason === "object" && !(reason instanceof Error) && "code" in reason) {
-		const value = reason as Partial<CodexTurnFailure>;
+	if (reason && typeof reason === "object" && !(reason instanceof Error)) {
+		const value = reason as Partial<CodexTurnFailure> & { error?: unknown };
+		const nested = value.error && typeof value.error === "object" ? value.error as Partial<CodexTurnFailure> : undefined;
+		const message = typeof value.message === "string"
+			? value.message
+			: typeof nested?.message === "string"
+				? nested.message
+				: "The turn could not be started.";
+		const detail = typeof value.detail === "string"
+			? value.detail
+			: typeof nested?.detail === "string"
+				? nested.detail
+				: message;
 		return {
-			code: typeof value.code === "string" ? value.code : "codex_turn_start_failed",
-			message: typeof value.message === "string" ? value.message : "The turn could not be started.",
-			sessionId: typeof value.sessionId === "string" ? value.sessionId : sessionId,
-			detail: typeof value.detail === "string" ? value.detail : String(reason)
+			code: typeof value.code === "string" ? value.code : typeof nested?.code === "string" ? nested.code : "codex_turn_start_failed",
+			message,
+			sessionId: typeof value.sessionId === "string" ? value.sessionId : typeof nested?.sessionId === "string" ? nested.sessionId : sessionId,
+			detail
 		};
 	}
 	const message = reason instanceof Error ? reason.message : String(reason);

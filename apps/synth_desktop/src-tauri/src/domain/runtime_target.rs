@@ -99,6 +99,10 @@ impl RuntimeTarget {
                 model: model.to_owned(),
                 adapter: None,
             },
+            "openai-codex-oauth" => Self::RemoteRuntime {
+                model: model.to_owned(),
+                adapter: Some("openai-codex-oauth".into()),
+            },
             _ => {
                 // Unknown / custom providers still run through the remote path.
                 Self::RemoteRuntime {
@@ -185,7 +189,12 @@ impl Serialize for RuntimeTarget {
                 // Keep provider for renderer payloads that still expect it.
                 let mut map = serializer.serialize_map(Some(4))?;
                 map.serialize_entry("kind", "remote")?;
-                map.serialize_entry("provider", "openrouter")?;
+                let provider = if adapter.as_deref() == Some("openai-codex-oauth") {
+                    "openai-codex-oauth"
+                } else {
+                    "openrouter"
+                };
+                map.serialize_entry("provider", provider)?;
                 map.serialize_entry("model", model)?;
                 map.serialize_entry("adapter", adapter)?;
                 map.end()
@@ -240,7 +249,9 @@ fn parse_runtime_target_value(value: &Value) -> Result<RuntimeTarget, String> {
                 .unwrap_or("openrouter");
             let model = string_field(obj, "model")
                 .ok_or_else(|| "RuntimeTarget.model is required for remote/cloud".to_string())?;
-            let adapter = optional_string(obj, "adapter");
+            let adapter = optional_string(obj, "adapter").or_else(|| {
+                (provider == "openai-codex-oauth").then(|| "openai-codex-oauth".into())
+            });
             if provider == "synth-cloud" {
                 // Historical synonym: remote + synth-cloud → CloudRuntime.
                 Ok(RuntimeTarget::CloudRuntime { model, adapter })
@@ -358,5 +369,14 @@ mod tests {
         let encoded = serde_json::to_value(&target).unwrap();
         assert_eq!(encoded["kind"], "remote");
         assert_eq!(encoded["provider"], "openrouter");
+    }
+
+    #[test]
+    fn codex_oauth_remains_remote_without_becoming_synth_billed() {
+        let target = RuntimeTarget::from_codex_provider("openai-codex-oauth", "gpt-5.6-luna");
+        assert!(target.is_remote());
+        assert!(!target.is_cloud());
+        assert_eq!(target.to_json_value()["provider"], "openai-codex-oauth");
+        assert_eq!(target.to_json_value()["adapter"], "openai-codex-oauth");
     }
 }

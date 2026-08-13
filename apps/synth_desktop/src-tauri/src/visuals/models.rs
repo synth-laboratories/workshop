@@ -42,6 +42,7 @@ pub enum RendererKind {
     Template,
     Tsx,
     Html,
+    Mermaid,
 }
 
 impl RendererKind {
@@ -50,6 +51,7 @@ impl RendererKind {
             Self::Template => "template",
             Self::Tsx => "tsx",
             Self::Html => "html",
+            Self::Mermaid => "mermaid",
         }
     }
 
@@ -57,6 +59,7 @@ impl RendererKind {
         match value {
             "tsx" => Self::Tsx,
             "html" => Self::Html,
+            "mermaid" => Self::Mermaid,
             _ => Self::Template,
         }
     }
@@ -195,9 +198,11 @@ pub fn validate_bindings(bindings: &Value) -> anyhow::Result<()> {
         let slot = slot
             .as_object()
             .ok_or_else(|| anyhow::anyhow!("visual binding slots must be objects"))?;
-        if slot.get("slot").and_then(Value::as_str).is_none() {
-            anyhow::bail!("visual binding slot requires a slot name");
-        }
+        let slot_name = slot
+            .get("slot")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("visual binding slot requires a slot name"))?;
+        super::live_eval::assert_live_eval_slot(slot_name)?;
         let kind = slot.get("kind").and_then(Value::as_str).unwrap_or_default();
         if !matches!(
             kind,
@@ -216,6 +221,11 @@ pub fn validate_bindings(bindings: &Value) -> anyhow::Result<()> {
         }
         if kind != "inline" && slot.get("source").and_then(Value::as_str).is_none() {
             anyhow::bail!("{kind} visual binding requires source");
+        }
+        if kind == "live_sse" {
+            if let Some(source) = slot.get("source").and_then(Value::as_str) {
+                super::live_eval::assert_declared_stream_source(source)?;
+            }
         }
     }
     Ok(())
@@ -262,5 +272,20 @@ mod tests {
             "slots": [{"slot":"matrix", "kind":"local_cas"}]
         }))
         .is_err());
+        assert!(validate_bindings(&json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "slots": [{"slot":"jobs", "kind":"live_sse", "source":"http://127.0.0.1:8098/declared"}]
+        }))
+        .is_err());
+        assert!(validate_bindings(&json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "slots": [{"slot":"stream", "kind":"live_sse", "source":"http://127.0.0.1:8098/events"}]
+        }))
+        .is_err());
+        validate_bindings(&json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "slots": [{"slot":"stream", "kind":"live_sse", "source":"http://127.0.0.1:8098/rollouts/r1/stream"}]
+        }))
+        .unwrap();
     }
 }

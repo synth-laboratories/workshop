@@ -171,6 +171,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					}}
 					key={view.section ?? "general"}
 					onBack={() => setView({ kind: "landing" })}
+					onSectionChange={(section) => setView({ kind: "settings", section })}
 					onReloadLaguna={onReloadLaguna}
 					lagunaPhase={laguna?.phase}
 					initialSection={view.section}
@@ -309,6 +310,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					selectedTargetId={selectedTargetId}
 					onSelectTarget={onSelectTarget}
 					onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
+					onConfigureModels={() => setView({ kind: "settings", section: "models" })}
 					onResolveBilling={() => setUsageSheetOpen(true)}
 				/>
 			) : null}

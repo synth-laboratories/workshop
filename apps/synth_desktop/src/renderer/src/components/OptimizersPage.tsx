@@ -2,10 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { OptimizerAlgorithmInfo, OptimizerRunRecord } from "@synth/runtime-protocol";
 import { bridges } from "../runtime/desktopBridge";
 
-const BANKING77_RECIPE_ID = "gepa.banking77.smoke.v1";
-const BANKING77_SMOKE_COST_USD = 0.25;
-const BANKING77_SMOKE_ROLLOUTS = 8;
+const BANKING77_LUNA_RECIPE_ID = "gepa.banking77.luna.v1";
+const BANKING77_SOL_RECIPE_ID = "gepa.banking77.sol.v1";
+const BANKING77_RUN_COST_USD = 2.45;
+const BANKING77_RUN_ROLLOUTS = 240;
+const BANKING77_PAIR_COST_USD = BANKING77_RUN_COST_USD * 2;
+const BANKING77_PAIR_ROLLOUTS = BANKING77_RUN_ROLLOUTS * 2;
 const CRAFTAX_SFT_RECIPE_ID = "sft.craftax.gpt-oss.smoke.v1";
+const HOSTED_SFT_FIXTURE_RECIPE_ID = "sft.hosted.fixture.v1";
+const HOSTED_SFT_NEMOTRON_RECIPE_ID = "sft.craftax.nemotron-nano.tinker.v1";
 const CRAFTAX_SFT_ROLLOUTS = 8;
 const CRAFTAX_SFT_STEPS = 4;
 
@@ -117,11 +122,17 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 		() => runs.find((run) => run.id === selectedId) ?? null,
 		[runs, selectedId]
 	);
-	const banking77RecipeAvailable = recipes.some(
-		(recipe) => recipe.id === BANKING77_RECIPE_ID && recipe.availability === "available"
+	const banking77RecipeAvailable = [BANKING77_LUNA_RECIPE_ID, BANKING77_SOL_RECIPE_ID].every(
+		(recipeId) => recipes.some((recipe) => recipe.id === recipeId && recipe.availability === "available")
 	);
 	const craftaxSftRecipeAvailable = recipes.some(
 		(recipe) => recipe.id === CRAFTAX_SFT_RECIPE_ID && recipe.availability === "available"
+	);
+	const hostedSftRecipeAvailable = recipes.some(
+		(recipe) => recipe.id === HOSTED_SFT_FIXTURE_RECIPE_ID && recipe.availability === "available"
+	);
+	const nemotronSftRecipeAvailable = recipes.some(
+		(recipe) => recipe.id === HOSTED_SFT_NEMOTRON_RECIPE_ID && recipe.availability === "available"
 	);
 
 	const seedFixture = async (fixture: string) => {
@@ -214,18 +225,65 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 		}
 	};
 
-	const launchBanking77Smoke = async () => {
+	const launchBanking77Comparison = async () => {
 		if (!bridges.optimizers) return;
 		if (!launchConfirmed) return;
 		setBusy(true);
 		setError(null);
 		try {
-			const run = await bridges.optimizers.startRecipe({
-				recipeId: BANKING77_RECIPE_ID,
-				openVisual: true
-			});
+			const [lunaRun, solRun] = await Promise.all([
+				bridges.optimizers.startRecipe({
+					recipeId: BANKING77_LUNA_RECIPE_ID,
+					openVisual: true
+				}),
+				bridges.optimizers.startRecipe({
+					recipeId: BANKING77_SOL_RECIPE_ID,
+					openVisual: true
+				})
+			]);
 			setLauncherOpen(false);
 			setLaunchConfirmed(false);
+			setSelectedId(lunaRun.id);
+			await refresh();
+			const visualId = lunaRun.visualRefs.find((ref) => ref.kind === "visual")?.id
+				?? solRun.visualRefs.find((ref) => ref.kind === "visual")?.id;
+			if (visualId) onOpenVisual(visualId);
+		} catch (reason) {
+			setError(String(reason));
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const launchHostedSftFixture = async () => {
+		if (!bridges.optimizers || !hostedSftRecipeAvailable) return;
+		setBusy(true);
+		setError(null);
+		try {
+			const run = await bridges.optimizers.startRecipe({
+				recipeId: HOSTED_SFT_FIXTURE_RECIPE_ID,
+				openVisual: true
+			});
+			setSelectedId(run.id);
+			await refresh();
+			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
+			if (visualId) onOpenVisual(visualId);
+		} catch (reason) {
+			setError(String(reason));
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const launchCraftaxNemotronSft = async () => {
+		if (!bridges.optimizers || !nemotronSftRecipeAvailable) return;
+		setBusy(true);
+		setError(null);
+		try {
+			const run = await bridges.optimizers.startRecipe({
+				recipeId: HOSTED_SFT_NEMOTRON_RECIPE_ID,
+				openVisual: true
+			});
 			setSelectedId(run.id);
 			await refresh();
 			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
@@ -262,7 +320,11 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 	const selectedExecution = selected
 		? selected.executionBindings.length > 0
 			? selected.executionBindings.map((binding) => binding.label ?? binding.kind).join(" · ")
-			: selected.source === "cloud" ? "Cloud managed" : "Local process"
+			: selected.source === "hosted"
+				? "optimizers-beta"
+				: selected.source === "cloud"
+					? "Cloud managed"
+					: "Local process"
 		: null;
 	const selectedDiagnostic = optimizerDiagnostic(selected?.error);
 	const selectedRunDirectory = selected && typeof selected.summary?.runDirectory === "string"
@@ -321,11 +383,33 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 			<section className="optimizer-launch-card" aria-labelledby="banking77-launch-title" data-testid="banking77-gepa-launch-card">
 				<div>
 					<span className="optimizer-eyebrow">Pinned recipe · Local process</span>
-					<h2 id="banking77-launch-title">Banking77 GEPA smoke</h2>
-					<p>One generation, one proposal, at most {BANKING77_SMOKE_ROLLOUTS} rollouts, capped at ${BANKING77_SMOKE_COST_USD.toFixed(2)}.</p>
+					<h2 id="banking77-launch-title">Banking77 GEPA · Luna vs Sol</h2>
+					<p>Two concurrent, isolated runs: one Luna-medium proposer and one Sol-medium proposer. At most {BANKING77_PAIR_ROLLOUTS} total rollouts, capped at ${BANKING77_PAIR_COST_USD.toFixed(2)} total.</p>
 				</div>
 				<button className="primary-button" type="button" disabled={busy || !banking77RecipeAvailable} onClick={() => setLauncherOpen(true)} data-testid="configure-banking77-gepa-smoke">
-					{banking77RecipeAvailable ? "Configure bounded smoke run" : "Recipe unavailable"}
+					{banking77RecipeAvailable ? "Configure Luna vs Sol" : "Recipes unavailable"}
+				</button>
+			</section>
+
+			<section className="optimizer-launch-card" aria-labelledby="hosted-sft-launch-title" data-testid="hosted-sft-launch-card">
+				<div>
+					<span className="optimizer-eyebrow">Pinned recipe · optimizers-beta</span>
+					<h2 id="hosted-sft-launch-title">Hosted SFT fixture</h2>
+					<p>Stream <code>optimizer_event.v1</code> pages from a running optimizers-beta into <code>optimizer.sft.live.v1</code>. Fixture backend; no Tinker or provider charges.</p>
+				</div>
+				<button className="primary-button" type="button" disabled={busy || !hostedSftRecipeAvailable} onClick={() => void launchHostedSftFixture()} data-testid="start-hosted-sft-fixture">
+					{hostedSftRecipeAvailable ? "Start hosted SFT fixture" : "Beta not configured"}
+				</button>
+			</section>
+
+			<section className="optimizer-launch-card" aria-labelledby="craftax-nemotron-sft-launch-title" data-testid="craftax-nemotron-sft-launch-card">
+				<div>
+					<span className="optimizer-eyebrow">Hosted recipe · Tinker · local Craftax slot</span>
+					<h2 id="craftax-nemotron-sft-launch-title">Craftax Nemotron 3.5 Lightning Tinker SFT</h2>
+					<p>Hosted <code>algorithm_id: sft</code> against a local Craftax slot. Student LoRA on Tinker. Default student is Nemotron 3.5 Lightning from <code>docs/sft_tinker_base_models.toml</code>. Checkpoint campaigns stream reward and cost only when the producer emits them.</p>
+				</div>
+				<button className="primary-button" type="button" disabled={busy || !nemotronSftRecipeAvailable} onClick={() => void launchCraftaxNemotronSft()} data-testid="start-craftax-nemotron-sft">
+					{nemotronSftRecipeAvailable ? "Start Craftax Nemotron SFT" : "Beta or local slot not ready"}
 				</button>
 			</section>
 
@@ -344,19 +428,19 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 				<div className="optimizer-launch-dialog" role="dialog" aria-modal="true" aria-labelledby="banking77-dialog-title" data-testid="banking77-gepa-launch-dialog">
 					<div className="optimizer-launch-dialog-card">
 						<div className="optimizer-launch-dialog-head">
-							<div><span className="optimizer-eyebrow">Review before starting compute</span><h2 id="banking77-dialog-title">Banking77 GEPA bounded smoke</h2></div>
+							<div><span className="optimizer-eyebrow">Review before starting paid compute</span><h2 id="banking77-dialog-title">Banking77 GEPA · Luna vs Sol</h2></div>
 							<button type="button" className="ghost-button" aria-label="Close Banking77 GEPA launcher" onClick={() => setLauncherOpen(false)} data-testid="close-banking77-gepa-launcher">×</button>
 						</div>
 						<dl className="optimizer-launch-summary" data-testid="banking77-gepa-bounds">
-							<div><dt>Optimizer</dt><dd>GEPA</dd></div><div><dt>Dataset</dt><dd>Banking77</dd></div>
-							<div><dt>Execution</dt><dd>Local recipe process</dd></div><div><dt>Run ID</dt><dd>Assigned on start</dd></div>
-							<div><dt>Rollout ceiling</dt><dd>{BANKING77_SMOKE_ROLLOUTS}</dd></div><div><dt>Cost ceiling</dt><dd>${BANKING77_SMOKE_COST_USD.toFixed(2)}</dd></div>
+							<div><dt>Optimizer</dt><dd>GEPA × 2</dd></div><div><dt>Dataset</dt><dd>Banking77</dd></div>
+							<div><dt>Proposers</dt><dd>Luna medium · Sol medium</dd></div><div><dt>Run IDs</dt><dd>Two, assigned on start</dd></div>
+							<div><dt>Rollout ceiling</dt><dd>{BANKING77_PAIR_ROLLOUTS} total</dd></div><div><dt>Cost ceiling</dt><dd>${BANKING77_PAIR_COST_USD.toFixed(2)} total</dd></div>
 						</dl>
-						<p className="optimizer-launch-prereq">Uses 4 train rows and 2 heldout rows. Requires the Banking77 cookbook checkout and an OpenAI API key available to the Desktop runtime.</p>
-						<label className="optimizer-launch-confirm"><input type="checkbox" checked={launchConfirmed} onChange={(event) => setLaunchConfirmed(event.target.checked)} data-testid="confirm-banking77-gepa-cost" /> I approve this bounded run and its API usage.</label>
+						<p className="optimizer-launch-prereq">Each run uses 50 train rows, 20-example minibatches, and 50 heldout rows. Proposers use the signed-in Codex ChatGPT account; Banking77 candidate evaluation uses the trusted Desktop OpenAI credential.</p>
+						<label className="optimizer-launch-confirm"><input type="checkbox" checked={launchConfirmed} onChange={(event) => setLaunchConfirmed(event.target.checked)} data-testid="confirm-banking77-gepa-cost" /> I approve both bounded runs and their API usage.</label>
 						<div className="optimizer-launch-dialog-actions">
 							<button type="button" className="secondary-button" onClick={() => setLauncherOpen(false)}>Cancel</button>
-							<button type="button" className="primary-button" disabled={busy || !launchConfirmed} onClick={() => void launchBanking77Smoke()} data-testid="start-banking77-gepa-smoke">{busy ? "Starting…" : "Start bounded Banking77 GEPA smoke"}</button>
+							<button type="button" className="primary-button" disabled={busy || !launchConfirmed} onClick={() => void launchBanking77Comparison()} data-testid="start-banking77-gepa-smoke">{busy ? "Starting both…" : "Start Luna + Sol comparison"}</button>
 						</div>
 					</div>
 				</div>
@@ -398,13 +482,14 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 						{algorithms.map((item) => <option key={item.id} value={item.id}>{item.title} · {item.availability}</option>)}
 					</select>
 					<select aria-label="Source filter" value={source} onChange={(e) => setSource(e.target.value)}>
-						<option value="all">All sources</option><option value="local">Local</option><option value="cloud">Cloud</option>
+						<option value="all">All sources</option><option value="local">Local</option><option value="hosted">Hosted</option><option value="cloud">Cloud</option>
 					</select>
 				</div>
 				<div className="optimizer-actions">
 					<button className="secondary-button" type="button" disabled={busy} onClick={() => void importLocal()} data-testid="import-local-optimizer">Import local</button>
 					<button className="secondary-button" type="button" disabled={busy} onClick={() => void syncCloud()} data-testid="sync-cloud-optimizers">Sync cloud</button>
-					<button className="primary-button" type="button" disabled={busy || !banking77RecipeAvailable} onClick={() => setLauncherOpen(true)} data-testid="create-cloud-optimizer">Banking77 GEPA smoke</button>
+					<button className="primary-button" type="button" disabled={busy || !banking77RecipeAvailable} onClick={() => setLauncherOpen(true)} data-testid="create-cloud-optimizer">Banking77 Luna vs Sol</button>
+					<button className="primary-button" type="button" disabled={busy || !hostedSftRecipeAvailable} onClick={() => void launchHostedSftFixture()} data-testid="create-hosted-sft-optimizer">Hosted SFT fixture</button>
 					<button className="primary-button" type="button" disabled={busy || !craftaxSftRecipeAvailable} onClick={() => setSftLauncherOpen(true)} data-testid="create-craftax-sft-optimizer">Craftax SFT smoke</button>
 				</div>
 			</div>
@@ -422,11 +507,11 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 									onClick={() => setSelectedId(run.id)}
 								>
 									<span className="optimizer-run-main"><span className="optimizer-algorithm">{algorithmLabel(run.algorithmId)}</span><strong>{run.objective ?? run.id}</strong><small>{formatWhen(run.finishedAt ?? run.startedAt ?? run.createdAt)}</small></span>
-									<span className="optimizer-run-meta"><span className={`optimizer-status ${run.status}`}>{run.status}</span><small>{run.source} · ${(run.usage.costUsd ?? 0).toFixed(2)}</small></span>
+									<span className="optimizer-run-meta"><span className={`optimizer-status ${run.status}`}>{run.status}</span><small>{run.source} · {run.usage.costUsd == null ? "—" : `$${run.usage.costUsd.toFixed(2)}`}</small></span>
 								</button>
 							</li>
 						))}
-						{runs.length === 0 ? <li className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>↗</span><strong>No optimizer runs yet</strong><p>Import a local run, connect cloud history, or start the pinned bounded Banking77 recipe.</p><button className="primary-button" type="button" disabled={busy || !banking77RecipeAvailable} onClick={() => setLauncherOpen(true)}>Configure Banking77 smoke</button></li> : null}
+						{runs.length === 0 ? <li className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>↗</span><strong>No optimizer runs yet</strong><p>Import a local run, connect cloud history, or start the pinned Banking77 comparison.</p><button className="primary-button" type="button" disabled={busy || !banking77RecipeAvailable} onClick={() => setLauncherOpen(true)}>Configure Luna vs Sol</button></li> : null}
 					</ul>
 				</section>
 
@@ -440,7 +525,7 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 								<dt>Execution</dt><dd data-testid="optimizer-execution-mode">{selectedExecution}</dd>
 								<dt>Live events</dt><dd>{selected.capabilities.streamEvents ? "Available" : "Replay / refresh"}</dd>
 								<dt>Cursor</dt><dd>{selected.cursorSeq}</dd>
-								<dt>Cost</dt><dd>${(selected.usage.costUsd ?? 0).toFixed(2)}</dd>
+								<dt>Cost</dt><dd>{selected.usage.costUsd == null ? "—" : `$${selected.usage.costUsd.toFixed(2)}`}</dd>
 								<dt>Created</dt><dd>{formatWhen(selected.createdAt)}</dd>
 							</dl>
 							{selectedDiagnostic ? (

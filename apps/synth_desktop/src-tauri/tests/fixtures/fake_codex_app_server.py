@@ -17,6 +17,7 @@ turn_number = 0
 # A marker whose contents are "once" removes itself first, so the very next
 # attempt succeeds.
 exit_on_turn_start = home / "exit-on-turn-start"
+reject_thread_resume = home / "reject-thread-resume"
 
 
 def send(message: dict) -> None:
@@ -44,6 +45,13 @@ for raw in sys.stdin:
     elif method == "thread/start":
         result = {"thread": {"id": "thread-fixture"}}
     elif method == "thread/resume":
+        if reject_thread_resume.exists():
+            send({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32600, "message": f"no rollout found for thread id {params.get('threadId')}"},
+            })
+            continue
         result = {"thread": {"id": params.get("threadId", "thread-fixture")}}
     elif method == "thread/name/set":
         result = {}

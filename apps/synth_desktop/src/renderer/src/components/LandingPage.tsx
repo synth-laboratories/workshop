@@ -9,6 +9,7 @@ type Props = {
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
+	onConfigureModels?: () => void;
 	onResolveBilling?: () => void;
 };
 
@@ -16,18 +17,22 @@ export function ModelPicker({
 	selectedTargetId,
 	apiKeyConfigured,
 	openrouterApiKeyConfigured,
+	codexOauthConfigured,
 	cloudBlockedReason = null,
 	onSelectTarget,
 	onConfigureAccount,
+	onConfigureModels,
 	onResolveBilling
 }: {
 	selectedTargetId: string;
 	apiKeyConfigured?: boolean;
 	openrouterApiKeyConfigured?: boolean;
+	codexOauthConfigured?: boolean;
 	/** Backend-authored reason billable cloud actions are blocked; local is unaffected. */
 	cloudBlockedReason?: string | null;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
+	onConfigureModels?: () => void;
 	onResolveBilling?: () => void;
 }) {
 	const [open, setOpen] = useState(false);
@@ -127,7 +132,7 @@ export function ModelPicker({
 						}
 						: undefined}
 				>
-					{(["local", "remote", "cloud"] as const).map((group) => {
+					{(["local", "remote", "subscription", "cloud"] as const).map((group) => {
 						const items = LAUNCH_PICKER_TARGETS.filter((t) => t.group === group);
 						if (!items.length) return null;
 						return (
@@ -138,6 +143,8 @@ export function ModelPicker({
 										target.id.startsWith("synth-cloud-") && apiKeyConfigured !== true;
 									const needsOpenRouterKey =
 										target.id.startsWith("openrouter-") && openrouterApiKeyConfigured !== true;
+									const needsCodexOauth =
+										target.id.startsWith("chatgpt-") && codexOauthConfigured !== true;
 									const allowanceBlocked =
 										target.id.startsWith("synth-cloud-") && !needsSynthKey && Boolean(cloudBlockedReason);
 									if (allowanceBlocked) {
@@ -170,8 +177,8 @@ export function ModelPicker({
 											</div>
 										);
 									}
-									if (needsSynthKey || needsOpenRouterKey) {
-										const providerName = needsOpenRouterKey ? "OpenRouter" : "Synth";
+									if (needsSynthKey || needsOpenRouterKey || needsCodexOauth) {
+										const providerName = needsCodexOauth ? "ChatGPT subscription" : needsOpenRouterKey ? "OpenRouter" : "Synth";
 										return (
 											<div
 												key={target.id}
@@ -185,18 +192,18 @@ export function ModelPicker({
 													aria-disabled="true"
 												>
 													<span className="model-option-label">{target.label}</span>
-												<span className="model-option-desc">{providerName} API key required</span>
+											<span className="model-option-desc">{needsCodexOauth ? "Connect in Settings → Models" : `${providerName} API key required`}</span>
 												</span>
-												<button
-													type="button"
-													className="model-option-configure"
-												data-testid={`model-configure-${providerName.toLowerCase()}-api-key`}
+										<button
+											type="button"
+											className="model-option-configure"
+											data-testid={needsCodexOauth ? "model-configure-chatgpt-subscription" : `model-configure-${providerName.toLowerCase()}-api-key`}
 													onClick={() => {
-														onConfigureAccount?.();
+														(needsCodexOauth ? onConfigureModels : onConfigureAccount)?.();
 														setOpen(false);
 													}}
 												>
-												Configure {providerName} API key
+											{needsCodexOauth ? "Connect ChatGPT subscription" : `Configure ${providerName} API key`}
 												</button>
 											</div>
 										);
@@ -233,6 +240,7 @@ export function LandingPage({
 	selectedTargetId,
 	onSelectTarget,
 	onConfigureAccount,
+	onConfigureModels,
 	onResolveBilling
 }: Props) {
 	const [accountChoiceMade, setAccountChoiceMade] = useState(
@@ -241,6 +249,23 @@ export function LandingPage({
 	return (
 		<div className="landing" data-testid="landing-page">
 			<div className="landing-hero">
+				<div className="synth-logo-wrap">
+					<SynthLogo className="synth-logo" />
+				</div>
+				<div className="landing-title-row">
+					<p className="landing-title">Start a new conversation using</p>
+					<ModelPicker
+						selectedTargetId={selectedTargetId}
+						apiKeyConfigured={state.apiKeyConfigured}
+						openrouterApiKeyConfigured={state.openrouterApiKeyConfigured}
+						codexOauthConfigured={state.codexOauthConfigured}
+						cloudBlockedReason={state.cloudBlockedReason}
+						onSelectTarget={onSelectTarget}
+						onConfigureAccount={onConfigureAccount}
+						onConfigureModels={onConfigureModels}
+						onResolveBilling={onResolveBilling}
+					/>
+				</div>
 				{!state.apiKeyConfigured && !accountChoiceMade ? (
 					<div className="quick-actions" data-testid="first-run-account-choice">
 						<button type="button" className="quick-card" onClick={() => {
@@ -254,21 +279,6 @@ export function LandingPage({
 						</button>
 					</div>
 				) : null}
-				<div className="synth-logo-wrap">
-					<SynthLogo className="synth-logo" />
-				</div>
-				<div className="landing-title-row">
-					<p className="landing-title">Start a new conversation using</p>
-					<ModelPicker
-						selectedTargetId={selectedTargetId}
-						apiKeyConfigured={state.apiKeyConfigured}
-						openrouterApiKeyConfigured={state.openrouterApiKeyConfigured}
-						cloudBlockedReason={state.cloudBlockedReason}
-						onSelectTarget={onSelectTarget}
-						onConfigureAccount={onConfigureAccount}
-						onResolveBilling={onResolveBilling}
-					/>
-				</div>
 			</div>
 		</div>
 	);

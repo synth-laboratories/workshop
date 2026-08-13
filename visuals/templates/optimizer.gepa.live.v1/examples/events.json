@@ -1,0 +1,248 @@
+{
+  "run": {
+    "schemaVersion": "optimizer_run.v1",
+    "id": "opt_gepa_banking77",
+    "algorithmId": "gepa",
+    "algorithmVersion": "1.0.0",
+    "status": "running",
+    "source": "local",
+    "objective": "banking77 prompt · maximize macro-F1",
+    "createdAt": "2026-08-12T16:00:00Z",
+    "startedAt": "2026-08-12T16:00:01Z",
+    "cursorSeq": 12,
+    "capabilities": {
+      "cancel": true,
+      "pause": true,
+      "resume": true,
+      "streamEvents": true,
+      "stateSlices": true,
+      "candidates": true
+    },
+    "summary": { "bestScore": 0.82, "iteration": 1, "accepted": 2, "phase": "evaluating-train" },
+    "policyRefs": {
+      "proposer": { "harness": "gepa_proposer", "config": "luna_med" },
+      "childEval": { "harness": "banking77_eval" }
+    }
+  },
+  "events": [
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_banking77:1",
+      "type": "gepa.run.started",
+      "sequenceNumber": 1,
+      "occurredAt": "2026-08-12T16:00:01Z",
+      "optimizerRunId": "opt_gepa_banking77",
+      "algorithmId": "gepa",
+      "delta": { "status": "running", "phase": "seeding" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_banking77:2",
+      "type": "gepa.budget.updated",
+      "sequenceNumber": 2,
+      "occurredAt": "2026-08-12T16:00:02Z",
+      "optimizerRunId": "opt_gepa_banking77",
+      "algorithmId": "gepa",
+      "snapshot": {
+        "rolloutsCeiling": 48,
+        "costCeilingUsd": 4.0,
+        "proposerCallsCeiling": 8
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_banking77:3",
+      "type": "candidate.evaluated",
+      "sequenceNumber": 3,
+      "occurredAt": "2026-08-12T16:00:20Z",
+      "optimizerRunId": "opt_gepa_banking77",
+      "algorithmId": "gepa",
+      "item": {
+        "kind": "candidate",
+        "id": "cand_seed",
+        "status": "evaluated",
+        "raw": {
+          "score": 0.71,
+          "costUsd": 0.12,
+          "rollouts": 8,
+          "parentId": null,
+          "prompt": "Classify the banking intent. Be brief."
+        }
+      },
+      "delta": { "train_reward": 0.71, "phase": "evaluating-train" },
+      "usageDelta": { "cost_usd": 0.12, "rollouts": 8, "prompt_tokens": 800, "completion_tokens": 200 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_banking77:4",
+      "type": "gepa.evaluation.linked",
+      "sequenceNumber": 4,
+      "occurredAt": "2026-08-12T16:00:21Z",
+      "optimizerRunId": "opt_gepa_banking77",
+      "algorithmId": "gepa",
+      "item": { "kind": "candidate", "id": "cand_seed", "status": "evaluated" },
+      "delta": {
+        "resource_ref": {
+          "kind": "container_rollout",
+          "id": "rollout_cand_seed",
+          "role": "candidate_evaluation",
+          "attributes": {
+            "stream_id": "stream_cand_seed",
+            "reward_url": "/reward?rollout_id=rollout_cand_seed",
+            "reward": 0.71
+          }
+        }
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_banking77:5",
+      "type": "candidate.accepted",
+      "sequenceNumber": 5,
+      "occurredAt": "2026-08-12T16:00:25Z",
+      "optimizerRunId": "opt_gepa_banking77",
+      "algorithmId": "gepa",
+      "item": {
+        "kind": "candidate",
+        "id": "cand_seed",
+        "status": "accepted",
+        "raw": {
+          "score": 0.71,
+          "costUsd": 0.12,
+          "parentId": null,
+          "prompt": "Classify the banking intent. Be brief."
+        }
+      },
+      "delta": { "incumbentId": "cand_seed", "phase": "selecting" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_banking77:6",
+      "type": "candidate.evaluated",
+      "sequenceNumber": 6,
+      "occurredAt": "2026-08-12T16:01:40Z",
+      "optimizerRunId": "opt_gepa_banking77",
+      "algorithmId": "gepa",
+      "item": {
+        "kind": "candidate",
+        "id": "cand_m1",
+        "status": "evaluated",
+        "raw": {
+          "parentId": "cand_seed",
+          "score": 0.82,
+          "costUsd": 0.31,
+          "rollouts": 16,
+          "prompt": "Classify the banking intent. Distinguish fee vs balance questions. Keep a short system preamble."
+        }
+      },
+      "delta": { "train_reward": 0.82, "phase": "evaluating-train" },
+      "usageDelta": { "cost_usd": 0.31, "rollouts": 16, "prompt_tokens": 1600, "completion_tokens": 400 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_banking77:7",
+      "type": "gepa.evaluation.linked",
+      "sequenceNumber": 7,
+      "occurredAt": "2026-08-12T16:01:41Z",
+      "optimizerRunId": "opt_gepa_banking77",
+      "algorithmId": "gepa",
+      "item": { "kind": "candidate", "id": "cand_m1", "status": "evaluated" },
+      "delta": {
+        "resource_ref": {
+          "kind": "container_rollout",
+          "id": "rollout_cand_m1",
+          "role": "candidate_evaluation",
+          "attributes": {
+            "stream_id": "stream_cand_m1",
+            "reward_url": "/reward?rollout_id=rollout_cand_m1"
+          }
+        }
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_banking77:8",
+      "type": "candidate.accepted",
+      "sequenceNumber": 8,
+      "occurredAt": "2026-08-12T16:01:42Z",
+      "optimizerRunId": "opt_gepa_banking77",
+      "algorithmId": "gepa",
+      "item": {
+        "kind": "candidate",
+        "id": "cand_m1",
+        "status": "accepted",
+        "raw": {
+          "parentId": "cand_seed",
+          "score": 0.82,
+          "costUsd": 0.31,
+          "rank": 1,
+          "prompt": "Classify the banking intent. Distinguish fee vs balance questions. Keep a short system preamble."
+        }
+      },
+      "delta": { "incumbentId": "cand_m1" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_banking77:9",
+      "type": "frontier.updated",
+      "sequenceNumber": 9,
+      "occurredAt": "2026-08-12T16:01:43Z",
+      "optimizerRunId": "opt_gepa_banking77",
+      "algorithmId": "gepa",
+      "snapshot": {
+        "incumbentId": "cand_m1",
+        "cells": [
+          { "candidateId": "cand_seed", "quality": 0.71, "costUsd": 0.12, "rollouts": 8 },
+          { "candidateId": "cand_m1", "quality": 0.82, "costUsd": 0.31, "rollouts": 16, "accent": true }
+        ],
+        "bestScore": 0.82
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_banking77:10",
+      "type": "gepa.reflection",
+      "sequenceNumber": 10,
+      "occurredAt": "2026-08-12T16:01:50Z",
+      "optimizerRunId": "opt_gepa_banking77",
+      "algorithmId": "gepa",
+      "delta": { "message": "Clarify fee vs balance intents; keep short system preamble." }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_banking77:11",
+      "type": "gepa.budget.updated",
+      "sequenceNumber": 11,
+      "occurredAt": "2026-08-12T16:01:51Z",
+      "optimizerRunId": "opt_gepa_banking77",
+      "algorithmId": "gepa",
+      "snapshot": {
+        "rolloutsCeiling": 48,
+        "rolloutsUsed": 24,
+        "costCeilingUsd": 4.0,
+        "costUsd": 0.43,
+        "proposerCallsCeiling": 8,
+        "proposerCallsUsed": 2
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_banking77:12",
+      "type": "candidate.proposed",
+      "sequenceNumber": 12,
+      "occurredAt": "2026-08-12T16:02:00Z",
+      "optimizerRunId": "opt_gepa_banking77",
+      "algorithmId": "gepa",
+      "item": {
+        "kind": "candidate",
+        "id": "cand_m2",
+        "status": "proposed",
+        "raw": {
+          "parentId": "cand_m1",
+          "prompt": "Classify the banking intent. Distinguish fee vs balance vs transfer. Keep a short system preamble."
+        }
+      },
+      "delta": { "phase": "proposing" }
+    }
+  ]
+}

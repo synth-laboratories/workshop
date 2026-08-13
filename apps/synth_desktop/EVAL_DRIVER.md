@@ -71,11 +71,10 @@ semantic action names used by `window.__synthEval`.
 ```json
 {
   "taskInstanceId": "craftax:test:2001",
+  "policyRef": { "harness": "react", "config": "luna_med" },
   "provider": "openrouter",
   "model": "openai/gpt-5.6-luna",
-  "reasoningEffort": "low",
-  "maxSteps": 64,
-  "maxCalls": 16,
+  "reasoningEffort": "medium",
   "timeoutS": 600,
   "telemetry": {
     "enabled": true,
@@ -86,8 +85,15 @@ semantic action names used by `window.__synthEval`.
 }
 ```
 
-`provider` is one of `openrouter` | `synth-cloud` | `local-laguna` and resolves
-through the same `codex::provider_class` table as Codex session preparation:
+`policy_ref` is required (`harness` and `config`; `config` is omitted only for
+`isolated_policy_process`). The driver does not pick a harness or default
+`luna_med`. The coding agent via MCP supplies the pin. The container runs the
+policy after the visual is bound to the declared SSE URL and `stream.subscribed`
+is observed. Workshop does not call the model or `/step`.
+
+`provider` on `POST /v1/policy_preflight` is one of `openrouter` |
+`synth-cloud` | `local-laguna` and resolves through the same
+`codex::provider_class` table as Codex session preparation:
 
 | provider | credential / daemon | chat endpoint |
 | --- | --- | --- |

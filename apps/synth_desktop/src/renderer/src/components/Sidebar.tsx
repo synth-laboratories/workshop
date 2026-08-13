@@ -6,6 +6,14 @@ import type { LagunaStatus } from "../bridge";
 import { type AccountViewModel } from "../runtime/accountView";
 import { ConversationContextMenu } from "./GeneralPreferencesSettings";
 import { PaneResizeHandle } from "./PaneResizeHandle";
+import { ProviderMark } from "./ProviderMark";
+
+type CodexUsageSnapshot = {
+	usedPercent: number;
+	resetsAt: number;
+	windowMinutes?: number;
+	planType?: string;
+};
 
 type Props = {
 	state: LandingState;
@@ -28,6 +36,8 @@ type Props = {
 	onSettings: () => void;
 	/** Composed by the renderer from the host's account summary. */
 	account: AccountViewModel;
+	codexOauthConfigured?: boolean;
+	codexUsage?: CodexUsageSnapshot | null;
 	onOpenAccount?: () => void;
 	onOpenUsage?: () => void;
 	onBilling?: (action: "upgrade" | "manage") => void;
@@ -131,6 +141,8 @@ export function Sidebar({
 	onSearch,
 	onSettings,
 	account,
+	codexOauthConfigured = false,
+	codexUsage = null,
 	onOpenAccount,
 	onOpenUsage,
 	onBilling,
@@ -154,8 +166,15 @@ export function Sidebar({
 	const [showAllChats, setShowAllChats] = useState(false);
 	const [accountMenuOpen, setAccountMenuOpen] = useState(false);
 	const [allowanceOpen, setAllowanceOpen] = useState(false);
+	const [codexUsageOpen, setCodexUsageOpen] = useState(false);
 	const accountMenuRef = useRef<HTMLDivElement>(null);
 	const accountTriggerRef = useRef<HTMLButtonElement>(null);
+	const codexRemaining = codexUsage ? Math.max(0, Math.round(100 - codexUsage.usedPercent)) : null;
+	const codexReset = codexUsage
+		? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(codexUsage.resetsAt * 1_000))
+		: null;
+	const accountTitle = codexOauthConfigured ? "ChatGPT subscription" : account.title;
+	const accountSubtitle = codexOauthConfigured ? "OpenAI account" : account.subtitle;
 
 	useEffect(() => {
 		if (!accountMenuOpen) return;
@@ -446,10 +465,12 @@ export function Sidebar({
 					{accountMenuOpen ? (
 						<div id="account-menu-panel" className="account-menu" role="menu" data-testid="account-menu">
 							<div className="account-menu-identity">
-								<span className="account-avatar" aria-hidden>{account.initial}</span>
+								{codexOauthConfigured ? (
+									<span className="account-avatar account-avatar-openai" aria-label="OpenAI account"><ProviderMark kind="openai" className="account-openai-mark" /></span>
+								) : <span className="account-avatar" aria-hidden>{account.initial}</span>}
 								<span>
-									<strong>{account.title}</strong>
-									<small data-testid="account-menu-subtitle">{account.subtitle}</small>
+									<strong>{accountTitle}</strong>
+									<small data-testid="account-menu-subtitle">{accountSubtitle}</small>
 								</span>
 							</div>
 							{account.cloudBlockedReason ? (
@@ -495,6 +516,33 @@ export function Sidebar({
 									) : null}
 								</div>
 							) : null}
+							{codexOauthConfigured ? (
+								<>
+									<button
+										type="button"
+										className="account-menu-row account-codex-usage-row"
+										onClick={() => setCodexUsageOpen((value) => !value)}
+										aria-expanded={codexUsageOpen}
+										aria-controls="account-codex-usage-panel"
+										data-testid="account-codex-usage-remaining"
+										role="menuitem"
+									>
+										<ProviderMark kind="openai" className="account-menu-openai-mark" />
+										<span>Codex usage remaining</span>
+										<span className="account-menu-value">{codexRemaining == null ? "Check after a turn" : `${codexRemaining}%`}</span>
+										<SectionChevron open={codexUsageOpen} />
+									</button>
+									{codexUsageOpen ? (
+										<div id="account-codex-usage-panel" className="account-menu-panel account-codex-usage-panel" data-testid="account-codex-usage-panel">
+											{codexUsage ? <>
+												<p className="account-menu-fact"><span>Remaining</span><strong>{codexRemaining}%</strong></p>
+												<p className="account-menu-fact"><span>Resets</span><strong>{codexReset}</strong></p>
+												{codexUsage.planType ? <p className="account-menu-note">{codexUsage.planType} plan allowance</p> : null}
+											</> : <p className="account-menu-note">Run a Codex turn to retrieve your current allowance.</p>}
+										</div>
+									) : null}
+								</>
+							) : null}
 							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); onOpenUsage?.(); }} data-testid="account-open-usage" role="menuitem">
 								<span className="account-menu-glyph" aria-hidden>▤</span><span>Usage</span>
 							</button>
@@ -523,8 +571,10 @@ export function Sidebar({
 						</div>
 					) : null}
 					<button ref={accountTriggerRef} type="button" className="account-trigger" onClick={() => setAccountMenuOpen((value) => !value)} aria-expanded={accountMenuOpen} aria-controls="account-menu-panel" aria-haspopup="menu" data-testid="account-menu-trigger">
-						<span className="account-avatar" aria-hidden>{account.initial}</span>
-						<span className="account-trigger-copy"><strong>{account.title}</strong><small>{account.subtitle}</small></span>
+						{codexOauthConfigured ? (
+							<span className="account-avatar account-avatar-openai" aria-label="OpenAI account"><ProviderMark kind="openai" className="account-openai-mark" /></span>
+						) : <span className="account-avatar" aria-hidden>{account.initial}</span>}
+						<span className="account-trigger-copy"><strong>{accountTitle}</strong><small>{accountSubtitle}</small></span>
 						<span className="account-help" aria-hidden>?</span>
 					</button>
 				</div>

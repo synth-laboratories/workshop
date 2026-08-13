@@ -4,8 +4,8 @@ use super::event_pump::{
 };
 use super::home::{
     apply_brokered_credential, apply_synth_cloud_provider, auto_compact_token_limit,
-    automatic_thread_title, ensure_home, mcp_enabled_tools, multi_agent_flags, nested_id,
-    normalize_gateway_origin, provider_class, requires_disabled_response_storage,
+    automatic_thread_title, ensure_home, mcp_enabled_tools, mcp_ipc_env_key, multi_agent_flags,
+    nested_id, normalize_gateway_origin, provider_class, requires_disabled_response_storage,
     responses_base_url, safe_component, supports_provider_compaction, toml_string,
     validate_reasoning_effort, validate_start, workspace_write_config, ProviderClass,
 };
@@ -56,12 +56,41 @@ fn test_request(workspace: &Path, session_id: &str) -> CodexSessionStartRequest 
         provider_env_key: Some("SYNTH_LAGUNA_API_KEY".into()),
         approval_policy: Some("never".into()),
         sandbox: Some("workspace-write".into()),
+        service_tier: None,
         thread_id: None,
         multi_agent_version: Some(MultiAgentVersion::None),
         auto_compact_token_limit: None,
         writable_roots: Vec::new(),
         broker_credential: false,
     }
+}
+
+#[tokio::test]
+async fn missing_rollout_on_resume_starts_a_replacement_thread() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let mut request = test_request(temp.path(), "stale-thread");
+    request.thread_id = Some("missing-rollout".into());
+    let home = codex_root.join("homes").join("stale-thread");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("reject-thread-resume"), "1").unwrap();
+
+    let info = manager.start(app.handle().clone(), request).await.unwrap();
+    assert_eq!(info.thread_id, "thread-fixture");
+    let requests = fixture_requests(&codex_root, "stale-thread");
+    let methods: Vec<_> = requests
+        .iter()
+        .filter_map(|message| message["method"].as_str())
+        .filter(|method| *method == "thread/resume" || *method == "thread/start")
+        .collect();
+    assert_eq!(methods, vec!["thread/resume", "thread/start"]);
 }
 
 async fn wait_for_record_status(manager: &CodexManager, session_id: &str, expected: &str) {
@@ -978,6 +1007,32 @@ fn advertises_only_the_compact_visual_tool_to_codex() {
         "enabled_tools = [\"optimizer_manage\"]\n"
     );
 }
+
+#[test]
+fn materializes_diagram_skill_with_direct_tool_first_contract() {
+    let temp = tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let home = temp.path().join("home");
+    ensure_home(&home, &test_request(&workspace, "diagram-skill")).unwrap();
+    let skill = fs::read_to_string(home.join("skills/author-synth-diagrams/SKILL.md")).unwrap();
+    assert!(skill.contains("Do not call `resources/list` or `resources/read`"));
+    assert!(skill.contains("does not require template discovery"));
+    assert!(skill.contains("`operation: \"create\"`"));
+    assert!(!skill.contains("\"method\": \"visual_manage\""));
+}
+#[test]
+fn generated_mcp_configs_use_each_adapter_owned_ipc_variable() {
+    assert_eq!(mcp_ipc_env_key("synth_visuals"), "SYNTH_VISUALS_IPC_FILE");
+    assert_eq!(
+        mcp_ipc_env_key("synth_containers"),
+        "SYNTH_DESKTOP_IPC_FILE"
+    );
+    assert_eq!(
+        mcp_ipc_env_key("synth_optimizers"),
+        "SYNTH_DESKTOP_IPC_FILE"
+    );
+}
 #[test]
 fn normalizes_responses_provider_base_url() {
     assert_eq!(
@@ -1077,6 +1132,54 @@ fn synth_cloud_provider_writes_expected_config() {
 }
 
 #[test]
+fn codex_oauth_materializes_private_chatgpt_auth_without_child_env() {
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("oauth-home");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let mut request = test_request(&workspace, "oauth-materialize");
+    request.provider_name = Some(crate::codex_oauth::PROVIDER_ID.into());
+    request.provider_title = Some("ChatGPT subscription (Codex OAuth)".into());
+    request.provider_env_key = None;
+    request.base_url = "https://chatgpt.com/backend-api/codex".into();
+    request.model = "gpt-5.6-luna".into();
+    request.api_key = serde_json::to_string(&crate::codex_oauth::Credential {
+        access_token: "access-secret".into(),
+        refresh_token: "refresh-secret".into(),
+        id_token: "id-secret".into(),
+        expires_ms: 2_000_000_000_000,
+        account_id: "acct_123".into(),
+        account_hint: None,
+        last_refresh_ms: 1_700_000_000_000,
+    })
+    .unwrap();
+
+    ensure_home(&home, &request).unwrap();
+    let config = fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(config.contains("requires_openai_auth = true"));
+    assert!(config.contains("cli_auth_credentials_store = \"file\""));
+    assert!(config.contains("base_url = \"https://chatgpt.com/backend-api/codex\""));
+    assert!(!config.contains("env_key ="));
+    assert!(!config.contains("access-secret"));
+    let auth = fs::read_to_string(home.join("auth.json")).unwrap();
+    assert!(auth.contains("\"auth_mode\": \"chatgpt\""));
+    assert!(auth.contains("access-secret"));
+    assert_eq!(provider_child_env(&request).unwrap(), None);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(home.join("auth.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+}
+
+#[test]
 fn only_synth_cloud_gets_disable_response_storage() {
     let temp = tempdir().unwrap();
     let workspace = temp.path().join("workspace");
@@ -1133,10 +1236,10 @@ fn rejects_auto_compact_limits_outside_the_desktop_range() {
         .to_string()
         .contains("autoCompactTokenLimit"));
     request.auto_compact_token_limit = Some(235_930);
-    assert!(validate_start(&request)
-        .unwrap_err()
-        .to_string()
-        .contains("autoCompactTokenLimit"));
+    assert!(
+        validate_start(&request).is_ok(),
+        "a persisted preference is capped to the model-safe maximum"
+    );
 }
 
 #[test]
@@ -1149,6 +1252,34 @@ fn defaults_luna_and_laguna_s_compaction_to_250k() {
     assert_eq!(auto_compact_token_limit(&request), 250_000);
     request.model = "openai/gpt-5.6-luna".into();
     assert_eq!(auto_compact_token_limit(&request), 250_000);
+}
+
+#[test]
+fn caps_a_shared_compaction_preference_for_smaller_codex_contexts() {
+    let temp = tempdir().unwrap();
+    let mut request = test_request(temp.path(), "compact-terra");
+    request.model = "openai/gpt-5.6-terra".into();
+    request.auto_compact_token_limit = Some(250_000);
+
+    assert_eq!(auto_compact_token_limit(&request), 235_929);
+    assert!(validate_start(&request).is_ok());
+}
+
+#[test]
+fn writes_selected_codex_service_tier() {
+    let temp = tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let mut request = test_request(&workspace, "fast-tier");
+    request.service_tier = Some("fast".into());
+    validate_start(&request).unwrap();
+    let home = temp.path().join("home");
+    ensure_home(&home, &request).unwrap();
+    assert!(fs::read_to_string(home.join("config.toml"))
+        .unwrap()
+        .contains("service_tier = \"fast\""));
+    request.service_tier = Some("turbo".into());
+    assert!(validate_start(&request).is_err());
 }
 
 #[test]

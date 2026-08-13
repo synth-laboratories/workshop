@@ -18,12 +18,28 @@
 
 Pass means a real run in Workshop (or a recorded hosted job Workshop can reopen), connect-before-start, persist-before-publish, no invented fields, no private Evals runner names on public surfaces. Fake JSONL smokes do not pass.
 
+**Result 2026-08-12 evening — receipts in [`receipts/2026-08-12/`](./receipts/2026-08-12/README.md):**
+
+| ID | Result | One line |
+| --- | --- | --- |
+| **A1** | **PASS** | 10/10 paid Luna lanes through Containers HTTP, visual bound before every first paid call, $0.0311 |
+| **A2** | **not done** | Harbor Docker bundle runs agent+verifier as distinct executions, but `harbor_docker.py` has no pinned-bundle path, so nothing reached Workshop |
+| **A3** | **PASS** | two live Banking77 GEPA (Luna vs Sol), disjoint logs, four flips, no stall |
+| **A4** | **PASS** | two hosted Tinker SFT completed in parallel, distinct dataset digests, `costUsd: null` |
+| **A5** | **PASS** | poll ≡ SSE ≡ WS on the paid A1 stream; reopens after the container is gone |
+| **A6** | **partial** | 7/7 structure checks; campaign rollouts score `null` — the container cannot sample a Tinker checkpoint locally |
+| **A7** | out of cut | — |
+| **A8** | **blocked** | `api.digbench.ai` 401; no `DIGBENCH_API_TOKEN` on this machine |
+
+Nine defects were found by running these and fixed in place; they are listed in
+the receipt index. Nothing is committed.
+
 | ID | Test | Pass when |
 | --- | --- | --- |
 | **A1** | **Craftax Luna med 10×** | Same job as today’s CLI slice, launched through Containers with `environment_ref` / `policy_ref` (harness + config) / `task_world` (seeds 0–9) and an explicit stream bind. Workshop visual connected before the first paid call. Poll / SSE (/ WS) equivalent. Spans open/data/close. `capture.closed` then a reconciled Trace V5. This is `CRAFTAX-LUNA-010` / TS-E01. **Containers-first:** `container_compat.md` §12 C3+C7 (engine path in PR CI; `--paid` react on nightly). |
 | **A2** | **Harbor GameBench live** | User registers a Harbor-packaged GameBench task (not a GameBench wire format). Pins at least two policies (e.g. Codex vs Luna). Opens `live.harbor_eval.v1` first. Starts; streams trial/attempt evidence; seals Trace V5. Native vs wrapped verifier agrees. ATIF is a projection, not the log. |
 | **A3** | **Two GEPA instances in parallel** | Banking77, two `algorithm_id: "gepa"` runs at once. Run A proposer = Luna, run B proposer = Sol. Distinct `optimizer_run_id`s, event logs, budgets, Pareto fronts, visuals. Both stay live; flipping the open visual does not stall the other. No crossed usage. Sidecar multiplexes; do not serialize behind a singleton worker. |
-| **A4** | **Two standalone SFT instances in parallel** | Two `algorithm_id: "sft"` runs (optimizers-beta dedicated optimizer, **not** `goex.sft.v1`). Different `dataset_digest`s. Distinct run IDs, logs, checkpoints, visuals. Both in flight, or the second is honestly `queued` on a single accelerator and then starts without corrupting the first log. Two fake Craftax SFT smokes writing JSONL fail this test. Hosted Tinker / OpenAI FT jobs required. |
+| **A4** | **Two standalone SFT instances in parallel** | Two `algorithm_id: "sft"` runs (optimizers-beta dedicated optimizer, **not** `goex.sft.v1`). Different `dataset_digest`s. Distinct run IDs, logs, checkpoints, visuals. Both in flight, or the second is honestly `queued` on a single accelerator and then starts without corrupting the first log. Two fake Craftax SFT smokes writing JSONL fail this test. Hosted Tinker jobs required. The shut-down OpenAI Fine-tuning API is not a substitute. |
 | **A5** | **Durable stream contract** | One append-only log per advertised stream. Request names `poll` / `sse` / `websocket`; server returns what it bound; no silent degrade. Cursor on `GET .../events`. Heartbeats do not advance evidence. Missing sequence / reward / usage / score fail closed (never default to 0). TS-C01…C08 on a reference server. |
 | **A6** | **SFT checkpoint-eval (one job)** | Separate from A4. One hosted multi-checkpoint `sft` run opened before training. Aligned metrics (no parallel-array point clouds). Concurrent checkpoint evaluation campaigns with stable rollout IDs, split roles, promotion ≠ “checkpoint ready.” Reopen after provider/slots are gone. |
 | **A7** | **OpenEnv Echo wrap** | Unmodified Echo image. Native-vs-wrapped fixed actions. Drop the false `checkpointable=True` snapshot claim. Compatibility target only; not a first-class fold. |
@@ -104,11 +120,7 @@ telemetry.retention        run | TTL   (advertised; silent 404 after world_stop 
 
 `auto` is a convenience for headless smoke only. Authoritative / visual-attached runs **name** `poll` / `sse` / `websocket`. If a visual is attached, the bound transport must be SSE or WS plus poll backfill. HTTP 200 on subscribe is not ready — wait for `stream.subscribed`.
 
-**Today (`http_models.py` / `http_adapter.py`):**
-
-- `transport` allows only `sse | websocket | auto`. **Poll is rejected.**
-- `GET /rollouts/{id}/events` dumps `trace.events` / `event_history` with **no cursor**.
-- SSE/WS re-poll `get_execution_state`, emit when the **JSON snapshot changes**, and mint `event_id = local counter`. Snapshot-diff dressed as a stream. Disconnect loses the counter.
+**Containers floor (2026-08-12, in-process PR CI):** poll is required; create-rollout echoes the full stream descriptor (`cursor.kind=sequence`); `GET .../events?after=` is sequence; SSE and WebSocket read the durable log (not snapshot-diff); `telemetry.transport=auto` is refused on authoritative runs; `stream.subscribed` is a non-advancing control record. Suite: `tests/conformance/container_compat/run.py` (C0–C8). Engine ReAct + IsolatedPolicyProcess examples run through that HTTP, not evals gold CLI. Façade is `TargetRuntime` children under `platform/runtimes/`. `deo_nested` parent `/reward` is gate + baseline delta, not a copy of child env-sum. **Not claimed:** paid Luna `craftax_react`, rust gold HTTP, Harbor Docker, live dig.bench token, unmodified Echo image.
 
 **Trace Streaming Profile (Containers owns the kit):** raw envelopes stay immutable; semantic events are a deterministic projection (`trace.opened` → nested `session`/`span` open-data-close → `capture.high_water` / `capture.closed` → `trace.sealing` → `trace.completed` with digest). Representative sequence is in `live_evals.md`. Conformance is TS-A…E (38 tests), not “JSON that looks like events.”
 
@@ -132,16 +144,15 @@ Stop using `env: {}` / `policy: {}` / `task_metadata` bags as the semantic model
 
 ```text
 environment_ref     service + generation + world_revision
-policy_ref          provider, model, effort, api_family, credential_mode (no raw keys)
-harness_ref         revision + loop bounds
+policy_ref          { harness, config, code? }   # no sibling harness_ref
 task_world          { world_id, revision, seed?, split?, role?, extras }
 task_instance_id    content-addressed resolution
-stream              telemetry from §2.1
+stream              telemetry from §2.1 (declared stream.id; slot stream)
 ```
 
 Logical service IDs exist even when all four share a process. That is how Workshop binds a visual to the env stream, Laguna to policy, and an optimizer sidecar to child evals without rewriting the task.
 
-Today’s 10-lane run already split these in practice. None of it is typed on the Containers request. Recommendation: HarnessService is the shared recipe so Evals and Optimizers both run “Luna med 10× Craftax” as one pin.
+Today’s 10-lane run already split these in practice. Containers HTTP now types `world_ref` / `environment_ref` / `policy_ref` `{harness, config, code?}` / `task_instance_id` / declared `stream`. Recipe is that pin — no sibling `HarnessService`.
 
 ### 2.3 Popular evals and formats — blockers
 
@@ -151,7 +162,7 @@ Today’s 10-lane run already split these in practice. None of it is typed on th
 | --- | --- | --- | --- | --- |
 | **Harbor** + ATIF 1.5–1.7 | First-class fold | Capability labels + resource refs. ATIF import/export with declared loss. Public template `live.harbor_eval.v1`. | No launch/lease/supervision. No native-vs-wrapped verifier suite. Agent vs verifier not distinct executions. Snapshot SSE cannot carry live Harbor evidence. | **Yes — finish this fold.** Trial→Attempt, job→EvaluationRun. ATIF is a projection, not the durable log. |
 | **Terminal-Bench / TBLite** | Harbor datasets | None | Inherit Harbor gaps. TBLite calibration is a dataset revision, not a runtime kind. | After Harbor v1, pin public fixtures. |
-| **OpenEnv** | Compatibility target | Labels gym-style + **claims true snapshots** if `checkpointable=True`. Does not wrap unmodified servers. | No gateway. WS lifecycle ≠ producer generations. `state()` ≠ checkpoint. No Echo native-vs-wrapped suite. | **Thin gateway.** `echo_env` then a multi-step official env (Chess tentative). **Drop the false checkpoint claim now.** |
+| **OpenEnv** | Compatibility target | Labels gym-style. **`checkpointable` defaults false; `state()` is not `true_checkpoint`.** | No unmodified-image gateway. WS lifecycle ≠ producer generations. | **Out of this cut.** |
 | **Prime Verifiers** | Compatibility target | **No adapter.** | Preserve Taskset/Harness/Env. Metrics ≠ rewards. Local tests must never `prime eval push`. Pin `primeintellect/gsm8k`. | After Harbor + Echo. |
 | **Inspect AI** | Research / Echo tutorial | None | Third runner. | **Do not fold.** Echo reference path only. |
 | **OpenResponses** | Inspiration | None as a fold | Lifecycle/conformance pattern only. | Adopt discipline in the Trace Streaming Profile. Do not implement OpenResponses as a compatibility layer. |
@@ -162,7 +173,7 @@ Today’s 10-lane run already split these in practice. None of it is typed on th
 | **OpenAI Fine-Tuning API** | Optimizer adapter | Public `SftBackend` + `sft_compat`. Beta: `goex.sft.v1` and standalone SFT path. | Events too thin for checkpoint-rollout viewer. Parallel metric arrays mis-align when sparse. | Adapter over `optimizer_event.v1`, not a second DB. |
 | **Gymnasium** | Overlaps OpenEnv | Profile only | No dataset/evaluators. | Cover via OpenEnv wrapper. |
 | **Harvey LAB, TaxCalcBench, Crosby, PostTrainBench** | Research | None | Ontology already names the pressure. | Phase 8 fixtures. |
-| **dig.bench** | Native content (hosted) | None | Remote session/step API + MCP tools. Two harnesses (basic vs agentic). Text obs, no frames. `get_session` ≠ checkpoint. | **A8 capstone.** Relay + durable log + `live.digbench.v1`. Do not Harbor-wrap. Do not OpenEnv-wrap. |
+| **dig.bench** | Native content (hosted) | C8 `digbench_mock` headless (seven kinds, no frames, `/reward` from status). | Live token + agentic MCP = `--paid` / A8 Desktop. `get_session` ≠ checkpoint. | **A8 capstone.** Do not Harbor-wrap. Do not OpenEnv-wrap. |
 
 ### 2.4 Sidecars + Workshop visuals
 
@@ -207,14 +218,18 @@ Three viewer layers: OpenAI-compatible FT baseline; Synth checkpoint-rollout (pa
 
 ## 4. Implementation cut
 
-0. Freeze wire: rollout-create telemetry + task_world; stream-event trait; no missing-to-zero. Python/Rust fixtures.
-1. Durable rollout log (poll + SSE + optional WS). TS-C01…C08 on a reference server.
-2. First-class env/policy/task_world. Replay today’s Luna med 10× through Containers with a visual connected before step 1 (TS-E01).
-3. Harbor fold v1: one public task, live evidence, verifier equivalence, ATIF projection, `live.harbor_eval.v1`.
-4. OpenEnv Echo unmodified image; native-vs-wrapped fixed actions; drop false checkpoint claims.
-5. Optimizer sidecar skeleton + GEPA live (Banking77) persist-before-publish.
-6. SFT contract (identities, aligned metrics, campaigns). Viewer only if a hosted multi-checkpoint job is actually available.
-7. **A8 dig.bench.** Relay over their Agent REST/MCP. `live.digbench.v1` first. Two policies. Workshop reopen. After A1–A7 contracts exist; this is the joint final, not a parallel first slice.
+Status 2026-08-12. Headless Containers §12 is the ship gate. Desktop / `--paid` / hosted SFT are the then-column.
+
+| Step | Work | Status |
+| --- | --- | --- |
+| 0 | Freeze wire: telemetry + `policy_ref` `{harness,config,code?}`; stream-event trait; missing≠0 | **Done** (docs + containers floor) |
+| 1 | Durable log poll + SSE + optional WS; sequence cursor; `stream.subscribed`; no `auto` | **Done** C1 / A5 headless |
+| 2 | Env/policy/task_world; Craftax 10× through Containers HTTP; visual before step 1 | **Headless done** (`examples/craftax_ten_seeds.py` + C3). Eval driver: prepare → `stream.subscribed` → start. Desktop TS-E01 + paid Luna = nightly |
+| 3 | Harbor fold v1: public fixture, verifier ≡ `/reward` script node, ATIF projection, `live.harbor_eval.v1` | **Fixture + ATIF projection + C4-06 hillclimb DAG done.** Docker Harbor + in-app register = A2 Desktop |
+| 4 | OpenEnv Echo wrap | **Out of this cut.** |
+| 5 | Optimizer sidecar + two GEPA (Banking77) persist-before-publish | **Done — A3 receipt.** Candidate + Pareto projections and `cost_usd` fixed by that run |
+| 6 | Standalone SFT campaigns / aligned metrics | **A4 done** (two hosted Tinker runs, distinct digests). **A6 partial** — campaigns run through `banking77_classify` but score `null`; the container has no local Tinker sampler |
+| 7 | **A8 dig.bench** `live.digbench.v1` first, two harnesses, no frames | **Blocked on `DIGBENCH_API_TOKEN`.** C8 mock headless remains the only path exercised |
 
 Next cut: Prime GSM8K, Chess OpenEnv, private GameBench/CardBench extensions, MAPO/RLVR/OHCO, GEPA on dig.bench.
 

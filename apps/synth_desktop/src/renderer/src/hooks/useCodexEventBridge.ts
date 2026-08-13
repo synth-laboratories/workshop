@@ -9,6 +9,34 @@ import { dispatchRuntimeEvent } from "../stores/sessionStore";
 import type { CodexBridge } from "../bridge";
 import type { DesktopPreferences } from "../preferences";
 
+export type CodexUsageSnapshot = {
+	usedPercent: number;
+	resetsAt: number;
+	windowMinutes?: number;
+	planType?: string;
+};
+
+function codexUsageFromEvent(event: { method: string; params: Record<string, unknown> }): CodexUsageSnapshot | null {
+	if (event.method !== "token_count") return null;
+	const info = event.params.info;
+	if (!info || typeof info !== "object") return null;
+	const rateLimits = (info as Record<string, unknown>).rate_limits;
+	if (!rateLimits || typeof rateLimits !== "object") return null;
+	const limits = rateLimits as Record<string, unknown>;
+	const primary = limits.primary;
+	if (!primary || typeof primary !== "object") return null;
+	const window = primary as Record<string, unknown>;
+	const usedPercent = window.used_percent;
+	const resetsAt = window.resets_at;
+	if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent) || typeof resetsAt !== "number" || !Number.isFinite(resetsAt)) return null;
+	return {
+		usedPercent: Math.max(0, Math.min(100, usedPercent)),
+		resetsAt,
+		windowMinutes: typeof window.window_minutes === "number" ? window.window_minutes : undefined,
+		planType: typeof limits.plan_type === "string" ? limits.plan_type : undefined
+	};
+}
+
 export function useCodexEventBridge(args: {
 	nativeCodex: CodexBridge | undefined;
 	allocateNativeSequence: (sessionId: string) => number;
@@ -19,6 +47,8 @@ export function useCodexEventBridge(args: {
 	autoCompactTokenLimits: DesktopPreferences["agentContext"]["autoCompactTokenLimits"];
 	localBaseUrl: string | undefined;
 	showToast: (message: string) => void;
+	onOauthReauthRequired?: () => void;
+	onCodexUsage?: (usage: CodexUsageSnapshot) => void;
 }): void {
 	const {
 		nativeCodex,
@@ -29,12 +59,20 @@ export function useCodexEventBridge(args: {
 		staleRunFenceRef,
 		autoCompactTokenLimits,
 		localBaseUrl,
-		showToast
+		showToast,
+		onOauthReauthRequired,
+		onCodexUsage
 	} = args;
 
 	useEffect(() => {
 		if (!nativeCodex) return;
 		return nativeCodex.onEvent((event) => {
+			const usage = codexUsageFromEvent(event);
+			if (usage) onCodexUsage?.(usage);
+			if (event.method === "turn/failed" && event.params.code === "codex_oauth_reauth_required") {
+				onOauthReauthRequired?.();
+				showToast("Reconnect ChatGPT subscription in Settings → Models");
+			}
 			const manualCompaction =
 				isCodexCompactionEvent(event) &&
 				manualCompactionPendingRef.current.delete(event.sessionId);
@@ -82,6 +120,8 @@ export function useCodexEventBridge(args: {
 		localBaseUrl,
 		manualCompactionPendingRef,
 		nativeCodex,
+		onOauthReauthRequired,
+		onCodexUsage,
 		queuedCompactionRef,
 		sessionsRef,
 		showToast,

@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Craftax live eval reference</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Live eval reference · Craftax</p>
+        <h1>Policy through time</h1>
+      </div>
+      <div class="connection-state" aria-live="polite">
+        <span id="connection-dot" class="status-dot"></span>
+        <span id="connection-label">Not connected</span>
+      </div>
+    </header>
+
+    <details id="source-panel" class="source-panel" open>
+      <summary>Real stream sources</summary>
+      <form id="stream-form" class="source-form">
+        <label>
+          SSE endpoints
+          <textarea id="stream-input" rows="2" placeholder="One absolute SSE URL per line" aria-label="SSE endpoints"></textarea>
+        </label>
+        <div class="form-actions">
+          <button type="submit" class="primary">Connect</button>
+          <button id="disconnect-button" type="button">Disconnect</button>
+          <span id="source-message" class="hint">No fixture data is loaded.</span>
+        </div>
+      </form>
+
+      <details class="smoke-helper">
+        <summary>Transport smoke helper</summary>
+        <p>Creates and manually steps a real telemetry-enabled rollout. This proves transport and rendering, not ReAct policy behavior.</p>
+        <div class="helper-grid">
+          <label>Container base URL <input id="container-base" value="http://127.0.0.1:8098" aria-label="Container base URL"></label>
+          <label>Seed <input id="rollout-seed" type="number" value="2001" aria-label="Rollout seed"></label>
+          <button id="create-rollout" type="button">Create observed rollout</button>
+          <label>Manual action <select id="manual-action"><option>NOOP</option></select></label>
+          <button id="step-rollout" type="button" disabled>Step once</button>
+        </div>
+      </details>
+    </details>
+
+    <section class="summary-strip" aria-label="Run summary">
+      <div><span>Rollouts</span><strong id="metric-rollouts">—</strong></div>
+      <div><span>Selected step</span><strong id="metric-step">—</strong></div>
+      <div><span>Reward</span><strong id="metric-reward">—</strong></div>
+      <div><span>Achievements</span><strong id="metric-achievements">—</strong></div>
+      <div><span>Policy cost</span><strong id="metric-cost">unavailable</strong></div>
+      <div><span>Runtime</span><strong id="metric-runtime">unreported</strong></div>
+    </section>
+
+    <nav id="lane-list" class="lane-list" aria-label="Rollouts"></nav>
+
+    <section class="workspace">
+      <article class="game-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Selected rollout</p>
+            <h2 id="selected-rollout">Waiting for events</h2>
+          </div>
+          <span id="selected-status" class="state-label">waiting</span>
+        </div>
+        <div class="frame-wrap">
+          <img id="game-frame" alt="Craftax gameplay frame" hidden>
+          <pre id="ascii-frame" aria-label="Craftax symbolic gameplay frame" hidden></pre>
+          <div id="frame-empty" class="empty-frame">A real frame will appear with the first snapshot.</div>
+          <div class="frame-caption">
+            <span id="frame-step">step —</span>
+            <span id="frame-time">time —</span>
+          </div>
+        </div>
+        <div class="frame-replay" data-visual-landmark="image-replay">
+          <div><strong>Image replay</strong><span id="frame-count">0 PNG frames from Containers</span></div>
+          <button id="frame-play" type="button" disabled>Play video</button>
+          <select id="frame-speed" aria-label="Image replay speed">
+            <option value="2">2 fps</option><option value="4" selected>4 fps</option><option value="8">8 fps</option><option value="12">12 fps</option>
+          </select>
+          <input id="frame-timeline" aria-label="Replay gameplay frames" type="range" min="0" max="0" value="0" disabled>
+        </div>
+      </article>
+
+      <aside class="detail-panel">
+        <section>
+          <p class="eyebrow">Policy</p>
+          <div class="policy-title">
+            <h2 id="policy-model">Unavailable</h2>
+            <span id="policy-effort"></span>
+          </div>
+          <dl class="details">
+            <div><dt>Provider</dt><dd id="policy-provider">—</dd></div>
+            <div><dt>Call</dt><dd id="policy-call">—</dd></div>
+            <div><dt>Action</dt><dd id="policy-action">not emitted</dd></div>
+            <div><dt>Latency</dt><dd id="policy-latency">—</dd></div>
+            <div><dt>Tokens</dt><dd id="policy-tokens">—</dd></div>
+          </dl>
+          <p id="policy-note" class="note">The native Craftax stream does not currently include policy calls. A normalized ReAct stream can fill this panel without changing the visual.</p>
+        </section>
+        <section>
+          <p class="eyebrow">Environment</p>
+          <dl id="vitals" class="details"></dl>
+          <div>
+            <h3>Resources &amp; gear</h3>
+            <div id="inventory" class="token-list"><span class="muted">No carried resources</span></div>
+          </div>
+          <div id="attributes-block" hidden>
+            <h3>Full-mode attributes</h3>
+            <div id="attributes" class="token-list"></div>
+          </div>
+          <div>
+            <h3>Achievements</h3>
+            <div id="achievement-list" class="token-list"><span class="muted">None yet</span></div>
+          </div>
+        </section>
+      </aside>
+    </section>
+
+    <section class="timeline-panel">
+      <div class="timeline-heading">
+        <div>
+          <p class="eyebrow">Evaluation time</p>
+          <h2 id="timeline-label">Waiting for the first event</h2>
+        </div>
+        <div class="replay-actions">
+          <button id="play-button" type="button" disabled>Play</button>
+          <select id="speed-select" aria-label="Replay speed">
+            <option value="0.5">0.5×</option>
+            <option value="1" selected>1×</option>
+            <option value="2">2×</option>
+            <option value="4">4×</option>
+          </select>
+          <button id="live-button" type="button" disabled>Follow live</button>
+        </div>
+      </div>
+      <input id="timeline" type="range" min="0" max="0" value="0" disabled aria-label="Replay evaluation through time">
+      <div class="timeline-ends"><span id="timeline-start">—</span><span id="timeline-end">—</span></div>
+    </section>
+
+    <section class="plots">
+      <article>
+        <div class="panel-heading">
+          <div><p class="eyebrow">Selected rollout</p><h2>Cumulative reward</h2></div>
+          <strong id="reward-value">—</strong>
+        </div>
+        <svg id="reward-chart" viewBox="0 0 640 190" role="img" aria-label="Cumulative reward by environment step"></svg>
+      </article>
+      <article>
+        <div class="panel-heading">
+          <div><p class="eyebrow">Selected rollout</p><h2>Achievements through time</h2></div>
+          <strong id="achievement-value">—</strong>
+        </div>
+        <svg id="achievement-chart" viewBox="0 0 640 190" role="img" aria-label="Cumulative achievements by environment step"></svg>
+      </article>
+    </section>
+
+    <section class="activity-panel">
+      <div class="panel-heading">
+        <div><p class="eyebrow">Ordered evidence</p><h2>Recent activity</h2></div>
+        <span id="event-count">0 events</span>
+      </div>
+      <ol id="activity-list"></ol>
+    </section>
+
+    <section class="trace-panel">
+      <div class="panel-heading">
+        <div><p class="eyebrow">Same temporal cutoff</p><h2>Trace V5 viewer</h2></div>
+        <div class="trace-heading-actions">
+          <button id="trace-focus" type="button" aria-pressed="false">Policy focus</button>
+          <button id="trace-full" type="button" aria-pressed="true">Full trace</button>
+          <span id="trace-status" class="trace-status" role="status" aria-live="polite">Waiting · unsealed</span>
+        </div>
+      </div>
+      <p id="trace-summary" class="trace-mode-summary">All ordered lifecycle, observation, image, policy, action, reward, status, and reconciliation events at this cutoff.</p>
+      <div class="trace-layout">
+        <ol id="trace-list" aria-label="Trace events"></ol>
+        <aside class="trace-detail">
+          <p class="eyebrow">Selected event</p>
+          <h3 id="trace-detail-title">Nothing selected</h3>
+          <dl id="trace-detail-fields" class="details"></dl>
+          <div class="trace-io" aria-label="Model interaction details">
+            <section><h4>Input</h4><pre id="trace-input">not emitted</pre></section>
+            <section><h4>Thinking</h4><pre id="trace-thinking">not emitted</pre></section>
+            <section><h4>Output</h4><pre id="trace-output">not emitted</pre></section>
+            <section><h4>Tool calls</h4><pre id="trace-tools">not emitted</pre></section>
+          </div>
+          <details class="trace-raw"><summary>Raw event payload</summary><pre id="trace-detail-json">Structural fields appear here.</pre></details>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>

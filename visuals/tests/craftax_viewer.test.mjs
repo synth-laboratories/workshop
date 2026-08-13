@@ -1,0 +1,277 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  craftaxEventSequence,
+  craftaxTruthLabel,
+  craftaxTruthState,
+  groupTraceByStep,
+  policyPartialDetail,
+  projectCraftaxSemanticTrace,
+  projectCraftaxViewer,
+  scopeCraftaxEvents,
+  semanticCheckpointIndexes,
+} from "../templates/live.craftax.v1/projectCraftax.ts";
+
+function event(lane, kind, sequence, payload = {}, second = sequence) {
+  return {
+    schema: "synth.trace-stream-event.v1",
+    run_id: lane,
+    lane,
+    kind,
+    sequence,
+    ts: `2026-08-12T17:00:${String(second).padStart(2, "0")}.000Z`,
+    payload,
+  };
+}
+
+test("Craftax viewer isolates the selected lane in a time-ordered multiplex", () => {
+  const events = [
+    event("seed:1", "trace.opened", 1, {}, 1),
+    event("seed:0", "trace.opened", 1, {}, 0),
+    event("seed:1", "reward_signal", 2, { step: 1, value: 5 }, 3),
+    event("seed:0", "reward_signal", 2, { step: 1, value: 0.5 }, 2),
+  ];
+  const first = projectCraftaxViewer(events);
+  assert.deepEqual(first.lanes, ["seed:0", "seed:1"]);
+  assert.equal(first.selectedLane, "seed:0");
+  assert.ok(first.visibleEvents.every((row) => row.lane === "seed:0"));
+  assert.equal(first.reward, 0.5);
+
+  const second = projectCraftaxViewer(events, "seed:1");
+  assert.ok(second.visibleEvents.every((row) => row.lane === "seed:1"));
+  assert.equal(second.reward, 5);
+});
+
+test("through-time cutoff hides future policy, reward, frame, and achievement evidence", () => {
+  const events = [
+    event("seed:0", "trace.opened", 1),
+    event("seed:0", "observation", 2, { grid: "P....\n..T..", readout: { wood: 0 } }),
+    event("seed:0", "frame", 3, { digest: "frame-0", format: "ascii" }),
+    event("seed:0", "span.policy.opened", 4, { harness: "react", call: { provider: "openrouter", model: "meta/muse-spark-1.1" } }),
+    event("seed:0", "span.policy.data", 5, { reasoning: "move to tree", actions: ["east"], usage: { total_tokens: 13 } }),
+    event("seed:0", "span.policy.plan", 6, { actions: ["east", "do"], length: 2 }),
+    event("seed:0", "span.policy.closed", 7, { length: 2 }),
+    event("seed:0", "action", 8, { step: 1, action: "east" }),
+    event("seed:0", "reward_signal", 9, { step: 1, value: 0.5 }),
+    event("seed:0", "observation", 10, { grid: ".P...\n..T..", readout: { achievements: { collect_wood: true, collect_stone: false } } }),
+    event("seed:0", "frame", 11, { digest: "frame-1", format: "png", url: "/artifacts/frame-1" }),
+    event("seed:0", "status", 12, { status: "completed" }),
+  ];
+
+  const early = projectCraftaxViewer(events, "seed:0", 4);
+  assert.equal(early.visibleEvents.at(-1).kind, "span.policy.data");
+  assert.equal(early.reward, undefined);
+  assert.deepEqual(early.achievements, []);
+  assert.equal(early.frameUrl, null);
+  assert.equal(early.frameEvents.length, 1);
+  assert.equal(early.ascii, "P....\n..T..");
+  assert.equal(early.policy.reasoning, "move to tree");
+  assert.deepEqual(early.policy.actions, ["east"]);
+
+  const complete = projectCraftaxViewer(events, "seed:0");
+  assert.equal(complete.reward, 0.5);
+  assert.deepEqual(complete.achievements, ["collect_wood"]);
+  assert.equal(complete.frameUrl, "/artifacts/frame-1");
+  assert.deepEqual(complete.frameEvents.map((frame) => frame.payload.url), ["/artifacts/frame-1"]);
+  assert.equal(complete.ascii, null);
+  assert.equal(complete.frameUnavailable, false);
+  assert.deepEqual(complete.policy.actions, ["east", "do"]);
+  assert.equal(complete.traceEvents.length, 4);
+  assert.equal(complete.terminal, true);
+  assert.equal(early.terminal, false);
+});
+
+test("image replay uses only ordered frame URLs emitted by Containers", () => {
+  const view = projectCraftaxViewer([
+    event("seed:0", "frame", 1, { digest: "digest-only", format: "png" }),
+    event("seed:0", "frame", 2, { digest: "frame-0", format: "png", url: "http://container/frames/0.png", step: 0 }),
+    event("seed:0", "observation", 3, { grid: "P..." }),
+    event("seed:0", "frame", 4, { digest: "frame-1", format: "png", url: "http://container/frames/1.png", step: 1 }),
+  ]);
+  assert.deepEqual(view.frameEvents.map((frame) => frame.payload.url), [
+    "http://container/frames/0.png",
+    "http://container/frames/1.png",
+  ]);
+  assert.equal(view.frameUrl, "http://container/frames/1.png");
+});
+
+test("real ReAct policy partials expose metadata, data, plan, usage, and fallback", () => {
+  const events = [
+    event("seed:0", "span.policy.opened", 1, {
+      harness: "react",
+      call: { provider: "openrouter", model: "meta/muse-spark-1.1", config: "muse_spark_medium" },
+    }),
+    event("seed:0", "span.policy.data", 2, {
+      assistant: "",
+      reasoning: "Need wood first",
+      tool_arguments: '{"actions":["east","do"]}',
+      actions: ["east", "do"],
+      action_authority: "harness_fallback",
+      fallback: true,
+      parse_error: "policy returned no valid Craftax actions",
+      usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13, cost_usd: null },
+      prior_attempts: [{ usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6, cost_usd: 0.01 } }],
+    }),
+    event("seed:0", "span.policy.plan", 3, { actions: ["east", "do"], length: 2 }),
+    event("seed:0", "span.policy.closed", 4, { length: 2 }),
+  ];
+  const view = projectCraftaxViewer(events);
+  assert.equal(view.policy.provider, "openrouter");
+  assert.equal(view.policy.model, "meta/muse-spark-1.1");
+  assert.equal(view.policy.reasoning, "Need wood first");
+  assert.equal(view.policy.toolArguments, '{"actions":["east","do"]}');
+  assert.equal(view.policy.actionAuthority, "harness_fallback");
+  assert.equal(view.policy.fallback, true);
+  assert.match(view.policy.parseError, /no valid Craftax actions/);
+  assert.deepEqual(view.policy.usage, {
+    prompt_tokens: 14,
+    completion_tokens: 5,
+    total_tokens: 19,
+    cost_usd: 0.01,
+  });
+  assert.equal(policyPartialDetail(events[0]), "openrouter · meta/muse-spark-1.1 · react");
+  assert.equal(policyPartialDetail(events[2]), "east → do");
+  assert.equal(policyPartialDetail(events[3]), "2 planned actions");
+});
+
+test("token deltas accumulate when the snapshot reasoning is empty and do not double-count usage", () => {
+  const events = [
+    event("seed:0", "span.policy.opened", 1, { harness: "react", call: { provider: "openrouter", model: "gpt-5.6-luna" } }),
+    event("seed:0", "span.policy.data", 2, { delta: true, channel: "reasoning", text: "" }),
+    event("seed:0", "span.policy.data", 3, { delta: true, channel: "tool", text: '{"actions":["do"]}' }),
+    event("seed:0", "span.policy.data", 4, {
+      assistant: "",
+      reasoning: "",
+      tool_arguments: '{"actions":["do"]}',
+      actions: ["do"],
+      action_authority: "policy",
+      usage: { total_tokens: 13 },
+    }),
+    event("seed:0", "span.policy.plan", 5, { actions: ["do"], length: 1 }),
+  ];
+  const view = projectCraftaxViewer(events);
+  assert.equal(view.policy.reasoning, undefined);
+  assert.equal(view.policy.toolArguments, '{"actions":["do"]}');
+  assert.deepEqual(view.policy.usage, { total_tokens: 13 });
+  assert.equal(policyPartialDetail(events[2]), 'tool Δ {"actions":["do"]}');
+  assert.equal(policyPartialDetail(events[1]), "reasoning Δ");
+});
+
+test("missing Craftax values remain missing and sequence_number aliases are honored", () => {
+  const missing = projectCraftaxViewer([
+    event("seed:0", "observation", 1, { readout: { energy: 3 } }),
+    event("seed:0", "reward_signal", 2, { step: 1, value: null }),
+    event("seed:0", "status", 3, { status: "completed" }),
+  ]);
+  assert.equal(missing.reward, undefined);
+  assert.equal(missing.cumulativeReward, undefined);
+  assert.deepEqual(missing.achievements, []);
+  assert.deepEqual(missing.policy.usage, {});
+  assert.equal(missing.frameUrl, null);
+  assert.equal(missing.ascii, null);
+  assert.equal(missing.frameUnavailable, false);
+
+  const alias = { ...event("seed:0", "action", null, {}), sequence_number: "9" };
+  assert.equal(craftaxEventSequence(alias, 0), 9);
+});
+
+test("V4 truth states distinguish missing, zero, tool-only, redacted, and failed", () => {
+  assert.equal(craftaxTruthState(undefined), "pending");
+  assert.equal(craftaxTruthState(undefined, { terminal: true }), "not_emitted");
+  assert.equal(craftaxTruthState(undefined, { applicable: false }), "not_applicable");
+  assert.equal(craftaxTruthState("[REDACTED]"), "redacted");
+  assert.equal(craftaxTruthState(undefined, { failed: true }), "failed");
+  assert.equal(craftaxTruthState(0, { terminal: true }), "present");
+  assert.equal(craftaxTruthLabel("not_applicable"), "not applicable");
+});
+
+test("V1 folds hundreds of policy deltas into one semantic call with full interaction", () => {
+  const deltas = Array.from({ length: 330 }, (_, index) => event("seed:0", "span.policy.data", index + 3, {
+    call: 1,
+    delta: true,
+    channel: index < 280 ? "reasoning" : "tool",
+    text: index < 280 ? "r" : "t",
+  }, index + 3));
+  const raw = [
+    event("seed:0", "observation", 1, { readout: { observation_text: "real input" } }, 1),
+    event("seed:0", "span.policy.opened", 2, { call: { provider: "openrouter", model: "gpt-5.6-luna" } }, 2),
+    ...deltas,
+    event("seed:0", "span.policy.data", 333, {
+      call: 1,
+      reasoning: "complete reasoning",
+      tool_arguments: '{"actions":["do"]}',
+      actions: ["do"],
+    }, 59),
+    event("seed:0", "span.policy.plan", 334, { actions: ["do"] }, 59),
+    event("seed:0", "span.policy.closed", 335, { length: 1 }, 59),
+  ];
+  const semantic = projectCraftaxSemanticTrace(raw);
+  assert.equal(semantic.length, 1);
+  assert.equal(semantic[0].kind, "policy.call");
+  assert.equal(semantic[0].rawEvents.length, 334);
+  assert.equal(semantic[0].interaction.input, "real input");
+  assert.equal(semantic[0].interaction.thinking, "complete reasoning");
+  assert.equal(semantic[0].interaction.tools, '{"actions":["do"]}');
+  assert.equal(semantic[0].interaction.responseType, "tool_call");
+  assert.match(semantic[0].label, /call 1.*do/);
+});
+
+test("V2 semantic trace orders calls, environment steps, achievements, and closure", () => {
+  const semantic = projectCraftaxSemanticTrace([
+    event("seed:0", "trace.opened", 1),
+    event("seed:0", "span.policy.opened", 2, { call: { model: "luna" } }),
+    event("seed:0", "span.policy.data", 3, { call: 1, assistant: "move" }),
+    event("seed:0", "span.policy.closed", 4, {}),
+    event("seed:0", "span.step.closed", 5, { step: 1, action: "up" }),
+    event("seed:0", "achievement_unlocked", 6, { step: 1, achievement: "collect_wood" }),
+    event("seed:0", "capture.closed", 7, { high_water: 6 }),
+  ]);
+  assert.deepEqual(semantic.map((item) => item.kind), [
+    "trace.opened", "policy.call", "environment.step", "achievement_unlocked", "capture.closed",
+  ]);
+  assert.equal(semantic[1].interaction.responseType, "text");
+  assert.equal(semantic[2].step, 1);
+  const groups = groupTraceByStep(semantic);
+  assert.ok(groups.some((group) => group.label === "Step 1"));
+});
+
+test("A13 visual scope refuses unrelated rollouts sharing one producer root", () => {
+  const rows = [
+    event("campaign-a:0", "observation", 1, {}),
+    event("campaign-a:1", "observation", 1, {}),
+    event("unrelated:0", "reward_signal", 1, { value: 999 }),
+  ];
+  const scoped = scopeCraftaxEvents(rows, ["campaign-a:0", "campaign-a:1"]);
+  assert.deepEqual(scoped.map((row) => row.lane), ["campaign-a:0", "campaign-a:1"]);
+  assert.ok(!JSON.stringify(scoped).includes("999"));
+});
+
+test("V2 replay checkpoints skip token deltas and observations", () => {
+  const rows = [
+    event("seed:0", "trace.opened", 1),
+    event("seed:0", "observation", 2, {}),
+    event("seed:0", "span.policy.opened", 3, {}),
+    ...Array.from({ length: 1000 }, (_, index) => event("seed:0", "span.policy.data", index + 4, { delta: true, channel: "reasoning", text: "x" })),
+    event("seed:0", "span.policy.closed", 1004, {}),
+    event("seed:0", "span.step.closed", 1005, { step: 1 }),
+  ];
+  const checkpoints = semanticCheckpointIndexes(rows);
+  assert.deepEqual(checkpoints, [0, 2, 1003, 1004]);
+  assert.ok(checkpoints.length < rows.length / 100);
+});
+
+test("missing PNG stays unavailable and does not fall back to ASCII", () => {
+  const missingPng = projectCraftaxViewer([
+    event("seed:0", "observation", 1, { grid: "P....\n..T.." }),
+    event("seed:0", "frame", 2, { format: "png" }),
+  ]);
+  assert.equal(missingPng.frameUrl, null);
+  assert.equal(missingPng.ascii, null);
+  assert.equal(missingPng.frameUnavailable, true);
+
+  const fixtureAscii = projectCraftaxViewer([
+    event("seed:0", "frame", 1, { format: "ascii", text: "P....\n..T.." }),
+  ]);
+  assert.equal(fixtureAscii.ascii, "P....\n..T..");
+  assert.equal(fixtureAscii.frameUnavailable, false);
+});

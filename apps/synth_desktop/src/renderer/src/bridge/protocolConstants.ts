@@ -20,7 +20,8 @@ export const EVENT_CHANNELS = {
 	LAGUNA_DOWNLOAD: "laguna:download",
 	LAGUNA_INFERENCE: "laguna:inference",
 	WHISPER_RUNTIME: "whisper:runtime",
-	WHISPER_DOWNLOAD: "whisper:download"
+	WHISPER_DOWNLOAD: "whisper:download",
+	OPTIMIZER_STATUS: "optimizer:status"
 } as const;
 
 export type EventChannelName = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
@@ -59,6 +60,11 @@ export const COMMANDS = {
 	ACCOUNT_GET_SUMMARY: "account_get_summary",
 	ACCOUNT_REFRESH: "account_refresh",
 	ACCOUNT_OPEN_BILLING: "account_open_billing",
+	CODEX_OAUTH_BEGIN: "codex_oauth_begin",
+	CODEX_OAUTH_COMPLETE_MANUAL: "codex_oauth_complete_manual",
+	CODEX_OAUTH_STATUS: "codex_oauth_status",
+	CODEX_OAUTH_DISCONNECT: "codex_oauth_disconnect",
+	CODEX_OAUTH_CANCEL: "codex_oauth_cancel",
 	SYNTH_CONFIG_GET: "synth_config_get",
 	SYNTH_CONFIG_UPDATE: "synth_config_update",
 	MODEL_MULTI_AGENT_LIST: "model_multi_agent_list",
@@ -125,6 +131,10 @@ export const COMMANDS = {
 	VISUALS_FORK: "visuals_fork",
 	VISUALS_ARCHIVE: "visuals_archive",
 	VISUALS_SHOW: "visuals_show",
+	VISUALS_CONTENT: "visuals_content",
+	VISUALS_RENDITIONS: "visuals_renditions",
+	VISUALS_RENDITION: "visuals_rendition",
+	VISUALS_RENDER: "visuals_render",
 	OPTIMIZERS_ALGORITHMS_LIST: "optimizers_algorithms_list",
 	OPTIMIZERS_RECIPES_LIST: "optimizers_recipes_list",
 	OPTIMIZERS_RECIPE_START: "optimizers_recipe_start",
@@ -142,6 +152,12 @@ export const COMMANDS = {
 	OPTIMIZERS_IMPORT_LOCAL: "optimizers_import_local",
 	OPTIMIZERS_RECONCILE_CLOUD: "optimizers_reconcile_cloud",
 	OPTIMIZERS_LIST_CLOUD: "optimizers_list_cloud",
+	OPTIMIZER_SIDECAR_STATUS: "optimizer_sidecar_status",
+	OPTIMIZER_SIDECAR_INSTALL: "optimizer_sidecar_install",
+	OPTIMIZER_SIDECAR_START: "optimizer_sidecar_start",
+	OPTIMIZER_SIDECAR_STOP: "optimizer_sidecar_stop",
+	OPTIMIZER_SIDECAR_VERSION: "optimizer_sidecar_version",
+	OPTIMIZER_SIDECAR_UNINSTALL: "optimizer_sidecar_uninstall",
 	DESKTOP_IMAGE_PREVIEW: "desktop_image_preview",
 	DESKTOP_INSTANCE_DIAGNOSTICS: "desktop_instance_diagnostics",
 	WORKSPACE_CHOOSE_DIRECTORY: "workspace_choose_directory",

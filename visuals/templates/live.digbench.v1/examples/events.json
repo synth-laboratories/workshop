@@ -1,0 +1,76 @@
+{
+  "schema": "synth.trace-stream-event.v1",
+  "run_id": "digbench_p1",
+  "events": [
+    {
+      "ts": "2026-08-12T17:10:00.000Z",
+      "run_id": "digbench_p1",
+      "kind": "stream.subscribed",
+      "sequence": null,
+      "payload": { "stream.id": "stream_digbench_p1", "next_sequence": 1 }
+    },
+    {
+      "ts": "2026-08-12T17:10:00.100Z",
+      "run_id": "digbench_p1",
+      "kind": "trace.opened",
+      "sequence": 1,
+      "payload": { "rollout_id": "digbench_p1" }
+    },
+    {
+      "ts": "2026-08-12T17:10:00.200Z",
+      "run_id": "digbench_p1",
+      "kind": "start_session",
+      "sequence": 2,
+      "payload": { "game": "P-1", "session_id": "digbench_p1" }
+    },
+    {
+      "ts": "2026-08-12T17:10:00.300Z",
+      "run_id": "digbench_p1",
+      "kind": "session.opened",
+      "sequence": 3,
+      "payload": { "game": "P-1", "session_id": "digbench_p1" }
+    },
+    {
+      "ts": "2026-08-12T17:10:00.400Z",
+      "run_id": "digbench_p1",
+      "kind": "observation",
+      "sequence": 4,
+      "payload": { "text": "A locked door. Legal: inspect, wait." }
+    },
+    {
+      "ts": "2026-08-12T17:10:00.500Z",
+      "run_id": "digbench_p1",
+      "kind": "legal_actions",
+      "sequence": 5,
+      "payload": { "actions": ["inspect", "wait"] }
+    },
+    {
+      "ts": "2026-08-12T17:10:00.600Z",
+      "run_id": "digbench_p1",
+      "kind": "stats",
+      "sequence": 6,
+      "payload": { "lives": 3, "level": 1, "steps_remaining": 20 }
+    },
+    {
+      "ts": "2026-08-12T17:10:00.700Z",
+      "run_id": "digbench_p1",
+      "kind": "invalid_action",
+      "sequence": 7,
+      "payload": { "action": "fly", "reason": "not_legal" }
+    },
+    {
+      "ts": "2026-08-12T17:10:00.800Z",
+      "run_id": "digbench_p1",
+      "kind": "action",
+      "sequence": 8,
+      "payload": { "action": "inspect" }
+    },
+    {
+      "ts": "2026-08-12T17:10:00.900Z",
+      "run_id": "digbench_p1",
+      "kind": "status",
+      "sequence": 9,
+      "payload": { "status": "running" }
+    }
+  ]
+}

@@ -45,6 +45,11 @@ pub(crate) const CREDENTIAL_ENV_NAMES: &[&str] =
 pub(crate) fn provider_child_env(
     request: &CodexSessionStartRequest,
 ) -> Result<Option<(String, String)>> {
+    if super::home::provider_class(request.provider_name.as_deref())
+        == super::home::ProviderClass::OpenaiCodexOauth
+    {
+        return Ok(None);
+    }
     if request.api_key.is_empty() {
         return Ok(None);
     }
@@ -82,6 +87,7 @@ pub(crate) struct EventPumpState {
     pub performance_trackers: PerformanceTrackers,
     pub receipts: Arc<crate::credential_broker::ReceiptStore>,
     pub attachment_id: uuid::Uuid,
+    pub codex_oauth: bool,
 }
 
 /// Spawn the Codex app-server and attach the stdout event pump.
@@ -145,6 +151,7 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
     tauri::async_runtime::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            let line = crate::codex_oauth::redact_text(&line);
             stderr_persistence
                 .notify_codex_event(&app, sid.clone(), "app-server/stderr", json!({"line":line}))
                 .await;
@@ -182,11 +189,15 @@ async fn read_stdout<R: tauri::Runtime>(
         }
         let raw_method = message["method"].as_str().unwrap_or_default();
         let mut params = message.get("params").cloned().unwrap_or(Value::Null);
+        crate::codex_oauth::redact_event_value(&mut params);
         // Some Responses-compatible servers report a terminal envelope as
         // `turn/completed` even when the enclosed turn has failed. Preserve
         // the actual outcome: otherwise the transcript says “Worked” while
         // there is no answer to show.
         let method = normalized_turn_method(raw_method, &params).to_owned();
+        if persistence.codex_oauth && method == "turn/failed" {
+            normalize_oauth_failure(&mut params);
+        }
         if is_context_compaction_notification(&method, &params) {
             if let Some(source) = persistence
                 .pending_compact_sources
@@ -429,6 +440,47 @@ async fn read_stdout<R: tauri::Runtime>(
     let mut pending = pending.lock().await;
     for (_, sender) in pending.drain() {
         let _ = sender.send(Err(STDOUT_CLOSED.into()));
+    }
+}
+
+fn normalize_oauth_failure(params: &mut Value) {
+    let lower = params.to_string().to_ascii_lowercase();
+    let (code, message) =
+        if lower.contains("usage_limit") || lower.contains("quota") || lower.contains("rate limit")
+        {
+            (
+                "codex_oauth_usage_limit",
+                "Your ChatGPT Codex plan allowance is currently unavailable.",
+            )
+        } else if lower.contains("401")
+            || lower.contains("unauthorized")
+            || lower.contains("revoked")
+            || lower.contains("authentication")
+        {
+            (
+                "codex_oauth_reauth_required",
+                "Reconnect ChatGPT subscription in Settings → Models.",
+            )
+        } else {
+            return;
+        };
+    *params = json!({"code": code, "message": message});
+}
+
+#[cfg(test)]
+mod oauth_failure_tests {
+    use super::*;
+
+    #[test]
+    fn maps_auth_and_quota_failures_to_stable_codes() {
+        let mut auth = json!({"error":{"message":"401 Unauthorized"}});
+        normalize_oauth_failure(&mut auth);
+        assert_eq!(auth["code"], "codex_oauth_reauth_required");
+        assert!(!auth.to_string().contains("401"));
+
+        let mut quota = json!({"error":{"type":"usage_limit"}});
+        normalize_oauth_failure(&mut quota);
+        assert_eq!(quota["code"], "codex_oauth_usage_limit");
     }
 }
 

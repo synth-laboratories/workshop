@@ -177,6 +177,8 @@ A1 in Desktop is TS-E01 on top of Containers C3. Fake JSONL smokes do not pass.
 - A4: two hosted jobs, different `dataset_digest`s, multiplex or honest `queued`. Not `goex.sft.v1`. Not two fake Craftax JSONL smokes.
 - A6: one multi-checkpoint job, visual **open before training**. Aligned metrics (no sparse parallel-array point clouds). Checkpoint eval campaigns = sets of Containers rollouts. Promotion ≠ “checkpoint ready.” Reopen after provider/slots are gone.
 
+Implementation spec: [`optimizers_beta_sft.md`](./optimizers_beta_sft.md). Recipe `sft.craftax.nemotron-nano.tinker.v1`.
+
 ---
 
 ## Acceptance cheat sheet

@@ -1,0 +1,473 @@
+{
+  "schema": "synth.workshop.a3-receipt.v1",
+  "test": "A3 \u2014 two live Banking77 GEPA (Luna vs Sol)",
+  "lanes": {
+    "luna": {
+      "recipeId": "gepa.banking77.luna.v1",
+      "optimizerRunId": "banking77_gepa_luna_med_0dac3949",
+      "algorithmId": "gepa",
+      "status": "completed",
+      "visualRefs": [
+        {
+          "id": "vis_d1c1892d064d4a9bbcac125933e15fa0",
+          "kind": "visual",
+          "metadata": {
+            "templateId": "optimizer.gepa.live.v1"
+          },
+          "role": "primary",
+          "title": "GEPA \u00b7 Banking77 intent prompt \u00b7 bounded GEPA \u00b7 Luna medium"
+        }
+      ],
+      "inputRefs": [
+        {
+          "id": "banking77",
+          "kind": "dataset",
+          "metadata": {
+            "heldoutRows": 50,
+            "trainRows": 50
+          },
+          "role": "train_and_heldout",
+          "title": "Banking77 (cookbook-pinned loader)"
+        },
+        {
+          "id": "gepa.banking77.luna.v1",
+          "kind": "recipe",
+          "metadata": {
+            "maxCostUsd": 2.45,
+            "maxGenerations": 1,
+            "maxHeldoutRollouts": 100,
+            "maxTotalRollouts": 240,
+            "maxTrainRollouts": 140,
+            "minibatchSize": 20,
+            "proposalsPerGeneration": 1,
+            "proposerEstimatedCostUsd": 0.05,
+            "rolloutEstimatedCostUsd": 0.01
+          },
+          "role": "configuration",
+          "title": "Bounded Banking77 GEPA \u00b7 Luna medium"
+        },
+        {
+          "id": "luna_med",
+          "kind": "policy_ref",
+          "metadata": {
+            "config": "luna_med",
+            "harness": "gepa_proposer"
+          },
+          "role": "proposer",
+          "title": "GEPA proposer \u00b7 Luna medium"
+        },
+        {
+          "id": "banking77_candidate",
+          "kind": "policy_ref",
+          "metadata": {
+            "config": "candidate",
+            "harness": "banking77_eval"
+          },
+          "role": "evaluator",
+          "title": "Banking77 candidate evaluator"
+        }
+      ],
+      "usage": {
+        "completionTokens": 1040,
+        "costUsd": 0.0,
+        "extra": {},
+        "promptTokens": 319083,
+        "rollouts": 240,
+        "wallTimeMs": 222833
+      },
+      "eventCount": 13270,
+      "eventKinds": [
+        ""
+      ],
+      "slices": {
+        "gepa.candidates": {
+          "candidates": []
+        },
+        "gepa.frontier": {
+          "cells": []
+        },
+        "gepa.reflections": {
+          "entries": [
+            {
+              "delta": {
+                "backend": "codex_app_server",
+                "cost_usd": 0.0,
+                "generation": 0,
+                "message": "Proposer returned candidates",
+                "model": "gpt-5.6-luna",
+                "proposal_count": 1,
+                "provider": "openai",
+                "runtime_substrate": "local",
+                "warning_count": 1,
+                "warnings": [
+                  "proposal appears to quote training example text from train:20; GEPA candidates should generalize rather than memorize exact queries"
+                ],
+                "workspace": "/Users/joshuapurtell/.synth-desktop/instances/v02/livecraftax/runtime/gepa/runs/banking77_gepa_luna_med_0dac3949/proposer_workspaces/generation_000"
+              },
+              "occurredAt": "2026-08-12T22:35:16.345571Z",
+              "sequence": 224,
+              "snapshot": null
+            }
+          ]
+        }
+      },
+      "samples": [
+        {
+          "note": "before_flip",
+          "at": 1786574014.685498,
+          "cursor": 0,
+          "eventCount": 2717,
+          "status": "proposing",
+          "usage": {
+            "completionTokens": 197,
+            "costUsd": 0.0,
+            "extra": {},
+            "promptTokens": 31525,
+            "rollouts": 50,
+            "wallTimeMs": 10700
+          },
+          "budget": null
+        },
+        {
+          "note": "after_flip",
+          "at": 1786574034.76964,
+          "cursor": 0,
+          "eventCount": 2938,
+          "status": "proposing",
+          "usage": {
+            "completionTokens": 197,
+            "costUsd": 0.0,
+            "extra": {},
+            "promptTokens": 31525,
+            "rollouts": 50,
+            "wallTimeMs": 10700
+          },
+          "budget": null
+        },
+        {
+          "note": "before_flip",
+          "at": 1786574146.674933,
+          "cursor": 0,
+          "eventCount": 8270,
+          "status": "rollout_running",
+          "usage": {
+            "completionTokens": 652,
+            "costUsd": 0.0,
+            "extra": {},
+            "promptTokens": 207699,
+            "rollouts": 140,
+            "wallTimeMs": 203496
+          },
+          "budget": null
+        },
+        {
+          "note": "after_flip",
+          "at": 1786574166.7918808,
+          "cursor": 0,
+          "eventCount": 8770,
+          "status": "completed",
+          "usage": {
+            "completionTokens": 1040,
+            "costUsd": 0.0,
+            "extra": {},
+            "promptTokens": 319083,
+            "rollouts": 240,
+            "wallTimeMs": 222833
+          },
+          "budget": null
+        },
+        {
+          "note": "final",
+          "at": 1786574207.998268,
+          "cursor": 0,
+          "eventCount": 13270,
+          "status": "completed",
+          "usage": {
+            "completionTokens": 1040,
+            "costUsd": 0.0,
+            "extra": {},
+            "promptTokens": 319083,
+            "rollouts": 240,
+            "wallTimeMs": 222833
+          },
+          "budget": null
+        }
+      ]
+    },
+    "sol": {
+      "recipeId": "gepa.banking77.sol.v1",
+      "optimizerRunId": "banking77_gepa_sol_med_c2a88e12",
+      "algorithmId": "gepa",
+      "status": "completed",
+      "visualRefs": [
+        {
+          "id": "vis_ef996f4f6a83484aaceffeb79cb63a42",
+          "kind": "visual",
+          "metadata": {
+            "templateId": "optimizer.gepa.live.v1"
+          },
+          "role": "primary",
+          "title": "GEPA \u00b7 Banking77 intent prompt \u00b7 bounded GEPA \u00b7 Sol medium"
+        }
+      ],
+      "inputRefs": [
+        {
+          "id": "banking77",
+          "kind": "dataset",
+          "metadata": {
+            "heldoutRows": 50,
+            "trainRows": 50
+          },
+          "role": "train_and_heldout",
+          "title": "Banking77 (cookbook-pinned loader)"
+        },
+        {
+          "id": "gepa.banking77.sol.v1",
+          "kind": "recipe",
+          "metadata": {
+            "maxCostUsd": 2.45,
+            "maxGenerations": 1,
+            "maxHeldoutRollouts": 100,
+            "maxTotalRollouts": 240,
+            "maxTrainRollouts": 140,
+            "minibatchSize": 20,
+            "proposalsPerGeneration": 1,
+            "proposerEstimatedCostUsd": 0.05,
+            "rolloutEstimatedCostUsd": 0.01
+          },
+          "role": "configuration",
+          "title": "Bounded Banking77 GEPA \u00b7 Sol medium"
+        },
+        {
+          "id": "sol_med",
+          "kind": "policy_ref",
+          "metadata": {
+            "config": "sol_med",
+            "harness": "gepa_proposer"
+          },
+          "role": "proposer",
+          "title": "GEPA proposer \u00b7 Sol medium"
+        },
+        {
+          "id": "banking77_candidate",
+          "kind": "policy_ref",
+          "metadata": {
+            "config": "candidate",
+            "harness": "banking77_eval"
+          },
+          "role": "evaluator",
+          "title": "Banking77 candidate evaluator"
+        }
+      ],
+      "usage": {
+        "completionTokens": 1072,
+        "costUsd": 0.0,
+        "extra": {},
+        "promptTokens": 338469,
+        "rollouts": 240,
+        "wallTimeMs": 268378
+      },
+      "eventCount": 11469,
+      "eventKinds": [
+        ""
+      ],
+      "slices": {
+        "gepa.candidates": {
+          "candidates": []
+        },
+        "gepa.frontier": {
+          "cells": []
+        },
+        "gepa.reflections": {
+          "entries": [
+            {
+              "delta": {
+                "backend": "codex_app_server",
+                "cost_usd": 0.0,
+                "generation": 0,
+                "message": "Proposer returned candidates",
+                "model": "gpt-5.6-sol",
+                "proposal_count": 1,
+                "provider": "openai",
+                "runtime_substrate": "local",
+                "warning_count": 0,
+                "warnings": [],
+                "workspace": "/Users/joshuapurtell/.synth-desktop/instances/v02/livecraftax/runtime/gepa/runs/banking77_gepa_sol_med_c2a88e12/proposer_workspaces/generation_000"
+              },
+              "occurredAt": "2026-08-12T22:36:06.134483Z",
+              "sequence": 224,
+              "snapshot": null
+            }
+          ]
+        }
+      },
+      "samples": [
+        {
+          "note": "before_flip",
+          "at": 1786573948.754847,
+          "cursor": 0,
+          "eventCount": 536,
+          "status": "proposing",
+          "usage": {
+            "completionTokens": 201,
+            "costUsd": 0.0,
+            "extra": {},
+            "promptTokens": 31525,
+            "rollouts": 50,
+            "wallTimeMs": 10439
+          },
+          "budget": null
+        },
+        {
+          "note": "after_flip",
+          "at": 1786573968.906295,
+          "cursor": 0,
+          "eventCount": 757,
+          "status": "proposing",
+          "usage": {
+            "completionTokens": 201,
+            "costUsd": 0.0,
+            "extra": {},
+            "promptTokens": 31525,
+            "rollouts": 50,
+            "wallTimeMs": 10439
+          },
+          "budget": null
+        },
+        {
+          "note": "before_flip",
+          "at": 1786574080.6519868,
+          "cursor": 0,
+          "eventCount": 4956,
+          "status": "proposing",
+          "usage": {
+            "completionTokens": 201,
+            "costUsd": 0.0,
+            "extra": {},
+            "promptTokens": 31525,
+            "rollouts": 50,
+            "wallTimeMs": 10439
+          },
+          "budget": null
+        },
+        {
+          "note": "after_flip",
+          "at": 1786574100.844162,
+          "cursor": 0,
+          "eventCount": 5177,
+          "status": "proposing",
+          "usage": {
+            "completionTokens": 201,
+            "costUsd": 0.0,
+            "extra": {},
+            "promptTokens": 31525,
+            "rollouts": 50,
+            "wallTimeMs": 10439
+          },
+          "budget": null
+        },
+        {
+          "note": "final",
+          "at": 1786574208.068713,
+          "cursor": 0,
+          "eventCount": 11469,
+          "status": "completed",
+          "usage": {
+            "completionTokens": 1072,
+            "costUsd": 0.0,
+            "extra": {},
+            "promptTokens": 338469,
+            "rollouts": 240,
+            "wallTimeMs": 268378
+          },
+          "budget": null
+        }
+      ]
+    }
+  },
+  "assertions": {
+    "distinctRunIds": true,
+    "disjointEventLogs": true,
+    "distinctVisuals": true,
+    "bothProducedEvents": true,
+    "flipDidNotStall": true,
+    "flips": [
+      {
+        "focused": "luna",
+        "focusedVisuals": [
+          {
+            "id": "vis_d1c1892d064d4a9bbcac125933e15fa0",
+            "kind": "visual",
+            "metadata": {
+              "templateId": "optimizer.gepa.live.v1"
+            },
+            "role": "primary",
+            "title": "GEPA \u00b7 Banking77 intent prompt \u00b7 bounded GEPA \u00b7 Luna medium"
+          }
+        ],
+        "otherLane": "sol",
+        "otherEventsBefore": 536,
+        "otherEventsAfter": 757,
+        "otherStatus": "proposing",
+        "otherAdvanced": true
+      },
+      {
+        "focused": "sol",
+        "focusedVisuals": [
+          {
+            "id": "vis_ef996f4f6a83484aaceffeb79cb63a42",
+            "kind": "visual",
+            "metadata": {
+              "templateId": "optimizer.gepa.live.v1"
+            },
+            "role": "primary",
+            "title": "GEPA \u00b7 Banking77 intent prompt \u00b7 bounded GEPA \u00b7 Sol medium"
+          }
+        ],
+        "otherLane": "luna",
+        "otherEventsBefore": 2717,
+        "otherEventsAfter": 2938,
+        "otherStatus": "proposing",
+        "otherAdvanced": true
+      },
+      {
+        "focused": "luna",
+        "focusedVisuals": [
+          {
+            "id": "vis_d1c1892d064d4a9bbcac125933e15fa0",
+            "kind": "visual",
+            "metadata": {
+              "templateId": "optimizer.gepa.live.v1"
+            },
+            "role": "primary",
+            "title": "GEPA \u00b7 Banking77 intent prompt \u00b7 bounded GEPA \u00b7 Luna medium"
+          }
+        ],
+        "otherLane": "sol",
+        "otherEventsBefore": 4956,
+        "otherEventsAfter": 5177,
+        "otherStatus": "proposing",
+        "otherAdvanced": true
+      },
+      {
+        "focused": "sol",
+        "focusedVisuals": [
+          {
+            "id": "vis_ef996f4f6a83484aaceffeb79cb63a42",
+            "kind": "visual",
+            "metadata": {
+              "templateId": "optimizer.gepa.live.v1"
+            },
+            "role": "primary",
+            "title": "GEPA \u00b7 Banking77 intent prompt \u00b7 bounded GEPA \u00b7 Sol medium"
+          }
+        ],
+        "otherLane": "luna",
+        "otherEventsBefore": 8270,
+        "otherEventsAfter": 8770,
+        "otherStatus": "completed",
+        "otherAdvanced": true
+      }
+    ]
+  }
+}

@@ -39,6 +39,28 @@ printf '%s' "$default_instance" | jq -e '
 [[ "$(printf '%s' "$beta" | jq -r .iconLabel)" == "2" ]]
 [[ -f "$(printf '%s' "$alpha" | jq -r .icon)" ]]
 
+# Packaged apps must run exclusively from their isolated instance. A cwd or
+# runtime fallback under ~/Documents causes macOS Files & Folders prompts.
+awk '
+  /if \[\[ "\$COMMAND" == "cua"/{in_cua=1}
+  in_cua && /cd "\$INSTANCE_ROOT"/{safe_cwd=NR}
+  in_cua && /exec "\$app_executable"/{exec_line=NR}
+  END { exit !(safe_cwd && exec_line && safe_cwd < exec_line) }
+' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'if \(\$0 == exe \|\| \$0 == cua_exe\)' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'SYNTH_DESKTOP_DEV_OAUTH_FILE' "$ROOT/scripts/desktop-instance.sh"
+if rg -q 'SYNTH_DESKTOP_DEV_SHARE_CANONICAL_OAUTH|synth-desktop-dev-\$NAME' "$ROOT/scripts/desktop-instance.sh"; then
+  echo "Desktop CUA launcher still contains a Keychain credential path" >&2
+  exit 1
+fi
+if rg -n 'home\.join\("Documents/|dirs::home_dir\(\).*Documents/|\.join\("Documents/' \
+  "$ROOT/apps/synth_desktop/src-tauri/src/optimizers/recipes.rs" \
+  "$ROOT/apps/synth_desktop/src-tauri/src/optimizers/sft_recipes.rs" \
+  "$ROOT/apps/synth_desktop/src-tauri/src/trace_ingest.rs" >/dev/null; then
+  echo "Desktop runtime still probes protected Documents paths" >&2
+  exit 1
+fi
+
 if "$ROOT/scripts/desktop-instance.sh" print '../unsafe' >/dev/null 2>&1; then
   echo "unsafe instance name was accepted" >&2
   exit 1

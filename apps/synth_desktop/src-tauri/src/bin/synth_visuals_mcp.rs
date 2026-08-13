@@ -109,8 +109,17 @@ mod tests {
             managed_tool_name("bind").unwrap(),
             "visual_bind_data_source"
         );
-        assert_eq!(managed_tool_name("save").unwrap(), "visual_save");
         assert_eq!(managed_tool_name("show").unwrap(), "visual_show");
+        assert_eq!(managed_tool_name("render").unwrap(), "visual_render");
+        assert_eq!(
+            managed_tool_name("authoring_context").unwrap(),
+            "visual_authoring_context"
+        );
+        assert_eq!(managed_tool_name("review").unwrap(), "visual_review");
+        assert_eq!(
+            managed_tool_name("mark_ready").unwrap(),
+            "visual_mark_ready"
+        );
         assert_eq!(managed_tool_name("fork").unwrap(), "visual_fork");
         assert_eq!(managed_tool_name("archive").unwrap(), "visual_archive");
         assert!(managed_tool_name("delete_everything").is_err());
@@ -128,6 +137,13 @@ mod tests {
         assert!(names.contains(&"visual_manage"));
         assert!(names.contains(&"visual_create"));
         assert!(names.contains(&"visual_open_in_pane"));
+        let bind = listed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "visual_bind_data_source")
+            .unwrap();
+        assert!(bind["inputSchema"]["properties"].get("poll_url").is_some());
         let facade = listed["tools"]
             .as_array()
             .unwrap()
@@ -141,10 +157,13 @@ mod tests {
         }))
         .unwrap();
         assert!(
-            advertised.len() < 600,
+            advertised.len() < 900,
             "compact facade grew to {} bytes",
             advertised.len()
         );
+        assert!(advertised.contains("author-synth-diagrams"));
+        assert!(advertised.contains("do not call MCP resources"));
+        assert!(advertised.contains("arguments.content"));
     }
 }
 
@@ -158,6 +177,10 @@ fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
         "bind" => Ok("visual_bind_data_source"),
         "save" => Ok("visual_save"),
         "show" => Ok("visual_show"),
+        "render" => Ok("visual_render"),
+        "authoring_context" => Ok("visual_authoring_context"),
+        "review" => Ok("visual_review"),
+        "mark_ready" => Ok("visual_mark_ready"),
         "fork" => Ok("visual_fork"),
         "archive" => Ok("visual_archive"),
         other => Err(format!("unknown visual operation {other}")),
@@ -167,19 +190,20 @@ fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
 fn tools() -> Value {
     let mut result = json!({
         "tools": [
-            {"name":"visual_manage","description":"Operate Synth visuals. Load the use-synth-visuals skill for operation payloads.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_templates","list","get","create","update","bind","save","show","fork","archive"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+            {"name":"visual_manage","description":"Direct tool for Synth visuals; do not call MCP resources or search the filesystem. For a diagram, load author-synth-diagrams, create diagram.mermaid.v1 with Mermaid source in arguments.content, then show the returned visual.id.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Operation to run. Mermaid path: create, then show.","enum":["list_templates","list","get","create","update","bind","show","fork","archive","authoring_context","review","mark_ready","render"]},"arguments":{"type":"object","description":"Operation arguments. Mermaid create requires template_id=diagram.mermaid.v1 and content; show requires visual_id.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
             {"name":"visual_list_templates","description":"List Synth visual templates","inputSchema":{"type":"object","properties":{"genre":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_get","description":"Get a visual by id","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
-            {"name":"visual_create","description":"Create a visual. Prefer analysis.visual.v1 for ad-hoc evidence-driven blocks; use blank.canvas.v1 for bespoke sandboxed HTML/SVG/CSS compositions. Choose the visual grammar from the data and never imply a trend without an ordered or temporal x-axis.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"props":{"type":"object"},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
+            {"name":"visual_create","description":"Create a visual from a trusted registered template. Interactive live viewers are configured templates; arbitrary TSX is not executed.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"props":{"type":"object"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
             {"name":"visual_create_from_template","description":"Alias of visual_create","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"props":{"type":"object"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
-            {"name":"visual_update","description":"Update visual bindings/title/status","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"bindings":{"type":"object"},"status":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
-            {"name":"visual_bind_data_source","description":"Bind a slot on a visual","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"slot":{"type":"string"},"kind":{"type":"string"},"source":{"type":"string"},"path":{"type":"string"}},"required":["instance_id","slot","kind","source"],"additionalProperties":false}},
-            {"name":"visual_save","description":"Save visual content and mark saved","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"tsx":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
-            {"name":"visual_save_tsx","description":"Alias of visual_save","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"tsx":{"type":"string"}},"required":["instance_id"],"additionalProperties":false}},
+            {"name":"visual_update","description":"Revise visual bindings, title, trusted-template configuration, or Mermaid content","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"bindings":{"type":"object"},"status":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["visual_id"],"additionalProperties":false}},
+            {"name":"visual_bind_data_source","description":"Bind a slot on a visual","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"slot":{"type":"string"},"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string","description":"Exact normalized poll URL declared beside a live SSE source"},"path":{"type":"string"}},"required":["instance_id","slot","kind","source"],"additionalProperties":false}},
             {"name":"visual_show","description":"Open a visual in the Desktop right pane","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"session_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_open_in_pane","description":"Alias of visual_show","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"}},"required":["instance_id"],"additionalProperties":false}},
             {"name":"visual_fork","description":"Fork a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
+            {"name":"visual_authoring_context","description":"Get the template contract, example evidence, revision, presentation, and outstanding quality gate for one visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
+            {"name":"visual_review","description":"Record one rendered-view critique for the current revision. Include viewport and explicit landmark checks.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"revision":{"type":"integer"},"viewport":{"type":"object"},"checks":{"type":"object"},"findings":{"type":"array","items":{"type":"string"}},"screenshot_path":{"type":"string"}},"required":["visual_id","revision","viewport","checks","findings"],"additionalProperties":false}},
+            {"name":"visual_mark_ready","description":"Mark the current revision ready after at least two passing rendered-view reviews","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"revision":{"type":"integer"}},"required":["visual_id","revision"],"additionalProperties":false}},
             {"name":"visual_archive","description":"Archive a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}}
         ]
     });
@@ -192,7 +216,7 @@ fn tools() -> Value {
                 .to_string();
             let read_only = matches!(
                 name.as_str(),
-                "visual_list_templates" | "visual_list" | "visual_get"
+                "visual_list_templates" | "visual_list" | "visual_get" | "visual_authoring_context"
             );
             if let Some(object) = tool.as_object_mut() {
                 object.insert(
@@ -242,6 +266,12 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 "id": args.get("instance_id"),
                 "sessionId": args.get("session_id").cloned().or_else(|| session_env.clone().map(Value::String)),
                 "sourceAgentId": "mcp",
+                "content": args.get("content"),
+                "metadata": {
+                    "presentation": args.get("presentation").cloned().unwrap_or(json!("pane")),
+                    "visualConfig": args.get("visual_config").cloned().unwrap_or(json!({})),
+                    "authoringReviews": []
+                },
             });
             request("POST", "/v1/visuals", Some(body))
         }
@@ -250,7 +280,25 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .get("visual_id")
                 .and_then(Value::as_str)
                 .ok_or("visual_id required")?;
-            request("POST", &format!("/v1/visuals/{id}"), Some(args.clone()))
+            let mut body = args.clone();
+            if args.get("visual_config").is_some() || args.get("presentation").is_some() {
+                let current = request("GET", &format!("/v1/visuals/{id}"), None)?;
+                let mut metadata = current
+                    .pointer("/visual/metadata")
+                    .cloned()
+                    .unwrap_or(json!({}));
+                if !metadata.is_object() {
+                    metadata = json!({});
+                }
+                if let Some(value) = args.get("visual_config") {
+                    metadata["visualConfig"] = value.clone();
+                }
+                if let Some(value) = args.get("presentation") {
+                    metadata["presentation"] = value.clone();
+                }
+                body["metadata"] = metadata;
+            }
+            request("POST", &format!("/v1/visuals/{id}"), Some(body))
         }
         "visual_bind_data_source" => {
             let id = args
@@ -276,6 +324,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 "slot": slot,
                 "kind": args.get("kind"),
                 "source": args.get("source"),
+                "poll_url": args.get("poll_url"),
                 "path": args.get("path"),
                 "schema": args.get("schema"),
             }));
@@ -311,6 +360,43 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 "sessionId": args.get("session_id").cloned().or_else(|| session_env.map(Value::String))
             });
             request("POST", &format!("/v1/visuals/{id}/show"), Some(body))
+        }
+        "visual_render" => {
+            let id = args
+                .get("visual_id")
+                .or_else(|| args.get("instance_id"))
+                .and_then(Value::as_str)
+                .ok_or("visual_id required")?;
+            request("POST", &format!("/v1/visuals/{id}/render"), None)
+        }
+        "visual_authoring_context" => {
+            let id = args
+                .get("visual_id")
+                .and_then(Value::as_str)
+                .ok_or("visual_id required")?;
+            request("GET", &format!("/v1/visuals/{id}/authoring"), None)
+        }
+        "visual_review" => {
+            let id = args
+                .get("visual_id")
+                .and_then(Value::as_str)
+                .ok_or("visual_id required")?;
+            request(
+                "POST",
+                &format!("/v1/visuals/{id}/reviews"),
+                Some(args.clone()),
+            )
+        }
+        "visual_mark_ready" => {
+            let id = args
+                .get("visual_id")
+                .and_then(Value::as_str)
+                .ok_or("visual_id required")?;
+            request(
+                "POST",
+                &format!("/v1/visuals/{id}/ready"),
+                Some(args.clone()),
+            )
         }
         "visual_fork" => {
             let id = args

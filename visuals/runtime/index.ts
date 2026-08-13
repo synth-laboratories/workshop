@@ -26,6 +26,19 @@ export {
   propsFromBindings
 } from "./bind.ts";
 export {
+  LIVE_EVAL_SLOT,
+  FORBIDDEN_LIVE_EVAL_SLOTS,
+  assertLiveEvalSlot,
+  assertDeclaredStreamSource,
+  ingestLiveEnvelope,
+  ingestLiveEnvelopes,
+  formatMissingNumber,
+  formatMissingUsd,
+  isGuessedStreamUrl,
+  isNeverDeclaredStreamUrl
+} from "./liveStream.ts";
+export { projectLiveEval, displayReward, rewardFromEnvStatus } from "./liveEvalReducer.ts";
+export {
   saveVisualInstanceTsx,
   renderInstanceTsx,
   markInstanceSaved

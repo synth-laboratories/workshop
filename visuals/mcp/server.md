@@ -13,8 +13,6 @@ import {
   listTemplates,
   resolveTemplate,
   bindTemplateSlots,
-  saveVisualInstanceTsx,
-  markInstanceSaved
 } from "@synth/visuals";
 ```
 
@@ -25,9 +23,11 @@ import {
 | `visual_list_templates` | `listTemplates()`, optional `genre` filter |
 | `visual_create_from_template` | `resolveTemplate(id)` → new `VisualInstance` in daemon memory / local store |
 | `visual_bind_data_source` | append/replace `VisualBinding`; validate slot via template meta; optionally `bindTemplateSlots` |
-| `visual_save_tsx` | `saveVisualInstanceTsx` → `visuals/instances/<id>.tsx` |
-| `visual_open_in_pane` | IPC to renderer VisualPane: load shell importer or saved TSX |
+| `visual_open_in_pane` | IPC to renderer VisualPane or full canvas: load a trusted registered shell |
 | `visual_stream_live_eval` | ensure live.* instance, bind `live_sse` or fixture, open pane, start SSE subscribe |
+| `visual_authoring_context` | return revision, template/example evidence, presentation, review count, and required checks |
+| `visual_review` | persist a rendered viewport critique against the exact current revision |
+| `visual_mark_ready` | require two passing distinct-width reviews and write the `qualityGate` receipt |
 
 ## Binding kinds
 
@@ -40,19 +40,22 @@ import {
 
 ## Agent happy path
 
-1. `visual_list_templates` → pick `craftax.eval_matrix.v1`
-2. `visual_create_from_template` `{ template_id, title }`
-3. `visual_bind_data_source` `{ slot: "matrix", kind: "fixture", source: "fixtures/craftax_matrix_slice.json" }`
-4. `visual_save_tsx` → path under `instances/`
-5. `visual_open_in_pane` `{ instance_id }`
+1. `visual_list_templates` → pick the task-family trusted template.
+2. `visual_create_from_template` `{ template_id, title, presentation: "canvas", visual_config }`.
+3. Bind real or explicitly labeled replay evidence.
+4. Open, render, critique, and revise at least twice.
+5. Record wide and compact `visual_review` receipts.
+6. `visual_mark_ready` for the current revision.
 
 Live evals:
 
-1. `visual_stream_live_eval` `{ template_id: "live.dock_harbor.v1", sse_url: "http://127.0.0.1:…/events" }`
+1. Prepare the container without starting it and bind the returned declared SSE URL.
+2. Open the live visual in canvas mode, iterate twice, and mark its current revision ready.
+3. Start only with that visual id and exact prepared descriptor. Slot is `stream`, never a guessed `/events` path.
 
 ## Security notes
 
-- Do not allow agents to write outside `visuals/instances/` via `visual_save_tsx`.
+- Arbitrary agent-authored TSX is retained only as source evidence; Desktop does not execute it. Interactive viewers are trusted registered templates with bounded configuration.
 - `trace_v5` bindings are read-only; annotation templates bind overlay slots separately.
 - SSE URLs should be localhost / runtime-proxied unless user-approved.
 

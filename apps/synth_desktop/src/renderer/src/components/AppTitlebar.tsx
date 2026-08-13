@@ -1,4 +1,5 @@
 import { SynthLogo } from "./SynthLogo";
+import { ProviderMark } from "./ProviderMark";
 import { truncate } from "../runtime/codexTurn";
 
 function IconSidePanel() {
@@ -32,6 +33,7 @@ export type AppTitlebarProps = {
 	terminalOpen: boolean;
 	sidePanelOpen: boolean;
 	sidePanelTab: "outputs" | "inference";
+	brand?: "synth" | "openai";
 	onCloseTab: () => void;
 	onNewConversation: () => void;
 	onToggleTerminal: () => void;
@@ -45,6 +47,7 @@ export function AppTitlebar({
 	terminalOpen,
 	sidePanelOpen,
 	sidePanelTab,
+	brand = "synth",
 	onCloseTab,
 	onNewConversation,
 	onToggleTerminal,
@@ -54,7 +57,11 @@ export function AppTitlebar({
 		<header className="titlebar" data-testid="titlebar" data-tauri-drag-region="">
 			<div className="titlebar-tabs" data-tauri-drag-region="">
 				<div className="tab tab-active" role="tab" aria-selected data-tauri-drag-region="">
-					<SynthLogo className="tab-logo" compact />
+					{brand === "openai" ? (
+						<ProviderMark kind="openai" className="tab-logo" />
+					) : (
+						<SynthLogo className="tab-logo" compact />
+					)}
 					<span>{truncate(tabLabel, 28)}</span>
 					<button type="button" className="tab-close" aria-label="Close tab" onClick={onCloseTab}>
 						×

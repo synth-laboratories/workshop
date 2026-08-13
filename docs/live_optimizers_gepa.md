@@ -365,8 +365,11 @@ The SFT design has two intentionally distinct product identities:
    materializes an SFT dataset and Tinker job/result, creates a sampler and policy bundle,
    and returns an SFT candidate to GELO. It remains `algorithm_id: "go-ex"` and must not
    be presented as a standalone SFT optimizer.
-2. Hosted standalone SFT is a future first-class `algorithm_id: "sft"` run in
-   `optimizers-beta`, backed initially by Tinker through a provider-neutral `SftBackend`.
+2. Hosted standalone SFT is a first-class `algorithm_id: "sft"` run in
+   `optimizers-beta`, backed by a provider-neutral `SftBackend` (`fixture` for
+   conformance, `tinker` for A4/A6). The historical OpenAI Fine-tuning console
+   is the UX to emulate (job, events, checkpoints, aligned metrics), not a live
+   API. Implementation spec: [`optimizers_beta_sft.md`](./optimizers_beta_sft.md).
    It owns training lifecycle, immutable checkpoints, checkpoint evaluation campaigns,
    promotion, model materialization, and its dedicated SFT visual family.
 
@@ -375,18 +378,20 @@ orchestration state machine. A GELO SFT plugin can open a scoped child SFT visua
 `optimizer_run_id + plugin_work_id`; a standalone SFT visual binds directly to its SFT
 optimizer run.
 
-### OpenAI-compatible baseline and Synth extension
+### Historical Fine-tuning UX (emulate, do not call)
 
-The compatibility baseline includes a fine-tuning job record, lifecycle status and
-errors, base and output model identity, training and validation files, hyperparameters,
-trained tokens, timestamped message/metric events, and immutable checkpoints with step
-number and training/validation metrics. The canonical Synth optimizer contract is a
-superset: it additionally models checkpoint evaluation campaigns, live rollout lanes,
-selection versus held-out roles, trace evidence, promotion decisions, provider compute,
-cost, and model lineage.
+The shut-down OpenAI Fine-tuning console is the visual baseline we emulate:
+a fine-tuning job record, lifecycle status and errors, base and output model
+identity, training and validation files, hyperparameters, trained tokens,
+timestamped message/metric events, and immutable checkpoints with step number
+and training/validation metrics. The canonical Synth optimizer contract is a
+superset: it additionally models checkpoint evaluation campaigns, live rollout
+lanes, selection versus held-out roles, trace evidence, promotion decisions,
+provider compute, cost, and model lineage.
 
-An OpenAI-compatible API remains an adapter over the canonical SFT optimizer run, not a
-second database or event authority:
+That vocabulary is a **projection** over the canonical SFT optimizer run, not a
+second database, not a live `POST /v1/fine_tuning/jobs`, and not an A4/A6
+provider. A4/A6 is hosted Tinker.
 
 ```text
 FineTuningJob                 <- run.summary + sft.training
@@ -674,8 +679,8 @@ The current contracts demonstrate the intended shape but do not yet satisfy this
    identity, or evidence coverage.
 5. `algorithm_id: "go-ex"` currently projects only GELO board/themes/data-engine slices;
    scoped SFT plugin state needs namespaced `go-ex.plugins.sft.*` slices and child visuals.
-6. Hosted standalone `algorithm_id: "sft"` still needs to be registered in
-   `optimizers-beta` with a streaming Tinker adapter and the provider-neutral contracts.
+6. Hosted standalone `algorithm_id: "sft"` is registered in `optimizers-beta`.
+   The Tinker adapter is fail-closed until Phase 1; see [`optimizers_beta_sft.md`](./optimizers_beta_sft.md).
 
 ### SFT implementation and acceptance order
 

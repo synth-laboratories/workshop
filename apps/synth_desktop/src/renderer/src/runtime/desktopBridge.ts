@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
+import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 
@@ -316,7 +316,7 @@ export function installDesktopBridge(): void {
 			}
 		}
 		: browserInternBridge();
-	window.synthAccount ??= isTauri
+window.synthAccount ??= isTauri
 		? {
 			beginSignIn: () => invokeCommand<SynthSignInBegin>(COMMANDS.ACCOUNT_BEGIN_SIGN_IN),
 			pollSignIn: () => invokeCommand<SynthSignInPoll>(COMMANDS.ACCOUNT_POLL_SIGN_IN),
@@ -335,6 +335,21 @@ export function installDesktopBridge(): void {
 			refresh: async () => ({ signedIn: false, state: "local_only", environment: "local", source: "none" }),
 			openBilling: async () => { throw new Error("Billing requires Synth Desktop"); }
 		};
+window.synthCodexOauth ??= isTauri
+	? {
+		begin: () => invokeCommand<CodexOauthBegin>(COMMANDS.CODEX_OAUTH_BEGIN),
+		completeManual: (redirectUrl) => invokeCommand<CodexOauthStatus>(COMMANDS.CODEX_OAUTH_COMPLETE_MANUAL, { redirectUrl }),
+		status: () => invokeCommand<CodexOauthStatus>(COMMANDS.CODEX_OAUTH_STATUS),
+		disconnect: () => invokeCommand<CodexOauthStatus>(COMMANDS.CODEX_OAUTH_DISCONNECT),
+		cancel: () => invokeCommand<void>(COMMANDS.CODEX_OAUTH_CANCEL)
+	}
+	: {
+		begin: async () => { throw new Error("ChatGPT subscription sign-in requires Synth Desktop"); },
+		completeManual: async () => { throw new Error("ChatGPT subscription sign-in requires Synth Desktop"); },
+		status: async () => ({ configured: false }),
+		disconnect: async () => ({ configured: false }),
+		cancel: async () => undefined
+	};
 window.synthConfig ??= isTauri
 		? {
 			get: () => invokeCommand<SynthBackendSettings>(COMMANDS.SYNTH_CONFIG_GET),
@@ -470,7 +485,7 @@ window.synthWorkspaceScope ??= isTauri
 		}
 		: {
 			status: async () => ({
-				currentVersion: "0.1.0",
+				currentVersion: "0.2.0",
 				channel: "stable",
 				latestVersion: null,
 				updateAvailable: false
@@ -492,7 +507,8 @@ window.synthWorkspaceScope ??= isTauri
 				{ id: "use-synth-containers", name: "use-synth-containers", description: "Synth container discovery and Trace V5 evidence." },
 				{ id: "use-synth-visuals", name: "use-synth-visuals", description: "Create and manage Synth visuals." },
 				{ id: "use-synth-optimizers", name: "use-synth-optimizers", description: "Operate Synth optimizer runs and recipes." },
-				{ id: "run-live-container-evals", name: "run-live-container-evals", description: "Run live container-backed eval rollouts." }
+				{ id: "run-live-container-evals", name: "run-live-container-evals", description: "Run live container-backed eval rollouts." },
+				{ id: "author-synth-diagrams", name: "author-synth-diagrams", description: "Author a Mermaid diagram into the right Visual pane." }
 			]
 		};
 	if (isTauri) {
@@ -560,6 +576,16 @@ window.synthWorkspaceScope ??= isTauri
 			archive: (visualId) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_ARCHIVE, { visualId }),
 			show: (visualId, sessionId) =>
 				invokeCommand<VisualRecord>(COMMANDS.VISUALS_SHOW, { visualId, sessionId: sessionId ?? null }),
+			content: (visualId) => invokeCommand(COMMANDS.VISUALS_CONTENT, { visualId }),
+			renditions: (visualId) => invokeCommand(COMMANDS.VISUALS_RENDITIONS, { visualId }),
+			rendition: (visualId, format, theme, sizeClass) =>
+				invokeCommand(COMMANDS.VISUALS_RENDITION, {
+					visualId,
+					format: format ?? null,
+					theme: theme ?? null,
+					sizeClass: sizeClass ?? null
+				}),
+			render: (visualId) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_RENDER, { visualId }),
 			onEvent(listener) {
 				return listenRuntimeAppEvents((payload) => {
 					if (payload.kind.startsWith("visual.")) listener(payload);
@@ -636,6 +662,9 @@ export const bridges = {
 	},
 	get account() {
 		return window.synthAccount;
+	},
+	get codexOauth() {
+		return window.synthCodexOauth;
 	},
 	get codex() {
 		return window.synthCodex;

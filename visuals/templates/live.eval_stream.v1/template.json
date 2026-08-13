@@ -12,7 +12,7 @@
     {
       "name": "stream",
       "description": "Live SSE endpoint or fixture event list",
-      "accepts": ["live_sse", "fixture"],
+      "accepts": ["live_sse", "fixture", "inline"],
       "required": true,
       "schema": "synth.visual.live_eval_events.v1"
     }

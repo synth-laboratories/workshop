@@ -283,7 +283,7 @@ test("Settings can force and reset a model multi-agent preset", async ({ page })
 	]);
 });
 
-test("Codex collaboration events drive the first-class Subagents visual", async ({ page }) => {
+test("V1 collaboration events drive the first-class Subagents visual without treating idle as done", async ({ page }) => {
 	await page.addInitScript(() => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
 		let listener: ((event: Event) => void) | undefined;
@@ -294,7 +294,7 @@ test("Codex collaboration events drive the first-class Subagents visual", async 
 				sessionId: "subagent-session",
 				threadId: "parent-thread",
 				workspace: "/workspaces/default",
-				model: "openai/gpt-5.6-sol",
+					model: "openai/gpt-5.6-luna",
 				providerName: "openrouter",
 				providerTitle: "OpenRouter",
 				baseUrl: "https://openrouter.ai/api/v1",
@@ -315,13 +315,16 @@ test("Codex collaboration events drive the first-class Subagents visual", async 
 		const send = (method: string, params: Record<string, unknown>) => emit({ sessionId: "subagent-session", method, params });
 		send("agentMessage/completed", { messageId: "parent-message", content: "I’ll delegate the migration review." });
 		send("item/started", { item: { id: "call-1", type: "collabAgentToolCall", tool: "spawnAgent", prompt: "Review migration safety. Check the runtime boundary." } });
-		send("item/completed", { item: { id: "call-1", type: "collabAgentToolCall", tool: "spawnAgent", prompt: "Review migration safety. Check the runtime boundary.", receiverThreadIds: ["child-thread"] } });
+		send("item/completed", { item: {
+			id: "call-1", type: "collabAgentToolCall", tool: "spawnAgent", prompt: "Review migration safety. Check the runtime boundary.",
+			receiverThreadIds: ["child-thread"], agentsStates: { "child-thread": { status: "running" } }
+		} });
 		send("thread/status/changed", { threadId: "child-thread", status: { type: "active" } });
 	});
 
 	const visual = page.getByTestId("visual-subagents");
 	await expect(visual).toBeVisible();
-	await expect(visual).toContainText("Active · 1");
+	await expect(visual).toContainText("Working · 1");
 	await expect(visual).toContainText("Review migration safety");
 	await expect(page.getByText("Review migration safety started")).toBeVisible();
 
@@ -331,10 +334,105 @@ test("Codex collaboration events drive the first-class Subagents visual", async 
 		emit({ sessionId: "subagent-session", method: "thread/status/changed", params: { threadId: "child-thread", status: { type: "idle" } } });
 	});
 
-	await expect(visual).toContainText("Active · 0");
-	await expect(visual).toContainText("Done · 1");
+	await expect(visual).toContainText("Working · 1");
+	await expect(visual).toContainText("Completed · 0");
+	await expect(page.getByTestId("chat-transcript")).not.toContainText("Migration boundary is safe.");
+
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCodexEvent: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexEvent;
+		emit({ sessionId: "subagent-session", method: "item/completed", params: { item: {
+			id: "wait-1", type: "collabAgentToolCall", tool: "wait", receiverThreadIds: ["child-thread"],
+			agentsStates: { "child-thread": { status: "completed", message: "Migration boundary is safe." } }
+		} } });
+	});
+
+	await expect(visual).toContainText("Working · 0");
+	await expect(visual).toContainText("Completed · 1");
 	await expect(visual).toContainText("Migration boundary is safe.");
 	await expect(page.getByTestId("chat-transcript")).not.toContainText("Migration boundary is safe.");
+});
+
+test("V2 subAgentActivity and child turn lifecycle drive the same first-class Subagents visual", async ({ page }) => {
+	await page.addInitScript(() => {
+		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
+		let listener: ((event: Event) => void) | undefined;
+		(window as typeof window & { __emitCodexV2Event?: (event: Event) => void }).__emitCodexV2Event = (event) => listener?.(event);
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId: "subagent-v2-session", threadId: "parent-v2-thread", workspace: "/workspaces/default",
+				model: "openai/gpt-5.6-terra", providerName: "openrouter", providerTitle: "OpenRouter",
+				baseUrl: "https://openrouter.ai/api/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId: "subagent-v2-session", threadId: "parent-v2-thread" }),
+			startTurn: async () => ({ sessionId: "subagent-v2-session", threadId: "parent-v2-thread", turnId: "turn-1" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: (next: (event: Event) => void) => { listener = next; return () => { listener = undefined; }; }
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-subagent-v2-session").click();
+
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCodexV2Event: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexV2Event;
+		const send = (method: string, params: Record<string, unknown>) => emit({ sessionId: "subagent-v2-session", method, params });
+		send("agentMessage/completed", { messageId: "parent-v2-message", content: "I’ll delegate the README location audit." });
+		send("item/started", { item: {
+			id: "spawn-v2-1", type: "subAgentActivity", kind: "started", agentThreadId: "child-v2-thread", agentPath: "/root/readme_location"
+		} });
+		send("turn/started", { threadId: "child-v2-thread", turn: { id: "child-v2-turn-1" } });
+	});
+
+	const visual = page.getByTestId("visual-subagents");
+	await expect(visual).toBeVisible();
+	await expect(visual).toContainText("Working · 1");
+	await expect(visual).toContainText("Readme Location");
+	await expect(visual.getByText("Working", { exact: true })).toBeVisible();
+	await expect(page.getByText("Readme Location started")).toBeVisible();
+
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCodexV2Event: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexV2Event;
+		emit({ sessionId: "subagent-v2-session", method: "agentMessage/completed", params: { threadId: "child-v2-thread", messageId: "child-v2-message", content: "README location confirmed." } });
+		emit({ sessionId: "subagent-v2-session", method: "thread/status/changed", params: { threadId: "child-v2-thread", status: { type: "idle" } } });
+	});
+	await expect(visual).toContainText("Working · 1");
+	await expect(visual).toContainText("Completed · 0");
+	await expect(page.getByTestId("chat-transcript")).not.toContainText("README location confirmed.");
+
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCodexV2Event: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexV2Event;
+		emit({ sessionId: "subagent-v2-session", method: "turn/completed", params: { threadId: "child-v2-thread", turn: { status: "completed", lastAgentMessage: "README location confirmed." } } });
+	});
+	await expect(visual).toContainText("Working · 0");
+	await expect(visual).toContainText("Completed · 1");
+	await expect(visual).toContainText("README location confirmed.");
+	await expect(page.getByTestId("chat-transcript")).not.toContainText("The provider ended the turn without a response");
+
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCodexV2Event: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexV2Event;
+		emit({ sessionId: "subagent-v2-session", method: "item/started", params: { item: {
+			id: "spawn-v2-wait", type: "subAgentActivity", kind: "started", agentThreadId: "child-v2-wait-thread", agentPath: "/root/runtime_audit"
+		} } });
+		emit({ sessionId: "subagent-v2-session", method: "agentMessage/completed", params: {
+			threadId: "child-v2-wait-thread", messageId: "child-v2-wait-message", content: "Runtime audit complete."
+		} });
+		// Current Codex app-server V2 output can omit child ids/states here.
+		emit({ sessionId: "subagent-v2-session", method: "item/completed", params: { item: {
+			id: "wait-v2", type: "collabAgentToolCall", tool: "wait", status: "completed", receiverThreadIds: [], agentsStates: {}
+		} } });
+	});
+	await expect(visual).toContainText("Completed · 2");
+	await expect(visual).toContainText("Runtime audit complete.");
+
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCodexV2Event: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexV2Event;
+		emit({ sessionId: "subagent-v2-session", method: "turn/started", params: { threadId: "child-v2-thread", turn: { id: "child-v2-turn-2" } } });
+		emit({ sessionId: "subagent-v2-session", method: "turn/failed", params: { threadId: "child-v2-thread", error: { message: "Agent exceeded its task budget." } } });
+	});
+	await expect(visual).toContainText("Needs attention · 1");
+	await expect(visual).toContainText("Agent exceeded its task budget.");
+	await expect(page.getByTestId("chat-transcript")).not.toContainText("The provider could not produce a response");
 });
 
 test("Codex thread name updates rename the durable sidebar session", async ({ page }) => {

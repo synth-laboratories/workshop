@@ -7,6 +7,7 @@
 
 import type {
 	CodexBridge,
+	CodexOauthBridge,
 	CoreBridge,
 	DesktopInstanceDiagnostics,
 	InternBridge,
@@ -48,6 +49,7 @@ declare global {
 		synthWorkspaceScope?: WorkspaceScopeBridge;
 		synthAccount?: SynthAccountBridge;
 		synthCodex?: CodexBridge;
+		synthCodexOauth?: CodexOauthBridge;
 		synthCore?: CoreBridge;
 		synthIntern?: InternBridge;
 		synthInventory?: InventoryBridge;

@@ -20,6 +20,13 @@ pub const VISUALS_IPC_HOP_TIMEOUT: Duration = Duration::from_secs(3);
 /// Longer visuals IPC hop (rollout / dataset pulls).
 pub const VISUALS_IPC_ROLL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// End-to-end live policy rollout budget. Containers may make several
+/// sequential provider calls (each with its own bounded timeout) while the
+/// subscribed visual continues to receive partial trace and frame events.
+/// This must not reuse the short dataset/engine hop timeout or a successful
+/// paid rollout will be reported to the MCP caller as a transport failure.
+pub const CONTAINER_POLICY_ROLLOUT_TIMEOUT: Duration = Duration::from_secs(900);
+
 /// Account snapshot HTTP budget.
 pub const ACCOUNT_CLOUD_TIMEOUT: Duration = Duration::from_secs(12);
 
@@ -46,6 +53,15 @@ pub const LAGUNA_READY_WAIT: Duration = Duration::from_secs(90);
 
 /// Laguna `/health` probe.
 pub const LAGUNA_HEALTH_TIMEOUT: Duration = Duration::from_millis(1200);
+
+/// Optimizer sidecar `/health` probe.
+pub const OPTIMIZER_SIDECAR_HEALTH_TIMEOUT: Duration = Duration::from_millis(1200);
+
+/// Optimizer sidecar ready-wait after start.
+// A freshly staged local optimizer project may need to compile its native
+// extension on first launch. Keep this bounded, but allow cold starts to
+// complete instead of repeatedly killing the build at five seconds.
+pub const OPTIMIZER_SIDECAR_READY_WAIT: Duration = Duration::from_secs(60);
 
 /// Laguna generation / chat request.
 pub const LAGUNA_INFERENCE_TIMEOUT: Duration = Duration::from_secs(20);

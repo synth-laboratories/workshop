@@ -34,6 +34,7 @@ pub struct CodexSessionStartRequest {
     pub provider_env_key: Option<String>,
     pub approval_policy: Option<String>,
     pub sandbox: Option<String>,
+    pub service_tier: Option<String>,
     pub thread_id: Option<String>,
     pub multi_agent_version: Option<MultiAgentVersion>,
     #[serde(default)]
@@ -66,6 +67,7 @@ impl fmt::Debug for CodexSessionStartRequest {
             .field("provider_env_key", &self.provider_env_key)
             .field("approval_policy", &self.approval_policy)
             .field("sandbox", &self.sandbox)
+            .field("service_tier", &self.service_tier)
             .field("thread_id", &self.thread_id)
             .field("multi_agent_version", &self.multi_agent_version)
             .field("auto_compact_token_limit", &self.auto_compact_token_limit)

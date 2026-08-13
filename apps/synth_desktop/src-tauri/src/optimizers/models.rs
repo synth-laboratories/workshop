@@ -78,8 +78,10 @@ impl OptimizerCapabilities {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OptimizerUsageSummary {
+    /// Settled money, or `null` when no event has reported any. A run that
+    /// never reports cost is unknown, not free — missing is never 0.
     #[serde(default)]
-    pub cost_usd: f64,
+    pub cost_usd: Option<f64>,
     #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub prompt_tokens: u64,
@@ -312,7 +314,9 @@ pub struct OptimizerReconcileRequest {
 
 /// Starts one of the product-owned, bounded optimizer recipes. Recipe inputs
 /// deliberately do not include commands, paths, environment variables, or
-/// credentials: those are resolved by the Rust host.
+/// credentials: those are resolved by the Rust host. An optional `base_model`
+/// must be an id from `docs/sft_tinker_base_models.toml`; omitted uses that
+/// file's default.
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OptimizerRecipeRunRequest {
@@ -321,4 +325,12 @@ pub struct OptimizerRecipeRunRequest {
     pub session_ref: Option<String>,
     #[serde(default)]
     pub open_visual: Option<bool>,
+    /// Tinker `create_lora_training_client(base_model=...)` id. Ignored except
+    /// on the Craftax hosted SFT recipe. Must be in `docs/sft_tinker_base_models.toml`.
+    #[serde(default)]
+    pub base_model: Option<String>,
+    /// Allowlisted dataset shard id. Ignored except on recipes that publish
+    /// `limits.datasetShards`. Selecting a shard is not supplying a path.
+    #[serde(default)]
+    pub dataset_shard: Option<String>,
 }

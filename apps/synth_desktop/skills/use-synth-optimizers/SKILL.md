@@ -13,7 +13,7 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 2. Choose the algorithm from the user's objective:
    - GEPA: improve prompts or other candidate values. The pinned smoke is `gepa.banking77.smoke.v1`; read [references/gepa.md](references/gepa.md).
    - GELO / Go-Ex: explore a hosted search space or reconcile an existing hosted run. Read [references/gelo.md](references/gelo.md).
-   - SFT: train and compare model weights/checkpoints. The pinned smoke is `sft.craftax.gpt-oss.smoke.v1`; read [references/sft.md](references/sft.md).
+   - SFT: train and compare model weights/checkpoints. Stream hosted SFT with `sft.hosted.fixture.v1`; the Tinker Craftax smoke is `sft.craftax.gpt-oss.smoke.v1`. The Craftax Nemotron 3.5 Lightning hosted recipe (`sft.craftax.nemotron-nano.tinker.v1`) POSTs to local/hosted optimizers-beta and evaluates against the local Craftax slot. Student ids: `docs/sft_tinker_base_models.toml`. Read [references/sft.md](references/sft.md).
 3. For a local recipe, report its availability, exact fixed inputs, hard limits, prerequisite services, credential names, and whether its cost is dollar-capped or only compute-bounded.
 4. Require explicit user approval before `start_recipe`. Listing, importing, reconciling, inspecting, and visualizing do not require compute approval.
 5. Pass only `recipe_id`, optional `session_ref`, and `open_visual`. The Rust host owns commands, paths, hyperparameters, and credential resolution.

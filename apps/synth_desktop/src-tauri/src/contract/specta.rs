@@ -119,6 +119,12 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::optimizers_import_local,
         crate::optimizers_reconcile_cloud,
         crate::optimizers_list_cloud,
+        crate::optimizers::manager::optimizer_sidecar_status,
+        crate::optimizers::manager::optimizer_sidecar_install,
+        crate::optimizers::manager::optimizer_sidecar_start,
+        crate::optimizers::manager::optimizer_sidecar_stop,
+        crate::optimizers::manager::optimizer_sidecar_version,
+        crate::optimizers::manager::optimizer_sidecar_uninstall,
         crate::visuals_templates_list,
         crate::visuals_templates_get,
         crate::visuals_list,
@@ -130,6 +136,10 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::visuals_fork,
         crate::visuals_archive,
         crate::visuals_show,
+        crate::visuals_content,
+        crate::visuals_renditions,
+        crate::visuals_rendition,
+        crate::visuals_render,
         crate::synth_config_get,
         crate::synth_config_update,
         crate::model_performance_get,
@@ -140,6 +150,11 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::account_poll_sign_in,
         crate::account_cancel_sign_in,
         crate::account_sign_out,
+        crate::codex_oauth_begin,
+        crate::codex_oauth_complete_manual,
+        crate::codex_oauth_status,
+        crate::codex_oauth_disconnect,
+        crate::codex_oauth_cancel,
         crate::model_multi_agent_list,
         crate::model_multi_agent_update,
         crate::workspace_access_get,
@@ -249,7 +264,7 @@ mod tests {
         let exported =
             body.matches("__TAURI_INVOKE(").count() + body.matches("__TAURI_INVOKE<").count();
         assert_eq!(
-            exported, 120,
+            exported, 135,
             "generated bindings must contain the complete desktop command set"
         );
     }

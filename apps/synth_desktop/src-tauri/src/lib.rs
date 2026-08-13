@@ -2,6 +2,8 @@ mod account;
 mod account_cloud;
 mod cloud;
 mod codex;
+mod codex_oauth;
+mod container_stream;
 pub mod contract;
 pub mod core_runtime;
 mod credential_broker;
@@ -63,11 +65,12 @@ use synth_config::{
 };
 use tauri::{Emitter, Manager, RunEvent, State};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
 use terminal::{TerminalCreateRequest, TerminalEvent, TerminalInfo, TerminalManager};
 use trace_ingest::{TraceBundleIngestRequest, TraceBundleIngestResult};
 use visuals::{
-    TemplateMeta, VisualCreateRequest, VisualQuery, VisualRecord, VisualRevision,
-    VisualUpdateRequest,
+    TemplateMeta, VisualAsset, VisualCreateRequest, VisualQuery, VisualRecord, VisualRendition,
+    VisualRevision, VisualUpdateRequest,
 };
 use workspace_scope::WorkspaceGrantRequest;
 use workspace_scope::{ConversationWorkspaceScope, WorkspaceAccessMode};
@@ -280,9 +283,16 @@ async fn hydrate_container(
     }
     let task_family = info
         .as_ref()
-        .and_then(|value| value.get("env_family").or_else(|| value.get("task_family")))
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
+        .and_then(|value| {
+            crate::visuals::classify_live_eval_family(value, None)
+                .map(|family| family.as_str().to_string())
+        })
+        .or_else(|| {
+            info.as_ref()
+                .and_then(|value| value.get("env_family").or_else(|| value.get("task_family")))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
         .or_else(|| {
             health
                 .get("payload")
@@ -308,6 +318,28 @@ async fn hydrate_container(
             "hydratedAt".into(),
             serde_json::json!(chrono::Utc::now().to_rfc3339()),
         );
+    }
+    if let Some(info_value) = &info {
+        if let Some(family) =
+            crate::visuals::classify_live_eval_family(info_value, task_family.as_deref())
+        {
+            let existing_refs = metadata
+                .get("liveEval")
+                .and_then(|value| value.get("policyRefs"))
+                .cloned();
+            match crate::visuals::live_eval_bind_metadata(
+                family,
+                info_value,
+                existing_refs.as_ref(),
+            ) {
+                Ok(bind) => {
+                    metadata.insert("liveEval".into(), bind);
+                }
+                Err(error) => {
+                    metadata.insert("liveEvalError".into(), serde_json::json!(error.to_string()));
+                }
+            }
+        }
     }
     if let Some(info) = info {
         metadata.insert("info".into(), info);
@@ -354,6 +386,13 @@ async fn data_containers_register(
     )
     .await;
     let task_family = hydrated_family.or_else(|| request.task_family.clone());
+    if let Some(error) = metadata
+        .get("liveEvalError")
+        .and_then(|value| value.as_str())
+        .filter(|error| error.contains("live_frames"))
+    {
+        return Err(error.into());
+    }
     state
         .register_container(request, status, health, metadata, task_family)
         .await
@@ -982,6 +1021,61 @@ async fn visuals_show(
 
 #[tauri::command]
 #[specta::specta]
+async fn visuals_content(
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+) -> Result<VisualAsset, AppError> {
+    state
+        .visuals()
+        .mermaid_source(visual_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_renditions(
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+) -> Result<Vec<VisualRendition>, AppError> {
+    state
+        .visuals()
+        .list_renditions(visual_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_rendition(
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+    format: Option<String>,
+    theme: Option<String>,
+    size_class: Option<String>,
+) -> Result<VisualAsset, AppError> {
+    state
+        .visuals()
+        .mermaid_rendition(visual_id, format, theme, size_class)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_render(
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+) -> Result<VisualRecord, AppError> {
+    state
+        .visuals()
+        .render_mermaid(&visual_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 fn synth_config_get() -> Result<BackendSettings, AppError> {
     synth_config::get().map_err(AppError::from)
 }
@@ -1098,6 +1192,71 @@ async fn account_begin_sign_in(
         .open_url(begin.verification_uri.clone(), None::<String>)
         .map_err(AppError::from)?;
     Ok(begin)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn codex_oauth_begin(
+    app: tauri::AppHandle,
+    manager: State<'_, Arc<codex_oauth::Manager>>,
+) -> Result<codex_oauth::BeginResult, AppError> {
+    let result = manager
+        .inner()
+        .clone()
+        .begin()
+        .await
+        .map_err(AppError::from)?;
+    if let Err(error) = app
+        .opener()
+        .open_url(result.authorize_url.clone(), None::<String>)
+    {
+        let _ = manager.cancel().await;
+        return Err(AppError::from(error));
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn codex_oauth_complete_manual(
+    manager: State<'_, Arc<codex_oauth::Manager>>,
+    redirect_url: String,
+) -> Result<codex_oauth::Status, AppError> {
+    manager
+        .complete_manual(&redirect_url)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn codex_oauth_status(
+    manager: State<'_, Arc<codex_oauth::Manager>>,
+) -> Result<codex_oauth::Status, AppError> {
+    manager.status().map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn codex_oauth_disconnect(
+    manager: State<'_, Arc<codex_oauth::Manager>>,
+    codex: State<'_, Arc<CodexManager>>,
+) -> Result<codex_oauth::Status, AppError> {
+    for session in codex.list().await {
+        if session.provider_name == codex_oauth::PROVIDER_ID {
+            codex
+                .close(&session.session_id)
+                .await
+                .map_err(AppError::from)?;
+        }
+    }
+    manager.disconnect().await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn codex_oauth_cancel(manager: State<'_, Arc<codex_oauth::Manager>>) -> Result<(), AppError> {
+    manager.cancel().await.map_err(AppError::from)
 }
 
 /// One poll step of the pending sign-in. On success the key is stored through
@@ -1474,6 +1633,7 @@ async fn workspace_scope_approve_request(
 /// knows. Shared by the plain attach command and the atomic send command.
 async fn prepare_codex_start(
     laguna: &LagunaManager,
+    oauth: &codex_oauth::Manager,
     core: &CoreRuntime,
     mut request: CodexSessionStartRequest,
 ) -> Result<CodexSessionStartRequest, AppError> {
@@ -1498,16 +1658,17 @@ async fn prepare_codex_start(
                 .map_err(AppError::from)?
                 .to_string_lossy()
                 .into_owned();
-            return prepare_codex_provider(laguna, request).await;
+            return prepare_codex_provider(laguna, oauth, request).await;
         }
     };
     request.workspace = scope.workspace.clone();
     request.writable_roots = workspace_scope::writable_roots(&scope);
-    prepare_codex_provider(laguna, request).await
+    prepare_codex_provider(laguna, oauth, request).await
 }
 
 async fn prepare_codex_provider(
     laguna: &LagunaManager,
+    oauth: &codex_oauth::Manager,
     mut request: CodexSessionStartRequest,
 ) -> Result<CodexSessionStartRequest, AppError> {
     if request.multi_agent_version.is_none() {
@@ -1558,6 +1719,30 @@ async fn prepare_codex_provider(
                 resolved.api_key.as_deref(),
             )?;
         }
+        codex::ProviderClass::OpenaiCodexOauth => {
+            let credential = oauth
+                .fresh_credential()
+                .await
+                .map_err(AppError::from)?
+                .ok_or_else(|| {
+                    AppError::message("Reconnect ChatGPT subscription in Settings → Models")
+                })?;
+            const ALLOWED: &[&str] = &["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"];
+            if !ALLOWED
+                .iter()
+                .any(|model| request.model.eq_ignore_ascii_case(model))
+            {
+                return Err(AppError::message(
+                    "This model is not available through the ChatGPT subscription target",
+                ));
+            }
+            request.base_url = "https://chatgpt.com/backend-api/codex".into();
+            request.api_key = serde_json::to_string(&credential).map_err(AppError::from)?;
+            request.provider_name = Some(codex_oauth::PROVIDER_ID.into());
+            request.provider_title = Some("ChatGPT subscription (Codex OAuth)".into());
+            request.provider_env_key = None;
+            request.broker_credential = false;
+        }
         codex::ProviderClass::Direct => {
             // openai / Azure / custom Responses endpoints: the renderer
             // supplies endpoint and env key, Rust holds no credential for
@@ -1578,11 +1763,12 @@ async fn codex_turn_send(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
     laguna: State<'_, Arc<LagunaManager>>,
+    oauth: State<'_, Arc<codex_oauth::Manager>>,
     core: State<'_, Arc<CoreRuntime>>,
     mut request: CodexTurnSendRequest,
 ) -> Result<CodexSessionInfo, CodexTurnFailure> {
     let session_id = request.start.session_id.clone();
-    request.start = prepare_codex_start(&laguna, &core, request.start)
+    request.start = prepare_codex_start(&laguna, &oauth, &core, request.start)
         .await
         .map_err(|error| CodexTurnFailure {
             code: "codex_provider_unavailable".into(),
@@ -1599,10 +1785,11 @@ async fn codex_session_start(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
     laguna: State<'_, Arc<LagunaManager>>,
+    oauth: State<'_, Arc<codex_oauth::Manager>>,
     core: State<'_, Arc<CoreRuntime>>,
     request: CodexSessionStartRequest,
 ) -> Result<CodexSessionInfo, AppError> {
-    let request = prepare_codex_start(&laguna, &core, request).await?;
+    let request = prepare_codex_start(&laguna, &oauth, &core, request).await?;
     state.start(app, request).await.map_err(AppError::from)
 }
 
@@ -1634,10 +1821,11 @@ async fn codex_thread_compact(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
     laguna: State<'_, Arc<LagunaManager>>,
+    oauth: State<'_, Arc<codex_oauth::Manager>>,
     core: State<'_, Arc<CoreRuntime>>,
     request: CodexSessionStartRequest,
 ) -> Result<(), AppError> {
-    let request = prepare_codex_start(&laguna, &core, request).await?;
+    let request = prepare_codex_start(&laguna, &oauth, &core, request).await?;
     state.compact(app, request).await.map_err(AppError::from)
 }
 
@@ -1668,11 +1856,15 @@ async fn codex_approval_resolve(
 #[specta::specta]
 async fn codex_session_close(
     state: State<'_, Arc<CodexManager>>,
+    oauth: State<'_, Arc<codex_oauth::Manager>>,
     request: CodexSessionRequest,
 ) -> Result<(), AppError> {
     state
         .close(&request.session_id)
         .await
+        .map_err(AppError::from)?;
+    oauth
+        .sync_from_session(&request.session_id)
         .map_err(AppError::from)
 }
 
@@ -1773,6 +1965,9 @@ fn terminal_close(
 }
 
 pub fn run() {
+    if crate::visuals::mermaid::hidden_mode_requested() {
+        std::process::exit(crate::visuals::mermaid::run_hidden_mode());
+    }
     let specta = contract::specta::builder();
     #[cfg(debug_assertions)]
     {
@@ -1821,6 +2016,7 @@ pub fn run() {
                 crate::storage::app_data_root().join("migration-backups"),
             );
             let laguna = Arc::new(LagunaManager::new());
+            let optimizer_manager = core.optimizers().manager().clone();
             let receipts = Arc::new(credential_broker::ReceiptStore::new());
             let broker = Arc::new(
                 credential_broker::CredentialBroker::start(receipts.clone()).map_err(|error| {
@@ -1831,6 +2027,7 @@ pub fn run() {
             let codex = Arc::new(CodexManager::new(Some(core.clone()), broker.clone()));
             let supervisor = Arc::new(services::ServiceSupervisor::new());
             supervisor.register(laguna.clone());
+            supervisor.register(optimizer_manager.clone());
             supervisor.register(whisper.clone());
             app.manage(core.clone());
             app.manage(migration);
@@ -1840,8 +2037,10 @@ pub fn run() {
             app.manage(whisper);
             app.manage(Arc::new(TerminalManager::new()));
             app.manage(Arc::new(device_auth::DeviceAuthManager::new()));
+            app.manage(Arc::new(codex_oauth::Manager::production()));
             app.manage(Arc::new(account_cloud::AccountCloudClient::open()));
             app.manage(laguna.clone());
+            app.manage(optimizer_manager.clone());
             app.manage(supervisor);
 
             // All committed CoreRuntime events reach Tauri through this single
@@ -1854,6 +2053,17 @@ pub fn run() {
                 while let Ok(status) = status_updates.recv().await {
                     let _ = status_handle
                         .emit(crate::contract::events::EventChannel::LAGUNA_STATUS, status);
+                }
+            });
+
+            let mut optimizer_status = optimizer_manager.subscribe();
+            let optimizer_status_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while let Ok(status) = optimizer_status.recv().await {
+                    let _ = optimizer_status_handle.emit(
+                        crate::contract::events::EventChannel::OPTIMIZER_STATUS,
+                        status,
+                    );
                 }
             });
 

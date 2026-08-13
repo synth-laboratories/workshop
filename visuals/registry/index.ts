@@ -40,4 +40,5 @@ export const TEMPLATE_IDS = METAS.map((t) => t.id);
 
 export type { VisualTemplate, VisualTemplateMeta, VisualInstance, VisualBinding } from "../runtime/types.ts";
 export { bindTemplateSlots, subscribeLiveSlot, isVisualBindings, propsFromBindings } from "../runtime/bind.ts";
+export { ingestLiveEnvelopes, assertLiveEvalSlot, LIVE_EVAL_SLOT } from "../runtime/liveStream.ts";
 export { saveVisualInstanceTsx, renderInstanceTsx, markInstanceSaved } from "../runtime/save_tsx.ts";

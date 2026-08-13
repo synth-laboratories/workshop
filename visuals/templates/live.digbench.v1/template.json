@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "live.digbench.v1",
+  "title": "dig.bench live eval",
+  "genre": "live",
+  "version": "1.0.0",
+  "description": "dig.bench text observation, legal actions, and stats. No frames. Bind slot stream only.",
+  "accent": "#FF5C00",
+  "shell": "shell.tsx",
+  "tags": ["live", "digbench", "eval", "stream"],
+  "slots": [
+    {
+      "name": "stream",
+      "description": "Declared live SSE or fixture with dig.bench kinds",
+      "accepts": ["live_sse", "fixture", "inline"],
+      "required": true,
+      "schema": "synth.trace-stream-event.v1"
+    }
+  ]
+}

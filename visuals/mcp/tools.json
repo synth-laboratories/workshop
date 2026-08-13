@@ -29,6 +29,14 @@
             "type": "object",
             "additionalProperties": true
           },
+          "visual_config": {
+            "type": "object",
+            "description": "Trusted-template configuration; does not execute agent-authored code"
+          },
+          "presentation": {
+            "type": "string",
+            "enum": ["canvas", "pane"]
+          },
           "instance_id": {
             "type": "string",
             "description": "Optional stable instance id; auto-generated if omitted"
@@ -65,18 +73,44 @@
       }
     },
     {
-      "name": "visual_save_tsx",
-      "description": "Serialize a VisualInstance shell to visuals/instances/<id>.tsx and mark status=saved.",
+      "name": "visual_authoring_context",
+      "description": "Return the current revision, trusted template contract, example evidence, review count, and readiness requirements.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "instance_id": { "type": "string" },
-          "overwrite": {
-            "type": "boolean",
-            "default": true
-          }
+          "visual_id": { "type": "string" }
         },
-        "required": ["instance_id"],
+        "required": ["visual_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "visual_review",
+      "description": "Record a rendered wide or compact critique for the current revision.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "visual_id": { "type": "string" },
+          "revision": { "type": "integer" },
+          "viewport": { "type": "object" },
+          "checks": { "type": "object" },
+          "findings": { "type": "array", "items": { "type": "string" } },
+          "screenshot_path": { "type": "string" }
+        },
+        "required": ["visual_id", "revision", "viewport", "checks", "findings"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "visual_mark_ready",
+      "description": "Mark a revision ready after two passing reviews at distinct viewport widths.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "visual_id": { "type": "string" },
+          "revision": { "type": "integer" }
+        },
+        "required": ["visual_id", "revision"],
         "additionalProperties": false
       }
     },
@@ -105,15 +139,18 @@
             "type": "string",
             "enum": [
               "live.eval_stream.v1",
-              "live.dock_harbor.v1",
-              "live.intern_acceptance.v1"
+              "live.harbor_eval.v1",
+              "live.container_rollouts.v1",
+              "live.intern_acceptance.v1",
+              "live.craftax.v1",
+              "live.digbench.v1"
             ],
             "description": "Which live template to use; creates instance if instance_id omitted"
           },
           "instance_id": { "type": "string" },
           "sse_url": {
             "type": "string",
-            "description": "Live SSE URL for eval/dock/intern events"
+            "description": "Live SSE URL for eval/Harbor/intern events"
           },
           "fixture": {
             "type": "string",

@@ -1,0 +1,62 @@
+{
+  "schema": "synth.trace-stream-event.v1",
+  "run_id": "harbor_public_1",
+  "events": [
+    {
+      "ts": "2026-08-12T17:20:00.000Z",
+      "run_id": "harbor_public_1",
+      "kind": "stream.subscribed",
+      "sequence": null,
+      "payload": { "stream.id": "stream_harbor_1", "next_sequence": 1 }
+    },
+    {
+      "ts": "2026-08-12T17:20:00.100Z",
+      "run_id": "harbor_public_1",
+      "kind": "trace.opened",
+      "sequence": 1,
+      "payload": { "rollout_id": "harbor_public_1" }
+    },
+    {
+      "ts": "2026-08-12T17:20:00.200Z",
+      "run_id": "harbor_public_1",
+      "kind": "trial.planned",
+      "sequence": 2,
+      "payload": { "instruction": "solve the public fixture" }
+    },
+    {
+      "ts": "2026-08-12T17:20:00.300Z",
+      "run_id": "harbor_public_1",
+      "kind": "trial.launched",
+      "sequence": 3,
+      "payload": { "sandbox": "env:harbor_public" }
+    },
+    {
+      "ts": "2026-08-12T17:20:00.400Z",
+      "run_id": "harbor_public_1",
+      "kind": "tools",
+      "sequence": 4,
+      "payload": { "name": "bash", "stdout": "ok" }
+    },
+    {
+      "ts": "2026-08-12T17:20:00.500Z",
+      "run_id": "harbor_public_1",
+      "kind": "stdout",
+      "sequence": 5,
+      "payload": { "text": "wrote answer" }
+    },
+    {
+      "ts": "2026-08-12T17:20:00.600Z",
+      "run_id": "harbor_public_1",
+      "kind": "verifier",
+      "sequence": 6,
+      "payload": { "script": "tests/test.sh", "reward.txt": 1.0 }
+    },
+    {
+      "ts": "2026-08-12T17:20:00.700Z",
+      "run_id": "harbor_public_1",
+      "kind": "status",
+      "sequence": 7,
+      "payload": { "status": "completed" }
+    }
+  ]
+}

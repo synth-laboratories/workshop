@@ -1,6 +1,6 @@
 ---
 name: run-live-container-evals
-description: Run and verify live Synth container evaluations with opt-in SSE telemetry, real rollout evidence, and the live.container_rollouts.v1 Workshop visual.
+description: Run and verify live Synth container evaluations with declared streaming telemetry, real rollout evidence, and a task-family Workshop visual.
 ---
 
 # Run live container evals
@@ -8,22 +8,78 @@ description: Run and verify live Synth container evaluations with opt-in SSE tel
 Use `synth_containers` for container discovery and rollout requests and
 `synth_visuals` for the live view. Do not scan ports or substitute fixtures.
 
+## Operator clock (W1–W3)
+
+This is one bind for Craftax, Harbor, and dig.bench. Skipping a step is a
+closed failure, not a retry.
+
+1. **Discover the provider.** Call `container_list`, then `container_probe`.
+   Read advertised `runtime_family`, transports, and `metadata.liveEval`.
+   Never guess `http://127.0.0.1:…/events` or `/rollouts/{id}/stream`.
+2. **Inspect capabilities.** Confirm the declared poll/SSE/WS URLs, slot
+   `stream` (never `live` or `jobs`), and `live_frames`. Harbor and dig.bench
+   are `live_frames=unsupported`. `live_frames=native` on those families is a
+   stop. dig.bench has no frames.
+3. **Create and review the visual first.** `live.craftax.v1`,
+   `live.harbor_eval.v1`, or `live.digbench.v1` from the classified family.
+   Bind slot `stream` only after prepare returns a descriptor. Obtain
+   `visual.ready` before any mutating start.
+4. **Wait for `stream.subscribed`.** HTTP 200 on GET is not ready. Heartbeats
+   do not count. `ready: true` on the control envelope is required.
+5. **Refuse start** if the visuals MCP is down, declared poll returns 503, the
+   stream URL was guessed, the visual is not ready, or `stream.subscribed` is
+   missing. Do not invent a replacement URL.
+6. **Never fabricate evidence.** Missing reward/usage/frames stay missing.
+   Incomplete dig.bench `/reward` is null, not 0. Do not draw dungeon frames.
+   Do not put `DIGBENCH_API_TOKEN` in logs, bindings, or screenshots.
+
+Harbor register writes `metadata.liveEval` with template `live.harbor_eval.v1`,
+slot `stream`, `liveFrames: unsupported`, and two `policy_ref`s (`harbor_fused`
++ `luna_med`, `harbor_fused` + `sol_med`). Open that visual before trial start.
+
+dig.bench opens `live.digbench.v1` before `start_session`. Two `policy_ref`s on
+the same game: basic (`react_legal_actions`) and agentic (`codex` +
+`mcp_bind: digbench-mcp`). Token starts at `start_session`.
+
+Craftax 10-lane pins are seeds 0–9 with `environment_ref` / `policy_ref` /
+`task_world`. The headless twin is containers `examples/craftax_ten_seeds.py`.
+Do not claim a paid Luna 10× run from this skill.
+
 ## Workflow
 
 1. Call `container_list`, select a registered container, then `container_probe`.
-2. Confirm `/info` advertises `rollout_stream_sse` or the rollout response can
-   return `synth.rollout.stream.v1`. Prefer SSE; use WebSocket for interactive
-   control or binary delivery only.
+2. Confirm discovery advertises a supported stream transport. Prefer SSE for
+   visuals, use WebSocket for interactive control or binary delivery, and use
+   bounded polling only when it is explicitly declared.
 3. List task instances and choose explicit stable IDs/seeds. State rollout count,
    model/policy, limits, and spend before a paid run.
-4. Create `live.container_rollouts.v1` through `synth_visuals.visual_manage`.
-   Bind slot `stream` as `live_sse` to an absolute SSE URL with schema
-   `synth.rollout.event.v1`, then show the visual.
-5. Start each rollout with:
+4. Allocate or preserve one stable `rollout_id`, then call
+   `container_prepare_rollout` for every rollout without starting it. Preserve the returned rollout ID,
+   stream ID, transport URL, retention, and policy/environment/task pins.
+5. Create the task-family visual through `synth_visuals.visual_manage`:
+   `live.craftax.v1` for native Craftax, `live.harbor_eval.v1` for a Harbor
+   attempt, or `live.digbench.v1` for dig.bench. Bind slot `stream` (never
+   `live` or `jobs`) as `live_sse` to the **declared** SSE URL. Do not construct
+   `/events` or `/rollouts/{id}/stream`.
+6. Open the visual in canvas mode and consume the stream until its control envelope reports
+   `stream.subscribed`. This acknowledgement is non-evidence and does not
+   advance the evidence sequence. Refuse the paid/mutating start if it is
+   missing. The first Luna call must not happen while the pane is still on
+   empty inline bindings.
+7. Iterate on the viewer at least twice, record wide and compact quality reviews,
+   and obtain a current `visual.ready` receipt. Then start each rollout with
+   `container_start_prepared_rollout`. Pass the prepared identity, exact stream
+   descriptor, visual id, `task_instance_id` or `seed`, and an explicit
+   `policy_ref`. The host does not pick `luna_med` or a default harness.
+   `container_run_rollouts` is scripted engine acceptance only — never use it
+   as a ReAct or model eval.
+
+The agent names the pin. Example (not a host default):
 
 ```json
 {
   "task_instance_id": "craftax:test:2001",
+  "policy_ref": { "harness": "react", "config": "luna_med" },
   "telemetry": {
     "enabled": true,
     "transport": "sse",
@@ -34,13 +90,25 @@ Use `synth_containers` for container discovery and rollout requests and
 }
 ```
 
-6. Resolve the returned relative `stream.sse_url` against the registered
-   container base URL. Never guess a stream route or rollout ID.
-7. Confirm the visible pane receives at least one `snapshot`, advances real
-   `progress.env_steps`, and displays the container-provided frame when present.
-8. Keep the stream open through `eval.run.terminal`. Report failures by lane.
-   Preserve the final sealed Trace V5 identity; a live stream is operational
-   evidence, not the durable evaluation record.
+8. Confirm the visible canvas receives real `observation`, `action`, `frame`, and
+   `reward_signal` events as applicable. For a ReAct policy, require
+   `span.policy.opened`, `span.policy.plan`, `span.policy.data`, and
+   `span.policy.closed`; the `data` partial carries the provider/model, selected
+   actions, nullable usage/cost, and bounded retry evidence. Token deltas are
+   additional `span.policy.data` records with `delta: true` only when the
+   provider streamed non-empty chunks — empty Luna reasoning stays blank.
+   ReAct history uses `compact_every=16`; a compact is a mechanical summary,
+   not a model-authored rewrite.
+9. Keep the stream open through authoritative terminal `status`. Report failures
+   by lane. Preserve the final sealed/reconciled Trace V5 identity and verify the
+   persisted journal can reopen with the container gone.
+
+If any request or live transport times out, do not allocate a new rollout.
+Call `container_get_rollout` with the stable identity. If it is still prepared,
+the exact same start may be replayed; if it is running or terminal, do not start
+again. Resume evidence with `container_poll_rollout(after=<last sequence>)`,
+advance to `next_cursor`, de-duplicate `(stream_id, sequence)`, and stop retrying
+when `cursor.closed` is true. SSE may then reattach with `Last-Event-ID`.
 
 ## Replay checks
 
@@ -54,14 +122,20 @@ Use `synth_containers` for container discovery and rollout requests and
 
 ## Acceptance checks
 
-- The event schema is `synth.rollout.event.v1`.
-- Use `Last-Event-ID` only when `supports_resume` is explicitly advertised;
-  otherwise reconnect as a live-only stream. Terminal events are never inferred.
-- Craftax frames come from the returned `frame_url`, not screenshots or fixtures.
+- The stream envelope schema is `synth.trace-stream-event.v1`; task-specific
+  facts live in its typed event kinds and payloads.
+- A descriptor with `cursor.kind = sequence` supports poll recovery. SSE resumes
+  with `Last-Event-ID`; WebSocket backfills through the declared poll URL before
+  reattaching. Terminal events are never inferred.
+- Craftax frames come from the emitted immutable frame URL, not screenshots or fixtures.
 - Reward, achievements, vitals, usage, and ETA show missing when unreported,
   never fabricated zeroes.
+- If `synth_visuals` is unreachable, poll returns 503, or a stream URL was not
+  declared by prepare, stop. Do not start. Do not guess `/events`.
+- GameBench is task/dataset identity, not a source format. Native Craftax events
+  use their declared Craftax source format; only Harbor is a first-class fold.
 - For an eval ETA, use the orchestrator's aggregate progress. A single container
   rollout cannot authoritatively estimate the remaining eval queue.
 
-Fall back to bounded polling only when streaming is not advertised, and label
-that mode visibly.
+Use bounded polling as the recovery authority even when SSE or WebSocket is the
+live delivery path, and label a sustained polling-only mode visibly.

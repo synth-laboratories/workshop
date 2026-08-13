@@ -203,6 +203,7 @@ export function ComposerDock({
 			}}
 			account={{
 				onConfigureAccount: () => setView({ kind: "settings", section: "account" }),
+				onConfigureModels: () => setView({ kind: "settings", section: "models" }),
 				onResolveBilling: () => setUsageSheetOpen(true),
 				onOpenVoiceSettings: () => setView({ kind: "settings", section: "voice" })
 			}}

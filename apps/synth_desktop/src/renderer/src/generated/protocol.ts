@@ -71,6 +71,21 @@ export const commands = {
 	optimizersImportLocal: (request: OptimizerImportLocalRequest) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_import_local", { request })),
 	optimizersReconcileCloud: (request: OptimizerReconcileRequest) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_reconcile_cloud", { request })),
 	optimizersListCloud: (algorithm: string | null, status: string | null, limit: unknown | null) => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_list_cloud", { algorithm, status, limit })),
+	optimizerSidecarStatus: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_status")),
+	optimizerSidecarInstall: (version: string | null) => typedError<OptimizerSidecarVersion, AppError>(__TAURI_INVOKE("optimizer_sidecar_install", { version })),
+	optimizerSidecarStart: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_start")),
+	optimizerSidecarStop: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_stop")),
+	optimizerSidecarVersion: () => typedError<{
+	version: string,
+	digest: string,
+	signature: string,
+	algorithmId: string,
+	algorithmVersion: string,
+	recipeSchemaVersion: string,
+	selected: boolean,
+	path: string,
+} | null, AppError>(__TAURI_INVOKE("optimizer_sidecar_version")),
+	optimizerSidecarUninstall: (version: string) => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_uninstall", { version })),
 	visualsTemplatesList: (genre: string | null) => typedError<TemplateMeta[], AppError>(__TAURI_INVOKE("visuals_templates_list", { genre })),
 	visualsTemplatesGet: (templateId: string) => typedError<TemplateMeta, AppError>(__TAURI_INVOKE("visuals_templates_get", { templateId })),
 	visualsList: (query: {
@@ -89,6 +104,10 @@ export const commands = {
 	visualsFork: (visualId: string, title: string | null, sessionId: string | null) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_fork", { visualId, title, sessionId })),
 	visualsArchive: (visualId: string) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_archive", { visualId })),
 	visualsShow: (visualId: string, sessionId: string | null) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_show", { visualId, sessionId })),
+	visualsContent: (visualId: string) => typedError<VisualAsset_Serialize, AppError>(__TAURI_INVOKE("visuals_content", { visualId })),
+	visualsRenditions: (visualId: string) => typedError<VisualRendition_Serialize[], AppError>(__TAURI_INVOKE("visuals_renditions", { visualId })),
+	visualsRendition: (visualId: string, format: string | null, theme: string | null, sizeClass: string | null) => typedError<VisualAsset_Serialize, AppError>(__TAURI_INVOKE("visuals_rendition", { visualId, format, theme, sizeClass })),
+	visualsRender: (visualId: string) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_render", { visualId })),
 	synthConfigGet: () => typedError<BackendSettings, AppError>(__TAURI_INVOKE("synth_config_get")),
 	synthConfigUpdate: (request: BackendSettingsUpdate) => typedError<BackendSettings, AppError>(__TAURI_INVOKE("synth_config_update", { request })),
 	modelPerformanceGet: (windowMinutes: number | null) => typedError<ModelPerformanceSnapshot_Serialize, AppError>(__TAURI_INVOKE("model_performance_get", { windowMinutes })),
@@ -116,6 +135,11 @@ export const commands = {
 	accountPollSignIn: () => typedError<SignInPoll, AppError>(__TAURI_INVOKE("account_poll_sign_in")),
 	accountCancelSignIn: () => typedError<null, AppError>(__TAURI_INVOKE("account_cancel_sign_in")),
 	accountSignOut: () => typedError<BackendSettings, AppError>(__TAURI_INVOKE("account_sign_out")),
+	codexOauthBegin: () => typedError<BeginResult, AppError>(__TAURI_INVOKE("codex_oauth_begin")),
+	codexOauthCompleteManual: (redirectUrl: string) => typedError<Status, AppError>(__TAURI_INVOKE("codex_oauth_complete_manual", { redirectUrl })),
+	codexOauthStatus: () => typedError<Status, AppError>(__TAURI_INVOKE("codex_oauth_status")),
+	codexOauthDisconnect: () => typedError<Status, AppError>(__TAURI_INVOKE("codex_oauth_disconnect")),
+	codexOauthCancel: () => typedError<null, AppError>(__TAURI_INVOKE("codex_oauth_cancel")),
 	modelMultiAgentList: () => typedError<ModelMultiAgentSetting[], AppError>(__TAURI_INVOKE("model_multi_agent_list")),
 	modelMultiAgentUpdate: (request: ModelMultiAgentUpdate) => typedError<ModelMultiAgentSetting[], AppError>(__TAURI_INVOKE("model_multi_agent_update", { request })),
 	workspaceAccessGet: () => typedError<WorkspaceAccessSettings, AppError>(__TAURI_INVOKE("workspace_access_get")),
@@ -394,6 +418,11 @@ export type BackendSettingsUpdate = {
 	apiKeyEnv: string,
 };
 
+export type BeginResult = {
+	authorizeUrl: string,
+	mode: string,
+};
+
 export type BillingAction = "upgrade" | "manage";
 
 export type CodexApprovalDecisionRequest = {
@@ -438,6 +467,7 @@ export type CodexSessionStartRequest = {
 	providerEnvKey: string | null,
 	approvalPolicy: string | null,
 	sandbox: string | null,
+	serviceTier: string | null,
 	threadId: string | null,
 	multiAgentVersion: MultiAgentVersion | null,
 	autoCompactTokenLimit?: unknown,
@@ -1022,12 +1052,24 @@ export type OptimizerQuery = {
 /**
  *  Starts one of the product-owned, bounded optimizer recipes. Recipe inputs
  *  deliberately do not include commands, paths, environment variables, or
- *  credentials: those are resolved by the Rust host.
+ *  credentials: those are resolved by the Rust host. An optional `base_model`
+ *  must be an id from `docs/sft_tinker_base_models.toml`; omitted uses that
+ *  file's default.
  */
 export type OptimizerRecipeRunRequest = {
 	recipeId: string,
 	sessionRef?: string | null,
 	openVisual?: boolean | null,
+	/**
+	 *  Tinker `create_lora_training_client(base_model=...)` id. Ignored except
+	 *  on the Craftax hosted SFT recipe. Must be in `docs/sft_tinker_base_models.toml`.
+	 */
+	baseModel?: string | null,
+	/**
+	 *  Allowlisted dataset shard id. Ignored except on recipes that publish
+	 *  `limits.datasetShards`. Selecting a shard is not supplying a path.
+	 */
+	datasetShard?: string | null,
 };
 
 export type OptimizerReconcileRequest = {
@@ -1115,6 +1157,26 @@ export type OptimizerRunRecord_Serialize = {
 	error?: unknown,
 };
 
+export type OptimizerSidecarStatus = {
+	phase: string,
+	baseUrl: string | null,
+	version: string | null,
+	digest: string | null,
+	detail: string | null,
+	updatedAt: unknown,
+};
+
+export type OptimizerSidecarVersion = {
+	version: string,
+	digest: string,
+	signature: string,
+	algorithmId: string,
+	algorithmVersion: string,
+	recipeSchemaVersion: string,
+	selected: boolean,
+	path: string,
+};
+
 export type OptimizerStateSlice = {
 	schemaVersion: string,
 	projectionSchemaVersion: string,
@@ -1127,6 +1189,10 @@ export type OptimizerStateSlice = {
 };
 
 export type OptimizerUsageSummary = {
+	/**
+	 *  Settled money, or `null` when no event has reported any. A run that
+	 *  never reports cost is unknown, not free — missing is never 0.
+	 */
 	costUsd?: number | null,
 	promptTokens?: unknown,
 	completionTokens?: unknown,
@@ -1135,7 +1201,7 @@ export type OptimizerUsageSummary = {
 	extra?: unknown,
 };
 
-export type RendererKind = "template" | "tsx" | "html";
+export type RendererKind = "template" | "tsx" | "html" | "mermaid";
 
 export type ResolvedTraceProjection = {
 	traceDigest: string,
@@ -1177,6 +1243,13 @@ export type SkillHit = {
 	id: string,
 	name: string,
 	description: string,
+};
+
+export type Status = {
+	configured: boolean,
+	accountHint: string | null,
+	lastRefresh: string | null,
+	expiresAt: string | null,
 };
 
 /**
@@ -1324,6 +1397,34 @@ export type UsageSummary = {
 	generatedAt: string,
 };
 
+export type VisualAsset = VisualAsset_Serialize | VisualAsset_Deserialize;
+
+export type VisualAsset_Deserialize = {
+	visualId: string,
+	revision: unknown,
+	format: string,
+	mediaType: string,
+	theme?: string | null,
+	sizeClass?: string | null,
+	digest: string,
+	base64: string,
+	widthPx?: unknown,
+	heightPx?: unknown,
+};
+
+export type VisualAsset_Serialize = {
+	visualId: string,
+	revision: unknown,
+	format: string,
+	mediaType: string,
+	theme?: string | null,
+	sizeClass?: string | null,
+	digest: string,
+	base64: string,
+	widthPx?: unknown,
+	heightPx?: unknown,
+};
+
 export type VisualCreateRequest = {
 	templateId: string,
 	title: string | null,
@@ -1397,6 +1498,36 @@ export type VisualRecord_Serialize = {
 	metadata: unknown,
 	createdAt: string,
 	updatedAt: string,
+};
+
+export type VisualRendition = VisualRendition_Serialize | VisualRendition_Deserialize;
+
+export type VisualRendition_Deserialize = {
+	visualId: string,
+	revision: unknown,
+	format: string,
+	theme: string,
+	sizeClass: string,
+	contentDigest: string,
+	mediaType: string,
+	rendererVersion: string,
+	widthPx?: unknown,
+	heightPx?: unknown,
+	createdAt: string,
+};
+
+export type VisualRendition_Serialize = {
+	visualId: string,
+	revision: unknown,
+	format: string,
+	theme: string,
+	sizeClass: string,
+	contentDigest: string,
+	mediaType: string,
+	rendererVersion: string,
+	widthPx?: unknown,
+	heightPx?: unknown,
+	createdAt: string,
 };
 
 export type VisualRevision = VisualRevision_Serialize | VisualRevision_Deserialize;

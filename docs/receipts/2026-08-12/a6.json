@@ -1,0 +1,301 @@
+{
+  "schema": "synth.workshop.a6-receipt.v1",
+  "test": "A6 \u2014 hosted multi-checkpoint SFT with banking77_classify campaigns",
+  "runId": "sft_banking77_train_a_407b5131",
+  "algorithmId": "sft",
+  "algorithmVersion": "banking77-nemotron-lightning-tinker-v1",
+  "status": "completed",
+  "visualRefs": [
+    {
+      "id": "vis_6b013a1cf2af4c91b7e0a075aeec9f05",
+      "kind": "visual",
+      "metadata": {
+        "templateId": "optimizer.sft.live.v1"
+      },
+      "role": "primary",
+      "title": "SFT \u00b7 Banking77 intent SFT \u00b7 hosted Tinker \u00b7 banking77_classify checkpoint campaigns"
+    }
+  ],
+  "usage": {
+    "completionTokens": 0,
+    "costUsd": null,
+    "extra": {},
+    "promptTokens": 0,
+    "rollouts": 0,
+    "wallTimeMs": 0
+  },
+  "checks": {
+    "C1_visual_open_before_training": {
+      "visualReadySeq": 2,
+      "trainingStartedSeq": 6,
+      "pass": true
+    },
+    "C2_multi_checkpoint_with_campaigns": {
+      "checkpointsCreated": 3,
+      "evaluationsAllocated": 3,
+      "evaluationsCompleted": 3,
+      "pass": true
+    },
+    "C3_campaigns_run_through_banking77_classify": {
+      "evaluatorVersions": [
+        "banking77_eval.v1"
+      ],
+      "planRefs": [],
+      "containerBindings": [
+        {
+          "id": "http://127.0.0.1:8110",
+          "kind": "local_slot",
+          "label": "banking77_classify container",
+          "metadata": {
+            "evaluationPlanRef": "banking77_eval.v1",
+            "role": "checkpoint_evaluation",
+            "worldRef": "world:banking77@heldout"
+          },
+          "status": "leased"
+        }
+      ],
+      "pass": true
+    },
+    "C4_stable_rollout_ids_and_split_roles": {
+      "rolloutIdSample": [
+        "sftroll_eaf971b8f70ebcdae1afcaca",
+        "sftroll_667575a5fc1248ec83182719",
+        "sftroll_386da1c6e84122816ce504fb",
+        "sftroll_8bf4c7c9fb9f8be3b7e520e6",
+        "sftroll_1f7803ab3f6a5bcae5f33a49",
+        "sftroll_add7e49fe7f49ddf61aaa820"
+      ],
+      "childRefSchemas": [
+        "synth.resource-ref.v1"
+      ],
+      "childRefRoles": [
+        "candidate_evaluation"
+      ],
+      "uniqueRolloutIds": 6,
+      "totalRolloutIds": 6,
+      "splitRoles": [
+        "selection"
+      ],
+      "pass": true
+    },
+    "C5_metrics_are_aligned_not_parallel_arrays": {
+      "hasPoints": false,
+      "arrayLengths": {},
+      "pass": true
+    },
+    "C6_promotion_is_not_checkpoint_ready": {
+      "readyEvents": 6,
+      "promotedEvents": 0,
+      "runStatus": "completed",
+      "promotedCheckpointOnRun": null,
+      "pass": true
+    },
+    "C7_reopen_after_provider_gone": {
+      "runId": "sft_banking77_train_a_407b5131",
+      "status": "completed",
+      "eventsReadable": 69,
+      "checkpointsReadable": 4,
+      "visualRefs": [
+        {
+          "id": "vis_6b013a1cf2af4c91b7e0a075aeec9f05",
+          "kind": "visual",
+          "metadata": {
+            "templateId": "optimizer.sft.live.v1"
+          },
+          "role": "primary",
+          "title": "SFT \u00b7 Banking77 intent SFT \u00b7 hosted Tinker \u00b7 banking77_classify checkpoint campaigns"
+        }
+      ],
+      "pass": true
+    }
+  },
+  "slices": {
+    "run.usage": {
+      "completionTokens": 0,
+      "costUsd": null,
+      "extra": {},
+      "promptTokens": 0,
+      "rollouts": 0,
+      "wallTimeMs": 0
+    },
+    "sft.checkpoints": {
+      "checkpoints": [
+        {
+          "id": "tinker:sft_banking77_train_a_407b5131",
+          "kind": "training_job",
+          "raw": {
+            "provider": "tinker"
+          },
+          "ready": true,
+          "status": "running"
+        },
+        {
+          "id": "ckpt-10",
+          "kind": "checkpoint",
+          "raw": {
+            "promoted": false
+          },
+          "status": "ready"
+        },
+        {
+          "id": "ckpt-20",
+          "kind": "checkpoint",
+          "raw": {
+            "promoted": false
+          },
+          "status": "ready"
+        },
+        {
+          "id": "ckpt-30",
+          "kind": "checkpoint",
+          "raw": {
+            "promoted": false
+          },
+          "status": "ready"
+        }
+      ]
+    },
+    "sft.checkpoint_evaluations": {
+      "evaluations": [
+        {
+          "delta": {
+            "checkpoint_id": "ckpt-10",
+            "evaluation_id": "eval_ckpt-10_selection",
+            "evaluator_version": "banking77_eval.v1",
+            "policy_config_id": "sftckpt_76ac81dcdbd968ed2b397844",
+            "rollout_count": 2,
+            "split_role": "selection",
+            "status": "allocated",
+            "step": 10
+          },
+          "item": {
+            "id": "eval_ckpt-10_selection",
+            "kind": "evaluation",
+            "raw": {},
+            "status": "allocated"
+          },
+          "measurementOnly": false,
+          "role": "selection",
+          "sequence": 48,
+          "snapshot": null
+        },
+        {
+          "delta": {
+            "checkpoint_id": "ckpt-10",
+            "evaluation_id": "eval_ckpt-10_selection",
+            "evaluator_version": "banking77_eval.v1",
+            "reward": null,
+            "score": null,
+            "scored": 0,
+            "split_role": "selection",
+            "status": "completed",
+            "step": 10,
+            "total": 2
+          },
+          "item": {
+            "id": "eval_ckpt-10_selection",
+            "kind": "evaluation",
+            "raw": {},
+            "status": "completed"
+          },
+          "measurementOnly": false,
+          "role": "selection",
+          "sequence": 53,
+          "snapshot": null
+        },
+        {
+          "delta": {
+            "checkpoint_id": "ckpt-20",
+            "evaluation_id": "eval_ckpt-20_selection",
+            "evaluator_version": "banking77_eval.v1",
+            "policy_config_id": "sftckpt_4d015ed678eb03a9a2198051",
+            "rollout_count": 2,
+            "split_role": "selection",
+            "status": "allocated",
+            "step": 20
+          },
+          "item": {
+            "id": "eval_ckpt-20_selection",
+            "kind": "evaluation",
+            "raw": {},
+            "status": "allocated"
+          },
+          "measurementOnly": false,
+          "role": "selection",
+          "sequence": 54,
+          "snapshot": null
+        },
+        {
+          "delta": {
+            "checkpoint_id": "ckpt-20",
+            "evaluation_id": "eval_ckpt-20_selection",
+            "evaluator_version": "banking77_eval.v1",
+            "reward": null,
+            "score": null,
+            "scored": 0,
+            "split_role": "selection",
+            "status": "completed",
+            "step": 20,
+            "total": 2
+          },
+          "item": {
+            "id": "eval_ckpt-20_selection",
+            "kind": "evaluation",
+            "raw": {},
+            "status": "completed"
+          },
+          "measurementOnly": false,
+          "role": "selection",
+          "sequence": 59,
+          "snapshot": null
+        },
+        {
+          "delta": {
+            "checkpoint_id": "ckpt-30",
+            "evaluation_id": "eval_ckpt-30_selection",
+            "evaluator_version": "banking77_eval.v1",
+            "policy_config_id": "sftckpt_5555f87bfe0fba8b70f96233",
+            "rollout_count": 2,
+            "split_role": "selection",
+            "status": "allocated",
+            "step": 30
+          },
+          "item": {
+            "id": "eval_ckpt-30_selection",
+            "kind": "evaluation",
+            "raw": {},
+            "status": "allocated"
+          },
+          "measurementOnly": false,
+          "role": "selection",
+          "sequence": 60,
+          "snapshot": null
+        },
+        {
+          "delta": {
+            "checkpoint_id": "ckpt-30",
+            "evaluation_id": "eval_ckpt-30_selection",
+            "evaluator_version": "banking77_eval.v1",
+            "reward": null,
+            "score": null,
+            "scored": 0,
+            "split_role": "selection",
+            "status": "completed",
+            "step": 30,
+            "total": 2
+          },
+          "item": {
+            "id": "eval_ckpt-30_selection",
+            "kind": "evaluation",
+            "raw": {},
+            "status": "completed"
+          },
+          "measurementOnly": false,
+          "role": "selection",
+          "sequence": 65,
+          "snapshot": null
+        }
+      ]
+    }
+  }
+}

@@ -41,7 +41,7 @@
     "test": "npm run test:rust && npm run test:visuals && npm run test:a11y && npm run test:ui",
     "test:rust": "npm run rust:test --workspace @synth/synth-desktop",
     "test:legacy-runtime": "PYTHONPATH=services/local-runtime/src python3 -m unittest discover -s services/local-runtime/tests -v",
-    "test:visuals": "node --test visuals/tests/*.test.mjs",
+    "test:visuals": "node --experimental-strip-types --test visuals/tests/*.test.mjs",
     "test:a11y": "node --test apps/synth_desktop/tests/*.test.mjs",
     "test:ui": "npm run build --workspace @synth/synth-desktop && playwright test --config apps/synth_desktop/playwright.config.ts",
     "test:playwright": "npm run build --workspace @synth/synth-desktop && playwright test --config apps/synth_desktop/playwright.config.ts",

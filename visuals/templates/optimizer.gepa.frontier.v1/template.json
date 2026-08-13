@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "optimizer.gepa.frontier.v1",
+  "title": "GEPA frontier",
+  "genre": "optimizer",
+  "version": "1.0.0",
+  "description": "Pareto / incumbent slices for a single GEPA run. No merged Luna-vs-Sol overlay.",
+  "accent": "#F05F22",
+  "shell": "shell.tsx",
+  "tags": ["optimizer", "gepa", "frontier"],
+  "slots": [
+    {
+      "name": "optimizer_run",
+      "description": "Optimizer run + optimizer_event.v1 Pareto / incumbent slices",
+      "accepts": ["optimizer_run", "fixture", "inline"],
+      "required": true,
+      "schema": "optimizer_event.v1"
+    }
+  ]
+}

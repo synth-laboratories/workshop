@@ -173,6 +173,8 @@ impl CodexManager {
                 performance_trackers: self.performance_trackers.clone(),
                 receipts: self.receipts(),
                 attachment_id,
+                codex_oauth: super::home::provider_class(request.provider_name.as_deref())
+                    == super::home::ProviderClass::OpenaiCodexOauth,
             },
         )
         .await?;
@@ -201,7 +203,7 @@ impl CodexManager {
             .thread_id
             .clone()
             .or_else(|| remembered.as_ref().map(|record| record.thread_id.clone()));
-        let method = if requested_thread.is_some() {
+        let mut method = if requested_thread.is_some() {
             "thread/resume"
         } else {
             "thread/start"
@@ -225,6 +227,21 @@ impl CodexManager {
                 {
                     attempts += 1;
                     tokio::time::sleep(std::time::Duration::from_millis(200 * attempts)).await;
+                }
+                Err(error)
+                    if method == "thread/resume"
+                        && error.to_string().contains("no rollout found for thread id") =>
+                {
+                    // A locally remembered thread can outlive the Codex rollout that
+                    // backed it (for example after switching CODEX_HOME or clearing
+                    // app-server state). Treat that exact resume miss as a stale
+                    // pointer and create a replacement thread once. Other resume
+                    // failures remain visible to the caller.
+                    method = "thread/start";
+                    if let Some(object) = params.as_object_mut() {
+                        object.remove("threadId");
+                    }
+                    attempts = 0;
                 }
                 Err(error) => return Err(error),
             }

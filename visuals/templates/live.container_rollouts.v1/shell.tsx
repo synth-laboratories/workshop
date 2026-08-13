@@ -1,19 +1,19 @@
 import { useMemo, useState } from "react";
 import { VisualChrome, MetricStrip } from "../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../chrome/useLiveEvalStream.ts";
+import { formatMissingNumber, formatMissingUsd, missingNumber } from "../../runtime/liveStream.ts";
 import type { LiveEvalEvent } from "../../runtime/types.ts";
-import fixture from "../../fixtures/live_container_rollout_events.json";
 
 type StreamPayload = { run_id?: string; events?: LiveEvalEvent[]; sse_url?: string };
 type Lane = {
   name: string; status: "starting" | "running" | "finished" | "failed";
-  done: number; total?: number; reward: number; achievements: string[];
+  done: number; total?: number; reward?: number; achievements: string[];
   health?: number; food?: number; drink?: number; energy?: number;
   calls?: number; tokens?: number; cost?: number; last: string; model?: string;
   frameUrl?: string;
 };
 
-function num(v: unknown): number | undefined { return typeof v === "number" && Number.isFinite(v) ? v : undefined; }
+function num(v: unknown): number | undefined { return missingNumber(v); }
 function payloadObject(v: unknown): Record<string, unknown> { return v && typeof v === "object" ? v as Record<string, unknown> : {}; }
 function timestamp(e: LiveEvalEvent) { return e.occurred_at ?? e.ts ?? ""; }
 function displayTime(value: string) {
@@ -32,7 +32,7 @@ function project(events: LiveEvalEvent[]): Lane[] {
   const lanes = new Map<string, Lane>();
   for (const e of events) {
     const name = laneName(e);
-    const lane = lanes.get(name) ?? { name, status: "starting", done: 0, reward: 0, achievements: [], last: "opening rollout" };
+    const lane = lanes.get(name) ?? { name, status: "starting", done: 0, achievements: [], last: "opening rollout" };
     const p = e.payload;
     if (e.kind === "eval.phase") { lane.status = "running"; lane.model = String(payloadObject(p.policy).model ?? p.model ?? "") || undefined; }
     if (e.kind === "snapshot") {
@@ -83,27 +83,29 @@ function LaneReplay({ laneEvents, streamBase }: { laneEvents: LiveEvalEvent[]; s
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginTop: 10 }}><label htmlFor={`lane-time-${lane.name}`} className="sv-mono" style={{ fontSize: 10, color: "var(--sv-text-faint)" }}>Rollout time</label><time className="sv-mono" style={{ fontSize: 10 }}>{selectedTime}</time></div>
     <input id={`lane-time-${lane.name}`} type="range" min={0} max={Math.max(0, laneEvents.length - 1)} value={selected} onChange={(event) => setCursor(Number(event.currentTarget.value))} aria-label={`Replay ${lane.name}`} style={{ width: "100%", margin: "5px 0 2px" }} />
     <div style={{ height: 7, background: "var(--sv-border)", borderRadius: 8, margin: "9px 0 7px", overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", background: "var(--sv-accent)", transition: "width 180ms ease" }} /></div>
-    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, color: "var(--sv-text-muted)", fontSize: 11 }}><span className="sv-mono">{lane.done}{lane.total ? ` / ${lane.total}` : " steps"}</span><span>reward <strong style={{ color: "var(--sv-text)" }}>{lane.reward.toFixed(2)}</strong></span><span>{lane.achievements.length} achievements</span>{lane.calls != null ? <span>{lane.calls} calls</span> : null}{lane.cost != null ? <span>${lane.cost.toFixed(4)}</span> : null}</div>
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, color: "var(--sv-text-muted)", fontSize: 11 }}><span className="sv-mono">{lane.done}{lane.total ? ` / ${lane.total}` : " steps"}</span><span>reward <strong style={{ color: "var(--sv-text)" }}>{formatMissingNumber(lane.reward)}</strong></span><span>{lane.achievements.length} achievements</span>{lane.calls != null ? <span>{lane.calls} calls</span> : null}{lane.cost != null ? <span>{formatMissingUsd(lane.cost)}</span> : null}</div>
     <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "end" }}><Vital label="HLTH" value={lane.health} /><Vital label="FOOD" value={lane.food} /><Vital label="DRNK" value={lane.drink} /><Vital label="NRGY" value={lane.energy} /><span className="sv-mono" style={{ marginLeft: "auto", maxWidth: "52%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10, color: "var(--sv-text-faint)" }}>› {lane.last}</span></div>
     {lane.frameUrl && streamBase ? <img src={new URL(lane.frameUrl, streamBase).toString()} alt={`Craftax world for ${lane.name} at ${selectedTime}`} style={{ display: "block", width: "100%", maxHeight: 300, marginTop: 10, borderRadius: 8, objectFit: "contain", imageRendering: "pixelated", background: "#111" }} /> : null}
   </article>;
 }
 
 export function Shell(props: { title?: string; lede?: string; stream?: StreamPayload }) {
-  const stream = props.stream ?? (fixture as StreamPayload);
-  const { events, live, error } = useLiveEvalStream({ sseUrl: stream.sse_url, fixtureEvents: stream.sse_url ? undefined : stream.events, replayMs: 360 });
+  const stream = props.stream ?? {};
+  const { events, live, error, ready } = useLiveEvalStream({ sseUrl: stream.sse_url, fixtureEvents: stream.sse_url ? undefined : stream.events, replayMs: 360 });
+  const hasSource = Boolean(stream.sse_url || stream.events);
   const [globalCursor, setGlobalCursor] = useState<number | null>(null);
   const selectedGlobal = globalCursor == null ? events.length - 1 : Math.max(0, Math.min(globalCursor, events.length - 1));
   const visibleEvents = events.slice(0, selectedGlobal + 1);
   const lanes = useMemo(() => project(visibleEvents), [visibleEvents]);
   const done = lanes.filter((lane) => lane.status === "finished").length;
-  const totalReward = lanes.reduce((sum, lane) => sum + lane.reward, 0);
+  const rewardValues = lanes.map((lane) => lane.reward).filter((value): value is number => value != null);
+  const totalReward = rewardValues.length ? rewardValues.reduce((sum, value) => sum + value, 0) : undefined;
   const allAchievements = new Set(lanes.flatMap((lane) => lane.achievements));
   const recent = visibleEvents.slice(-8).reverse();
   const streamBase = stream.sse_url ? new URL(stream.sse_url, window.location.href) : null;
 
   return <VisualChrome kicker="Container eval · live" live={live} title={props.title ?? "Live rollout progress"} lede={props.lede ?? "Watch real rollout position, outcomes, and engine activity as they arrive."} testId="visual-live-container-rollouts" footer="live.container_rollouts.v1 · synth.rollout.event.v1">
-    <MetricStrip metrics={[{ label: "Rollouts", value: `${done}/${lanes.length || "—"} done` }, { label: "Total reward", value: totalReward.toFixed(2) }, { label: "Achievements", value: String(allAchievements.size) }, { label: "Stream", value: live ? "receiving" : done ? "complete" : "waiting" }]} />
+    <MetricStrip metrics={[{ label: "Rollouts", value: `${done}/${lanes.length || "—"} done` }, { label: "Total reward", value: formatMissingNumber(totalReward) }, { label: "Achievements", value: String(allAchievements.size) }, { label: "Stream", value: !hasSource ? "awaiting source" : !ready ? "connecting" : live ? "receiving" : done ? "complete" : "waiting" }]} />
     <section className="sv-section" aria-label="Evaluation replay"><div className="sv-section-head"><h3>Evaluation time</h3><time className="sv-mono">{events.length ? displayTime(timestamp(events[selectedGlobal])) : "Waiting for an event"}</time></div><input type="range" min={0} max={Math.max(0, events.length - 1)} value={selectedGlobal} onChange={(event) => setGlobalCursor(Number(event.currentTarget.value))} disabled={!events.length} aria-label="Replay the complete evaluation" style={{ width: "100%" }} /></section>
     {error ? <p role="alert" style={{ color: "#c2553f" }}>{error}</p> : null}
     <section className="sv-section" aria-label="Rollout lanes" aria-live="polite"><div className="sv-section-head"><h3>Rollouts</h3><span className="sv-mono">true step progress</span></div><div style={{ display: "grid", gap: 8 }}>{lanes.map((lane) => <LaneReplay key={lane.name} laneEvents={visibleEvents.filter((event) => laneName(event) === lane.name)} streamBase={streamBase} />)}{!lanes.length ? <div style={{ padding: 20, color: "var(--sv-text-faint)" }}>Waiting for the first rollout…</div> : null}</div></section>

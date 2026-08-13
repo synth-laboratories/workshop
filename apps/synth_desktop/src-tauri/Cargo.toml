@@ -1,6 +1,6 @@
 [package]
 name = "synth-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Synth Desktop Tauri host"
 edition = "2021"
 default-run = "synth-desktop"
@@ -28,6 +28,8 @@ fs2 = "0.4"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+mermaid-to-svg = { path = "third_party/mermaid-to-svg" }
 portable-pty = "0.9"
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

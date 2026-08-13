@@ -1,0 +1,70 @@
+{
+  "schema": "synth.workshop.a5-receipt.v1",
+  "test": "A5 \u2014 durable stream contract on the A1 paid stream",
+  "facade": "http://127.0.0.1:8097",
+  "a1RolloutId": "craftax_luna_010_craftax_seed_0",
+  "checks": {
+    "E1_poll_vs_sse": {
+      "rolloutId": "craftax_luna_010_craftax_seed_0",
+      "pollEvents": 2856,
+      "sseEvents": 2856,
+      "identicalOrderedEvidence": true,
+      "sseIdsAreSequences": false,
+      "highWater": 2855,
+      "closed": true,
+      "pass": true
+    },
+    "E2_control_does_not_advance_evidence": {
+      "controlKinds": [
+        "stream.subscribed"
+      ],
+      "subscribedIsControl": true,
+      "controlRecordsCarryNoSequence": true,
+      "heartbeatsSeen": 0,
+      "heartbeatsAreNotEvents": true,
+      "evidenceHighWater": 2855,
+      "pass": true
+    },
+    "E3_reconnect_backfill": {
+      "resumeFrom": 1428,
+      "resumedEvents": 1427,
+      "expectedTail": 1427,
+      "noGapNoDuplicate": true,
+      "pass": true
+    },
+    "E4_auto_refused": {
+      "refused": true,
+      "detail": "{\"detail\":{\"error\":\"transport_refused\",\"status_code\":422,\"detail\":\"telemetry.transport=auto is refused on authoritative / visual-attached runs\"}}",
+      "pass": true
+    },
+    "E5_no_silent_degrade": {
+      "preparedTransport": "sse",
+      "advertisedWebsocket": null,
+      "unboundWebsocketRefused": true,
+      "pass": true
+    },
+    "E6_missing_is_null_not_zero": {
+      "rolloutId": "a5_transport_probe",
+      "httpStatus": 404,
+      "status": null,
+      "reward": null,
+      "missingEvidence": null,
+      "pass": true
+    },
+    "E1b_websocket_equivalence": {
+      "rolloutId": "a5_ws_craftax_seed_11",
+      "wsEvents": 2753,
+      "pollEvents": 2753,
+      "sseEvents": 2753,
+      "wsMatchesPoll": true,
+      "sseMatchesPoll": true,
+      "pass": true
+    },
+    "E7_reopen_after_container_gone": {
+      "declaredPollUrlReachable": false,
+      "spoolDigest": "6743d5545c62f39de594a626bad4f01fbf33c2f0b7fdbc23dde0b848ee9e037d",
+      "spoolBlobOnDisk": "/Users/joshuapurtell/.synth-desktop/instances/v02/livecraftax/data/store/traces/67/6743d5545c62f39de594a626bad4f01fbf33c2f0b7fdbc23dde0b848ee9e037d",
+      "pass": true
+    }
+  }
+}

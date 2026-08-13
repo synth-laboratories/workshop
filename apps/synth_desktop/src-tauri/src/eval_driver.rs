@@ -8,13 +8,22 @@
 //! release builds never listen.
 
 use crate::codex::{self, CodexManager, CodexSessionStartRequest, CodexTurnSendRequest};
+use crate::container_stream::{
+    declared_poll_url, declared_sse_url, declared_stream_descriptor, refuse_auto_transport,
+    require_caller_policy_ref, resolve_declared_url, wait_for_stream_subscribed,
+    SUBSCRIBE_READY_TIMEOUT,
+};
 use crate::core_runtime::CoreRuntime;
 use crate::ipc::{serve_json_with_limit, JsonHttpRequest, JsonHttpResponse};
 use crate::laguna::LagunaManager;
 use crate::storage::{EventAppend, EventSource};
 use crate::synth_config;
 use crate::trace_ingest::TraceBundleIngestRequest;
-use crate::visuals::{VisualCreateRequest, VisualUpdateRequest};
+use crate::visuals::{
+    assert_declared_stream_source, assert_live_eval_slot, classify_live_eval_family,
+    craftax_ten_lane_pins, live_sse_bindings, pending_stream_bindings, resolve_live_eval_template,
+    VisualCreateRequest, VisualUpdateRequest, CRAFTAX_TEN_LANE_SEEDS,
+};
 use crate::visuals_ipc;
 use anyhow::{anyhow, bail, Context, Result};
 use hyper::StatusCode;
@@ -28,7 +37,9 @@ use uuid::Uuid;
 
 pub const PROTOCOL_VERSION: &str = "synth.eval-driver.v1";
 const OPENROUTER_CHAT_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
+#[allow(dead_code)]
 const DEFAULT_POLICY_ACTIONS: &[&str] = &["do", "left", "do", "up", "do", "right", "do", "down"];
+const LIVE_EVAL_SLOT: &str = "stream";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -401,6 +412,10 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
                 .unwrap_or("workspace-write")
                 .into(),
         ),
+        service_tier: body
+            .get("serviceTier")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         thread_id: None,
         multi_agent_version: None,
         auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
@@ -458,6 +473,9 @@ async fn prepare_start(
             )
             .map_err(|message| anyhow!(message))?;
         }
+        crate::codex::ProviderClass::OpenaiCodexOauth => {
+            bail!("ChatGPT subscription sessions are not available through the eval driver")
+        }
         crate::codex::ProviderClass::Direct => {}
     }
     Ok(request)
@@ -513,6 +531,10 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
         provider_env_key: None,
         approval_policy: Some("never".into()),
         sandbox: Some("workspace-write".into()),
+        service_tier: body
+            .get("serviceTier")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         thread_id: None,
         multi_agent_version: None,
         auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
@@ -625,10 +647,35 @@ async fn export_session(core: &CoreRuntime, session_id: &str) -> Result<Value> {
 }
 
 async fn open_visual(core: &CoreRuntime, body: Value) -> Result<Value> {
-    let template_id = body
-        .get("templateId")
+    let container_id = body
+        .get("containerId")
+        .or_else(|| body.get("container_id"))
+        .and_then(Value::as_str);
+    let mut family = body
+        .get("family")
         .and_then(Value::as_str)
-        .unwrap_or("live.container_rollouts.v1");
+        .and_then(|value| classify_live_eval_family(&json!({"runtime_family": value}), None));
+    if let Some(id) = container_id {
+        let container = core.data().get_container(id.to_string()).await?;
+        family = family.or_else(|| {
+            container
+                .metadata
+                .get("liveEval")
+                .and_then(|value| value.get("family"))
+                .and_then(Value::as_str)
+                .and_then(|value| {
+                    classify_live_eval_family(&json!({"runtime_family": value}), None)
+                })
+        });
+        family = family.or_else(|| {
+            classify_live_eval_family(
+                container.metadata.get("info").unwrap_or(&json!({})),
+                container.task_family.as_deref(),
+            )
+        });
+    }
+    let requested = body.get("templateId").and_then(Value::as_str);
+    let template_id = resolve_live_eval_template(requested, family)?;
     let session_id = body
         .get("sessionId")
         .and_then(Value::as_str)
@@ -636,11 +683,17 @@ async fn open_visual(core: &CoreRuntime, body: Value) -> Result<Value> {
     let title = body
         .get("title")
         .and_then(Value::as_str)
-        .unwrap_or("Live container eval")
-        .to_string();
-    let bindings = body.get("bindings").cloned().unwrap_or(json!({}));
+        .map(str::to_string)
+        .unwrap_or_else(|| match family {
+            Some(family) => format!("{} live eval", family.as_str()),
+            None => "Live container eval".into(),
+        });
+    let bindings = body
+        .get("bindings")
+        .cloned()
+        .unwrap_or_else(pending_stream_bindings);
     let create = VisualCreateRequest {
-        template_id: template_id.into(),
+        template_id,
         title: Some(title),
         bindings: Some(bindings),
         id: None,
@@ -665,6 +718,8 @@ async fn open_visual(core: &CoreRuntime, body: Value) -> Result<Value> {
         "visual": shown,
         "createEvent": event,
         "showEvent": show_event,
+        "templateId": shown.template_id,
+        "family": family.map(|value| value.as_str()),
     }))
 }
 
@@ -880,6 +935,9 @@ async fn resolve_policy_target(
                 wire,
             })
         }
+        codex::ProviderClass::OpenaiCodexOauth => {
+            bail!("policy_rollouts do not accept ChatGPT subscription credentials")
+        }
         codex::ProviderClass::Direct => {
             bail!("policy_rollouts require provider=openrouter|synth-cloud|local-laguna")
         }
@@ -913,25 +971,12 @@ async fn run_policy_rollout(
         .and_then(Value::as_str)
         .context("policy_rollouts require model")?
         .to_string();
-    let target = resolve_policy_target(deps, provider, &model).await?;
     let reasoning_effort = body
         .get("reasoningEffort")
         .or_else(|| body.get("reasoning_effort"))
         .and_then(Value::as_str)
-        .unwrap_or("low")
+        .unwrap_or("medium")
         .to_string();
-    let max_steps = body
-        .get("maxSteps")
-        .or_else(|| body.get("max_steps"))
-        .and_then(Value::as_u64)
-        .unwrap_or(64)
-        .clamp(1, 256) as usize;
-    let max_calls = body
-        .get("maxCalls")
-        .or_else(|| body.get("max_calls"))
-        .and_then(Value::as_u64)
-        .unwrap_or(16)
-        .clamp(1, 64) as usize;
     let timeout_s = body
         .get("timeoutS")
         .or_else(|| body.get("timeout_per_rollout_s"))
@@ -944,161 +989,193 @@ async fn run_policy_rollout(
         "detail": "standard",
         "frame": {"enabled": false}
     }));
+    refuse_auto_transport(&telemetry)?;
+    let slot = require_stream_slot(&body)?;
 
     let client = crate::http::http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(timeout_s))
         .build()?;
+    let recovery_client = crate::http::http_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(crate::limits::VISUALS_IPC_ROLL_TIMEOUT)
+        .build()?;
 
     let seed = seed_from_task_instance(&task_instance_id)?;
-    let create_body = json!({
-        "seed": seed,
-        "telemetry": telemetry,
-    });
-    let mut state = client
-        .post(format!("{base}/rollouts"))
-        .json(&create_body)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Value>()
-        .await?;
-    let rollout_id = state
+    // A1: open the family visual before prepare so the pane exists before any
+    // paid call. After prepare, rebind slot `stream` to the declared SSE URL
+    // (never guess `/events`) and wait for `stream.subscribed` before start.
+    let visual_id = match body
+        .get("visualId")
+        .or_else(|| body.get("visual_id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            container
+                .metadata
+                .get("liveVisualId")
+                .or_else(|| container.metadata.get("live_visual_id"))
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+        }) {
+        Some(id) => id,
+        _ => {
+            let opened = open_visual(
+                core,
+                json!({
+                    "containerId": container_id,
+                    "title": format!("Live eval {task_instance_id}"),
+                }),
+            )
+            .await?;
+            opened
+                .pointer("/visual/id")
+                .and_then(Value::as_str)
+                .context("open_visual omitted visual.id")?
+                .to_string()
+        }
+    };
+
+    // C1-08 / TS-E01: prepare → bind declared SSE → poll until stream.subscribed → start.
+    let rollout_id = body
         .get("rollout_id")
         .and_then(Value::as_str)
-        .context("container omitted rollout_id")?
-        .to_string();
-    let stream = state.get("stream").cloned();
-
-    let mut usage_total = UsageAcc::default();
-    let mut calls = 0usize;
-    let started = std::time::Instant::now();
-    let mut actions_taken = Vec::new();
-    let mut correlated_model_response_id = None;
-    let mut correlated_model_event_id = None;
-    let mut correlated_model_name = None;
-    let mut correlated_action = None;
-    let mut correlated_step = None;
-
-    for _ in 0..max_calls {
-        if state
-            .get("terminated")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-            || state
-                .get("truncated")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-        {
-            break;
-        }
-        if actions_taken.len() >= max_steps {
-            break;
-        }
-        let readout = state.get("readout").cloned().unwrap_or_else(|| json!({}));
-        let planned = policy_actions_from_model(
-            &client,
-            &target,
-            &model,
-            &reasoning_effort,
-            &readout,
-            &mut usage_total,
-        )
-        .await?;
-        calls += 1;
-        let model_event = core
-            .append_and_broadcast(EventAppend {
-                event_id: None,
-                session_id: None,
-                // Craftax rollout ids are external identities, not rows in the
-                // Workshop `runs` table. Bind them in payload to avoid the FK.
-                run_id: None,
-                source: EventSource::System,
-                kind: "eval.policy_model.response".into(),
-                payload: json!({
-                    "containerId": container_id,
-                    "rolloutId": rollout_id,
-                    "taskInstanceId": task_instance_id,
-                    "provider": target.provider,
-                    "providerResponseId": &planned.response_id,
-                    "model": &planned.response_model,
-                    "plannedActions": &planned.actions,
-                    "call": calls,
-                }),
-                remote_sequence: None,
-                command_id: None,
-                created_at: None,
-            })
-            .await?;
-        for action in planned.actions {
-            if actions_taken.len() >= max_steps {
-                break;
-            }
-            state = client
-                .post(format!("{base}/rollouts/{rollout_id}/step"))
-                .json(&json!({"action": action}))
-                .send()
-                .await?
-                .error_for_status()?
-                .json::<Value>()
-                .await?;
-            let step = state
-                .pointer("/progress/env_steps")
-                .and_then(Value::as_u64)
-                .unwrap_or(actions_taken.len() as u64 + 1);
-            correlated_model_response_id = Some(planned.response_id.clone());
-            correlated_model_event_id = Some(model_event.event_id.clone());
-            correlated_model_name = Some(planned.response_model.clone());
-            correlated_action = Some(action.clone());
-            correlated_step = Some(step);
-            actions_taken.push(action);
-            if state
-                .get("terminated")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-                || state
-                    .get("truncated")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-            {
-                break;
-            }
-        }
-    }
-
-    let event_log = client
-        .get(format!("{base}/rollouts/{rollout_id}/event_log"))
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("roll_{}", Uuid::new_v4().simple()));
+    let prepare_body = json!({ "rollout_id": rollout_id, "telemetry": telemetry });
+    let mut prepare_response = client
+        .post(format!("{base}/rollouts/prepare"))
+        .json(&prepare_body)
         .send()
-        .await?
-        .error_for_status()?
+        .await;
+    if prepare_response.is_err() {
+        prepare_response = client
+            .post(format!("{base}/rollouts/prepare"))
+            .json(&prepare_body)
+            .send()
+            .await;
+    }
+    let prepared = prepare_response
+        .context("idempotent POST /rollouts/prepare")?
+        .error_for_status()
+        .context("POST /rollouts/prepare")?
         .json::<Value>()
-        .await
-        .unwrap_or(json!({}));
-
-    let trace_correlation = build_trace_correlation(
-        &client,
-        &base,
-        container_id,
-        &rollout_id,
-        &task_instance_id,
-        seed,
-        &target.provider,
-        &model,
-        correlated_model_name.as_deref(),
-        &state,
-        correlated_action.as_deref(),
-        correlated_step,
-        correlated_model_response_id.as_deref(),
-        correlated_model_event_id.as_deref(),
+        .await?;
+    let returned_rollout_id = prepared
+        .get("rollout_id")
+        .and_then(Value::as_str)
+        .context("prepare omitted rollout_id")?
+        .to_string();
+    if returned_rollout_id != rollout_id {
+        bail!("prepare returned a different rollout_id than the caller-stable id");
+    }
+    let prepared_stream = declared_stream_descriptor(&prepared)?
+        .context("prepare omitted stream descriptor; refusing to guess /events")?;
+    let poll_url = resolve_declared_url(&base, &declared_poll_url(&prepared_stream)?)?;
+    let sse_url = resolve_declared_url(&base, &declared_sse_url(&prepared_stream)?)?;
+    assert_declared_stream_source(&sse_url)?;
+    update_visual(
+        core,
+        &visual_id,
+        json!({
+            "bindings": live_sse_bindings(&sse_url),
+            "metadata": {
+                "containerId": container_id,
+                "rolloutId": rollout_id,
+                "streamState": "bound_before_start",
+                "streamId": prepared_stream.get("id"),
+            }
+        }),
     )
     .await?;
+    wait_for_stream_subscribed(&client, &poll_url, SUBSCRIBE_READY_TIMEOUT).await?;
 
-    let reward = state.get("reward").cloned().unwrap_or(json!(0.0));
-    let achievements = state
-        .pointer("/readout/observation/achievements")
+    let mut start_body = json!({
+        "rollout_id": rollout_id,
+        "task_instance_id": task_instance_id,
+        "seed": seed,
+        "telemetry": telemetry,
+        "slot": slot,
+        "policy_ref": require_caller_policy_ref(&body)?,
+    });
+    if let Some(world_ref) = body
+        .get("worldRef")
+        .or_else(|| body.get("world_ref"))
         .cloned()
-        .or_else(|| state.get("achievements").cloned())
-        .unwrap_or_else(|| json!([]));
+    {
+        start_body["world_ref"] = world_ref;
+    }
+    if let Some(environment_ref) = body
+        .get("environmentRef")
+        .or_else(|| body.get("environment_ref"))
+        .cloned()
+    {
+        start_body["environment_ref"] = environment_ref;
+    }
+    if let Some(task_world) = body
+        .get("taskWorld")
+        .or_else(|| body.get("task_world"))
+        .cloned()
+    {
+        start_body["task_world"] = task_world;
+    }
+    let started = std::time::Instant::now();
+    let (state, recovered) = visuals_ipc::start_rollout_idempotently(
+        &client,
+        &recovery_client,
+        &base,
+        &rollout_id,
+        &start_body,
+    )
+    .await
+    .context("POST /rollouts after stream.subscribed")?;
+    let stream = declared_stream_descriptor(&state)?.or(Some(prepared_stream));
+    refuse_host_side_policy_loop(&state)?;
+
+    let event_log = client
+        .get(&poll_url)
+        .query(&[("after", "0")])
+        .send()
+        .await?
+        .error_for_status()
+        .context("GET declared transports.poll.url after container-owned policy")?
+        .json::<Value>()
+        .await?;
+    let events = envelopes_from_policy_log(&event_log);
+    let actions_taken = harvest_actions(&events);
+    let usage_total = harvest_usage(state.get("usage"), &events);
+    let calls = harvest_policy_calls(&events, state.get("usage"));
+    let spool = crate::storage::persist_live_envelopes(
+        core.content(),
+        stream
+            .as_ref()
+            .and_then(|value| value.get("id"))
+            .and_then(Value::as_str),
+        Some(&rollout_id),
+        crate::storage::envelopes_from_event_log(&event_log),
+    )?;
+
+    let scored = client
+        .post(format!("{base}/reward"))
+        .json(&json!({ "rollout_id": rollout_id }))
+        .send()
+        .await
+        .ok()
+        .filter(|response| response.status().is_success());
+    let reward_body = match scored {
+        Some(response) => response.json::<Value>().await.unwrap_or(Value::Null),
+        None => Value::Null,
+    };
+    let reward = match reward_body.get("reward") {
+        Some(value) if !value.is_null() => value.clone(),
+        _ => match state.get("reward") {
+            Some(value) if !value.is_null() => value.clone(),
+            _ => Value::Null,
+        },
+    };
+    let achievements = harvest_achievements(&events);
 
     core.update_container_last_rollout(container_id.to_string(), rollout_id.clone())
         .await?;
@@ -1111,12 +1188,8 @@ async fn run_policy_rollout(
         .get("truncated")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    // Driver-side step/call caps are an honest lane completion even when the
-    // environment never flipped its own truncated bit.
-    let budget_exhausted = actions_taken.len() >= max_steps || calls >= max_calls;
-    let truncated = env_truncated || (!env_terminated && budget_exhausted);
+    let policy_model = harvest_policy_model(&events).unwrap_or(model.clone());
 
-    // Journal a durable lifecycle breadcrumb for cross-check (no secrets).
     let _ = core
         .append_and_broadcast(EventAppend {
             event_id: None,
@@ -1128,14 +1201,16 @@ async fn run_policy_rollout(
                 "containerId": container_id,
                 "rolloutId": rollout_id,
                 "taskInstanceId": task_instance_id,
-                "provider": target.provider,
-                "model": model,
+                "provider": provider,
+                "model": policy_model,
                 "reasoningEffort": reasoning_effort,
                 "reward": reward,
                 "actionCount": actions_taken.len(),
                 "calls": calls,
                 "terminated": env_terminated,
-                "truncated": truncated,
+                "truncated": env_truncated,
+                "visualId": visual_id,
+                "policyAuthority": "container",
             }),
             remote_sequence: None,
             command_id: None,
@@ -1150,8 +1225,8 @@ async fn run_policy_rollout(
         "rolloutId": rollout_id,
         "taskInstanceId": task_instance_id,
         "seed": seed,
-        "provider": target.provider,
-        "model": model,
+        "provider": provider,
+        "model": policy_model,
         "reasoningEffort": reasoning_effort,
         "actions": actions_taken,
         "calls": calls,
@@ -1160,11 +1235,26 @@ async fn run_policy_rollout(
         "reward": reward,
         "achievements": achievements,
         "terminated": env_terminated,
-        "truncated": truncated,
+        "truncated": env_truncated,
         "state": state,
         "eventLog": event_log,
-        "traceCorrelation": trace_correlation,
+        "spoolDigest": spool.digest,
+        "traceCorrelation": json!({
+            "schemaVersion": "synth.trace-correlation.v1",
+            "authority": "container_stream",
+            "containerId": container_id,
+            "rolloutId": rollout_id,
+            "taskInstanceId": task_instance_id,
+            "seed": seed,
+            "boundRolloutId": rollout_id,
+            "visualId": visual_id,
+            "actionCount": actions_taken.len(),
+            "spoolDigest": spool.digest,
+        }),
         "stream": stream,
+        "visualId": visual_id,
+        "policyAuthority": "container",
+        "recovered": recovered,
         "usage": {
             "promptTokens": usage_total.prompt,
             "completionTokens": usage_total.completion,
@@ -1175,21 +1265,165 @@ async fn run_policy_rollout(
     }))
 }
 
+fn refuse_host_side_policy_loop(state: &Value) -> Result<()> {
+    if container_owned_policy_completed(state) {
+        Ok(())
+    } else {
+        bail!(
+            "policy_rollouts refuse a host-side model loop; container did not complete a policy-owned rollout"
+        )
+    }
+}
+
+fn container_owned_policy_completed(state: &Value) -> bool {
+    state.get("terminated").and_then(Value::as_bool) == Some(true)
+        || matches!(
+            state.get("status").and_then(Value::as_str),
+            Some("completed" | "scored" | "failed" | "truncated")
+        )
+}
+
+fn envelopes_from_policy_log(log: &Value) -> Vec<Value> {
+    crate::storage::envelopes_from_event_log(log)
+}
+
+fn event_kind(event: &Value) -> &str {
+    event
+        .get("kind")
+        .or_else(|| event.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+}
+
+fn event_payload(event: &Value) -> &Value {
+    event.get("payload").unwrap_or(event)
+}
+
+fn harvest_actions(events: &[Value]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| {
+            if event_kind(event) != "action" {
+                return None;
+            }
+            event_payload(event)
+                .get("action")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+fn harvest_usage(start_usage: Option<&Value>, events: &[Value]) -> UsageAcc {
+    let mut acc = UsageAcc::default();
+    if let Some(usage) = start_usage.filter(|value| value.is_object()) {
+        add_usage(&mut acc, usage);
+        if acc.total > 0 || acc.prompt > 0 || acc.completion > 0 || acc.cost_usd.is_some() {
+            return acc;
+        }
+    }
+    for event in events {
+        if event_kind(event) != "span.policy.data" {
+            continue;
+        }
+        let payload = event_payload(event);
+        if payload.get("delta").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        if let Some(usage) = payload.get("usage") {
+            add_usage(&mut acc, usage);
+        }
+    }
+    acc
+}
+
+fn add_usage(acc: &mut UsageAcc, usage: &Value) {
+    let read = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| usage.get(*key).and_then(Value::as_u64))
+    };
+    if let Some(value) = read(&["prompt_tokens", "promptTokens"]) {
+        acc.prompt = acc.prompt.saturating_add(value);
+    }
+    if let Some(value) = read(&["completion_tokens", "completionTokens"]) {
+        acc.completion = acc.completion.saturating_add(value);
+    }
+    if let Some(value) = read(&["total_tokens", "totalTokens"]) {
+        acc.total = acc.total.saturating_add(value);
+    }
+    if let Some(value) = usage
+        .get("cost_usd")
+        .or_else(|| usage.get("costUsd"))
+        .or_else(|| usage.get("cost"))
+        .and_then(Value::as_f64)
+    {
+        acc.cost_usd = Some(acc.cost_usd.unwrap_or(0.0) + value);
+    }
+}
+
+fn harvest_policy_calls(events: &[Value], start_usage: Option<&Value>) -> u64 {
+    if let Some(calls) = start_usage.and_then(|usage| usage.get("calls").and_then(Value::as_u64)) {
+        return calls;
+    }
+    events
+        .iter()
+        .filter(|event| event_kind(event) == "span.policy.closed")
+        .count() as u64
+}
+
+fn harvest_policy_model(events: &[Value]) -> Option<String> {
+    events.iter().rev().find_map(|event| {
+        if event_kind(event) != "span.policy.data" {
+            return None;
+        }
+        let payload = event_payload(event);
+        if payload.get("delta").and_then(Value::as_bool) == Some(true) {
+            return None;
+        }
+        payload
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn harvest_achievements(events: &[Value]) -> Value {
+    let mut names = Vec::new();
+    for event in events {
+        if event_kind(event) != "achievement_unlocked" {
+            continue;
+        }
+        let payload = event_payload(event);
+        if let Some(name) = payload
+            .get("achievement")
+            .or_else(|| payload.pointer("/payload/achievement"))
+            .and_then(Value::as_str)
+        {
+            if !name.is_empty() && !names.iter().any(|existing| existing == name) {
+                names.push(name.to_string());
+            }
+        }
+    }
+    json!(names)
+}
+
 #[derive(Default)]
 struct UsageAcc {
     prompt: u64,
     completion: u64,
     total: u64,
-    cost_usd: f64,
+    cost_usd: Option<f64>,
 }
 
+#[allow(dead_code)]
 struct PolicyPlan {
     actions: Vec<String>,
     response_id: String,
     response_model: String,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, clippy::too_many_arguments)]
 async fn build_trace_correlation(
     client: &reqwest::Client,
     base: &str,
@@ -1352,6 +1586,7 @@ fn policy_request(wire: &str, model: &str, reasoning_effort: &str, prompt: &str)
     request
 }
 
+#[allow(dead_code)]
 async fn policy_actions_from_model(
     client: &reqwest::Client,
     target: &PolicyTarget,
@@ -1446,7 +1681,7 @@ async fn policy_actions_from_model(
                 .and_then(Value::as_f64)
                 .or_else(|| u.get("total_cost").and_then(Value::as_f64))
         }) {
-            usage.cost_usd += cost;
+            usage.cost_usd = Some(usage.cost_usd.unwrap_or(0.0) + cost);
         }
     }
     let content = if target.wire == "responses" {
@@ -1545,6 +1780,51 @@ fn seed_from_task_instance(task_instance_id: &str) -> Result<i64> {
     Ok(seed)
 }
 
+fn require_stream_slot(body: &Value) -> Result<&'static str> {
+    let requested = body
+        .get("slot")
+        .or_else(|| body.get("streamSlot"))
+        .or_else(|| body.get("stream_slot"))
+        .and_then(Value::as_str)
+        .unwrap_or(LIVE_EVAL_SLOT);
+    assert_live_eval_slot(requested)?;
+    if requested != LIVE_EVAL_SLOT {
+        bail!("eval driver visual-attached rollouts bind slot \"{LIVE_EVAL_SLOT}\", not \"{requested}\"");
+    }
+    Ok(LIVE_EVAL_SLOT)
+}
+
+/// Pin 10 Craftax lanes (seeds 0–9) for Containers HTTP. Does not call a paid policy.
+fn craftax_ten_lane_request(body: &Value) -> Result<Vec<Value>> {
+    let environment_ref = body
+        .get("environment_ref")
+        .or_else(|| body.get("environmentRef"))
+        .and_then(Value::as_str)
+        .context("10-lane Craftax pin requires environment_ref")?;
+    let policy_ref = require_caller_policy_ref(body)?;
+    let task_world = body
+        .get("task_world")
+        .or_else(|| body.get("taskWorld"))
+        .cloned()
+        .context("10-lane Craftax pin requires task_world")?;
+    let pins = craftax_ten_lane_pins(environment_ref, &policy_ref, &task_world)?;
+    if pins.len() != CRAFTAX_TEN_LANE_SEEDS.len() {
+        bail!("10-lane Craftax pin must emit seeds 0–9");
+    }
+    Ok(pins)
+}
+
+fn wants_craftax_ten_lane(body: &Value) -> bool {
+    body.get("count").and_then(Value::as_u64) == Some(10)
+        || body
+            .get("seeds")
+            .and_then(Value::as_array)
+            .is_some_and(|seeds| {
+                seeds.iter().filter_map(Value::as_i64).collect::<Vec<_>>()
+                    == CRAFTAX_TEN_LANE_SEEDS.to_vec()
+            })
+}
+
 fn validated_loopback_base(base: &str) -> Result<String> {
     let trimmed = base.trim_end_matches('/');
     let parsed = reqwest::Url::parse(trimmed).context("invalid container base URL")?;
@@ -1561,6 +1841,11 @@ fn validated_loopback_base(base: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::container_stream::{
+        poll_has_stream_subscribed, require_caller_policy_ref,
+        require_stream_subscribed_before_start,
+    };
+    use serde_json::json;
 
     #[test]
     fn protocol_version_is_stable() {
@@ -1571,6 +1856,185 @@ mod tests {
     fn extracts_seed_from_task_instance() {
         assert_eq!(seed_from_task_instance("craftax:test:2001").unwrap(), 2001);
         assert!(seed_from_task_instance("bad").is_err());
+    }
+
+    #[test]
+    fn policy_rollout_forwards_declared_stream_and_does_not_invent_urls() {
+        let state = json!({
+            "rollout_id": "r1",
+            "stream": {
+                "id": "stream_r1",
+                "transports": { "sse": { "url": "http://127.0.0.1:8098/rollouts/r1/stream" } }
+            }
+        });
+        let stream = declared_stream_descriptor(&state).unwrap().unwrap();
+        assert_eq!(stream["id"], "stream_r1");
+        assert!(declared_stream_descriptor(&json!({"rollout_id":"r1"}))
+            .unwrap()
+            .is_none());
+        assert!(refuse_auto_transport(&json!({"transport":"auto"})).is_err());
+        assert!(refuse_auto_transport(&json!({"transport":"sse"})).is_ok());
+        assert!(declared_poll_url(&stream).is_err());
+        assert!(declared_poll_url(&json!({"id":"stream_r1"})).is_err());
+    }
+
+    #[test]
+    fn policy_rollout_binds_declared_sse_not_events_guess() {
+        let stream = json!({
+            "id": "stream:r1",
+            "transports": {
+                "poll": { "url": "/rollouts/r1/events" },
+                "sse": { "url": "/rollouts/r1/stream" }
+            }
+        });
+        assert_eq!(declared_sse_url(&stream).unwrap(), "/rollouts/r1/stream");
+        let absolute =
+            resolve_declared_url("http://127.0.0.1:8098", &declared_sse_url(&stream).unwrap())
+                .unwrap();
+        assert_eq!(absolute, "http://127.0.0.1:8098/rollouts/r1/stream");
+        let bindings = live_sse_bindings(&absolute);
+        assert_eq!(bindings["slots"][0]["kind"], "live_sse");
+        assert_eq!(bindings["slots"][0]["slot"], "stream");
+        assert_eq!(
+            bindings["slots"][0]["source"],
+            "http://127.0.0.1:8098/rollouts/r1/stream"
+        );
+        assert!(declared_sse_url(&json!({
+            "transports": { "poll": { "url": "/rollouts/r1/events" } }
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn policy_rollouts_require_caller_policy_ref() {
+        assert!(require_caller_policy_ref(&json!({})).is_err());
+        assert!(require_caller_policy_ref(&json!({"policy_ref": {"config": "x"}})).is_err());
+        assert!(require_caller_policy_ref(&json!({"policy_ref": {"harness": "react"}})).is_err());
+        let pin = require_caller_policy_ref(&json!({
+            "policy_ref": {"harness": "react", "config": "caller_config"}
+        }))
+        .unwrap();
+        assert_eq!(pin["harness"], "react");
+        assert_eq!(pin["config"], "caller_config");
+    }
+
+    #[test]
+    fn refuse_host_side_policy_when_container_did_not_finish() {
+        assert!(refuse_host_side_policy_loop(&json!({"status": "running"})).is_err());
+        assert!(refuse_host_side_policy_loop(&json!({"terminated": true})).is_ok());
+        assert!(refuse_host_side_policy_loop(&json!({"status": "completed"})).is_ok());
+    }
+
+    #[test]
+    fn harvests_actions_and_skips_token_delta_usage() {
+        let events = vec![
+            json!({"kind": "action", "payload": {"action": "do"}}),
+            json!({"kind": "span.policy.data", "payload": {"delta": true, "usage": {"total_tokens": 99}}}),
+            json!({"kind": "span.policy.data", "payload": {"model": "from-log", "usage": {"total_tokens": 13}}}),
+            json!({"kind": "span.policy.closed"}),
+            json!({"kind": "achievement_unlocked", "payload": {"achievement": "wood"}}),
+        ];
+        assert_eq!(harvest_actions(&events), vec!["do".to_string()]);
+        let usage = harvest_usage(None, &events);
+        assert_eq!(usage.total, 13);
+        assert_eq!(harvest_policy_model(&events).as_deref(), Some("from-log"));
+        assert_eq!(harvest_achievements(&events), json!(["wood"]));
+        assert_eq!(harvest_policy_calls(&events, None), 1);
+    }
+
+    #[test]
+    fn declared_poll_url_uses_descriptor_and_never_guesses_events() {
+        let stream = json!({
+            "id": "stream:r1",
+            "transports": { "poll": { "url": "/rollouts/r1/events" } }
+        });
+        assert_eq!(declared_poll_url(&stream).unwrap(), "/rollouts/r1/events");
+        let absolute = resolve_declared_url(
+            "http://127.0.0.1:8098",
+            &declared_poll_url(&stream).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(absolute, "http://127.0.0.1:8098/rollouts/r1/events");
+        assert!(declared_poll_url(&json!({"poll_url": "/events"})).is_err());
+    }
+
+    #[test]
+    fn poll_has_stream_subscribed_detects_ready_ack() {
+        let ready = json!({
+            "events": [{
+                "kind": "stream.subscribed",
+                "control": true,
+                "payload": {
+                    "ready": true,
+                    "stream.id": "stream:r1",
+                    "rollout_id": "r1",
+                    "next_sequence": 1
+                }
+            }]
+        });
+        assert!(poll_has_stream_subscribed(&ready));
+        assert!(require_stream_subscribed_before_start(&ready).is_ok());
+
+        let top_level_ready = json!({
+            "items": [{ "kind": "stream.subscribed", "ready": true }]
+        });
+        assert!(poll_has_stream_subscribed(&top_level_ready));
+    }
+
+    #[test]
+    fn require_stream_subscribed_refuses_start_when_ack_is_missing() {
+        let missing = json!({ "events": [{ "kind": "heartbeat" }] });
+        assert!(!poll_has_stream_subscribed(&missing));
+        let err = require_stream_subscribed_before_start(&missing).unwrap_err();
+        assert!(err.to_string().contains("stream.subscribed"));
+
+        let not_ready = json!({
+            "events": [{
+                "kind": "stream.subscribed",
+                "payload": { "ready": false }
+            }]
+        });
+        assert!(require_stream_subscribed_before_start(&not_ready).is_err());
+        assert!(require_stream_subscribed_before_start(&json!({})).is_err());
+    }
+
+    #[test]
+    fn visual_attached_rollout_slot_must_be_stream() {
+        assert_eq!(require_stream_slot(&json!({})).unwrap(), "stream");
+        assert_eq!(
+            require_stream_slot(&json!({"slot":"stream"})).unwrap(),
+            "stream"
+        );
+        assert!(require_stream_slot(&json!({"slot":"live"})).is_err());
+        assert!(require_stream_slot(&json!({"slot":"jobs"})).is_err());
+    }
+
+    #[test]
+    fn craftax_ten_lane_request_pins_seeds_zero_through_nine() {
+        assert!(wants_craftax_ten_lane(&json!({"count": 10})));
+        assert!(wants_craftax_ten_lane(&json!({
+            "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        })));
+        assert!(!wants_craftax_ten_lane(&json!({"count": 1})));
+        let pins = craftax_ten_lane_request(&json!({
+            "environment_ref": "env:craftax_gold",
+            "policy_ref": {"harness": "react", "config": "luna_med"},
+            "task_world": {"world_id": "craftax_default", "revision": "symbolic_survival"}
+        }))
+        .unwrap();
+        assert_eq!(pins.len(), 10);
+        assert_eq!(pins[0]["seed"], 0);
+        assert_eq!(pins[9]["seed"], 9);
+        assert_eq!(pins[3]["task_instance_id"], "seed:3");
+        assert_eq!(pins[3]["environment_ref"], "env:craftax_gold");
+        assert_eq!(pins[3]["policy_ref"]["config"], "luna_med");
+        assert_eq!(pins[3]["task_world"]["seed"], 3);
+        assert_eq!(pins[3]["slot"], "stream");
+        assert!(craftax_ten_lane_request(&json!({
+            "policy_ref": {"harness": "react", "config": "luna_med"},
+            "task_world": {"world_id": "craftax_default"}
+        }))
+        .is_err());
     }
 
     #[test]

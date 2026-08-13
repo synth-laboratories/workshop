@@ -1,0 +1,287 @@
+/**
+ * A10-style responsive visual gate: real rendered DOM measurements and
+ * screenshots at 1440 / 1024 / 768 / 390, driven by the REAL Banking77 GEPA
+ * runs (Sol + Luna) and a delta-heavy Craftax fixture. `noOverflow` here is
+ * measured from the DOM, never asserted from metadata.
+ */
+
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { Page } from "@playwright/test";
+import { expect, test } from "./browser.fixture";
+
+const RUNS_DIR = join(
+	homedir(),
+	".synth-desktop/instances/v02/gepa/runtime/gepa/runs"
+);
+const SOL_ID = "banking77_gepa_sol_med_45856f25";
+const LUNA_ID = "banking77_gepa_luna_med_82f8136b";
+const SHOT_DIR = join(import.meta.dirname, "../../test-results/visual-gate");
+
+const VIEWPORTS = [
+	{ width: 1440, height: 900 },
+	{ width: 1024, height: 768 },
+	{ width: 768, height: 1024 },
+	{ width: 390, height: 844 }
+] as const;
+
+function loadRunEvents(runId: string): unknown[] | null {
+	const path = join(RUNS_DIR, runId, "events.optimizer.jsonl");
+	if (!existsSync(path)) return null;
+	return readFileSync(path, "utf8")
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line));
+}
+
+async function assertNoHorizontalOverflow(page: Page, label: string): Promise<void> {
+	const metrics = await page.evaluate(() => {
+		const root = document.scrollingElement ?? document.documentElement;
+		const offenders: string[] = [];
+		const limit = window.innerWidth + 1;
+		for (const element of document.querySelectorAll("body *")) {
+			const rect = element.getBoundingClientRect();
+			if (rect.width > 0 && rect.right > limit + 8) {
+				const probe = element as HTMLElement;
+				offenders.push(`${probe.tagName.toLowerCase()}.${String(probe.className).slice(0, 60)} right=${Math.round(rect.right)}`);
+				if (offenders.length >= 5) break;
+			}
+		}
+		return {
+			scrollWidth: root.scrollWidth,
+			clientWidth: root.clientWidth,
+			innerWidth: window.innerWidth,
+			offenders
+		};
+	});
+	expect(
+		metrics.scrollWidth,
+		`${label}: page scrollWidth ${metrics.scrollWidth} must not exceed clientWidth ${metrics.clientWidth}; offenders: ${metrics.offenders.join(" | ")}`
+	).toBeLessThanOrEqual(metrics.clientWidth + 1);
+}
+
+async function captureViewportSweep(page: Page, slug: string): Promise<void> {
+	mkdirSync(SHOT_DIR, { recursive: true });
+	for (const viewport of VIEWPORTS) {
+		await page.setViewportSize(viewport);
+		// Let CSS breakpoints and any resize observers settle.
+		await page.waitForTimeout(250);
+		await assertNoHorizontalOverflow(page, `${slug} @ ${viewport.width}px`);
+		await page.screenshot({
+			path: join(SHOT_DIR, `${slug}-${viewport.width}.png`),
+			fullPage: true
+		});
+	}
+	await page.setViewportSize({ width: 1440, height: 900 });
+}
+
+test.describe("GEPA workspace on the real Sol run", () => {
+	const solEvents = loadRunEvents(SOL_ID);
+	const lunaEvents = loadRunEvents(LUNA_ID);
+	test.skip(!solEvents || !lunaEvents, "real Banking77 GEPA run artifacts are not on this machine");
+
+	test.beforeEach(async ({ page }) => {
+		await page.addInitScript(
+			({ sol, luna, solId, lunaId }) => {
+				const makeRun = (id: string, events: unknown[]) => ({
+					schemaVersion: "optimizer_run.v1",
+					id,
+					algorithmId: "gepa",
+					algorithmVersion: "1.0.0",
+					status: "completed",
+					source: "local",
+					objective: `Banking77 GEPA · ${id.includes("sol") ? "Sol" : "Luna"} medium`,
+					createdAt: "2026-08-12T20:57:00.000Z",
+					startedAt: "2026-08-12T20:57:00.000Z",
+					finishedAt: "2026-08-12T21:01:30.000Z",
+					cursorSeq: events.length,
+					capabilities: { streamEvents: true },
+					executionBindings: [],
+					inputRefs: [],
+					outputRefs: [],
+					visualRefs: [{ kind: "visual", id: `visual-${id}` }],
+					summary: {},
+					usage: { rollouts: 140 }
+				});
+				const byId: Record<string, unknown[]> = { [solId]: sol, [lunaId]: luna };
+				const runs = [makeRun(solId, sol), makeRun(lunaId, luna)];
+				(window as any).synthOptimizers = {
+					listAlgorithms: async () => [{ id: "gepa", title: "GEPA", availability: "available" }],
+					listRecipes: async () => [],
+					list: async () => runs,
+					get: async (id: string) => runs.find((run: any) => run.id === id),
+					refresh: async (id: string) => runs.find((run: any) => run.id === id),
+					eventsAfter: async (id: string, afterSeq = 0, limit = 500) =>
+						(byId[id] ?? [])
+							.filter((event: any) => Number(event.sequence_number) > afterSeq)
+							.slice(0, limit ?? 500),
+					getState: async () => ({}),
+					getStateBatch: async () => [],
+					cancel: async () => runs[0],
+					pause: async () => runs[0],
+					resume: async () => runs[0],
+					openVisual: async (id: string) => runs.find((run: any) => run.id === id),
+					importLocal: async () => { throw new Error("not used"); },
+					reconcileCloud: async () => runs[0],
+					listCloud: async () => [],
+					create: async () => runs[0],
+					startRecipe: async () => runs[0],
+					onEvent: () => () => undefined
+				};
+				(window as any).synthVisuals = {
+					get: async (visualId: string) => ({
+						schemaVersion: "synth.desktop-visual.v1",
+						id: visualId,
+						templateId: "optimizer.gepa.live.v1",
+						title: "Banking77 GEPA · Sol",
+						status: "saved",
+						createdAt: "2026-08-12T21:02:00.000Z",
+						updatedAt: "2026-08-12T21:02:00.000Z",
+						bindings: {
+							schemaVersion: "synth.visual-bindings.v1",
+							slots: [{ slot: "optimizer_run", kind: "optimizer_run", source: visualId.replace(/^visual-/, "") }]
+						},
+						metadata: {}
+					}),
+					onEvent: () => () => undefined,
+					onShow: () => () => undefined
+				};
+			},
+			{ sol: solEvents, luna: lunaEvents, solId: SOL_ID, lunaId: LUNA_ID }
+		);
+		await page.reload();
+		await page.getByTestId("titlebar").waitFor();
+		await page.getByRole("button", { name: "Optimizers" }).click();
+		await page.getByTestId(`optimizer-run-${SOL_ID}`).click();
+		await page.getByTestId("open-optimizer-visual").click();
+		await expect(page.getByTestId("gepa-workspace")).toBeVisible();
+		await expect(page.getByTestId("workspace-status")).toContainText("Completed");
+	});
+
+	test("completed run renders truthfully and holds every breakpoint in split view", async ({ page }) => {
+		const workspace = page.getByTestId("gepa-workspace");
+		await expect(workspace).not.toContainText("Following live");
+		await expect(page.getByTestId("workspace-headline")).toContainText("Search complete");
+		await expect(page.getByTestId("gepa-run-header")).toContainText("140 / 240");
+		await expect(page.getByTestId("gepa-run-header")).toContainText("gpt-5.6-sol");
+		await expect(page.getByTestId("gepa-pareto-frontier")).toBeVisible();
+		await expect(page.getByTestId("gepa-comparison")).toContainText("gpt-5.6-luna");
+		await captureViewportSweep(page, "gepa-split");
+	});
+
+	test("expanded workspace inspects candidate, evaluations, and trace at every breakpoint", async ({ page }) => {
+		await page.getByTestId("toggle-visual-expand").click();
+		await page.getByTestId("optimizer-candidate-gepa_d2b4f5433ce8").click();
+		await expect(page.getByTestId("gepa-selected-candidate")).toContainText("Rejected at the minibatch gate");
+		await expect(page.getByTestId("gepa-candidate-content")).toBeVisible();
+		await page.getByTestId("eval-filter-failures").click();
+		await expect(page.getByTestId("gepa-child-evaluations")).toBeVisible();
+		await expect(page.getByTestId("inspect-proposer-trace-0")).toContainText("Reflection context assembled");
+		await captureViewportSweep(page, "gepa-expanded");
+	});
+});
+
+test.describe("Craftax semantic viewer", () => {
+	test("folds deltas, keeps hierarchy, and holds every breakpoint", async ({ page }) => {
+		// Fixture replay paces one durable event per 800ms; this run has ~45.
+		test.setTimeout(180_000);
+		const lane = "rollout_craftax_gate_2026_08_12";
+		const events: unknown[] = [];
+		let seq = 0;
+		const push = (kind: string, payload: Record<string, unknown> = {}) => {
+			seq += 1;
+			events.push({
+				kind,
+				sequence: seq,
+				occurred_at: new Date(Date.UTC(2026, 7, 12, 20, 0, 0, seq * 15)).toISOString(),
+				run_id: lane,
+				payload
+			});
+		};
+		push("trace.opened");
+		push("observation", { readout: { env_steps: 0, observation_text: "Forest clearing", inventory: { health: 9, food: 8, drink: 7, energy: 9, wood: 2 } } });
+		push("span.policy.opened", { call: { provider: "openrouter", model: "gpt-5.6-luna" } });
+		for (let index = 0; index < 30; index += 1) {
+			push("span.policy.data", { delta: true, channel: "reasoning", text: `token${index} ` });
+		}
+		push("span.policy.data", { channel: "summary", model: "gpt-5.6-luna", tool_arguments: '{"actions":["up","left"]}', usage: { prompt_tokens: 1200, completion_tokens: 260, total_tokens: 1460, cost_usd: 0.000502 } });
+		push("span.policy.plan", { actions: ["up", "left"] });
+		push("span.policy.closed", { length: 2 });
+		push("reward_signal", { value: 1.0 });
+		push("span.step.closed", { step: 0, action: "up" });
+		push("achievement_unlocked", { achievement: "collect_wood" });
+		push("span.step.closed", { step: 1, action: "left" });
+		push("trace.reconciled", { digest: "d".repeat(64) });
+
+		const visual = {
+			schemaVersion: "synth.desktop-visual.v1",
+			id: "vis_craftax_gate",
+			currentRevision: 1,
+			title: "Craftax responsive gate",
+			templateId: "live.craftax.v1",
+			status: "saved",
+			rendererKind: "template",
+			bindings: {
+				schemaVersion: "synth.visual-bindings.v1",
+				slots: [{
+					slot: "stream",
+					kind: "inline",
+					data: {
+						events,
+						scope: { campaign_id: "campaign_gate", rollout_ids: [lane], selection: { initial_rollout_id: lane } }
+					}
+				}]
+			},
+			sessionId: null,
+			messageId: null,
+			runId: null,
+			traceId: null,
+			parentVisualId: null,
+			sourceAgentId: "gate",
+			sourceModel: "gate",
+			contentDigest: null,
+			previewDigest: null,
+			metadata: {},
+			createdAt: "2026-08-12T21:00:00Z",
+			updatedAt: "2026-08-12T21:00:00Z"
+		};
+		await page.addInitScript((record) => {
+			(window as any).synthVisuals = {
+				listTemplates: async () => [{ id: "live.craftax.v1", title: "Craftax live", genre: "live" }],
+				getTemplate: async (templateId: string) => ({ id: templateId, title: templateId }),
+				list: async () => [record],
+				get: async () => record,
+				revisions: async () => [],
+				create: async () => record,
+				update: async () => record,
+				save: async () => record,
+				fork: async () => record,
+				archive: async () => record,
+				show: async () => record,
+				onEvent: () => () => undefined,
+				onShow: () => () => undefined
+			};
+		}, visual);
+		await page.reload();
+		await page.getByTestId("titlebar").waitFor();
+		await page.getByTestId("open-visuals").click();
+		await page.getByTestId("visuals-card-vis_craftax_gate").getByRole("button", { name: "Open" }).click();
+		// The template also renders in the gallery preview; measure the pane instance.
+		const viewer = page.getByTestId("visual-pane").getByTestId("visual-live-craftax");
+		await expect(viewer).toBeVisible();
+		// Fixture replay is interval-based; wait for the sealed terminal state.
+		await expect(viewer).toContainText("sealed/reconciled", { timeout: 90_000 });
+
+		// One folded policy-call row, not thirty token rows.
+		const traceButtons = viewer.locator(".cv-trace li button");
+		const rowCount = await traceButtons.count();
+		expect(rowCount, `trace rows should be folded, got ${rowCount}`).toBeLessThan(20);
+		await expect(viewer).not.toContainText("token25");
+		await expect(viewer).toContainText("Step 0");
+		await expect(viewer).toContainText("collect_wood");
+
+		await page.getByTestId("toggle-visual-expand").click();
+		await captureViewportSweep(page, "craftax");
+	});
+});

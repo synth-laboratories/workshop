@@ -39,6 +39,10 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
         id: "run-live-container-evals",
         content: include_str!("../../skills/run-live-container-evals/SKILL.md"),
     },
+    BundledSkill {
+        id: "author-synth-diagrams",
+        content: include_str!("../../skills/author-synth-diagrams/SKILL.md"),
+    },
 ];
 
 /// Reads a single `key: value` field out of a SKILL.md's leading `---`

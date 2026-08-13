@@ -5,6 +5,7 @@ mod database;
 mod event_journal;
 #[path = "../migration/mod.rs"]
 pub mod legacy_migration;
+mod live_spool;
 mod migrations;
 mod model_performance;
 mod models;
@@ -18,6 +19,10 @@ pub use content_store::ContentStore;
 pub use database::{app_data_root, Database, Storage};
 pub(crate) use event_journal::append_event;
 pub use event_journal::{EventAppend, EventJournal};
+pub use live_spool::{
+    envelopes_from_event_log, load_live_spool, persist_live_envelopes, replay_frame_from_envelope,
+    LiveSpool, LIVE_SPOOL_SCHEMA,
+};
 pub use model_performance::{MeasurementKind, ModelPerformanceRepository, ModelPerformanceSummary};
 pub use models::{
     AppEvent, CommandReceiptRecord, CoreDiagnostics, EventSource, RunRecord, SessionRecord,

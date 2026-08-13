@@ -4,8 +4,9 @@
 not support commitments until their promotion gates pass
 
 **Detailed designs:** `execution_ontology.md`, `execution_stream_contracts.md`,
-`live_evals.md`, `live_optimizers_gepa.md`, and
-`private_eval_workspace_extensions.md`
+`live_evals.md`, `live_optimizers_gepa.md`,
+`private_eval_workspace_extensions.md`, and
+`workshop_live_visuals_execution_plan.md`
 
 ## Product goal
 

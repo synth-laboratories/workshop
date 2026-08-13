@@ -106,6 +106,6 @@ Show progress, throughput, completed/failed counts, running reward summary, and 
 
 ## Choosing the blank canvas
 
-Choose `blank.canvas.v1` when the intended result is more like an authored visual explanation than a standard chart: a task-and-results story, a trace topology, a reward-flow diagram, a compact experiment dashboard, or a bespoke environment-state panel.
+Choose `blank.canvas.v1` when the intended result is more like an authored visual explanation than a standard chart: a task-and-results story, a trace topology, a reward-flow diagram, a compact experiment dashboard, or a bespoke environment-state panel. System / UML / flow pictures belong on `diagram.mermaid.v1` via `author-synth-diagrams`, not as HTML dumped into a canvas.
 
 Keep using `analysis.visual.v1` for ordinary metric, bar, frequency-difference, table, and scatter compositions. The blank canvas increases freedom and review burden; inspect it carefully at the actual Desktop pane width.

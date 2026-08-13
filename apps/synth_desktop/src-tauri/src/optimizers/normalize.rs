@@ -10,6 +10,21 @@ pub fn normalize_event(
     default_algorithm_id: &str,
 ) -> Option<OptimizerEventEnvelope> {
     let obj = raw.as_object()?;
+    if let Some(payload) = obj.get("payload").and_then(Value::as_object) {
+        if payload
+            .get("schema_version")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.starts_with("optimizer_event"))
+        {
+            let mut event = normalize_canonical(payload, default_run_id, default_algorithm_id)?;
+            if let Some(seq) = as_u64(obj.get("seq").or_else(|| obj.get("_seq"))) {
+                if let Some(raw) = event.raw.as_object_mut() {
+                    raw.insert("sourceSequenceNumber".into(), json!(seq));
+                }
+            }
+            return Some(event);
+        }
+    }
     if obj
         .get("schema_version")
         .and_then(Value::as_str)
@@ -23,19 +38,11 @@ pub fn normalize_event(
         || (obj.contains_key("fields")
             && (obj.contains_key("event_type") || obj.contains_key("type")))
     {
-        return Some(normalize_gepa_oss(
-            obj,
-            default_run_id,
-            default_algorithm_id,
-        ));
+        return normalize_gepa_oss(obj, default_run_id, default_algorithm_id);
     }
     if obj.contains_key("_seq") || obj.contains_key("event_type") || obj.contains_key("event_kind")
     {
-        return Some(normalize_hosted_or_goex(
-            obj,
-            default_run_id,
-            default_algorithm_id,
-        ));
+        return normalize_hosted_or_goex(obj, default_run_id, default_algorithm_id);
     }
     None
 }
@@ -94,6 +101,29 @@ fn normalize_canonical(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
+    let mut delta = obj
+        .get("delta")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    lift_child_resource_ref(&mut delta);
+    if event_type == "optimizer.state.transitioned" {
+        if let Some(status) = delta.get("to").cloned() {
+            if !delta.contains_key("status") {
+                delta.insert("status".to_string(), status);
+            }
+        }
+    }
+    let usage_delta = obj
+        .get("usage_delta")
+        .or_else(|| obj.get("usageDelta"))
+        .and_then(Value::as_object)
+        .cloned()
+        .or_else(|| {
+            (event_type == "runtime.job.completed")
+                .then(|| extract_usage(&Value::Object(delta.clone())))
+                .flatten()
+        });
     Some(OptimizerEventEnvelope {
         schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
         event_id: obj
@@ -109,17 +139,9 @@ fn normalize_canonical(
         algorithm_id,
         level: obj.get("level").and_then(Value::as_str).map(str::to_string),
         item: obj.get("item").cloned(),
-        delta: obj
-            .get("delta")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default(),
+        delta,
         snapshot: obj.get("snapshot").and_then(Value::as_object).cloned(),
-        usage_delta: obj
-            .get("usage_delta")
-            .or_else(|| obj.get("usageDelta"))
-            .and_then(Value::as_object)
-            .cloned(),
+        usage_delta,
         artifact_refs: obj
             .get("artifact_refs")
             .or_else(|| obj.get("artifactRefs"))
@@ -135,14 +157,13 @@ fn normalize_gepa_oss(
     obj: &Map<String, Value>,
     default_run_id: &str,
     default_algorithm_id: &str,
-) -> OptimizerEventEnvelope {
+) -> Option<OptimizerEventEnvelope> {
     let sequence_number = as_u64(
         obj.get("sequence_number")
             .or_else(|| obj.get("sequenceNumber"))
             .or_else(|| obj.get("_seq"))
             .or_else(|| obj.get("seq")),
-    )
-    .unwrap_or(0);
+    )?;
     let event_type = obj
         .get("event_type")
         .or_else(|| obj.get("type"))
@@ -163,6 +184,7 @@ fn normalize_gepa_oss(
             .unwrap_or(default_algorithm_id),
     );
     let mut delta = fields.as_object().cloned().unwrap_or_default();
+    lift_child_resource_ref(&mut delta);
     if let Some(message) = obj.get("message").and_then(Value::as_str) {
         delta.insert("message".into(), json!(message));
     }
@@ -179,7 +201,7 @@ fn normalize_gepa_oss(
     } else {
         None
     };
-    OptimizerEventEnvelope {
+    Some(OptimizerEventEnvelope {
         schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
         event_id: obj
             .get("event_id")
@@ -205,20 +227,19 @@ fn normalize_gepa_oss(
         artifact_refs,
         error: obj.get("error").cloned(),
         raw: Value::Object(obj.clone()),
-    }
+    })
 }
 
 fn normalize_hosted_or_goex(
     obj: &Map<String, Value>,
     default_run_id: &str,
     default_algorithm_id: &str,
-) -> OptimizerEventEnvelope {
+) -> Option<OptimizerEventEnvelope> {
     let sequence_number = as_u64(
         obj.get("_seq")
             .or_else(|| obj.get("seq"))
             .or_else(|| obj.get("sequence_number")),
-    )
-    .unwrap_or(0);
+    )?;
     let event_type = obj
         .get("event_type")
         .or_else(|| obj.get("event_kind"))
@@ -244,6 +265,7 @@ fn normalize_hosted_or_goex(
         .unwrap_or(default_algorithm_id);
     let algorithm_id = normalize_algorithm_id(algorithm_hint);
     let mut delta = payload.as_object().cloned().unwrap_or_default();
+    lift_child_resource_ref(&mut delta);
     if !obj.contains_key("payload") {
         // Native go-ex jsonl: keep useful top-level keys in delta.
         for key in ["theme", "saturation", "phase", "tick", "status", "message"] {
@@ -265,7 +287,7 @@ fn normalize_hosted_or_goex(
         None
     };
     let mapped_type = map_goex_event_type(&event_type, &algorithm_id);
-    OptimizerEventEnvelope {
+    Some(OptimizerEventEnvelope {
         schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
         event_id: Some(format!("{run_id}:{sequence_number}")),
         event_type: mapped_type,
@@ -291,7 +313,7 @@ fn normalize_hosted_or_goex(
             .cloned()
             .or_else(|| payload.get("error").cloned()),
         raw: Value::Object(obj.clone()),
-    }
+    })
 }
 
 pub fn normalize_algorithm_id(value: &str) -> String {
@@ -392,7 +414,7 @@ fn gepa_snapshot(event_type: &str, fields: &Value) -> Option<Map<String, Value>>
                             "candidateId": id,
                             "quality": entry.get("train_reward").cloned().unwrap_or(Value::Null),
                             "heldoutQuality": entry.get("heldout_reward").cloned().unwrap_or(Value::Null),
-                            "costUsd": entry.get("cost_usd").cloned().unwrap_or(json!(0.0)),
+                            "costUsd": entry.get("cost_usd").cloned().unwrap_or(Value::Null),
                             "accent": best_id == Some(id),
                         }))
                     })
@@ -452,6 +474,37 @@ fn infer_item_from_hosted(event_type: &str, payload: &Value) -> Option<Value> {
         }
     }
     None
+}
+
+fn lift_child_resource_ref(delta: &mut Map<String, Value>) {
+    if delta
+        .get("child_resource_ref")
+        .is_some_and(is_container_resource_ref)
+    {
+        return;
+    }
+    if let Some(child) = delta.get("child_eval_ref").cloned() {
+        if is_container_resource_ref(&child) {
+            delta.insert("child_resource_ref".into(), child);
+        }
+    }
+}
+
+fn is_container_resource_ref(value: &Value) -> bool {
+    value.get("schema").and_then(Value::as_str) == Some("synth.resource-ref.v1")
+        && value.get("kind").and_then(Value::as_str) == Some("container_rollout")
+        && value
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+        && value
+            .pointer("/attributes/stream_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+        && value
+            .pointer("/attributes/reward_url")
+            .and_then(Value::as_str)
+            .is_some_and(|url| !url.is_empty())
 }
 
 fn extract_usage(fields: &Value) -> Option<Map<String, Value>> {
@@ -557,6 +610,40 @@ mod tests {
     }
 
     #[test]
+    fn enriches_canonical_gepa_status_and_runtime_usage() {
+        let transition = json!({
+            "schema_version": "optimizer_event.v1",
+            "type": "optimizer.state.transitioned",
+            "sequence_number": 69,
+            "optimizer_run_id": "gepa_live_1",
+            "algorithm_id": "gepa",
+            "delta": {"to": "completed"}
+        });
+        let event = normalize_event(&transition, "fallback", "gepa").unwrap();
+        assert_eq!(event.delta["status"], json!("completed"));
+
+        let completed = json!({
+            "schema_version": "optimizer_event.v1",
+            "type": "runtime.job.completed",
+            "sequence_number": 12,
+            "optimizer_run_id": "gepa_live_1",
+            "algorithm_id": "gepa",
+            "delta": {
+                "rollout_count": 4,
+                "cost_usd": 0.02,
+                "wall_seconds": 2.5,
+                "usage": {"prompt_tokens": 2500, "completion_tokens": 25}
+            }
+        });
+        let event = normalize_event(&completed, "fallback", "gepa").unwrap();
+        let usage = event.usage_delta.unwrap();
+        assert_eq!(usage["rollouts"], json!(4));
+        assert_eq!(usage["prompt_tokens"], json!(2500));
+        assert_eq!(usage["completion_tokens"], json!(25));
+        assert_eq!(usage["wall_time_ms"], json!(2500));
+    }
+
+    #[test]
     fn projects_native_gepa_frontier_into_visual_cells() {
         let raw = json!({
             "_seq": 18,
@@ -596,5 +683,160 @@ mod tests {
     fn maps_gelo_alias_to_go_ex() {
         assert_eq!(normalize_algorithm_id("GELO"), "go-ex");
         assert_eq!(normalize_algorithm_id("goex"), "go-ex");
+    }
+
+    #[test]
+    fn unwraps_hosted_sft_optimizer_event_payload() {
+        let raw = json!({
+            "run_id": "sft_cloud_1",
+            "seq": 1004,
+            "event_type": "sft.training.metrics",
+            "created_at": "2026-08-12T19:00:00Z",
+            "payload": {
+                "schema_version": "optimizer_event.v1",
+                "type": "sft.training.metrics",
+                "sequence_number": 4,
+                "created_at": "2026-08-12T19:00:00Z",
+                "run_id": "sft_cloud_1",
+                "algorithm_id": "sft",
+                "delta": {"trainLoss": 1.4, "step": 10}
+            }
+        });
+        let event = normalize_event(&raw, "fallback", "sft").unwrap();
+        assert_eq!(event.algorithm_id, "sft");
+        assert_eq!(event.event_type, "sft.training.metrics");
+        assert_eq!(event.sequence_number, 4);
+        assert_eq!(event.delta.get("trainLoss").unwrap(), 1.4);
+        assert_eq!(event.raw["sourceSequenceNumber"], 1004);
+        assert_ne!(event.algorithm_id, "goex.sft.v1");
+    }
+
+    #[test]
+    fn missing_sequence_is_not_coerced_to_zero() {
+        let raw = json!({
+            "schema_version": "event_stream_record.v1",
+            "event_type": "candidate.accepted",
+            "fields": {
+                "run_id": "gepa_1",
+                "candidate_id": "cand_1",
+                "train_reward": null
+            }
+        });
+        assert!(normalize_event(&raw, "fallback", "gepa").is_none());
+        let hosted = json!({
+            "run_id": "gepa_1",
+            "event_type": "optimizer.heartbeat",
+            "payload": {}
+        });
+        assert!(normalize_event(&hosted, "fallback", "gepa").is_none());
+    }
+
+    #[test]
+    fn proposer_delta_passes_through_without_invented_fields() {
+        let raw = json!({
+            "schema_version": "optimizer_event.v1",
+            "type": "proposer.delta",
+            "sequence_number": 4,
+            "run_id": "gepa_luna",
+            "algorithm_id": "gepa",
+            "delta": {
+                "generation": 1,
+                "channel": "critique",
+                "text": "consider a tighter intent header"
+            }
+        });
+        let event = normalize_event(&raw, "fallback", "gepa").unwrap();
+        assert_eq!(event.event_type, "proposer.delta");
+        assert_eq!(event.delta.get("generation").unwrap(), 1);
+        assert_eq!(event.delta.get("channel").unwrap(), "critique");
+        assert_eq!(
+            event.delta.get("text").unwrap(),
+            "consider a tighter intent header"
+        );
+        assert!(event.usage_delta.is_none());
+        assert!(!event.delta.contains_key("reward"));
+        assert!(!event.delta.contains_key("cost_usd"));
+
+        let partial = json!({
+            "schema_version": "optimizer_event.v1",
+            "type": "proposer.delta",
+            "sequence_number": 5,
+            "run_id": "gepa_luna",
+            "algorithm_id": "gepa",
+            "delta": { "channel": "critique", "text": "more" }
+        });
+        let event = normalize_event(&partial, "fallback", "gepa").unwrap();
+        assert!(event.delta.get("generation").is_none());
+        assert_eq!(event.delta.get("channel").unwrap(), "critique");
+        assert!(event.usage_delta.is_none());
+    }
+
+    #[test]
+    fn child_resource_ref_passes_through_without_defaulting_reward() {
+        let raw = json!({
+            "schema_version": "optimizer_event.v1",
+            "type": "optimizer.child_rollout.attached",
+            "sequence_number": 7,
+            "run_id": "gepa_luna",
+            "algorithm_id": "gepa",
+            "delta": {
+                "child_resource_ref": {
+                    "schema": "synth.resource-ref.v1",
+                    "kind": "container_rollout",
+                    "id": "rollout_luna",
+                    "attributes": {
+                        "stream_id": "stream:luna",
+                        "reward_url": "/reward?rollout_id=rollout_luna"
+                    }
+                }
+            }
+        });
+        let event = normalize_event(&raw, "fallback", "gepa").unwrap();
+        let child = event.delta.get("child_resource_ref").unwrap();
+        assert_eq!(child["schema"], "synth.resource-ref.v1");
+        assert_eq!(child["kind"], "container_rollout");
+        assert_eq!(child["id"], "rollout_luna");
+        assert_eq!(child["attributes"]["stream_id"], "stream:luna");
+        assert_eq!(
+            child["attributes"]["reward_url"],
+            "/reward?rollout_id=rollout_luna"
+        );
+        assert!(child.get("reward").is_none());
+        assert!(event.usage_delta.is_none());
+        assert!(!event.delta.contains_key("reward"));
+    }
+
+    #[test]
+    fn incomplete_child_eval_is_not_invented_into_a_resource_ref() {
+        let raw = json!({
+            "schema_version": "optimizer_event.v1",
+            "type": "optimizer.child_rollout.attached",
+            "sequence_number": 8,
+            "run_id": "gepa_luna",
+            "algorithm_id": "gepa",
+            "delta": {
+                "child_eval_ref": {
+                    "kind": "container_rollout",
+                    "id": "rollout_luna"
+                }
+            }
+        });
+        let event = normalize_event(&raw, "fallback", "gepa").unwrap();
+        assert!(event.delta.get("child_resource_ref").is_none());
+        assert_eq!(event.delta["child_eval_ref"]["id"], "rollout_luna");
+    }
+
+    #[test]
+    fn missing_frontier_cost_stays_null() {
+        let raw = json!({
+            "_seq": 18,
+            "type": "frontier.updated",
+            "fields": {
+                "best_candidate_id": "cand_seed",
+                "frontier": [{"candidate_id": "cand_seed", "train_reward": 0.5}]
+            }
+        });
+        let event = normalize_event(&raw, "gepa_native_1", "gepa").unwrap();
+        assert_eq!(event.snapshot.unwrap()["cells"][0]["costUsd"], Value::Null);
     }
 }

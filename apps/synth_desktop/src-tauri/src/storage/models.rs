@@ -4,7 +4,7 @@ use serde_json::Value;
 
 pub const APP_EVENT_SCHEMA_VERSION: &str = "synth.desktop-app-event.v1";
 /// Matches `storage/migrations.rs` `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 fn default_session_kind() -> String {
     "codex".into()

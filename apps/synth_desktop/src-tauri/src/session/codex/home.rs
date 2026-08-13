@@ -1,5 +1,5 @@
 //! Codex home directory / config.toml / provider binding helpers.
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -22,6 +22,7 @@ pub enum ProviderClass {
     LocalLaguna,
     SynthCloud,
     OpenRouter,
+    OpenaiCodexOauth,
     Direct,
 }
 
@@ -30,6 +31,9 @@ pub fn provider_class(provider_name: Option<&str>) -> ProviderClass {
         Some(name) if name.eq_ignore_ascii_case("local-laguna") => ProviderClass::LocalLaguna,
         Some(name) if name.eq_ignore_ascii_case("synth-cloud") => ProviderClass::SynthCloud,
         Some(name) if name.eq_ignore_ascii_case("openrouter") => ProviderClass::OpenRouter,
+        Some(name) if name.eq_ignore_ascii_case(crate::codex_oauth::PROVIDER_ID) => {
+            ProviderClass::OpenaiCodexOauth
+        }
         _ => ProviderClass::Direct,
     }
 }
@@ -164,6 +168,48 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         visuals_skill.join("references/visual-recipes.md"),
         include_str!("../../../../skills/use-synth-visuals/references/visual-recipes.md"),
     )?;
+    let diagrams_skill = home.join("skills/author-synth-diagrams");
+    fs::create_dir_all(diagrams_skill.join("references"))?;
+    fs::write(
+        diagrams_skill.join("SKILL.md"),
+        include_str!("../../../../skills/author-synth-diagrams/SKILL.md"),
+    )?;
+    for (name, body) in [
+        (
+            "families.md",
+            include_str!("../../../../skills/author-synth-diagrams/references/families.md"),
+        ),
+        (
+            "flowchart.md",
+            include_str!("../../../../skills/author-synth-diagrams/references/flowchart.md"),
+        ),
+        (
+            "sequence.md",
+            include_str!("../../../../skills/author-synth-diagrams/references/sequence.md"),
+        ),
+        (
+            "class.md",
+            include_str!("../../../../skills/author-synth-diagrams/references/class.md"),
+        ),
+        (
+            "state.md",
+            include_str!("../../../../skills/author-synth-diagrams/references/state.md"),
+        ),
+        (
+            "er.md",
+            include_str!("../../../../skills/author-synth-diagrams/references/er.md"),
+        ),
+        (
+            "c4.md",
+            include_str!("../../../../skills/author-synth-diagrams/references/c4.md"),
+        ),
+        (
+            "feedback-loop.md",
+            include_str!("../../../../skills/author-synth-diagrams/references/feedback-loop.md"),
+        ),
+    ] {
+        fs::write(diagrams_skill.join("references").join(name), body)?;
+    }
     let optimizers_skill = home.join("skills/use-synth-optimizers");
     fs::create_dir_all(&optimizers_skill)?;
     fs::write(
@@ -213,13 +259,52 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
     } else {
         ""
     };
+    let oauth = provider_class(request.provider_name.as_deref()) == ProviderClass::OpenaiCodexOauth;
+    let auth_config = if oauth {
+        "cli_auth_credentials_store = \"file\"\n"
+    } else {
+        ""
+    };
+    // A ChatGPT subscription uses the Codex auth.json file. Pointing this
+    // provider at the local Laguna key makes Codex send that loopback secret as
+    // a Bearer token instead of the ChatGPT OAuth access token.
+    let env_key_config = if oauth {
+        String::new()
+    } else {
+        format!("env_key = \"{}\"\n", toml_string(env_key))
+    };
+    let provider_base_url = if oauth {
+        request.base_url.trim_end_matches('/').to_owned()
+    } else {
+        responses_base_url(&request.base_url)
+    };
     let config = format!(
-        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"default\"\n{}{}\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\nenv_key = \"{}\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n# Codex selects provider-hosted compaction for OpenAI/Azure and local summarization otherwise.\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
-        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), disable_response_storage_config, compaction_config, workspace_write_config, toml_key(provider), toml_string(title), toml_string(&responses_base_url(&request.base_url)), toml_string(env_key), agents_enabled, multi_agent_v1, multi_agent_v2
+        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"{}\"\n{}{}{}\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\n{}wire_api = \"responses\"\nrequires_openai_auth = {}\n# Codex selects provider-hosted compaction for OpenAI/Azure and local summarization otherwise.\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
+        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), toml_string(request.service_tier.as_deref().unwrap_or("default")), auth_config, disable_response_storage_config, compaction_config, workspace_write_config, toml_key(provider), toml_string(title), toml_string(&provider_base_url), env_key_config, oauth, agents_enabled, multi_agent_v1, multi_agent_v2
     );
     fs::write(home.join("config.toml"), config)?;
     let auth = home.join("auth.json");
-    if !auth.exists() {
+    if oauth {
+        let credential: crate::codex_oauth::Credential = serde_json::from_str(&request.api_key)
+            .context("ChatGPT subscription credential was unavailable")?;
+        let body = serde_json::to_vec_pretty(&serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": credential.id_token,
+                "access_token": credential.access_token,
+                "refresh_token": credential.refresh_token,
+                "account_id": credential.account_id,
+            },
+            "last_refresh": chrono::DateTime::from_timestamp_millis(credential.last_refresh_ms)
+                .map(|value| value.to_rfc3339()),
+        }))?;
+        fs::write(&auth, body)?;
+        set_private_file(&auth)?;
+    } else if !auth.exists()
+        || fs::read_to_string(&auth)
+            .unwrap_or_default()
+            .contains("\"auth_mode\": \"chatgpt\"")
+    {
         fs::write(
             auth,
             "{\n  \"OPENAI_API_KEY\": \"synth-desktop-provider\"\n}\n",
@@ -249,11 +334,46 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
                 continue;
             }
             existing.push_str(&format!(
-                "\n{heading}\ncommand = \"{}\"\nargs = []\n{}default_tools_approval_mode = \"approve\"\nenv = {{ SYNTH_DESKTOP_IPC_FILE = \"{}\", SYNTH_SESSION_ID = \"{}\" }}\n",
-                toml_string(&bin.display().to_string()), mcp_enabled_tools(server), toml_string(&ipc.display().to_string()), toml_string(&request.session_id),
+                "\n{heading}\ncommand = \"{}\"\nargs = []\n{}default_tools_approval_mode = \"approve\"\nenv = {{ {} = \"{}\", SYNTH_SESSION_ID = \"{}\" }}\n",
+                toml_string(&bin.display().to_string()), mcp_enabled_tools(server), mcp_ipc_env_key(server), toml_string(&ipc.display().to_string()), toml_string(&request.session_id),
             ));
         }
         fs::write(home.join("config.toml"), existing)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_file(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_private_file(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+/// Remove every materialized ChatGPT credential from Workshop-owned Codex homes.
+pub fn scrub_oauth_auth_files() -> Result<()> {
+    let homes = codex_root().join("homes");
+    let Ok(entries) = fs::read_dir(homes) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let home = entry.path();
+        let config = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+        if config.contains(&format!(
+            "model_provider = \"{}\"",
+            crate::codex_oauth::PROVIDER_ID
+        )) {
+            match fs::remove_file(home.join("auth.json")) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
     Ok(())
 }
@@ -272,6 +392,11 @@ pub(crate) fn validate_start(request: &CodexSessionStartRequest) -> Result<()> {
     }
     if !Path::new(&request.workspace).is_dir() {
         return Err(anyhow!("workspace must be an existing directory"));
+    }
+    if let Some(tier) = request.service_tier.as_deref() {
+        if !matches!(tier, "default" | "fast") {
+            return Err(anyhow!("serviceTier must be default or fast"));
+        }
     }
     if !supports_provider_compaction(request) {
         let compact_limit = auto_compact_token_limit(request);
@@ -315,7 +440,7 @@ pub(crate) fn model_context_window(model: &str) -> u64 {
 }
 
 pub(crate) fn auto_compact_token_limit(request: &CodexSessionStartRequest) -> u64 {
-    request.auto_compact_token_limit.unwrap_or_else(|| {
+    let requested = request.auto_compact_token_limit.unwrap_or_else(|| {
         let model = request.model.to_ascii_lowercase();
         if model.contains("laguna-s-2.1")
             || model.contains("gpt-5.6-luna")
@@ -327,7 +452,14 @@ pub(crate) fn auto_compact_token_limit(request: &CodexSessionStartRequest) -> u6
         } else {
             model_context_window(&request.model) * 4 / 5
         }
-    })
+    });
+
+    // The renderer persists this control globally, while model context
+    // windows are model-scoped. A value selected for Luna (250k) must not
+    // make a smaller-window Codex model such as Terra fail to start.
+    // Keep the lower-bound validation intact so malformed requests remain
+    // actionable, but cap normal preferences at this model's safe maximum.
+    requested.min(model_context_window(&request.model) * 9 / 10)
 }
 
 /// Whether Codex should disable server-side response storage for this
@@ -437,6 +569,13 @@ pub fn codex_root() -> PathBuf {
         .unwrap_or_else(|| crate::instance::state_root().join("codex"))
 }
 
+pub fn oauth_auth_path(session_id: &str) -> PathBuf {
+    codex_root()
+        .join("homes")
+        .join(safe_component(session_id))
+        .join("auth.json")
+}
+
 pub(crate) async fn persist_records(
     records: &Arc<RwLock<HashMap<String, CodexSessionRecord>>>,
     state_path: &Path,
@@ -492,6 +631,13 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         "synth_visuals" => "enabled_tools = [\"visual_manage\"]\n",
         "synth_optimizers" => "enabled_tools = [\"optimizer_manage\"]\n",
         _ => "",
+    }
+}
+
+pub(crate) fn mcp_ipc_env_key(server: &str) -> &'static str {
+    match server {
+        "synth_visuals" => "SYNTH_VISUALS_IPC_FILE",
+        _ => "SYNTH_DESKTOP_IPC_FILE",
     }
 }
 

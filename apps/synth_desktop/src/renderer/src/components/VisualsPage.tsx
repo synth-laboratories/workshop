@@ -23,6 +23,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
+	const [focusVisualId, setFocusVisualId] = useState<string | null>(null);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -69,9 +70,12 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 	}, [tab, visuals]);
 
 	const selected = filtered.find((visual) => visual.id === selectedId) ?? filtered[0] ?? null;
+	useEffect(() => {
+		if (selected?.metadata?.presentation === "canvas") setFocusVisualId(selected.id);
+	}, [selected?.id, selected?.metadata?.presentation]);
 
 	return (
-		<section className="visuals-page" data-testid="visuals-page">
+		<section className={`visuals-page${focusVisualId ? " visuals-page-focus" : ""}`} data-testid="visuals-page">
 			<header className="visuals-page-head">
 				<div>
 					<button type="button" className="ghost-button" onClick={onBack}>Back</button>
@@ -114,8 +118,8 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 			{error ? <p className="visuals-error">{error}</p> : null}
 			{loading ? <p className="visuals-loading">Loading visuals…</p> : null}
 
-			<div className="visuals-layout">
-				<div className="visuals-grid" data-testid="visuals-grid">
+			<div className={`visuals-layout${focusVisualId ? " focus" : ""}`}>
+				<div className="visuals-grid" data-testid="visuals-grid" hidden={Boolean(focusVisualId)}>
 					{filtered.length === 0 && !loading ? (
 						<p className="visuals-empty">No visuals yet. Create one from chat, MCP, or New visual.</p>
 					) : null}
@@ -143,8 +147,17 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 				{selected ? (
 					<div className="visuals-preview" data-testid="visuals-preview">
 						<header>
-							<h2>{selected.title}</h2>
-							<p>{selected.templateId} · {statusLabel(selected.status)}</p>
+							<div>
+								<h2>{selected.title}</h2>
+								<p>{selected.templateId} · {statusLabel(selected.status)}</p>
+							</div>
+							<button
+								type="button"
+								className="ghost-button"
+								onClick={() => setFocusVisualId(focusVisualId ? null : selected.id)}
+							>
+								{focusVisualId ? "Exit canvas" : "Open canvas"}
+							</button>
 						</header>
 						<VisualHost artifact={artifactFromVisualRecord(selected)} />
 					</div>

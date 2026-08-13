@@ -1,10 +1,37 @@
 //! Authenticated loopback IPC so the visual MCP adapter never opens SQLite.
 
+use crate::container_stream::{
+    authoritative_poll_telemetry, declared_poll_url, declared_sse_url, declared_stream_descriptor,
+    refuse_auto_transport, require_caller_policy_ref, require_task_instance, resolve_declared_url,
+    wait_for_stream_subscribed, SUBSCRIBE_READY_TIMEOUT,
+};
 use crate::core_runtime::CoreRuntime;
 use crate::data::ContainerRegisterRequest;
 use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
 use crate::limits;
-use crate::visuals::{VisualCreateRequest, VisualQuery, VisualUpdateRequest};
+use crate::visuals::{
+    assert_live_eval_slot, classify_live_eval_family, live_eval_bind_metadata, VisualCreateRequest,
+    VisualQuery, VisualStatus, VisualUpdateRequest, LIVE_EVAL_SLOT,
+};
+
+const MAX_SCRIPTED_ROLLOUTS: u64 = 10;
+const BASE_AUTHORING_CHECKS: [&str; 6] = [
+    "rendered",
+    "noOverflow",
+    "primarySurfaceVisible",
+    "temporalControls",
+    "traceInspector",
+    "realEvidence",
+];
+
+fn required_authoring_checks(template_id: &str) -> Vec<&'static str> {
+    let mut checks = BASE_AUTHORING_CHECKS.to_vec();
+    if template_id == "live.craftax.v1" {
+        checks.push("imageReplay");
+    }
+    checks
+}
+
 use anyhow::{Context, Result};
 use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -154,6 +181,213 @@ fn validated_loopback_rollout_base(base: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+pub(crate) async fn get_rollout_status(
+    client: &reqwest::Client,
+    base: &str,
+    rollout_id: &str,
+) -> Result<Option<Value>> {
+    let response = client
+        .get(format!("{base}/rollouts/{rollout_id}"))
+        .send()
+        .await
+        .context("GET authoritative rollout status")?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    Ok(Some(response.error_for_status()?.json::<Value>().await?))
+}
+
+fn rollout_started(state: &Value) -> bool {
+    state.get("started").and_then(Value::as_bool) == Some(true)
+        || state.get("terminated").and_then(Value::as_bool) == Some(true)
+        || matches!(
+            state.get("status").and_then(Value::as_str),
+            Some("running" | "completed" | "failed" | "cancelled" | "truncated")
+        )
+}
+
+pub(crate) async fn start_rollout_idempotently(
+    execution_client: &reqwest::Client,
+    recovery_client: &reqwest::Client,
+    base: &str,
+    rollout_id: &str,
+    start_body: &Value,
+) -> Result<(Value, bool)> {
+    let send = || {
+        execution_client
+            .post(format!("{base}/rollouts"))
+            .json(start_body)
+    };
+    match send().send().await {
+        Ok(response) => return Ok((response.error_for_status()?.json::<Value>().await?, false)),
+        Err(first_error) => {
+            if let Some(state) = get_rollout_status(recovery_client, base, rollout_id).await? {
+                if rollout_started(&state) {
+                    return Ok((state, true));
+                }
+            }
+
+            // The request either never reached the façade or left an outcome gap. Replaying the
+            // exact immutable identity is safe: Containers owns the idempotency boundary.
+            match send().send().await {
+                Ok(response) => {
+                    return Ok((response.error_for_status()?.json::<Value>().await?, true));
+                }
+                Err(retry_error) => {
+                    if let Some(state) =
+                        get_rollout_status(recovery_client, base, rollout_id).await?
+                    {
+                        if rollout_started(&state) {
+                            return Ok((state, true));
+                        }
+                    }
+                    return Err(retry_error).with_context(|| {
+                        format!(
+                            "idempotent rollout start failed after reconnect; first error: {first_error}"
+                        )
+                    });
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ScriptedRollout {
+    rollout_id: String,
+    state: Value,
+    events: Value,
+    stream_id: Option<String>,
+}
+
+/// C1-08: normalized Containers prepare → declared poll until `stream.subscribed` → start.
+async fn run_one_scripted_rollout(
+    client: &reqwest::Client,
+    base: &str,
+    seed: i64,
+    actions: &[String],
+    requested_rollout_id: Option<String>,
+) -> Result<ScriptedRollout> {
+    let telemetry = authoritative_poll_telemetry();
+    refuse_auto_transport(&telemetry)?;
+    let requested_rollout_id =
+        requested_rollout_id.unwrap_or_else(|| format!("roll_{}", Uuid::new_v4().simple()));
+    let prepare = client
+        .post(format!("{base}/rollouts/prepare"))
+        .json(&json!({ "rollout_id": requested_rollout_id, "telemetry": telemetry }))
+        .send()
+        .await
+        .context("POST /rollouts/prepare")?;
+    let prepare_status = prepare.status();
+    if !prepare_status.is_success() {
+        anyhow::bail!(
+            "normalized Containers POST /rollouts/prepare failed with {prepare_status}; native benchmark routes must be folded inside Containers"
+        );
+    }
+    let prepared = prepare.json::<Value>().await?;
+    let rollout_id = prepared
+        .get("rollout_id")
+        .and_then(Value::as_str)
+        .context("prepare omitted rollout_id")?
+        .to_string();
+    if rollout_id != requested_rollout_id {
+        anyhow::bail!("prepare returned a different rollout_id than the caller-stable id");
+    }
+    let prepared_stream = declared_stream_descriptor(&prepared)?
+        .context("prepare omitted stream descriptor; refusing to guess /events")?;
+    let poll_url = resolve_declared_url(base, &declared_poll_url(&prepared_stream)?)?;
+    wait_for_stream_subscribed(client, &poll_url, SUBSCRIBE_READY_TIMEOUT).await?;
+
+    let mut state = client
+        .post(format!("{base}/rollouts"))
+        .json(&json!({
+            "rollout_id": rollout_id,
+            "seed": seed,
+            "telemetry": telemetry,
+            "slot": LIVE_EVAL_SLOT,
+        }))
+        .send()
+        .await?
+        .error_for_status()
+        .context("POST /rollouts after stream.subscribed")?
+        .json::<Value>()
+        .await?;
+    step_until_done(client, base, &rollout_id, &mut state, actions).await?;
+    let events = client
+        .get(&poll_url)
+        .query(&[("after", "0")])
+        .send()
+        .await?
+        .error_for_status()
+        .context("GET declared transports.poll.url")?
+        .json::<Value>()
+        .await?;
+    let stream_id = prepared_stream
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            state
+                .get("stream")
+                .and_then(|value| value.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+    Ok(ScriptedRollout {
+        rollout_id,
+        state,
+        events,
+        stream_id,
+    })
+}
+
+async fn step_until_done(
+    client: &reqwest::Client,
+    base: &str,
+    rollout_id: &str,
+    state: &mut Value,
+    actions: &[String],
+) -> Result<()> {
+    for action in actions {
+        if state
+            .get("terminated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || state
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        {
+            break;
+        }
+        *state = client
+            .post(format!("{base}/rollouts/{rollout_id}/step"))
+            .json(&json!({"action": action}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+    }
+    Ok(())
+}
+
+fn require_scripted_stream_slot(body: &Value) -> Result<()> {
+    let requested = body
+        .get("slot")
+        .or_else(|| body.get("streamSlot"))
+        .or_else(|| body.get("stream_slot"))
+        .and_then(Value::as_str)
+        .unwrap_or(LIVE_EVAL_SLOT);
+    assert_live_eval_slot(requested)?;
+    if requested != LIVE_EVAL_SLOT {
+        anyhow::bail!(
+            "visuals IPC scripted rollouts bind slot \"{LIVE_EVAL_SLOT}\", not \"{requested}\""
+        );
+    }
+    Ok(())
+}
+
 async fn register_hydrated_container(
     core: &CoreRuntime,
     request: ContainerRegisterRequest,
@@ -190,11 +424,18 @@ async fn register_hydrated_container(
             }
         }
     }
-    let family = info
+    let classified = info
         .as_ref()
-        .and_then(|value| value.get("env_family").or_else(|| value.get("task_family")))
-        .and_then(Value::as_str)
-        .map(str::to_string)
+        .and_then(|value| classify_live_eval_family(value, request.task_family.as_deref()))
+        .or_else(|| classify_live_eval_family(&json!({}), request.task_family.as_deref()));
+    let family = classified
+        .map(|family| family.as_str().to_string())
+        .or_else(|| {
+            info.as_ref()
+                .and_then(|value| value.get("env_family").or_else(|| value.get("task_family")))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .or_else(|| request.task_family.clone());
     let mut metadata = request
         .metadata
@@ -212,6 +453,17 @@ async fn register_hydrated_container(
             "health-only"
         }),
     );
+    if let Some(family) = classified {
+        let policy_refs = metadata.get("policyRefs").cloned();
+        metadata.insert(
+            "liveEval".into(),
+            live_eval_bind_metadata(
+                family,
+                info.as_ref().unwrap_or(&json!({})),
+                policy_refs.as_ref(),
+            )?,
+        );
+    }
     if let Some(value) = info {
         metadata.insert("info".into(), value);
     }
@@ -249,7 +501,10 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
         ("POST", "/v1/containers") => {
             let request: ContainerRegisterRequest = serde_json::from_value(body)?;
             let container = register_hydrated_container(core, request).await?;
-            Ok(json!({"container":container}))
+            Ok(json!({
+                "container": container,
+                "liveEval": container.metadata.get("liveEval").cloned().unwrap_or(Value::Null),
+            }))
         }
         ("GET", path) if path.starts_with("/v1/containers/") && !path.ends_with("/probe") => {
             let id = path.trim_start_matches("/v1/containers/");
@@ -297,6 +552,28 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             if let Some(value) = info.clone() {
                 metadata.insert("info".into(), value);
             }
+            let classified = info
+                .as_ref()
+                .and_then(|value| {
+                    classify_live_eval_family(value, container.task_family.as_deref())
+                })
+                .or_else(|| {
+                    classify_live_eval_family(&json!({}), container.task_family.as_deref())
+                });
+            if let Some(family) = classified {
+                let policy_refs = metadata
+                    .get("liveEval")
+                    .and_then(|value| value.get("policyRefs"))
+                    .cloned();
+                metadata.insert(
+                    "liveEval".into(),
+                    live_eval_bind_metadata(
+                        family,
+                        info.as_ref().unwrap_or(&json!({})),
+                        policy_refs.as_ref(),
+                    )?,
+                );
+            }
             for (route, key) in [
                 ("task_catalog", "taskCatalog"),
                 ("task_info", "taskInfo"),
@@ -327,6 +604,237 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .await?;
             Ok(json!({"container":updated}))
         }
+        ("POST", path)
+            if path.starts_with("/v1/containers/") && path.ends_with("/rollouts/prepare") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/containers/")
+                .trim_end_matches("/rollouts/prepare")
+                .trim_end_matches('/');
+            let container = core.data().get_container(id.to_string()).await?;
+            let base = validated_loopback_rollout_base(
+                container
+                    .base_url
+                    .as_deref()
+                    .context("container has no base URL")?,
+            )?;
+            let telemetry = body.get("telemetry").cloned().unwrap_or_else(|| json!({"enabled":true,"transport":"sse","detail":"standard","frame":{"enabled":true,"format":"png","every_n_steps":1}}));
+            refuse_auto_transport(&telemetry)?;
+            let rollout_id = body
+                .get("rollout_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("roll_{}", Uuid::new_v4().simple()));
+            let client = crate::http::http_client_builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
+                .build()?;
+            let prepare_body = json!({"rollout_id": rollout_id, "telemetry": telemetry});
+            let mut response = client
+                .post(format!("{base}/rollouts/prepare"))
+                .json(&prepare_body)
+                .send()
+                .await;
+            if response.is_err() {
+                response = client
+                    .post(format!("{base}/rollouts/prepare"))
+                    .json(&prepare_body)
+                    .send()
+                    .await;
+            }
+            let response = response.context("idempotent POST /rollouts/prepare")?;
+            if matches!(
+                response.status(),
+                reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED
+            ) {
+                anyhow::bail!("container has no normalized prepare endpoint; native benchmark routes must be folded inside Containers");
+            }
+            let prepared = response.error_for_status()?.json::<Value>().await?;
+            let returned_rollout_id = prepared
+                .get("rollout_id")
+                .and_then(Value::as_str)
+                .context("prepare omitted rollout_id")?;
+            if returned_rollout_id != rollout_id {
+                anyhow::bail!("prepare returned a different rollout_id than the caller-stable id");
+            }
+            let stream = declared_stream_descriptor(&prepared)?
+                .context("prepare omitted stream descriptor")?;
+            let poll_url = resolve_declared_url(&base, &declared_poll_url(&stream)?)?;
+            let sse_url = resolve_declared_url(&base, &declared_sse_url(&stream)?)?;
+            crate::visuals::assert_declared_stream_source(&sse_url)?;
+            Ok(json!({
+                "container_id": id, "rollout_id": rollout_id, "prepared": prepared, "stream": stream,
+                "resolved": {"poll_url": poll_url, "sse_url": sse_url},
+                "visual_binding": {"slot":"stream","kind":"live_sse","source":sse_url,"poll_url":poll_url,"schema":"synth.trace-stream-event.v1"},
+                "start_blocked_until": "stream.subscribed"
+            }))
+        }
+        ("GET", path) if path.starts_with("/v1/containers/") && path.contains("/rollouts/") => {
+            let remainder = path.trim_start_matches("/v1/containers/");
+            let (id, rollout_id) = remainder
+                .split_once("/rollouts/")
+                .context("invalid rollout status path")?;
+            if id.is_empty() || rollout_id.is_empty() || rollout_id.contains('/') {
+                anyhow::bail!("invalid rollout status path");
+            }
+            let container = core.data().get_container(id.to_string()).await?;
+            let base = validated_loopback_rollout_base(
+                container
+                    .base_url
+                    .as_deref()
+                    .context("container has no base URL")?,
+            )?;
+            let client = crate::http::http_client_builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
+                .build()?;
+            let state = get_rollout_status(&client, &base, rollout_id)
+                .await?
+                .context("unknown rollout")?;
+            Ok(json!({"container_id": id, "rollout_id": rollout_id, "state": state}))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/containers/") && path.ends_with("/rollouts/poll") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/containers/")
+                .trim_end_matches("/rollouts/poll")
+                .trim_end_matches('/');
+            let rollout_id = body
+                .get("rollout_id")
+                .and_then(Value::as_str)
+                .context("poll requires rollout_id")?;
+            let stream = body
+                .get("stream")
+                .filter(|value| value.is_object())
+                .context("poll requires the exact prepared stream descriptor")?;
+            let after = body.get("after").and_then(Value::as_u64).unwrap_or(0);
+            let container = core.data().get_container(id.to_string()).await?;
+            let base = validated_loopback_rollout_base(
+                container
+                    .base_url
+                    .as_deref()
+                    .context("container has no base URL")?,
+            )?;
+            let mut poll_url =
+                reqwest::Url::parse(&resolve_declared_url(&base, &declared_poll_url(stream)?)?)?;
+            poll_url
+                .query_pairs_mut()
+                .clear()
+                .append_pair("after", &after.to_string());
+            let client = crate::http::http_client_builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
+                .build()?;
+            let page = client
+                .get(poll_url)
+                .send()
+                .await
+                .context("resume declared rollout poll")?
+                .error_for_status()?
+                .json::<Value>()
+                .await?;
+            if page.get("rollout_id").and_then(Value::as_str) != Some(rollout_id) {
+                anyhow::bail!("poll response rollout_id does not match requested rollout");
+            }
+            let next_cursor = page
+                .pointer("/cursor/high_water")
+                .cloned()
+                .unwrap_or(Value::Null);
+            Ok(
+                json!({"container_id": id, "rollout_id": rollout_id, "page": page, "next_cursor": next_cursor}),
+            )
+        }
+        ("POST", path)
+            if path.starts_with("/v1/containers/") && path.ends_with("/rollouts/start") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/containers/")
+                .trim_end_matches("/rollouts/start")
+                .trim_end_matches('/');
+            let container = core.data().get_container(id.to_string()).await?;
+            let base = validated_loopback_rollout_base(
+                container
+                    .base_url
+                    .as_deref()
+                    .context("container has no base URL")?,
+            )?;
+            let rollout_id = body
+                .get("rollout_id")
+                .and_then(Value::as_str)
+                .context("start requires rollout_id")?;
+            let visual_id = body
+                .get("visual_id")
+                .and_then(Value::as_str)
+                .context("start requires visual_id")?;
+            let visual = registry.get(visual_id.to_string()).await?;
+            let quality = visual
+                .metadata
+                .get("qualityGate")
+                .filter(|value| value.get("ready").and_then(Value::as_bool) == Some(true))
+                .context("refusing rollout start: visual is not ready")?;
+            if quality.get("revision").and_then(Value::as_i64) != Some(visual.current_revision) {
+                anyhow::bail!("refusing rollout start: visual readiness receipt is stale");
+            }
+            let stream = body
+                .get("stream")
+                .filter(|value| value.is_object())
+                .context("start requires the exact prepared stream descriptor")?;
+            let policy_ref = require_caller_policy_ref(&body)?;
+            let task_instance_id = require_task_instance(&body)?;
+            let poll_url = resolve_declared_url(&base, &declared_poll_url(stream)?)?;
+            let telemetry = body.get("telemetry").cloned().unwrap_or_else(|| json!({"enabled":true,"transport":"sse","detail":"standard","frame":{"enabled":true,"format":"png","every_n_steps":1}}));
+            refuse_auto_transport(&telemetry)?;
+            let client = crate::http::http_client_builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT)
+                .build()?;
+            let recovery_client = crate::http::http_client_builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
+                .build()?;
+            let subscription =
+                wait_for_stream_subscribed(&client, &poll_url, SUBSCRIBE_READY_TIMEOUT).await?;
+            let mut start_body = json!({
+                "rollout_id": rollout_id, "seed": body.get("seed"), "task_instance_id": task_instance_id,
+                "policy_ref": policy_ref, "telemetry": telemetry, "slot": LIVE_EVAL_SLOT
+            });
+            if let Some(environment_ref) = body
+                .get("environment_ref")
+                .or_else(|| body.get("environmentRef"))
+                .cloned()
+            {
+                start_body["environment_ref"] = environment_ref;
+            }
+            if let Some(task_world) = body
+                .get("task_world")
+                .or_else(|| body.get("taskWorld"))
+                .cloned()
+            {
+                start_body["task_world"] = task_world;
+            }
+            if let Some(world_ref) = body
+                .get("world_ref")
+                .or_else(|| body.get("worldRef"))
+                .cloned()
+            {
+                start_body["world_ref"] = world_ref;
+            }
+            let (state, recovered) = start_rollout_idempotently(
+                &client,
+                &recovery_client,
+                &base,
+                rollout_id,
+                &start_body,
+            )
+            .await
+            .context("POST /rollouts after stream.subscribed")?;
+            core.update_container_last_rollout(id.to_string(), rollout_id.to_string())
+                .await?;
+            Ok(
+                json!({"container_id":id,"rollout_id":rollout_id,"visual_id":visual_id,"visual_revision":visual.current_revision,"state":state,"subscription":subscription,"started":true,"recovered":recovered}),
+            )
+        }
         ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/rollouts") => {
             let id = path
                 .trim_start_matches("/v1/containers/")
@@ -339,8 +847,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .context("container has no base URL")?;
             let base = validated_loopback_rollout_base(base)?;
             let count = body.get("count").and_then(Value::as_u64).unwrap_or(1);
-            if !(1..=8).contains(&count) {
-                anyhow::bail!("count must be between 1 and 8");
+            if !(1..=MAX_SCRIPTED_ROLLOUTS).contains(&count) {
+                anyhow::bail!("count must be between 1 and {MAX_SCRIPTED_ROLLOUTS}");
             }
             let actions = body
                 .get("actions")
@@ -357,14 +865,13 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                         .collect::<Result<Vec<_>>>()
                 })
                 .transpose()?
-                .unwrap_or_else(|| {
-                    ["do", "left", "do", "up", "do", "right", "do", "down"]
-                        .into_iter()
-                        .map(str::to_string)
-                        .collect()
-                });
+                .context("container_run_rollouts requires an explicit actions list; this is scripted engine acceptance, not a policy eval")?;
             if actions.is_empty() || actions.len() > 64 {
                 anyhow::bail!("actions must contain between 1 and 64 bounded steps");
+            }
+            require_scripted_stream_slot(&body)?;
+            if let Some(telemetry) = body.get("telemetry") {
+                refuse_auto_transport(telemetry)?;
             }
             let seeds = body.get("seeds").and_then(Value::as_array);
             if let Some(values) = seeds {
@@ -384,60 +891,33 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     .and_then(|values| values.get(index as usize))
                     .and_then(Value::as_i64)
                     .unwrap_or(index as i64 + 1);
-                let response = client
-                    .post(format!("{base}/rollouts"))
-                    .json(&json!({"seed":seed}))
-                    .send()
-                    .await?
-                    .error_for_status()?;
-                let mut state = response.json::<Value>().await?;
-                let rollout_id = state
-                    .get("rollout_id")
-                    .and_then(Value::as_str)
-                    .context("container rollout response omitted rollout_id")?
-                    .to_string();
-                for action in &actions {
-                    if state
-                        .get("terminated")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                        || state
-                            .get("truncated")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false)
-                    {
-                        break;
-                    }
-                    state = client
-                        .post(format!("{base}/rollouts/{rollout_id}/step"))
-                        .json(&json!({"action":action}))
-                        .send()
-                        .await?
-                        .error_for_status()?
-                        .json::<Value>()
-                        .await?;
-                }
-                let events = client
-                    .get(format!("{base}/rollouts/{rollout_id}/event_log"))
-                    .send()
-                    .await?
-                    .error_for_status()?
-                    .json::<Value>()
-                    .await?;
+                let ScriptedRollout {
+                    rollout_id,
+                    state,
+                    events,
+                    stream_id,
+                } = run_one_scripted_rollout(&client, &base, seed, &actions, None).await?;
+                let spool = crate::storage::persist_live_envelopes(
+                    core.content(),
+                    stream_id.as_deref(),
+                    Some(&rollout_id),
+                    crate::storage::envelopes_from_event_log(&events),
+                )?;
                 core.update_container_last_rollout(id.to_string(), rollout_id.clone())
                     .await?;
                 rollouts.push(json!({
-                    "rolloutId": rollout_id,
+                    "rollout_id": rollout_id,
                     "seed": seed,
                     "actions": actions.clone(),
                     "state": state,
-                    "eventLog": events,
+                    "event_log": events,
+                    "spool_digest": spool.digest,
                 }));
             }
             Ok(json!({
-                "containerId": id,
-                "baseUrl": base,
-                "rolloutCount": rollouts.len(),
+                "container_id": id,
+                "base_url": base,
+                "rollout_count": rollouts.len(),
                 "rollouts": rollouts,
             }))
         }
@@ -453,12 +933,220 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let query: VisualQuery = serde_json::from_value(body.clone()).unwrap_or_default();
             Ok(json!({"visuals": registry.list(query).await?}))
         }
+        ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/authoring") => {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/authoring")
+                .trim_end_matches('/');
+            let visual = registry.get(id.to_string()).await?;
+            let template = registry.get_template(&visual.template_id)?;
+            let required_checks = required_authoring_checks(&visual.template_id);
+            let reviews = visual
+                .metadata
+                .get("authoringReviews")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            Ok(json!({
+                "visual": visual,
+                "template": template,
+                "authoring": {
+                    "rendererContract": "trusted_template_configuration",
+                    "arbitraryTsxExecuted": false,
+                    "requiredIterations": 2,
+                    "reviewCount": reviews.len(),
+                    "requiredChecks": required_checks,
+                    "instruction": "Render in Desktop canvas mode, inspect at wide and compact viewports, revise the trusted template configuration, then record two passing reviews before mark_ready."
+                }
+            }))
+        }
+        ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/content") => {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/content")
+                .trim_end_matches('/');
+            Ok(json!({"content": registry.mermaid_source(id.to_string()).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/renditions") => {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/renditions")
+                .trim_end_matches('/');
+            Ok(json!({"renditions": registry.list_renditions(id.to_string()).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/visuals/") && path.contains("/renditions/") => {
+            let rest = path.trim_start_matches("/v1/visuals/");
+            let (id, format) = rest
+                .split_once("/renditions/")
+                .ok_or_else(|| anyhow::anyhow!("invalid rendition path"))?;
+            let theme = body
+                .get("theme")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let size = body
+                .get("size")
+                .or_else(|| body.get("size_class"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Ok(json!({
+                "rendition": registry
+                    .mermaid_rendition(id.to_string(), Some(format.to_string()), theme, size)
+                    .await?
+            }))
+        }
         ("GET", path) if path.starts_with("/v1/visuals/") && !path.ends_with("/show") => {
             let id = path.trim_start_matches("/v1/visuals/");
             if id.contains('/') {
                 anyhow::bail!("unsupported visuals path");
             }
             Ok(json!({"visual": registry.get(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/reviews") => {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/reviews")
+                .trim_end_matches('/');
+            let current = registry.get(id.to_string()).await?;
+            let revision = body
+                .get("revision")
+                .and_then(Value::as_i64)
+                .context("review requires revision")?;
+            if revision != current.current_revision {
+                anyhow::bail!(
+                    "review revision {revision} is stale; current revision is {}",
+                    current.current_revision
+                );
+            }
+            let viewport = body
+                .get("viewport")
+                .filter(|value| value.is_object())
+                .context("review requires viewport")?;
+            let width = viewport
+                .get("width")
+                .and_then(Value::as_u64)
+                .context("review viewport requires width")?;
+            let height = viewport
+                .get("height")
+                .and_then(Value::as_u64)
+                .context("review viewport requires height")?;
+            if width < 320 || height < 400 {
+                anyhow::bail!("review viewport is below the supported 320x400 floor");
+            }
+            let checks = body
+                .get("checks")
+                .filter(|value| value.is_object())
+                .context("review requires checks")?;
+            let findings = body
+                .get("findings")
+                .and_then(Value::as_array)
+                .context("review requires findings")?;
+            if findings.iter().any(|value| !value.is_string()) {
+                anyhow::bail!("review findings must be strings");
+            }
+            let mut metadata = current.metadata.as_object().cloned().unwrap_or_default();
+            let mut reviews = metadata
+                .get("authoringReviews")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            reviews.push(json!({
+                "revision": revision,
+                "viewport": viewport,
+                "checks": checks,
+                "findings": findings,
+                "screenshotPath": body.get("screenshot_path").cloned().unwrap_or(Value::Null),
+                "reviewedAt": chrono::Utc::now().to_rfc3339(),
+            }));
+            metadata.insert("authoringReviews".into(), Value::Array(reviews.clone()));
+            metadata.remove("qualityGate");
+            let (visual, event) = registry
+                .update(
+                    id.to_string(),
+                    VisualUpdateRequest {
+                        title: None,
+                        bindings: None,
+                        status: Some(VisualStatus::Draft),
+                        renderer_kind: None,
+                        message_id: None,
+                        run_id: None,
+                        trace_id: None,
+                        content: None,
+                        metadata: Some(Value::Object(metadata)),
+                        bump_revision: Some(false),
+                    },
+                )
+                .await?;
+            Ok(json!({"visual": visual, "event": event, "reviewCount": reviews.len()}))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/ready") => {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/ready")
+                .trim_end_matches('/');
+            let current = registry.get(id.to_string()).await?;
+            let revision = body
+                .get("revision")
+                .and_then(Value::as_i64)
+                .context("mark_ready requires revision")?;
+            if revision != current.current_revision {
+                anyhow::bail!(
+                    "ready revision {revision} is stale; current revision is {}",
+                    current.current_revision
+                );
+            }
+            let mut metadata = current.metadata.as_object().cloned().unwrap_or_default();
+            let reviews = metadata
+                .get("authoringReviews")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let current_reviews: Vec<&Value> = reviews
+                .iter()
+                .filter(|review| review.get("revision").and_then(Value::as_i64) == Some(revision))
+                .collect();
+            if current_reviews.len() < 2 {
+                anyhow::bail!(
+                    "visual readiness requires at least two reviews of revision {revision}"
+                );
+            }
+            let required = required_authoring_checks(&current.template_id);
+            for review in &current_reviews {
+                for check in &required {
+                    if review
+                        .pointer(&format!("/checks/{check}"))
+                        .and_then(Value::as_bool)
+                        != Some(true)
+                    {
+                        anyhow::bail!("visual review is not passing required check {check}");
+                    }
+                }
+            }
+            let widths: std::collections::BTreeSet<u64> = current_reviews
+                .iter()
+                .filter_map(|review| review.pointer("/viewport/width").and_then(Value::as_u64))
+                .collect();
+            if widths.len() < 2 {
+                anyhow::bail!("visual readiness requires reviews at two distinct viewport widths");
+            }
+            metadata.insert("qualityGate".into(), json!({"ready": true, "revision": revision, "reviewCount": current_reviews.len(), "readyAt": chrono::Utc::now().to_rfc3339()}));
+            let (visual, event) = registry
+                .update(
+                    id.to_string(),
+                    VisualUpdateRequest {
+                        title: None,
+                        bindings: None,
+                        status: Some(VisualStatus::Saved),
+                        renderer_kind: None,
+                        message_id: None,
+                        run_id: None,
+                        trace_id: None,
+                        content: None,
+                        metadata: Some(Value::Object(metadata)),
+                        bump_revision: Some(false),
+                    },
+                )
+                .await?;
+            Ok(json!({"visual": visual, "event": event, "ready": true, "revision": revision}))
         }
         ("POST", "/v1/visuals") => {
             let request: VisualCreateRequest = serde_json::from_value(body)?;
@@ -511,6 +1199,14 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let (visual, event) = registry.show(id.to_string(), session_id).await?;
             core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
             Ok(json!({"opened": true, "visual": visual, "event": event}))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/render") => {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/render")
+                .trim_end_matches('/');
+            let visual = registry.render_mermaid(id).await?;
+            Ok(json!({"visual": visual}))
         }
         ("POST", path) if path.starts_with("/v1/visuals/") => {
             let id = path.trim_start_matches("/v1/visuals/");
@@ -600,6 +1296,15 @@ async fn dispatch_optimizer(
             let (run, event) = optimizers.open_visual(id.to_string()).await?;
             Ok(json!({ "run": run, "event": event }))
         }
+        ("POST", path)
+            if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/refresh") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/refresh");
+            let run = optimizers.refresh(id.to_string()).await?;
+            Ok(json!({ "run": run }))
+        }
         ("POST", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/cancel") => {
             let id = path
                 .trim_start_matches("/v1/optimizers/runs/")
@@ -661,6 +1366,12 @@ mod tests {
     }
 
     #[test]
+    fn craftax_readiness_requires_real_image_replay() {
+        assert!(!required_authoring_checks("live.harbor_eval.v1").contains(&"imageReplay"));
+        assert!(required_authoring_checks("live.craftax.v1").contains(&"imageReplay"));
+    }
+
+    #[test]
     fn rollout_base_is_strictly_loopback_http() {
         assert_eq!(
             validated_loopback_rollout_base("http://127.0.0.1:8098/").unwrap(),
@@ -669,5 +1380,288 @@ mod tests {
         assert!(validated_loopback_rollout_base("https://127.0.0.1:8098").is_err());
         assert!(validated_loopback_rollout_base("http://example.com:8098").is_err());
         assert!(validated_loopback_rollout_base("file:///tmp/craftax").is_err());
+    }
+
+    #[test]
+    fn reconnect_classifies_only_authoritative_started_states() {
+        assert!(!rollout_started(&json!({
+            "status": "prepared", "started": false, "terminated": false
+        })));
+        assert!(rollout_started(&json!({
+            "status": "running", "started": true, "terminated": false
+        })));
+        assert!(rollout_started(&json!({
+            "status": "failed", "started": true, "terminated": true
+        })));
+    }
+
+    #[tokio::test]
+    async fn ambiguous_start_disconnect_recovers_authoritative_state_without_replay() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let read = first.read(&mut request).await.unwrap();
+            assert!(String::from_utf8_lossy(&request[..read]).starts_with("POST /rollouts "));
+            drop(first); // The mutation landed, but the response transport was lost.
+
+            let (mut status, _) = listener.accept().await.unwrap();
+            let read = status.read(&mut request).await.unwrap();
+            assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /rollouts/r1 "));
+            let body =
+                r#"{"rollout_id":"r1","status":"running","started":true,"terminated":false}"#;
+            status
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let client = test_client();
+        let (state, recovered) = start_rollout_idempotently(
+            &client,
+            &client,
+            &format!("http://{addr}"),
+            "r1",
+            &json!({"rollout_id":"r1"}),
+        )
+        .await
+        .unwrap();
+        assert!(recovered);
+        assert_eq!(state["status"], "running");
+        task.await.unwrap();
+    }
+
+    #[test]
+    fn scripted_rollouts_bind_slot_stream() {
+        assert!(require_scripted_stream_slot(&json!({})).is_ok());
+        assert!(require_scripted_stream_slot(&json!({"slot": "stream"})).is_ok());
+        assert!(require_scripted_stream_slot(&json!({"slot": "live"})).is_err());
+        assert!(require_scripted_stream_slot(&json!({"slot": "jobs"})).is_err());
+    }
+
+    #[test]
+    fn public_scripted_rollout_batch_supports_exactly_ten() {
+        assert_eq!(MAX_SCRIPTED_ROLLOUTS, 10);
+        assert!((1..=MAX_SCRIPTED_ROLLOUTS).contains(&10));
+        assert!(!(1..=MAX_SCRIPTED_ROLLOUTS).contains(&11));
+    }
+
+    fn route_path(path: &str) -> &str {
+        path.split('?').next().unwrap_or(path)
+    }
+
+    async fn spawn_mock(
+        handler: impl Fn(JsonHttpRequest) -> JsonHttpResponse + Clone + Send + Sync + 'static,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let _ = serve_json(listener, move |request| {
+                let handler = handler.clone();
+                async move { handler(request) }
+            })
+            .await;
+        });
+        (format!("http://{addr}"), task)
+    }
+
+    fn test_client() -> reqwest::Client {
+        crate::http::http_client_builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn containers_facade_waits_for_subscribed_then_polls_declared_url() {
+        let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let subscribed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hits_h = hits.clone();
+        let started_h = started.clone();
+        let subscribed_h = subscribed.clone();
+        let (base, task) = spawn_mock(move |request| {
+            let method = request.method.as_str().to_string();
+            let path = route_path(&request.path).to_string();
+            hits_h.lock().unwrap().push(format!("{method} {path}"));
+            match (method.as_str(), path.as_str()) {
+                ("POST", "/rollouts/prepare") => JsonHttpResponse::ok(json!({
+                    "rollout_id": "r1",
+                    "stream": {
+                        "id": "stream:r1",
+                        "transports": { "poll": { "url": "/rollouts/r1/events" } }
+                    }
+                })),
+                ("GET", "/rollouts/r1/events") => {
+                    subscribed_h.store(true, std::sync::atomic::Ordering::SeqCst);
+                    JsonHttpResponse::ok(json!({
+                        "events": [{
+                            "kind": "stream.subscribed",
+                            "ready": true,
+                            "payload": { "ready": true, "rollout_id": "r1" }
+                        }]
+                    }))
+                }
+                ("POST", "/rollouts") => {
+                    assert!(
+                        subscribed_h.load(std::sync::atomic::Ordering::SeqCst),
+                        "C1-08: POST /rollouts before stream.subscribed"
+                    );
+                    started_h.store(true, std::sync::atomic::Ordering::SeqCst);
+                    assert_eq!(
+                        request.body.get("rollout_id").and_then(Value::as_str),
+                        Some("r1")
+                    );
+                    assert_eq!(
+                        request.body.get("slot").and_then(Value::as_str),
+                        Some("stream")
+                    );
+                    JsonHttpResponse::ok(json!({
+                        "rollout_id": "r1",
+                        "terminated": false,
+                        "truncated": false
+                    }))
+                }
+                ("POST", "/rollouts/r1/step") => JsonHttpResponse::ok(json!({
+                    "rollout_id": "r1",
+                    "terminated": true,
+                    "truncated": false
+                })),
+                ("GET", "/rollouts/r1/event_log") => JsonHttpResponse::error(
+                    StatusCode::NOT_FOUND,
+                    "gold event_log must not be guessed",
+                ),
+                _ => JsonHttpResponse::error(
+                    StatusCode::NOT_FOUND,
+                    format!("unexpected {method} {path}"),
+                ),
+            }
+        })
+        .await;
+        let client = test_client();
+        let outcome =
+            run_one_scripted_rollout(&client, &base, 1, &["do".into()], Some("r1".into()))
+                .await
+                .unwrap();
+        assert_eq!(outcome.rollout_id, "r1");
+        assert_eq!(outcome.stream_id.as_deref(), Some("stream:r1"));
+        assert!(started.load(std::sync::atomic::Ordering::SeqCst));
+        let recorded = hits.lock().unwrap().clone();
+        assert!(recorded.iter().any(|hit| hit == "POST /rollouts/prepare"));
+        let prepare_at = recorded
+            .iter()
+            .position(|hit| hit == "POST /rollouts/prepare")
+            .unwrap();
+        let start_at = recorded
+            .iter()
+            .position(|hit| hit == "POST /rollouts")
+            .unwrap();
+        let poll_at = recorded
+            .iter()
+            .position(|hit| hit == "GET /rollouts/r1/events")
+            .unwrap();
+        assert!(prepare_at < poll_at);
+        assert!(poll_at < start_at);
+        assert!(!recorded.iter().any(|hit| hit.contains("/event_log")));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn native_benchmark_routes_are_refused_outside_containers_fold() {
+        let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let hits_h = hits.clone();
+        let (base, task) = spawn_mock(move |request| {
+            let method = request.method.as_str().to_string();
+            let path = route_path(&request.path).to_string();
+            hits_h.lock().unwrap().push(format!("{method} {path}"));
+            match (method.as_str(), path.as_str()) {
+                ("POST", "/rollouts/prepare") => {
+                    JsonHttpResponse::error(StatusCode::NOT_FOUND, "no prepare")
+                }
+                _ => JsonHttpResponse::error(
+                    StatusCode::NOT_FOUND,
+                    format!("unexpected {method} {path}"),
+                ),
+            }
+        })
+        .await;
+        let client = test_client();
+        let error = run_one_scripted_rollout(&client, &base, 7, &["do".into()], Some("r1".into()))
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("must be folded inside Containers"));
+        let recorded = hits.lock().unwrap().clone();
+        assert!(recorded.iter().any(|hit| hit == "POST /rollouts/prepare"));
+        assert_eq!(recorded.len(), 1);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn containers_facade_refuses_start_without_subscribed() {
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started_h = started.clone();
+        let (base, task) = spawn_mock(move |request| {
+            let method = request.method.as_str();
+            let path = route_path(&request.path);
+            match (method, path) {
+                ("POST", "/rollouts/prepare") => JsonHttpResponse::ok(json!({
+                    "rollout_id": "r1",
+                    "stream": {
+                        "id": "stream:r1",
+                        "transports": { "poll": { "url": "/rollouts/r1/events" } }
+                    }
+                })),
+                ("GET", "/rollouts/r1/events") => JsonHttpResponse::ok(json!({
+                    "events": [{ "kind": "heartbeat" }]
+                })),
+                ("POST", "/rollouts") => {
+                    started_h.store(true, std::sync::atomic::Ordering::SeqCst);
+                    JsonHttpResponse::ok(json!({"rollout_id": "r1"}))
+                }
+                _ => JsonHttpResponse::error(StatusCode::NOT_FOUND, "no"),
+            }
+        })
+        .await;
+        let client = test_client();
+        let err = run_one_scripted_rollout(&client, &base, 1, &["do".into()], Some("r1".into()))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("stream.subscribed"));
+        assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
+        task.abort();
+    }
+
+    #[test]
+    fn harbor_and_digbench_register_metadata_is_visual_first() {
+        let harbor =
+            live_eval_bind_metadata(crate::visuals::LiveEvalFamily::Harbor, &json!({}), None)
+                .unwrap();
+        assert_eq!(harbor["templateId"], "live.harbor_eval.v1");
+        assert_eq!(harbor["slot"], "stream");
+        assert_eq!(harbor["liveFrames"], "unsupported");
+        assert_eq!(harbor["policyRefs"].as_array().map(Vec::len), Some(2));
+        assert!(live_eval_bind_metadata(
+            crate::visuals::LiveEvalFamily::Harbor,
+            &json!({"live_frames": "native"}),
+            None
+        )
+        .is_err());
+        let digbench =
+            live_eval_bind_metadata(crate::visuals::LiveEvalFamily::Digbench, &json!({}), None)
+                .unwrap();
+        assert_eq!(digbench["templateId"], "live.digbench.v1");
+        assert_eq!(digbench["policyRefs"][0]["harness"], "react_legal_actions");
+        assert_eq!(digbench["policyRefs"][1]["mcp_bind"], "digbench-mcp");
     }
 }

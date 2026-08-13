@@ -1,0 +1,78 @@
+{
+  "schema": "synth.trace-stream-event.v1",
+  "run_id": "craftax_seed_0",
+  "events": [
+    {
+      "ts": "2026-08-12T17:00:00.000Z",
+      "run_id": "craftax_seed_0",
+      "lane": "seed:0",
+      "kind": "stream.subscribed",
+      "sequence": null,
+      "payload": { "stream.id": "stream_craftax_0", "next_sequence": 1 }
+    },
+    {
+      "ts": "2026-08-12T17:00:00.100Z",
+      "run_id": "craftax_seed_0",
+      "lane": "seed:0",
+      "kind": "trace.opened",
+      "sequence": 1,
+      "payload": { "rollout_id": "craftax_seed_0" }
+    },
+    {
+      "ts": "2026-08-12T17:00:00.200Z",
+      "run_id": "craftax_seed_0",
+      "lane": "seed:0",
+      "kind": "span.policy.opened",
+      "sequence": 2,
+      "payload": { "harness": "react", "config": "luna_med" }
+    },
+    {
+      "ts": "2026-08-12T17:00:00.300Z",
+      "run_id": "craftax_seed_0",
+      "lane": "seed:0",
+      "kind": "observation",
+      "sequence": 3,
+      "payload": { "text": "You see a tree.", "step": 0 }
+    },
+    {
+      "ts": "2026-08-12T17:00:00.400Z",
+      "run_id": "craftax_seed_0",
+      "lane": "seed:0",
+      "kind": "action",
+      "sequence": 4,
+      "payload": { "action": "do" }
+    },
+    {
+      "ts": "2026-08-12T17:00:00.500Z",
+      "run_id": "craftax_seed_0",
+      "lane": "seed:0",
+      "kind": "reward_signal",
+      "sequence": 5,
+      "payload": { "value": 0.5, "step": 1 }
+    },
+    {
+      "ts": "2026-08-12T17:00:00.600Z",
+      "run_id": "craftax_seed_0",
+      "lane": "seed:0",
+      "kind": "frame",
+      "sequence": 6,
+      "payload": { "encoding": "ascii", "text": ".....\n..T..\n..@..\n.....\n.....", "digest": "frame_seed0" }
+    },
+    {
+      "ts": "2026-08-12T17:00:00.700Z",
+      "run_id": "craftax_seed_0",
+      "lane": "seed:0",
+      "kind": "span.policy.closed",
+      "sequence": 7,
+      "payload": { "harness": "react" }
+    },
+    {
+      "ts": "2026-08-12T17:00:00.800Z",
+      "run_id": "craftax_seed_0",
+      "lane": "seed:0",
+      "kind": "status",
+      "sequence": 8,
+      "payload": { "status": "completed", "usage": { "prompt_tokens": null, "completion_tokens": null, "total_tokens": null } }
+    }
+  ]
+}

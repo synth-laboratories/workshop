@@ -47,7 +47,7 @@ Daemon data: `~/.synth-desktop/runtime/`. Quitting Tauri does **not** stop the d
 - Local Laguna XS 2.1 through Codex app-server and `/v1/responses`
 - Configured Responses-compatible model providers through Codex app-server
 - Inventory seed (2 containers, 3 traces, 9 templates)
-- Visual create + save TSX + live dock visual
+- Visual create + save TSX + live eval visual
 - Intern sync demo
 - Tauri host supervises/probes the daemon; UI polls `/v1/health` + sessions
 - `npm test` green (14 runtime + 3 visuals + 4 a11y)

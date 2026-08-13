@@ -20,6 +20,8 @@ export type VisualBinding = {
    * - optimizer_run → cloud/local optimizer_run_id
    */
   source?: string;
+  /** Declared sibling poll endpoint for a normalized live stream. Never inferred. */
+  poll_url?: string;
   /** Resolved payload. Required for inline bindings. */
   data?: unknown;
   /** Optional JSON-pointer / dotted path into the resolved payload. */
@@ -109,28 +111,10 @@ export type LiveEvalEvent = {
   ts?: string;
   occurred_at?: string;
   run_id: string;
-  kind:
-    | "run_started"
-    | "step"
-    | "metric"
-    | "reward"
-    | "acceptance"
-    | "job_status"
-    | "rollout"
-    | "error"
-    | "run_finished"
-    // Native evals.event-stream.v1 kinds. Transcript sub-kinds remain in
-    // payload.kind so the visual can show the engine event verbatim.
-    | "eval.phase"
-    | "snapshot"
-    | "transcript"
-    | "eval.run.terminal"
-    | "eval.stream.terminal"
-    | "eval.usage.sampled"
-    | "eval.ops.warning";
+  kind: string;
   lane?: string | null;
   source?: string;
-  sequence?: string | null;
+  sequence?: number | string | null;
   schema_version?: string;
   payload: Record<string, unknown>;
 };

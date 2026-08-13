@@ -58,8 +58,6 @@ impl CoreRuntime {
         let visuals =
             VisualRegistry::new(storage.database().clone(), journal.clone(), content.clone());
         let data = DataStore::new(storage.database().clone(), content.clone());
-        let optimizers =
-            OptimizerService::new(storage.database().clone(), journal.clone(), visuals.clone());
         let intern_provider = Arc::new(InternProviderManager::new(
             intern.clone(),
             storage.database().clone(),
@@ -67,6 +65,14 @@ impl CoreRuntime {
         let sessions = SessionService::new(storage.database().clone());
         let runs = RunService::new(storage.database().clone());
         let (events_tx, _) = broadcast::channel(512);
+        let optimizer_manager = Arc::new(crate::optimizers::OptimizerManager::new());
+        let optimizers = OptimizerService::new_with_manager(
+            storage.database().clone(),
+            journal.clone(),
+            visuals.clone(),
+            events_tx.clone(),
+            optimizer_manager,
+        );
         Self {
             storage,
             journal,

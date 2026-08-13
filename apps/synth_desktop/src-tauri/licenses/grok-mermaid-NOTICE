@@ -1,0 +1,16 @@
+Grok Mermaid renderer provenance
+=================================
+
+The pure-Rust Mermaid renderer in third_party/ is vendored from
+xai-org/grok-build revision 8a14c91d.
+
+Grok Build is licensed under Apache-2.0. The embedded mermaid-to-svg crate is
+MIT licensed and derives its layout from Rust ports of Dagre/Graphlib. Exact
+upstream provenance, local hardening notes, and third-party attributions are
+preserved in each vendored Cargo.toml, LICENSE, and THIRD_PARTY_NOTICES file.
+
+Vendored directories:
+- third_party/mermaid-to-svg
+- third_party/dagre_rust
+- third_party/graphlib_rust
+- third_party/ordered_hashmap

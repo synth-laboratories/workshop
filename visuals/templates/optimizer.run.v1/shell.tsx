@@ -180,7 +180,7 @@ export function Shell(props: ShellProps) {
             label: "Best",
             value: typeof bestScore === "number" ? bestScore.toFixed(2) : "—"
           },
-          { label: "Cost", value: `$${(projected.usage.costUsd ?? 0).toFixed(2)}` },
+          { label: "Cost", value: projected.usage.costUsd == null ? "—" : `$${projected.usage.costUsd.toFixed(2)}` },
           { label: "Source", value: String(run.source ?? "—") }
         ]}
       />

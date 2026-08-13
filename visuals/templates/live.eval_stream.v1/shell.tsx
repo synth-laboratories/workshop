@@ -2,7 +2,6 @@ import { useMemo } from "react";
 import { VisualChrome, MetricStrip } from "../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../chrome/useLiveEvalStream.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../runtime/types.ts";
-import liveFixture from "../../fixtures/live_eval_events.json";
 
 type StreamPayload = {
   run_id?: string;
@@ -21,20 +20,21 @@ export type ShellProps = {
 
 function asStream(raw: unknown): StreamPayload {
   if (raw && typeof raw === "object") return raw as StreamPayload;
-  return liveFixture as StreamPayload;
+  return {};
 }
 
 export function Shell(props: ShellProps) {
-  const stream = asStream(props.data ?? props.stream ?? liveFixture);
+  const stream = asStream(props.data ?? props.stream);
   const sseUrl =
     props.sseUrl ??
     stream.sse_url ??
     props.bindings?.find((b) => b.slot === "stream" && b.kind === "live_sse")?.source;
 
   const fixtureEvents = useMemo(
-    () => (sseUrl ? undefined : stream.events ?? (liveFixture as StreamPayload).events),
+    () => (sseUrl ? undefined : stream.events),
     [sseUrl, stream.events]
   );
+  const hasSource = Boolean(sseUrl || stream.events);
 
   const { events, live, error } = useLiveEvalStream({
     sseUrl,
@@ -65,7 +65,7 @@ export function Shell(props: ShellProps) {
           },
           {
             label: "Status",
-            value: live ? "streaming" : finished ? String(metrics.status ?? "done") : "idle"
+            value: live ? "streaming" : finished ? String(metrics.status ?? "done") : hasSource ? "idle" : "awaiting source"
           }
         ]}
       />

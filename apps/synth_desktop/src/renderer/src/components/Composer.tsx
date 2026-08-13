@@ -83,6 +83,7 @@ export type ComposerSlash = {
 
 export type ComposerAccountNav = {
 	onConfigureAccount?: () => void;
+	onConfigureModels?: () => void;
 	/** Opens the plan/billing recovery path when cloud spend is blocked. */
 	onResolveBilling?: () => void;
 	/** Opens Settings → Voice so the user can pick/download a Whisper model. */
@@ -367,6 +368,11 @@ function composerPlaceholder(state: LandingState): string {
 			? "Ask anything…"
 			: "Configure an OpenRouter API key in Settings → Account";
 	}
+	if (state.selectedTargetId.startsWith("chatgpt-")) {
+		return state.codexOauthConfigured
+			? "Ask anything…"
+			: "Connect ChatGPT subscription in Settings → Models";
+	}
 	if (
 		(state.selectedTargetId === "intern-sync" || state.selectedTargetId === "intern-async") &&
 		state.internMode === "unconfigured"
@@ -387,13 +393,16 @@ function composerEnabled(state: LandingState): boolean {
 	if (state.selectedTargetId.startsWith("openrouter-")) {
 		return state.openrouterApiKeyConfigured === true;
 	}
+	if (state.selectedTargetId.startsWith("chatgpt-")) {
+		return state.codexOauthConfigured === true;
+	}
 	if (state.selectedTargetId === "intern-sync" || state.selectedTargetId === "intern-async") {
 		return state.internMode !== "unconfigured";
 	}
 	return state.composerEnabled;
 }
 
-const GROUP_ORDER: ExecutionTargetOption["group"][] = ["local", "remote", "cloud"];
+const GROUP_ORDER: ExecutionTargetOption["group"][] = ["local", "remote", "subscription", "cloud"];
 
 function formatSkillMention(skill: Skill): string {
 	const slug = skill.name.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
@@ -406,6 +415,7 @@ function ModelMenu({
 	aggregateModelTpsLabels,
 	onSelectTarget,
 	onConfigureAccount,
+	onConfigureModels,
 	onResolveBilling,
 	open,
 	onOpenChange
@@ -415,6 +425,7 @@ function ModelMenu({
 	aggregateModelTpsLabels?: Readonly<Record<string, string>>;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
+	onConfigureModels?: () => void;
 	onResolveBilling?: () => void;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -488,6 +499,8 @@ function ModelMenu({
 										target.id.startsWith("synth-cloud-") && state.apiKeyConfigured !== true;
 									const needsOpenRouterKey =
 										target.id.startsWith("openrouter-") && state.openrouterApiKeyConfigured !== true;
+									const needsCodexOauth =
+										target.id.startsWith("chatgpt-") && state.codexOauthConfigured !== true;
 									const allowanceBlocked =
 										target.id.startsWith("synth-cloud-") && !needsSynthKey && Boolean(state.cloudBlockedReason);
 									const localProgress =
@@ -531,8 +544,8 @@ function ModelMenu({
 											</div>
 										);
 									}
-									if (needsSynthKey || needsOpenRouterKey) {
-										const providerName = needsOpenRouterKey ? "OpenRouter" : "Synth";
+									if (needsSynthKey || needsOpenRouterKey || needsCodexOauth) {
+										const providerName = needsCodexOauth ? "ChatGPT subscription" : needsOpenRouterKey ? "OpenRouter" : "Synth";
 										return (
 											<div
 												key={target.id}
@@ -546,18 +559,18 @@ function ModelMenu({
 													aria-disabled="true"
 												>
 													<span className="composer-model-option-label">{target.label}</span>
-												<span className="composer-model-option-desc">{providerName} API key required</span>
+											<span className="composer-model-option-desc">{needsCodexOauth ? "Connect in Settings → Models" : `${providerName} API key required`}</span>
 												</span>
-												<button
-													type="button"
-													className="composer-model-configure"
-												data-testid={`composer-model-configure-${providerName.toLowerCase()}-api-key`}
+										<button
+											type="button"
+											className="composer-model-configure"
+											data-testid={needsCodexOauth ? "composer-model-configure-chatgpt-subscription" : `composer-model-configure-${providerName.toLowerCase()}-api-key`}
 													onClick={() => {
-														onConfigureAccount?.();
+														(needsCodexOauth ? onConfigureModels : onConfigureAccount)?.();
 														onOpenChange(false);
 													}}
 												>
-												Configure {providerName} API key
+											{needsCodexOauth ? "Connect ChatGPT subscription" : `Configure ${providerName} API key`}
 												</button>
 											</div>
 										);
@@ -681,7 +694,7 @@ export function Composer({
 		onRename: onSlashRename,
 		onCompact: onSlashCompact
 	} = slash;
-	const { onConfigureAccount, onResolveBilling, onOpenVoiceSettings } = account;
+	const { onConfigureAccount, onConfigureModels, onResolveBilling, onOpenVoiceSettings } = account;
 	const [value, setValue] = useState("");
 	const [submitting, setSubmitting] = useState(false);
 	const [recording, setRecording] = useState(false);
@@ -1120,6 +1133,12 @@ export function Composer({
 					<button type="button" onClick={onConfigureAccount} data-testid="configure-openrouter-api-key">Open Settings</button>
 				</div>
 			) : null}
+			{state.selectedTargetId.startsWith("chatgpt-") && !state.codexOauthConfigured ? (
+				<div className="composer-configuration-required" role="alert" data-testid="codex-oauth-required">
+					<span><strong>ChatGPT subscription required</strong> Connect it under Settings → Models before sending a message.</span>
+					<button type="button" onClick={onConfigureModels} data-testid="configure-codex-oauth">Open Settings</button>
+				</div>
+			) : null}
 			{whisperRuntime?.phase !== "unloaded" ? (
 				<p className={`composer-whisper-status is-${whisperRuntime?.phase}`} role="status" data-testid="composer-whisper-status">
 					<span aria-hidden />
@@ -1220,6 +1239,7 @@ export function Composer({
 							aggregateModelTpsLabels={aggregateModelTpsLabels}
 							onSelectTarget={onSelectTarget}
 							onConfigureAccount={onConfigureAccount}
+							onConfigureModels={onConfigureModels}
 							onResolveBilling={onResolveBilling}
 							open={modelMenuOpen}
 							onOpenChange={setModelMenuOpen}

@@ -22,11 +22,29 @@ named operations directly; do not use shell or scan ports as a fallback.
 5. Register a container only when the user or workspace gives an explicit URL.
    Use `container_register`; never infer a localhost port.
 
-For a bounded engine acceptance run, call `container_run_rollouts` once with the
-registered `container_id`, an exact `count`, optional integer `seeds`, and 1-64
-explicit action names. The tool permits only registered loopback HTTP services,
-records each rollout in Desktop inventory, and returns the exact live state and
-event log. Do not call it again when the requested count has already completed.
+For a bounded **engine acceptance** run (fixed actions, not a model eval), call
+`container_run_rollouts` once with the registered `container_id`, an exact
+`count`, optional integer `seeds`, and 1-64 **explicit** action names. The host
+does not invent an action list. Do not call it again when the requested count
+has already completed. Do not report this as ReAct or LLM policy evidence.
+
+For a live policy eval, follow `run-live-container-evals`: prepare, bind the
+declared stream on a task-family visual, then `container_start_prepared_rollout`
+with an explicit `policy_ref` (`harness` + `config`). The coding agent names
+the pin; the host does not default `luna_med`.
+
+Use only the normalized Containers contract: plural rollout routes,
+`snake_case` wire fields, and descriptor-nested transport URLs. Never consume
+flat `poll_url`/`sse_url`, singular `/rollout`, native `event_log`, or a guessed
+benchmark route. Native and Harbor-specific APIs are translated inside the
+registered Containers compatibility fold.
+
+Treat a timeout as an unknown transport outcome. Reuse the original
+`rollout_id`; never allocate a replacement. Call `container_get_rollout` to
+restore authoritative lifecycle state and `container_poll_rollout` with the
+last durable `after` cursor to backfill. Repeating prepare or start is permitted
+only with the exact same immutable identity. A `409` means the retry changed
+identity and must not be bypassed.
 
 ## Locate the policy harness
 

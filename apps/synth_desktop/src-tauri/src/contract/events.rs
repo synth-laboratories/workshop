@@ -22,6 +22,7 @@ impl EventChannel {
     pub const LAGUNA_INFERENCE: &'static str = "laguna:inference";
     pub const WHISPER_RUNTIME: &'static str = "whisper:runtime";
     pub const WHISPER_DOWNLOAD: &'static str = "whisper:download";
+    pub const OPTIMIZER_STATUS: &'static str = "optimizer:status";
 }
 
 /// All known channels (for drift checks / docs).
@@ -35,6 +36,7 @@ pub const EVENT_CHANNELS: &[&str] = &[
     EventChannel::LAGUNA_INFERENCE,
     EventChannel::WHISPER_RUNTIME,
     EventChannel::WHISPER_DOWNLOAD,
+    EventChannel::OPTIMIZER_STATUS,
 ];
 
 /// Who produced a boundary event.

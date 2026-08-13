@@ -295,7 +295,7 @@ Stopping/uninstalling a sidecar version does not delete runs, events, visuals, o
 ### optimizers-beta (`algorithm_id: "sft"`)
 
 - Dedicated optimizer, not `goex.sft.v1`. Same visual primitives, different state machine. `SftBackend` / `sft_compat` in optimizers stay the adapter over `optimizer_event.v1`, not a second DB.
-- A4: two hosted Tinker or OpenAI FT jobs, different `dataset_digest`s. If one accelerator: second is honestly `queued`, then starts without corrupting the first log.
+- A4: two hosted Tinker jobs, different `dataset_digest`s. If one accelerator: second is honestly `queued`, then starts without corrupting the first log. The shut-down OpenAI Fine-tuning API is not a substitute.
 - A6: one multi-checkpoint job. Visual connected before training starts. Checkpoint eval campaigns allocate stable `rollout_id`s via Containers. Metrics aligned on `(checkpoint_id, split_role, step, evaluator_version)` — no sparse parallel arrays. Promotion is a decision event, not “checkpoint ready.”
 - Reopen after provider/slots are gone from persisted optimizer log + child Trace V5.
 

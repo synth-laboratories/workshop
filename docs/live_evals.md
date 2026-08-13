@@ -12,9 +12,37 @@
 > policy × task × execution-profile matrices are proposed in
 > `private_eval_workspace_extensions.md`.
 
-**Status:** Product and interaction design proposal
-**Working mode:** Real-stream local prototypes first; engineering implementation after review
+**Status:** Containers/Workshop floor implemented; real Craftax reference accepted; Harbor and hosted dig.bench acceptance remain external
+**Working mode:** First-class templates, skill, MCP, and persisted stream replay backed by real producer receipts
 **Initial examples:** Harbor / GameBench, Craftax Rust with a ReAct policy, and Banking77
+
+## Visual-first authoring gate
+
+Live evaluation execution is intentionally split from visual preparation:
+
+1. `container_prepare_rollout` reserves an identity and returns the exact stream
+   descriptor without starting execution.
+2. The agent creates a trusted task-family visual in `canvas` presentation,
+   binds the declared `stream`, and opens it.
+3. The agent uses real prior trace evidence or the prepared stream to render and
+   critique the current visual revision at least twice at distinct viewport widths.
+   Example evidence is permitted for layout development only and must be replaced
+   before readiness.
+4. `visual_review` records explicit landmark checks and findings.
+5. `visual_mark_ready` writes a revision-specific quality receipt only when both
+   reviews pass.
+6. `container_start_prepared_rollout` requires that current receipt and still
+   waits for `stream.subscribed`; a stale visual revision fails closed.
+
+Interactive agent-authored TSX is not executed. The safe extension point is a
+trusted registered template plus bounded `visualConfig`. Arbitrary saved source
+remains evidence for an engineer to review and promote into the registry.
+
+The canonical Craftax gameplay template follows the reference composition:
+dominant immutable gameplay, environment and policy context, evaluation- and
+rollout-time replay, outcome plots, ordered activity, and selectable Trace V5
+evidence. The Visuals library provides an explicit full-canvas mode rather than
+forcing immersive viewers into the narrow catalog preview.
 
 ## Summary
 
@@ -24,11 +52,11 @@ eval source, create and open the appropriate live visual, verify that the visual
 connected, start the eval, and leave the visual attached through terminal state and
 durable trace sealing.
 
-Before asking an engineer to implement that product surface, we will build and iterate
-local HTML reference prototypes. These are not mocked-data demos. They must subscribe to
-real container or eval event streams and render real rollout state, images, rewards,
-achievements, policy activity, usage, cost, and failures. They are prototypes only in the
-sense that a Workshop agent is not creating or managing them through the product yet.
+The local HTML reference prototype and first-class `live.craftax.v1` template now consume
+the same real Containers stream. They are not mocked-data demos: both render persisted
+rollout state, immutable frame URLs, rewards, achievements, policy partials, nullable
+usage/cost, and failures. The HTML remains a fast interaction reference; the registered
+template, Visuals MCP, and bundled skill are the product path.
 
 The output of this phase is a tested interaction recipe, a canonical event contract,
 three representative live examples, and an engineering-ready implementation brief for
@@ -144,21 +172,30 @@ failed evidence state, not a warning hidden in logs.
 
 ## Canonical live contract
 
-The long-term public contract should remain `evals.event-stream.v1`, with a documented
-rollout vocabulary rather than a parallel Workshop-only event schema. Container-native
-events such as `synth.rollout.event.v1` should be normalized at the boundary.
+Containers owns one opinionated append-only envelope:
+`synth.trace-stream-event.v1`. Native environments, the Harbor compatibility fold, and
+future compatible relays project their facts into its documented task vocabulary. A
+Workshop visual never invents a second envelope or guesses a route. Optimizer search
+events remain `optimizer_event.v1` and link to child Containers streams with
+`synth.resource-ref.v1`; they do not flatten environment frames into optimizer events.
+
+Workshop consumes only the normalized plural Containers HTTP API and `snake_case` wire
+JSON: `/rollouts/prepare`, `/rollouts`, `/rollouts/{rollout_id}`, and descriptor-declared
+rollout-scoped event/stream/reward URLs. A compatibility fold may translate a native
+backend privately, but must not expose flat `poll_url`/`sse_url`, `stream.id`, singular
+`/rollout`, or benchmark-specific routes to Workshop.
 
 The minimum normalized envelope is:
 
 ```json
 {
-  "schema_version": "evals.event-stream.v1",
+  "schema": "synth.trace-stream-event.v1",
   "run_id": "run_...",
   "rollout_id": "rollout_...",
   "lane": "seed-17",
   "sequence": 42,
-  "occurred_at": "2026-08-12T12:34:56.789Z",
-  "kind": "rollout.snapshot",
+  "ts": "2026-08-12T12:34:56.789123Z",
+  "kind": "span.policy.data",
   "payload": {}
 }
 ```
@@ -178,9 +215,37 @@ The vocabulary must cover at least:
 | Evidence | trace status, Trace V5 digest, visibility and completeness |
 | Operations | warning, retry, reconnect, heartbeat, malformed event, stream error |
 
-The stream should support replay followed by live tailing. Reconnection needs a stable
-cursor, ideally SSE `id` plus `Last-Event-ID`, and consumers must de-duplicate by stable
-event identity.
+The prepared stream descriptor freezes its advertised transport and retention. Durable
+events are fsynced before publication. Consumers first observe the control-only
+`stream.subscribed` acknowledgement, then start mutation, de-duplicate by stable identity,
+and reconnect or poll only through descriptor-declared URLs. A persisted terminal seal
+reconciles the exact sequences/digest and allows reopening with the producer gone.
+
+### Timeout, retry, and reconnect contract
+
+Timeout is an ambiguous transport outcome, not proof that a rollout failed or never
+started. The mutation boundary is therefore idempotent:
+
+- Workshop allocates `rollout_id` before the first prepare request.
+- `POST /rollouts/prepare` with the same ID and the same transport/retention returns the
+  existing descriptor with `replayed: true`. Changed bindings return `409`.
+- `POST /rollouts` with the same ID, task identity, policy reference (including code),
+  transport, and retention returns the existing lifecycle state with `replayed: true`.
+  Any changed identity returns `409 rollout_identity_conflict` and cannot execute.
+- After an ambiguous start disconnect, Workshop first calls
+  `GET /rollouts/{rollout_id}`. An authoritative running or terminal state is accepted;
+  a prepared/not-started state permits one exact start replay.
+- Stream restoration never calls start. It polls only the URL declared by prepare with
+  `after=<last durable sequence>`, de-duplicates by `(stream.id, sequence)`, and advances
+  only to the returned `cursor.high_water`. `cursor.closed` ends reconnect attempts.
+- SSE and WebSocket are delivery accelerators, not the recovery authority. Poll plus the
+  durable cursor is the common recovery path after a timeout, app restart, or transport
+  downgrade.
+
+Workshop exposes this as idempotent `container_prepare_rollout` and
+`container_start_prepared_rollout`, plus read-only `container_get_rollout` and
+`container_poll_rollout`. A visual may show reconnecting/stale state, but it must retain
+the last durable frame and trace entries rather than clearing or fabricating progress.
 
 ## Reference visual recipe
 
@@ -326,18 +391,18 @@ The Craftax prototype additionally requires changing real frames, live policy ac
 incremental reward and achievement plots, and a trace link that resolves to the selected
 rollout and step.
 
-## Proposed Workshop product surface
-
-This section is a target for engineering review, not a frozen API.
+## Implemented Workshop product surface
 
 ### Templates
 
-Keep a small template family sharing one stream reducer and lifecycle model:
+The registered family shares one missing-safe reducer and the required slot `stream`:
 
-- `live.eval_stream.v2`: generic tasks and result streams;
-- `live.container_rollouts.v2`: container rollouts and task-specific state;
-- `live.react_rollouts.v1`: policy activity plus environment state and frames;
-- `live.harbor_eval.v2`: Harbor job/task orchestration projected through the same contract.
+- `live.craftax.v1`: multiplexed lanes, immutable frames, per-lane through-time
+  replay, RewardSignals, achievements, and ReAct opened/plan/data/closed partials;
+- `live.harbor_eval.v1`: Harbor trial/tool/verifier projection without claiming
+  child Craftax frame affordances on the parent;
+- `live.digbench.v1`: text observations/actions/stats with frames unsupported;
+- `live.eval_stream.v1` and `live.container_rollouts.v1`: generic fallback views.
 
 Task-specific panels should be declared capabilities or optional slots, not separate
 copies of connection, replay, lane, usage, and failure logic. Completed views should
@@ -346,7 +411,8 @@ where those interactions are stronger than the live shell.
 
 ### Skills
 
-Update the Synth Visuals and Synth Containers skills with one canonical live-eval recipe:
+The bundled `run-live-container-evals` and `use-synth-visuals` skills teach one
+canonical live-eval recipe:
 
 - discover the source and capabilities;
 - distinguish an engine acceptance run from a real policy evaluation;
@@ -357,9 +423,10 @@ Update the Synth Visuals and Synth Containers skills with one canonical live-eva
 - bind sealed Trace V5 evidence afterward;
 - report exact run, rollout, model, seed, limit, cost, and trace identities.
 
-Add a focused `use-synth-live-evals` skill only if the combined workflow remains too
-large or ambiguous after the two existing skills are tightened. The skill should teach
-orchestration, not contain policy logic or task-specific endpoint guesses.
+The focused run skill owns orchestration, not policy logic or task-specific endpoint
+guesses. `synth_visuals.visual_manage` remains the compact agent tool; registered
+template creation/binding/showing is first class, and legacy MCP methods remain for
+other clients.
 
 ### MCP and host APIs
 
@@ -428,7 +495,7 @@ We should keep two correlated planes rather than calling either one the other:
 
 | Plane | Authority | Payload | Consumer use |
 | --- | --- | --- | --- |
-| Rollout presentation | Harness/container | `evals.event-stream.v1` or normalized `synth.rollout.event.v1` | frames, progress, rewards, achievements, policy and usage UI |
+| Rollout presentation | Harness/container | `synth.trace-stream-event.v1` | frames, progress, rewards, achievements, policy and usage UI |
 | Trace evidence | Containers capture supervisor | ordered `synth.capture.raw.v1` envelopes | durable evidence, derived projections, final Trace V5 reconciliation |
 
 Containers already provides most of the evidence transport semantics. Its collector
@@ -440,7 +507,7 @@ when the spool is closed and the consumer cursor has reached `high_water_ordinal
 Evals already has `ContainerTraceSource` to convert those raw pages into `trace.raw`,
 throttled `trace.visual`, and terminal `trace.reconciled` events.
 
-The missing work is integration and contract hardening, not a new trace format:
+The floor integration and contract hardening now include:
 
 1. **Discovery and correlation.** A rollout response needs a typed stream descriptor
    naming `run_id`, `rollout_id`, `trace_id`, `capture_id`, schemas, supported
@@ -672,22 +739,23 @@ Trace V5 model schemas should be re-exported from that public schema catalog so 
 one standards surface, while Python dataclasses remain an implementation. Workshop and
 Evals consume the published schemas/test kit; neither should fork the trace vocabulary.
 
-## Engineering implementation sequence
+## Implementation status and remaining acceptance
 
-After the prototypes and recipe are reviewed:
-
-1. Freeze the normalized rollout vocabulary and compatibility rules for
-   `evals.event-stream.v1`.
-2. Add producer adapters for Harbor/GameBench, Craftax Rust ReAct, and Banking77 without
-   inventing a second evidence authority.
-3. Implement the host’s replayable run-level SSE binding, readiness handshake, limits,
-   and correlation enforcement.
-4. Extract a shared live stream reducer and lifecycle shell for the registered templates.
-5. Implement the approved template panels and task capability extensions.
-6. Add the workflow-level MCP operations and update the relevant skills.
-7. Implement the live-to-Trace-V5 transition and exact point-to-trace navigation.
-8. Validate with a bounded smoke run for each example, then multi-rollout and failure
-   cases.
+1. **Done:** canonical trace-stream envelope, reference façade, persist-before-publish,
+   declared poll/SSE transport, subscribed-before-start, bounded body/header/history,
+   restart-safe cursors, exact terminal seals, and black-box conformance receipts.
+2. **Done:** real Craftax Rust + Muse Spark medium ReAct adapter and an exact ten-seed
+   concurrent receipt with real frames, rewards, achievements, policy partials,
+   nullable usage/cost, and ten reconciled terminal seals.
+3. **Done:** shared Workshop reducer, task-family templates, Visuals MCP registration,
+   bundled skills, durable replay bridge, narrow/live reference view, and release app
+   build.
+4. **External acceptance:** the packaged Harbor/GameBench Docker task currently fails
+   before trial start because its Dockerfile copies repository-root paths from an
+   environment-subdirectory build context. Fix that source bundle before claiming A2.
+5. **Credential acceptance:** hosted dig.bench requires `DIGBENCH_API_TOKEN`; its mock
+   contract is implemented, but a real public A8 receipt is not fabricated in its
+   absence.
 9. Run independent CUA and capture a release receipt.
 
 ## Verification matrix
