@@ -992,6 +992,11 @@ fn materialize_config(
     );
 
     let container = table_mut(&mut config, "container")?;
+    // The first Banking77 launch may need to create the isolated uv environment
+    // and load the Hugging Face dataset before it can bind its health endpoint.
+    // Keep the runtime's default 30s deadline for warm services, but give this
+    // explicitly managed cold-start path enough room to become ready.
+    container.insert("startup_timeout_seconds".into(), 120.into());
     let container_stream_root = destination
         .parent()
         .ok_or_else(|| anyhow!("generated recipe destination has no run directory"))?
@@ -1295,6 +1300,7 @@ namespace = "base"
         assert!(text.contains("rollout_estimated_cost_usd = 0.01"));
         assert!(text.contains("BANKING77_TRAIN_SAMPLE=50"));
         assert!(text.contains("BANKING77_TEST_SAMPLE=50"));
+        assert!(text.contains("startup_timeout_seconds = 120"));
         assert!(!text.contains("OPENAI_API_KEY="));
         assert!(!text.contains("secret"));
         assert!(text.contains("model = \"gpt-5.6-luna\""));
