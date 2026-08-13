@@ -5366,14 +5366,14 @@ a,
 }
 
 .inventory-workbench.with-visual .inventory-page {
-	flex: 0 0 42%;
-	max-width: 42%;
+	flex: 1 1 auto;
+	max-width: none;
 	min-width: 360px;
 }
 
 .inventory-workbench.with-visual .visual-pane {
-	flex: 1 1 58%;
-	min-width: 0;
+	flex: 0 0 min(var(--visual-pane-width, 420px), calc(100% - 360px));
+	min-width: 340px;
 	border-left: 1px solid var(--color-border);
 }
 
