@@ -22,12 +22,18 @@ if [[ ! -f "$PASSWORD_FILE" ]]; then
 fi
 KEYCHAIN_PASSWORD="$(<"$PASSWORD_FILE")"
 
+KEYCHAIN_CREATED=false
 if [[ ! -f "$KEYCHAIN" ]]; then
   security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+  # Keychain lifetime is bootstrap configuration. Reapplying it on every
+  # rebuild invokes SecKeychainSetSettings and can surface a macOS password
+  # dialog even though this dedicated keychain already has its own password.
+  security set-keychain-settings -lut 21600 "$KEYCHAIN"
+  KEYCHAIN_CREATED=true
 fi
-security set-keychain-settings -lut 21600 "$KEYCHAIN"
 security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
+IDENTITY_IMPORTED=false
 if ! security find-certificate -c "$IDENTITY" "$KEYCHAIN" >/dev/null 2>&1; then
   TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/synth-workshop-signing.XXXXXX")"
   trap 'rm -rf "$TEMP_ROOT"' EXIT
@@ -50,6 +56,7 @@ if ! security find-certificate -c "$IDENTITY" "$KEYCHAIN" >/dev/null 2>&1; then
     -k "$KEYCHAIN" \
     -P "$KEYCHAIN_PASSWORD" \
     -T /usr/bin/codesign >/dev/null
+  IDENTITY_IMPORTED=true
   cp "$TEMP_ROOT/certificate.pem" "$CERTIFICATE_FILE"
   chmod 600 "$CERTIFICATE_FILE"
 fi
@@ -70,11 +77,13 @@ if ! security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -Fq
     "$CERTIFICATE_FILE"
 fi
 
-security set-key-partition-list \
-  -S apple-tool:,apple: \
-  -s \
-  -k "$KEYCHAIN_PASSWORD" \
-  "$KEYCHAIN" >/dev/null
+if [[ "$IDENTITY_IMPORTED" == "true" || "$KEYCHAIN_CREATED" == "true" ]]; then
+  security set-key-partition-list \
+    -S apple-tool:,apple: \
+    -s \
+    -k "$KEYCHAIN_PASSWORD" \
+    "$KEYCHAIN" >/dev/null
+fi
 
 # `codesign --keychain` narrows certificate lookup but does not make a custom
 # keychain part of trust evaluation on every macOS release. Add this one
