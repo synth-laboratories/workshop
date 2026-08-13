@@ -533,9 +533,7 @@ def start_container(args: argparse.Namespace, client: IpcClient, receipt: Receip
         and item.get("rollout_id", bound["rolloutId"]) == bound["rolloutId"]
         for item in starts
     )
-    # Canonical container trace streams are zero-indexed; -1 means no durable
-    # event has been observed yet and keeps sequence 0 from looking stale.
-    cursor = -1
+    cursor = 0
     kinds: collections.Counter[str] = collections.Counter()
     terminal_state: Any = started.get("state")
     deadline = time.monotonic() + args.timeout
@@ -551,7 +549,9 @@ def start_container(args: argparse.Namespace, client: IpcClient, receipt: Receip
         events = page.get("events") or []
         for event in events:
             seq = sequence(event)
-            if seq <= cursor:
+            # Control envelopes such as stream.subscribed are deliberately
+            # unsequenced and project to 0; they do not regress durable data.
+            if event.get("sequence") is not None and seq <= cursor:
                 receipt.blocker("cursor_regression", f"received {seq} after {cursor}")
             cursor = max(cursor, seq)
             kinds[event_kind(event)] += 1
