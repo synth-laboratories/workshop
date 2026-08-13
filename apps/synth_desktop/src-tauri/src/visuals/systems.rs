@@ -249,6 +249,74 @@ pub fn validate_source(source: &str, kind: SystemsKind) -> Result<()> {
     parse_and_validate(source, kind).map(|_| ())
 }
 
+/// Conservative authoring diagnostics for problems that are schema-valid but
+/// commonly produce illegible pane-sized compositions. These are feedback,
+/// not parser errors: an agent can revise the same visual and re-run review.
+pub fn authoring_findings(source: &str, kind: SystemsKind) -> Result<Vec<String>> {
+    let scene = parse_and_validate(source, kind)?;
+    let mut findings = Vec::new();
+    let visible_nodes = scene.nodes.iter().filter(|item| item.visible).count();
+    let visible_notes = scene.notes.iter().filter(|item| item.visible).count();
+    let visible_edges = scene.edges.iter().filter(|item| item.visible).count();
+    if visible_nodes > 12 || visible_nodes + visible_notes > 14 {
+        findings.push(format!(
+            "high_density: poster begins with {visible_nodes} visible nodes and {visible_notes} visible notes; prefer progressive disclosure and roughly 5–7 focal elements per beat"
+        ));
+    }
+    if visible_edges > 16 {
+        findings.push(format!(
+            "edge_density: poster begins with {visible_edges} visible edges; group or stage relationships across beats"
+        ));
+    }
+    for node in &scene.nodes {
+        let capacity = estimated_text_capacity(node.width, node.height, 14.0);
+        let length = node.label.chars().count();
+        if length > capacity {
+            findings.push(format!(
+                "label_truncation:{}: {} characters exceed the estimated {}-character node capacity",
+                node.id, length, capacity
+            ));
+        }
+    }
+    for (index, note) in scene.notes.iter().enumerate() {
+        let capacity = estimated_text_capacity(note.width, 56.0, 12.0);
+        let length = note.text.chars().count();
+        if length > capacity {
+            findings.push(format!(
+                "note_truncation:{}: {} characters exceed the estimated {}-character note capacity",
+                note.id.as_deref().unwrap_or_else(|| if index == 0 {
+                    "note"
+                } else {
+                    "unnamed-note"
+                }),
+                length,
+                capacity
+            ));
+        }
+    }
+    for edge in &scene.edges {
+        if edge
+            .label
+            .as_ref()
+            .map(|label| label.chars().count())
+            .unwrap_or(0)
+            > 24
+        {
+            findings.push(format!(
+                "edge_label_truncation:{}->{}: keep connector captions at 24 characters or fewer",
+                edge.from, edge.to
+            ));
+        }
+    }
+    Ok(findings)
+}
+
+fn estimated_text_capacity(width: f64, height: f64, font_size: f64) -> usize {
+    let chars_per_line = ((width - 24.0).max(font_size) / (font_size * 0.62)).floor() as usize;
+    let lines = ((height - 18.0).max(font_size) / (font_size * 1.3)).floor() as usize;
+    chars_per_line.max(1) * lines.max(1)
+}
+
 fn validate_scene(scene: &Scene, kind: SystemsKind) -> Result<()> {
     if scene.version != 1 {
         bail!("systems scene version must be 1");
@@ -919,5 +987,16 @@ mod tests {
         let out = render_svg(source, SystemsKind::Dynamic).unwrap();
         assert!(out.svg.contains("<rect x=\"120\""));
         assert!(out.svg.contains("<g opacity=\"0.75\""));
+    }
+    #[test]
+    fn authoring_findings_flag_dense_and_overlong_scenes() {
+        let source = r#"{"version":1,"canvas":{"width":1200,"height":680},"theme":"technical-dark","nodes":[{"id":"a","x":10,"y":10,"width":100,"height":40,"label":"This label is much too long to remain legible inside this very small node"},{"id":"b","x":120,"y":10,"width":60,"height":40,"label":"b"},{"id":"c","x":190,"y":10,"width":60,"height":40,"label":"c"},{"id":"d","x":260,"y":10,"width":60,"height":40,"label":"d"},{"id":"e","x":330,"y":10,"width":60,"height":40,"label":"e"},{"id":"f","x":400,"y":10,"width":60,"height":40,"label":"f"},{"id":"g","x":470,"y":10,"width":60,"height":40,"label":"g"},{"id":"h","x":540,"y":10,"width":60,"height":40,"label":"h"},{"id":"i","x":610,"y":10,"width":60,"height":40,"label":"i"},{"id":"j","x":680,"y":10,"width":60,"height":40,"label":"j"},{"id":"k","x":750,"y":10,"width":60,"height":40,"label":"k"},{"id":"l","x":820,"y":10,"width":60,"height":40,"label":"l"},{"id":"m","x":890,"y":10,"width":60,"height":40,"label":"m"}],"edges":[],"notes":[],"durationMs":1000,"posterTimeMs":1000,"beats":[{"id":"beat","atMs":0,"caption":"Dense"}],"timeline":[],"reducedMotion":"poster"}"#;
+        let findings = authoring_findings(source, SystemsKind::Dynamic).unwrap();
+        assert!(findings
+            .iter()
+            .any(|item| item.starts_with("high_density:")));
+        assert!(findings
+            .iter()
+            .any(|item| item.starts_with("label_truncation:a:")));
     }
 }

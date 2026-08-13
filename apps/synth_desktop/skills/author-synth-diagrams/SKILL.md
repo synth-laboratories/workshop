@@ -15,7 +15,9 @@ Live eval evidence stays on `live.*.v1`. Optimizer runs stay on `optimizer.*.v1`
 2. Read only the matching reference: [families.md](references/families.md), [systems-map.md](references/systems-map.md), or [dynamic-systems.md](references/dynamic-systems.md).
 3. Call `mcp__synth_visuals__visual_manage` directly with `operation: "create"` and **new** `content` in `arguments`. Do not put source in `props`.
 4. Read the returned `visual.id`, then call the same tool with `operation: "show"` and that ID so the visual lands in the right pane of this chat.
-5. Revise the same ID with `update` + new `content` (new revision). Do not fork a blank canvas.
+5. Call `authoring_context`. Treat every `automatedFindings` entry as revision feedback, not a warning to ignore.
+6. Inspect the actual rendered Desktop visual—not the JSON source. Capture a wide screenshot and a compact screenshot, visually check text collisions, truncation, hierarchy, edge crossings, and focal density, then revise the same ID with `update` + new `content`.
+7. Record both screenshot paths with `review`. Systems visuals must pass `noTextCollisions`, `focalDensity`, and `screenshotInspected`; never self-report those checks without opening the images. Repeat render → screenshot → critique → update until both reviews pass, then call `mark_ready`.
 
 Do not call `resources/list` or `resources/read`: `synth_visuals` is a tool-only MCP server. Do not shell-search for the tool, MCP registration, or skill implementation. Repository inspection required to answer the user's question is allowed, but keep it bounded and call the visual tool as soon as the necessary evidence is gathered. Reference files are optional syntax help only when the requested family is unfamiliar.
 
@@ -60,6 +62,8 @@ Then call `visual_manage` again with `{"operation":"show","arguments":{"visual_i
 - Never bind slot `stream`.
 - Missing `content` fails closed. Do not retry as `blank.canvas.v1`.
 - Preserve stable IDs across revisions. In 2D/4D sources, every group and node has an explicit finite rectangle and every edge references existing nodes.
+- Prefer 5–7 focal elements per beat. Stage secondary evidence through later beats instead of showing every node and connector in the poster state.
+- Keep node labels short enough to fit their rectangles and edge labels at 24 characters or fewer. Put exact identifiers and long evidence in the beat description or a detail note, not across a connector.
 - Do not claim an edge, state, or animation beat that the evidence does not establish. Use a missing/unproven treatment when that absence is the point.
 
 ## Selection rules

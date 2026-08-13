@@ -40,3 +40,15 @@ test("dynamic systems explainers are declarative and expose deterministic playba
 	assert.match(surface, /styleClass\(state\.style\)/);
 	assert.doesNotMatch(surface, /dangerouslySetInnerHTML|eval\(|new Function|<iframe/);
 });
+
+test("systems authoring requires screenshot-backed collision and density review", () => {
+	const ipc = readFileSync(new URL("../src-tauri/src/visuals_ipc.rs", import.meta.url), "utf8");
+	const authorSkill = readFileSync(new URL("../skills/author-synth-diagrams/SKILL.md", import.meta.url), "utf8");
+	assert.match(ipc, /noTextCollisions/);
+	assert.match(ipc, /focalDensity/);
+	assert.match(ipc, /screenshotInspected/);
+	assert.match(ipc, /requires screenshot_path from the rendered Desktop view/);
+	assert.match(ipc, /unresolved automated findings/);
+	assert.match(authorSkill, /Capture a wide screenshot and a compact screenshot/);
+	assert.match(authorSkill, /5–7 focal elements per beat/);
+});

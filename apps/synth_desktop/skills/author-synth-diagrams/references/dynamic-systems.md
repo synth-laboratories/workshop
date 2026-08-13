@@ -10,6 +10,17 @@ Author in five passes:
 4. **Poster fallback:** `posterTimeMs` must select a state that communicates the core system as deterministic SVG; `reducedMotion` is exactly `"poster"` or `"final"`.
 5. **Refinement:** verify behavior first, then connector/label clarity, then pacing and publication polish.
 
+## Required visual QA loop
+
+After every create or update:
+
+1. Call `show`, then `authoring_context`; resolve every automated finding.
+2. Capture the rendered Desktop pane at a wide viewport and at a compact viewport.
+3. Open and inspect both screenshots. Fail the review for any touching/overlapping text, ambiguous truncation, label crossing, hidden primary claim, or poster state with more than roughly 5–7 focal elements.
+4. Update the same visual ID and repeat. Record the real screenshot paths with `review`; call `mark_ready` only after both images pass.
+
+JSON validity and bounded rectangles are not visual approval. A review without an inspected rendered screenshot is invalid.
+
 Illustrative source shape (follow the registered schema when it is stricter):
 
 ```json

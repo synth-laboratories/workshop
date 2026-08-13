@@ -44,7 +44,7 @@ other clients but are intentionally not advertised to Codex.
 5. Show exact units and provenance. Preserve small costs rather than rounding them to `$0.00`.
 6. Call the `show` operation after creation or update so the result opens in the Desktop pane.
 7. Inspect the rendered visual in Desktop canvas mode. Fix clipped labels, empty sections, misleading encodings, weak hierarchy, and excessive whitespace.
-8. Perform at least two explicit render-and-critique iterations at distinct viewport widths. Record each with `review`; do not reuse a review after the visual revision changes.
+8. Perform at least two explicit render-and-critique iterations at distinct viewport widths. Capture and open the rendered screenshots, pass their real paths to `review`, and do not reuse a review after the visual revision changes. For systems visuals, resolve every deterministic finding returned by `authoring_context` before readiness.
 9. Call `mark_ready` only when all required landmarks pass. A trusted live template is configured through `visual_config`; saved arbitrary TSX is retained as source evidence but is never executed by Desktop.
 
 ## Composition rules
@@ -111,7 +111,7 @@ dig.bench: open `live.digbench.v1` before `start_session`. Basic ReAct and agent
 
 ## Iteration rubric
 
-Every review supplies these booleans: `rendered`, `noOverflow`, `primarySurfaceVisible`, `temporalControls`, `traceInspector`, and `realEvidence`. `live.craftax.v1` additionally requires `imageReplay`, which is true only when ordered Containers PNG frame URLs render and can be scrubbed or played. Also critique:
+Every review supplies these booleans: `rendered`, `noOverflow`, `primarySurfaceVisible`, `temporalControls`, `traceInspector`, and `realEvidence`. Systems visuals additionally require `noTextCollisions`, `focalDensity`, and `screenshotInspected`; their reviews require a PNG/JPEG screenshot path, and readiness is refused while deterministic authoring findings remain. `live.craftax.v1` additionally requires `imageReplay`, which is true only when ordered Containers PNG frame URLs render and can be scrubbed or played. Also critique:
 
 - Is the primary environment or decision surface dominant above the fold?
 - Can the operator tell environment facts from policy facts and evaluator authority?

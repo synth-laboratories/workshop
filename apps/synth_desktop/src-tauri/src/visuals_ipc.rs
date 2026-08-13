@@ -13,6 +13,7 @@ use crate::visuals::{
     assert_live_eval_slot, classify_live_eval_family, live_eval_bind_metadata, VisualCreateRequest,
     VisualQuery, VisualStatus, VisualUpdateRequest, LIVE_EVAL_SLOT,
 };
+use base64::Engine;
 
 const MAX_SCRIPTED_ROLLOUTS: u64 = 10;
 const BASE_AUTHORING_CHECKS: [&str; 6] = [
@@ -26,6 +27,14 @@ const BASE_AUTHORING_CHECKS: [&str; 6] = [
 
 fn required_authoring_checks(template_id: &str) -> Vec<&'static str> {
     let mut checks = BASE_AUTHORING_CHECKS.to_vec();
+    if matches!(
+        template_id,
+        "diagram.systems.v1" | "diagram.systems.dynamic.v1"
+    ) {
+        checks.push("noTextCollisions");
+        checks.push("focalDensity");
+        checks.push("screenshotInspected");
+    }
     if template_id == "live.craftax.v1" {
         checks.push("imageReplay");
     }
@@ -947,6 +956,18 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
+            let automated_findings =
+                if let Some(kind) = crate::visuals::systems::template_kind(&visual.template_id) {
+                    let asset = registry.visual_source(id.to_string()).await?;
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(asset.base64)
+                        .context("systems authoring source must be base64")?;
+                    let source = String::from_utf8(bytes)
+                        .context("systems authoring source must be UTF-8")?;
+                    crate::visuals::systems::authoring_findings(&source, kind)?
+                } else {
+                    Vec::new()
+                };
             Ok(json!({
                 "visual": visual,
                 "template": template,
@@ -956,7 +977,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     "requiredIterations": 2,
                     "reviewCount": reviews.len(),
                     "requiredChecks": required_checks,
-                    "instruction": "Render in Desktop canvas mode, inspect at wide and compact viewports, revise the trusted template configuration, then record two passing reviews before mark_ready."
+                    "automatedFindings": automated_findings,
+                    "instruction": "Render and show in Desktop, capture and inspect screenshots at wide and compact viewports, revise until automated findings and visible collisions are resolved, then record two screenshot-backed passing reviews before mark_ready."
                 }
             }))
         }
@@ -1043,6 +1065,29 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             if findings.iter().any(|value| !value.is_string()) {
                 anyhow::bail!("review findings must be strings");
             }
+            if matches!(
+                current.template_id.as_str(),
+                "diagram.systems.v1" | "diagram.systems.dynamic.v1"
+            ) {
+                let screenshot = body
+                    .get("screenshot_path")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .context("systems visual review requires screenshot_path from the rendered Desktop view")?;
+                if !(screenshot.ends_with(".png")
+                    || screenshot.ends_with(".jpg")
+                    || screenshot.ends_with(".jpeg"))
+                {
+                    anyhow::bail!("systems visual review screenshot_path must reference a PNG or JPEG capture");
+                }
+                let screenshot_path = std::path::Path::new(screenshot);
+                if !screenshot_path.is_absolute() || !screenshot_path.is_file() {
+                    anyhow::bail!(
+                        "systems visual review screenshot_path must be an existing absolute file"
+                    );
+                }
+            }
             let mut metadata = current.metadata.as_object().cloned().unwrap_or_default();
             let mut reviews = metadata
                 .get("authoringReviews")
@@ -1119,6 +1164,21 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     {
                         anyhow::bail!("visual review is not passing required check {check}");
                     }
+                }
+            }
+            if let Some(kind) = crate::visuals::systems::template_kind(&current.template_id) {
+                let asset = registry.visual_source(id.to_string()).await?;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(asset.base64)
+                    .context("systems readiness source must be base64")?;
+                let source =
+                    String::from_utf8(bytes).context("systems readiness source must be UTF-8")?;
+                let findings = crate::visuals::systems::authoring_findings(&source, kind)?;
+                if !findings.is_empty() {
+                    anyhow::bail!(
+                        "systems visual has unresolved automated findings: {}",
+                        findings.join("; ")
+                    );
                 }
             }
             let widths: std::collections::BTreeSet<u64> = current_reviews
