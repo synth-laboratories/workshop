@@ -7417,13 +7417,29 @@ html.sidebar-hidden .sidebar {
 }
 
 .backend-signin {
-	display: flex;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
 	align-items: center;
 	gap: 10px;
 	padding: 10px 12px;
-	margin-bottom: 12px;
+	margin-top: 12px;
 	border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
 	border-radius: 8px;
+	background: var(--color-bg-subtle);
+}
+
+.backend-signin-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.backend-api-key-form { grid-column: 1 / -1; display: grid; gap: 6px; padding-top: 10px; border-top: 1px solid var(--color-border); }
+.backend-api-key-form label { color: var(--color-text); font-size: 11px; font-weight: 650; }
+.backend-api-key-form > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.backend-api-key-form input { min-width: 0; height: 32px; padding: 0 10px; border: 1px solid var(--color-border); border-radius: 7px; background: #fff; color: var(--color-text); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.backend-api-key-form input:focus { outline: 2px solid rgba(64, 112, 244, .18); border-color: #7895df; }
+.backend-api-key-form small { color: var(--color-text-faint); font-size: 10.5px; }
+.backend-signin-note { grid-column: 1 / -1; }
+
+@media (max-width: 760px) {
+	.backend-signin { grid-template-columns: 1fr; }
+	.backend-signin-actions { justify-content: flex-start; }
 }
 
 .workspace-scope-wrap { position: relative; min-width: 0; }
