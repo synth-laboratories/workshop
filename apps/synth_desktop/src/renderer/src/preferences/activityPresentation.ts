@@ -54,12 +54,39 @@ function lineStatus(line: LocalActivityLine): ActivityStatus {
 }
 
 function toolCategory(line: LocalActivityLine): string | null {
+	if (isAuthoredEvidence(line)) return null;
 	if (line.kind === "file_write") return "edited files";
 	if (line.kind === "file_read") return "read files";
 	if (line.kind === "command") return "ran commands";
 	if (line.kind === "search") return "searched";
-	if (line.toolStatus) return "used tools";
+	if (line.toolStatus) {
+		const label = (line.label ?? "").toLowerCase();
+		if (label.includes("visual")) return "used visuals";
+		if (label.includes("container")) return "used containers";
+		return "used tools";
+	}
 	return null;
+}
+
+/**
+ * Visuals, containers, approvals, and run summaries are the evidence a W1
+ * operator has to inspect. Grouped/compact mode must not fold them into
+ * "Ran commands, used tools N calls".
+ */
+export function isAuthoredEvidence(line: LocalActivityLine): boolean {
+	if (
+		line.kind === "visual"
+		|| line.kind === "approval"
+		|| line.kind === "run_summary"
+		|| line.kind === "subagent"
+		|| line.kind === "context_compaction"
+	) return true;
+	if (line.artifactId || line.containerId) return true;
+	const label = (line.label ?? "").toLowerCase();
+	return label.includes("synth_visuals")
+		|| label.includes("synth_containers")
+		|| /(^|[._])visual_/.test(label)
+		|| /(^|[._])container_/.test(label);
 }
 
 function summarizeGroup(lines: LocalActivityLine[]): { label: string; summary: string; status: ActivityStatus; toolCount: number } {
@@ -105,42 +132,55 @@ export function presentActivityLines(
 	}
 
 	if (mode === "compact") {
-		if (running) {
-			const current = [...lines].reverse().find((line) => line.toolStatus === "running" || line.kind === "working")
-				?? lines[lines.length - 1];
-			const priorCount = Math.max(0, lines.length - (current ? 1 : 0));
-			const items: ActivityPresentationItem[] = [];
-			if (priorCount > 0) {
-				const prior = current ? lines.slice(0, lines.indexOf(current)) : lines;
-				const groupId = `compact-prior-${prior[0]?.id ?? "none"}`;
-				const { label, summary, status } = summarizeGroup(prior);
-				items.push({
+		const presented: ActivityPresentationItem[] = [];
+		let foldable: LocalActivityLine[] = [];
+		const flushFoldable = (runningSlice: boolean) => {
+			if (foldable.length === 0) return;
+			if (runningSlice) {
+				const current = [...foldable].reverse().find((line) => line.toolStatus === "running" || line.kind === "working")
+					?? foldable[foldable.length - 1];
+				const prior = current ? foldable.slice(0, foldable.indexOf(current)) : foldable;
+				if (prior.length > 0) {
+					const groupId = `compact-prior-${prior[0]?.id ?? "none"}`;
+					const { label, summary, status } = summarizeGroup(prior);
+					presented.push({
+						kind: "group",
+						id: groupId,
+						label: `${label} · earlier`,
+						summary: `${prior.length} prior · ${summary}`,
+						count: prior.length,
+						status,
+						lines: prior,
+						expanded: expanded.has(groupId)
+					});
+				}
+				if (current) presented.push({ kind: "line", line: current });
+			} else if (foldable.length === 1) {
+				presented.push({ kind: "line", line: foldable[0]! });
+			} else {
+				const groupId = `compact-done-${foldable[0]?.id ?? "none"}`;
+				const { label, summary, status } = summarizeGroup(foldable);
+				presented.push({
 					kind: "group",
 					id: groupId,
-					label: `${label} · earlier`,
-					summary: `${priorCount} prior · ${summary}`,
-					count: priorCount,
+					label,
+					summary,
+					count: foldable.length,
 					status,
-					lines: prior,
+					lines: foldable,
 					expanded: expanded.has(groupId)
 				});
 			}
-			if (current) items.push({ kind: "line", line: current });
-			return items;
+			foldable = [];
+		};
+		for (const line of lines) {
+			if (isAuthoredEvidence(line)) {
+				flushFoldable(false);
+				presented.push({ kind: "line", line });
+			} else foldable.push(line);
 		}
-		if (lines.length === 0) return [];
-		const groupId = `compact-done-${lines[0]?.id ?? "none"}`;
-		const { label, summary, status } = summarizeGroup(lines);
-		return [{
-			kind: "group",
-			id: groupId,
-			label,
-			summary,
-			count: lines.length,
-			status,
-			lines,
-			expanded: expanded.has(groupId)
-		}];
+		flushFoldable(running);
+		return presented;
 	}
 
 	// grouped: fold consecutive tool calls together, including the short
@@ -174,7 +214,10 @@ export function presentActivityLines(
 	for (const line of lines) {
 		const isTool = Boolean(toolCategory(line));
 		const isConnective = CONNECTIVE_KINDS.has(line.kind ?? "");
-		if (isTool || isConnective) buffer.push(line);
+		if (isAuthoredEvidence(line)) {
+			flush();
+			items.push({ kind: "line", line });
+		} else if (isTool || isConnective) buffer.push(line);
 		else {
 			flush();
 			items.push({ kind: "line", line });

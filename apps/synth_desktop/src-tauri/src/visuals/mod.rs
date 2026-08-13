@@ -5,6 +5,7 @@ pub mod mermaid;
 mod models;
 mod registry;
 mod renditions;
+pub mod systems;
 mod templates;
 
 pub use live_eval::{

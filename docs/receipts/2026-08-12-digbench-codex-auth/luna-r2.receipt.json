@@ -1,0 +1,89 @@
+{
+  "model": "gpt-5.6-luna",
+  "auth": "ChatGPT (verified by codex login status; no secret recorded)",
+  "harness": "codex exec shell interaction",
+  "reasoning_effort": "medium",
+  "official_digbench": false,
+  "benchmark": "local DiG-style canary v1",
+  "replicate": 2,
+  "exit_code": 0,
+  "elapsed_seconds": 87.752,
+  "tool_commands": [
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action observe'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action amber'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action cobalt'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action amber'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action ivory'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action sun'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action sun'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action moon'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action sun'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action moon'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action sun'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action sun'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action sun'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action one'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action two'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action three'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action one'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action three'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action two'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action one'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action two'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action north'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action east'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action south'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action A'",
+    "/bin/zsh -lc 'python3 /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/work/digbench_local_game.py --state /Users/joshuapurtell/Documents/Codex/2026-08-12/let-2/outputs/digbench_codex_auth/luna-r2.state.json --action B'"
+  ],
+  "anti_cheat_pass": true,
+  "protocol_compliance": true,
+  "source_inspection_detected": false,
+  "state": {
+    "suite_status": "complete",
+    "game_index": 5,
+    "games_won": 5,
+    "total_actions": 25,
+    "game": {},
+    "results": [
+      {
+        "game": "sequence_lock",
+        "won": true,
+        "actions": 4,
+        "detail": "lock opened"
+      },
+      {
+        "game": "rule_oracle",
+        "won": true,
+        "actions": 8,
+        "detail": "6/8 correct"
+      },
+      {
+        "game": "memory_door",
+        "won": true,
+        "actions": 8,
+        "detail": "8/8 correct"
+      },
+      {
+        "game": "route_finder",
+        "won": true,
+        "actions": 3,
+        "detail": "vault reached"
+      },
+      {
+        "game": "switchboard",
+        "won": true,
+        "actions": 2,
+        "detail": "target reached"
+      }
+    ]
+  },
+  "usage": {
+    "input_tokens": 466817,
+    "cached_input_tokens": 428544,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 4291,
+    "reasoning_output_tokens": 573
+  },
+  "final_message": "Suite complete.\n\nScore: 5/5 games won  \nTotal actions: 25"
+}

@@ -5,11 +5,14 @@ description: Use when creating, updating, inspecting, or opening a Synth Desktop
 
 # Use Synth Visuals
 
-Choose the visual grammar from the evidence. Treat registered templates as optional shortcuts, not mandates. For ad-hoc analysis, prefer `analysis.visual.v1` and author its ordered `spec.blocks` at creation time. Use `blank.canvas.v1` when the composition cannot be expressed cleanly with those blocks. If the artifact is a system, UML, or flow picture, load `author-synth-diagrams` and create `diagram.mermaid.v1` instead of dumping SVG into a canvas.
+Choose the visual grammar from the evidence. Treat registered templates as optional shortcuts, not mandates. For ad-hoc analysis, prefer `analysis.visual.v1` and author its ordered `spec.blocks` at creation time. Use `blank.canvas.v1` when the composition cannot be expressed cleanly with those blocks. If the artifact is a system, UML, flow picture, or time-aware technical explainer, load `author-synth-diagrams`. It chooses among `diagram.mermaid.v1`, `diagram.systems.v1`, `diagram.systems.dynamic.v1`, or a focused combination; do not dump SVG/HTML/JavaScript into a canvas.
 
-Codex advertises one compact custom tool, `mcp__synth_visuals`, instead of all
-visual schemas on every turn. Call it with `method: "visual_manage"`, an
-`operation`, and an operation-specific `arguments` object:
+Codex advertises one compact custom tool,
+`mcp__synth_visuals__visual_manage`, instead of all visual schemas on every
+turn. In code mode call it as
+`tools.mcp__synth_visuals__visual_manage({ operation, arguments })`. There is
+**no** top-level `method` field. Do not use `resources/list`, `resources/read`,
+or filesystem search to discover this tool.
 
 | Operation | Arguments |
 | --- | --- |
@@ -27,7 +30,7 @@ visual schemas on every turn. Call it with `method: "visual_manage"`, an
 | `mark_ready` | `{ "visual_id": string, "revision": number }` |
 
 For example, list templates with
-`{"method":"visual_manage","operation":"list_templates","arguments":{}}`.
+`{"operation":"list_templates","arguments":{}}`.
 Do not invent separate callable names such as
 `mcp__synth_visuals__visual_create`; legacy MCP names remain compatible for
 other clients but are intentionally not advertised to Codex.
@@ -123,6 +126,17 @@ latest semantic engine event. Craftax also exposes a per-lane through-time
 cutoff and policy span partials. Never substitute elapsed time for step progress,
 invent missing values, or fill the pane with raw JSON; retain the journal and
 sealed Trace V5 for deeper inspection and post-run reopening.
+
+## Live optimizer runs
+
+Optimizer visuals are owned by the optimizer service. Start an allowlisted recipe
+through `use-synth-optimizers` with `open_visual: true`, or call its `open_visual`
+operation for an existing run. Do not create a parallel `analysis.visual.v1` or
+bind an optimizer feed manually. The host selects the GEPA, GELO, or SFT family,
+binds slot `optimizer_run`, shows the same durable visual ID in the current chat's
+right pane, and keeps reading the optimizer event cursor while the agent continues
+to talk or poll. Reopening after a restart must reuse that ID and replay persisted
+events; unknown score, reward, cost, coverage, or evidence integrity remains missing.
 
 ## `blank.canvas.v1`
 

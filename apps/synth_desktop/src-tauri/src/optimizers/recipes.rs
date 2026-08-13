@@ -39,6 +39,8 @@ const MAX_TOTAL_ROLLOUTS: i64 = 240;
 const MAX_COST_USD: f64 = 2.45;
 const PROPOSER_ESTIMATED_COST_USD: f64 = 0.05;
 const ROLLOUT_ESTIMATED_COST_USD: f64 = 0.01;
+const PROPOSER_TIMEOUT_SECONDS: i64 = 300;
+const PROPOSER_MESSAGE_STALL_TIMEOUT_SECONDS: i64 = 120;
 
 #[derive(Clone, Copy)]
 enum ProposerProfile {
@@ -406,7 +408,16 @@ async fn run_recipe_worker(
 
     let mut upstream_cursor = 0;
     loop {
-        ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await?;
+        if let Err(error) =
+            ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await
+        {
+            // The producer registers its durable index shortly after spawn.
+            // A 404 is retryable only while the child is demonstrably alive;
+            // it is not a successful empty event page.
+            if !super::OptimizerManager::optimizer_run_not_indexed(&error) {
+                return Err(error);
+            }
+        }
         tokio::select! {
             status = child.wait() => {
                 let status = status.context("wait for Banking77 GEPA process")?;
@@ -1106,6 +1117,14 @@ fn materialize_config(
         "reasoning_effort".into(),
         toml::Value::String("medium".into()),
     );
+    proposer.insert(
+        "timeout_seconds".into(),
+        toml::Value::Integer(PROPOSER_TIMEOUT_SECONDS),
+    );
+    proposer.insert(
+        "message_stall_timeout_seconds".into(),
+        toml::Value::Integer(PROPOSER_MESSAGE_STALL_TIMEOUT_SECONDS),
+    );
     proposer.insert("auth_mode".into(), toml::Value::String("chatgpt".into()));
     proposer.insert("copy_host_auth".into(), toml::Value::Boolean(true));
     proposer.remove("api_key_env");
@@ -1280,6 +1299,8 @@ namespace = "base"
         assert!(!text.contains("secret"));
         assert!(text.contains("model = \"gpt-5.6-luna\""));
         assert!(text.contains("auth_mode = \"chatgpt\""));
+        assert!(text.contains("timeout_seconds = 300"));
+        assert!(text.contains("message_stall_timeout_seconds = 120"));
         assert!(!text.contains("api_key_env = \"OPENAI_API_KEY\""));
         assert!(text.contains("train_ids = ["));
         assert!(text.contains("\"train:0\""));

@@ -55,6 +55,7 @@ export type OptimizerRun = {
     wallTimeMs?: number;
   };
   executionBindings?: Array<Record<string, unknown>>;
+  error?: unknown;
 };
 
 export type GepaLimit = {
@@ -96,6 +97,31 @@ export type GepaEvaluation = {
   costUsd?: number;
   usage?: Record<string, unknown>;
   occurredAt?: string;
+};
+
+export type GepaFailedAttempt = {
+  candidateId?: string;
+  sequence: number;
+  stage?: string;
+  exampleId?: string;
+  jobId?: string;
+  attempt?: number;
+  maxAttempts?: number;
+  failureClass?: string;
+  message?: string;
+  occurredAt?: string;
+};
+
+export type GepaCoverage = {
+  candidateId?: string;
+  stage?: string;
+  required: number;
+  scored: number;
+  failed: number;
+  pending: number;
+  complete: boolean;
+  promotionEligible: boolean;
+  sequence: number;
 };
 
 export type GepaTraceStep = {
@@ -163,6 +189,8 @@ export type GepaState = {
   limits: GepaLimit[];
   stages: GepaStage[];
   evaluations: GepaEvaluation[];
+  failedAttempts: GepaFailedAttempt[];
+  coverage: GepaCoverage[];
   proposerTraces: GepaProposerTrace[];
   activity: {
     phase: string;
@@ -178,7 +206,7 @@ export type GepaState = {
   };
   incumbentId?: string;
   best?: { candidateId?: string; trainReward?: number; heldoutReward?: number };
-  heldout?: { candidateId?: string; reward?: number; skipped?: boolean };
+  heldout?: { candidateId?: string; reward?: number; skipped?: boolean; blocked?: boolean; reason?: string };
   models: { proposer?: string; policy?: string };
   timing: { startedAt?: string; endedAt?: string; lastEventAt?: string };
   rolloutsCompleted: number;
@@ -242,6 +270,22 @@ export type ProjectedState = {
   };
 };
 
+function optimizerFailureDetail(error: unknown): string | undefined {
+  if (!error) return undefined;
+  const value = typeof error === "object" && !Array.isArray(error)
+    ? error as Record<string, unknown>
+    : {};
+  const source = [value.stderrTail, value.message, error]
+    .find((candidate) => typeof candidate === "string") as string | undefined;
+  if (!source) return undefined;
+  const container = source.match(/container error:\s*([^\n]+)/i)?.[1]?.trim();
+  if (container) return container;
+  return source
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line && !line.includes("resource_tracker") && !line.startsWith("warnings.warn"));
+}
+
 export function isContainerRolloutRef(value: unknown): value is ContainerRolloutRef {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const rec = value as Record<string, unknown>;
@@ -298,6 +342,8 @@ export function projectAtCursor(
   let frontier: Array<Record<string, unknown>> = [];
   const reflections: Array<Record<string, unknown>> = [];
   const gepaEvaluations: GepaEvaluation[] = [];
+  const gepaFailedAttempts: GepaFailedAttempt[] = [];
+  const gepaCoverage = new Map<string, GepaCoverage>();
   const proposerTraces = new Map<number, GepaProposerTrace>();
   let budget: Record<string, unknown> | undefined;
   let limits: GepaLimit[] = [];
@@ -990,6 +1036,50 @@ export function projectAtCursor(
         };
       }
     }
+    if (event.type === "optimizer.candidate_evaluation.attempt.failed") {
+      const failure = event.delta?.failure && typeof event.delta.failure === "object" && !Array.isArray(event.delta.failure)
+        ? event.delta.failure as Record<string, unknown>
+        : {};
+      gepaFailedAttempts.push({
+        candidateId: candidateIdFrom(event),
+        sequence: event.sequenceNumber,
+        stage: typeof event.delta?.stage === "string" ? event.delta.stage : undefined,
+        exampleId: typeof event.delta?.example_id === "string" ? event.delta.example_id : undefined,
+        jobId: typeof event.delta?.job_id === "string" ? event.delta.job_id : undefined,
+        attempt: missingNumber(event.delta?.attempt),
+        maxAttempts: missingNumber(event.delta?.max_attempts),
+        failureClass: typeof failure.reason_code === "string"
+          ? failure.reason_code
+          : typeof failure.failure_type === "string" ? failure.failure_type : undefined,
+        message: typeof failure.message === "string" ? failure.message : undefined,
+        occurredAt: event.occurredAt || undefined
+      });
+    }
+    if (event.type === "optimizer.evaluation.coverage.updated") {
+      const candidateId = candidateIdFrom(event);
+      const stage = typeof event.delta?.stage === "string" ? event.delta.stage : undefined;
+      const required = missingNumber(event.delta?.required ?? event.delta?.required_rollout_count) ?? 0;
+      const scored = missingNumber(event.delta?.scored ?? event.delta?.scored_rollout_count) ?? 0;
+      const failed = missingNumber(event.delta?.failed ?? event.delta?.failed_rollout_count) ?? 0;
+      const pending = missingNumber(event.delta?.pending ?? event.delta?.pending_rollout_count) ?? Math.max(0, required - scored - failed);
+      gepaCoverage.set(`${candidateId ?? "run"}::${stage ?? "unknown"}`, {
+        candidateId,
+        stage,
+        required,
+        scored,
+        failed,
+        pending,
+        complete: required > 0 && scored === required && failed === 0 && pending === 0,
+        promotionEligible: event.delta?.promotion_eligible === true || event.delta?.complete === true,
+        sequence: event.sequenceNumber
+      });
+    }
+    if (event.type === "heldout.blocked") {
+      const candidateId = candidateIdFrom(event);
+      const reason = typeof event.delta?.reason === "string" ? event.delta.reason : "incomplete_evidence";
+      heldout = { candidateId, blocked: true, reason };
+      markStage("heldout", "failed", event.occurredAt, "Promotion blocked: heldout evidence is incomplete");
+    }
     if (event.type === "gepa.budget.updated" || event.type === "budget.updated") {
       budget = { ...(event.snapshot ?? event.delta ?? {}) };
     }
@@ -1264,9 +1354,10 @@ export function projectAtCursor(
       }
       return { id, label: stageLabels[id], status: terminal ? "skipped" : "pending" };
     });
+    const failedStage = stages.find((stage) => stage.status === "failed");
     const activityLabel = terminal
       ? failed
-        ? "Search failed"
+        ? `${failedStage?.label ?? "Search"} failed`
         : "Search complete"
       : proposalActive && evaluationActive
         ? "Creating + evaluating candidates"
@@ -1287,11 +1378,13 @@ export function projectAtCursor(
       limits,
       stages,
       evaluations: gepaEvaluations,
+      failedAttempts: gepaFailedAttempts,
+      coverage: [...gepaCoverage.values()],
       proposerTraces: [...proposerTraces.values()],
       activity: {
         phase: activityPhase,
         label: activityLabel,
-        detail: activityDetail,
+        detail: failed ? optimizerFailureDetail(run.error) ?? activityDetail : activityDetail,
         proposalActive,
         evaluationActive,
         evaluationStage,

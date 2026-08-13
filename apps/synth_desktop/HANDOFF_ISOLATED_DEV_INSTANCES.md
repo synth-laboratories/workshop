@@ -15,6 +15,13 @@ target. Named development instances do not replace or modify it.
 
 ## Quick start
 
+Named testing instances follow the permanent
+[`test-instance login contract`](../../docs/TEST_INSTANCE_LOGIN_CONTRACT.md):
+use the plain commands below. Never require operators to add credential flags,
+credential paths, or environment-variable prefixes. ChatGPT, OpenRouter, and
+Synth authentication is resolved automatically from standard private
+machine-local settings.
+
 Run commands from the workshop repository root:
 
 ```bash

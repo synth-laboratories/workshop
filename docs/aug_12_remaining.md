@@ -1,7 +1,38 @@
 # Live-eval remaining acceptance and implementation status
 
-Updated 2026-08-12 after the Containers + Workshop implementation pass. Optimizer
-execution remains deliberately out of this pass.
+## 2026-08-13 GEPA live-panel completion
+
+The optimizer portion that was deliberately excluded from the original
+Containers + Workshop pass is now implemented across the G1 GEPA runtime and
+Workshop's durable right-panel projection:
+
+- exhausted rollout retries persist typed failure evidence with null reward and
+  cost; they never manufacture a zero-score rollout or a fake child stream;
+- the runtime checkpoints after each consumed child result, tracks required,
+  scored, failed, and pending coverage, preserves legacy pre-coverage
+  checkpoints on reopen, and refuses heldout promotion without complete scored
+  coverage;
+- persisted pages are cursor-idempotent, sequence gaps trigger a durable reload,
+  and a duplicate sequence with different content fails closed;
+- the chat-bound live GEPA panel now presents best-so-far hill climb, Pareto
+  search space, lineage and gate decisions, per-example rollouts/rewards,
+  proposer reasoning, limits/cost, and an evidence-integrity panel whose failed
+  samples are explicitly excluded from scores;
+- the agent can open the durable optimizer visual in the active chat while the
+  run continues; reopening preserves the same optimizer-run binding rather than
+  creating a snapshot copy.
+
+Rendered QA at 1440, 1024, 768, and 390 px reports zero document overflow. The
+new deterministic GEPA QA surface is
+`apps/synth_desktop/src/renderer/gepa-qa.html`; it exercises a
+live-looking search with accepted, rejected, and evaluating candidates plus an
+exhausted rollout. This is product/fixture validation, not a claim of a new paid
+Banking77 uplift receipt. A fresh provider-backed run remains an external
+acceptance receipt.
+
+The remainder of this document records the 2026-08-12 Containers + Workshop
+acceptance pass; optimizer execution was deliberately out of that historical
+receipt and is superseded by the completion note above.
 
 ## Current receipt
 
@@ -53,7 +84,7 @@ Validation on this dirty WIP tip:
 | **V6** accessibility | **Implemented for the Craftax reference/template floor.** Accessible names, semantic row labels, focus visibility, status text beyond color, reduced motion, compact responsive inspector. A formal axe/screen-reader receipt remains external. |
 | **O1–O4** operations | Existing budget, credential-broker, redaction, durable-spool, reconnect, and cancellation primitives are covered by unit/conformance tests, but the destructive parallel-budget/cancellation/auth-rotation drills below remain acceptance work. |
 | **O5** rebuild identity | **Implemented and script-tested.** Named CUA bundles use one persistent local signer and `cua-run` relaunches the existing signed app. No rebuild/relaunch was performed in this pass, specifically to avoid causing another Keychain prompt while the mixed tree is dirty. |
-| **W1–W3** agent workflow | Skills, MCP entrypoints, visual-first ordering, and declared-source refusal are implemented. A fresh-workspace Sol harness run with injected MCP/503/frame failures remains an external agent acceptance, not a unit-test claim. |
+| **W1–W3** agent workflow | A fresh isolated `w1sol` CUA run selected GPT-5.6 Sol and proved safe refusal: W1 registered and authoritatively probed the declared offline Rust endpoint, then started zero rollouts and created no visual; a W3 missing-descriptor injection stopped at MCP discovery with zero mutation. W2 and the 503/frame/policy-pin matrix remain open because no fresh service could run. Receipt: [`w1-w3-cua.json`](./receipts/2026-08-12/w1-w3-cua.json). |
 
 The external drills are intentionally still described below. They are acceptance
 receipts, not missing happy-path product code, and must run from a clean split tip

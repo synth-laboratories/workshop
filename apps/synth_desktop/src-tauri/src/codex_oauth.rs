@@ -12,7 +12,10 @@ use sha2::{Digest, Sha256};
 use std::{
     fmt, fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex as StateMutex,
+    },
     time::Duration,
 };
 use tokio::{
@@ -84,10 +87,21 @@ pub struct SystemKeychain {
 /// code-signing requirement and would otherwise prompt after local rebuilds.
 struct LocalInstanceCredentialStore;
 
-/// Explicit debug-instance store backed by the existing Codex auth file.
-/// Computer-use builds must never touch Keychain because a rebuilt app can
-/// trigger a password modal. This adapter is deliberately read-only.
-struct DevFileCredentialStore(PathBuf);
+/// A named debug instance reads the canonical Codex file only as its initial
+/// seed. Successful refresh/re-auth and disconnect are persisted in an
+/// instance-local private overlay, so the source remains read-only and a
+/// rebuilt app never invokes Keychain.
+struct DevFileCredentialStore {
+    seed: PathBuf,
+    local: PathBuf,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum InstanceCredentialState {
+    Connected { credential: Credential },
+    Disconnected,
+}
 
 #[cfg(unix)]
 fn set_private_file(path: &Path) -> Result<()> {
@@ -117,18 +131,48 @@ impl CredentialStore for LocalInstanceCredentialStore {
 
 impl CredentialStore for DevFileCredentialStore {
     fn load(&self) -> Result<Option<Credential>> {
-        match fs::read_to_string(&self.0) {
+        match fs::read_to_string(&self.local) {
+            Ok(value) => {
+                return match serde_json::from_str::<InstanceCredentialState>(&value)
+                    .context("invalid instance-local Codex OAuth state")?
+                {
+                    InstanceCredentialState::Connected { credential } => Ok(Some(credential)),
+                    InstanceCredentialState::Disconnected => Ok(None),
+                };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        match fs::read_to_string(&self.seed) {
             Ok(value) => Ok(Some(parse_dev_auth_file(&value)?)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),
         }
     }
 
-    fn save(&self, _credential: &Credential) -> Result<()> {
-        Ok(())
+    fn save(&self, credential: &Credential) -> Result<()> {
+        self.write_local(&InstanceCredentialState::Connected {
+            credential: credential.clone(),
+        })
     }
 
     fn delete(&self) -> Result<()> {
+        self.write_local(&InstanceCredentialState::Disconnected)
+    }
+}
+
+impl DevFileCredentialStore {
+    fn write_local(&self, state: &InstanceCredentialState) -> Result<()> {
+        let parent = self
+            .local
+            .parent()
+            .expect("instance-local OAuth path must have a parent directory");
+        fs::create_dir_all(parent)?;
+        let temporary = self.local.with_extension("json.tmp");
+        fs::write(&temporary, serde_json::to_vec_pretty(state)?)?;
+        set_private_file(&temporary)?;
+        fs::rename(&temporary, &self.local)?;
+        set_private_file(&self.local)?;
         Ok(())
     }
 }
@@ -231,11 +275,39 @@ pub struct BeginResult {
 #[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
+    pub state: AuthState,
+    pub action: AuthAction,
+    pub can_use_models: bool,
+    pub guidance: String,
     pub configured: bool,
     pub account_hint: Option<String>,
     pub last_refresh: Option<String>,
     pub expires_at: Option<String>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthState {
+    Disconnected,
+    Authenticating,
+    Ready,
+    Expiring,
+    Expired,
+    RefreshFailed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthAction {
+    Connect,
+    Wait,
+    None,
+    Reauthenticate,
+    Retry,
+}
+
+#[derive(Clone, Debug)]
+struct AuthFailure(String);
 
 #[derive(Clone)]
 struct Pending {
@@ -257,6 +329,8 @@ pub struct Manager {
     authorize_url: String,
     token_url: String,
     pending: Mutex<Option<Pending>>,
+    failure: StateMutex<Option<AuthFailure>>,
+    authenticating: AtomicBool,
 }
 
 impl Manager {
@@ -268,9 +342,10 @@ impl Manager {
             {
                 CredentialStoreMode::Canonical => Arc::new(SystemKeychain::new(keychain_service())),
                 CredentialStoreMode::Isolated => Arc::new(LocalInstanceCredentialStore),
-                CredentialStoreMode::DevFile => Arc::new(DevFileCredentialStore(
-                    dev_file.expect("debug credential file mode requires a path"),
-                )),
+                CredentialStoreMode::DevFile => Arc::new(DevFileCredentialStore {
+                    seed: dev_file.expect("debug credential file mode requires a path"),
+                    local: crate::storage::app_data_root().join("oauth/codex.json"),
+                }),
             };
         Self::new(store, AUTHORIZE_URL, TOKEN_URL)
     }
@@ -282,6 +357,8 @@ impl Manager {
             authorize_url: authorize_url.into(),
             token_url: token_url.into(),
             pending: Mutex::new(None),
+            failure: StateMutex::new(None),
+            authenticating: AtomicBool::new(false),
         }
     }
 
@@ -308,6 +385,11 @@ impl Manager {
             .append_pair("codex_cli_simplified_flow", "true")
             .append_pair("originator", "codex_cli_rs");
         *guard = Some(Pending { verifier, state });
+        self.authenticating.store(true, Ordering::Release);
+        *self
+            .failure
+            .lock()
+            .expect("OAuth failure state mutex poisoned") = None;
         drop(guard);
 
         let mode = match TcpListener::bind(("127.0.0.1", 1455)).await {
@@ -328,7 +410,15 @@ impl Manager {
         let Ok(Ok((mut stream, _))) =
             tokio::time::timeout(Duration::from_secs(300), listener.accept()).await
         else {
-            let _ = self.cancel().await;
+            *self.pending.lock().await = None;
+            self.authenticating.store(false, Ordering::Release);
+            *self
+                .failure
+                .lock()
+                .expect("OAuth failure state mutex poisoned") = Some(AuthFailure(
+                "ChatGPT sign-in timed out. Choose Start over in Settings → Models to create a fresh authorization attempt."
+                    .into(),
+            ));
             return;
         };
         let mut bytes = vec![0; 16 * 1024];
@@ -342,6 +432,17 @@ impl Manager {
             Some(target) => self.complete_manual(target).await,
             None => Err(anyhow!("OAuth callback was malformed")),
         };
+        if let Err(error) = &result {
+            self.authenticating.store(false, Ordering::Release);
+            *self
+                .failure
+                .lock()
+                .expect("OAuth failure state mutex poisoned") = Some(AuthFailure(format!(
+                "ChatGPT sign-in failed: {}. Re-sync from Settings → Models.",
+                redact_text(&format!("{error:#}"))
+            )));
+            *self.pending.lock().await = None;
+        }
         let (status, body) = if result.is_ok() {
             (
                 "200 OK",
@@ -422,7 +523,12 @@ impl Manager {
             last_refresh_ms: now,
         };
         self.store.save(&credential)?;
+        *self
+            .failure
+            .lock()
+            .expect("OAuth failure state mutex poisoned") = None;
         *self.pending.lock().await = None;
+        self.authenticating.store(false, Ordering::Release);
         self.status()
     }
 
@@ -433,7 +539,7 @@ impl Manager {
         if current.expires_ms > Utc::now().timestamp_millis() + 5 * 60 * 1000 {
             return Ok(Some(current));
         }
-        let response = self
+        let response = match self
             .client
             .post(&self.token_url)
             .form(&[
@@ -443,13 +549,34 @@ impl Manager {
             ])
             .send()
             .await
-            .context("Codex OAuth refresh failed")?;
+        {
+            Ok(response) => response,
+            Err(error) => {
+                let message = format!("ChatGPT subscription refresh failed: {}. Retry from Settings → Models; Workshop will not fall back to another provider.", redact_text(&error.to_string()));
+                *self
+                    .failure
+                    .lock()
+                    .expect("OAuth failure state mutex poisoned") =
+                    Some(AuthFailure(message.clone()));
+                bail!(message);
+            }
+        };
         if !response.status().is_success() {
             if matches!(response.status().as_u16(), 400 | 401) {
-                self.store.delete()?;
-                bail!("ChatGPT subscription authorization expired; reconnect in Settings → Models");
+                let message = "ChatGPT subscription authorization expired. Reauthenticate in Settings → Models; Workshop will not fall back to another provider.".to_owned();
+                *self
+                    .failure
+                    .lock()
+                    .expect("OAuth failure state mutex poisoned") =
+                    Some(AuthFailure(message.clone()));
+                bail!(message);
             }
-            bail!("Codex OAuth refresh was rejected ({})", response.status());
+            let message = format!("ChatGPT subscription refresh failed (HTTP {}). Retry from Settings → Models; Workshop will not fall back to another provider.", response.status());
+            *self
+                .failure
+                .lock()
+                .expect("OAuth failure state mutex poisoned") = Some(AuthFailure(message.clone()));
+            bail!(message);
         }
         let token: TokenResponse = response
             .json()
@@ -471,12 +598,67 @@ impl Manager {
         refreshed.expires_ms = now + token.expires_in.unwrap_or(3600) * 1000;
         refreshed.last_refresh_ms = now;
         self.store.save(&refreshed)?;
+        *self
+            .failure
+            .lock()
+            .expect("OAuth failure state mutex poisoned") = None;
         Ok(Some(refreshed))
+    }
+
+    pub async fn ensure_ready(&self) -> Result<Status> {
+        match self.fresh_credential().await {
+            Ok(Some(_)) => self.status(),
+            Ok(None) => Ok(self.status()?),
+            Err(_) => Ok(self.status()?),
+        }
     }
 
     pub fn status(&self) -> Result<Status> {
         let credential = self.store.load()?;
+        let failure = self
+            .failure
+            .lock()
+            .expect("OAuth failure state mutex poisoned")
+            .clone();
+        let now = Utc::now().timestamp_millis();
+        let (state, action, can_use_models, guidance) = if let Some(AuthFailure(detail)) = failure {
+            (AuthState::RefreshFailed, AuthAction::Retry, false, detail)
+        } else if let Some(value) = credential.as_ref() {
+            if value.expires_ms <= now {
+                (AuthState::Expired, AuthAction::Reauthenticate, false,
+                 "ChatGPT subscription authorization expired. Reauthenticate in Settings → Models; Workshop will not send or fall back.".into())
+            } else if value.expires_ms <= now + 5 * 60 * 1000 {
+                (
+                    AuthState::Expiring,
+                    AuthAction::Retry,
+                    true,
+                    "ChatGPT authorization is expiring; Workshop will refresh it before sending."
+                        .into(),
+                )
+            } else {
+                (
+                    AuthState::Ready,
+                    AuthAction::None,
+                    true,
+                    "ChatGPT subscription is ready.".into(),
+                )
+            }
+        } else if self.authenticating.load(Ordering::Acquire) {
+            (
+                AuthState::Authenticating,
+                AuthAction::Wait,
+                false,
+                "Finish ChatGPT sign-in in the browser, or cancel this attempt.".into(),
+            )
+        } else {
+            (AuthState::Disconnected, AuthAction::Connect, false,
+             "Connect a ChatGPT subscription in Settings → Models. Workshop will not fall back to another provider.".into())
+        };
         Ok(Status {
+            state,
+            action,
+            can_use_models,
+            guidance,
             configured: credential.is_some(),
             account_hint: credential
                 .as_ref()
@@ -491,12 +673,17 @@ impl Manager {
 
     pub async fn cancel(&self) -> Result<()> {
         *self.pending.lock().await = None;
+        self.authenticating.store(false, Ordering::Release);
         Ok(())
     }
 
     pub async fn disconnect(&self) -> Result<Status> {
         self.cancel().await?;
         self.store.delete()?;
+        *self
+            .failure
+            .lock()
+            .expect("OAuth failure state mutex poisoned") = None;
         crate::session::codex::scrub_oauth_auth_files()?;
         self.status()
     }
@@ -759,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn debug_file_store_reads_codex_auth_without_mutating_it() {
+    fn debug_file_store_seeds_then_persists_only_instance_local_state() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("oauth.json");
         let id_token = format!(
@@ -784,12 +971,23 @@ mod tests {
         });
         fs::write(&path, serde_json::to_vec_pretty(&body).unwrap()).unwrap();
         let before = fs::read(&path).unwrap();
-        let store = DevFileCredentialStore(path.clone());
-        let loaded = store.load().unwrap().unwrap();
+        let local = temp.path().join("instance/oauth/codex.json");
+        let store = DevFileCredentialStore {
+            seed: path.clone(),
+            local: local.clone(),
+        };
+        let mut loaded = store.load().unwrap().unwrap();
         assert_eq!(loaded.access_token, "file-access");
         assert_eq!(loaded.account_id, "file-account");
+        loaded.access_token = "instance-access".into();
         store.save(&loaded).unwrap();
+        assert_eq!(
+            store.load().unwrap().unwrap().access_token,
+            "instance-access"
+        );
+        assert!(local.is_file());
         store.delete().unwrap();
+        assert!(store.load().unwrap().is_none());
         assert_eq!(fs::read(&path).unwrap(), before);
     }
 
@@ -855,6 +1053,32 @@ mod tests {
         let json = serde_json::to_string(&manager.status().unwrap()).unwrap();
         assert!(!json.contains("secret"));
         assert!(json.contains("person@example.com"));
+    }
+
+    #[test]
+    fn expired_credentials_are_not_reported_as_usable() {
+        let store = Arc::new(MemoryKeychain::default());
+        store
+            .save(&Credential {
+                access_token: "expired".into(),
+                refresh_token: "refresh".into(),
+                id_token: "id".into(),
+                expires_ms: Utc::now().timestamp_millis() - 1,
+                account_id: "acct_expired".into(),
+                account_hint: None,
+                last_refresh_ms: 0,
+            })
+            .unwrap();
+        let status = Manager::new(store, AUTHORIZE_URL, TOKEN_URL)
+            .status()
+            .unwrap();
+        assert_eq!(status.state, AuthState::Expired);
+        assert_eq!(status.action, AuthAction::Reauthenticate);
+        assert!(!status.can_use_models);
+        assert!(
+            status.configured,
+            "stored and usable are intentionally distinct states"
+        );
     }
 
     #[test]

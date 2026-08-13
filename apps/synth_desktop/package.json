@@ -29,7 +29,9 @@
 		"test:bombadil:empty-turn": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/empty-completed-turn.spec.ts node tests/bombadil/run.mjs",
 		"test:bombadil:composer-toolbar": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/composer-toolbar.spec.ts node tests/bombadil/run.mjs",
 		"test:bombadil:terminal": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/terminal-polish.spec.ts node tests/bombadil/run.mjs",
-		"test:bombadil:v0.1-visuals": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/v0.1-visual-contracts.spec.ts node tests/bombadil/run.mjs"
+		"test:bombadil:v0.1-visuals": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/v0.1-visual-contracts.spec.ts node tests/bombadil/run.mjs",
+		"test:bombadil:approval": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/approval-card.spec.ts node tests/bombadil/run.mjs",
+		"test:bombadil:grouped-visual": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/grouped-visual-evidence.spec.ts node tests/bombadil/run.mjs"
   },
   "dependencies": {
     "@synth/runtime-protocol": "*",

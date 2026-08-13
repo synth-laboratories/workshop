@@ -561,7 +561,7 @@ function ModelMenu({
 													aria-disabled="true"
 												>
 													<span className="composer-model-option-label">{target.label}</span>
-											<span className="composer-model-option-desc">{needsCodexOauth ? "Connect in Settings → Models" : `${providerName} API key required`}</span>
+											<span className="composer-model-option-desc">{needsCodexOauth ? (state.codexOauthStatus?.state === "expired" ? "Authorization expired" : state.codexOauthStatus?.state === "refresh_failed" ? "Re-sync failed" : "Connect in Settings → Models") : `${providerName} API key required`}</span>
 												</span>
 										<button
 											type="button"
@@ -572,7 +572,7 @@ function ModelMenu({
 														onOpenChange(false);
 													}}
 												>
-											{needsCodexOauth ? "Connect ChatGPT subscription" : `Configure ${providerName} API key`}
+											{needsCodexOauth ? (state.codexOauthStatus?.action === "reauthenticate" || state.codexOauthStatus?.action === "retry" ? "Re-sync ChatGPT" : "Connect ChatGPT subscription") : `Configure ${providerName} API key`}
 												</button>
 											</div>
 										);
@@ -1181,8 +1181,8 @@ export function Composer({
 			) : null}
 			{state.selectedTargetId.startsWith("chatgpt-") && !state.codexOauthConfigured ? (
 				<div className="composer-configuration-required" role="alert" data-testid="codex-oauth-required">
-					<span><strong>ChatGPT subscription required</strong> Connect it under Settings → Models before sending a message.</span>
-					<button type="button" onClick={onConfigureModels} data-testid="configure-codex-oauth">Open Settings</button>
+					<span><strong>{state.codexOauthStatus?.state === "expired" ? "ChatGPT authorization expired" : state.codexOauthStatus?.state === "refresh_failed" ? "ChatGPT re-sync failed" : "ChatGPT subscription required"}</strong> {state.codexOauthStatus?.guidance ?? "Connect it under Settings → Models before sending a message."}</span>
+					<button type="button" onClick={onConfigureModels} data-testid="configure-codex-oauth">{state.codexOauthStatus?.action === "reauthenticate" || state.codexOauthStatus?.action === "retry" ? "Re-sync ChatGPT" : "Open Models settings"}</button>
 				</div>
 			) : null}
 			{whisperRuntime?.phase !== "unloaded" ? (

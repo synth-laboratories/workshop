@@ -15,6 +15,21 @@ export type LiveEvalProjection = {
   cutoff_sequence: number | null;
 };
 
+export type DigbenchLaneProjection = {
+  harness: string | null;
+  config: string | null;
+  label: string;
+  evidence_class: "stub" | "live_basic" | "live_codex_exec" | "live_codex_mcp" | "unknown";
+  actions: number;
+  invalid_actions: number;
+  mcp_calls: number;
+  unique_observations: number;
+  levels_beaten: number | null;
+  applied_moves: number;
+  command_authority_passed: boolean | null;
+  malformed_commands: number;
+};
+
 const FORBIDDEN_BLOBS = ["collector", "capability_blob", "capabilities_blob", "DIGBENCH_API_TOKEN"] as const;
 
 function envelopeSequence(event: LiveEnvelope): number | null {
@@ -110,4 +125,70 @@ export function rewardFromEnvStatus(status: string | null | undefined): number |
   if (status === "completed") return 1;
   if (status === "game_over") return 0;
   return null;
+}
+
+/** Observable harness identity and diagnostics for one dig.bench lane. */
+export function projectDigbenchLane(events: LiveEnvelope[]): DigbenchLaneProjection {
+  const semantic = events.filter((event) => !isControlEnvelope(event) && event.control !== true);
+  const opened = semantic.find((event) => String(event.kind ?? event.type) === "trace.opened");
+  const openedPayload = (opened?.payload ?? {}) as Record<string, unknown>;
+  const policyRef =
+    openedPayload.policy_ref && typeof openedPayload.policy_ref === "object"
+      ? (openedPayload.policy_ref as Record<string, unknown>)
+      : {};
+  const actionRows = semantic.filter((event) => String(event.kind ?? event.type) === "action");
+  const actionPayload = (actionRows[0]?.payload ?? {}) as Record<string, unknown>;
+  const harness =
+    typeof policyRef.harness === "string"
+      ? policyRef.harness
+      : typeof actionPayload.harness === "string"
+        ? actionPayload.harness
+        : null;
+  const config = typeof policyRef.config === "string" ? policyRef.config : null;
+  const mcpOpened = semantic.filter((event) => String(event.kind ?? event.type) === "span.mcp.opened");
+  const simulated = semantic.some((event) => {
+    const payload = (event.payload ?? {}) as Record<string, unknown>;
+    return payload.evidence_class === "simulated" || String(payload.action_authority ?? "").includes("stub");
+  });
+  let evidence_class: DigbenchLaneProjection["evidence_class"] = "unknown";
+  if (simulated) evidence_class = "stub";
+  else if (harness === "codex" && mcpOpened.length > 0) evidence_class = "live_codex_mcp";
+  else if (
+    harness === "codex" &&
+    actionRows.some((event) => String(event.payload.action_authority ?? "") === "codex_exec_live")
+  ) evidence_class = "live_codex_exec";
+  else if (harness && actionRows.length > 0) evidence_class = "live_basic";
+  const observations = semantic
+    .filter((event) => String(event.kind ?? event.type) === "observation")
+    .map((event) => {
+      const payload = (event.payload ?? {}) as Record<string, unknown>;
+      return typeof payload.text === "string" ? payload.text.trim() : JSON.stringify(payload.raw ?? payload);
+    })
+    .filter(Boolean);
+  const summaryRow = [...semantic]
+    .reverse()
+    .find((event) => String(event.kind ?? event.type) === "trace.summary");
+  const summary = (summaryRow?.payload ?? {}) as Record<string, unknown>;
+  const summaryNumber = (key: string): number | null => {
+    const value = summary[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  };
+  const authority = summary.command_authority_passed;
+  const displayHarness = harness === "codex" ? "Codex" : harness === "react_legal_actions" || harness === "react" ? "Basic" : harness;
+  return {
+    harness,
+    config,
+    label: [displayHarness, config].filter(Boolean).join(" · ") || "unidentified harness",
+    evidence_class,
+    actions: summaryNumber("applied_moves") ?? actionRows.length,
+    invalid_actions:
+      summaryNumber("locally_rejected_illegal_attempts") ??
+      semantic.filter((event) => String(event.kind ?? event.type) === "invalid_action").length,
+    mcp_calls: mcpOpened.length,
+    unique_observations: new Set(observations).size,
+    levels_beaten: summaryNumber("levels_beaten"),
+    applied_moves: summaryNumber("applied_moves") ?? actionRows.length,
+    command_authority_passed: typeof authority === "boolean" ? authority : null,
+    malformed_commands: summaryNumber("malformed_local_commands") ?? 0,
+  };
 }

@@ -207,6 +207,14 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
             "feedback-loop.md",
             include_str!("../../../../skills/author-synth-diagrams/references/feedback-loop.md"),
         ),
+        (
+            "systems-map.md",
+            include_str!("../../../../skills/author-synth-diagrams/references/systems-map.md"),
+        ),
+        (
+            "dynamic-systems.md",
+            include_str!("../../../../skills/author-synth-diagrams/references/dynamic-systems.md"),
+        ),
     ] {
         fs::write(diagrams_skill.join("references").join(name), body)?;
     }

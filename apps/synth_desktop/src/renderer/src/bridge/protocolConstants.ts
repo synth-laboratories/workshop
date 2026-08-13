@@ -63,6 +63,7 @@ export const COMMANDS = {
 	CODEX_OAUTH_BEGIN: "codex_oauth_begin",
 	CODEX_OAUTH_COMPLETE_MANUAL: "codex_oauth_complete_manual",
 	CODEX_OAUTH_STATUS: "codex_oauth_status",
+	CODEX_OAUTH_ENSURE_READY: "codex_oauth_ensure_ready",
 	CODEX_OAUTH_DISCONNECT: "codex_oauth_disconnect",
 	CODEX_OAUTH_CANCEL: "codex_oauth_cancel",
 	SYNTH_CONFIG_GET: "synth_config_get",

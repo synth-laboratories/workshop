@@ -6,6 +6,8 @@ import { loadVisualShell } from "../runtime/visualsLoader";
 import { bridges } from "../runtime/desktopBridge";
 import { mergeOptimizerEventPage, type OptimizerEventCursorState } from "../runtime/optimizerEventCursor";
 import { MermaidVisual } from "./MermaidVisual";
+import { SystemsMapVisual } from "./SystemsMapVisual";
+import { SystemsDynamicVisual } from "./SystemsDynamicVisual";
 import type { SubagentState } from "../runtime/sessionView";
 
 type ShellProps = {
@@ -365,6 +367,15 @@ class VisualErrorBoundary extends Component<{ children: ReactNode }, { error: Er
 
 /** Shared host used by chat cards, the right pane, and the Visuals library. */
 export function VisualHost({ artifact }: { artifact: ArtifactRef }) {
+	const isSystemsDynamic =
+		artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
+	if (isSystemsDynamic) {
+		return <VisualErrorBoundary key={`${artifact.id}:systems-dynamic`}><SystemsDynamicVisual artifact={artifact} /></VisualErrorBoundary>;
+	}
+	const isSystems = artifact.templateId === "diagram.systems.v1" || artifact.rendererKind === "systems";
+	if (isSystems) {
+		return <VisualErrorBoundary key={`${artifact.id}:systems`}><SystemsMapVisual artifact={artifact} /></VisualErrorBoundary>;
+	}
 	const isMermaid =
 		artifact.templateId === "diagram.mermaid.v1" || artifact.rendererKind === "mermaid";
 	if (isMermaid) {
@@ -399,7 +410,9 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const [expanded, setExpanded] = useState(false);
 	const isSubagents = artifact.templateId === "synth.subagents.v1";
 	const isMermaid = artifact.templateId === "diagram.mermaid.v1" || artifact.rendererKind === "mermaid";
-	const kindLabel = isSubagents ? "Agents" : isMermaid ? "Diagram" : "Visual";
+	const isSystemsDynamic = artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
+	const isSystems = artifact.templateId === "diagram.systems.v1" || artifact.rendererKind === "systems";
+	const kindLabel = isSubagents ? "Agents" : isSystemsDynamic ? "Benjamin Dicken Style" : isSystems ? "Systems map · 2D" : isMermaid ? "Diagram" : "Visual";
 	return (
 		<aside
 			className={`visual-pane${expanded ? " visual-pane-expanded" : ""}`}

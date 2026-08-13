@@ -74,12 +74,34 @@ test.beforeEach(async ({ page }) => {
 				};
 			},
 			onEvent: () => () => undefined,
-			onShow: () => () => undefined
+			onShow: (listener: (event: any) => void) => {
+				(window as any).__showOptimizerVisual = listener;
+				return () => { delete (window as any).__showOptimizerVisual; };
+			}
 		};
 	});
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await page.getByRole("button", { name: "Optimizers" }).click();
+});
+
+test("an agent visual.show event opens the optimizer page in the chat side pane", async ({ page }) => {
+	await page.evaluate(() => {
+		(window as any).__showOptimizerVisual({
+			schemaVersion: "synth.desktop-app-event.v1",
+			sequence: 9,
+			eventId: "visual-show-9",
+			sessionId: "session_current",
+			source: "visual",
+			kind: "visual.show",
+			payload: { visualId: "visual-banking77_agent", title: "GEPA · Banking77" },
+			createdAt: "2026-08-09T16:00:09.000Z"
+		});
+	});
+
+	await expect(page.getByTestId("visual-pane")).toBeVisible();
+	await expect(page.getByTestId("visual-optimizer-run")).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toContainText("Banking77 GEPA smoke");
 });
 
 test("failed local recipes surface bounded stderr diagnostics and log paths", async ({ page }) => {
@@ -173,6 +195,17 @@ test("CUA can review and explicitly start the bounded Banking77 GEPA recipe", as
 	await expect(page.getByTestId("visual-pane")).toBeVisible();
 	await expect(page.getByTestId("visual-optimizer-run")).toBeVisible();
 	await expect(page.getByTestId("optimizer-event-log")).toContainText("run.queued");
+});
+
+test("paid launcher releases the UI while long-lived GEPA recipes are still starting", async ({ page }) => {
+	await page.evaluate(() => {
+		(window as any).synthOptimizers.startRecipe = async () => new Promise(() => undefined);
+	});
+	await page.getByTestId("configure-banking77-gepa-smoke").click();
+	await page.getByTestId("confirm-banking77-gepa-cost").check();
+	await page.getByTestId("start-banking77-gepa-smoke").click();
+	await expect(page.getByTestId("banking77-gepa-launch-dialog")).toHaveCount(0);
+	await expect(page.getByRole("button", { name: "Visuals" })).toBeEnabled();
 });
 
 test("CUA can review and explicitly start the bounded Craftax SFT recipe", async ({ page }) => {

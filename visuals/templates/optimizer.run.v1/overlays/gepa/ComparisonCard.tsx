@@ -43,7 +43,8 @@ export function ComparisonCard({ columns }: { columns: ComparisonColumn[] }) {
     })),
     row("Rollouts", columns.map(({ gepa }) => {
       const limit = limitOf(gepa, "total_rollouts");
-      return limit?.spent != null ? `${Math.round(limit.spent)}${limit.max != null ? ` / ${Math.round(limit.max)}` : ""}` : String(gepa.rolloutsCompleted || "—");
+      const spent = Math.max(limit?.spent ?? 0, gepa.rolloutsCompleted);
+      return spent > 0 ? `${Math.round(spent)}${limit?.max != null ? ` / ${Math.round(limit.max)}` : ""}` : "—";
     })),
     row("Proposer tokens", columns.map(({ gepa }) => {
       const tokens = gepa.proposerTraces.reduce((sum, trace) =>

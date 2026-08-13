@@ -20,15 +20,17 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 
 ## Follow every run
 
-1. Record `run.id` and `run.cursorSeq`.
-2. Call `watch_run` with `optimizer_run_id` and `after_seq` equal to the last processed sequence. Advance to the greatest returned sequence. Empty batches are normal.
-3. Use `get_run` for status and summary, and `get_state` for the algorithm-specific slices in its reference.
-4. Stop only at `completed`, `failed`, or `cancelled`. Use `cancel_run` only when the user requests it.
-5. After a Desktop restart, recover with `list_runs`/`get_run` and continue from the persisted cursor. Reconcile cloud runs before watching them. Local process records and events survive restart, but a process owned by the previous Desktop session is not reattached.
+1. For a run started from chat, pass `open_visual: true`. The host creates and binds the algorithm-family visual before starting compute, reuses one durable visual ID, and shows it in the current conversation's right pane. Do not create a second generic visual for the same run.
+2. For an existing or historical run, call `open_visual` with its `optimizer_run_id`. This reuses its primary visual and presents it in the current conversation without changing the run's original ownership.
+3. Record `run.id`, the primary visual ID in `run.visualRefs`, and `run.cursorSeq`. Keep the pane open while following the run; the visual reads the same durable event cursor and continues updating independently of tool polling.
+4. Call `watch_run` with `optimizer_run_id` and `after_seq` equal to the last processed sequence. Advance to the greatest returned sequence. Empty batches are normal.
+5. Use `get_run` for status and summary, and `get_state` for the algorithm-specific slices in its reference.
+6. Stop only at `completed`, `failed`, or `cancelled`. Use `cancel_run` only when the user requests it.
+7. After a Desktop restart, recover with `list_runs`/`get_run`, call `open_visual`, and continue from the persisted cursor. Reconcile cloud runs before watching them. Local process records and events survive restart, but a process owned by the previous Desktop session is not reattached.
 
 ## Present the result
 
-Open the visual when requested or when comparison is materially clearer there. Report:
+Show the visual before a chat-started run and whenever the user asks to inspect an existing run. The pane and the chat artifact must reference the same visual ID. Report:
 
 - algorithm, objective, run ID, source, execution binding, status, and final cursor;
 - declared limits versus actual usage;

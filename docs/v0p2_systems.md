@@ -400,11 +400,11 @@ The AFTER diagrams are the target. **Core code** closes the edges that can be cl
 
 | AFTER edge | Core code (this cut) | Still a live job |
 | --- | --- | --- |
-| Visual-first Craftax HTTP | One bind clock: register → visual on slot `stream` → declared poll until `stream.subscribed` → start; 10-lane pins seeds 0–9 without a paid call; spool reopen | Paid Luna med ×10 (A1+A5) |
-| Harbor in-app | Same clock; `live.harbor_eval.v1` before trial start; pins `luna_med` + `sol_med`; `live_frames=native` fails register | Docker packaged GameBench trial (A2) |
-| dig.bench Desktop | Same clock; `live.digbench.v1` before `start_session`; basic ReAct + agentic Codex+MCP pins; no frames; token refused in log | Public game + token (A8) |
-| Two GEPA parent | Manager-spawned two `algorithm_id: "gepa"` workers + distinct spools; child `resource-ref`; G1 `proposer.delta` producer | Banking77 Luna vs Sol paid (A3) |
-| Tinker SFT parent | `algorithm_id: "sft"` in `optimizers-beta-sft`: one-accelerator `queued` (`accelerator_busy`), distinct logs, checkpoint evals as `synth.resource-ref.v1`; OpenAI FT refused (mocks, no live Tinker) | Hosted Tinker jobs (A4 then A6) |
+| Visual-first Craftax HTTP | One bind clock: register → visual on slot `stream` → declared poll until `stream.subscribed` → start; 10-lane pins seeds 0–9 without a paid call; spool reopen | A1 FAIL 4/10 on `a1clean` (Desktop drop); A5 PASS 8/8 on seed 0 |
+| Harbor in-app | Same clock; `live.harbor_eval.v1` before trial start; pins `luna_med` + `sol_med`; `live_frames=native` fails register | Docker packaged GameBench trial (A2). Live alpine `docker run` hung on this OrbStack |
+| dig.bench Desktop | Same clock; `live.digbench.v1` before `start_session`; basic ReAct + agentic Codex+MCP pins; no frames; token refused in log | Public game + token (A8). Headless mock only — no `DIGBENCH_API_TOKEN` |
+| Two GEPA parent | Manager-spawned two `algorithm_id: "gepa"` workers + distinct spools; G1 disk producer emits `proposer.delta` and child `resource-ref` | A3 FAIL: IPC ingest 404 (`~/.gepa/index.jsonl` race) |
+| Tinker SFT parent | `algorithm_id: "sft"` mocks queue with `accelerator_busy` and attach checkpoint `synth.resource-ref.v1`; OpenAI FT refused | A4 FAIL two trainers at once; A6 PARTIAL null `/reward` |
 | Failure motion | Cursor/409/digest already in-process | Kill SSE/container; paid exactly-once |
 | Agent operator | Skills refuse guessed `/events`; visual first; Harbor/dig.bench pins named; stop on tool fail | Fresh-workspace Sol run (W1–W3) |
 

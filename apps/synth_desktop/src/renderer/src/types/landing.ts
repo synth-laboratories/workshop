@@ -80,7 +80,7 @@ export type ArtifactRef = {
 	};
 	/** Runtime visual template id (e.g. craftax.eval_matrix.v1). */
 	templateId?: string;
-	/** Rust renderer kind; mermaid bypasses the TSX template shell. */
+	/** Rust renderer kind; first-class diagrams bypass the TSX template shell. */
 	rendererKind?: string;
 	/** Runtime visual instance id from `/v1/visuals`. */
 	visualId?: string;
@@ -176,6 +176,8 @@ export type LandingState = {
 	openrouterApiKeyConfigured?: boolean;
 	/** ChatGPT subscription OAuth present in the native keychain. */
 	codexOauthConfigured?: boolean;
+	/** Rust-owned ChatGPT auth state and recovery instructions. */
+	codexOauthStatus?: import("../bridge").CodexOauthStatus;
 	/**
 	 * Backend-authored reason billable Synth Cloud actions are blocked for this
 	 * account (exhausted allowance, past due, cancelled). Local models are never

@@ -1,0 +1,89 @@
+{
+  "schema": "synth.workshop.a6-receipt.v1",
+  "test": "A6 — fresh hosted Tinker checkpoint with scored Banking77 campaign",
+  "result": "PASS",
+  "resultReason": "A fresh bounded Tinker run created checkpoint ckpt-10, allocated one Banking77 child rollout with a declared stream_id and reward_url, received numeric reward 0.0 with status=scored, completed the checkpoint evaluation scored=1/1, and promoted ckpt-10 by best_present_selection_score. Zero is a real environment-authored classification score here, not a missing value coerced to zero.",
+  "runId": "sft_banking77_a6pass_223234",
+  "algorithmId": "sft",
+  "algorithmVersion": "banking77-nemotron-lightning-tinker-v1",
+  "status": "succeeded",
+  "backend": "tinker",
+  "baseModel": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+  "workshopMirror": false,
+  "tips": {
+    "optimizersBetaSft": {
+      "repo": "/Users/joshuapurtell/Documents/GitHub/optimizers-beta-sft",
+      "sha": "11238d1fc84df3b52f280e34048ed9bc8b4f1f33",
+      "branch": "josh/aug12-sft"
+    },
+    "containers": {
+      "repo": "/Users/joshuapurtell/Documents/GitHub/containers",
+      "sha": "a20f994534b08240fb0165de697cd72052c44438",
+      "branch": "josh/aug12-containers-platform",
+      "workingTreeNote": "Uncommitted secret-free Tinker error-code diagnostic added; unrelated dirty files preserved."
+    }
+  },
+  "bindings": {
+    "optimizersBeta": "http://127.0.0.1:8881",
+    "banking77": "http://127.0.0.1:8110",
+    "banking77LaunchRequirements": [
+      "exported TINKER_API_KEY",
+      "tinker",
+      "transformers",
+      "jinja2"
+    ]
+  },
+  "eventLog": "/Users/joshuapurtell/Documents/GitHub/optimizers-beta-sft/.out/clean-a4/workspace/sft_banking77_a6pass_223234/runs/sft_banking77_a6pass_223234/events.jsonl",
+  "manifest": "/Users/joshuapurtell/Documents/GitHub/optimizers-beta-sft/.out/clean-a4/workspace/sft_banking77_a6pass_223234/runs/sft_banking77_a6pass_223234/manifest.json",
+  "checkpoint": {
+    "checkpointId": "ckpt-10",
+    "step": 10,
+    "tokens": 3622,
+    "digest": "55e1754ef1240a01b1ecc2070e314255984be94869c33699f4d4fc9bdb2b8deb",
+    "promoted": true,
+    "selectionScore": 0.0
+  },
+  "campaign": {
+    "evaluationId": "eval_ckpt-10_selection",
+    "evaluatorVersion": "banking77_eval.v1",
+    "splitRole": "selection",
+    "scored": 1,
+    "total": 1,
+    "reward": 0.0,
+    "score": 0.0,
+    "status": "completed"
+  },
+  "child": {
+    "rolloutId": "sftroll_a530e60370fa71a35cae80a4",
+    "seed": 1,
+    "status": "scored",
+    "reward": 0.0,
+    "executionId": "eval_sftroll_a530e60370fa71a35cae80a4_ce8c76dc9d024d62",
+    "resourceRef": {
+      "schema": "synth.resource-ref.v1",
+      "kind": "container_rollout",
+      "role": "candidate_evaluation",
+      "id": "sftroll_a530e60370fa71a35cae80a4",
+      "attributes": {
+        "stream_id": "stream:sftroll_a530e60370fa71a35cae80a4",
+        "reward_url": "/rollouts/sftroll_a530e60370fa71a35cae80a4/reward"
+      }
+    }
+  },
+  "diagnosis": {
+    "maskedError": "TinkerError: TINKER_API_KEY was not exported into the Banking77 process",
+    "rootCause": "The env file was sourced without shell auto-export; the sidecar had the key but the checkpoint sampler process did not.",
+    "fix": "Launch Banking77 with set -a before sourcing the protected env, then set +a; install tinker, transformers, and jinja2 in that runtime.",
+    "secretSafeDiagnostic": "Containers now maps the known SDK failure to tinker_api_key_missing and other Tinker failures to class/status-only codes; provider prose is not emitted."
+  },
+  "assertions": {
+    "freshHostedTinkerTraining": true,
+    "algorithmSftNotGoex": true,
+    "checkpointCreated": true,
+    "childResourceRefHasStreamAndRewardUrl": true,
+    "numericReward": true,
+    "missingWasNotCoercedToZero": true,
+    "scoredCampaign": true,
+    "checkpointPromoted": true
+  }
+}

@@ -476,7 +476,19 @@ impl OptimizerService {
         &self,
         optimizer_run_id: String,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        self.open_visual_in_session(optimizer_run_id, None).await
+    }
+
+    /// Create or reuse the run's primary visual and show it in the requested
+    /// conversation. Showing a historical run must not rewrite the run's
+    /// ownership; the session override belongs to this presentation event.
+    pub async fn open_visual_in_session(
+        &self,
+        optimizer_run_id: String,
+        session_ref: Option<String>,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let mut run = self.get(optimizer_run_id.clone()).await?;
+        let presentation_session_ref = session_ref.or_else(|| run.session_ref.clone());
         let title = format!(
             "{} · {}",
             algorithm_label(&run.algorithm_id),
@@ -508,7 +520,7 @@ impl OptimizerService {
                     id: None,
                     status: None,
                     renderer_kind: None,
-                    session_id: run.session_ref.clone(),
+                    session_id: presentation_session_ref.clone(),
                     message_id: None,
                     run_id: None,
                     trace_id: None,
@@ -553,7 +565,7 @@ impl OptimizerService {
         };
         let (shown, show_event) = self
             .visuals
-            .show(visual.id.clone(), run.session_ref.clone())
+            .show(visual.id.clone(), presentation_session_ref.clone())
             .await?;
         let event = serde_json::from_value::<AppEvent>(show_event)
             .ok()
@@ -561,7 +573,7 @@ impl OptimizerService {
                 schema_version: crate::storage::APP_EVENT_SCHEMA_VERSION.into(),
                 sequence: 0,
                 event_id: Uuid::new_v4().to_string(),
-                session_id: run.session_ref.clone(),
+                session_id: presentation_session_ref,
                 session_sequence: None,
                 run_id: None,
                 source: EventSource::System,
@@ -2435,6 +2447,45 @@ mod tests {
             .and_then(Value::as_array)
             .unwrap();
         assert_eq!(cells.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn opens_primary_visual_in_current_conversation_without_reassigning_run() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_historical_run",
+                    "sessionRef": "session_original",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let (shown, event) = svc
+            .open_visual_in_session(run.id.clone(), Some("session_current".into()))
+            .await
+            .unwrap();
+        let event = event.expect("visual show event");
+
+        assert_eq!(shown.session_ref.as_deref(), Some("session_original"));
+        assert_eq!(event.kind, "visual.show");
+        assert_eq!(event.session_id.as_deref(), Some("session_current"));
+        assert_eq!(shown.visual_refs.len(), 1);
+
+        let visual_id = shown.visual_refs[0].id.clone();
+        let (reopened, second_event) = svc
+            .open_visual_in_session(run.id, Some("session_current".into()))
+            .await
+            .unwrap();
+        assert_eq!(reopened.visual_refs[0].id, visual_id);
+        assert_eq!(
+            second_event.unwrap().session_id.as_deref(),
+            Some("session_current")
+        );
     }
 
     #[tokio::test]

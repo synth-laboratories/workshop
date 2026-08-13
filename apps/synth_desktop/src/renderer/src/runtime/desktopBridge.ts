@@ -340,14 +340,16 @@ window.synthCodexOauth ??= isTauri
 		begin: () => invokeCommand<CodexOauthBegin>(COMMANDS.CODEX_OAUTH_BEGIN),
 		completeManual: (redirectUrl) => invokeCommand<CodexOauthStatus>(COMMANDS.CODEX_OAUTH_COMPLETE_MANUAL, { redirectUrl }),
 		status: () => invokeCommand<CodexOauthStatus>(COMMANDS.CODEX_OAUTH_STATUS),
+		ensureReady: () => invokeCommand<CodexOauthStatus>(COMMANDS.CODEX_OAUTH_ENSURE_READY),
 		disconnect: () => invokeCommand<CodexOauthStatus>(COMMANDS.CODEX_OAUTH_DISCONNECT),
 		cancel: () => invokeCommand<void>(COMMANDS.CODEX_OAUTH_CANCEL)
 	}
 	: {
 		begin: async () => { throw new Error("ChatGPT subscription sign-in requires Synth Desktop"); },
 		completeManual: async () => { throw new Error("ChatGPT subscription sign-in requires Synth Desktop"); },
-		status: async () => ({ configured: false }),
-		disconnect: async () => ({ configured: false }),
+		status: async () => ({ state: "disconnected", action: "connect", canUseModels: false, guidance: "ChatGPT sign-in requires Synth Desktop.", configured: false }),
+		ensureReady: async () => ({ state: "disconnected", action: "connect", canUseModels: false, guidance: "ChatGPT sign-in requires Synth Desktop.", configured: false }),
+		disconnect: async () => ({ state: "disconnected", action: "connect", canUseModels: false, guidance: "ChatGPT sign-in requires Synth Desktop.", configured: false }),
 		cancel: async () => undefined
 	};
 window.synthConfig ??= isTauri

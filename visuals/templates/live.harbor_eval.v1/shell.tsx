@@ -11,6 +11,7 @@ import { VisualChrome, MetricStrip } from "../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber } from "../../runtime/liveStream.ts";
 import { projectLiveEval } from "../../runtime/liveEvalReducer.ts";
+import { bindingSlots } from "../../runtime/bind.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../runtime/types.ts";
 
 type StreamPayload = { events?: LiveEvalEvent[]; sse_url?: string };
@@ -21,7 +22,7 @@ export type ShellProps = {
   stream?: StreamPayload;
   jobs?: StreamPayload;
   data?: StreamPayload;
-  bindings?: VisualBinding[];
+  bindings?: VisualBinding[] | { slots?: VisualBinding[] };
   sseUrl?: string;
 };
 
@@ -88,7 +89,7 @@ export function Shell(props: ShellProps) {
   const sseUrl =
     props.sseUrl ??
     stream.sse_url ??
-    props.bindings?.find((b) => b.slot === "stream" && b.kind === "live_sse")?.source;
+    bindingSlots(props.bindings).find((binding) => binding.slot === "stream" && binding.kind === "live_sse")?.source;
   const fixtureEvents = useMemo(
     () => (sseUrl ? undefined : stream.events),
     [sseUrl, stream.events]

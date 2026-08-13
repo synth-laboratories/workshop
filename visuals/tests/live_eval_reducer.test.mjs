@@ -165,3 +165,75 @@ test("dig.bench /reward maps env status and never fabricates incomplete as zero"
   assert.equal(rewardFromEnvStatus("running"), null);
   assert.equal(rewardFromEnvStatus(null), null);
 });
+
+test("dig.bench lane projection labels structural smoke as stub evidence", async () => {
+  const { projectDigbenchLane } = await import("../runtime/liveEvalReducer.ts");
+  const lane = projectDigbenchLane(digbench.filter((event) => event.run_id === "digbench_p1"));
+  assert.equal(lane.harness, "react_legal_actions");
+  assert.equal(lane.config, "react_legal_actions");
+  assert.equal(lane.label, "Basic · react_legal_actions");
+  assert.equal(lane.evidence_class, "stub");
+  assert.equal(lane.actions, 1);
+  assert.equal(lane.invalid_actions, 1);
+  assert.equal(lane.unique_observations, 1);
+  assert.equal(lane.mcp_calls, 0);
+});
+
+test("dig.bench lane projection requires observed non-simulated MCP for live Codex", async () => {
+  const { projectDigbenchLane } = await import("../runtime/liveEvalReducer.ts");
+  const events = [
+    {
+      kind: "trace.opened",
+      run_id: "agentic",
+      payload: { policy_ref: { harness: "codex", config: "agentic_luna_medium" } },
+    },
+    { kind: "observation", run_id: "agentic", payload: { text: "same room" } },
+    { kind: "span.mcp.opened", run_id: "agentic", payload: { tool: "step", server: "digbench-mcp" } },
+    { kind: "action", run_id: "agentic", payload: { action: "inspect", action_authority: "policy" } },
+    { kind: "span.mcp.closed", run_id: "agentic", payload: { tool: "step" } },
+    { kind: "observation", run_id: "agentic", payload: { text: "same room" } },
+  ];
+  const lane = projectDigbenchLane(events);
+  assert.equal(lane.label, "Codex · agentic_luna_medium");
+  assert.equal(lane.evidence_class, "live_codex_mcp");
+  assert.equal(lane.mcp_calls, 1);
+  assert.equal(lane.unique_observations, 1);
+});
+
+test("dig.bench lane projection distinguishes authenticated Codex exec from MCP", async () => {
+  const { projectDigbenchLane } = await import("../runtime/liveEvalReducer.ts");
+  const events = [
+    {
+      kind: "trace.opened",
+      run_id: "codex_exec_lane",
+      payload: { policy_ref: { harness: "codex", config: "codex_exec_luna_medium" } },
+    },
+    {
+      kind: "action",
+      run_id: "codex_exec_lane",
+      payload: { action: "inspect", harness: "codex", action_authority: "codex_exec_live" },
+    },
+  ];
+  const lane = projectDigbenchLane(events);
+  assert.equal(lane.evidence_class, "live_codex_exec");
+  assert.equal(lane.mcp_calls, 0);
+});
+
+test("official P-1 Luna/Terra fixture keeps score and command compliance separate", async () => {
+  const { projectDigbenchLane } = await import("../runtime/liveEvalReducer.ts");
+  const events = loadEvents("templates/live.digbench.v1/examples/codex-auth-results.json");
+  const runIds = [...new Set(events.map((event) => event.run_id))];
+  assert.equal(runIds.length, 2);
+  const luna = projectDigbenchLane(events.filter((event) => event.run_id === "dig_official_p1_luna"));
+  const terra = projectDigbenchLane(events.filter((event) => event.run_id === "dig_official_p1_terra"));
+  assert.equal(luna.evidence_class, "live_codex_exec");
+  assert.equal(luna.levels_beaten, 8);
+  assert.equal(luna.actions, 672);
+  assert.equal(luna.command_authority_passed, false);
+  assert.equal(luna.malformed_commands, 88);
+  assert.equal(terra.evidence_class, "live_codex_exec");
+  assert.equal(terra.levels_beaten, 1);
+  assert.equal(terra.actions, 269);
+  assert.equal(terra.command_authority_passed, true);
+  assert.equal(terra.malformed_commands, 0);
+});

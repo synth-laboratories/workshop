@@ -1379,6 +1379,7 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 		}
 		if (
 			event.eventKind !== "visual.created" &&
+			event.eventKind !== "visual.show" &&
 			event.eventKind !== "resource_ref.created"
 		) {
 			continue;
@@ -1393,22 +1394,25 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 		const title =
 			typeof payload.title === "string" ? payload.title : "Visual";
 		const templateId =
-			typeof payload.templateId === "string" ? payload.templateId : undefined;
+			typeof payload.templateId === "string"
+				? payload.templateId
+				: artifacts.get(id)?.templateId;
+		const prior = artifacts.get(id);
 		artifacts.set(id, {
 			id,
 			kind: "report",
-			title,
+			title: typeof payload.title === "string" ? payload.title : prior?.title ?? title,
 			summary:
-				typeof payload.summary === "string" ? payload.summary : undefined,
+				typeof payload.summary === "string" ? payload.summary : prior?.summary,
 			messageId:
-				typeof payload.messageId === "string" ? payload.messageId : undefined,
+				typeof payload.messageId === "string" ? payload.messageId : prior?.messageId,
 			shownByAgent: true,
 			templateId,
 			visualId: id,
 			bindings:
 				payload.bindings && typeof payload.bindings === "object"
 					? (payload.bindings as Record<string, unknown>)
-					: undefined,
+					: prior?.bindings,
 			preview: {
 				variant: templateId?.includes("scrub") ? "craftax_frame" : "generic"
 			}
@@ -1683,6 +1687,7 @@ export function buildLandingState(args: {
 	apiKeyConfigured?: boolean;
 	openrouterApiKeyConfigured?: boolean;
 	codexOauthConfigured?: boolean;
+	codexOauthStatus?: import("../bridge").CodexOauthStatus;
 	cloudBlockedReason?: string | null;
 }): LandingState {
 	const model = healthToModelStatus(args.health, args.laguna);
@@ -1727,6 +1732,7 @@ export function buildLandingState(args: {
 		apiKeyConfigured: args.apiKeyConfigured,
 		openrouterApiKeyConfigured: args.openrouterApiKeyConfigured ?? args.health?.openrouter.mode === "ready",
 		codexOauthConfigured: args.codexOauthConfigured,
+		codexOauthStatus: args.codexOauthStatus,
 		cloudBlockedReason: args.cloudBlockedReason ?? null,
 		composerEnabled: model.composerEnabled,
 		composerPlaceholder: model.composerPlaceholder

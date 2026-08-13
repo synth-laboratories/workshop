@@ -175,6 +175,13 @@ export function isVisualBindings(value: unknown): value is VisualBindings {
   return candidate.schemaVersion === "synth.visual-bindings.v1" && Array.isArray(candidate.slots);
 }
 
+/** Desktop passes the bindings envelope; some hosts still pass a raw slot array. */
+export function bindingSlots(value: unknown): VisualBinding[] {
+  if (Array.isArray(value)) return value as VisualBinding[];
+  if (isVisualBindings(value)) return value.slots;
+  return [];
+}
+
 export function propsFromBindings(value: unknown): { props: Record<string, unknown>; errors: string[] } {
   if (!isVisualBindings(value)) {
     if (value && typeof value === "object" && !Array.isArray(value)) {

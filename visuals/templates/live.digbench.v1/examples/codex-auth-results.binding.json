@@ -1,0 +1,8 @@
+{
+  "slots": {
+    "eval_stream": {
+      "kind": "fixture",
+      "source": "templates/live.digbench.v1/examples/codex-auth-results.json"
+    }
+  }
+}

@@ -137,6 +137,7 @@ export const commands = {
 	accountSignOut: () => typedError<BackendSettings, AppError>(__TAURI_INVOKE("account_sign_out")),
 	codexOauthBegin: () => typedError<BeginResult, AppError>(__TAURI_INVOKE("codex_oauth_begin")),
 	codexOauthCompleteManual: (redirectUrl: string) => typedError<Status, AppError>(__TAURI_INVOKE("codex_oauth_complete_manual", { redirectUrl })),
+	codexOauthEnsureReady: () => typedError<Status, AppError>(__TAURI_INVOKE("codex_oauth_ensure_ready")),
 	codexOauthStatus: () => typedError<Status, AppError>(__TAURI_INVOKE("codex_oauth_status")),
 	codexOauthDisconnect: () => typedError<Status, AppError>(__TAURI_INVOKE("codex_oauth_disconnect")),
 	codexOauthCancel: () => typedError<null, AppError>(__TAURI_INVOKE("codex_oauth_cancel")),
@@ -397,6 +398,10 @@ export type AppEvent_Serialize = {
 };
 
 export type AttachmentSource = "user_picker" | "recent_folder" | "agent_request" | "migrated_default";
+
+export type AuthAction = "connect" | "wait" | "none" | "reauthenticate" | "retry";
+
+export type AuthState = "disconnected" | "authenticating" | "ready" | "expiring" | "expired" | "refresh_failed";
 
 export type BackendSettings = {
 	configPath: string,
@@ -1214,7 +1219,7 @@ export type OptimizerUsageSummary = {
 	extra?: unknown,
 };
 
-export type RendererKind = "template" | "tsx" | "html" | "mermaid";
+export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systemsDynamic";
 
 export type ResolvedTraceProjection = {
 	traceDigest: string,
@@ -1259,6 +1264,10 @@ export type SkillHit = {
 };
 
 export type Status = {
+	state: AuthState,
+	action: AuthAction,
+	canUseModels: boolean,
+	guidance: string,
 	configured: boolean,
 	accountHint: string | null,
 	lastRefresh: string | null,

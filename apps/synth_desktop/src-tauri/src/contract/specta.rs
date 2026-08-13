@@ -152,6 +152,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::account_sign_out,
         crate::codex_oauth_begin,
         crate::codex_oauth_complete_manual,
+        crate::codex_oauth_ensure_ready,
         crate::codex_oauth_status,
         crate::codex_oauth_disconnect,
         crate::codex_oauth_cancel,
@@ -266,7 +267,7 @@ mod tests {
         let exported =
             body.matches("__TAURI_INVOKE(").count() + body.matches("__TAURI_INVOKE<").count();
         assert_eq!(
-            exported, 137,
+            exported, 138,
             "generated bindings must contain the complete desktop command set"
         );
     }

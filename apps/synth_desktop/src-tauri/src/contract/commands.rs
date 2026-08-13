@@ -35,6 +35,7 @@ impl Commands {
     pub const ACCOUNT_OPEN_BILLING: &'static str = "account_open_billing";
     pub const CODEX_OAUTH_BEGIN: &'static str = "codex_oauth_begin";
     pub const CODEX_OAUTH_COMPLETE_MANUAL: &'static str = "codex_oauth_complete_manual";
+    pub const CODEX_OAUTH_ENSURE_READY: &'static str = "codex_oauth_ensure_ready";
     pub const CODEX_OAUTH_STATUS: &'static str = "codex_oauth_status";
     pub const CODEX_OAUTH_DISCONNECT: &'static str = "codex_oauth_disconnect";
     pub const CODEX_OAUTH_CANCEL: &'static str = "codex_oauth_cancel";

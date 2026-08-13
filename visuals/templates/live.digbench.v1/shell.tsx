@@ -11,7 +11,8 @@ import { Identifier } from "../../chrome/Identifier.tsx";
 import { VisualChrome, MetricStrip } from "../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber } from "../../runtime/liveStream.ts";
-import { projectLiveEval } from "../../runtime/liveEvalReducer.ts";
+import { projectDigbenchLane, projectLiveEval } from "../../runtime/liveEvalReducer.ts";
+import { bindingSlots } from "../../runtime/bind.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../runtime/types.ts";
 
 type StreamScope = { game_id?: string; rollout_ids?: string[]; selection?: { initial_rollout_id?: string } };
@@ -22,7 +23,7 @@ export type ShellProps = {
   lede?: string;
   stream?: StreamPayload;
   data?: StreamPayload;
-  bindings?: VisualBinding[];
+  bindings?: VisualBinding[] | { slots?: VisualBinding[] };
   sseUrl?: string;
 };
 
@@ -73,7 +74,7 @@ export function Shell(props: ShellProps) {
   const sseUrl =
     props.sseUrl ??
     stream.sse_url ??
-    props.bindings?.find((b) => b.slot === "stream" && b.kind === "live_sse")?.source;
+    bindingSlots(props.bindings).find((binding) => binding.slot === "stream" && binding.kind === "live_sse")?.source;
   const scope = stream.scope;
   const fixtureEvents = useMemo(
     () => (sseUrl ? undefined : stream.events),
@@ -95,6 +96,7 @@ export function Shell(props: ShellProps) {
     [scopedEvents, selectedLane]
   );
   const projection = projectLiveEval(laneEvents);
+  const laneProjection = projectDigbenchLane(laneEvents);
   const observation = lastOf(laneEvents, "observation");
   const legal = lastOf(laneEvents, "legal_actions");
   const stats = lastOf(laneEvents, "stats");
@@ -105,11 +107,6 @@ export function Shell(props: ShellProps) {
   const obsText = typeof observation?.payload.text === "string" ? observation.payload.text : null;
   const history = historyOf(laneEvents);
   const visibleHistory = showFullHistory ? history : history.slice(-HISTORY_WINDOW);
-  const harness = (() => {
-    const opened = lastOf(laneEvents, "policy.session.opened") ?? lastOf(laneEvents, "session");
-    const payload = (opened?.payload ?? {}) as Record<string, unknown>;
-    return typeof payload.harness === "string" ? payload.harness : undefined;
-  })();
 
   return (
     <VisualChrome
@@ -153,7 +150,7 @@ export function Shell(props: ShellProps) {
               aria-label={`Select session ${lane}`}
               onClick={() => setChosenLane(lane)}
             >
-              <Identifier value={lane} max={22} copy={false} />
+              <span>{projectDigbenchLane(scopedEvents.filter((event) => laneOf(event) === lane)).label}</span>
             </button>
           ))}
         </nav>
@@ -162,7 +159,7 @@ export function Shell(props: ShellProps) {
       <section className="sv-section" aria-label="Observation" data-testid="digbench-observation">
         <div className="sv-section-head">
           <h3>Observation</h3>
-          <span className="sv-mono">{harness ? `harness ${harness}` : "text evidence only"}</span>
+          <span className="sv-mono">{laneProjection.label} · {laneProjection.evidence_class.replaceAll("_", " ")}</span>
         </div>
         {obsText ? (
           <pre style={{ margin: 0, padding: "10px 12px", border: "1px solid var(--sv-border)", borderRadius: 8, background: "var(--sv-surface-muted)", whiteSpace: "pre-wrap", overflowWrap: "anywhere", font: "12px/1.5 var(--sv-mono)" }}>
@@ -191,6 +188,33 @@ export function Shell(props: ShellProps) {
         ) : (
           <p style={{ margin: 0, color: "var(--sv-text-faint)", fontSize: 12 }}>Not yet advertised by the environment.</p>
         )}
+      </section>
+
+      <section className="sv-section" aria-label="Harness diagnostics" data-testid="digbench-harness-diagnostics">
+        <div className="sv-section-head">
+          <h3>Harness diagnostics</h3>
+          <span className="sv-mono">observable evidence</span>
+        </div>
+        <MetricStrip
+          metrics={[
+            { label: "Actions", value: String(laneProjection.actions) },
+            { label: "Levels beaten", value: formatMissingNumber(laneProjection.levels_beaten, 0) },
+            { label: "Invalid", value: String(laneProjection.invalid_actions) },
+            { label: "Malformed", value: String(laneProjection.malformed_commands) },
+            { label: "Unique obs", value: String(laneProjection.unique_observations) },
+            { label: "MCP calls", value: String(laneProjection.mcp_calls) },
+            {
+              label: "Authority",
+              value:
+                laneProjection.command_authority_passed == null
+                  ? "unknown"
+                  : laneProjection.command_authority_passed
+                    ? "pass"
+                    : "FAIL"
+            },
+            { label: "Evidence", value: laneProjection.evidence_class.replaceAll("_", " ") }
+          ]}
+        />
       </section>
 
       <section className="sv-section" aria-label="Session history" data-testid="digbench-history">

@@ -80,6 +80,60 @@ instance_processes() {
   '
 }
 
+# Named Workshop instances are disposable test clients. Refresh their provider
+# credentials from the developer's private machine profile on every launch so
+# CUA/eval runs do not begin in a misleading signed-out state. Only the three
+# allowlisted values are copied; instance routing and other settings remain
+# isolated. The destination is private and is never printed.
+stage_test_credentials() {
+  local source_env="${SYNTH_DESKTOP_TEST_CREDENTIALS_FILE:-$HOME/.synth-desktop/.env}"
+  local destination_env="$DATA_ROOT/.env"
+  python3 - "$source_env" "$destination_env" <<'PY'
+import os
+import re
+import sys
+from pathlib import Path
+
+source, destination = map(Path, sys.argv[1:])
+allowed = ("SYNTH_API_KEY", "OPENROUTER_API_KEY")
+
+def parse(path):
+    values = {}
+    if not path.is_file():
+        return values
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key in allowed:
+            values[key] = value.strip().strip("'\"")
+    return values
+
+seed = parse(source)
+for key in allowed:
+    if os.environ.get(key, "").strip():
+        seed[key] = os.environ[key].strip()
+
+existing = destination.read_text().splitlines() if destination.is_file() else []
+kept = [line for line in existing if not re.match(r"^\s*(?:export\s+)?(?:SYNTH_API_KEY|OPENROUTER_API_KEY)\s*=", line)]
+for key in allowed:
+    value = seed.get(key)
+    if value:
+        escaped = value.replace("'", "'\"'\"'")
+        kept.append(f"{key}='{escaped}'")
+
+destination.parent.mkdir(parents=True, exist_ok=True)
+temporary = destination.with_suffix(".env.tmp")
+temporary.write_text("\n".join(kept).rstrip() + "\n")
+temporary.chmod(0o600)
+temporary.replace(destination)
+PY
+}
+
 write_contract() {
 	local old_runtime="" manifest_tmp="$MANIFEST.tmp"
   mkdir -p "$DATA_ROOT" "$WORKSPACE" "$GENERATED_ROOT" "$TARGET_ROOT"
@@ -111,15 +165,18 @@ EOF
       chmod 600 "$DATA_ROOT/.env"
     fi
   fi
+  stage_test_credentials
 
-  python3 "$ROOT/scripts/generate-desktop-instance-icon.py" \
-    --source "$ROOT/apps/synth_desktop/resources/icon.png" \
-    --png "$ICON_PNG" \
-    --icns "$ICON_ICNS" \
-    --release-label "$RELEASE_LINE" \
-    --instance-label "$ICON_LABEL"
+  if [[ ! -f "$ICON_PNG" || ! -f "$ICON_ICNS" ]]; then
+    python3 "$ROOT/scripts/generate-desktop-instance-icon.py" \
+      --source "$ROOT/apps/synth_desktop/resources/icon.png" \
+      --png "$ICON_PNG" \
+      --icns "$ICON_ICNS" \
+      --release-label "$RELEASE_LINE" \
+      --instance-label "$ICON_LABEL"
+  fi
 
-  cat >"$CONFIG" <<EOF
+  cat >"$CONFIG.tmp" <<EOF
 {
   "productName": "$APP_TITLE",
   "version": "$APP_VERSION",
@@ -144,6 +201,7 @@ EOF
     }]
   },
   "bundle": {
+    "targets": ["app"],
     "icon": ["$ICON_PNG", "$ICON_ICNS"],
     "macOS": {
       "minimumSystemVersion": "14.0"
@@ -151,6 +209,11 @@ EOF
   }
 }
 EOF
+  if [[ -f "$CONFIG" ]] && cmp -s "$CONFIG.tmp" "$CONFIG"; then
+    rm "$CONFIG.tmp"
+  else
+    mv "$CONFIG.tmp" "$CONFIG"
+  fi
 
   if [[ -f "$MANIFEST" ]]; then
     old_runtime="$(jq -c '.runtime // empty' "$MANIFEST" 2>/dev/null || true)"
@@ -417,9 +480,11 @@ dev_instance() {
   export SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST"
   export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
   export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
-  # Named instances are isolated by default. A signed debug CUA run may use a
-  # pre-staged private credential file. The app never touches Keychain in this
-  # mode, so rebuilds cannot trigger password dialogs.
+  # Debug instances use the existing Codex file directly and never touch
+  # Keychain. An explicit path still wins for fixtures or alternate accounts.
+  if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" && -f "$HOME/.codex/auth.json" ]]; then
+    SYNTH_DESKTOP_DEV_OAUTH_FILE="$HOME/.codex/auth.json"
+  fi
   [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" ]] || export SYNTH_DESKTOP_DEV_OAUTH_FILE
   export CARGO_TARGET_DIR="$TARGET_ROOT"
   stage_gepa_runtime
@@ -470,12 +535,20 @@ PY
   export TAURI_CONFIG
   TAURI_CONFIG="$(<"$CONFIG")"
 
-  echo "[desktop:$NAME] building embedded-agent MCP adapters"
-  cargo build \
-    --manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
-    --bin synth-containers-mcp \
-    --bin synth-visuals-mcp \
-    --bin synth-optimizers-mcp
+  local adapters_ready=1 adapter
+  for adapter in synth-containers-mcp synth-visuals-mcp synth-optimizers-mcp; do
+    [[ -x "$TARGET_ROOT/debug/$adapter" ]] || adapters_ready=0
+  done
+  if [[ "$adapters_ready" == "0" || "${SYNTH_DESKTOP_REBUILD_ADAPTERS:-0}" == "1" ]]; then
+    echo "[desktop:$NAME] building embedded-agent MCP adapters"
+    cargo build \
+      --manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
+      --bin synth-containers-mcp \
+      --bin synth-visuals-mcp \
+      --bin synth-optimizers-mcp
+  else
+    echo "[desktop:$NAME] reusing embedded-agent MCP adapters (set SYNTH_DESKTOP_REBUILD_ADAPTERS=1 to refresh)"
+  fi
 
   revalidate_provenance "post-build" "$pre_build_revision"
   export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
@@ -492,33 +565,31 @@ PY
     # Raw `tauri dev` binaries have no LaunchServices app identity, so macOS
     # accessibility clients cannot address a named instance reliably. A debug
     # bundle preserves the isolated environment and registers the unique ID.
-    npx tauri build --debug --config "$CONFIG"
+    # Build only the runnable .app. A DMG adds time and has no use in the
+    # local CUA loop.
+    npx tauri build --debug --bundles app --config "$CONFIG"
     local app_bundle="$CARGO_TARGET_DIR/debug/bundle/macos/$APP_TITLE.app"
     local app_executable="$CUA_EXE"
     if [[ ! -x "$app_executable" ]]; then
       echo "[desktop:$NAME] expected CUA bundle executable missing: $app_executable" >&2
       exit 1
     fi
-    # CUA bundles must have a stable designated requirement. An ad-hoc debug
-    # signature is tied to the changing executable CDHash, which makes macOS
-    # Keychain ask for the login password after every rebuild. All named local
-    # instances intentionally share this development signer and code-signing
-    # identifier, while retaining distinct CFBundleIdentifiers for LaunchServices.
-    local dev_signing_identity="${SYNTH_DESKTOP_DEV_SIGNING_IDENTITY:-Synth Workshop Development}"
-    local dev_signing_keychain
-    dev_signing_keychain="$("$ROOT/scripts/setup-desktop-dev-signing.sh")"
-    # `setup-desktop-dev-signing.sh` runs in command substitution; explicitly
-    # unlock again in this process so codesign can resolve the private key.
-    security unlock-keychain \
-      -p "$(<"${SYNTH_DESKTOP_DEV_SIGNING_ROOT:-$HOME/.synth-desktop/dev-signing}/keychain-password")" \
-      "$dev_signing_keychain"
-    codesign \
-      --force \
-      --deep \
-      --sign "$dev_signing_identity" \
-      --keychain "$dev_signing_keychain" \
-      --identifier "com.synth.desktop.v02.dev.shared" \
-      "$app_bundle"
+    # Local test builds must never open a Keychain/password dialog. Ad-hoc
+    # signing requires no secret. Stable certificate signing remains an
+    # explicit opt-in for workflows that need a persistent CUA identity.
+    if [[ "${SYNTH_DESKTOP_USE_DEV_SIGNER:-0}" == "1" ]]; then
+      local dev_signing_identity="${SYNTH_DESKTOP_DEV_SIGNING_IDENTITY:-Synth Workshop Development}"
+      local dev_signing_keychain
+      dev_signing_keychain="$("$ROOT/scripts/setup-desktop-dev-signing.sh")"
+      security unlock-keychain \
+        -p "$(<"${SYNTH_DESKTOP_DEV_SIGNING_ROOT:-$HOME/.synth-desktop/dev-signing}/keychain-password")" \
+        "$dev_signing_keychain"
+      codesign --force --deep --sign "$dev_signing_identity" \
+        --keychain "$dev_signing_keychain" \
+        --identifier "com.synth.desktop.v02.dev.shared" "$app_bundle"
+    else
+      codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$app_bundle"
+    fi
     codesign --verify --deep --strict "$app_bundle"
     echo "[desktop:$NAME] CUA bundle $app_bundle"
     echo "[desktop:$NAME] CUA target $BUNDLE_ID"

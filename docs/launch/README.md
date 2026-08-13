@@ -1,4 +1,8 @@
-# Workshop v0.1 launch docs
+# Workshop launch docs
+
+v0.1 friends-release contract remains in this folder. **v0.2 launch status and E2E plan:** [v0.2-launch.md](./v0.2-launch.md).
+
+## v0.1 (frozen)
 
 Frozen contract and remaining Gate F / Gate P work.
 

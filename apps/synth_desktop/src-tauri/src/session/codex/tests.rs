@@ -1019,7 +1019,49 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
     assert!(skill.contains("Do not call `resources/list` or `resources/read`"));
     assert!(skill.contains("does not require template discovery"));
     assert!(skill.contains("`operation: \"create\"`"));
+    assert!(skill.contains("tools.mcp__synth_visuals__visual_manage"));
+    assert!(skill.contains("diagram.systems.v1"));
+    assert!(skill.contains("diagram.systems.dynamic.v1"));
+    assert!(skill.contains("broad topology"));
+    assert!(skill.contains("exact call order"));
+    assert!(skill.contains("Write a storyboard of at least three named beats"));
+    assert!(skill.contains("delegate storyboard plus scene/timeline authoring"));
+    assert!(
+        skill.contains("The parent agent owns evidence selection, integration, safety validation")
+    );
+    assert!(skill.contains("Workshop's subagent is the coding collaborator"));
+    assert!(!skill.contains("Cursor"));
     assert!(!skill.contains("\"method\": \"visual_manage\""));
+
+    let systems =
+        fs::read_to_string(home.join("skills/author-synth-diagrams/references/systems-map.md"))
+            .unwrap();
+    assert!(systems.contains("template_id: \"diagram.systems.v1\""));
+    assert!(systems.contains("explicit finite rectangle"));
+
+    let dynamic =
+        fs::read_to_string(home.join("skills/author-synth-diagrams/references/dynamic-systems.md"))
+            .unwrap();
+    assert!(dynamic.contains("diagram.systems.dynamic.v1"));
+    assert!(dynamic.contains("Poster fallback"));
+    assert!(dynamic.contains("pause, replay, scrub"));
+    assert!(dynamic.contains("\"posterTimeMs\": 9000"));
+    assert!(dynamic.contains("\"caption\": \"Retries accumulate\""));
+    assert!(dynamic.contains("\"target\": \"queue\""));
+    assert!(dynamic.contains("\"durationMs\": 900, \"easing\": \"ease-in-out\""));
+    assert!(dynamic
+        .contains("`linear`, `ease-in`, `ease-out`, `ease-in-out`, `step-start`, or `step-end`"));
+    assert!(dynamic.contains("\"reducedMotion\": \"poster\""));
+    assert!(!dynamic.contains("\"poster\":"));
+    assert!(!dynamic.contains("Cursor"));
+
+    let visual_skill = fs::read_to_string(home.join("skills/use-synth-visuals/SKILL.md")).unwrap();
+    assert!(visual_skill.contains("tools.mcp__synth_visuals__visual_manage"));
+    assert!(visual_skill.contains("diagram.systems.v1"));
+    assert!(visual_skill.contains("diagram.systems.dynamic.v1"));
+    assert!(visual_skill.contains("There is\n**no** top-level `method` field"));
+    assert!(!visual_skill.contains("`method: \"visual_manage\"`"));
+    assert!(!visual_skill.contains("{\"method\":\"visual_manage\""));
 }
 #[test]
 fn generated_mcp_configs_use_each_adapter_owned_ipc_variable() {

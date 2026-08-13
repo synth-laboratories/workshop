@@ -1,0 +1,66 @@
+{
+  "schema": "synth.workshop.a4-receipt.v1",
+  "test": "A4 — shared hosted Tinker accelerator occupancy through one service process",
+  "result": "PASS",
+  "resultReason": "The exact rebuilt service admitted run A and typed run B as sft.training.queued reason=accelerator_busy in its own spool. After run A released the slot, run B emitted sft.training.started. The earlier FAIL ran a target/debug binary compiled before commit 11238d1's occupancy implementation.",
+  "recipeId": "sft.banking77.nemotron-lightning.tinker.v1",
+  "driver": "sidecar-only POST /v1/runs algorithm=sft backend=tinker",
+  "tips": {
+    "optimizersBetaSft": {
+      "repo": "/Users/joshuapurtell/Documents/GitHub/optimizers-beta-sft",
+      "sha": "11238d1fc84df3b52f280e34048ed9bc8b4f1f33",
+      "branch": "josh/aug12-sft"
+    }
+  },
+  "compiledService": {
+    "path": "/Users/joshuapurtell/Documents/GitHub/optimizers-beta-sft/target/debug/optimizers-beta",
+    "builtAt": "2026-08-12T22:15:21-0400",
+    "sha256": "b6edb2401d085474813e43b61b3de12a30925fa3170b9c95c4f054ee8dfd9a89"
+  },
+  "bindings": {
+    "optimizersBeta": "http://127.0.0.1:8881",
+    "acceleratorSlots": 1
+  },
+  "liveLanes": [
+    {
+      "runId": "sft_banking77_a4a_222251",
+      "eventLog": "/Users/joshuapurtell/Documents/GitHub/optimizers-beta-sft/.out/clean-a4/workspace/sft_banking77_a4a_222251/runs/sft_banking77_a4a_222251/events.jsonl",
+      "queued": {"backend": "tinker", "status": "queued"},
+      "terminal": "cancelled",
+      "note": "Cancelled after the occupancy assertion to bound paid work; cancellation released the accelerator."
+    },
+    {
+      "runId": "sft_banking77_a4b_222251",
+      "eventLog": "/Users/joshuapurtell/Documents/GitHub/optimizers-beta-sft/.out/clean-a4/workspace/sft_banking77_a4b_222251/runs/sft_banking77_a4b_222251/events.jsonl",
+      "queued": {"backend": "tinker", "reason": "accelerator_busy", "status": "queued"},
+      "startedAfterReleaseSequence": 6,
+      "terminal": "cancelled"
+    }
+  ],
+  "integrationCoverage": {
+    "path": "/Users/joshuapurtell/Documents/GitHub/optimizers-beta-sft/acceptance/hosted_sft_occupancy_acceptance.py",
+    "result": "PASS",
+    "boundary": "two overlapping HTTP POST /v1/runs requests against one compiled service process",
+    "assertions": {
+      "secondQueuedReasonAcceleratorBusy": true,
+      "secondDidNotStartBeforeRelease": true,
+      "secondStartedAfterRelease": true,
+      "distinctEventLogs": true,
+      "firstLogPrefixPreserved": true
+    }
+  },
+  "unitCoverage": {
+    "command": "cargo test -p synth_sft hosted_second_job_is_queued_on_one_accelerator_without_sharing_a_spool -- --nocapture",
+    "result": "PASS (1 passed)"
+  },
+  "assertions": {
+    "algorithmSft": true,
+    "backendTinker": true,
+    "noOpenaiFt": true,
+    "distinctRunIds": true,
+    "distinctEventLogs": true,
+    "secondQueuedReasonAcceleratorBusy": true,
+    "secondStartedWhenSlotFreed": true,
+    "firstLogNotRewritten": true
+  }
+}

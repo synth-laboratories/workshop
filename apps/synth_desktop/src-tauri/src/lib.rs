@@ -1027,7 +1027,7 @@ async fn visuals_content(
 ) -> Result<VisualAsset, AppError> {
     state
         .visuals()
-        .mermaid_source(visual_id)
+        .visual_source(visual_id)
         .await
         .map_err(AppError::from)
 }
@@ -1056,7 +1056,7 @@ async fn visuals_rendition(
 ) -> Result<VisualAsset, AppError> {
     state
         .visuals()
-        .mermaid_rendition(visual_id, format, theme, size_class)
+        .visual_rendition(visual_id, format, theme, size_class)
         .await
         .map_err(AppError::from)
 }
@@ -1069,7 +1069,7 @@ async fn visuals_render(
 ) -> Result<VisualRecord, AppError> {
     state
         .visuals()
-        .render_mermaid(&visual_id)
+        .render_visual(&visual_id)
         .await
         .map_err(AppError::from)
 }
@@ -1234,6 +1234,14 @@ fn codex_oauth_status(
     manager: State<'_, Arc<codex_oauth::Manager>>,
 ) -> Result<codex_oauth::Status, AppError> {
     manager.status().map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn codex_oauth_ensure_ready(
+    manager: State<'_, Arc<codex_oauth::Manager>>,
+) -> Result<codex_oauth::Status, AppError> {
+    manager.ensure_ready().await.map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -1896,11 +1904,16 @@ fn codex_default_workspace() -> Result<String, AppError> {
     let configured = synth_config::allowed_workspace_roots().map_err(|error| {
         AppError::message(format!("Cannot read workspace access settings: {error}"))
     })?;
-    let path = configured
-        .first()
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("SYNTH_DESKTOP_WORKSPACE").map(std::path::PathBuf::from))
-        .unwrap_or_else(|| crate::instance::state_root().join("workspaces/default"));
+    let permissions = synth_config::desktop_permission_settings().map_err(|error| {
+        AppError::message(format!("Cannot read desktop permission settings: {error}"))
+    })?;
+    let path = synth_config::select_default_workspace_path(
+        &configured,
+        &permissions.sandbox_mode,
+        std::env::var_os("SYNTH_DESKTOP_WORKSPACE").map(std::path::PathBuf::from),
+        dirs::home_dir(),
+        crate::instance::state_root().join("workspaces/default"),
+    );
     std::fs::create_dir_all(&path)
         .map_err(|error| AppError::io(format!("Cannot create the default workspace: {error}")))?;
     let path = path

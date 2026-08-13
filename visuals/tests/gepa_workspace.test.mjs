@@ -222,3 +222,35 @@ test("mid-run projection keeps live lanes and selections honest", () => {
   assert.equal(fresh.status, "registered");
   assert.equal(fresh.score, undefined);
 });
+
+test("failed rollout evidence stays null, updates coverage, and blocks heldout promotion", () => {
+  const events = [
+    {
+      ...base, sequenceNumber: 1, type: "optimizer.candidate_evaluation.attempt.failed",
+      delta: {
+        candidate_id: "gepa_seed", stage: "heldout", example_id: "heldout:7",
+        job_id: "job-7", attempt: 3, max_attempts: 3,
+        reward: null, cost_usd: null,
+        failure: { failure_type: "transport", reason_code: "stream_timeout", message: "stream timed out", retryable: true }
+      }
+    },
+    {
+      ...base, sequenceNumber: 2, type: "optimizer.evaluation.coverage.updated",
+      delta: { candidate_id: "gepa_seed", stage: "heldout", required: 10, scored: 9, failed: 1, pending: 0, complete: false }
+    },
+    {
+      ...base, sequenceNumber: 3, type: "heldout.blocked",
+      delta: { candidate_id: "gepa_seed", required: 10, scored: 9, failed: 1, missing: 0, promotion_eligible: false, reason: "incomplete_heldout_coverage" }
+    }
+  ];
+  const projected = projectAtCursor(RUN, events);
+  assert.deepEqual(projected.gepa.coverage[0], {
+    candidateId: "gepa_seed", stage: "heldout", required: 10, scored: 9,
+    failed: 1, pending: 0, complete: false, promotionEligible: false, sequence: 2
+  });
+  assert.equal(projected.gepa.failedAttempts[0].failureClass, "stream_timeout");
+  assert.equal(projected.gepa.failedAttempts[0].attempt, 3);
+  assert.equal(projected.gepa.heldout.blocked, true);
+  assert.equal(projected.gepa.heldout.reward, undefined);
+  assert.equal(projected.gepa.stages.find((stage) => stage.id === "heldout").status, "failed");
+});

@@ -67,6 +67,7 @@ import {
 } from "../runtime/modelSwitchPlan";
 import type {
 	CodexSessionInfo,
+	CodexOauthStatus,
 	ComposerImageAttachment,
 	ConversationWorkspaceScope,
 	LagunaStatus
@@ -182,6 +183,7 @@ export function useAppController() {
 	const autoOpenedSubagentsRef = useRef(new Set<string>());
 	const [failedSend, setFailedSend] = useState<FailedSend | null>(null);
 	const [codexOauthConfigured, setCodexOauthConfigured] = useState(false);
+	const [codexOauthStatus, setCodexOauthStatus] = useState<CodexOauthStatus | undefined>();
 	const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
 	const staleRunFenceRef = useRef(new Set<string>());
 	const manualCompactionPendingRef = useRef(new Set<string>());
@@ -250,7 +252,8 @@ export function useAppController() {
 	useEffect(() => {
 		const refreshOauthStatus = () => {
 			void bridges.codexOauth?.status().then((status) => {
-				setCodexOauthConfigured(status.configured);
+				setCodexOauthStatus(status);
+				setCodexOauthConfigured(status.canUseModels);
 			}).catch(() => undefined);
 		};
 		// The Tauri bridge can attach just after the first renderer commit in a
@@ -258,8 +261,8 @@ export function useAppController() {
 		refreshOauthStatus();
 		const retry = window.setTimeout(refreshOauthStatus, 750);
 		const changed = (event: Event) => {
-			const configured = (event as CustomEvent<{ configured?: boolean }>).detail?.configured;
-			if (typeof configured === "boolean") setCodexOauthConfigured(configured);
+			const status = (event as CustomEvent<CodexOauthStatus>).detail;
+			if (status) { setCodexOauthStatus(status); setCodexOauthConfigured(status.canUseModels); }
 		};
 		window.addEventListener("codex-oauth-changed", changed);
 		return () => {
@@ -563,6 +566,7 @@ export function useAppController() {
 			apiKeyConfigured,
 			openrouterApiKeyConfigured: backendSettings?.openrouterApiKeyConfigured,
 			codexOauthConfigured,
+			codexOauthStatus,
 			cloudBlockedReason: accountView.cloudBlockedReason
 		});
 		const archived = new Set(
@@ -587,6 +591,7 @@ export function useAppController() {
 		apiKeyConfigured,
 		backendSettings?.openrouterApiKeyConfigured,
 		codexOauthConfigured,
+		codexOauthStatus,
 		codexUsage,
 		downloadPaused,
 		eventsBySession,
@@ -813,13 +818,14 @@ export function useAppController() {
 
 	const ensureCodexOauthReady = useCallback(async (targetId: string): Promise<boolean> => {
 		if (!targetId.startsWith("chatgpt-")) return true;
-		const status = await bridges.codexOauth?.status().catch(() => null);
-		if (status?.configured) {
+		const status = await bridges.codexOauth?.ensureReady().catch(() => null);
+		if (status) setCodexOauthStatus(status);
+		if (status?.canUseModels) {
 			setCodexOauthConfigured(true);
 			return true;
 		}
 		setCodexOauthConfigured(false);
-		showToast("Connect ChatGPT subscription in Settings — message was not sent");
+		showToast(status?.guidance ?? "ChatGPT authorization status could not be verified. Message was not sent.");
 		setView({ kind: "settings", section: "models" });
 		return false;
 	}, [showToast]);
@@ -969,6 +975,15 @@ export function useAppController() {
 						failTurnStart(sessionId, text, messageId, reason);
 						return false;
 					}
+					// Stop may be pressed while sendTurn is still attaching the app-server,
+					// before Rust has a turn id to interrupt. Preserve that intent across
+					// the handshake and interrupt the newly-created turn immediately.
+					if (staleRunFenceRef.current.has(sessionId)) {
+						await nativeCodex.interrupt(sessionId);
+						staleRunFenceRef.current.delete(sessionId);
+						dispatchLocalSessionStatus(sessionId, "interrupted");
+						return false;
+					}
 					staleRunFenceRef.current.delete(sessionId);
 					setFailedSend((current) => (current?.sessionId === sessionId ? null : current));
 					// Working only appears once a real turn exists. Without a
@@ -987,7 +1002,9 @@ export function useAppController() {
 				await refreshSessions();
 				return true;
 			} catch (reason) {
-				showToast(reason instanceof Error ? reason.message : String(reason));
+				showToast(reason instanceof Error
+					? reason.message
+					: turnFailureMessage(codexTurnFailure(sessionId, reason)));
 				return false;
 			} finally {
 				setBusy(false);
@@ -1033,6 +1050,10 @@ export function useAppController() {
 			try {
 				const session = sessions.find((candidate) => candidate.id === activeSessionId);
 				if (nativeCodex && session?.metadata.runtime === "codex-app-server") {
+					if (kind === "cancel" || kind === "pause") {
+						// Also fences a run.started event that lands after a warming-up stop.
+						staleRunFenceRef.current.add(activeSessionId);
+					}
 					if (kind === "close") await nativeCodex.close(activeSessionId);
 					else if (kind === "cancel" || kind === "pause") await nativeCodex.interrupt(activeSessionId);
 					else if (kind === "approve" || kind === "reject") {
@@ -1057,7 +1078,10 @@ export function useAppController() {
 				}
 				await refreshSessions();
 			} catch (reason) {
-				showToast(reason instanceof Error ? reason.message : String(reason));
+				const message = reason instanceof Error
+					? reason.message
+					: turnFailureMessage(codexTurnFailure(activeSessionId, reason));
+				showToast(message);
 			} finally {
 				setBusy(false);
 			}

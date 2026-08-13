@@ -44,6 +44,23 @@ const API_KEY_FILE: &str = "api_key";
 const PAYLOAD_FILE: &str = "payload.json";
 const MANIFEST_FILE: &str = "manifest.json";
 
+#[derive(Debug)]
+struct OptimizerEventRunNotFound {
+    run_id: String,
+}
+
+impl std::fmt::Display for OptimizerEventRunNotFound {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "optimizer event producer has not indexed run `{}`",
+            self.run_id
+        )
+    }
+}
+
+impl std::error::Error for OptimizerEventRunNotFound {}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OptimizerSidecarStatus {
@@ -222,18 +239,11 @@ impl OptimizerManager {
             .json()
             .await
             .context("decode managed optimizer event page")?;
-        // A newly spawned CLI run registers its durable spool in the GEPA
-        // index during startup. Until then, an empty page is the only valid
-        // transient result; no guessed local path is consulted.
         if status == StatusCode::NOT_FOUND {
-            return Ok(json!({
-                "schema_version": "optimizer_event_page.v1",
-                "run_id": run_id,
-                "after_sequence": after_sequence,
-                "next_sequence": after_sequence,
-                "terminal": false,
-                "events": [],
-            }));
+            return Err(OptimizerEventRunNotFound {
+                run_id: run_id.to_string(),
+            }
+            .into());
         }
         if !status.is_success() {
             bail!("optimizer event endpoint returned {status}: {body}");
@@ -250,6 +260,10 @@ impl OptimizerManager {
             }
         }
         Ok(body)
+    }
+
+    pub(crate) fn optimizer_run_not_indexed(error: &anyhow::Error) -> bool {
+        error.downcast_ref::<OptimizerEventRunNotFound>().is_some()
     }
 
     pub async fn set_status(&self, mut status: OptimizerSidecarStatus) {
@@ -1816,6 +1830,22 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("ensure_ready"), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn optimizer_event_404_is_not_a_successful_empty_page() {
+        let (mgr, _home) = manager();
+        mgr.install(None).unwrap();
+        mgr.start().await.unwrap();
+
+        let error = mgr
+            .optimizer_events_after("not_indexed_yet", 0, 500)
+            .await
+            .unwrap_err();
+        assert!(OptimizerManager::optimizer_run_not_indexed(&error));
+        assert!(error.to_string().contains("not_indexed_yet"));
+
+        let _ = mgr.stop().await;
     }
 
     #[tokio::test]

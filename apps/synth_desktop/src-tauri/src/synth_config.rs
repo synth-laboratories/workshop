@@ -297,6 +297,27 @@ pub fn allowed_workspace_roots() -> Result<Vec<String>> {
     Ok(workspace_access_settings()?.allowed_roots)
 }
 
+pub(crate) fn select_default_workspace_path(
+    allowed_roots: &[String],
+    sandbox_mode: &str,
+    launcher_workspace: Option<std::path::PathBuf>,
+    home: Option<std::path::PathBuf>,
+    isolated_default: std::path::PathBuf,
+) -> std::path::PathBuf {
+    if let Some(root) = allowed_roots.first() {
+        return root.into();
+    }
+    // `danger-full-access` is a machine-wide access promise. Keep an explicit
+    // attached root authoritative, but do not strand an otherwise unrestricted
+    // task in the named instance's empty workspace. Starting at the user's home
+    // makes normal repository discovery possible while Codex's sandbox setting
+    // remains the actual access boundary.
+    if sandbox_mode == "danger-full-access" {
+        return home.or(launcher_workspace).unwrap_or(isolated_default);
+    }
+    launcher_workspace.unwrap_or(isolated_default)
+}
+
 pub fn update_workspace_access(request: WorkspaceAccessUpdate) -> Result<WorkspaceAccessSettings> {
     let allowed_roots = validate_workspace_roots(request.allowed_roots)?;
     let path = config_path();
@@ -977,6 +998,33 @@ mod tests {
             validate_workspace_roots(vec![root.join("missing").display().to_string()]).is_err()
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn full_system_access_starts_at_home_without_an_explicit_workspace() {
+        let selected = select_default_workspace_path(
+            &[],
+            "danger-full-access",
+            Some(PathBuf::from("/isolated/instance/workspace")),
+            Some(PathBuf::from("/Users/example")),
+            PathBuf::from("/isolated/default"),
+        );
+        assert_eq!(selected, PathBuf::from("/Users/example"));
+    }
+
+    #[test]
+    fn explicit_workspace_still_wins_under_full_system_access() {
+        let selected = select_default_workspace_path(
+            &["/Users/example/Documents/GitHub/containers".into()],
+            "danger-full-access",
+            Some(PathBuf::from("/isolated/instance/workspace")),
+            Some(PathBuf::from("/Users/example")),
+            PathBuf::from("/isolated/default"),
+        );
+        assert_eq!(
+            selected,
+            PathBuf::from("/Users/example/Documents/GitHub/containers")
+        );
     }
 
     #[test]

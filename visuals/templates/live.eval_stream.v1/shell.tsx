@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { VisualChrome, MetricStrip } from "../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../chrome/useLiveEvalStream.ts";
+import { bindingSlots } from "../../runtime/bind.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../runtime/types.ts";
 
 type StreamPayload = {
@@ -14,7 +15,7 @@ export type ShellProps = {
   lede?: string;
   stream?: StreamPayload;
   data?: StreamPayload;
-  bindings?: VisualBinding[];
+  bindings?: VisualBinding[] | { slots?: VisualBinding[] };
   sseUrl?: string;
 };
 
@@ -28,7 +29,7 @@ export function Shell(props: ShellProps) {
   const sseUrl =
     props.sseUrl ??
     stream.sse_url ??
-    props.bindings?.find((b) => b.slot === "stream" && b.kind === "live_sse")?.source;
+    bindingSlots(props.bindings).find((binding) => binding.slot === "stream" && binding.kind === "live_sse")?.source;
 
   const fixtureEvents = useMemo(
     () => (sseUrl ? undefined : stream.events),

@@ -23,6 +23,7 @@ export {
   asAnnotationMarkers,
   createJsonFixtureLoader,
   isVisualBindings,
+  bindingSlots,
   propsFromBindings
 } from "./bind.ts";
 export {

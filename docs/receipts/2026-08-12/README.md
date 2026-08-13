@@ -17,6 +17,7 @@ fixes listed below. Containers façades on loopback; optimizers-beta on
 | [`a6.json`](./a6.json) | A6 hosted multi-checkpoint SFT campaign | **PARTIAL** — 7/7 structure checks; campaign rollouts scored `null` |
 | — | A2 Harbor Docker GameBench | **NOT DONE** |
 | — | A8 dig.bench capstone | **BLOCKED** — no `DIGBENCH_API_TOKEN` on this machine |
+| [`w1-w3-cua.json`](./w1-w3-cua.json) | W1–W3 fresh-workspace Sol workflow | **PARTIAL** — safe W1/W3 refusal; W2 not reached |
 
 A7 (OpenEnv Echo) is out of this cut.
 

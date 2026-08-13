@@ -204,7 +204,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 			) : null}
 
 			{view.kind === "visuals" ? (
-				<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`}>
+				<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`} style={{ "--visual-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}>
 					<VisualsPage
 						onOpenVisual={openVisualRecord}
 						onGoToChat={(sessionId) => {
@@ -239,13 +239,13 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						}}
 					/>
 					{openArtifact ? (
-						<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
+						<><PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => { setInventoryContainerWidth(width); persistLayoutSnapshot({ outputPaneWidth: width }); }} ariaLabel="Resize visual pane" /><VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} /></>
 					) : null}
 				</div>
 			) : null}
 
 			{view.kind === "optimizers" ? (
-				<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`}>
+				<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`} style={{ "--visual-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}>
 					<OptimizersPage
 						onOpenVisual={(visualId) => {
 							void (async () => {
@@ -264,7 +264,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						onBack={() => setView({ kind: "landing" })}
 					/>
 					{openArtifact ? (
-						<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
+						<><PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => { setInventoryContainerWidth(width); persistLayoutSnapshot({ outputPaneWidth: width }); }} ariaLabel="Resize visual pane" /><VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} /></>
 					) : null}
 				</div>
 			) : null}
@@ -281,7 +281,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						onBack={() => setView({ kind: "landing" })}
 					/>
 					{openArtifact ? (
-						<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
+						<><PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => { setInventoryContainerWidth(width); persistLayoutSnapshot({ outputPaneWidth: width }); }} ariaLabel="Resize visual pane" /><VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} /></>
 					) : null}
 					{openContainer ? (
 						<>

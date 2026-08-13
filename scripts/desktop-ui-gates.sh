@@ -96,6 +96,9 @@ BOMBADIL_SPECS=(
 	layout.spec.ts
 	visual-alignment.spec.ts
 	visual-library-layout.spec.ts
+	visual-pane-boundaries.spec.ts
+	approval-card.spec.ts
+	grouped-visual-evidence.spec.ts
 	trace-catalog-layout.spec.ts
 	shell-containment.spec.ts
 	inference-state-honesty.spec.ts

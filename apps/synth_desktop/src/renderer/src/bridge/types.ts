@@ -657,6 +657,10 @@ export type CodexOauthBegin = {
 };
 
 export type CodexOauthStatus = {
+	state: "disconnected" | "authenticating" | "ready" | "expiring" | "expired" | "refresh_failed";
+	action: "connect" | "wait" | "none" | "reauthenticate" | "retry";
+	canUseModels: boolean;
+	guidance: string;
 	configured: boolean;
 	accountHint?: string | null;
 	lastRefresh?: string | null;
@@ -667,6 +671,7 @@ export type CodexOauthBridge = {
 	begin(): Promise<CodexOauthBegin>;
 	completeManual(redirectUrl: string): Promise<CodexOauthStatus>;
 	status(): Promise<CodexOauthStatus>;
+	ensureReady(): Promise<CodexOauthStatus>;
 	disconnect(): Promise<CodexOauthStatus>;
 	cancel(): Promise<void>;
 };

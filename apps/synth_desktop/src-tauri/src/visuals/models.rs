@@ -43,6 +43,8 @@ pub enum RendererKind {
     Tsx,
     Html,
     Mermaid,
+    Systems,
+    SystemsDynamic,
 }
 
 impl RendererKind {
@@ -52,6 +54,8 @@ impl RendererKind {
             Self::Tsx => "tsx",
             Self::Html => "html",
             Self::Mermaid => "mermaid",
+            Self::Systems => "systems",
+            Self::SystemsDynamic => "systems-dynamic",
         }
     }
 
@@ -60,6 +64,8 @@ impl RendererKind {
             "tsx" => Self::Tsx,
             "html" => Self::Html,
             "mermaid" => Self::Mermaid,
+            "systems" => Self::Systems,
+            "systems-dynamic" => Self::SystemsDynamic,
             _ => Self::Template,
         }
     }

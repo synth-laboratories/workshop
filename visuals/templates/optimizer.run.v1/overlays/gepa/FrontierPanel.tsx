@@ -10,8 +10,7 @@ import {
   candidateName,
   candidatePoint,
   metricsByCandidate,
-  statusLabel,
-  type CandidateRecord
+  statusLabel
 } from "./model.ts";
 
 const PLOT = { left: 46, right: 396, top: 18, bottom: 208 };
@@ -79,7 +78,7 @@ export function FrontierPanel({
         </span>
       </div>
       <div style={{ border: "1px solid var(--sv-border)", borderRadius: 9, padding: "8px 10px" }}>
-        <svg viewBox="0 0 430 248" width="100%" role="img" aria-label="Candidate quality versus example coverage">
+        <svg viewBox="0 0 430 248" width="100%" role="img" aria-label="Candidate quality versus example coverage" style={{ display: "block", maxWidth: 650, margin: "0 auto" }}>
           {[0, 0.25, 0.5, 0.75, 1].map((tick) => (
             <g key={`grid-${tick}`}>
               <line x1={x(tick)} y1={PLOT.top} x2={x(tick)} y2={PLOT.bottom} stroke="var(--sv-border)" strokeWidth="1" />

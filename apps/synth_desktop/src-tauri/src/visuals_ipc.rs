@@ -965,7 +965,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .trim_start_matches("/v1/visuals/")
                 .trim_end_matches("/content")
                 .trim_end_matches('/');
-            Ok(json!({"content": registry.mermaid_source(id.to_string()).await?}))
+            Ok(json!({"content": registry.visual_source(id.to_string()).await?}))
         }
         ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/renditions") => {
             let id = path
@@ -990,7 +990,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .map(str::to_string);
             Ok(json!({
                 "rendition": registry
-                    .mermaid_rendition(id.to_string(), Some(format.to_string()), theme, size)
+                    .visual_rendition(id.to_string(), Some(format.to_string()), theme, size)
                     .await?
             }))
         }
@@ -1205,7 +1205,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .trim_start_matches("/v1/visuals/")
                 .trim_end_matches("/render")
                 .trim_end_matches('/');
-            let visual = registry.render_mermaid(id).await?;
+            let visual = registry.render_visual(id).await?;
             Ok(json!({"visual": visual}))
         }
         ("POST", path) if path.starts_with("/v1/visuals/") => {
@@ -1293,7 +1293,13 @@ async fn dispatch_optimizer(
             let id = path
                 .trim_start_matches("/v1/optimizers/runs/")
                 .trim_end_matches("/open_visual");
-            let (run, event) = optimizers.open_visual(id.to_string()).await?;
+            let session_ref = body
+                .get("sessionRef")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let (run, event) = optimizers
+                .open_visual_in_session(id.to_string(), session_ref)
+                .await?;
             Ok(json!({ "run": run, "event": event }))
         }
         ("POST", path)

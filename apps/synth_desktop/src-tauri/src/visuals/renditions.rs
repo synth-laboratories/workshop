@@ -1,6 +1,7 @@
 //! Derived SVG/PNG renditions for Mermaid visuals. Canonical source stays in CAS blobs.
 
 use super::mermaid::{self, RenderedDiagram, Theme, MEDIA_TYPE_SVG, RENDERER_VERSION};
+use super::systems;
 use anyhow::{bail, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -93,6 +94,75 @@ pub fn insert_svg_rendition(
     })
 }
 
+pub fn insert_systems_svg_rendition(
+    conn: &Connection,
+    visual_id: &str,
+    revision: i64,
+    digest: &str,
+    rendered: &systems::RenderedSystems,
+    theme: &str,
+    size_class: &str,
+) -> Result<VisualRendition> {
+    insert_svg_rendition_values(
+        conn,
+        visual_id,
+        revision,
+        digest,
+        rendered.width,
+        rendered.height,
+        theme,
+        size_class,
+        systems::MEDIA_TYPE_SVG,
+        systems::RENDERER_VERSION,
+    )
+}
+
+fn insert_svg_rendition_values(
+    conn: &Connection,
+    visual_id: &str,
+    revision: i64,
+    digest: &str,
+    width: u32,
+    height: u32,
+    theme: &str,
+    size_class: &str,
+    media_type: &str,
+    renderer_version: &str,
+) -> Result<VisualRendition> {
+    let created_at = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT OR REPLACE INTO visual_renditions(
+            visual_id, revision, format, theme, size_class, content_digest,
+            media_type, renderer_version, width_px, height_px, created_at
+         ) VALUES (?1,?2,'svg',?3,?4,?5,?6,?7,?8,?9,?10)",
+        params![
+            visual_id,
+            revision,
+            theme,
+            size_class,
+            digest,
+            media_type,
+            renderer_version,
+            width as i64,
+            height as i64,
+            created_at
+        ],
+    )?;
+    Ok(VisualRendition {
+        visual_id: visual_id.into(),
+        revision,
+        format: "svg".into(),
+        theme: theme.into(),
+        size_class: size_class.into(),
+        content_digest: digest.into(),
+        media_type: media_type.into(),
+        renderer_version: renderer_version.into(),
+        width_px: Some(width as i64),
+        height_px: Some(height as i64),
+        created_at,
+    })
+}
+
 pub fn list_renditions(
     conn: &Connection,
     visual_id: &str,
@@ -135,6 +205,26 @@ pub fn get_rendition(
     theme: &str,
     size_class: &str,
 ) -> Result<VisualRendition> {
+    get_rendition_for_renderer(
+        conn,
+        visual_id,
+        revision,
+        format,
+        theme,
+        size_class,
+        mermaid::RENDERER_VERSION,
+    )
+}
+
+pub fn get_rendition_for_renderer(
+    conn: &Connection,
+    visual_id: &str,
+    revision: i64,
+    format: &str,
+    theme: &str,
+    size_class: &str,
+    renderer_version: &str,
+) -> Result<VisualRendition> {
     if !matches!(format, "svg" | "png") {
         bail!("unsupported rendition format {format}");
     }
@@ -156,7 +246,7 @@ pub fn get_rendition(
             format,
             theme,
             size_class,
-            mermaid::RENDERER_VERSION
+            renderer_version
         ],
         |row| {
             Ok(VisualRendition {

@@ -60,6 +60,15 @@ function optimizerDiagnostic(error: unknown): OptimizerDiagnostic | null {
 			logPath: typeof value.logPath === "string" ? value.logPath : undefined
 		};
 	}
+	const containerFailure = raw.match(/container error:\s*([^\n]+)/i)?.[1]?.trim();
+	if (containerFailure) {
+		return {
+			title: "Container rollout stream failed",
+			message: containerFailure,
+			raw,
+			logPath: typeof value.logPath === "string" ? value.logPath : undefined
+		};
+	}
 	return {
 		title: "Optimizer run failed",
 		message,
@@ -70,6 +79,10 @@ function optimizerDiagnostic(error: unknown): OptimizerDiagnostic | null {
 
 function fileName(path: string): string {
 	return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+function reportedCost(costUsd: number | null | undefined): string {
+	return costUsd != null && costUsd > 0 ? `$${costUsd.toFixed(2)}` : "—";
 }
 
 export function OptimizersPage({ onOpenVisual, onBack }: Props) {
@@ -230,6 +243,11 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 		if (!launchConfirmed) return;
 		setBusy(true);
 		setError(null);
+		// The bridge may remain pending for the lifetime of the local recipe. Close
+		// the paid-compute confirmation immediately so live run events and visuals
+		// stay reachable while both jobs are executing.
+		setLauncherOpen(false);
+		setLaunchConfirmed(false);
 		try {
 			const [lunaRun, solRun] = await Promise.all([
 				bridges.optimizers.startRecipe({
@@ -241,8 +259,6 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 					openVisual: true
 				})
 			]);
-			setLauncherOpen(false);
-			setLaunchConfirmed(false);
 			setSelectedId(lunaRun.id);
 			await refresh();
 			const visualId = lunaRun.visualRefs.find((ref) => ref.kind === "visual")?.id
@@ -507,7 +523,7 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 									onClick={() => setSelectedId(run.id)}
 								>
 									<span className="optimizer-run-main"><span className="optimizer-algorithm">{algorithmLabel(run.algorithmId)}</span><strong>{run.objective ?? run.id}</strong><small>{formatWhen(run.finishedAt ?? run.startedAt ?? run.createdAt)}</small></span>
-									<span className="optimizer-run-meta"><span className={`optimizer-status ${run.status}`}>{run.status}</span><small>{run.source} · {run.usage.costUsd == null ? "—" : `$${run.usage.costUsd.toFixed(2)}`}</small></span>
+									<span className="optimizer-run-meta"><span className={`optimizer-status ${run.status}`}>{run.status}</span><small>{run.source} · {reportedCost(run.usage.costUsd)}</small></span>
 								</button>
 							</li>
 						))}
@@ -525,7 +541,7 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 								<dt>Execution</dt><dd data-testid="optimizer-execution-mode">{selectedExecution}</dd>
 								<dt>Live events</dt><dd>{selected.capabilities.streamEvents ? "Available" : "Replay / refresh"}</dd>
 								<dt>Cursor</dt><dd>{selected.cursorSeq}</dd>
-								<dt>Cost</dt><dd>{selected.usage.costUsd == null ? "—" : `$${selected.usage.costUsd.toFixed(2)}`}</dd>
+								<dt>Cost</dt><dd>{reportedCost(selected.usage.costUsd)}</dd>
 								<dt>Created</dt><dd>{formatWhen(selected.createdAt)}</dd>
 							</dl>
 							{selectedDiagnostic ? (

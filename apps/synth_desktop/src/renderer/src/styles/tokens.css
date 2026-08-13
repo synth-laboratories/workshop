@@ -1,0 +1,123 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Workshop core scale — the vocabulary every surface is allowed to use.
+
+   app.css already defines the shell's color roles. This file adds the parts
+   that were missing (space, type, tone, surface, status) so that a page author
+   never has to invent a value. If you need something that is not in here, the
+   answer is almost always to reuse a neighbour, not to add a token.
+
+   Rules this file exists to make enforceable:
+     · Six type sizes. Eight spaces. Four radii. No half-pixels.
+     · Every color comes from a token, so dark theme works for free.
+     · Status is a tone, not a hand-mixed hex.
+   ────────────────────────────────────────────────────────────────────────── */
+
+:root {
+	/* ── Space ── 4px rhythm. Use these for padding, gap, and margin. ── */
+	--sp-1: 4px;
+	--sp-2: 8px;
+	--sp-3: 12px;
+	--sp-4: 16px;
+	--sp-5: 20px;
+	--sp-6: 24px;
+	--sp-7: 32px;
+	--sp-8: 48px;
+
+	/* ── Type ── Six steps. Anything between two steps is one of the two. ──
+	   micro  labels, eyebrows, badge text
+	   meta   timestamps, secondary metadata, dense controls
+	   body   default reading size for supporting copy and rows
+	   strong row titles, card titles, control labels
+	   title  section and card headings
+	   h2     inspector / dialog headings
+	   h1     page title
+	*/
+	--fs-micro: 11px;
+	--fs-meta: 12px;
+	--fs-body: 13px;
+	--fs-strong: 14px;
+	--fs-title: 16px;
+	--fs-h2: 19px;
+	--fs-h1: 22px;
+
+	--lh-tight: 1.25;
+	--lh-body: 1.5;
+
+	--fw-regular: 400;
+	--fw-medium: 550;
+	--fw-semi: 650;
+
+	--tracking-tight: -0.02em;
+	--tracking-eyebrow: 0.08em;
+
+	/* ── Shape ── radius-sm/md/lg/pill already exist in app.css. One more for
+	   small controls, and that is the whole set. ── */
+	--radius-xs: 6px;
+
+	/* ── Surfaces ── semantic roles, so dark theme only re-points these. ── */
+	--surface-page: var(--color-bg);
+	--surface-raised: var(--color-card);
+	--surface-sunken: var(--color-bg-subtle);
+	--surface-hover: rgba(20, 22, 26, 0.04);
+	--surface-active: rgba(20, 22, 26, 0.07);
+
+	--border-subtle: var(--color-border);
+	--border-strong: #d2d6dc;
+
+	/* ── Selection ── ONE selection color for the whole product.
+	   Retire the per-page purples (#7663ba, #6654a9, #d8d1ee, #f7f4ff).
+	   To move selection to Synth orange, re-point these three lines only. ── */
+	--selected-fg: var(--color-selection);
+	--selected-bg: var(--color-selection-subtle);
+	--selected-edge: var(--color-selection);
+	/* Text that sits ON the selection color. Flips with the theme because the
+	   dark selection blue is light enough that white text fails contrast. */
+	--selected-contrast: #ffffff;
+
+	/* ── Status tones ── the only status colors. Always paired with a word;
+	   never color alone. ── */
+	--tone-neutral-bg: #eef0f3;
+	--tone-neutral-fg: #5b626c;
+	--tone-info-bg: #e9f0fe;
+	--tone-info-fg: #2f5fbd;
+	--tone-running-bg: #fef3e0;
+	--tone-running-fg: #8a5a11;
+	--tone-success-bg: #e6f4ec;
+	--tone-success-fg: #216b44;
+	--tone-warn-bg: #fdf3e3;
+	--tone-warn-fg: #7f5714;
+	--tone-danger-bg: #fbeaea;
+	--tone-danger-fg: #9c3b3b;
+
+	/* ── Elevation ── shadow-sm/md exist in app.css. Cards get no shadow;
+	   only floating surfaces do. ── */
+	--shadow-dialog: 0 22px 70px rgba(24, 27, 33, 0.22);
+
+	/* ── Measure ── keeps actions next to their content instead of flung to
+	   the far edge of a wide window. ── */
+	--measure-page: 1120px;
+	--measure-prose: 68ch;
+	--measure-lede: 52ch;
+}
+
+:root[data-theme="dark"] {
+	--surface-hover: rgba(255, 255, 255, 0.05);
+	--surface-active: rgba(255, 255, 255, 0.08);
+	--border-strong: #3a3e46;
+	--selected-contrast: #10161f;
+
+	--tone-neutral-bg: #24272d;
+	--tone-neutral-fg: #a3aab4;
+	--tone-info-bg: #1c2a44;
+	--tone-info-fg: #8fb4f7;
+	--tone-running-bg: #33270f;
+	--tone-running-fg: #e0b366;
+	--tone-success-bg: #14301f;
+	--tone-success-fg: #74c79a;
+	--tone-warn-bg: #33280f;
+	--tone-warn-fg: #dcb469;
+	--tone-danger-bg: #351d1d;
+	--tone-danger-fg: #e29191;
+
+	--shadow-dialog: 0 22px 70px rgba(0, 0, 0, 0.55);
+}

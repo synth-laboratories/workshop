@@ -377,8 +377,7 @@ impl LagunaManager {
         }
         let model_dir = models_root.join(spec.id);
         fs::create_dir_all(&model_dir)?;
-        let python = home().join(".venv/bin/python");
-        validate_python(&python)?;
+        let python = LagunaRuntimeState::detect().require_ready()?;
         let script = r#"from huggingface_hub import snapshot_download
 import json, sys
 snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[3])
@@ -1285,15 +1284,7 @@ fn spawn_sidecar(root: &Path, api_key: &str, backend: &str) -> Result<()> {
         .create(true)
         .append(true)
         .open(home().join("desktop-sidecar.log"))?;
-    let python = {
-        let candidate = home().join(".venv/bin/python");
-        if candidate.exists() {
-            candidate
-        } else {
-            PathBuf::from(env::var("SYNTH_PYTHON").unwrap_or_else(|_| "python3".into()))
-        }
-    };
-    validate_python(&python)?;
+    let python = LagunaRuntimeState::detect().require_ready()?;
     let daemon = root.join("services/laguna-daemon");
     let mut command = Command::new(python);
     command
@@ -1311,6 +1302,54 @@ fn spawn_sidecar(root: &Path, api_key: &str, backend: &str) -> Result<()> {
     let child = command.spawn().context("spawn Laguna sidecar")?;
     fs::write(home().join("sidecar.pid"), child.id().to_string())?;
     Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LagunaRuntimeState {
+    Ready { python: PathBuf },
+    Missing { expected: PathBuf },
+    Invalid { expected: PathBuf, detail: String },
+}
+
+impl LagunaRuntimeState {
+    /// The runtime is machine-owned and shared. Instance homes contain mutable
+    /// daemon state only; they never select an interpreter.
+    fn authoritative_python() -> PathBuf {
+        dirs::home_dir()
+            .expect("Laguna runtime discovery requires an operating-system home directory")
+            .join(".synth-desktop/laguna/.venv/bin/python")
+    }
+
+    fn detect() -> Self {
+        Self::detect_at(Self::authoritative_python())
+    }
+
+    fn detect_at(expected: PathBuf) -> Self {
+        if !expected.is_file() {
+            return Self::Missing { expected };
+        }
+        match validate_python(&expected) {
+            Ok(()) => Self::Ready { python: expected },
+            Err(error) => Self::Invalid {
+                expected,
+                detail: format!("{error:#}"),
+            },
+        }
+    }
+
+    fn require_ready(self) -> Result<PathBuf> {
+        match self {
+            Self::Ready { python } => Ok(python),
+            Self::Missing { expected } => Err(anyhow::anyhow!(
+                "Laguna runtime is missing at `{}`. Install the Workshop-managed Laguna runtime in Settings → Services; no alternate interpreter will be used.",
+                expected.display()
+            )),
+            Self::Invalid { expected, detail } => Err(anyhow::anyhow!(
+                "Laguna runtime at `{}` is invalid: {detail}. Repair it in Settings → Services; no alternate interpreter will be used.",
+                expected.display()
+            )),
+        }
+    }
 }
 
 /// Environment for the Synth-managed daemon. The upstream/external variables are
@@ -1381,14 +1420,17 @@ fn stop_managed_sidecar() -> Result<bool> {
 
 fn validate_python(python: &Path) -> Result<()> {
     let status = Command::new(python)
-        .arg("--version")
+        .args([
+            "-c",
+            "import fastapi, huggingface_hub, uvicorn; assert fastapi and huggingface_hub and uvicorn",
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .with_context(|| {
             format!(
-                "Laguna requires a Python environment, but `{}` could not be started. Create ~/.synth-desktop/laguna/.venv with the Laguna dependencies, or set SYNTH_PYTHON to a usable interpreter.",
+                "Workshop could not start the authoritative Laguna runtime `{}`",
                 python.display()
             )
         })?;
@@ -1396,7 +1438,7 @@ fn validate_python(python: &Path) -> Result<()> {
         Ok(())
     } else {
         Err(anyhow::anyhow!(
-            "Laguna Python interpreter `{}` exited unsuccessfully",
+            "Laguna runtime `{}` is missing required packages (fastapi, huggingface_hub, or uvicorn)",
             python.display()
         ))
     }
@@ -1574,6 +1616,18 @@ mod tests {
         let hit = validate_model_input(&flat).unwrap();
         assert_eq!(Path::new(&hit.models_root), flat.canonicalize().unwrap());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_managed_runtime_never_falls_back() {
+        let missing = env::temp_dir().join(format!("synth-missing-laguna-runtime-{}", now_ms()));
+        let state = LagunaRuntimeState::detect_at(missing.clone());
+        assert_eq!(state, LagunaRuntimeState::Missing { expected: missing });
+        assert!(state
+            .require_ready()
+            .unwrap_err()
+            .to_string()
+            .contains("no alternate interpreter"));
     }
 
     #[test]

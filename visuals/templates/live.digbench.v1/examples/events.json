@@ -14,7 +14,13 @@
       "run_id": "digbench_p1",
       "kind": "trace.opened",
       "sequence": 1,
-      "payload": { "rollout_id": "digbench_p1" }
+      "payload": {
+        "rollout_id": "digbench_p1",
+        "world_ref": "world:digbench:P-1",
+        "environment_ref": "env:digbench_mock",
+        "task_instance_id": "P-1",
+        "policy_ref": { "harness": "react_legal_actions", "config": "react_legal_actions" }
+      }
     },
     {
       "ts": "2026-08-12T17:10:00.200Z",
@@ -63,11 +69,88 @@
       "run_id": "digbench_p1",
       "kind": "action",
       "sequence": 8,
-      "payload": { "action": "inspect" }
+      "payload": {
+        "action": "inspect",
+        "harness": "react_legal_actions",
+        "action_authority": "harness_stub"
+      }
     },
     {
       "ts": "2026-08-12T17:10:00.900Z",
       "run_id": "digbench_p1",
+      "kind": "status",
+      "sequence": 9,
+      "payload": { "status": "running" }
+    },
+    {
+      "ts": "2026-08-12T17:10:01.000Z",
+      "run_id": "digbench_p1_agentic",
+      "kind": "trace.opened",
+      "sequence": 1,
+      "payload": {
+        "rollout_id": "digbench_p1_agentic",
+        "world_ref": "world:digbench:P-1",
+        "environment_ref": "env:digbench_mock",
+        "task_instance_id": "P-1",
+        "policy_ref": { "harness": "codex", "config": "agentic_codex" }
+      }
+    },
+    {
+      "ts": "2026-08-12T17:10:01.100Z",
+      "run_id": "digbench_p1_agentic",
+      "kind": "session.opened",
+      "sequence": 2,
+      "payload": { "game": "P-1", "session_id": "digbench_p1_agentic" }
+    },
+    {
+      "ts": "2026-08-12T17:10:01.200Z",
+      "run_id": "digbench_p1_agentic",
+      "kind": "observation",
+      "sequence": 3,
+      "payload": { "text": "A locked door. Legal: inspect, wait." }
+    },
+    {
+      "ts": "2026-08-12T17:10:01.300Z",
+      "run_id": "digbench_p1_agentic",
+      "kind": "legal_actions",
+      "sequence": 4,
+      "payload": { "actions": ["inspect", "wait"] }
+    },
+    {
+      "ts": "2026-08-12T17:10:01.400Z",
+      "run_id": "digbench_p1_agentic",
+      "kind": "stats",
+      "sequence": 5,
+      "payload": { "lives": 3, "level": 1, "steps_remaining": 20 }
+    },
+    {
+      "ts": "2026-08-12T17:10:01.500Z",
+      "run_id": "digbench_p1_agentic",
+      "kind": "span.mcp.opened",
+      "sequence": 6,
+      "payload": { "tool": "step", "server": "digbench-mcp", "evidence_class": "simulated" }
+    },
+    {
+      "ts": "2026-08-12T17:10:01.600Z",
+      "run_id": "digbench_p1_agentic",
+      "kind": "action",
+      "sequence": 7,
+      "payload": {
+        "action": "inspect",
+        "harness": "codex",
+        "action_authority": "harness_stub"
+      }
+    },
+    {
+      "ts": "2026-08-12T17:10:01.700Z",
+      "run_id": "digbench_p1_agentic",
+      "kind": "span.mcp.closed",
+      "sequence": 8,
+      "payload": { "tool": "step", "evidence_class": "simulated" }
+    },
+    {
+      "ts": "2026-08-12T17:10:01.800Z",
+      "run_id": "digbench_p1_agentic",
       "kind": "status",
       "sequence": 9,
       "payload": { "status": "running" }

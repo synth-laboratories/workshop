@@ -34,6 +34,7 @@
     "desktop:ui-gates": "./scripts/desktop-ui-gates.sh",
     "desktop:ui-gates:bombadil": "./scripts/desktop-ui-gates.sh bombadil",
     "desktop:ui-gates:playwright": "./scripts/desktop-ui-gates.sh playwright",
+    "desktop:v02-e2e": "./scripts/v02-e2e-gates.sh",
     "dev:mock": "npm run dev --workspace synth-workshop-mock",
     "dev:inference": "PYTHONPATH=services/local-inference python3 -m synth_inference --host 127.0.0.1 --port 7332",
     "build": "npm run build --workspace @synth/synth-desktop",

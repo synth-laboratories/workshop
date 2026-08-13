@@ -71,6 +71,23 @@ function IconSearch() {
 	);
 }
 
+function IconPin({ pinned = false }: { pinned?: boolean }) {
+	return (
+		<svg className="chat-row-action-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<path d="M5.1 2.2h5.8l-.9 3 1.8 2v1.1H8.7v4.9L8 14l-.7-.8V8.3H4.2V7.2l1.8-2-.9-3z" fill={pinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.15" strokeLinejoin="round" />
+		</svg>
+	);
+}
+
+function IconArchive() {
+	return (
+		<svg className="chat-row-action-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="2.4" y="3" width="11.2" height="2.8" rx=".8" stroke="currentColor" strokeWidth="1.15" />
+			<path d="M3.3 5.8v6.7c0 .6.5 1.1 1.1 1.1h7.2c.6 0 1.1-.5 1.1-1.1V5.8M6.2 8.5h3.6" stroke="currentColor" strokeWidth="1.15" strokeLinecap="round" />
+		</svg>
+	);
+}
+
 
 
 
@@ -228,6 +245,8 @@ export function Sidebar({
 		const remainder = orderedChats.filter((chat) => !alwaysVisible.has(chat.id));
 		return [...priority, ...remainder].slice(0, Math.max(10, priority.length));
 	}, [activeChatId, orderedChats, pinnedChatIds, showAllChats, workingChatIds]);
+	const firstPinnedIndex = visibleChats.findIndex((chat) => pinnedChatIds.has(chat.id));
+	const firstRecentIndex = visibleChats.findIndex((chat) => !pinnedChatIds.has(chat.id));
 
 	if (!sidebarVisible) return null;
 
@@ -279,14 +298,18 @@ export function Sidebar({
 							{orderedChats.length === 0 ? (
 								<p className="empty-hint">No local chats yet</p>
 							) : (
-								visibleChats.map((chat) => {
+								visibleChats.map((chat, chatIndex) => {
 									const title = conversationTitles[chat.id] ?? chat.title;
 									const pinned = pinnedChatIds.has(chat.id);
 									const working = workingChatIds.has(chat.id);
+									const sectionLabel = chatIndex === firstPinnedIndex
+										? "Pinned"
+										: chatIndex === firstRecentIndex ? "Recents" : null;
 									if (renamingId === chat.id) {
 										return (
+											<div key={chat.id} className="chat-section-entry">
+												{sectionLabel ? <h3 className="chat-section-label">{sectionLabel}</h3> : null}
 											<form
-												key={chat.id}
 												className="chat-rename-form"
 												data-testid={`rename-chat-${chat.id}`}
 												onSubmit={(event) => {
@@ -314,11 +337,14 @@ export function Sidebar({
 												<button type="submit">Save</button>
 												<button type="button" onClick={() => setRenamingId(null)}>Cancel</button>
 											</form>
+											</div>
 										);
 									}
-									return (
-										<button
-											key={chat.id}
+					return (
+						<div key={chat.id} className="chat-section-entry">
+							{sectionLabel ? <h3 className="chat-section-label">{sectionLabel}</h3> : null}
+						<div className="chat-row">
+						<button
 											type="button"
 											className={`chat-item${activeChatId === chat.id ? " active" : ""}${pinned ? " pinned" : ""}`}
 											onClick={() => onOpenChat(chat.id)}
@@ -337,7 +363,7 @@ export function Sidebar({
 											data-testid={`local-chat-${chat.id}`}
 										>
 											<span className="item-label">{title}</span>
-											{pinned ? <span className="chat-pin-marker" aria-label="Pinned" title="Pinned" data-testid={`chat-pinned-${chat.id}`}>Pinned</span> : null}
+											{pinned ? <span className="sr-only" data-testid={`chat-pinned-${chat.id}`}>Pinned</span> : null}
 											{working ? (
 												<>
 													<span
@@ -353,7 +379,32 @@ export function Sidebar({
 											) : unreadChatIds.has(chat.id) ? (
 												<span className="chat-unread-indicator" aria-label="Finished, unviewed" title="Finished, unviewed" data-testid={`chat-unread-${chat.id}`} />
 											) : null}
-										</button>
+						</button>
+						<div className="chat-row-actions" aria-label={`Actions for ${title}`}>
+							<button
+								type="button"
+								className={`chat-row-action${pinned ? " selected" : ""}`}
+								aria-label={pinned ? `Unpin ${title}` : `Pin ${title}`}
+								title={pinned ? "Unpin" : "Pin"}
+								data-testid={`chat-pin-${chat.id}`}
+								onClick={() => onPinChat?.(chat.id, !pinned)}
+							>
+								<IconPin pinned={pinned} />
+							</button>
+							<button
+								type="button"
+								className="chat-row-action"
+								aria-label={`Archive ${title}`}
+								title={working ? "Wait for this chat to finish before archiving" : "Archive"}
+								data-testid={`chat-archive-${chat.id}`}
+								disabled={working}
+								onClick={() => onArchiveChat?.(chat.id, true)}
+							>
+								<IconArchive />
+							</button>
+						</div>
+						</div>
+						</div>
 									);
 								})
 							)}

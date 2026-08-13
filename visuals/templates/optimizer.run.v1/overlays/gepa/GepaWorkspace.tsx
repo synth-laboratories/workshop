@@ -25,6 +25,7 @@ import { RolloutBrowser, type RolloutGroup, type RolloutRow } from "../../compon
 import { CandidateInspector, CandidateList } from "./CandidateBoard.tsx";
 import { ComparisonCard, type ComparisonColumn } from "./ComparisonCard.tsx";
 import { FrontierPanel } from "./FrontierPanel.tsx";
+import { HillClimbPanel } from "./HillClimbPanel.tsx";
 import { ProposerTracePanel } from "./ProposerTracePanel.tsx";
 import {
   candidateName,
@@ -55,6 +56,56 @@ function statusPresentation(status: string, terminal: boolean): {
   // Any in-flight optimizer phase (proposing, rollout_running, evaluating, …)
   // is run-level "Running"; the stage timeline carries the phase detail.
   return { text: "Running", tone: "live", dot: true };
+}
+
+function EvidenceIntegrity({ gepa }: { gepa: NonNullable<ProjectedState["gepa"]> }) {
+  const required = gepa.coverage.reduce((sum, row) => sum + row.required, 0);
+  const scored = gepa.coverage.reduce((sum, row) => sum + row.scored, 0);
+  const failed = gepa.coverage.reduce((sum, row) => sum + row.failed, 0);
+  const pending = gepa.coverage.reduce((sum, row) => sum + row.pending, 0);
+  const complete = gepa.coverage.length > 0 && failed === 0 && pending === 0 && scored === required;
+  if (gepa.coverage.length === 0 && gepa.failedAttempts.length === 0 && !gepa.heldout?.blocked) return null;
+  return (
+    <section className="sv-section" aria-label="Evaluation evidence integrity" data-testid="gepa-evidence-integrity" style={{ marginTop: 0 }}>
+      <div className="sv-section-head">
+        <h3>Evidence integrity</h3>
+        <span className="sv-mono" style={{ color: complete ? "var(--sv-accent)" : failed > 0 ? "#b23830" : "var(--sv-text-muted)" }}>
+          {complete ? "complete" : failed > 0 ? "incomplete · promotion blocked" : "collecting"}
+        </span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", border: "1px solid var(--sv-border)", borderRadius: 9, overflow: "hidden" }}>
+        {[["Required", required], ["Scored", scored], ["Failed", failed], ["Pending", pending]].map(([label, value]) => (
+          <div key={String(label)} style={{ padding: "10px 12px", borderRight: label === "Pending" ? undefined : "1px solid var(--sv-border)" }}>
+            <div style={{ color: "var(--sv-text-faint)", fontSize: 10, textTransform: "uppercase", letterSpacing: ".08em" }}>{label}</div>
+            <div className="sv-mono" style={{ marginTop: 3, fontSize: 17 }}>{value}</div>
+          </div>
+        ))}
+      </div>
+      {gepa.failedAttempts.length > 0 ? (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: "pointer", color: "#b23830", fontSize: 12, fontWeight: 650 }}>
+            {gepa.failedAttempts.length} exhausted rollout {gepa.failedAttempts.length === 1 ? "attempt" : "attempts"} — excluded from scores
+          </summary>
+          <div style={{ display: "grid", gap: 6, marginTop: 7 }}>
+            {gepa.failedAttempts.slice(-12).map((failure) => (
+              <div key={`${failure.sequence}-${failure.exampleId ?? "unknown"}`} style={{ border: "1px solid var(--sv-border)", borderRadius: 7, padding: "8px 10px", fontSize: 11.5 }}>
+                <span className="sv-mono">{failure.candidateId ?? "candidate"} · {failure.stage ?? "evaluation"} · {failure.exampleId ?? "unknown example"}</span>
+                <div style={{ color: "var(--sv-text-muted)", marginTop: 3 }}>
+                  {failure.failureClass ?? "rollout_failed"}{failure.attempt != null ? ` · attempt ${failure.attempt}${failure.maxAttempts != null ? `/${failure.maxAttempts}` : ""}` : ""}
+                  {failure.message ? ` · ${failure.message}` : ""}
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
+      ) : null}
+      {gepa.heldout?.blocked ? (
+        <p style={{ margin: "8px 0 0", color: "#b23830", fontSize: 12 }}>
+          Heldout promotion was blocked because the evidence set was incomplete. No missing result was treated as zero.
+        </p>
+      ) : null}
+    </section>
+  );
 }
 
 export type GepaComparisonPayload = {
@@ -182,11 +233,14 @@ export function GepaWorkspace({
   const rolloutLimit = limitOf(gepa, "total_rollouts");
   const costLimit = limitOf(gepa, "cost_usd");
   const proposerLimit = limitOf(gepa, "proposer_calls");
-  const rolloutSpent = rolloutLimit?.spent ?? (gepa.rolloutsCompleted || undefined);
+  const rolloutSpentValue = Math.max(rolloutLimit?.spent ?? 0, gepa.rolloutsCompleted);
+  const rolloutSpent = rolloutSpentValue > 0 ? rolloutSpentValue : undefined;
   const proposerSpent = proposerLimit?.spent ??
     (gepa.proposerTraces.filter((trace) => trace.status === "completed").length || undefined);
   const costSpent = costLimit?.spent ?? projected.usage.costUsd;
-  const heldoutValue = gepa.heldout?.skipped
+  const heldoutValue = gepa.heldout?.blocked
+    ? "blocked"
+    : gepa.heldout?.skipped
     ? "skipped"
     : gepa.heldout?.reward != null
       ? gepa.heldout.reward.toFixed(2)
@@ -269,6 +323,8 @@ export function GepaWorkspace({
         }}
         testId="gepa-stage-timeline"
       />
+      <EvidenceIntegrity gepa={gepa} />
+      <HillClimbPanel gepa={gepa} onSelect={setSelectedCandidate} />
       <div className="sv-workspace-canvas">
         <div>
           <FrontierPanel gepa={gepa} selectedId={selectedCandidate} onSelect={setSelectedCandidate} />

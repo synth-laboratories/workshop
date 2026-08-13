@@ -1,0 +1,46 @@
+{
+  "schema": "digbench.codex-auth-comparison.v1",
+  "benchmark": "local DiG-style canary v1",
+  "official_digbench": false,
+  "auth": "ChatGPT via Codex CLI",
+  "reasoning_effort": "medium",
+  "models": {
+    "gpt-5.6-luna": {
+      "runs": 3,
+      "games_won": 15,
+      "games_played": 15,
+      "mean_actions": 25.667,
+      "mean_elapsed_seconds": 100.958,
+      "memory_rule_accuracy": "24/24",
+      "mean_reported_input_tokens": 492257,
+      "mean_uncached_input_tokens": 44427.7,
+      "mean_output_tokens": 4479.3,
+      "protocol_compliant_runs": 2,
+      "source_inspection_runs": 0
+    },
+    "gpt-5.6-terra": {
+      "runs": 3,
+      "games_won": 15,
+      "games_played": 15,
+      "mean_actions": 25,
+      "mean_elapsed_seconds": 87.198,
+      "memory_rule_accuracy": "22/24",
+      "mean_reported_input_tokens": 514249.7,
+      "mean_uncached_input_tokens": 33737.7,
+      "mean_output_tokens": 4352,
+      "protocol_compliant_runs": 3,
+      "source_inspection_runs": 0
+    }
+  },
+  "paired_summary": {
+    "win_difference": 0,
+    "terra_elapsed_reduction_percent": 13.6,
+    "terra_action_reduction_percent": 2.6,
+    "interpretation": "Performance tie on wins; Terra was faster and marginally more action-efficient in this small canary."
+  },
+  "limitations": [
+    "The official DiG-bench endpoint returned HTTP 401 because DIGBENCH_API_TOKEN was unavailable.",
+    "Five local games and three runs per model are insufficient for a general model ranking.",
+    "The harness used authenticated codex exec shell actions, not the DiG MCP server."
+  ]
+}

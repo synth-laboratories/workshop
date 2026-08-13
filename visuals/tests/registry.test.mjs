@@ -71,6 +71,17 @@ test("visuals package exposes the registered templates", () => {
   assert.equal(mermaid.slots.length, 0);
   assert.ok(!existsSync(join(templatesDir, "diagram.mermaid.v1", "shell.tsx")));
   assert.ok(!existsSync(join(templatesDir, "diagram.mermaid.v1", "examples")));
+  for (const [id, rendererKind] of [
+    ["diagram.systems.v1", "systems"],
+    ["diagram.systems.dynamic.v1", "systems-dynamic"],
+  ]) {
+    const meta = JSON.parse(readFileSync(join(templatesDir, id, "template.json"), "utf8"));
+    assert.equal(meta.id, id);
+    assert.equal(meta.genre, "diagram");
+    assert.equal(meta.rendererKind, rendererKind);
+    assert.deepEqual(meta.slots, []);
+    assert.ok(!existsSync(join(templatesDir, id, "shell.tsx")));
+  }
 });
 
 test("eval catalog declares the initial versioned family", () => {
