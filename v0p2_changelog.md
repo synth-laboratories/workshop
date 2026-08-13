@@ -17,6 +17,6 @@
 - Sequence diagrams now render multiline labels instead of displaying literal break markup.
 - Wide diagrams no longer initially render clipped outside the visible pane.
 - Named development instances can use an explicit read-only Codex auth file without creating or opening a Keychain credential prompt.
+- Codex auth-file sessions now use the API access-token expiry instead of incorrectly expiring when the shorter-lived identity token ends.
 - Mermaid SVG registry validation now accepts XML declarations emitted by the renderer.
 - C4 diagrams now emit safe SVG links.
-
