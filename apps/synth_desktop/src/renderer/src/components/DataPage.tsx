@@ -430,7 +430,7 @@ export function DataPage({
 				<div className="ws-stack" data-testid="inventory-containers">
 					<div className="ws-stack-tight">
 						<button type="button" className="ws-btn ws-btn-secondary" data-testid="attach-container" onClick={() => setAttachOpen((value) => !value)}>Attach container</button>
-						{attachOpen ? <form onSubmit={(event) => { event.preventDefault(); void attach(); }} className="ws-form-row">
+						{attachOpen ? <form onSubmit={(event) => { event.preventDefault(); void attach(); }} className="ws-form-row inventory-attach-form">
 							<label className="ws-field">Name<input className="ws-input" value={attachName} onChange={(event) => setAttachName(event.target.value)} /></label>
 							<label className="ws-field">Base URL<input className="ws-input" value={attachUrl} onChange={(event) => setAttachUrl(event.target.value)} inputMode="url" required /></label>
 							<button className="ws-btn ws-btn-secondary" type="submit" disabled={busyId === "attach"}>{busyId === "attach" ? "Attaching…" : "Attach"}</button>
