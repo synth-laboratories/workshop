@@ -29,6 +29,7 @@ export function useLiveEvalStream(options: {
   const ingest = useRef(emptyLiveIngest());
 
   useEffect(() => {
+    const fixtureReady = Boolean(!sseUrl && fixtureEvents?.length);
     ingest.current = emptyLiveIngest();
     setEvents([]);
     setError(null);
@@ -44,7 +45,10 @@ export function useLiveEvalStream(options: {
       if (pending.length) {
         ingest.current = ingestLiveEnvelopeBatch(ingest.current, pending.splice(0));
       }
-      setReady(ingest.current.ready);
+      // Fixture evidence does not contain the live transport's
+      // `stream.subscribed` control envelope. Keep its local-ready state while
+      // publishing each durable envelope instead of overwriting it to false.
+      setReady(fixtureReady || ingest.current.ready);
       setEvents(ingest.current.events as LiveEvalEvent[]);
     };
     const push = (parsed: LiveEnvelope) => {

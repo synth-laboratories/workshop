@@ -16,6 +16,15 @@ import {
 } from "./projectCraftax.ts";
 import "./viewer.css";
 
+// Vite turns these template-local fixtures into packaged assets. Persisted
+// visuals intentionally keep only the small fixture reference in SQLite; the
+// shell resolves that reference here instead of requiring a megabyte-scale
+// inline binding to be copied through the visual service.
+const BUNDLED_FIXTURES = import.meta.glob("./examples/*.json", {
+  eager: true,
+  import: "default"
+}) as Record<string, unknown>;
+
 type StreamScope = {
   campaign_id?: string;
   rollout_ids?: string[];
@@ -69,6 +78,16 @@ function finite(value: unknown): number | undefined {
 
 function asStream(raw: unknown): StreamPayload {
   return object(raw) as StreamPayload;
+}
+
+function bundledFixtureStream(bindings: VisualBinding[]): StreamPayload | undefined {
+  const source = bindings.find((binding) => binding.slot === "stream" && binding.kind === "fixture")?.source;
+  if (!source) return undefined;
+  const fileName = source.split("/").pop();
+  if (!fileName) return undefined;
+  const fixture = BUNDLED_FIXTURES[`./examples/${fileName}`];
+  const stream = asStream(fixture);
+  return Array.isArray(stream.events) ? stream : undefined;
 }
 
 function timeLabel(event: LiveEvalEvent | undefined, precise = false): string {
@@ -187,8 +206,8 @@ function truthNumber(value: number | undefined, terminal: boolean, format: (valu
 }
 
 export function Shell(props: ShellProps) {
-  const stream = asStream(props.data ?? props.stream);
   const bindingList = Array.isArray(props.bindings) ? props.bindings : props.bindings?.slots ?? [];
+  const stream = asStream(props.data ?? props.stream ?? bundledFixtureStream(bindingList));
   const liveBinding = bindingList.find((binding) => binding.slot === "stream" && binding.kind === "live_sse");
   const sseUrl = props.sseUrl ?? stream.transports?.sse?.url ?? stream.sse_url ?? liveBinding?.source;
   const pollUrl = stream.transports?.poll?.url ?? stream.poll_url ?? liveBinding?.poll_url;

@@ -146,6 +146,23 @@ test("finite fixture replay is ready without a live subscription control", () =>
     /if \(fixtureEvents\?\.length\) \{\s*\/\/[^]*?setReady\(true\);\s*setLive\(true\);/,
     "local fixtures must finish as ready instead of falling back to connecting"
   );
+  assert.match(
+    hook,
+    /setReady\(fixtureReady \|\| ingest\.current\.ready\)/,
+    "publishing fixture envelopes must not erase the local-ready state"
+  );
+});
+
+test("live Craftax resolves persisted fixture references from packaged template assets", () => {
+  const shell = readFileSync(join(root, "templates/live.craftax.v1/shell.tsx"), "utf8");
+  assert.match(shell, /import\.meta\.glob\("\.\/examples\/\*\.json"/);
+  assert.match(shell, /props\.data \?\? props\.stream \?\? bundledFixtureStream\(bindingList\)/);
+  const fixture = JSON.parse(
+    readFileSync(join(root, "templates/live.craftax.v1/examples/cua-luna-low-10.json"), "utf8"),
+  );
+  assert.equal(fixture.events.length, 284);
+  assert.equal(fixture.events.filter((event) => event.kind === "snapshot").length, 274);
+  assert.equal(fixture.events.filter((event) => event.kind === "eval.run.terminal").length, 10);
 });
 
 test("multiplexed rollout-local event ids never collapse across lanes", () => {
