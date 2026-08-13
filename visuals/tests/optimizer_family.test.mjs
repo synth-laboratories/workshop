@@ -336,11 +336,21 @@ test("canonical GELO lifecycle events keep candidates and child streams inspecta
     { ...base, type: "goex.theme_state_changed", sequenceNumber: 2, delta: { theme_id: "survival", name: "Survival", to: "active" } },
     { ...base, type: "child.rollout.registered", sequenceNumber: 3, delta: { candidate_id: "cand_local", split: "train", evaluation_stage: "search_fresh", status: "subscribed", resource_ref } },
     { ...base, type: "child.rollout.completed", sequenceNumber: 4, delta: { candidate_id: "cand_local", split: "train", evaluation_stage: "search_fresh", status: "completed", reward: 0.5, resource_ref } },
-    { ...base, type: "goex.best_base_decided", sequenceNumber: 5, delta: { candidate_id: "cand_local", fresh_reward_mean: 0.5 } },
+    { ...base, type: "candidate.registered", sequenceNumber: 5, delta: { candidate_id: "cand_proposed", parent_id: "cand_local", source: "core_proposer", values: { system: "Inspect the live proposal" } } },
+    { ...base, type: "proposer.delta", sequenceNumber: 6, delta: { generation: 0, channel: "content", text: "proposal " } },
+    { ...base, type: "proposer.delta", sequenceNumber: 7, delta: { generation: 0, channel: "content", text: "reasoning" } },
+    { ...base, type: "goex.core_proposer_finished", sequenceNumber: 8, delta: { cost_usd: 0.01 } },
+    { ...base, type: "goex.acceptance_completed", sequenceNumber: 9, delta: { champion_candidate_id: "cand_proposed", baseline_candidate_id: "cand_local" } },
+    { ...base, type: "goex.best_base_decided", sequenceNumber: 10, delta: { candidate_id: "cand_local", fresh_reward_mean: 0.5 } },
   ]);
-  assert.equal(projected.goex.candidates.length, 1);
-  assert.equal(projected.goex.candidates[0].candidate_id, "cand_local");
-  assert.equal(projected.goex.candidates[0].on_frontier, true);
+  assert.equal(projected.goex.candidates.length, 2);
+  assert.equal(projected.goex.candidates.find((candidate) => candidate.candidate_id === "cand_local").on_frontier, true);
+  const proposal = projected.goex.candidates.find((candidate) => candidate.candidate_id === "cand_proposed");
+  assert.equal(proposal.values.system, "Inspect the live proposal");
+  assert.equal(proposal.status, "accepted");
+  assert.equal(proposal.on_frontier, true);
+  assert.equal(projected.goex.agents.coreProposer.streaming.content, "proposal reasoning");
+  assert.equal(projected.goex.agents.coreProposer.status, "completed");
   assert.equal(projected.goex.themes[0].theme_id, "survival");
   assert.equal(projected.goex.rollouts.length, 1);
   assert.equal(projected.goex.rollouts[0].ref.id, "rollout_local_1");

@@ -44,6 +44,10 @@ export function GoExOverlay({ state }: { state: ProjectedState }) {
     ? proposerRun.trace as Record<string, unknown>
     : undefined;
   const traceEvents = rows(proposerTrace?.received).filter((event) => event.method === "item/completed");
+  const proposerStreaming = proposer?.streaming && typeof proposer.streaming === "object" && !Array.isArray(proposer.streaming)
+    ? proposer.streaming as Record<string, unknown>
+    : {};
+  const proposerText = Object.values(proposerStreaming).map(text).filter(Boolean).join("\n");
 
   return (
     <>
@@ -86,6 +90,12 @@ export function GoExOverlay({ state }: { state: ProjectedState }) {
                 );
               })}
             </div>
+          </details>
+        ) : null}
+        {proposerText ? (
+          <details style={{ marginTop: 8, border: "1px solid var(--sv-border)", borderRadius: 8, padding: "8px 10px" }}>
+            <summary style={{ cursor: "pointer" }}><strong>Inspect proposer stream</strong></summary>
+            <pre style={{ margin: "9px 0 0", maxHeight: 420, overflow: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", color: "var(--sv-text-muted)", font: "inherit" }}>{proposerText}</pre>
           </details>
         ) : null}
       </section>

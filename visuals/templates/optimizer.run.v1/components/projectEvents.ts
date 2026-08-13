@@ -1463,9 +1463,13 @@ export function projectAtCursor(
       };
     }
     if (event.type === "goex.core_proposer_started" || event.type === "goex.core_proposer_finished") {
+      const existing = goexAgents.coreProposer && typeof goexAgents.coreProposer === "object" && !Array.isArray(goexAgents.coreProposer)
+        ? goexAgents.coreProposer as Record<string, unknown>
+        : {};
       goexAgents = {
         ...goexAgents,
         coreProposer: {
+          ...existing,
           status: event.type.endsWith("started") ? "running" : "completed",
           sequence: event.sequenceNumber,
           ...(event.delta ?? {})
@@ -1475,6 +1479,56 @@ export function projectAtCursor(
     if (event.type === "goex.seed_candidate_registered") {
       const id = typeof event.delta?.candidate_id === "string" ? event.delta.candidate_id : undefined;
       if (id) goexEventCandidates.set(id, { ...(goexEventCandidates.get(id) ?? {}), id, candidate_id: id, status: "registered", ...(event.delta ?? {}) });
+    }
+    if (run.algorithmId === "go-ex" && event.type === "candidate.registered") {
+      const id = typeof event.delta?.candidate_id === "string" ? event.delta.candidate_id : undefined;
+      if (id) goexEventCandidates.set(id, { ...(goexEventCandidates.get(id) ?? {}), id, candidate_id: id, ...(event.delta ?? {}) });
+    }
+    if (run.algorithmId === "go-ex" && event.type === "goex.acceptance_completed") {
+      const championId = typeof event.delta?.champion_candidate_id === "string" ? event.delta.champion_candidate_id : undefined;
+      const baselineId = typeof event.delta?.baseline_candidate_id === "string" ? event.delta.baseline_candidate_id : undefined;
+      if (championId) {
+        goexEventCandidates.set(championId, {
+          ...(goexEventCandidates.get(championId) ?? {}),
+          id: championId,
+          candidate_id: championId,
+          status: "accepted",
+          decision: "accepted",
+          on_frontier: true
+        });
+        const currentFrontier = goexFrontier.candidate_frontier && typeof goexFrontier.candidate_frontier === "object" && !Array.isArray(goexFrontier.candidate_frontier)
+          ? goexFrontier.candidate_frontier as Record<string, unknown>
+          : {};
+        goexFrontier = { ...goexFrontier, candidate_frontier: { ...currentFrontier, global: [championId] } };
+      }
+      if (baselineId && baselineId !== championId) {
+        goexEventCandidates.set(baselineId, {
+          ...(goexEventCandidates.get(baselineId) ?? {}),
+          id: baselineId,
+          candidate_id: baselineId,
+          status: "rejected",
+          decision: "rejected"
+        });
+      }
+    }
+    if (run.algorithmId === "go-ex" && event.type === "proposer.delta") {
+      const text = typeof event.delta?.text === "string" ? event.delta.text : "";
+      const existing = goexAgents.coreProposer && typeof goexAgents.coreProposer === "object" && !Array.isArray(goexAgents.coreProposer)
+        ? goexAgents.coreProposer as Record<string, unknown>
+        : {};
+      const streaming = existing.streaming && typeof existing.streaming === "object" && !Array.isArray(existing.streaming)
+        ? existing.streaming as Record<string, unknown>
+        : {};
+      const channel = typeof event.delta?.channel === "string" ? event.delta.channel : "content";
+      goexAgents = {
+        ...goexAgents,
+        coreProposer: {
+          ...existing,
+          status: existing.status === "completed" ? "completed" : "running",
+          streaming: { ...streaming, [channel]: `${String(streaming[channel] ?? "")}${text}` },
+          sequence: event.sequenceNumber
+        }
+      };
     }
     if (event.type === "goex.best_base_decided") {
       const id = typeof event.delta?.candidate_id === "string" ? event.delta.candidate_id : undefined;
