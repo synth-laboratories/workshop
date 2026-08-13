@@ -492,6 +492,8 @@ export function projectAtCursor(
   let goexFrontier: Record<string, unknown> = {};
   let goexDataEngine: Record<string, unknown> = {};
   let goexAgents: Record<string, unknown> = {};
+  const goexEventCandidates = new Map<string, Record<string, unknown>>();
+  const goexEventRollouts = new Map<string, Record<string, unknown>>();
   const checkpoints: Array<Record<string, unknown>> = [];
   const evaluations: Array<Record<string, unknown>> = [];
   const campaigns: Array<{
@@ -1470,6 +1472,43 @@ export function projectAtCursor(
         }
       };
     }
+    if (event.type === "goex.seed_candidate_registered") {
+      const id = typeof event.delta?.candidate_id === "string" ? event.delta.candidate_id : undefined;
+      if (id) goexEventCandidates.set(id, { ...(goexEventCandidates.get(id) ?? {}), id, candidate_id: id, status: "registered", ...(event.delta ?? {}) });
+    }
+    if (event.type === "goex.best_base_decided") {
+      const id = typeof event.delta?.candidate_id === "string" ? event.delta.candidate_id : undefined;
+      if (id) goexEventCandidates.set(id, { ...(goexEventCandidates.get(id) ?? {}), id, candidate_id: id, status: "best_base", on_frontier: true, ...(event.delta ?? {}) });
+    }
+    if (event.type === "goex.theme_state_changed") {
+      const id = typeof event.delta?.theme_id === "string" ? event.delta.theme_id : undefined;
+      if (id) {
+        const index = themes.findIndex((theme) => theme.theme_id === id);
+        const next = { ...(index >= 0 ? themes[index] : {}), ...(event.delta ?? {}), status: event.delta?.to };
+        if (index >= 0) themes[index] = next; else themes.push(next);
+      }
+    }
+    if (event.type.startsWith("child.rollout.")) {
+      const resource = event.delta?.resource_ref && typeof event.delta.resource_ref === "object" && !Array.isArray(event.delta.resource_ref)
+        ? event.delta.resource_ref as Record<string, unknown>
+        : {};
+      const id = typeof resource.rollout_id === "string" ? resource.rollout_id : undefined;
+      if (id) {
+        const stream = resource.stream && typeof resource.stream === "object" && !Array.isArray(resource.stream)
+          ? resource.stream as Record<string, unknown>
+          : {};
+        goexEventRollouts.set(id, {
+          ...(goexEventRollouts.get(id) ?? {}),
+          rollout_id: id,
+          candidate_id: event.delta?.candidate_id,
+          split: event.delta?.split,
+          lane: event.delta?.evaluation_stage,
+          status: event.delta?.status,
+          reward: event.delta?.reward,
+          metadata: { stream }
+        });
+      }
+    }
     if (event.type === "goex.state.batch.updated") {
       const slices = event.snapshot?.slices;
       const sliceMap = slices && typeof slices === "object" && !Array.isArray(slices)
@@ -1599,6 +1638,38 @@ export function projectAtCursor(
       const id = String(event.item?.id ?? event.delta?.evaluation_id ?? "");
       const existing = campaigns.find((campaign) => campaign.id === id);
       if (existing) existing.status = event.item?.status ?? "completed";
+    }
+    if (event.type === "sft.checkpoint_rollout.allocated") {
+      const rolloutId = String(event.item?.id ?? event.delta?.rollout_id ?? "");
+      const evaluationId = String(event.delta?.evaluation_id ?? "");
+      if (rolloutId && evaluationId) {
+        let campaign = campaigns.find((entry) => entry.id === evaluationId);
+        if (!campaign) {
+          campaign = {
+            id: evaluationId,
+            checkpointId: typeof event.delta?.checkpoint_id === "string" ? event.delta.checkpoint_id : undefined,
+            status: "running",
+            splitRole: typeof event.delta?.split_role === "string" ? event.delta.split_role : undefined,
+            children: []
+          };
+          campaigns.push(campaign);
+        }
+        if (!campaign.children.some((child) => child.id === rolloutId)) {
+          const streamId = typeof event.delta?.stream_id === "string" ? event.delta.stream_id : undefined;
+          campaign.children.push({
+            kind: "container_rollout",
+            id: rolloutId,
+            role: "checkpoint_evaluation",
+            attributes: {
+              ...(streamId ? { stream_id: streamId } : {}),
+              reward: null,
+              checkpoint_id: event.delta?.checkpoint_id,
+              split_role: event.delta?.split_role,
+              seed: event.delta?.seed
+            }
+          });
+        }
+      }
     }
     if (
       event.type === "sft.checkpoint_rollout.completed" ||
@@ -1806,6 +1877,9 @@ export function projectAtCursor(
       const id = typeof row.rollout_id === "string" ? row.rollout_id : undefined;
       if (id) rowsByRollout.set(id, row);
     }
+    for (const [id, row] of goexEventRollouts) {
+      rowsByRollout.set(id, { ...(rowsByRollout.get(id) ?? {}), ...row });
+    }
     const rows = [...rowsByRollout.values()];
     const rollouts = rows.flatMap((row) => {
       const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
@@ -1861,7 +1935,15 @@ export function projectAtCursor(
     projected.goex = {
       board,
       themes,
-      candidates: goexCandidates,
+      candidates: (() => {
+        const merged = new Map<string, Record<string, unknown>>();
+        for (const candidate of goexCandidates) {
+          const id = String(candidate.candidate_id ?? candidate.id ?? "");
+          if (id) merged.set(id, candidate);
+        }
+        for (const [id, candidate] of goexEventCandidates) merged.set(id, { ...(merged.get(id) ?? {}), ...candidate });
+        return [...merged.values()];
+      })(),
       frontier: goexFrontier,
       dataEngine: goexDataEngine,
       agents: goexAgents,

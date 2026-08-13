@@ -319,6 +319,35 @@ test("hosted GELO state keeps Craftax child streams inspectable", () => {
   assert.equal(projected.goex.rollouts[0].ref.attributes.stream.transports.poll.url, "/rollouts/rollout_craftax_1/events");
 });
 
+test("canonical GELO lifecycle events keep candidates and child streams inspectable without state batches", () => {
+  const run = { id: "gelo_local", algorithmId: "go-ex", status: "completed" };
+  const base = { occurredAt: "2026-08-12T20:00:00Z", optimizerRunId: run.id, algorithmId: "go-ex" };
+  const resource_ref = {
+    resource_type: "rollout",
+    rollout_id: "rollout_local_1",
+    stream: {
+      id: "stream:rollout_local_1",
+      transports: { poll: { url: "/rollouts/rollout_local_1/events" } },
+      reward: { url: "/rollouts/rollout_local_1/reward" },
+    },
+  };
+  const projected = projectAtCursor(run, [
+    { ...base, type: "goex.seed_candidate_registered", sequenceNumber: 1, delta: { candidate_id: "cand_local" } },
+    { ...base, type: "goex.theme_state_changed", sequenceNumber: 2, delta: { theme_id: "survival", name: "Survival", to: "active" } },
+    { ...base, type: "child.rollout.registered", sequenceNumber: 3, delta: { candidate_id: "cand_local", split: "train", evaluation_stage: "search_fresh", status: "subscribed", resource_ref } },
+    { ...base, type: "child.rollout.completed", sequenceNumber: 4, delta: { candidate_id: "cand_local", split: "train", evaluation_stage: "search_fresh", status: "completed", reward: 0.5, resource_ref } },
+    { ...base, type: "goex.best_base_decided", sequenceNumber: 5, delta: { candidate_id: "cand_local", fresh_reward_mean: 0.5 } },
+  ]);
+  assert.equal(projected.goex.candidates.length, 1);
+  assert.equal(projected.goex.candidates[0].candidate_id, "cand_local");
+  assert.equal(projected.goex.candidates[0].on_frontier, true);
+  assert.equal(projected.goex.themes[0].theme_id, "survival");
+  assert.equal(projected.goex.rollouts.length, 1);
+  assert.equal(projected.goex.rollouts[0].ref.id, "rollout_local_1");
+  assert.equal(projected.goex.rollouts[0].ref.attributes.stream_id, "stream:rollout_local_1");
+  assert.equal(projected.goex.rollouts[0].reward, 0.5);
+});
+
 test("optimizer normalization fails closed when sequence is missing", () => {
   assert.throws(
     () => normalizeOptimizerEvents([{ type: "candidate.created" }]),
@@ -458,6 +487,19 @@ test("hosted SFT events paint curves, keep missing val loss, and do not treat re
   assert.equal(formatChildEvalReward(campaign.children[1]), "1.00");
   assert.equal(formatChildEvalCost(campaign.children[1]), "$0.0040");
   assert.equal(projected.usage.costUsd, 0.004);
+});
+
+test("SFT allocated rollout IDs become inspectable children without embedded resource refs", () => {
+  const run = { id: "sft_local", algorithmId: "sft", status: "running" };
+  const events = normalizeOptimizerEvents([
+    { type: "sft.checkpoint_evaluation.allocated", sequence_number: 1, run_id: run.id, algorithm_id: "sft", item: { id: "eval_1", status: "allocated" }, delta: { evaluation_id: "eval_1", checkpoint_id: "ckpt_1", split_role: "selection" } },
+    { type: "sft.checkpoint_rollout.allocated", sequence_number: 2, run_id: run.id, algorithm_id: "sft", item: { id: "rollout_1", status: "allocated" }, delta: { evaluation_id: "eval_1", checkpoint_id: "ckpt_1", rollout_id: "rollout_1", stream_id: "stream:rollout_1", seed: 0, split_role: "selection" } },
+    { type: "sft.checkpoint_rollout.completed", sequence_number: 3, run_id: run.id, algorithm_id: "sft", item: { id: "rollout_1", status: "completed" }, delta: { evaluation_id: "eval_1", rollout_id: "rollout_1", reward: 1 } },
+  ]);
+  const child = projectAtCursor(run, events).sft.campaigns[0].children[0];
+  assert.equal(child.id, "rollout_1");
+  assert.equal(child.attributes.stream_id, "stream:rollout_1");
+  assert.equal(child.attributes.reward, 1);
 });
 
 test("live templates do not import fixture fallbacks", () => {
