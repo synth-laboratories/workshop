@@ -14,9 +14,14 @@ test("v0.2 pending approval cards pin above Working in ChatTranscript", () => {
 	assert.ok(approvals >= 0, "pending approval pin is missing");
 	assert.ok(working >= 0, "Working… marker is missing");
 	assert.ok(approvals < working, "approval cards must render above Working…");
-	assert.match(source, /if \(!running\) return \[\];/);
 	assert.match(source, /Approve once/);
 	assert.match(source, /Always allow for this session/);
+	// Staleness is no longer inferred from run status — an unresolved request is
+	// terminalized by a durable approval.expired event, so a restored session
+	// shows real history instead of a live-looking card with dead buttons. That
+	// behavior is owned by tests/playwright/v02-approval-ux.spec.ts; asserting
+	// the old `if (!running) return []` guard here pinned the defect in place.
+	assert.doesNotMatch(source, /if \(!running\) return \[\];/);
 });
 
 test("v0.2 grouped activity keeps visual and container MCP calls out of used-tools summaries", () => {

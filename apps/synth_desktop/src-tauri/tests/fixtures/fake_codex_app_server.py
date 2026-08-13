@@ -18,6 +18,7 @@ turn_number = 0
 # attempt succeeds.
 exit_on_turn_start = home / "exit-on-turn-start"
 reject_thread_resume = home / "reject-thread-resume"
+request_approval_on_turn_start = home / "request-approval-on-turn-start"
 
 
 def send(message: dict) -> None:
@@ -38,6 +39,10 @@ for raw in sys.stdin:
     request_id = message.get("id")
     params = message.get("params") or {}
     if request_id is None:
+        continue
+    # Desktop's answer to a server-originated approval request. It is already
+    # captured in the JSONL log above; there is no request method to dispatch.
+    if method is None:
         continue
 
     if method == "initialize":
@@ -81,6 +86,17 @@ for raw in sys.stdin:
         continue
 
     send({"jsonrpc": "2.0", "id": request_id, "result": result})
+    if method == "turn/start" and request_approval_on_turn_start.exists():
+        send({
+            "jsonrpc": "2.0",
+            "id": 9000 + turn_number,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "command": "printf fixture",
+                "cwd": str(home.parent),
+                "availableDecisions": ["decline", "accept", "acceptForSession"],
+            },
+        })
     if method == "thread/compact/start":
         compact_turn_id = "compact-fixture-1"
         send({

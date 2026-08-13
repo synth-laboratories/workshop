@@ -1010,7 +1010,9 @@ export function eventsToLocalActivity(
 			pendingApprovals.push({ sequence: event.sequence, key: approvalKey(event) });
 			continue;
 		}
-		if (event.eventKind !== "approval.granted" && event.eventKind !== "approval.rejected") continue;
+		if (event.eventKind !== "approval.granted"
+			&& event.eventKind !== "approval.rejected"
+			&& event.eventKind !== "approval.expired") continue;
 		const key = approvalKey(event);
 		let index = pendingApprovals.length - 1;
 		if (key) {
@@ -1300,7 +1302,8 @@ export function eventsToLocalActivity(
 		const path = typeof payload.path === "string" ? payload.path : undefined;
 		const label = event.eventKind === "approval.requested" ? "Approval requested"
 			: event.eventKind === "approval.granted" ? "Approval granted"
-				: event.eventKind === "approval.rejected" ? "Approval rejected" : "Approval updated";
+				: event.eventKind === "approval.rejected" ? "Approval rejected"
+					: event.eventKind === "approval.expired" ? "Approval expired" : "Approval updated";
 		const command = typeof payload.command === "string" ? payload.command : undefined;
 		const safeKind = payload.kind === "shell_command" || payload.kind === "file_change" || payload.kind === "permission";
 		const detail = safeKind && typeof payload.detail === "string"

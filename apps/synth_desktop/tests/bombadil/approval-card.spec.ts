@@ -22,7 +22,14 @@ const approval = extract((state: any) => {
 		workingVisible: Boolean(working),
 		rejectVisible: Boolean(reject),
 		approveVisible: Boolean(approve),
+		approvePoint: point(".approval-card .approval-approve"),
 		approveOnce: (approve?.textContent ?? "").includes("Approve once"),
+		bridgeReady: typeof state.window.synthCodex?.resolveApproval === "function"
+			&& typeof state.window.synthCodexOauth?.ensureReady === "function"
+			&& typeof state.window.synthConfig?.getDesktopPermissions === "function",
+		resolverCalls: Array.isArray(state.window.__approvalResolverCalls)
+			? state.window.__approvalResolverCalls.map((call: unknown[]) => call.join("|"))
+			: [],
 		cardAboveWorking: !cardRect || !workingRect || cardRect.bottom <= workingRect.top + 1,
 		noHorizontalOverflow: document.documentElement.scrollWidth <= state.window.innerWidth + 1
 	};
@@ -35,8 +42,21 @@ export const open_the_waiting_turn = actions(() => {
 	if (!approval.current.cardVisible && approval.current.chatPoint) {
 		return [{ Click: { name: "Open the waiting approval turn", point: approval.current.chatPoint } }];
 	}
+	if (approval.current.cardVisible
+		&& approval.current.approvePoint
+		&& !approval.current.resolverCalls.includes("v02-approval-session|appr_shell_1|once")) {
+		return [{ Click: { name: "Approve the waiting shell request", point: approval.current.approvePoint } }];
+	}
 	return ["Wait"];
 });
+
+export const approval_fixture_has_the_connected_permissions_and_resolver_bridge = eventually(() =>
+	approval.current.bridgeReady
+).within(8, "seconds");
+
+export const approve_once_calls_the_resolver_with_session_approval_and_decision = eventually(() =>
+	approval.current.resolverCalls.includes("v02-approval-session|appr_shell_1|once")
+).within(8, "seconds");
 
 export const approval_card_pins_above_working_with_reject_and_approve_once = eventually(() =>
 	approval.current.cardVisible

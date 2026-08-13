@@ -275,6 +275,7 @@ window.synthModelPerformance = {
 function approvalCardBridgeScript() {
 	return `
 const approvalSessionId = "v02-approval-session";
+window.__approvalResolverCalls = [];
 function approvalAppEvent(sequence, kind, payload) {
   return {
     schemaVersion: "synth.desktop-app-event.v1",
@@ -324,6 +325,9 @@ window.synthCodex = {
   start: async () => ({ sessionId: approvalSessionId, threadId: "v02-approval-thread" }),
   startTurn: async () => ({ sessionId: approvalSessionId, threadId: "v02-approval-thread", turnId: "turn-approval" }),
   interrupt: async () => undefined,
+  resolveApproval: async (sessionId, approvalId, decision) => {
+    window.__approvalResolverCalls.push([sessionId, approvalId, decision]);
+  },
   close: async () => undefined,
   onEvent: () => () => undefined
 };
@@ -342,6 +346,27 @@ window.synthCore = {
   eventsAfter: async () => approvalEvents,
   sessionEventsAfter: async (sessionId) => sessionId === approvalSessionId ? approvalEvents : [],
   onEvent: () => () => undefined
+};
+window.synthCodexOauth = {
+  begin: async () => { throw new Error("not used"); },
+  completeManual: async () => ({ state: "connected", action: "none", canUseModels: true, configured: true }),
+  status: async () => ({ state: "connected", action: "none", canUseModels: true, configured: true }),
+  ensureReady: async () => ({ state: "connected", action: "none", canUseModels: true, configured: true }),
+  disconnect: async () => ({ state: "disconnected", action: "connect", canUseModels: false, configured: false }),
+  cancel: async () => undefined
+};
+window.synthConfig = {
+  get: async () => ({
+    configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "test",
+    backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY",
+    apiKeyConfigured: true, workerKeyConfigured: false, openrouterApiKeyConfigured: true
+  }),
+  update: async () => { throw new Error("not used"); },
+  listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
+  getWorkspaceAccess: async () => ({ allowedRoots: [] }),
+  updateWorkspaceAccess: async () => ({ allowedRoots: [] }),
+  getDesktopPermissions: async () => ({ approvalPolicy: "untrusted", sandboxMode: "workspace-write" }),
+  updateDesktopPermissions: async (request) => request
 };
 `;
 }
