@@ -452,15 +452,60 @@ fn capture_review(args: &Value) -> Result<Value, String> {
     if !(320..=2400).contains(&width) || !(400..=1800).contains(&height) {
         return Err("review viewport must be within 320x400 and 2400x1800".into());
     }
-    let rendered = request("POST", &format!("/v1/visuals/{id}/render"), None)?;
-    let revision = rendered
+    let visual_response = request("GET", &format!("/v1/visuals/{id}"), None)?;
+    let revision = visual_response
         .pointer("/visual/currentRevision")
         .and_then(Value::as_i64)
-        .ok_or("render response missing revision")?;
+        .ok_or("visual response missing revision")?;
+    let renderer_kind = visual_response
+        .pointer("/visual/rendererKind")
+        .and_then(Value::as_str)
+        .ok_or("visual response missing renderer kind")?;
+    let root = connection_file()
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("visual-review-captures");
+    fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    let stem = format!("{id}-r{revision}-{width}x{height}");
+    let png_path = root.join(format!("{stem}.png"));
+    let capture_mode = if matches!(renderer_kind, "mermaid" | "systems" | "systemsDynamic") {
+        request("POST", &format!("/v1/visuals/{id}/render"), None)?;
+        capture_svg_review(id, renderer_kind, width, height, &root, &stem, &png_path)?;
+        "deterministic-svg"
+    } else {
+        capture_desktop_review(id, width, height, &png_path)?;
+        "desktop-window"
+    };
+    let png = fs::read(&png_path).map_err(|error| error.to_string())?;
+    Ok(json!({
+        "visual_id": id,
+        "revision": revision,
+        "renderer_kind": renderer_kind,
+        "capture_mode": capture_mode,
+        "viewport": {"width":width,"height":height},
+        "screenshot_path": png_path.to_string_lossy(),
+        "instruction": "Inspect the attached PNG image before submitting visual_review. If any collision, truncation, crossing, weak hierarchy, or excessive density is visible, update and capture again.",
+        "_mcpImage": {"data":base64::engine::general_purpose::STANDARD.encode(png),"mimeType":"image/png"}
+    }))
+}
+
+fn capture_svg_review(
+    id: &str,
+    renderer_kind: &str,
+    width: u64,
+    height: u64,
+    root: &std::path::Path,
+    stem: &str,
+    png_path: &std::path::Path,
+) -> Result<(), String> {
     let rendition = request(
         "GET",
         &format!("/v1/visuals/{id}/renditions/svg"),
-        Some(json!({"theme":"dark","size":"pane"})),
+        Some(json!({
+            "theme": if renderer_kind == "mermaid" { "light" } else { "dark" },
+            "size":"pane"
+        })),
     )?;
     let svg_b64 = rendition
         .pointer("/rendition/base64")
@@ -469,15 +514,7 @@ fn capture_review(args: &Value) -> Result<Value, String> {
     let svg = base64::engine::general_purpose::STANDARD
         .decode(svg_b64)
         .map_err(|error| error.to_string())?;
-    let root = connection_file()
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("visual-review-captures");
-    fs::create_dir_all(&root).map_err(|error| error.to_string())?;
-    let stem = format!("{id}-r{revision}-{width}x{height}");
     let svg_path = root.join(format!("{stem}.svg"));
-    let png_path = root.join(format!("{stem}.png"));
     fs::write(&svg_path, &svg).map_err(|error| error.to_string())?;
     // Fit the complete SVG inside the requested viewport. Cropping a square
     // QuickLook thumbnail made valid wide diagrams look clipped and taught the
@@ -501,7 +538,10 @@ fn capture_review(args: &Value) -> Result<Value, String> {
     let fitted_height = (view_box_values[3] * scale).round().max(1.0) as u64;
     let raster = Command::new("sips")
         .args([
-            "-s", "format", "png", "-z",
+            "-s",
+            "format",
+            "png",
+            "-z",
             &fitted_height.to_string(),
             &fitted_width.to_string(),
         ])
@@ -520,7 +560,8 @@ fn capture_review(args: &Value) -> Result<Value, String> {
                 "--padToHeightWidth",
                 &height.to_string(),
                 &width.to_string(),
-                "--padColor", "090A0C",
+                "--padColor",
+                "090A0C",
             ])
             .arg(&png_path)
             .args(["--out"])
@@ -532,15 +573,81 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         }
         fs::rename(&padded_path, &png_path).map_err(|error| error.to_string())?;
     }
-    let png = fs::read(&png_path).map_err(|error| error.to_string())?;
-    Ok(json!({
-        "visual_id": id,
-        "revision": revision,
-        "viewport": {"width":width,"height":height},
-        "screenshot_path": png_path.to_string_lossy(),
-        "instruction": "Inspect the attached PNG image before submitting visual_review. If any collision, truncation, crossing, weak hierarchy, or excessive density is visible, update and capture again.",
-        "_mcpImage": {"data":base64::engine::general_purpose::STANDARD.encode(png),"mimeType":"image/png"}
-    }))
+    Ok(())
+}
+
+fn capture_desktop_review(
+    id: &str,
+    width: u64,
+    height: u64,
+    png_path: &std::path::Path,
+) -> Result<(), String> {
+    // Template visuals are React surfaces, not SVG renditions. Show the exact
+    // visual, locate this named instance's on-screen window, and capture it.
+    request(
+        "POST",
+        &format!("/v1/visuals/{id}/show"),
+        Some(json!({"presentation":"pane"})),
+    )?;
+    std::thread::sleep(std::time::Duration::from_millis(350));
+    let app_name = env::var("SYNTH_DESKTOP_APP_NAME")
+        .map_err(|_| "template review capture requires SYNTH_DESKTOP_APP_NAME".to_string())?;
+    let swift = r#"import CoreGraphics
+import Foundation
+let wanted = CommandLine.arguments[1]
+let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)! as! [[String: Any]]
+let candidates = windows.compactMap { item -> (Int, Double)? in
+  guard (item[kCGWindowOwnerName as String] as? String) == wanted,
+        let number = item[kCGWindowNumber as String] as? Int,
+        let bounds = item[kCGWindowBounds as String] as? [String: Any],
+        let width = bounds["Width"] as? Double,
+        let height = bounds["Height"] as? Double,
+        width >= 640, height >= 400 else { return nil }
+  return (number, width * height)
+}
+if let best = candidates.max(by: { $0.1 < $1.1 }) { print(best.0) }"#;
+    let output = Command::new("swift")
+        .args(["-e", swift, &app_name])
+        .output()
+        .map_err(|error| format!("launch Desktop window resolver: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Desktop window resolver failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let window_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if window_id.is_empty() {
+        return Err(format!("no reviewable Desktop window found for {app_name}"));
+    }
+    let raw_path = png_path.with_extension("window.png");
+    let capture = Command::new("/usr/sbin/screencapture")
+        .args(["-x", "-l", &window_id])
+        .arg(&raw_path)
+        .status()
+        .map_err(|error| format!("launch Desktop window capture: {error}"))?;
+    if !capture.success() || !raw_path.is_file() {
+        return Err("Desktop window capture failed".into());
+    }
+    let resize = Command::new("sips")
+        .args([
+            "-s",
+            "format",
+            "png",
+            "-z",
+            &height.to_string(),
+            &width.to_string(),
+        ])
+        .arg(&raw_path)
+        .args(["--out"])
+        .arg(png_path)
+        .status()
+        .map_err(|error| format!("launch Desktop review resize: {error}"))?;
+    if !resize.success() || !png_path.is_file() {
+        return Err("Desktop review resize failed".into());
+    }
+    let _ = fs::remove_file(raw_path);
+    Ok(())
 }
 
 fn main() {

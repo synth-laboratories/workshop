@@ -27,13 +27,10 @@ const BASE_AUTHORING_CHECKS: [&str; 6] = [
 
 fn required_authoring_checks(template_id: &str) -> Vec<&'static str> {
     let mut checks = BASE_AUTHORING_CHECKS.to_vec();
-    if matches!(
-        template_id,
-        "diagram.systems.v1" | "diagram.systems.dynamic.v1"
-    ) {
+    checks.push("screenshotInspected");
+    if template_id.starts_with("diagram.") {
         checks.push("noTextCollisions");
         checks.push("focalDensity");
-        checks.push("screenshotInspected");
     }
     if template_id == "live.craftax.v1" {
         checks.push("imageReplay");
@@ -1065,26 +1062,25 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             if findings.iter().any(|value| !value.is_string()) {
                 anyhow::bail!("review findings must be strings");
             }
-            if matches!(
-                current.template_id.as_str(),
-                "diagram.systems.v1" | "diagram.systems.dynamic.v1"
-            ) {
+            {
                 let screenshot = body
                     .get("screenshot_path")
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
-                    .context("systems visual review requires screenshot_path from the rendered Desktop view")?;
+                    .context("visual review requires screenshot_path from capture_review")?;
                 if !(screenshot.ends_with(".png")
                     || screenshot.ends_with(".jpg")
                     || screenshot.ends_with(".jpeg"))
                 {
-                    anyhow::bail!("systems visual review screenshot_path must reference a PNG or JPEG capture");
+                    anyhow::bail!(
+                        "visual review screenshot_path must reference a PNG or JPEG capture"
+                    );
                 }
                 let screenshot_path = std::path::Path::new(screenshot);
                 if !screenshot_path.is_absolute() || !screenshot_path.is_file() {
                     anyhow::bail!(
-                        "systems visual review screenshot_path must be an existing absolute file"
+                        "visual review screenshot_path must be an existing absolute file"
                     );
                 }
             }

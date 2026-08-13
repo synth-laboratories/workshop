@@ -47,7 +47,7 @@ test("systems authoring requires screenshot-backed collision and density review"
 	assert.match(ipc, /noTextCollisions/);
 	assert.match(ipc, /focalDensity/);
 	assert.match(ipc, /screenshotInspected/);
-	assert.match(ipc, /requires screenshot_path from the rendered Desktop view/);
+	assert.match(ipc, /visual review requires screenshot_path from capture_review/);
 	assert.match(ipc, /unresolved automated findings/);
 	assert.match(authorSkill, /capture_review.*wide and compact viewport sizes/);
 	assert.match(authorSkill, /5–7 focal elements per beat/);
@@ -60,6 +60,17 @@ test("visual MCP exposes image-backed review capture", () => {
 	assert.match(mcp, /visual_capture_review/);
 	assert.match(mcp, /screenshot_path/);
 	assert.match(mcp, /_mcpImage/);
+	assert.match(mcp, /deterministic-svg/);
+	assert.match(mcp, /desktop-window/);
+	assert.match(mcp, /screencapture/);
 	assert.match(stdio, /"type": "image"/);
 	assert.match(stdio, /object\.remove\("_mcpImage"\)/);
+});
+
+test("screenshot-backed readiness applies to every visual family", () => {
+	const ipc = readFileSync(new URL("../src-tauri/src/visuals_ipc.rs", import.meta.url), "utf8");
+	const useSkill = readFileSync(new URL("../skills/use-synth-visuals/SKILL.md", import.meta.url), "utf8");
+	assert.match(ipc, /checks\.push\("screenshotInspected"\)/);
+	assert.match(ipc, /visual review requires screenshot_path from capture_review/);
+	for (const family of ["evals", "optimizers", "UML/Mermaid", "static 2D", "Benjamin Dicken Style"]) assert.ok(useSkill.includes(family), family);
 });
