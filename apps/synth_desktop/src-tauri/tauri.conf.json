@@ -38,7 +38,13 @@
     },
     "resources": {
       "../../../services/laguna-daemon/laguna_daemon": "services/laguna-daemon/laguna_daemon",
-      "../../../visuals": "visuals"
+      "../../../visuals/templates": "visuals/templates",
+      "../../../visuals/chrome": "visuals/chrome",
+      "../../../visuals/components": "visuals/components",
+      "../../../visuals/runtime": "visuals/runtime",
+      "../../../visuals/ambient.d.ts": "visuals/ambient.d.ts",
+      "../../../visuals/package.json": "visuals/package.json",
+      "../../../visuals/tsconfig.json": "visuals/tsconfig.json"
     }
   }
 }
