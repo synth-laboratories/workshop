@@ -1,0 +1,54 @@
+{
+  "schema": "workshop.w2-then-w1-acceptance-receipt.v2",
+  "captured_at": "2026-08-13T03:12:00Z",
+  "acceptance_date": "2026-08-12",
+  "operator_model": "GPT-5.6 Sol",
+  "workshop_revision": "ef50724ba41ce3dc5b85b49377929c482f4c88ac",
+  "result": "PASS",
+  "w2": {
+    "result": "PASS",
+    "visual_id": "vis_ff81361fa5f54ec6b92c2df286be41f0",
+    "template_id": "trace.rollout_inspector.v1",
+    "revision": 2,
+    "status": "saved",
+    "revision_summary": "Added an above-the-fold evidence review summary with exact verdict status, rationale, score, and evidence-digest binding; cards reflow in the compact expanded visual state.",
+    "proof": {
+      "wide": { "viewport": { "width": 1280, "height": 900 }, "path": "docs/receipts/2026-08-12/w2-visual-proof/wide-1280x900.png", "sha256": "b5b67a253c8f14750d2f75c5a41f544b9520db079e1bd511a3aeb702f15bf549" },
+      "compact": { "viewport": { "width": 768, "height": 1024 }, "state": "expanded visual", "path": "docs/receipts/2026-08-12/w2-visual-proof/compact-768x1024.png", "sha256": "280c415df04bcaaa3503657ad97f22a955f0a06a1eaf1f417f8360f6f7b7e640" }
+    },
+    "verification": { "playwright": "1 passed", "visual_tests": "66 passed", "typecheck": "passed" }
+  },
+  "w1": {
+    "result": "PASS",
+    "endpoint": "http://127.0.0.1:8298",
+    "registered_container_id": "ctr_fa132769f60e4f949ecb33a9f3cd00e5",
+    "health": "ready",
+    "runtime_family": "craftax",
+    "world_ref": "world:craftax_default@symbolic_survival",
+    "environment_ref": "env:craftax_gold",
+    "evaluator_ref": "eval:craftax.env_sum",
+    "reward_authority": "environment",
+    "max_episode_steps": 120,
+    "policy_ref": { "harness": "react", "config": "muse_spark_medium", "code": null },
+    "model_evidence": { "kind": "openrouter_react", "provider": "openrouter", "model": "meta/muse-spark-1.1", "reasoning_effort": "medium", "graded": true },
+    "pre_start_gate": { "expected_events": ["stream.subscribed"], "stream_subscribed_ready": true, "frame_required_before_start": false },
+    "start_accounting": { "executable_start_calls": 10, "rollouts_created": 10, "retries": 0, "replacement_rollouts": 0, "ambiguous_starts": 0, "all_recovered_false": true },
+    "aggregate": { "terminal_completed": 10, "terminal_death": 5, "terminal_max_steps": 5, "reward_sum": 18.6, "policy_calls": 82, "prompt_tokens": 304123, "completion_tokens": 138656, "total_tokens": 442779, "cost_usd": 0.70864055 },
+    "rollouts": [
+      { "seed": 0, "rollout_id": "w1-20260812-muse-spark-medium-seed-0", "visual_id": "vis_8b6103588d2c4b95a29458a711d80b23", "status": "completed", "terminal_reason": "max_steps", "steps": 120, "reward": 3.0, "achievements": ["collect_sapling", "collect_wood", "place_plant"], "usage": { "calls": 6, "prompt_tokens": 19427, "completion_tokens": 12994, "total_tokens": 32421, "cost_usd": 0.06517525 }, "stream_id": "stream:w1-20260812-muse-spark-medium-seed-0", "closed_cursor": 1215, "final_frame": { "url": "/rollouts/w1-20260812-muse-spark-medium-seed-0/frames/120.png", "digest": "bca969747e820e75" }, "capture_closed_digest": "2e0fbdab14d76df5" },
+      { "seed": 1, "rollout_id": "w1-20260812-muse-spark-medium-seed-1", "visual_id": "vis_a4c5c458281c44dcae668282a22c0dd5", "status": "completed", "terminal_reason": "death", "steps": 35, "reward": 0.0, "achievements": ["collect_wood"], "usage": { "calls": 3, "prompt_tokens": 4829, "completion_tokens": 3903, "total_tokens": 8732, "cost_usd": 0.0190831 }, "stream_id": "stream:w1-20260812-muse-spark-medium-seed-1", "closed_cursor": 406, "final_frame": { "url": "/rollouts/w1-20260812-muse-spark-medium-seed-1/frames/35.png", "digest": "7fbe43cc3d75ab7a" }, "capture_closed_digest": "3ec2e6e8248eeb1e" },
+      { "seed": 2, "rollout_id": "w1-20260812-muse-spark-medium-seed-2", "visual_id": "vis_4d90371c4d73496b8c3970dedf086089", "status": "completed", "terminal_reason": "max_steps", "steps": 120, "reward": 1.5, "achievements": ["collect_sapling", "collect_wood"], "usage": { "calls": 12, "prompt_tokens": 51614, "completion_tokens": 19730, "total_tokens": 71344, "cost_usd": 0.1034207 }, "stream_id": "stream:w1-20260812-muse-spark-medium-seed-2", "closed_cursor": 1308, "final_frame": { "url": "/rollouts/w1-20260812-muse-spark-medium-seed-2/frames/120.png", "digest": "5e4f15cc090ed0dd" }, "capture_closed_digest": "06ca8018c4bcf560" },
+      { "seed": 3, "rollout_id": "w1-20260812-muse-spark-medium-seed-3", "visual_id": "vis_84deaf048bc94016a13dbace8a313ed4", "status": "completed", "terminal_reason": "death", "steps": 66, "reward": 2.0, "achievements": ["collect_sapling", "collect_wood", "place_table"], "usage": { "calls": 7, "prompt_tokens": 17703, "completion_tokens": 6582, "total_tokens": 24285, "cost_usd": 0.03613775 }, "stream_id": "stream:w1-20260812-muse-spark-medium-seed-3", "closed_cursor": 749, "final_frame": { "url": "/rollouts/w1-20260812-muse-spark-medium-seed-3/frames/66.png", "digest": "704fb6c459bf1b00" }, "capture_closed_digest": "8103661971e56b2c" },
+      { "seed": 4, "rollout_id": "w1-20260812-muse-spark-medium-seed-4", "visual_id": "vis_7286cab1c30b4219bc4985423ec036e6", "status": "completed", "terminal_reason": "death", "steps": 86, "reward": 1.1, "achievements": ["collect_sapling", "collect_wood"], "usage": { "calls": 8, "prompt_tokens": 23984, "completion_tokens": 10692, "total_tokens": 34676, "cost_usd": 0.0564911 }, "stream_id": "stream:w1-20260812-muse-spark-medium-seed-4", "closed_cursor": 983, "final_frame": { "url": "/rollouts/w1-20260812-muse-spark-medium-seed-4/frames/86.png", "digest": "93956116aebd3ad8" }, "capture_closed_digest": "68986a319540f64f" },
+      { "seed": 5, "rollout_id": "w1-20260812-muse-spark-medium-seed-5", "visual_id": "vis_7eaa0891b59a47bc9c9cc4b9440cb21a", "status": "completed", "terminal_reason": "max_steps", "steps": 120, "reward": 3.9, "achievements": ["collect_sapling", "collect_wood", "defeat_zombie", "place_table"], "usage": { "calls": 9, "prompt_tokens": 28733, "completion_tokens": 12426, "total_tokens": 41159, "cost_usd": 0.06495575 }, "stream_id": "stream:w1-20260812-muse-spark-medium-seed-5", "closed_cursor": 1313, "final_frame": { "url": "/rollouts/w1-20260812-muse-spark-medium-seed-5/frames/120.png", "digest": "f030228b9e493cc9" }, "capture_closed_digest": "6d38a994799c141e" },
+      { "seed": 6, "rollout_id": "w1-20260812-muse-spark-medium-seed-6", "visual_id": "vis_e75737dbaf1c4835bf702d80b196e000", "status": "completed", "terminal_reason": "max_steps", "steps": 120, "reward": 5.0, "achievements": ["collect_sapling", "collect_stone", "collect_wood", "make_wood_pickaxe", "place_table"], "usage": { "calls": 9, "prompt_tokens": 30388, "completion_tokens": 12717, "total_tokens": 43105, "cost_usd": 0.06708095 }, "stream_id": "stream:w1-20260812-muse-spark-medium-seed-6", "closed_cursor": 1276, "final_frame": { "url": "/rollouts/w1-20260812-muse-spark-medium-seed-6/frames/120.png", "digest": "7b4a72a845528881" }, "capture_closed_digest": "520cc8c7a6c0d82e" },
+      { "seed": 7, "rollout_id": "w1-20260812-muse-spark-medium-seed-7", "visual_id": "vis_4a2eb48c34d540e281a6a96d008978eb", "status": "completed", "terminal_reason": "death", "steps": 65, "reward": 0.0, "achievements": ["collect_wood"], "usage": { "calls": 6, "prompt_tokens": 13799, "completion_tokens": 6494, "total_tokens": 20293, "cost_usd": 0.03269765 }, "stream_id": "stream:w1-20260812-muse-spark-medium-seed-7", "closed_cursor": 733, "final_frame": { "url": "/rollouts/w1-20260812-muse-spark-medium-seed-7/frames/65.png", "digest": "d26e8874b05f05a6" }, "capture_closed_digest": "313f5637aa1b1d9b" },
+      { "seed": 8, "rollout_id": "w1-20260812-muse-spark-medium-seed-8", "visual_id": "vis_3eaefa60e91f4feb959e3ae030a4cb0a", "status": "completed", "terminal_reason": "death", "steps": 44, "reward": 0.1, "achievements": ["collect_wood"], "usage": { "calls": 7, "prompt_tokens": 25180, "completion_tokens": 21191, "total_tokens": 46371, "cost_usd": 0.10005155 }, "stream_id": "stream:w1-20260812-muse-spark-medium-seed-8", "closed_cursor": 506, "final_frame": { "url": "/rollouts/w1-20260812-muse-spark-medium-seed-8/frames/44.png", "digest": "52bc51440b9ba943" }, "capture_closed_digest": "ba9e7c650a10168e" },
+      { "seed": 9, "rollout_id": "w1-20260812-muse-spark-medium-seed-9", "visual_id": "vis_9b1416a5fef84cf6849493946c2aff5f", "status": "completed", "terminal_reason": "max_steps", "steps": 120, "reward": 2.0, "achievements": ["collect_sapling", "collect_wood"], "usage": { "calls": 15, "prompt_tokens": 88466, "completion_tokens": 31927, "total_tokens": 120393, "cost_usd": 0.16354675 }, "stream_id": "stream:w1-20260812-muse-spark-medium-seed-9", "closed_cursor": 1352, "final_frame": { "url": "/rollouts/w1-20260812-muse-spark-medium-seed-9/frames/120.png", "digest": "3b7bef4fe58c7f97" }, "capture_closed_digest": "0ae6391a92502ed6" }
+    ],
+    "evidence_contract": { "stream_schema": "synth.rollout.stream.v1", "event_schema": "synth.trace-stream-event.v1", "retention": "run", "frame_format": "png", "all_streams_closed": true, "all_visuals_post_start_reviewed": true },
+    "historical_trace_used": false,
+    "screenshot_substituted_for_frame": false,
+    "raw_engine_registered": false
+  }
+}
