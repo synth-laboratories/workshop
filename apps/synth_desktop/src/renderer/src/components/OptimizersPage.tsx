@@ -417,7 +417,7 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 				</div>
 				<div className="ws-card-aside">
 					{!banking77RecipeAvailable ? <span className="ws-badge ws-badge-warn">Recipes unavailable</span> : null}
-					<button className="ws-btn ws-btn-primary" type="button" disabled={busy || !banking77RecipeAvailable} onClick={() => setLauncherOpen(true)} data-testid="create-cloud-optimizer">
+					<button className={`ws-btn ${banking77RecipeAvailable ? "ws-btn-primary" : "ws-btn-secondary"}`} type="button" disabled={busy || !banking77RecipeAvailable} onClick={() => setLauncherOpen(true)} data-testid="create-cloud-optimizer">
 						<span data-testid="configure-banking77-gepa-smoke">Configure Luna vs Sol</span>
 					</button>
 				</div>
