@@ -83,11 +83,13 @@ export function GlobalTimeline({
             <button
               type="button"
               className="sv-btn"
+              aria-current={index === cursorIndex ? "step" : undefined}
               style={{
                 width: "100%",
                 textAlign: "left",
                 marginBottom: 4,
-                opacity: index === cursorIndex ? 1 : 0.7
+                background: index === cursorIndex ? "var(--sv-accent-soft)" : undefined,
+                borderColor: index === cursorIndex ? "var(--sv-accent)" : undefined
               }}
               onClick={() => onScrub(index)}
               data-testid={`optimizer-timeline-event-${event.sequence}`}
@@ -127,7 +129,7 @@ export function EventLog({ entries }: { entries: Array<Record<string, unknown>> 
         <h3>Events</h3>
         <span className="sv-mono">{entries.length}</span>
       </div>
-      <ol style={{ listStyle: "none", margin: 0, padding: 0, maxHeight: 220, overflow: "auto", border: "1px solid var(--sv-border)", borderRadius: 8 }}>
+      <ol tabIndex={0} aria-label="Optimizer events" style={{ listStyle: "none", margin: 0, padding: 0, maxHeight: 220, overflow: "auto", border: "1px solid var(--sv-border)", borderRadius: 8 }}>
         {entries.map((entry, index) => (
           <li key={`${entry.sequence}-${index}`} style={{ padding: "8px 10px", borderBottom: "1px solid var(--sv-border)", fontSize: 12 }}>
             <span className="sv-mono" style={{ color: "var(--sv-accent)", marginRight: 8 }}>{String(entry.type)}</span>
@@ -270,10 +272,9 @@ export function CandidateRail({
           const id = String(candidate.id ?? "");
           const active = id === selectedId;
           return (
+            <div key={id} role="listitem">
             <button
-              key={id}
               type="button"
-              role="listitem"
               className="sv-btn"
               data-testid={`optimizer-candidate-${id}`}
               aria-pressed={active}
@@ -289,6 +290,7 @@ export function CandidateRail({
               </div>
               <span style={{ display: "block", marginTop: 5, fontSize: 10.5, fontWeight: 700 }}>Inspect candidate →</span>
             </button>
+            </div>
           );
         })}
       </div>

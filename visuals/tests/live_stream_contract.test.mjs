@@ -10,6 +10,7 @@ import {
   formatMissingNumber,
   formatMissingUsd,
   ingestLiveEnvelopes,
+  ingestLiveEnvelopeBatch,
   isGuessedStreamUrl,
 } from "../runtime/liveStream.ts";
 
@@ -31,6 +32,30 @@ test("forbidden live-eval slots live and jobs fail closed", () => {
   assert.equal(assertLiveEvalSlot("stream", "live.harbor_eval.v1"), null);
   assert.equal(assertLiveEvalSlot("acceptance", "live.intern_acceptance.v1"), null);
 });
+
+test("batch ingest preserves lane-local identity, gaps, controls, and duplicate truth", () => {
+  const initial = ingestLiveEnvelopeBatch(undefinedState(), [
+    { kind: "stream.subscribed", control: true },
+    { lane: "a", sequence: 1, kind: "observation", payload: { text: "a1" } },
+    { lane: "b", sequence: 1, kind: "observation", payload: { text: "b1" } },
+    { lane: "a", sequence: 3, kind: "observation", payload: { text: "a3" } },
+  ]);
+  assert.equal(initial.ready, true);
+  assert.equal(initial.events.length, 3);
+  assert.deepEqual(initial.gaps, [{ scope: "a", after: 1, before: 3 }]);
+
+  const healed = ingestLiveEnvelopeBatch(initial, [
+    { lane: "a", sequence: 2, kind: "observation", payload: { text: "a2" } },
+    { lane: "b", sequence: 1, kind: "observation", payload: { text: "b1" } },
+  ]);
+  assert.equal(healed.events.length, 4, "exact duplicate is dropped");
+  assert.deepEqual(healed.gaps, []);
+  assert.equal(healed.lastSequenceByScope.get("a"), 3);
+});
+
+function undefinedState() {
+  return ingestLiveEnvelopes([]);
+}
 
 test("guessed Craftax/Harbor URLs are refused without a declared descriptor", () => {
   assert.equal(isGuessedStreamUrl("http://127.0.0.1:8098/events"), true);

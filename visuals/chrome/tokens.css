@@ -1,8 +1,8 @@
 /* Synth Desktop visual chrome — light Poolside-compatible, Synth orange accent */
 :root,
 .synth-visual-root {
-  --sv-accent: #f05f22;
-  --sv-accent-hot: #ff5c00;
+  --sv-accent: #b94712;
+  --sv-accent-hot: #a83a08;
   --sv-accent-soft: rgba(240, 95, 34, 0.12);
   --sv-surface: #ffffff;
   --sv-surface-muted: #f6f7f9;
@@ -10,10 +10,17 @@
   --sv-border-strong: #d5dae2;
   --sv-text: #1a1d23;
   --sv-text-muted: #5c6573;
-  --sv-text-faint: #8b93a1;
+  --sv-text-faint: #687180;
   --sv-radius: 10px;
   --sv-font: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
   --sv-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* One keyboard-focus contract for every shared visual template. Individual
+   genres may override the color, but must not remove the visible ring. */
+.synth-visual-root :where(button, input, select, textarea, summary, a[href], [tabindex]):focus-visible {
+  outline: 2px solid var(--sv-accent);
+  outline-offset: 2px;
 }
 
 .synth-visual-root {

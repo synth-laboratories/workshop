@@ -3,6 +3,7 @@ import type { LiveEvalEvent } from "../runtime/types.ts";
 import {
   emptyLiveIngest,
   ingestLiveEnvelope,
+  ingestLiveEnvelopeBatch,
   type LiveEnvelope
 } from "../runtime/liveStream.ts";
 
@@ -36,10 +37,28 @@ export function useLiveEvalStream(options: {
     setRecovered(0);
     idx.current = 0;
 
-    const push = (parsed: LiveEnvelope) => {
-      ingest.current = ingestLiveEnvelope(ingest.current, parsed);
+    let frame: number | null = null;
+    const pending: LiveEnvelope[] = [];
+    const publish = () => {
+      frame = null;
+      if (pending.length) {
+        ingest.current = ingestLiveEnvelopeBatch(ingest.current, pending.splice(0));
+      }
       setReady(ingest.current.ready);
       setEvents(ingest.current.events as LiveEvalEvent[]);
+    };
+    const push = (parsed: LiveEnvelope) => {
+      pending.push(parsed);
+      if (frame == null) frame = window.requestAnimationFrame(publish);
+    };
+    const pushBatch = (rows: LiveEnvelope[]) => {
+      if (frame != null) {
+        window.cancelAnimationFrame(frame);
+        frame = null;
+      }
+      if (pending.length) rows = [...pending.splice(0), ...rows];
+      ingest.current = ingestLiveEnvelopeBatch(ingest.current, rows);
+      publish();
     };
 
     if (sseUrl && typeof EventSource !== "undefined") {
@@ -66,7 +85,7 @@ export function useLiveEvalStream(options: {
                 cursor?: { next?: number; high_water?: number; has_more?: boolean; closed?: boolean };
               } | LiveEnvelope[];
               const rows = Array.isArray(body) ? body : body.page?.events ?? body.events ?? [];
-              for (const row of rows) push(row);
+              pushBatch(rows);
               if (Array.isArray(body)) break;
               const cursor = body.cursor;
               const evidenceSequences = rows.map((row) => Number(row.sequence_number ?? row.sequence)).filter(Number.isFinite);
@@ -153,6 +172,7 @@ export function useLiveEvalStream(options: {
       }
       void backfill();
       return () => {
+        if (frame != null) window.cancelAnimationFrame(frame);
         es?.close();
         abort.abort();
         setLive(false);
@@ -171,6 +191,7 @@ export function useLiveEvalStream(options: {
         push(next as LiveEnvelope);
       }, replayMs);
       return () => {
+        if (frame != null) window.cancelAnimationFrame(frame);
         window.clearInterval(id);
         setLive(false);
       };

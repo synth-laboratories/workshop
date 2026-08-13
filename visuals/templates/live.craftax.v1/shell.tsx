@@ -23,6 +23,7 @@ type StreamScope = {
 };
 type StreamPayload = {
   events?: LiveEvalEvent[];
+  replay_ms?: number;
   sse_url?: string;
   poll_url?: string;
   transports?: { poll?: { url?: string }; sse?: { url?: string } };
@@ -183,7 +184,7 @@ export function Shell(props: ShellProps) {
   const pollUrl = stream.transports?.poll?.url ?? stream.poll_url ?? liveBinding?.poll_url;
   const scope = stream.scope;
   const fixtureEvents = useMemo(() => sseUrl ? undefined : stream.events, [sseUrl, stream.events]);
-  const { events, live, error, ready, recovering, recovered } = useLiveEvalStream({ sseUrl, pollUrl, fixtureEvents });
+  const { events, live, error, ready, recovering, recovered } = useLiveEvalStream({ sseUrl, pollUrl, fixtureEvents, replayMs: stream.replay_ms });
   const config = { ...DEFAULT_CONFIG, ...props.visualMetadata?.visualConfig };
   const scopedEvents = useMemo(() => {
     // A visual bound to specific rollouts must never silently import every

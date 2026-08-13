@@ -16,7 +16,7 @@ import { bindingSlots } from "../../runtime/bind.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../runtime/types.ts";
 
 type StreamScope = { game_id?: string; rollout_ids?: string[]; selection?: { initial_rollout_id?: string } };
-type StreamPayload = { events?: LiveEvalEvent[]; sse_url?: string; scope?: StreamScope };
+type StreamPayload = { events?: LiveEvalEvent[]; sse_url?: string; replay_ms?: number; scope?: StreamScope };
 
 export type ShellProps = {
   title?: string;
@@ -81,7 +81,7 @@ export function Shell(props: ShellProps) {
     [sseUrl, stream.events]
   );
   const hasSource = Boolean(sseUrl || stream.events);
-  const { events, live, error, ready } = useLiveEvalStream({ sseUrl, fixtureEvents });
+  const { events, live, error, ready } = useLiveEvalStream({ sseUrl, fixtureEvents, replayMs: stream.replay_ms });
   const scopedEvents = useMemo(() => {
     if (!scope?.rollout_ids?.length) return events;
     const allowed = new Set(scope.rollout_ids);

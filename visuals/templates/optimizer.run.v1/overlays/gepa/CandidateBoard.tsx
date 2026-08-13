@@ -80,10 +80,9 @@ export function CandidateList({
             heldoutScore != null ? `heldout ${heldoutScore.toFixed(2)}` : null
           ].filter(Boolean);
           return (
+            <div key={id} role="listitem">
             <button
-              key={id}
               type="button"
-              role="listitem"
               className="sv-candidate-card"
               data-selected={selected}
               data-testid={`optimizer-candidate-${id}`}
@@ -119,6 +118,7 @@ export function CandidateList({
                 <span style={{ display: "block", marginTop: 2, fontSize: 11, color: "var(--sv-text-muted)" }}>{decision}</span>
               ) : null}
             </button>
+            </div>
           );
         })}
       </div>

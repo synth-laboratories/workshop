@@ -14,7 +14,7 @@ import { projectLiveEval } from "../../runtime/liveEvalReducer.ts";
 import { bindingSlots } from "../../runtime/bind.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../runtime/types.ts";
 
-type StreamPayload = { events?: LiveEvalEvent[]; sse_url?: string };
+type StreamPayload = { events?: LiveEvalEvent[]; sse_url?: string; replay_ms?: number };
 
 export type ShellProps = {
   title?: string;
@@ -95,7 +95,7 @@ export function Shell(props: ShellProps) {
     [sseUrl, stream.events]
   );
   const hasSource = Boolean(sseUrl || stream.events);
-  const { events, live, error, ready } = useLiveEvalStream({ sseUrl, fixtureEvents });
+  const { events, live, error, ready } = useLiveEvalStream({ sseUrl, fixtureEvents, replayMs: stream.replay_ms });
   const [showFullStream, setShowFullStream] = useState(false);
   const projection = projectLiveEval(events);
   const trials = useMemo(() => foldTrials(events), [events]);

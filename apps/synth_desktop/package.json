@@ -47,6 +47,7 @@
   },
   "devDependencies": {
     "@antithesishq/bombadil": "^0.6.1",
+    "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.62.1",
     "@tauri-apps/cli": "^2.11.4",
     "@types/react": "^19.1.0",

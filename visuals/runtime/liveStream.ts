@@ -145,53 +145,74 @@ export function emptyLiveIngest(): LiveIngestState {
   };
 }
 
-/** Append one envelope. Control records can set ready; they are not evidence. */
-export function ingestLiveEnvelope(state: LiveIngestState, event: LiveEnvelope): LiveIngestState {
-  const id = envelopeIdentity(event, state.events.length);
-  const digest = typeof event.digest === "string" ? event.digest : JSON.stringify(event);
-  if (state.ids.has(id)) {
-    const previous = state.digests.get(id);
-    if (previous === digest) return state;
-    return { ...state, conflicts: [...state.conflicts, `Conflicting duplicate envelope ${id}`] };
-  }
+/**
+ * Append a batch while cloning each collection only once. Live transports can
+ * deliver thousands of messages in one browser task; applying the single-row
+ * reducer for each message made 100k-envelope runs quadratic in both array
+ * copies and sequence-gap scans.
+ */
+export function ingestLiveEnvelopeBatch(
+  state: LiveIngestState,
+  incoming: LiveEnvelope[]
+): LiveIngestState {
+  if (incoming.length === 0) return state;
   const ids = new Set(state.ids);
-  ids.add(id);
   const digests = new Map(state.digests);
-  digests.set(id, digest);
-  if (isControlEnvelope(event)) {
-    const kind = String(event.kind ?? event.type ?? "");
-    return {
-      ...state,
-      events: state.events,
-      ids,
-      digests,
-      ready: state.ready || kind === "stream.subscribed"
-    };
-  }
-  const scope = String(event.rollout_id ?? event.lane ?? event.run_id ?? "run");
-  const rawSequence = event.sequence_number ?? event.sequence;
-  const sequence = typeof rawSequence === "number" ? rawSequence : Number(rawSequence);
+  const events = [...state.events];
   const lastSequenceByScope = new Map(state.lastSequenceByScope);
   const receivedSequencesByScope = new Map(state.receivedSequencesByScope);
-  let gaps = [...state.gaps];
-  if (Number.isFinite(sequence)) {
-    const received = new Set(receivedSequencesByScope.get(scope) ?? []);
-    received.add(sequence);
-    receivedSequencesByScope.set(scope, received);
-    const ordered = [...received].sort((a, b) => a - b);
-    lastSequenceByScope.set(scope, ordered.at(-1) ?? sequence);
-    gaps = gaps.filter((gap) => gap.scope !== scope);
+  const clonedSequenceScopes = new Set<string>();
+  const touchedSequenceScopes = new Set<string>();
+  const conflicts = [...state.conflicts];
+  let ready = state.ready;
+
+  for (const event of incoming) {
+    const id = envelopeIdentity(event, events.length);
+    const digest = typeof event.digest === "string" ? event.digest : JSON.stringify(event);
+    if (ids.has(id)) {
+      const previous = digests.get(id);
+      if (previous !== digest) conflicts.push(`Conflicting duplicate envelope ${id}`);
+      continue;
+    }
+    ids.add(id);
+    digests.set(id, digest);
+    if (isControlEnvelope(event)) {
+      ready ||= String(event.kind ?? event.type ?? "") === "stream.subscribed";
+      continue;
+    }
+    events.push(event);
+    const scope = String(event.rollout_id ?? event.lane ?? event.run_id ?? "run");
+    const rawSequence = event.sequence_number ?? event.sequence;
+    const sequence = typeof rawSequence === "number" ? rawSequence : Number(rawSequence);
+    if (!Number.isFinite(sequence)) continue;
+    if (!clonedSequenceScopes.has(scope)) {
+      receivedSequencesByScope.set(scope, new Set(receivedSequencesByScope.get(scope) ?? []));
+      clonedSequenceScopes.add(scope);
+    }
+    receivedSequencesByScope.get(scope)!.add(sequence);
+    touchedSequenceScopes.add(scope);
+    lastSequenceByScope.set(scope, Math.max(lastSequenceByScope.get(scope) ?? sequence, sequence));
+  }
+
+  let gaps = state.gaps.filter((gap) => !touchedSequenceScopes.has(gap.scope));
+  for (const scope of touchedSequenceScopes) {
+    const ordered = [...(receivedSequencesByScope.get(scope) ?? [])].sort((a, b) => a - b);
     for (let index = 1; index < ordered.length; index++) {
       if (ordered[index] > ordered[index - 1] + 1) {
         gaps.push({ scope, after: ordered[index - 1], before: ordered[index] });
       }
     }
   }
-  return { ...state, events: [...state.events, event], ids, digests, lastSequenceByScope, receivedSequencesByScope, gaps, ready: state.ready };
+  return { events, ids, digests, lastSequenceByScope, receivedSequencesByScope, gaps, conflicts, ready };
 }
 
-export function ingestLiveEnvelopes(events: LiveEnvelope[]): LiveIngestState {
-  return events.reduce(ingestLiveEnvelope, emptyLiveIngest());
+/** Append one envelope. Control records can set ready; they are not evidence. */
+export function ingestLiveEnvelope(state: LiveIngestState, event: LiveEnvelope): LiveIngestState {
+  return ingestLiveEnvelopeBatch(state, [event]);
+}
+
+export function ingestLiveEnvelopes(events: LiveEnvelope[], state = emptyLiveIngest()): LiveIngestState {
+  return ingestLiveEnvelopeBatch(state, events);
 }
 
 export function missingNumber(value: unknown): number | undefined {
