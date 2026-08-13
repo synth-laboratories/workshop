@@ -500,3 +500,33 @@ test("optimizer workbench keeps its hierarchy at desktop and compact widths", as
 		expect(geometry).toEqual({ inside: true, overflow: false });
 	}
 });
+
+test("Optimizer and Data primitives remain themed and contained in dark mode", async ({ page }) => {
+	await openSettings(page);
+	await page.getByTestId("theme-dark").click();
+	await page.getByRole("button", { name: "← Back" }).click();
+
+	for (const surface of [
+		{ entry: "open-optimizers", page: "optimizers-page" },
+		{ entry: "open-inventory", page: "inventory-page" }
+	]) {
+		await page.getByTestId(surface.entry).click();
+		const audit = await page.getByTestId(surface.page).evaluate((element) => {
+			const style = getComputedStyle(element);
+			const raised = element.querySelector<HTMLElement>(".ws-card, .ws-list, .ws-panel");
+			const raisedStyle = raised ? getComputedStyle(raised) : null;
+			return {
+				theme: document.documentElement.dataset.theme,
+				pageBackground: style.backgroundColor,
+				pageColor: style.color,
+				raisedBackground: raisedStyle?.backgroundColor ?? null,
+				overflow: document.documentElement.scrollWidth > window.innerWidth + 1
+			};
+		});
+		expect(audit.theme).toBe("dark");
+		expect(audit.pageBackground).toBe("rgb(22, 23, 26)");
+		expect(audit.pageColor).toBe("rgb(242, 243, 245)");
+		if (audit.raisedBackground) expect(audit.raisedBackground).not.toBe("rgb(255, 255, 255)");
+		expect(audit.overflow).toBe(false);
+	}
+});
