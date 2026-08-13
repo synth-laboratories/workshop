@@ -32,7 +32,7 @@ export type OptimizerEvent = {
   };
   delta?: Record<string, unknown>;
   snapshot?: Record<string, unknown>;
-  usageDelta?: Record<string, number>;
+  usageDelta?: Record<string, number | null>;
   artifactRefs?: unknown[];
   error?: unknown;
   raw?: unknown;
@@ -216,7 +216,7 @@ export type ProjectedState = {
   cursorSeq: number;
   summary: Record<string, unknown>;
   timeline: Array<Record<string, unknown>>;
-  usage: Record<string, number>;
+  usage: Record<string, number | null>;
   logs: Array<Record<string, unknown>>;
   artifacts: unknown[];
   execution: { bindings: Array<Record<string, unknown>> };
@@ -334,7 +334,9 @@ export function projectAtCursor(
     .filter((e) => e.sequenceNumber <= maxSeq)
     .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
 
-  const usage: Record<string, number> = {};
+  const usage: Record<string, number | null> = {};
+  let costReceiptSeen = false;
+  let costTelemetryComplete = true;
   const timeline: Array<Record<string, unknown>> = [];
   const logs: Array<Record<string, unknown>> = [];
   const artifacts: unknown[] = [];
@@ -462,8 +464,31 @@ export function projectAtCursor(
       ? source.usage as Record<string, unknown>
       : {};
     const wallSeconds = missingNumber(source.wall_seconds ?? source.wallSeconds);
+    const costSource = Object.prototype.hasOwnProperty.call(source, "cost_usd")
+      ? source.cost_usd
+      : Object.prototype.hasOwnProperty.call(source, "costUsd")
+        ? source.costUsd
+        : Object.prototype.hasOwnProperty.call(nested, "cost_usd")
+          ? nested.cost_usd
+          : Object.prototype.hasOwnProperty.call(nested, "costUsd")
+            ? nested.costUsd
+            : undefined;
+    const costPresent = costSource !== undefined;
+    const reportedCost = missingNumber(costSource);
+    if (costPresent) {
+      if (replace) {
+        costReceiptSeen = true;
+        costTelemetryComplete = reportedCost != null;
+        usage.costUsd = reportedCost ?? null;
+      } else {
+        costReceiptSeen = true;
+        if (reportedCost == null) costTelemetryComplete = false;
+        usage.costUsd = costTelemetryComplete
+          ? (usage.costUsd ?? 0) + (reportedCost ?? 0)
+          : null;
+      }
+    }
     const values = {
-      costUsd: missingNumber(source.cost_usd ?? source.costUsd),
       promptTokens: missingNumber(
         source.prompt_tokens ?? source.promptTokens ?? nested.prompt_tokens ?? nested.promptTokens
       ),
@@ -477,7 +502,10 @@ export function projectAtCursor(
     };
     for (const [key, value] of Object.entries(values)) {
       if (value == null) continue;
-      usage[key] = replace && key !== "wallTimeMs" ? value : (usage[key] ?? 0) + value;
+      const current = usage[key];
+      usage[key] = replace && key !== "wallTimeMs"
+        ? value
+        : (typeof current === "number" ? current : 0) + value;
     }
   };
 
@@ -1322,6 +1350,7 @@ export function projectAtCursor(
     artifacts,
     execution: { bindings: run.executionBindings ?? [] }
   };
+  if (costReceiptSeen && !costTelemetryComplete) projected.usage.costUsd = null;
 
   if (!incumbentId) {
     const accent = frontier.find((cell) => cell.accent);

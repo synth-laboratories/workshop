@@ -11,7 +11,7 @@
   "slots": [
     {
       "name": "document",
-      "description": "Self-contained canvas document with HTML/SVG body, optional CSS, accessible title, and preferred height.",
+      "description": "Self-contained canvas document with HTML/SVG body, optional CSS, accessible title/description metadata, and preferred height. Description is not rendered as a visible prose block.",
       "accepts": ["fixture", "local_cas", "trace_v5"],
       "required": true,
       "schema": "synth.visual.canvas_document.v1"

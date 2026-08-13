@@ -2,6 +2,7 @@ import type { VisualBinding } from "../../runtime/types.ts";
 
 type CanvasDocument = {
   title?: string;
+  /** Accessibility metadata; visible explanatory prose belongs in the authored body. */
   description?: string;
   html: string;
   css?: string;
@@ -26,9 +27,7 @@ function escapeHtml(value: string): string {
 }
 
 function sourceFor(document: CanvasDocument, title: string): string {
-  const description = document.description
-    ? `<p class="canvas-description">${escapeHtml(document.description)}</p>`
-    : "";
+  const accessibleDescription = document.description?.trim();
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -41,7 +40,6 @@ function sourceFor(document: CanvasDocument, title: string): string {
     html, body { margin: 0; min-height: 100%; background: ${document.background ?? "#fff"}; }
     body { padding: 24px; }
     .canvas-title { margin: 0; font-size: 24px; line-height: 1.15; letter-spacing: -.025em; }
-    .canvas-description { margin: 8px 0 20px; color: #697180; font-size: 13px; line-height: 1.5; }
     svg { display: block; max-width: 100%; height: auto; }
     table { width: 100%; border-collapse: collapse; }
     img { max-width: 100%; }
@@ -49,8 +47,9 @@ function sourceFor(document: CanvasDocument, title: string): string {
   </style>
 </head>
 <body>
-  <header><h1 class="canvas-title">${escapeHtml(title)}</h1>${description}</header>
+  <header><h1 class="canvas-title">${escapeHtml(title)}</h1></header>
   <main>${document.html}</main>
+  ${accessibleDescription ? `<span hidden>${escapeHtml(accessibleDescription)}</span>` : ""}
 </body>
 </html>`;
 }
@@ -69,7 +68,7 @@ export function Shell(props: ShellProps) {
   const height = Math.min(2400, Math.max(320, document.height ?? 720));
   return (
     <iframe
-      title={title}
+      title={document.description?.trim() ? `${title}. ${document.description.trim()}` : title}
       srcDoc={sourceFor(document, title)}
       sandbox=""
       referrerPolicy="no-referrer"

@@ -101,7 +101,7 @@ export function GlobalTimeline({
   );
 }
 
-export function UsageCards({ usage }: { usage: Record<string, number> }) {
+export function UsageCards({ usage }: { usage: Record<string, number | null> }) {
   const tokenTotal = usage.promptTokens == null && usage.completionTokens == null
     ? null
     : (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);

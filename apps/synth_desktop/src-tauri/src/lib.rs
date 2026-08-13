@@ -1996,12 +1996,6 @@ pub fn run() {
         std::process::exit(crate::visuals::mermaid::run_hidden_mode());
     }
     let specta = contract::specta::builder();
-    #[cfg(debug_assertions)]
-    {
-        if let Err(error) = contract::specta::export_typescript_bindings() {
-            eprintln!("specta protocol export skipped: {error}");
-        }
-    }
 
     tauri::Builder::default()
         // This must be the first plugin registered. All app state, IPC, and
@@ -2106,9 +2100,10 @@ pub fn run() {
             });
 
             let ipc_core = core.clone();
+            let ipc_app = app.handle().clone();
             let ipc_root = crate::storage::app_data_root();
             tauri::async_runtime::spawn(async move {
-                match visuals_ipc::spawn(ipc_core, ipc_root).await {
+                match visuals_ipc::spawn(ipc_core, ipc_app, ipc_root).await {
                     Ok(connection) => {
                         eprintln!(
                             "Visuals IPC listening at {} (token written to {})",

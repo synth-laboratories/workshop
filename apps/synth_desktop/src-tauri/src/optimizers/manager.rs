@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     env, fs,
     io::Write,
     path::{Path, PathBuf},
@@ -159,9 +159,21 @@ pub struct OptimizerManager {
     updates: broadcast::Sender<OptimizerSidecarStatus>,
     runtime: Mutex<Option<SidecarRuntime>>,
     /// Concurrent GEPA recipe workers, keyed by run id. Not a singleton.
-    gepa_workers: Mutex<HashSet<String>>,
+    /// Process-group leaders for active recipe workers. Tracking only logical
+    /// run ids is insufficient: a Tauri exit can outlive the task that owns
+    /// the `Child`, leaving `uv` descendants orphaned. Every production worker
+    /// is its own process group and the supervisor drains these groups first.
+    gepa_workers: Mutex<HashMap<String, GepaWorkerState>>,
     run_spools: Arc<Mutex<HashMap<String, RunSpoolState>>>,
     client: Client,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GepaWorkerState {
+    /// The run id is atomically reserved while its process is being spawned.
+    Starting,
+    /// The isolated process group is owned by this supervisor.
+    Running { pid: u32 },
 }
 
 impl OptimizerManager {
@@ -184,7 +196,7 @@ impl OptimizerManager {
             ensure_lock: Mutex::new(()),
             updates,
             runtime: Mutex::new(None),
-            gepa_workers: Mutex::new(HashSet::new()),
+            gepa_workers: Mutex::new(HashMap::new()),
             run_spools: Arc::new(Mutex::new(HashMap::new())),
             client: crate::http::http_client(),
         }
@@ -517,9 +529,13 @@ impl OptimizerManager {
             .version()?
             .ok_or_else(|| anyhow!("Optimizer sidecar is not installed"))?;
         {
+            use std::collections::hash_map::Entry;
             let mut workers = self.gepa_workers.lock().await;
-            if !workers.insert(run_id.to_string()) {
-                bail!("GEPA recipe for `{run_id}` is already running");
+            match workers.entry(run_id.to_string()) {
+                Entry::Vacant(entry) => {
+                    entry.insert(GepaWorkerState::Starting);
+                }
+                Entry::Occupied(_) => bail!("GEPA recipe for `{run_id}` is already running"),
             }
         }
         self.ensure_memory_spool(run_id).await;
@@ -531,7 +547,27 @@ impl OptimizerManager {
             stderr,
             openai_api_key,
         ) {
-            Ok(child) => Ok(child),
+            Ok(mut child) => {
+                let pid = child
+                    .id()
+                    .ok_or_else(|| anyhow!("spawned GEPA recipe omitted its process id"))?;
+                let promoted = {
+                    let mut workers = self.gepa_workers.lock().await;
+                    match workers.get_mut(run_id) {
+                        Some(state @ GepaWorkerState::Starting) => {
+                            *state = GepaWorkerState::Running { pid };
+                            true
+                        }
+                        Some(GepaWorkerState::Running { .. }) | None => false,
+                    }
+                };
+                if promoted {
+                    Ok(child)
+                } else {
+                    terminate_child(&mut child).await;
+                    bail!("GEPA supervisor drained `{run_id}` while its process was starting")
+                }
+            }
             Err(error) => {
                 self.gepa_workers.lock().await.remove(run_id);
                 Err(error)
@@ -540,7 +576,17 @@ impl OptimizerManager {
     }
 
     pub async fn release_gepa_recipe(&self, run_id: &str) {
-        self.gepa_workers.lock().await.remove(run_id);
+        // A recipe leader can exit while descendants remain in its process
+        // group. Releasing ownership must reap that whole group, not merely
+        // forget the pid and orphan paid work.
+        self.terminate_gepa_recipe(run_id).await;
+    }
+
+    pub async fn terminate_gepa_recipe(&self, run_id: &str) {
+        let state = self.gepa_workers.lock().await.remove(run_id);
+        if let Some(GepaWorkerState::Running { pid }) = state {
+            terminate_process_groups(&[pid]).await;
+        }
     }
 
     pub async fn active_gepa_run_ids(&self) -> Vec<String> {
@@ -549,7 +595,9 @@ impl OptimizerManager {
             .lock()
             .await
             .iter()
-            .cloned()
+            .filter_map(|(run_id, state)| {
+                matches!(state, GepaWorkerState::Running { .. }).then(|| run_id.clone())
+            })
             .collect::<Vec<_>>();
         ids.sort();
         ids
@@ -764,11 +812,21 @@ impl OptimizerManager {
     }
 
     async fn abort_runtime(&self) {
+        let worker_pids = self
+            .gepa_workers
+            .lock()
+            .await
+            .drain()
+            .filter_map(|(_, state)| match state {
+                GepaWorkerState::Starting => None,
+                GepaWorkerState::Running { pid } => Some(pid),
+            })
+            .collect::<Vec<_>>();
+        terminate_process_groups(&worker_pids).await;
         if let Some(mut runtime) = self.runtime.lock().await.take() {
             runtime.proxy_task.abort();
             if let Some(child) = runtime.child.as_mut() {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
+                terminate_child(child).await;
             }
             if let Some(task) = runtime.upstream_task.take() {
                 task.abort();
@@ -897,6 +955,7 @@ fn launch_gepa_recipe_process(
         }
     }
     let mut command = optimizer_command(version)?;
+    isolate_process_group(&mut command);
     command
         .args(["gepa", "run", "--config"])
         .arg(config_path)
@@ -960,6 +1019,7 @@ async fn launch_sidecar_upstream(
         .append(true)
         .open(home.join("sidecar.log"))?;
     let mut command = optimizer_command(&hit.version)?;
+    isolate_process_group(&mut command);
     command
         .args(["gepa", "service", "--db"])
         .arg(runtime_dir.join("gepa.sqlite"))
@@ -974,6 +1034,48 @@ async fn launch_sidecar_upstream(
         .spawn()
         .context("spawn allowlisted synth-optimizers GEPA service")?;
     Ok((Some(child), upstream_base_url, None))
+}
+
+#[cfg(unix)]
+fn isolate_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.as_std_mut().process_group(0);
+}
+
+#[cfg(not(unix))]
+fn isolate_process_group(_command: &mut Command) {}
+
+#[cfg(unix)]
+async fn terminate_process_groups(pids: &[u32]) {
+    for &pid in pids {
+        // Negative pid addresses the entire process group created at spawn.
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGTERM);
+        }
+    }
+    if !pids.is_empty() {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    for &pid in pids {
+        unsafe {
+            if libc::kill(-(pid as i32), 0) == 0 {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn terminate_process_groups(_pids: &[u32]) {}
+
+async fn terminate_child(child: &mut Child) {
+    if let Some(pid) = child.id() {
+        terminate_process_groups(&[pid]).await;
+    }
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.kill().await;
+    }
+    let _ = child.wait().await;
 }
 
 fn now_ms() -> u64 {
@@ -1596,6 +1698,81 @@ mod tests {
             }
         }
         assert!(saw_bus, "pin must still publish optimizer.run.updated");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn supervisor_drain_kills_active_recipe_process_group() {
+        let (mgr, _home) = manager();
+        let manager = Arc::new(mgr);
+        let mut command = Command::new("/bin/sh");
+        isolate_process_group(&mut command);
+        command
+            .args(["-c", "sleep 30 & wait"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let mut child = command.spawn().unwrap();
+        let pid = child.id().unwrap();
+        manager.gepa_workers.lock().await.insert(
+            "gepa_shutdown_probe".into(),
+            GepaWorkerState::Running { pid },
+        );
+
+        let supervisor = crate::services::ServiceSupervisor::new();
+        supervisor.register(manager.clone());
+        supervisor.drain_all().await;
+
+        let status = tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .expect("managed recipe process did not terminate")
+            .unwrap();
+        assert!(!status.success());
+        assert!(manager.active_gepa_run_ids().await.is_empty());
+        unsafe {
+            assert_ne!(
+                libc::kill(-(pid as i32), 0),
+                0,
+                "recipe process group survived supervisor drain"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn recipe_release_kills_the_owned_process_group() {
+        let (mgr, _home) = manager();
+        let mut command = Command::new("/bin/sh");
+        isolate_process_group(&mut command);
+        command
+            .args(["-c", "sleep 30 & wait"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let mut child = command.spawn().unwrap();
+        let pid = child.id().unwrap();
+        mgr.gepa_workers.lock().await.insert(
+            "gepa_release_probe".into(),
+            GepaWorkerState::Running { pid },
+        );
+
+        mgr.release_gepa_recipe("gepa_release_probe").await;
+
+        let status = tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .expect("released recipe process did not terminate")
+            .unwrap();
+        assert!(!status.success());
+        assert!(mgr.active_gepa_run_ids().await.is_empty());
+        unsafe {
+            assert_ne!(
+                libc::kill(-(pid as i32), 0),
+                0,
+                "recipe process group survived release"
+            );
+        }
     }
 
     #[tokio::test]

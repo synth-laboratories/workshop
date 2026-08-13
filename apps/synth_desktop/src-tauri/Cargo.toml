@@ -29,8 +29,10 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+libc = "0.2"
 mermaid-to-svg = { path = "third_party/mermaid-to-svg" }
 portable-pty = "0.9"
+png = "0.17"
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rusqlite = { version = "0.32", features = ["bundled"] }

@@ -63,15 +63,33 @@ async function assertNoHorizontalOverflow(page: Page, label: string): Promise<vo
 
 async function captureViewportSweep(page: Page, slug: string): Promise<void> {
 	mkdirSync(SHOT_DIR, { recursive: true });
+	const workspaceGeometry: Array<{ width: number; columns: number; sameRow: boolean }> = [];
 	for (const viewport of VIEWPORTS) {
 		await page.setViewportSize(viewport);
 		// Let CSS breakpoints and any resize observers settle.
 		await page.waitForTimeout(250);
 		await assertNoHorizontalOverflow(page, `${slug} @ ${viewport.width}px`);
+		const canvas = page.locator(".sv-workspace-canvas").first();
+		if (await canvas.count()) {
+			workspaceGeometry.push(await canvas.evaluate((element, width) => {
+				const children = [...element.children].slice(0, 2).map((child) => child.getBoundingClientRect());
+				return {
+					width,
+					columns: getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length,
+					sameRow: children.length === 2 && Math.abs(children[0].top - children[1].top) <= 2
+				};
+			}, viewport.width));
+		}
 		await page.screenshot({
 			path: join(SHOT_DIR, `${slug}-${viewport.width}.png`),
 			fullPage: true
 		});
+	}
+	if (workspaceGeometry.length) {
+		const wide = workspaceGeometry.find((geometry) => geometry.width === 1440);
+		const compact = workspaceGeometry.find((geometry) => geometry.width === 768);
+		expect(wide, `${slug}: missing wide workspace geometry`).toMatchObject({ columns: 2, sameRow: true });
+		expect(compact, `${slug}: missing compact workspace geometry`).toMatchObject({ columns: 1, sameRow: false });
 	}
 	await page.setViewportSize({ width: 1440, height: 900 });
 }

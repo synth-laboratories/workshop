@@ -12,6 +12,42 @@ use mcp_stdio::{run_stdio_server, McpServerInfo};
 use serde_json::{json, Value};
 use std::{env, fs, io, path::PathBuf, process::Command};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CapturePlatform {
+    MacOs,
+    Unsupported(&'static str),
+}
+
+impl CapturePlatform {
+    fn current() -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            Self::MacOs
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Self::Unsupported("linux")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            Self::Unsupported("windows")
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        {
+            Self::Unsupported("unknown")
+        }
+    }
+
+    fn require_macos(self, operation: &str) -> Result<(), String> {
+        match self {
+            Self::MacOs => Ok(()),
+            Self::Unsupported(platform) => Err(format!(
+                "UnsupportedCapturePlatform: {operation} is not implemented for {platform}"
+            )),
+        }
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Connection {
@@ -499,6 +535,7 @@ fn capture_svg_review(
     stem: &str,
     png_path: &std::path::Path,
 ) -> Result<(), String> {
+    CapturePlatform::current().require_macos("SVG review capture")?;
     let rendition = request(
         "GET",
         &format!("/v1/visuals/{id}/renditions/svg"),
@@ -516,64 +553,110 @@ fn capture_svg_review(
         .map_err(|error| error.to_string())?;
     let svg_path = root.join(format!("{stem}.svg"));
     fs::write(&svg_path, &svg).map_err(|error| error.to_string())?;
-    // Fit the complete SVG inside the requested viewport. Cropping a square
-    // QuickLook thumbnail made valid wide diagrams look clipped and taught the
-    // reviewing agent the wrong thing about the actual renderer.
-    let svg_text = String::from_utf8_lossy(&svg);
-    let view_box = svg_text
-        .split("viewBox=\"")
-        .nth(1)
-        .and_then(|rest| rest.split('"').next())
-        .ok_or("SVG review capture missing viewBox")?;
-    let view_box_values = view_box
-        .split_whitespace()
-        .map(str::parse::<f64>)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("invalid SVG review viewBox: {error}"))?;
-    if view_box_values.len() != 4 || view_box_values[2] <= 0.0 || view_box_values[3] <= 0.0 {
-        return Err("SVG review capture has invalid viewBox dimensions".into());
-    }
-    let scale = (width as f64 / view_box_values[2]).min(height as f64 / view_box_values[3]);
-    let fitted_width = (view_box_values[2] * scale).round().max(1.0) as u64;
-    let fitted_height = (view_box_values[3] * scale).round().max(1.0) as u64;
-    let raster = Command::new("sips")
-        .args([
-            "-s",
-            "format",
-            "png",
-            "-z",
-            &fitted_height.to_string(),
-            &fitted_width.to_string(),
-        ])
-        .arg(&svg_path)
-        .args(["--out"])
-        .arg(&png_path)
-        .status()
-        .map_err(|error| format!("launch sips SVG rasterizer: {error}"))?;
-    if !raster.success() || !png_path.is_file() {
-        return Err("sips failed to rasterize PNG review capture".into());
-    }
-    if fitted_width != width || fitted_height != height {
-        let padded_path = root.join(format!("{stem}.padded.png"));
-        let pad = Command::new("sips")
-            .args([
-                "--padToHeightWidth",
-                &height.to_string(),
-                &width.to_string(),
-                "--padColor",
-                "090A0C",
-            ])
-            .arg(&png_path)
-            .args(["--out"])
-            .arg(&padded_path)
-            .status()
-            .map_err(|error| format!("launch sips viewport pad: {error}"))?;
-        if !pad.success() || !padded_path.is_file() {
-            return Err("sips failed to pad PNG review capture".into());
-        }
-        fs::rename(&padded_path, &png_path).map_err(|error| error.to_string())?;
+    render_svg_with_webkit(&svg_path, width, height, png_path)?;
+    assert_non_blank_png(png_path)
+}
+
+#[cfg(target_os = "macos")]
+fn render_svg_with_webkit(
+    svg_path: &std::path::Path,
+    width: u64,
+    height: u64,
+    png_path: &std::path::Path,
+) -> Result<(), String> {
+    // WebKit is the canonical macOS SVG renderer for review captures. Unlike
+    // `sips`, it preserves the browser features Synth allows, including
+    // foreignObject content, and snapshots the exact requested viewport.
+    let swift = r#"import AppKit
+import Foundation
+import WebKit
+
+final class Navigation: NSObject, WKNavigationDelegate {
+    var loaded = false
+    var error: Error?
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loaded = true }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { self.error = error; loaded = true }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { self.error = error; loaded = true }
+}
+
+let input = URL(fileURLWithPath: CommandLine.arguments[1])
+let output = URL(fileURLWithPath: CommandLine.arguments[2])
+let width = Double(CommandLine.arguments[3])!
+let height = Double(CommandLine.arguments[4])!
+_ = NSApplication.shared
+let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+let navigation = Navigation()
+webView.navigationDelegate = navigation
+let source = try String(contentsOf: input, encoding: .utf8)
+let encoded = Data(source.utf8).base64EncodedString()
+let html = """
+<!doctype html><meta charset="utf-8"><style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#090A0C}
+img{display:block;width:100%;height:100%;object-fit:contain}
+</style><img src="data:image/svg+xml;base64,\(encoded)">
+"""
+webView.loadHTMLString(html, baseURL: input.deletingLastPathComponent())
+let loadDeadline = Date().addingTimeInterval(15)
+while !navigation.loaded && Date() < loadDeadline {
+    RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+}
+if let error = navigation.error { fputs("\(error)\n", stderr); exit(2) }
+if !navigation.loaded { fputs("WebKit SVG load timed out\n", stderr); exit(3) }
+var snapshot: NSImage?
+var snapshotError: Error?
+webView.takeSnapshot(with: nil) { image, error in snapshot = image; snapshotError = error }
+let snapshotDeadline = Date().addingTimeInterval(15)
+while snapshot == nil && snapshotError == nil && Date() < snapshotDeadline {
+    RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+}
+if let error = snapshotError { fputs("\(error)\n", stderr); exit(4) }
+guard let image = snapshot,
+      let bitmap = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: Int(width), pixelsHigh: Int(height),
+        bitsPerSample: 8, samplesPerPixel: 4,
+        hasAlpha: true, isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0, bitsPerPixel: 0
+      ),
+      let context = NSGraphicsContext(bitmapImageRep: bitmap) else {
+    fputs("WebKit SVG snapshot produced no PNG\n", stderr); exit(5)
+}
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = context
+image.draw(in: NSRect(x: 0, y: 0, width: width, height: height),
+           from: .zero, operation: .copy, fraction: 1.0)
+NSGraphicsContext.restoreGraphicsState()
+guard let png = bitmap.representation(using: .png, properties: [:]) else {
+    fputs("WebKit SVG snapshot could not encode PNG\n", stderr); exit(6)
+}
+try png.write(to: output, options: .atomic)
+"#;
+    let output = Command::new("swift")
+        .args(["-e", swift])
+        .arg(svg_path)
+        .arg(png_path)
+        .arg(width.to_string())
+        .arg(height.to_string())
+        .output()
+        .map_err(|error| format!("launch WebKit SVG renderer: {error}"))?;
+    if !output.status.success() || !png_path.is_file() {
+        return Err(format!(
+            "WebKitSvgRenderFailed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
     Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn render_svg_with_webkit(
+    _svg_path: &std::path::Path,
+    _width: u64,
+    _height: u64,
+    _png_path: &std::path::Path,
+) -> Result<(), String> {
+    CapturePlatform::current().require_macos("SVG review capture")
 }
 
 fn capture_desktop_review(
@@ -582,14 +665,61 @@ fn capture_desktop_review(
     height: u64,
     png_path: &std::path::Path,
 ) -> Result<(), String> {
+    CapturePlatform::current().require_macos("Desktop template review capture")?;
+    #[cfg(target_os = "macos")]
+    {
+        capture_macos_desktop_review(id, width, height, png_path)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (id, width, height, png_path);
+        unreachable!("platform gate returned success outside macOS")
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn capture_macos_desktop_review(
+    id: &str,
+    width: u64,
+    height: u64,
+    png_path: &std::path::Path,
+) -> Result<(), String> {
     // Template visuals are React surfaces, not SVG renditions. Show the exact
-    // visual, locate this named instance's on-screen window, and capture it.
+    // visual, resize the actual Webview so responsive layout runs at the
+    // requested viewport, then capture that named instance's on-screen window.
+    // Resizing a bitmap after capture is not a responsive-layout review.
     request(
         "POST",
         &format!("/v1/visuals/{id}/show"),
         Some(json!({"presentation":"pane"})),
     )?;
-    std::thread::sleep(std::time::Duration::from_millis(350));
+    let resize = request(
+        "POST",
+        "/v1/review-window/resize",
+        Some(json!({"width":width,"height":height})),
+    )?;
+    let previous = resize
+        .get("previous")
+        .cloned()
+        .ok_or("review window resize omitted previous size")?;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let result = capture_current_macos_window(width, height, png_path);
+    let restore = request("POST", "/v1/review-window/resize", Some(previous));
+    match (result, restore) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(format!(
+            "captured review but failed to restore Desktop window: {error}"
+        )),
+        (Ok(()), Ok(_)) => Ok(()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn capture_current_macos_window(
+    width: u64,
+    height: u64,
+    png_path: &std::path::Path,
+) -> Result<(), String> {
     let app_name = env::var("SYNTH_DESKTOP_APP_NAME")
         .map_err(|_| "template review capture requires SYNTH_DESKTOP_APP_NAME".to_string())?;
     let swift = r#"import CoreGraphics
@@ -627,7 +757,7 @@ if let best = candidates.max(by: { $0.1 < $1.1 }) { print(best.0) }"#;
         .status()
         .map_err(|error| format!("launch Desktop window capture: {error}"))?;
     if !capture.success() || !raw_path.is_file() {
-        return Err("Desktop window capture failed".into());
+        return Err("ScreenRecordingDeniedOrUnavailable: Desktop window capture produced no image; enable Screen Recording for Synth Workshop and retry".into());
     }
     let resize = Command::new("sips")
         .args([
@@ -647,7 +777,94 @@ if let best = candidates.max(by: { $0.1 < $1.1 }) { print(best.0) }"#;
         return Err("Desktop review resize failed".into());
     }
     let _ = fs::remove_file(raw_path);
+    assert_non_blank_png(png_path)?;
     Ok(())
+}
+
+fn assert_non_blank_png(path: &std::path::Path) -> Result<(), String> {
+    let file = fs::File::open(path).map_err(|error| format!("open review PNG: {error}"))?;
+    let mut decoder = png::Decoder::new(file);
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder
+        .read_info()
+        .map_err(|error| format!("decode review PNG header: {error}"))?;
+    let mut buffer = vec![0; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut buffer)
+        .map_err(|error| format!("decode review PNG: {error}"))?;
+    let bytes = &buffer[..info.buffer_size()];
+    let channels = match info.color_type {
+        png::ColorType::Rgb => 3,
+        png::ColorType::Rgba => 4,
+        png::ColorType::Grayscale => 1,
+        png::ColorType::GrayscaleAlpha => 2,
+        png::ColorType::Indexed => return Err("review PNG unexpectedly remained indexed".into()),
+    };
+    let mut min_luma = u16::MAX;
+    let mut max_luma = 0u16;
+    let mut sampled = 0usize;
+    for pixel in bytes.chunks_exact(channels).step_by(97) {
+        if channels == 4 && pixel[3] == 0 || channels == 2 && pixel[1] == 0 {
+            continue;
+        }
+        let (r, g, b) = if channels >= 3 {
+            (pixel[0] as u16, pixel[1] as u16, pixel[2] as u16)
+        } else {
+            let value = pixel[0] as u16;
+            (value, value, value)
+        };
+        let luma = (r * 3 + g * 6 + b) / 10;
+        min_luma = min_luma.min(luma);
+        max_luma = max_luma.max(luma);
+        sampled += 1;
+    }
+    if sampled < 16 || max_luma.saturating_sub(min_luma) < 8 {
+        return Err("BlankReviewCapture: screenshot is uniform/blank; Screen Recording permission may be denied".into());
+    }
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod webkit_tests {
+    use super::*;
+
+    #[test]
+    fn webkit_svg_capture_preserves_foreign_object_at_requested_viewport() {
+        let root =
+            std::env::temp_dir().join(format!("synth-visuals-webkit-svg-{}", std::process::id()));
+        fs::create_dir_all(&root).expect("create SVG capture test directory");
+        let svg_path = root.join("foreign-object.svg");
+        let png_path = root.join("foreign-object.png");
+        fs::write(
+            &svg_path,
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180">
+<rect width="320" height="180" fill="#111827"/>
+<foreignObject x="40" y="30" width="240" height="120">
+  <div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;background:#22c55e;color:#ffffff;font:32px sans-serif;display:flex;align-items:center;justify-content:center">WebKit</div>
+</foreignObject></svg>"##,
+        )
+        .expect("write SVG fixture");
+
+        render_svg_with_webkit(&svg_path, 320, 180, &png_path).expect("render SVG through WebKit");
+        assert_non_blank_png(&png_path).expect("capture should contain visible geometry");
+
+        let file = fs::File::open(&png_path).expect("open rendered PNG");
+        let decoder = png::Decoder::new(file);
+        let mut reader = decoder.read_info().expect("read rendered PNG header");
+        assert_eq!((reader.info().width, reader.info().height), (320, 180));
+        let mut buffer = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buffer).expect("decode rendered PNG");
+        let has_foreign_object_green = buffer[..info.buffer_size()].chunks_exact(4).any(|pixel| {
+            let (red, green, blue) = (pixel[0] as u16, pixel[1] as u16, pixel[2] as u16);
+            green > 150 && green > red * 2 && green > blue
+        });
+        assert!(
+            has_foreign_object_green,
+            "rendered PNG omitted the foreignObject HTML surface"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
 }
 
 fn main() {

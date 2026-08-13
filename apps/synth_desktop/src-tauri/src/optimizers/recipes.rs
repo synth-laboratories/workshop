@@ -433,7 +433,10 @@ async fn run_recipe_worker(
             }
             changed = cancel_rx.changed() => {
                 if changed.is_ok() && *cancel_rx.borrow() {
-                    child.kill().await.context("cancel Banking77 GEPA process")?;
+                    manager.terminate_gepa_recipe(&run_id).await;
+                    if child.try_wait()?.is_none() {
+                        child.kill().await.context("cancel Banking77 GEPA process")?;
+                    }
                     append_status_event(&service, &run_id, "optimizer.run.cancelled", "cancelled").await?;
                     return Ok(());
                 }

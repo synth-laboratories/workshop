@@ -43,6 +43,7 @@ use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc};
+use tauri::{AppHandle, Manager, PhysicalSize, Size};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -57,7 +58,11 @@ pub fn connection_path(root: &std::path::Path) -> PathBuf {
     root.join("visuals-ipc.json")
 }
 
-pub async fn spawn(core: Arc<CoreRuntime>, root: PathBuf) -> Result<VisualsIpcConnection> {
+pub async fn spawn(
+    core: Arc<CoreRuntime>,
+    app: AppHandle,
+    root: PathBuf,
+) -> Result<VisualsIpcConnection> {
     let token = format!("synth_vis_{}", Uuid::new_v4());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -81,8 +86,9 @@ pub async fn spawn(core: Arc<CoreRuntime>, root: PathBuf) -> Result<VisualsIpcCo
     tauri::async_runtime::spawn(async move {
         let result = serve_json(listener, move |request| {
             let core = serve_core.clone();
+            let app = app.clone();
             let token = token.clone();
-            async move { route_request(request, &core, &token).await }
+            async move { route_request(request, &core, &app, &token).await }
         })
         .await;
         if let Err(error) = result {
@@ -95,9 +101,10 @@ pub async fn spawn(core: Arc<CoreRuntime>, root: PathBuf) -> Result<VisualsIpcCo
 async fn route_request(
     request: JsonHttpRequest,
     core: &CoreRuntime,
+    app: &AppHandle,
     token: &str,
 ) -> JsonHttpResponse {
-    match dispatch_request(request, core, token).await {
+    match dispatch_request(request, core, app, token).await {
         Ok(value) => JsonHttpResponse::ok(value),
         Err(error) if crate::error::error_is::<crate::error::Unauthorized>(&error) => {
             JsonHttpResponse::error(StatusCode::UNAUTHORIZED, error.to_string())
@@ -109,6 +116,7 @@ async fn route_request(
 async fn dispatch_request(
     request: JsonHttpRequest,
     core: &CoreRuntime,
+    app: &AppHandle,
     token: &str,
 ) -> Result<Value> {
     let auth = request
@@ -128,10 +136,41 @@ async fn dispatch_request(
         request.body
     };
     let method = request.method.as_str();
+    if method == "POST" && path == "/v1/review-window/resize" {
+        return resize_review_window(app, &json_body);
+    }
     if path.starts_with("/v1/optimizers") {
         return dispatch_optimizer(method, path, json_body, core).await;
     }
     dispatch(method, path, json_body, core).await
+}
+
+fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
+    let window = app
+        .get_webview_window("main")
+        .context("review capture requires the main Desktop window")?;
+    let width = body
+        .get("width")
+        .and_then(Value::as_u64)
+        .context("review window width is required")?;
+    let height = body
+        .get("height")
+        .and_then(Value::as_u64)
+        .context("review window height is required")?;
+    if !(320..=2400).contains(&width) || !(400..=1800).contains(&height) {
+        anyhow::bail!("review window must be within 320x400 and 2400x1800");
+    }
+    let previous = window.inner_size().context("read review window size")?;
+    window
+        .set_size(Size::Physical(PhysicalSize::new(
+            width as u32,
+            height as u32,
+        )))
+        .context("resize review window")?;
+    Ok(json!({
+        "previous": {"width": previous.width, "height": previous.height},
+        "current": {"width": width, "height": height}
+    }))
 }
 
 fn query_json(query: &str) -> Value {

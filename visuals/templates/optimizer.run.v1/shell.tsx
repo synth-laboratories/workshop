@@ -78,8 +78,8 @@ function normalizeEvents(events: unknown[]): OptimizerEvent[] {
       item: e.item as OptimizerEvent["item"],
       delta: (e.delta as Record<string, unknown>) ?? {},
       snapshot: e.snapshot as Record<string, unknown> | undefined,
-      usageDelta: e.usageDelta as Record<string, number> | undefined ??
-        (e.usage_delta as Record<string, number> | undefined),
+      usageDelta: e.usageDelta as Record<string, number | null> | undefined ??
+        (e.usage_delta as Record<string, number | null> | undefined),
       artifactRefs: (e.artifactRefs as unknown[]) ?? (e.artifact_refs as unknown[]) ?? [],
       error: e.error,
       raw: e.raw

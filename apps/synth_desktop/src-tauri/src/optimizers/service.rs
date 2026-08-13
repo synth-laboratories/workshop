@@ -1230,9 +1230,7 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
         }
     }
     if let Some(usage) = &event.usage_delta {
-        if let Some(v) = usage.get("cost_usd").and_then(Value::as_f64) {
-            run.usage.cost_usd = Some(run.usage.cost_usd.unwrap_or(0.0) + v);
-        }
+        apply_reported_cost(&mut run.usage, usage);
         if let Some(v) = usage.get("prompt_tokens").and_then(Value::as_u64) {
             run.usage.prompt_tokens += v;
         }
@@ -1264,6 +1262,33 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
     if let Some(error) = &event.error {
         run.error = Some(error.clone());
     }
+}
+
+/// Apply the any-unknown-to-null cost rule to an incrementally persisted run.
+/// `extra.costTelemetryComplete` retains the poisoned state across reloads so
+/// a later known receipt cannot turn an earlier unknown charge into a partial
+/// confident sum.
+fn apply_reported_cost(usage: &mut OptimizerUsageSummary, delta: &Map<String, Value>) {
+    let Some(raw) = delta.get("cost_usd").or_else(|| delta.get("costUsd")) else {
+        return;
+    };
+    let was_complete = usage
+        .extra
+        .get("costTelemetryComplete")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let reported = raw
+        .as_f64()
+        .filter(|value| value.is_finite() && *value >= 0.0);
+    let complete = was_complete && reported.is_some();
+    usage
+        .extra
+        .insert("costTelemetryComplete".into(), Value::Bool(complete));
+    usage.cost_usd = if complete {
+        Some(usage.cost_usd.unwrap_or(0.0) + reported.unwrap_or(0.0))
+    } else {
+        None
+    };
 }
 
 fn optimizer_terminal_status(event_type: &str) -> Option<&'static str> {
@@ -1380,9 +1405,7 @@ fn project_from_events(
             artifacts.push(artifact.clone());
         }
         if let Some(usage_delta) = &event.usage_delta {
-            if let Some(v) = usage_delta.get("cost_usd").and_then(Value::as_f64) {
-                usage.cost_usd = Some(usage.cost_usd.unwrap_or(0.0) + v);
-            }
+            apply_reported_cost(&mut usage, usage_delta);
             if let Some(v) = usage_delta.get("prompt_tokens").and_then(Value::as_u64) {
                 usage.prompt_tokens += v;
             }
@@ -2637,6 +2660,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(usage.data.get("costUsd"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn mixed_cost_receipts_never_project_a_partial_sum() {
+        let mut usage = OptimizerUsageSummary::default();
+        apply_reported_cost(
+            &mut usage,
+            &serde_json::from_value(json!({"cost_usd": 0.02})).unwrap(),
+        );
+        assert_eq!(usage.cost_usd, Some(0.02));
+        apply_reported_cost(
+            &mut usage,
+            &serde_json::from_value(json!({"cost_usd": null})).unwrap(),
+        );
+        assert_eq!(usage.cost_usd, None);
+        apply_reported_cost(
+            &mut usage,
+            &serde_json::from_value(json!({"cost_usd": 0.03})).unwrap(),
+        );
+        assert_eq!(usage.cost_usd, None);
+        assert_eq!(
+            usage.extra.get("costTelemetryComplete"),
+            Some(&Value::Bool(false))
+        );
     }
 
     /// A recipe in the catalog that `start_recipe` does not route is a dead

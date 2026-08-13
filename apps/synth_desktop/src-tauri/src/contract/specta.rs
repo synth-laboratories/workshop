@@ -224,6 +224,10 @@ pub fn builder() -> Builder<tauri::Wry> {
 pub fn export_typescript_bindings() -> Result<(), String> {
     // CARGO_MANIFEST_DIR is src-tauri/; PROTOCOL_TS_RELATIVE is relative to that.
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(PROTOCOL_TS_RELATIVE);
+    export_typescript_bindings_to(&path)
+}
+
+fn export_typescript_bindings_to(path: &std::path::Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -251,9 +255,18 @@ mod tests {
 
     #[test]
     fn export_specta_protocol_bindings() {
-        export_typescript_bindings().expect("export specta TypeScript bindings");
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(PROTOCOL_TS_RELATIVE);
+        let committed_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(PROTOCOL_TS_RELATIVE);
+        let path = std::env::temp_dir().join(format!(
+            "synth-desktop-protocol-{}-{}.ts",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        export_typescript_bindings_to(&path).expect("render specta TypeScript bindings");
         let body = std::fs::read_to_string(&path).expect("read generated protocol.ts");
+        let committed =
+            std::fs::read_to_string(&committed_path).expect("read committed protocol.ts");
+        let _ = std::fs::remove_file(&path);
         assert!(
             body.contains("desktop_instance_diagnostics")
                 || body.contains("desktopInstanceDiagnostics"),
@@ -269,6 +282,10 @@ mod tests {
         assert_eq!(
             exported, 138,
             "generated bindings must contain the complete desktop command set"
+        );
+        assert_eq!(
+            body, committed,
+            "committed protocol.ts is stale; regenerate it explicitly before committing"
         );
     }
 }

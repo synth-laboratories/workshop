@@ -134,6 +134,8 @@ impl Commands {
     pub const OPTIMIZER_SIDECAR_UNINSTALL: &'static str = "optimizer_sidecar_uninstall";
     pub const DESKTOP_IMAGE_PREVIEW: &'static str = "desktop_image_preview";
     pub const DESKTOP_INSTANCE_DIAGNOSTICS: &'static str = "desktop_instance_diagnostics";
+    pub const DESKTOP_PERMISSIONS_GET: &'static str = "desktop_permissions_get";
+    pub const DESKTOP_PERMISSIONS_UPDATE: &'static str = "desktop_permissions_update";
     pub const WORKSPACE_CHOOSE_DIRECTORY: &'static str = "workspace_choose_directory";
     pub const LAGUNA_MODELS_SET_DIRECTORY: &'static str = "laguna_models_set_directory";
     pub const LAGUNA_MODELS_CLEAR_DIRECTORY: &'static str = "laguna_models_clear_directory";
