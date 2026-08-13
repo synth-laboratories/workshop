@@ -1484,6 +1484,10 @@ export function projectAtCursor(
       const id = typeof event.delta?.candidate_id === "string" ? event.delta.candidate_id : undefined;
       if (id) goexEventCandidates.set(id, { ...(goexEventCandidates.get(id) ?? {}), id, candidate_id: id, ...(event.delta ?? {}) });
     }
+    if (run.algorithmId === "go-ex" && event.type === "candidate.evaluated") {
+      const id = typeof event.delta?.candidate_id === "string" ? event.delta.candidate_id : undefined;
+      if (id) goexEventCandidates.set(id, { ...(goexEventCandidates.get(id) ?? {}), id, candidate_id: id, ...(event.delta ?? {}) });
+    }
     if (run.algorithmId === "go-ex" && event.type === "goex.acceptance_completed") {
       const championId = typeof event.delta?.champion_candidate_id === "string" ? event.delta.champion_candidate_id : undefined;
       const baselineId = typeof event.delta?.baseline_candidate_id === "string" ? event.delta.baseline_candidate_id : undefined;

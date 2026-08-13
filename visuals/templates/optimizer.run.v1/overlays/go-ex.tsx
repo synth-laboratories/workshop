@@ -138,7 +138,7 @@ export function GoExOverlay({ state }: { state: ProjectedState }) {
                   <dt>Heldout</dt><dd style={{ margin: 0 }}>{formatMissingNumber(candidate.heldout_mean ?? candidate.heldout_mean_reward)}</dd>
                   <dt>Decision</dt><dd style={{ margin: 0 }}>{String(candidate.decision ?? candidate.final_status ?? "—")}</dd>
                   <dt>Prompt</dt><dd style={{ margin: 0, whiteSpace: "pre-wrap" }}>{String(candidate.prompt_text ?? candidate.react_system_prompt ?? "—")}</dd>
-                  <dt>Rationale</dt><dd style={{ margin: 0 }}>{String((candidate.metadata as Record<string, unknown> | undefined)?.rationale ?? (candidate.annotations as Record<string, unknown> | undefined)?.rationale ?? "—")}</dd>
+                  <dt>Rationale</dt><dd style={{ margin: 0 }}>{String(candidate.reason ?? (candidate.metadata as Record<string, unknown> | undefined)?.rationale ?? (candidate.annotations as Record<string, unknown> | undefined)?.rationale ?? "—")}</dd>
                   <dt>Rollouts</dt><dd className="sv-mono" style={{ margin: 0, overflowWrap: "anywhere" }}>{Array.isArray(candidate.rollout_ids) ? candidate.rollout_ids.join("\n") : "—"}</dd>
                 </dl>
               </details>

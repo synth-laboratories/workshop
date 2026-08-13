@@ -340,8 +340,9 @@ test("canonical GELO lifecycle events keep candidates and child streams inspecta
     { ...base, type: "proposer.delta", sequenceNumber: 6, delta: { generation: 0, channel: "content", text: "proposal " } },
     { ...base, type: "proposer.delta", sequenceNumber: 7, delta: { generation: 0, channel: "content", text: "reasoning" } },
     { ...base, type: "goex.core_proposer_finished", sequenceNumber: 8, delta: { cost_usd: 0.01 } },
-    { ...base, type: "goex.acceptance_completed", sequenceNumber: 9, delta: { champion_candidate_id: "cand_proposed", baseline_candidate_id: "cand_local" } },
-    { ...base, type: "goex.best_base_decided", sequenceNumber: 10, delta: { candidate_id: "cand_local", fresh_reward_mean: 0.5 } },
+    { ...base, type: "candidate.evaluated", sequenceNumber: 9, delta: { candidate_id: "cand_proposed", status: "accepted", decision: "accepted", search_mean: 0.75, heldout_mean: null, rollout_ids: ["rollout_local_1"] } },
+    { ...base, type: "goex.acceptance_completed", sequenceNumber: 10, delta: { champion_candidate_id: "cand_proposed", baseline_candidate_id: "cand_local" } },
+    { ...base, type: "goex.best_base_decided", sequenceNumber: 11, delta: { candidate_id: "cand_local", fresh_reward_mean: 0.5 } },
   ]);
   assert.equal(projected.goex.candidates.length, 2);
   assert.equal(projected.goex.candidates.find((candidate) => candidate.candidate_id === "cand_local").on_frontier, true);
@@ -349,6 +350,8 @@ test("canonical GELO lifecycle events keep candidates and child streams inspecta
   assert.equal(proposal.values.system, "Inspect the live proposal");
   assert.equal(proposal.status, "accepted");
   assert.equal(proposal.on_frontier, true);
+  assert.equal(proposal.search_mean, 0.75);
+  assert.equal(proposal.heldout_mean, null);
   assert.equal(projected.goex.agents.coreProposer.streaming.content, "proposal reasoning");
   assert.equal(projected.goex.agents.coreProposer.status, "completed");
   assert.equal(projected.goex.themes[0].theme_id, "survival");
