@@ -441,7 +441,16 @@ async fn run_recipe_worker(
                     return Ok(());
                 }
             }
-            _ = sleep(Duration::from_millis(750)) => {}
+            _ = sleep(Duration::from_millis(750)) => {
+                // A proposer generation seals its app-server artifacts before
+                // the optimizer run finishes. Reconcile those artifacts while
+                // the run is live so the right-panel Trace V5 viewer does not
+                // have to wait for terminal state. Deterministic event ids make
+                // repeated polls and reconnects idempotent.
+                if let Err(error) = append_proposer_transcripts(&service, &run_id, &run_dir).await {
+                    eprintln!("transient proposer transcript reconciliation failure: {error:#}");
+                }
+            }
         }
     }
 }
@@ -673,6 +682,100 @@ fn string_list(
         .unwrap_or_default()
 }
 
+fn bounded_trace_text(value: &serde_json::Value, max_chars: usize) -> String {
+    let raw = value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| serde_json::to_string_pretty(value).unwrap_or_default());
+    if raw.chars().count() <= max_chars {
+        return raw;
+    }
+    let head = raw.chars().take(max_chars).collect::<String>();
+    format!(
+        "{head}\n… truncated in projection ({} chars; sealed artifact retains the complete value)",
+        raw.chars().count()
+    )
+}
+
+fn project_trace_v5_items(source: &str) -> Vec<serde_json::Value> {
+    let mut items = Vec::new();
+    for line in source.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(envelope) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if envelope.get("method").and_then(serde_json::Value::as_str) != Some("item/completed") {
+            continue;
+        }
+        let item = envelope
+            .get("params")
+            .and_then(|params| params.get("item"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let item_type = item
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let occurred_at = envelope
+            .get("emittedAtMs")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+            .map(|value| value.to_rfc3339());
+        let id = item
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("trace-item-{}", items.len() + 1));
+        let sequence = items.len() + 1;
+        let projected = match item_type {
+            "userMessage" => {
+                let body = item
+                    .get("content")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default();
+                Some(json!({ "id": id, "sequence": sequence, "family": "input", "kind": "message.input", "title": "GEPA proposer request", "occurredAt": occurred_at, "body": bounded_trace_text(&json!(body), 20_000) }))
+            }
+            "agentMessage" => item.get("text").and_then(serde_json::Value::as_str).map(|body| {
+                let final_answer = item.get("phase").and_then(serde_json::Value::as_str) == Some("final_answer");
+                json!({ "id": id, "sequence": sequence, "family": if final_answer { "output" } else { "thinking" }, "kind": if final_answer { "message.output" } else { "reasoning.summary" }, "title": if final_answer { "Proposer response" } else { "Reasoning summary" }, "occurredAt": occurred_at, "body": bounded_trace_text(&json!(body), 20_000) })
+            }),
+            "commandExecution" => {
+                let exit_code = item.get("exitCode").and_then(serde_json::Value::as_i64);
+                Some(json!({ "id": id, "sequence": sequence, "family": "tool", "kind": "tool.shell", "title": "Run shell command", "occurredAt": occurred_at, "body": bounded_trace_text(item.get("command").unwrap_or(&serde_json::Value::Null), 20_000), "detail": bounded_trace_text(item.get("aggregatedOutput").unwrap_or(&serde_json::Value::Null), 20_000), "status": if exit_code == Some(0) { "completed".into() } else { format!("exit {}", exit_code.map_or_else(|| "?".into(), |value| value.to_string())) } }))
+            }
+            "fileChange" => {
+                let changes = item
+                    .get("changes")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let title = changes
+                    .iter()
+                    .filter_map(|change| change.get("path").and_then(serde_json::Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let detail = changes
+                    .iter()
+                    .map(|change| format!("{} {}\n{}", change.pointer("/kind/type").and_then(serde_json::Value::as_str).unwrap_or("change"), change.get("path").and_then(serde_json::Value::as_str).unwrap_or_default(), change.get("diff").and_then(serde_json::Value::as_str).unwrap_or_default()))
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                Some(json!({ "id": id, "sequence": sequence, "family": "artifact", "kind": "tool.file_change", "title": if title.is_empty() { "Workspace file change" } else { &title }, "occurredAt": occurred_at, "detail": bounded_trace_text(&json!(detail), 20_000) }))
+            }
+            _ => None,
+        };
+        if let Some(projected) = projected {
+            items.push(projected);
+        }
+    }
+    items
+}
+
 /// Backfill `proposer.transcript.loaded` events from the proposer workspace
 /// artifacts of a completed run, so the trace viewer can show the reflection
 /// narrative (critique, evidence, rationale, proposals) without reading the
@@ -752,48 +855,98 @@ async fn append_proposer_transcripts(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let sequence_number = run.cursor_seq + events.len() as u64 + 1;
-        events.push(OptimizerEventEnvelope {
-            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-            event_id: Some(format!("{run_id}:proposer-transcript:{generation}")),
-            event_type: "proposer.transcript.loaded".into(),
-            sequence_number,
-            occurred_at: chrono::Utc::now().to_rfc3339(),
-            optimizer_run_id: run_id.into(),
-            algorithm_id: "gepa".into(),
-            level: Some("info".into()),
-            item: None,
-            delta: serde_json::from_value(json!({
-                "generation": generation,
-                "message": "Proposer transcript reconciled from workspace artifacts",
-                "critique": truncated_text(
-                    manifest.get("critique").unwrap_or(&serde_json::Value::Null),
-                    4_000
-                ),
-                "rationale": truncated_text(
-                    manifest.get("rationale").unwrap_or(&serde_json::Value::Null),
-                    4_000
-                ),
-                "failure_patterns": string_list(evidence.get("failure_patterns"), 12, 1_000),
-                "winning_patterns": string_list(evidence.get("winning_patterns"), 12, 1_000),
-                "candidate_comparison": truncated_text(
-                    evidence.get("candidate_comparison").unwrap_or(&serde_json::Value::Null),
-                    2_000
-                ),
-                "proposals": proposals,
-                "usage": response.get("usage"),
-            }))?,
-            snapshot: None,
-            usage_delta: None,
-            artifact_refs: vec![json!({
-                "kind": "proposer_transcript",
-                "id": response_path,
-                "path": response_path,
-                "title": format!("Proposer transcript · generation {generation}")
-            })],
-            error: None,
-            raw: json!({ "source": "opencode_response.json", "generation": generation }),
-        });
+        let transcript_event_id = format!("{run_id}:proposer-transcript:{generation}");
+        if !service
+            .has_event_id(run_id.to_string(), transcript_event_id.clone())
+            .await?
+        {
+            let sequence_number = run.cursor_seq + events.len() as u64 + 1;
+            events.push(OptimizerEventEnvelope {
+                schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+                event_id: Some(transcript_event_id),
+                event_type: "proposer.transcript.loaded".into(),
+                sequence_number,
+                occurred_at: chrono::Utc::now().to_rfc3339(),
+                optimizer_run_id: run_id.into(),
+                algorithm_id: "gepa".into(),
+                level: Some("info".into()),
+                item: None,
+                delta: serde_json::from_value(json!({
+                    "generation": generation,
+                    "message": "Proposer transcript reconciled from workspace artifacts",
+                    "critique": truncated_text(
+                        manifest.get("critique").unwrap_or(&serde_json::Value::Null),
+                        4_000
+                    ),
+                    "rationale": truncated_text(
+                        manifest.get("rationale").unwrap_or(&serde_json::Value::Null),
+                        4_000
+                    ),
+                    "failure_patterns": string_list(evidence.get("failure_patterns"), 12, 1_000),
+                    "winning_patterns": string_list(evidence.get("winning_patterns"), 12, 1_000),
+                    "candidate_comparison": truncated_text(
+                        evidence.get("candidate_comparison").unwrap_or(&serde_json::Value::Null),
+                        2_000
+                    ),
+                    "proposals": proposals,
+                    "usage": response.get("usage"),
+                }))?,
+                snapshot: None,
+                usage_delta: None,
+                artifact_refs: vec![json!({
+                    "kind": "proposer_transcript",
+                    "id": response_path,
+                    "path": response_path,
+                    "title": format!("Proposer transcript · generation {generation}")
+                })],
+                error: None,
+                raw: json!({ "source": "opencode_response.json", "generation": generation }),
+            });
+        }
+        let trace_path = dir
+            .join(".agent_artifacts")
+            .join("opencode_sse_events.jsonl");
+        let trace_event_id = format!("{run_id}:proposer-trace-v5:{generation}");
+        if trace_path.is_file()
+            && !service
+                .has_event_id(run_id.to_string(), trace_event_id.clone())
+                .await?
+        {
+            let items = fs::read_to_string(&trace_path)
+                .ok()
+                .map(|source| project_trace_v5_items(&source))
+                .unwrap_or_default();
+            if !items.is_empty() {
+                let sequence_number = run.cursor_seq + events.len() as u64 + 1;
+                events.push(OptimizerEventEnvelope {
+                    schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+                    event_id: Some(trace_event_id),
+                    event_type: "proposer.trace_v5.loaded".into(),
+                    sequence_number,
+                    occurred_at: chrono::Utc::now().to_rfc3339(),
+                    optimizer_run_id: run_id.into(),
+                    algorithm_id: "gepa".into(),
+                    level: Some("info".into()),
+                    item: None,
+                    delta: serde_json::from_value(json!({
+                        "generation": generation,
+                        "schema_version": "synth.trace-projection.rollout-inspector.v1",
+                        "message": "Sealed proposer Trace V5 reconciled from app-server artifacts",
+                        "items": items,
+                    }))?,
+                    snapshot: None,
+                    usage_delta: None,
+                    artifact_refs: vec![json!({
+                        "kind": "trace_v5",
+                        "id": trace_path,
+                        "path": trace_path,
+                        "title": format!("Proposer Trace V5 · generation {generation}")
+                    })],
+                    error: None,
+                    raw: json!({ "source": "opencode_sse_events.jsonl", "generation": generation }),
+                });
+            }
+        }
     }
     if !events.is_empty() {
         service.append_events(run_id.to_string(), events).await?;
@@ -1225,6 +1378,32 @@ mod tests {
     use crate::storage::{ContentStore, EventJournal, Storage};
     use crate::visuals::VisualRegistry;
     use tempfile::tempdir;
+
+    #[test]
+    fn sealed_app_server_events_project_to_trace_v5_without_invented_reasoning() {
+        let source = [
+            json!({"method":"item/started","params":{"item":{"id":"ignored","type":"commandExecution"}}}),
+            json!({"method":"item/completed","emittedAtMs":1_786_639_200_000i64,"params":{"item":{"id":"input","type":"userMessage","content":[{"type":"input_text","text":"Improve this prompt"}]}}}),
+            json!({"method":"item/completed","params":{"item":{"id":"thought","type":"agentMessage","phase":"commentary","text":"I will inspect the failures."}}}),
+            json!({"method":"item/completed","params":{"item":{"id":"tool","type":"commandExecution","command":"python analyze.py","aggregatedOutput":"three clusters","exitCode":0}}}),
+            json!({"method":"item/completed","params":{"item":{"id":"file","type":"fileChange","changes":[{"path":"proposal/manifest.json","kind":{"type":"create"},"diff":"+candidate"}]}}}),
+            json!({"method":"item/completed","params":{"item":{"id":"final","type":"agentMessage","phase":"final_answer","text":"Created three candidates."}}}),
+            json!({"method":"item/completed","params":{"item":{"id":"hidden","type":"reasoning","summary":[]}}}),
+        ]
+        .into_iter()
+        .map(|value| serde_json::to_string(&value).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+        let items = project_trace_v5_items(&source);
+        assert_eq!(items.len(), 5);
+        assert_eq!(items[0]["family"], "input");
+        assert_eq!(items[1]["family"], "thinking");
+        assert_eq!(items[2]["family"], "tool");
+        assert_eq!(items[2]["detail"], "three clusters");
+        assert_eq!(items[3]["kind"], "tool.file_change");
+        assert_eq!(items[4]["family"], "output");
+        assert!(items.iter().all(|item| item["id"] != "hidden"));
+    }
 
     #[test]
     fn materialized_recipe_enforces_pinned_bounds_and_no_secret_values() {

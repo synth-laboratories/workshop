@@ -307,6 +307,19 @@ impl OptimizerService {
         .await
     }
 
+    pub async fn has_event_id(&self, optimizer_run_id: String, event_id: String) -> Result<bool> {
+        let db = self.db.clone();
+        db.run(move |conn| {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM optimizer_events WHERE optimizer_run_id = ?1 AND event_id = ?2)",
+                params![optimizer_run_id, event_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(Into::into)
+        })
+        .await
+    }
+
     pub async fn append_events(
         &self,
         optimizer_run_id: String,
