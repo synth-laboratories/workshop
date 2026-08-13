@@ -60,15 +60,6 @@ function optimizerDiagnostic(error: unknown): OptimizerDiagnostic | null {
 			logPath: typeof value.logPath === "string" ? value.logPath : undefined
 		};
 	}
-	const containerFailure = raw.match(/container error:\s*([^\n]+)/i)?.[1]?.trim();
-	if (containerFailure) {
-		return {
-			title: "Container rollout stream failed",
-			message: containerFailure,
-			raw,
-			logPath: typeof value.logPath === "string" ? value.logPath : undefined
-		};
-	}
 	return {
 		title: "Optimizer run failed",
 		message,
@@ -81,16 +72,23 @@ function fileName(path: string): string {
 	return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
 
-function reportedCost(costUsd: number | null | undefined): string {
-	return costUsd != null && costUsd > 0 ? `$${costUsd.toFixed(2)}` : "—";
-}
-
-function optimizerStatusClass(status: string): string {
-	if (status === "running") return "ws-badge-running";
-	if (status === "completed") return "ws-badge-success";
-	if (status === "failed" || status === "cancelled") return "ws-badge-danger";
-	if (status === "paused" || status === "queued") return "ws-badge-warn";
-	return "";
+function runTitle(run: OptimizerRunRecord): string {
+	const objective = run.objective ?? run.id;
+	const importedPath = objective.startsWith("imported from ")
+		? objective.slice("imported from ".length)
+		: null;
+	if (!importedPath) return objective;
+	const parts = importedPath.split(/[\\/]/).filter(Boolean);
+	let artifactName = parts.at(-1)?.includes("events.") ? parts.at(-2) : parts.at(-1);
+	if (artifactName === "artifacts") artifactName = parts.at(-3);
+	const algorithmTokens = new Set([run.algorithmId, algorithmLabel(run.algorithmId), "goex"]
+		.map((token) => token.toLowerCase().replace(/[^a-z0-9]/g, "")));
+	return (artifactName ?? run.id)
+		.split(/[_-]+/g)
+		.filter((token) => !algorithmTokens.has(token.toLowerCase().replace(/[^a-z0-9]/g, "")))
+		.join(" ")
+		.replace(/\bmed\b/gi, "medium")
+		.replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 export function OptimizersPage({ onOpenVisual, onBack }: Props) {
@@ -155,27 +153,6 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 	const nemotronSftRecipeAvailable = recipes.some(
 		(recipe) => recipe.id === HOSTED_SFT_NEMOTRON_RECIPE_ID && recipe.availability === "available"
 	);
-
-	const seedFixture = async (fixture: string) => {
-		if (!bridges.optimizers) return;
-		setBusy(true);
-		setError(null);
-		try {
-			const run = await bridges.optimizers.create({
-				algorithmId: fixture === "goex" ? "go-ex" : fixture,
-				seedFixture: fixture,
-				openVisual: true
-			});
-			setSelectedId(run.id);
-			await refresh();
-			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
-			if (visualId) onOpenVisual(visualId);
-		} catch (reason) {
-			setError(String(reason));
-		} finally {
-			setBusy(false);
-		}
-	};
 
 	const openSelectedVisual = async () => {
 		if (!selected || !bridges.optimizers) return;
@@ -251,11 +228,6 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 		if (!launchConfirmed) return;
 		setBusy(true);
 		setError(null);
-		// The bridge may remain pending for the lifetime of the local recipe. Close
-		// the paid-compute confirmation immediately so live run events and visuals
-		// stay reachable while both jobs are executing.
-		setLauncherOpen(false);
-		setLaunchConfirmed(false);
 		try {
 			const [lunaRun, solRun] = await Promise.all([
 				bridges.optimizers.startRecipe({
@@ -267,6 +239,8 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 					openVisual: true
 				})
 			]);
+			setLauncherOpen(false);
+			setLaunchConfirmed(false);
 			setSelectedId(lunaRun.id);
 			await refresh();
 			const visualId = lunaRun.visualRefs.find((ref) => ref.kind === "visual")?.id
@@ -391,185 +365,163 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 	};
 
 	return (
-		<div className="ws-page" data-testid="optimizers-page">
-			<header className="ws-page-head">
-				<button type="button" className="ws-btn ws-btn-ghost" onClick={onBack}>
-					← Back
-				</button>
-				<div className="ws-page-head-text">
-					<h1 className="ws-title">Optimizers</h1>
-					<p className="ws-lede">Track local and cloud training runs, inspect progress, and open their visuals.</p>
+		<div className="inventory-page optimizers-page" data-testid="optimizers-page">
+			<header className="inventory-head optimizer-head">
+				<button type="button" className="optimizer-back-button" aria-label="Back" onClick={onBack}>←</button>
+				<div className="optimizer-head-copy">
+					<span className="optimizer-eyebrow">Workshop</span>
+					<h1>Optimizers</h1>
+					<p className="inventory-lede">Run, compare, and inspect optimization jobs.</p>
 				</div>
-				<div className="ws-page-head-actions">
-					<button className="ws-btn ws-btn-secondary" type="button" disabled={busy} onClick={() => void importLocal()} data-testid="import-local-optimizer">Import local</button>
-					<button className="ws-btn ws-btn-secondary" type="button" disabled={busy} onClick={() => void syncCloud()} data-testid="sync-cloud-optimizers">Sync cloud</button>
+				<div className="optimizer-head-actions">
+					<button className="secondary-button" type="button" disabled={busy} onClick={() => void importLocal()} data-testid="import-local-optimizer">Import run</button>
+					<button className="secondary-button" type="button" disabled={busy} onClick={() => void syncCloud()} data-testid="sync-cloud-optimizers">Sync cloud</button>
 				</div>
 			</header>
 
-			{error ? <p className="ws-note ws-note-danger" role="alert" data-testid="optimizer-error">{error}</p> : null}
+			{error ? <p className="inventory-error" role="alert" data-testid="optimizer-error">{error}</p> : null}
 
-			<div className="ws-card-group">
-			<section className="ws-card ws-card-split" aria-labelledby="banking77-launch-title" data-testid="banking77-gepa-launch-card">
-				<div className="ws-card-body">
-					<span className="ws-eyebrow">Pinned recipe · Local process</span>
-					<h2 className="ws-card-title" id="banking77-launch-title">Banking77 GEPA · Luna vs Sol</h2>
-					<p className="ws-card-text">Two concurrent, isolated runs: one Luna-medium proposer and one Sol-medium proposer. At most {BANKING77_PAIR_ROLLOUTS} total rollouts, capped at ${BANKING77_PAIR_COST_USD.toFixed(2)} total.</p>
+			<section className="optimizer-recipes" aria-labelledby="optimizer-recipes-title">
+				<div className="optimizer-recipes-head">
+					<div><span className="optimizer-eyebrow">Quick start</span><h2 id="optimizer-recipes-title">Start an optimizer</h2></div>
+					<p>Every recipe is preflighted before compute begins.</p>
 				</div>
-				<div className="ws-card-aside">
-					{!banking77RecipeAvailable ? <span className="ws-badge ws-badge-warn">Recipes unavailable</span> : null}
-					<button className={`ws-btn ${banking77RecipeAvailable ? "ws-btn-primary" : "ws-btn-secondary"}`} type="button" disabled={busy || !banking77RecipeAvailable} onClick={() => setLauncherOpen(true)} data-testid="create-cloud-optimizer">
-						<span data-testid="configure-banking77-gepa-smoke">Configure Luna vs Sol</span>
-					</button>
+				<div className="optimizer-recipe-grid">
+					<article className="optimizer-recipe-card featured" aria-labelledby="banking77-launch-title" data-testid="banking77-gepa-launch-card">
+						<div className="optimizer-recipe-top"><span className="optimizer-recipe-mark">GE</span><span className="optimizer-recipe-runtime">Local · paid</span></div>
+						<h3 id="banking77-launch-title">Banking77 · Luna vs Sol</h3>
+						<p>Two concurrent GEPA runs. At most {BANKING77_PAIR_ROLLOUTS} total rollouts · ${BANKING77_PAIR_COST_USD.toFixed(2)} cap.</p>
+						<button className="primary-button" type="button" disabled={busy || !banking77RecipeAvailable} onClick={() => setLauncherOpen(true)} data-testid="configure-banking77-gepa-smoke">{banking77RecipeAvailable ? "Review & start" : "Unavailable"}</button>
+					</article>
+
+					<article className={`optimizer-recipe-card${hostedSftRecipeAvailable ? "" : " unavailable"}`} aria-labelledby="hosted-sft-launch-title" data-testid="hosted-sft-launch-card">
+						<div className="optimizer-recipe-top"><span className="optimizer-recipe-mark">SF</span><span className="optimizer-recipe-runtime">Hosted · fixture</span></div>
+						<h3 id="hosted-sft-launch-title">SFT event-stream fixture</h3>
+						<p>Validate the hosted lifecycle without Tinker or provider charges.</p>
+						<button className="secondary-button" type="button" disabled={busy || !hostedSftRecipeAvailable} onClick={() => void launchHostedSftFixture()} data-testid="start-hosted-sft-fixture">{hostedSftRecipeAvailable ? "Start fixture" : "Needs beta"}</button>
+					</article>
+
+					<article className={`optimizer-recipe-card${nemotronSftRecipeAvailable ? "" : " unavailable"}`} aria-labelledby="craftax-nemotron-sft-launch-title" data-testid="craftax-nemotron-sft-launch-card">
+						<div className="optimizer-recipe-top"><span className="optimizer-recipe-mark">SF</span><span className="optimizer-recipe-runtime">Tinker · local Craftax slot</span></div>
+						<h3 id="craftax-nemotron-sft-launch-title">Craftax · Nemotron SFT</h3>
+						<p>Train a Nemotron 3.5 Lightning LoRA, then score checkpoint campaigns.</p>
+						<button className="secondary-button" type="button" disabled={busy || !nemotronSftRecipeAvailable} onClick={() => void launchCraftaxNemotronSft()} data-testid="start-craftax-nemotron-sft">{nemotronSftRecipeAvailable ? "Review & start" : "Needs beta + slot"}</button>
+					</article>
+
+					<article className={`optimizer-recipe-card${craftaxSftRecipeAvailable ? "" : " unavailable"}`} aria-labelledby="craftax-sft-launch-title" data-testid="craftax-sft-launch-card">
+						<div className="optimizer-recipe-top"><span className="optimizer-recipe-mark">SF</span><span className="optimizer-recipe-runtime">Local · Tinker</span></div>
+						<h3 id="craftax-sft-launch-title">Craftax · GPT-OSS smoke</h3>
+						<p>Four teacher rollouts · {CRAFTAX_SFT_STEPS} LoRA steps · {CRAFTAX_SFT_ROLLOUTS} evaluations.</p>
+						<button className="secondary-button" type="button" disabled={busy || !craftaxSftRecipeAvailable} onClick={() => setSftLauncherOpen(true)} data-testid="configure-craftax-sft-smoke">{craftaxSftRecipeAvailable ? "Review & start" : "Unavailable"}</button>
+					</article>
 				</div>
 			</section>
-
-			<section className="ws-card ws-card-split" aria-labelledby="hosted-sft-launch-title" data-testid="hosted-sft-launch-card">
-				<div className="ws-card-body">
-					<span className="ws-eyebrow">Pinned recipe · optimizers-beta</span>
-					<h2 className="ws-card-title" id="hosted-sft-launch-title">Hosted SFT fixture</h2>
-					<p className="ws-card-text">Stream <code>optimizer_event.v1</code> pages from a running optimizers-beta into <code>optimizer.sft.live.v1</code>. Fixture backend; no Tinker or provider charges.</p>
-				</div>
-				<div className="ws-card-aside">
-					{!hostedSftRecipeAvailable ? <span className="ws-badge ws-badge-warn">Beta not configured</span> : null}
-					<button className="ws-btn ws-btn-secondary" type="button" disabled={busy || !hostedSftRecipeAvailable} onClick={() => void launchHostedSftFixture()} data-testid="create-hosted-sft-optimizer">
-						<span data-testid="start-hosted-sft-fixture">Start hosted SFT fixture</span>
-					</button>
-				</div>
-			</section>
-
-			<section className="ws-card ws-card-split" aria-labelledby="craftax-nemotron-sft-launch-title" data-testid="craftax-nemotron-sft-launch-card">
-				<div className="ws-card-body">
-					<span className="ws-eyebrow">Hosted recipe · Tinker · local Craftax slot</span>
-					<h2 className="ws-card-title" id="craftax-nemotron-sft-launch-title">Craftax Nemotron 3.5 Lightning Tinker SFT</h2>
-					<p className="ws-card-text">Hosted <code>algorithm_id: sft</code> against a local Craftax slot. Student LoRA on Tinker. Default student is Nemotron 3.5 Lightning from <code>docs/sft_tinker_base_models.toml</code>. Checkpoint campaigns stream reward and cost only when the producer emits them.</p>
-				</div>
-				<div className="ws-card-aside">
-					{!nemotronSftRecipeAvailable ? <span className="ws-badge ws-badge-warn">Beta or local slot not ready</span> : null}
-					<button className="ws-btn ws-btn-secondary" type="button" disabled={busy || !nemotronSftRecipeAvailable} onClick={() => void launchCraftaxNemotronSft()} data-testid="start-craftax-nemotron-sft">Start Craftax Nemotron SFT</button>
-				</div>
-			</section>
-
-			<section className="ws-card ws-card-split" aria-labelledby="craftax-sft-launch-title" data-testid="craftax-sft-launch-card">
-				<div className="ws-card-body">
-					<span className="ws-eyebrow">Pinned recipe · Local process + Tinker</span>
-					<h2 className="ws-card-title" id="craftax-sft-launch-title">Craftax GPT-OSS SFT smoke</h2>
-					<p className="ws-card-text">Four teacher rollouts, {CRAFTAX_SFT_STEPS} LoRA steps, and base-vs-adapter evaluation across {CRAFTAX_SFT_ROLLOUTS} total environment rollouts.</p>
-				</div>
-				<div className="ws-card-aside">
-					{!craftaxSftRecipeAvailable ? <span className="ws-badge ws-badge-warn">Recipe unavailable</span> : null}
-					<button className="ws-btn ws-btn-secondary" type="button" disabled={busy || !craftaxSftRecipeAvailable} onClick={() => setSftLauncherOpen(true)} data-testid="create-craftax-sft-optimizer">
-						<span data-testid="configure-craftax-sft-smoke">Configure bounded SFT run</span>
-					</button>
-				</div>
-			</section>
-			</div>
 
 			{launcherOpen ? (
-				<div className="ws-dialog-scrim" role="dialog" aria-modal="true" aria-labelledby="banking77-dialog-title" data-testid="banking77-gepa-launch-dialog">
-					<div className="ws-dialog">
-						<div className="ws-dialog-head">
-							<div className="ws-stack-tight"><span className="ws-eyebrow">Review before starting paid compute</span><h2 className="ws-dialog-title" id="banking77-dialog-title">Banking77 GEPA · Luna vs Sol</h2></div>
-							<button type="button" className="ws-btn ws-btn-ghost ws-btn-small" aria-label="Close Banking77 GEPA launcher" onClick={() => setLauncherOpen(false)} data-testid="close-banking77-gepa-launcher">×</button>
+				<div className="optimizer-launch-dialog" role="dialog" aria-modal="true" aria-labelledby="banking77-dialog-title" data-testid="banking77-gepa-launch-dialog">
+					<div className="optimizer-launch-dialog-card">
+						<div className="optimizer-launch-dialog-head">
+							<div><span className="optimizer-eyebrow">Review before starting paid compute</span><h2 id="banking77-dialog-title">Banking77 GEPA · Luna vs Sol</h2></div>
+							<button type="button" className="ghost-button" aria-label="Close Banking77 GEPA launcher" onClick={() => setLauncherOpen(false)} data-testid="close-banking77-gepa-launcher">×</button>
 						</div>
-						<dl className="ws-kv" data-testid="banking77-gepa-bounds">
-							<dt>Optimizer</dt><dd>GEPA × 2</dd><dt>Dataset</dt><dd>Banking77</dd>
-							<dt>Proposers</dt><dd>Luna medium · Sol medium</dd><dt>Run IDs</dt><dd>Two, assigned on start</dd>
-							<dt>Rollout ceiling</dt><dd>{BANKING77_PAIR_ROLLOUTS} total</dd><dt>Cost ceiling</dt><dd>${BANKING77_PAIR_COST_USD.toFixed(2)} total</dd>
+						<dl className="optimizer-launch-summary" data-testid="banking77-gepa-bounds">
+							<div><dt>Optimizer</dt><dd>GEPA × 2</dd></div><div><dt>Dataset</dt><dd>Banking77</dd></div>
+							<div><dt>Proposers</dt><dd>Luna medium · Sol medium</dd></div><div><dt>Run IDs</dt><dd>Two, assigned on start</dd></div>
+							<div><dt>Rollout ceiling</dt><dd>{BANKING77_PAIR_ROLLOUTS} total</dd></div><div><dt>Cost ceiling</dt><dd>${BANKING77_PAIR_COST_USD.toFixed(2)} total</dd></div>
 						</dl>
-						<p className="ws-dialog-copy">Each run uses 50 train rows, 20-example minibatches, and 50 heldout rows. Proposers use the signed-in Codex ChatGPT account; Banking77 candidate evaluation uses the trusted Desktop OpenAI credential.</p>
-						<label className="ws-dialog-confirm"><input type="checkbox" checked={launchConfirmed} onChange={(event) => setLaunchConfirmed(event.target.checked)} data-testid="confirm-banking77-gepa-cost" /> I approve both bounded runs and their API usage.</label>
-						<div className="ws-btn-row ws-btn-row-end">
-							<button type="button" className="ws-btn ws-btn-secondary" onClick={() => setLauncherOpen(false)}>Cancel</button>
-							<button type="button" className="ws-btn ws-btn-primary" disabled={busy || !launchConfirmed} onClick={() => void launchBanking77Comparison()} data-testid="start-banking77-gepa-smoke">{busy ? "Starting both…" : "Start Luna + Sol comparison"}</button>
+						<p className="optimizer-launch-prereq">Each run uses 50 train rows, 20-example minibatches, and 50 heldout rows. Proposers use the signed-in Codex ChatGPT account; Banking77 candidate evaluation uses the trusted Desktop OpenAI credential.</p>
+						<label className="optimizer-launch-confirm"><input type="checkbox" checked={launchConfirmed} onChange={(event) => setLaunchConfirmed(event.target.checked)} data-testid="confirm-banking77-gepa-cost" /> I approve both bounded runs and their API usage.</label>
+						<div className="optimizer-launch-dialog-actions">
+							<button type="button" className="secondary-button" onClick={() => setLauncherOpen(false)}>Cancel</button>
+							<button type="button" className="primary-button" disabled={busy || !launchConfirmed} onClick={() => void launchBanking77Comparison()} data-testid="start-banking77-gepa-smoke">{busy ? "Starting both…" : "Start Luna + Sol comparison"}</button>
 						</div>
 					</div>
 				</div>
 			) : null}
 
 			{sftLauncherOpen ? (
-				<div className="ws-dialog-scrim" role="dialog" aria-modal="true" aria-labelledby="craftax-sft-dialog-title" data-testid="craftax-sft-launch-dialog">
-					<div className="ws-dialog">
-						<div className="ws-dialog-head">
-							<div className="ws-stack-tight"><span className="ws-eyebrow">Review before starting paid compute</span><h2 className="ws-dialog-title" id="craftax-sft-dialog-title">Craftax GPT-OSS bounded SFT smoke</h2></div>
-							<button type="button" className="ws-btn ws-btn-ghost ws-btn-small" aria-label="Close Craftax SFT launcher" onClick={() => setSftLauncherOpen(false)}>×</button>
+				<div className="optimizer-launch-dialog" role="dialog" aria-modal="true" aria-labelledby="craftax-sft-dialog-title" data-testid="craftax-sft-launch-dialog">
+					<div className="optimizer-launch-dialog-card">
+						<div className="optimizer-launch-dialog-head">
+							<div><span className="optimizer-eyebrow">Review before starting paid compute</span><h2 id="craftax-sft-dialog-title">Craftax GPT-OSS bounded SFT smoke</h2></div>
+							<button type="button" className="ghost-button" aria-label="Close Craftax SFT launcher" onClick={() => setSftLauncherOpen(false)}>×</button>
 						</div>
-						<dl className="ws-kv" data-testid="craftax-sft-bounds">
-							<dt>Teacher</dt><dd>GPT-OSS-120B via Groq</dd><dt>Student</dt><dd>GPT-OSS-20B LoRA via Tinker</dd>
-							<dt>Teacher rollouts</dt><dd>4</dd><dt>Training steps</dt><dd>{CRAFTAX_SFT_STEPS}</dd>
-							<dt>Held-out seeds</dt><dd>2 × base and adapter</dd><dt>Environment rollouts</dt><dd>{CRAFTAX_SFT_ROLLOUTS} maximum</dd>
+						<dl className="optimizer-launch-summary" data-testid="craftax-sft-bounds">
+							<div><dt>Teacher</dt><dd>GPT-OSS-120B via Groq</dd></div><div><dt>Student</dt><dd>GPT-OSS-20B LoRA via Tinker</dd></div>
+							<div><dt>Teacher rollouts</dt><dd>4</dd></div><div><dt>Training steps</dt><dd>{CRAFTAX_SFT_STEPS}</dd></div>
+							<div><dt>Held-out seeds</dt><dd>2 × base and adapter</dd></div><div><dt>Environment rollouts</dt><dd>{CRAFTAX_SFT_ROLLOUTS} maximum</dd></div>
 						</dl>
-						<p className="ws-dialog-copy">Uses the trusted Craftax binary (reusing port 8098 or owning it for this run) plus Groq and Tinker credentials in the trusted Desktop environment. Provider charges apply; this recipe is bounded by rollouts and steps, not by a dollar ceiling.</p>
-						<label className="ws-dialog-confirm"><input type="checkbox" checked={sftLaunchConfirmed} onChange={(event) => setSftLaunchConfirmed(event.target.checked)} data-testid="confirm-craftax-sft-compute" /> I approve the bounded Groq and Tinker compute.</label>
-						<div className="ws-btn-row ws-btn-row-end">
-							<button type="button" className="ws-btn ws-btn-secondary" onClick={() => setSftLauncherOpen(false)}>Cancel</button>
-							<button type="button" className="ws-btn ws-btn-primary" disabled={busy || !sftLaunchConfirmed} onClick={() => void launchCraftaxSftSmoke()} data-testid="start-craftax-sft-smoke">{busy ? "Starting…" : "Start bounded Craftax SFT smoke"}</button>
+						<p className="optimizer-launch-prereq">Uses the trusted Craftax binary (reusing port 8098 or owning it for this run) plus Groq and Tinker credentials in the trusted Desktop environment. Provider charges apply; this recipe is bounded by rollouts and steps, not by a dollar ceiling.</p>
+						<label className="optimizer-launch-confirm"><input type="checkbox" checked={sftLaunchConfirmed} onChange={(event) => setSftLaunchConfirmed(event.target.checked)} data-testid="confirm-craftax-sft-compute" /> I approve the bounded Groq and Tinker compute.</label>
+						<div className="optimizer-launch-dialog-actions">
+							<button type="button" className="secondary-button" onClick={() => setSftLauncherOpen(false)}>Cancel</button>
+							<button type="button" className="primary-button" disabled={busy || !sftLaunchConfirmed} onClick={() => void launchCraftaxSftSmoke()} data-testid="start-craftax-sft-smoke">{busy ? "Starting…" : "Start bounded Craftax SFT smoke"}</button>
 						</div>
 					</div>
 				</div>
 			) : null}
 
-			<div className="ws-toolbar ws-toolbar-wrap" data-testid="optimizer-toolbar">
-				<div className="ws-toolbar-filters">
-					<label className="ws-search">
+			<div className="optimizer-toolbar" data-testid="optimizer-toolbar">
+				<div className="optimizer-filters">
+					<label className="optimizer-search">
 						<span aria-hidden>⌕</span>
 						<input aria-label="Search optimizers" placeholder="Search runs" value={search} onChange={(event) => setSearch(event.target.value)} data-testid="optimizers-search" />
 					</label>
-					<select className="ws-select" aria-label="Status filter" value={status} onChange={(e) => setStatus(e.target.value)}>
+					<select aria-label="Status filter" value={status} onChange={(e) => setStatus(e.target.value)}>
 						<option value="all">All statuses</option><option value="running">Running</option><option value="paused">Paused</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="queued">Queued</option>
 					</select>
-					<select className="ws-select" aria-label="Algorithm filter" value={algorithm} onChange={(e) => setAlgorithm(e.target.value)}>
+					<select aria-label="Algorithm filter" value={algorithm} onChange={(e) => setAlgorithm(e.target.value)}>
 						<option value="all">All algorithms</option>
 						{algorithms.map((item) => <option key={item.id} value={item.id}>{item.title} · {item.availability}</option>)}
 					</select>
-					<select className="ws-select" aria-label="Source filter" value={source} onChange={(e) => setSource(e.target.value)}>
+					<select aria-label="Source filter" value={source} onChange={(e) => setSource(e.target.value)}>
 						<option value="all">All sources</option><option value="local">Local</option><option value="hosted">Hosted</option><option value="cloud">Cloud</option>
 					</select>
 				</div>
 			</div>
 
-			<div className="ws-workbench">
-				<section aria-label="Optimizer runs">
-					<div className="ws-list-head"><div className="ws-list-head-label"><span className="ws-eyebrow">Runs</span><strong>{runs.length} total</strong></div><div className="ws-btn-row"><span className="ws-faint">Demo data</span><button className="ws-btn ws-btn-secondary ws-btn-small" type="button" disabled={busy} onClick={() => void seedFixture("gepa")} data-testid="seed-gepa-fixture">GEPA</button><button className="ws-btn ws-btn-secondary ws-btn-small" type="button" disabled={busy} onClick={() => void seedFixture("goex")}>GELO</button><button className="ws-btn ws-btn-secondary ws-btn-small" type="button" disabled={busy} onClick={() => void seedFixture("sft")}>SFT</button></div></div>
-					<ul className="ws-list">
+			<div className="optimizer-workbench">
+				<section className="optimizer-runs" aria-label="Optimizer runs">
+					<div className="optimizer-section-head"><div><span className="optimizer-eyebrow">Runs</span><strong>{runs.length} total</strong></div></div>
+					<ul className="inventory-list optimizer-list">
 						{runs.map((run) => (
 							<li key={run.id}>
 								<button
 									type="button"
-									className={`ws-item ws-item-button${selectedId === run.id ? " is-selected" : ""}`}
-									aria-current={selectedId === run.id}
+									className={`inventory-row${selectedId === run.id ? " active" : ""}`}
 									data-testid={`optimizer-run-${run.id}`}
 									onClick={() => setSelectedId(run.id)}
 								>
-									<span className="ws-item-main"><span className="ws-item-title"><span className="ws-tag">{algorithmLabel(run.algorithmId)}</span> {run.objective ?? run.id}</span><small className="ws-item-meta">{formatWhen(run.finishedAt ?? run.startedAt ?? run.createdAt)}</small></span>
-									<span className="ws-item-aside-stack"><span className={`ws-badge ${optimizerStatusClass(run.status)}`}>{run.status}</span><small className="ws-item-meta">{run.source} · {reportedCost(run.usage.costUsd)}</small></span>
+									<span className="optimizer-run-main"><span className="optimizer-algorithm">{algorithmLabel(run.algorithmId)}</span><strong>{runTitle(run)}</strong><small>{formatWhen(run.finishedAt ?? run.startedAt ?? run.createdAt)}</small></span>
+									<span className="optimizer-run-meta"><span className={`optimizer-status ${run.status}`}>{run.status}</span><small>{run.source} · {run.usage.costUsd == null ? "—" : `$${run.usage.costUsd.toFixed(2)}`}</small></span>
 								</button>
 							</li>
 						))}
-						{runs.length === 0 ? <li className="ws-empty"><strong className="ws-empty-title">No optimizer runs yet</strong><p>Import a local run, connect cloud history, or start the pinned Banking77 comparison.</p></li> : null}
+						{runs.length === 0 ? <li className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>↗</span><strong>No optimizer runs yet</strong><p>Import a local run, connect cloud history, or start the pinned Banking77 comparison.</p><button className="primary-button" type="button" disabled={busy || !banking77RecipeAvailable} onClick={() => setLauncherOpen(true)}>Configure Luna vs Sol</button></li> : null}
 					</ul>
 				</section>
 
-				<section className="ws-inspector" aria-label="Optimizer inspector">
+				<section className="optimizer-inspector" aria-label="Optimizer inspector">
 					{selected ? (
-						<div className="ws-stack ws-stack-loose" data-testid="optimizer-inspector">
-							<div className="ws-inspector-head"><span className="ws-eyebrow">Run details</span><h2 className="ws-inspector-title">{algorithmLabel(selected.algorithmId)}</h2><p className="ws-lede">{selected.objective ?? selected.id}</p></div>
-							<dl className="ws-kv">
+						<div data-testid="optimizer-inspector">
+							<span className="optimizer-eyebrow">Run details</span><h2>{algorithmLabel(selected.algorithmId)}</h2><p>{runTitle(selected)}</p>
+							<dl>
 								<dt>Status</dt><dd>{selected.status}</dd>
 								<dt>Source</dt><dd>{selected.source}</dd>
 								<dt>Execution</dt><dd data-testid="optimizer-execution-mode">{selectedExecution}</dd>
 								<dt>Live events</dt><dd>{selected.capabilities.streamEvents ? "Available" : "Replay / refresh"}</dd>
 								<dt>Cursor</dt><dd>{selected.cursorSeq}</dd>
-								<dt>Cost</dt><dd>{reportedCost(selected.usage.costUsd)}</dd>
+								<dt>Cost</dt><dd>{selected.usage.costUsd == null ? "—" : `$${selected.usage.costUsd.toFixed(2)}`}</dd>
 								<dt>Created</dt><dd>{formatWhen(selected.createdAt)}</dd>
 							</dl>
 							{selectedDiagnostic ? (
-								<section className="ws-note ws-note-danger" role="alert" data-testid="optimizer-diagnostic">
-									<span className="ws-eyebrow">Why it stopped</span>
+								<section className="optimizer-diagnostic" role="alert" data-testid="optimizer-diagnostic">
+									<span className="optimizer-diagnostic-kicker">Why it stopped</span>
 									<strong>{selectedDiagnostic.title}</strong>
 									<p>{selectedDiagnostic.message}</p>
-									{selectedDiagnostic.field ? <code>{selectedDiagnostic.field}</code> : null}
+									{selectedDiagnostic.field ? <code className="optimizer-diagnostic-field">{selectedDiagnostic.field}</code> : null}
 									{selectedDiagnostic.raw ? (
-										<details>
+										<details className="optimizer-diagnostic-details">
 											<summary>Show technical details</summary>
 											<pre data-testid="optimizer-stderr-tail">{selectedDiagnostic.raw}</pre>
 										</details>
@@ -578,22 +530,22 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 								</section>
 							) : null}
 							{selectedRunDirectory ? (
-								<details className="ws-note" data-testid="optimizer-run-files">
+								<details className="optimizer-run-files" data-testid="optimizer-run-files">
 									<summary>Logs &amp; artifacts</summary>
-									<code className="ws-mono">{selectedRunDirectory}</code>
+									<code>{selectedRunDirectory}</code>
 									<ul><li>workshop.stdout.log</li><li>workshop.stderr.log</li><li>events.jsonl</li><li>result_manifest.json</li></ul>
 								</details>
 							) : null}
-							<div className="ws-btn-row">
-								<button className="ws-btn ws-btn-secondary" type="button" disabled={busy} onClick={() => void openSelectedVisual()} data-testid="open-optimizer-visual">Open visual</button>
-								<button className="ws-btn ws-btn-secondary" type="button" disabled={busy} onClick={() => void refreshSelected()} data-testid="refresh-optimizer-run">Refresh</button>
-								{selected.capabilities.pause && selected.status === "running" ? <button className="ws-btn ws-btn-secondary" type="button" disabled={busy} onClick={() => void controlSelected("pause")} data-testid="pause-optimizer-run">Pause</button> : null}
-								{selected.capabilities.resume && selected.status === "paused" ? <button className="ws-btn ws-btn-secondary" type="button" disabled={busy} onClick={() => void controlSelected("resume")} data-testid="resume-optimizer-run">Resume</button> : null}
-								{selected.capabilities.cancel && !["completed", "failed", "cancelled"].includes(selected.status) ? <button className="ws-btn ws-btn-danger" type="button" disabled={busy} onClick={() => void controlSelected("cancel")} data-testid="cancel-optimizer-run">Cancel</button> : null}
+							<div className="optimizer-inspector-actions">
+								<button className="primary-button" type="button" disabled={busy} onClick={() => void openSelectedVisual()} data-testid="open-optimizer-visual">Open visual</button>
+								<button className="secondary-button" type="button" disabled={busy} onClick={() => void refreshSelected()} data-testid="refresh-optimizer-run">Refresh</button>
+								{selected.capabilities.pause && selected.status === "running" ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void controlSelected("pause")} data-testid="pause-optimizer-run">Pause</button> : null}
+								{selected.capabilities.resume && selected.status === "paused" ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void controlSelected("resume")} data-testid="resume-optimizer-run">Resume</button> : null}
+								{selected.capabilities.cancel && !["completed", "failed", "cancelled"].includes(selected.status) ? <button className="secondary-button optimizer-danger-button" type="button" disabled={busy} onClick={() => void controlSelected("cancel")} data-testid="cancel-optimizer-run">Cancel</button> : null}
 							</div>
 						</div>
 					) : (
-						<div className="ws-empty"><strong className="ws-empty-title">Select a run</strong><p>Run details, usage, and linked visuals appear here.</p></div>
+						<div className="optimizer-empty optimizer-empty-inspector"><span className="optimizer-empty-icon" aria-hidden>◎</span><strong>Select a run</strong><p>Run details, usage, and linked visuals appear here.</p></div>
 					)}
 				</section>
 			</div>
