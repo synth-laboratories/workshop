@@ -533,7 +533,9 @@ def start_container(args: argparse.Namespace, client: IpcClient, receipt: Receip
         and item.get("rollout_id", bound["rolloutId"]) == bound["rolloutId"]
         for item in starts
     )
-    cursor = 0
+    # Canonical container trace streams are zero-indexed; -1 means no durable
+    # event has been observed yet and keeps sequence 0 from looking stale.
+    cursor = -1
     kinds: collections.Counter[str] = collections.Counter()
     terminal_state: Any = started.get("state")
     deadline = time.monotonic() + args.timeout
