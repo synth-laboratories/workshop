@@ -159,6 +159,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::model_multi_agent_update,
         crate::workspace_access_get,
         crate::workspace_access_update,
+        crate::desktop_permissions_get,
+        crate::desktop_permissions_update,
         crate::workspace_scope_get,
         crate::workspace_scope_choose_and_attach,
         crate::workspace_scope_recent_folders,
@@ -264,7 +266,7 @@ mod tests {
         let exported =
             body.matches("__TAURI_INVOKE(").count() + body.matches("__TAURI_INVOKE<").count();
         assert_eq!(
-            exported, 135,
+            exported, 137,
             "generated bindings must contain the complete desktop command set"
         );
     }

@@ -204,6 +204,20 @@ configuration when a new session starts. Named development instances store the
 same file under `~/.synth-desktop/instances/<name>/data/config.toml`. Reset removes the override and returns
 the model family to its preset.
 
+## Desktop permission defaults
+
+The composer permission picker is a machine-level Synth setting. Changes are
+stored under `[desktop.permissions]` in `~/.synth-desktop/config.toml` and are
+used for new and restored chats after restart. Named development instances use
+their isolated `config.toml` so a permissive test lane does not weaken the
+canonical installed app.
+
+```toml
+[desktop.permissions]
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+```
+
 ## Subagents
 
 Synth Workshop treats delegated work as a first-class session surface rather

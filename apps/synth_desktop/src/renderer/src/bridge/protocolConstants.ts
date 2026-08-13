@@ -71,6 +71,8 @@ export const COMMANDS = {
 	MODEL_MULTI_AGENT_UPDATE: "model_multi_agent_update",
 	WORKSPACE_ACCESS_GET: "workspace_access_get",
 	WORKSPACE_ACCESS_UPDATE: "workspace_access_update",
+	DESKTOP_PERMISSIONS_GET: "desktop_permissions_get",
+	DESKTOP_PERMISSIONS_UPDATE: "desktop_permissions_update",
 	WORKSPACE_SCOPE_GET: "workspace_scope_get",
 	WORKSPACE_SCOPE_CHOOSE_AND_ATTACH: "workspace_scope_choose_and_attach",
 	WORKSPACE_SCOPE_RECENT_FOLDERS: "workspace_scope_recent_folders",

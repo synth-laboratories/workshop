@@ -51,7 +51,7 @@ import {
 	targetIdToExecutionTarget,
 	visualRecordToArtifact
 } from "../runtime/sessionView";
-import { approvalModeConfig, approvalModeFromConfig, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode, type ApprovalPolicy, type SandboxMode } from "../runtime/nativeCodex";
+import { approvalModeFromConfig, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode, type ApprovalPolicy, type SandboxMode } from "../runtime/nativeCodex";
 import {
 	loadModelKnobValues,
 	modelKnobForTarget,
@@ -225,6 +225,20 @@ export function useAppController() {
 		setUnreadChatIds(new Set(next.unreadCompletedChats));
 		applyPreferencesToDocument(next);
 	}), []);
+
+	useEffect(() => {
+		if (!isDesktop) return;
+		let disposed = false;
+		void bridges.config?.getDesktopPermissions()
+			.then((stored) => {
+				if (disposed) return;
+				setPreferences(setPermissionPreferences(stored.approvalPolicy, stored.sandboxMode));
+			})
+			.catch((reason) => {
+				if (!disposed) showToast(`Could not load machine permissions: ${reason instanceof Error ? reason.message : String(reason)}`);
+			});
+		return () => { disposed = true; };
+	}, [isDesktop, showToast]);
 
 	useEffect(() => {
 		applyPreferencesToDocument(preferences);
@@ -481,6 +495,12 @@ export function useAppController() {
 	const terminalWorkspaceId = activeSessionId ?? "default";
 	const selectActivePermissions = useCallback((nextApprovalPolicy: ApprovalPolicy, nextSandboxMode: SandboxMode) => {
 		const mode = approvalModeFromConfig(nextApprovalPolicy, nextSandboxMode);
+		if (isDesktop) {
+			void bridges.config?.updateDesktopPermissions({
+				approvalPolicy: nextApprovalPolicy,
+				sandboxMode: nextSandboxMode
+			}).catch((reason) => showToast(`Could not save machine permissions: ${reason instanceof Error ? reason.message : String(reason)}`));
+		}
 		if (!activeSessionId) {
 			setApprovalMode(mode); setApprovalPolicy(nextApprovalPolicy); setSandboxMode(nextSandboxMode);
 			setPreferences(setPermissionPreferences(nextApprovalPolicy, nextSandboxMode));
@@ -501,22 +521,22 @@ export function useAppController() {
 		const config = { approvalPolicy: nextApprovalPolicy, sandbox: nextSandboxMode };
 		patchSessionMetadata(activeSessionId, { approvalMode: mode, ...config });
 		void nativeCodex?.close(activeSessionId).catch((reason) => showToast(reason instanceof Error ? reason.message : String(reason)));
-	}, [activeSessionId, nativeCodex, showToast]);
+	}, [activeSessionId, isDesktop, nativeCodex, showToast]);
 
 	useEffect(() => {
 		if (!activeSessionId) return;
 		const session = sessions.find((candidate) => candidate.id === activeSessionId);
 		if (!session || session.metadata.runtime !== "codex-app-server") return;
-		const mode = typeof session.metadata.approvalMode === "string"
-			? session.metadata.approvalMode as ApprovalMode
-			: approvalModeFromConfig(
-				typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : undefined,
-				typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : undefined
-			);
-		setApprovalMode(mode);
-		setApprovalPolicy(typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy as ApprovalPolicy : approvalModeConfig(mode).approvalPolicy as ApprovalPolicy);
-		setSandboxMode(typeof session.metadata.sandbox === "string" ? session.metadata.sandbox as SandboxMode : approvalModeConfig(mode).sandbox as SandboxMode);
-	}, [activeSessionId, sessions]);
+		if (session.status === "running") return;
+		if (session.metadata.approvalPolicy === approvalPolicy && session.metadata.sandbox === sandboxMode) return;
+		const mode = approvalModeFromConfig(approvalPolicy, sandboxMode);
+		patchSessionMetadata(activeSessionId, {
+			approvalMode: mode,
+			approvalPolicy,
+			sandbox: sandboxMode
+		});
+		void nativeCodex?.close(activeSessionId).catch((reason) => showToast(reason instanceof Error ? reason.message : String(reason)));
+	}, [activeSessionId, approvalPolicy, nativeCodex, sandboxMode, sessions, showToast]);
 
 	useEffect(() => {
 		let disposed = false;
@@ -902,19 +922,12 @@ export function useAppController() {
 					const workspace = typeof session.metadata.workspace === "string"
 						? session.metadata.workspace
 						: await nativeCodex.defaultWorkspace();
-					const storedApprovalMode = typeof session.metadata.approvalMode === "string"
-						? session.metadata.approvalMode as ApprovalMode
-						: approvalModeFromConfig(
-							typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : undefined,
-							typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : undefined
-						);
-					const storedApproval = approvalModeConfig(storedApprovalMode);
 					const startRequest = {
 						...codexStartRequest(sessionId, workspace, executionTarget, "ask", preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined, serviceTierForExecutionTarget(executionTarget, modelKnobValues) ?? "default"),
 						// Restored pre-policy sessions can carry only the human mode. Never
 						// turn that into an undefined request which Rust then treats as Ask.
-						approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : storedApproval.approvalPolicy,
-						sandbox: typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : storedApproval.sandbox,
+						approvalPolicy,
+						sandbox: sandboxMode,
 						threadId: typeof session.metadata.threadId === "string" ? session.metadata.threadId : undefined
 					};
 					const sequence = allocateNativeSequence(sessionId);
@@ -979,7 +992,7 @@ export function useAppController() {
 				setBusy(false);
 			}
 		},
-		[allocateNativeSequence, ensureCodexOauthReady, ensureOpenRouterReady, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
+		[allocateNativeSequence, approvalPolicy, ensureCodexOauthReady, ensureOpenRouterReady, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, sandboxMode, selectedTargetId, showToast]
 	);
 	sendToSessionRef.current = sendToSession;
 

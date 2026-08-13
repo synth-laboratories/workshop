@@ -60,8 +60,8 @@ use serde_json::Value;
 use std::sync::Arc;
 use storage::{AppEvent, CoreDiagnostics, ModelPerformanceRepository, ModelPerformanceSummary};
 use synth_config::{
-    BackendSettings, BackendSettingsUpdate, ModelMultiAgentSetting, ModelMultiAgentUpdate,
-    WorkspaceAccessSettings, WorkspaceAccessUpdate,
+    BackendSettings, BackendSettingsUpdate, DesktopPermissionSettings, DesktopPermissionUpdate,
+    ModelMultiAgentSetting, ModelMultiAgentUpdate, WorkspaceAccessSettings, WorkspaceAccessUpdate,
 };
 use tauri::{Emitter, Manager, RunEvent, State};
 use tauri_plugin_dialog::DialogExt;
@@ -1411,6 +1411,20 @@ fn workspace_access_update(
     request: WorkspaceAccessUpdate,
 ) -> Result<WorkspaceAccessSettings, AppError> {
     synth_config::update_workspace_access(request).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn desktop_permissions_get() -> Result<DesktopPermissionSettings, AppError> {
+    synth_config::desktop_permission_settings().map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn desktop_permissions_update(
+    request: DesktopPermissionUpdate,
+) -> Result<DesktopPermissionSettings, AppError> {
+    synth_config::update_desktop_permissions(request).map_err(AppError::from)
 }
 
 #[tauri::command]

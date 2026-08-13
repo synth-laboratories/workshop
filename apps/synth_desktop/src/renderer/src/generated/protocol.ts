@@ -144,6 +144,8 @@ export const commands = {
 	modelMultiAgentUpdate: (request: ModelMultiAgentUpdate) => typedError<ModelMultiAgentSetting[], AppError>(__TAURI_INVOKE("model_multi_agent_update", { request })),
 	workspaceAccessGet: () => typedError<WorkspaceAccessSettings, AppError>(__TAURI_INVOKE("workspace_access_get")),
 	workspaceAccessUpdate: (request: WorkspaceAccessUpdate) => typedError<WorkspaceAccessSettings, AppError>(__TAURI_INVOKE("workspace_access_update", { request })),
+	desktopPermissionsGet: () => typedError<DesktopPermissionSettings, AppError>(__TAURI_INVOKE("desktop_permissions_get")),
+	desktopPermissionsUpdate: (request: DesktopPermissionUpdate) => typedError<DesktopPermissionSettings, AppError>(__TAURI_INVOKE("desktop_permissions_update", { request })),
 	workspaceScopeGet: (sessionId: string) => typedError<{
 	sessionId: string,
 	workspace: string,
@@ -596,6 +598,17 @@ export type DataCounts = {
 	containers: unknown,
 	traces: unknown,
 	usage: unknown,
+};
+
+export type DesktopPermissionSettings = {
+	configPath: string,
+	approvalPolicy: string,
+	sandboxMode: string,
+};
+
+export type DesktopPermissionUpdate = {
+	approvalPolicy: string,
+	sandboxMode: string,
 };
 
 export type EntityCount = {

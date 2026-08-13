@@ -420,11 +420,17 @@ const cuaAnalysisVisual = {
   sourceAgentId: "laguna", sourceModel: "laguna-xs-2.1", contentDigest: null, previewDigest: null,
   metadata: {}, createdAt: "2026-08-09T13:24:48.000Z", updatedAt: "2026-08-09T13:24:48.000Z"
 };
-const fixtureVisuals = ${includeCuaAnalysisVisual ? "[cuaAnalysisVisual]" : "[]"};
+const cuaLongTitleVisual = {
+  ...cuaAnalysisVisual,
+  id: "laguna-prompt-trim-long-title",
+  title: "SFT · Banking77 intent SFT · hosted Tinker · banking77_classify checkpoint campaigns with a deliberately taller wrapped title",
+  updatedAt: "2026-08-09T13:25:48.000Z"
+};
+const fixtureVisuals = ${includeCuaAnalysisVisual ? "[cuaAnalysisVisual, cuaLongTitleVisual]" : "[]"};
 window.synthVisuals = {
   listTemplates: async () => [{ id: "analysis.visual.v1", title: "Agent-authored analysis", genre: "analysis" }],
   getTemplate: async () => ({ id: "analysis.visual.v1", title: "Agent-authored analysis" }),
-  list: async () => fixtureVisuals, get: async () => cuaAnalysisVisual, revisions: async () => [],
+  list: async () => fixtureVisuals, get: async (visualId) => fixtureVisuals.find((visual) => visual.id === visualId) || cuaAnalysisVisual, revisions: async () => [],
   create: async () => cuaAnalysisVisual, update: async () => cuaAnalysisVisual, save: async () => cuaAnalysisVisual,
   fork: async () => cuaAnalysisVisual, archive: async () => cuaAnalysisVisual, show: async () => cuaAnalysisVisual,
   onEvent: () => () => {}, onShow: () => () => {}
