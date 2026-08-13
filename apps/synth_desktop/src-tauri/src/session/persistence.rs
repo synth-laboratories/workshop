@@ -3,9 +3,7 @@
 //! Replaces `Option<Arc<CoreRuntime>>` + per-call persistence branches in Codex.
 //! `Null` no-ops every method so call sites always go through one type.
 
-use crate::contract::events::{
-    origin_for_boundary_kind, origin_for_source_and_kind, tag_event, EventChannel,
-};
+use crate::contract::events::{origin_for_boundary_kind, tag_event, EventChannel};
 use crate::core_runtime::CoreRuntime;
 use crate::domain::{
     DomainMutation, RunCreate, RunService, RunStatus, SessionCreate, SessionService, SessionStatus,
@@ -82,68 +80,6 @@ impl SessionPersistence {
                 let event = ephemeral_codex_app_event(&session_id, &method, params);
                 let _ = app.emit(EventChannel::RUNTIME, &tag_event(origin, event));
             }
-        }
-    }
-
-    /// Strict persist-before-publish boundary used by the approval broker.
-    /// Unlike the compatibility notification path above, a Core write error is
-    /// returned so a request is never shown without a durable lifecycle row.
-    pub async fn append_boundary_event<R: tauri::Runtime>(
-        &self,
-        app: &AppHandle<R>,
-        session_id: String,
-        source: EventSource,
-        kind: impl Into<String>,
-        payload: Value,
-    ) -> Result<()> {
-        let kind = kind.into();
-        match self {
-            Self::Core(core) => {
-                core.append_and_emit(
-                    app,
-                    EventAppend {
-                        event_id: None,
-                        session_id: Some(session_id),
-                        run_id: None,
-                        source,
-                        kind,
-                        payload,
-                        remote_sequence: None,
-                        command_id: None,
-                        created_at: None,
-                    },
-                )
-                .await?;
-            }
-            Self::Null => {
-                let event = ephemeral_app_event(&session_id, source, &kind, payload);
-                let origin = origin_for_source_and_kind(event.source.as_str(), &event.kind);
-                let _ = app.emit(EventChannel::RUNTIME, &tag_event(origin, event));
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn events_after(&self, after_sequence: i64, limit: i64) -> Result<Vec<AppEvent>> {
-        match self {
-            Self::Core(core) => core.journal().events_after(after_sequence, limit).await,
-            Self::Null => Ok(Vec::new()),
-        }
-    }
-
-    pub async fn events_of_kinds_after(
-        &self,
-        after_sequence: i64,
-        kinds: Vec<String>,
-        limit: i64,
-    ) -> Result<Vec<AppEvent>> {
-        match self {
-            Self::Core(core) => {
-                core.journal()
-                    .events_of_kinds_after(after_sequence, kinds, limit)
-                    .await
-            }
-            Self::Null => Ok(Vec::new()),
         }
     }
 
@@ -276,15 +212,6 @@ impl SessionPersistence {
 }
 
 fn ephemeral_codex_app_event(session_id: &str, method: &str, params: Value) -> AppEvent {
-    ephemeral_app_event(session_id, EventSource::Codex, method, params)
-}
-
-fn ephemeral_app_event(
-    session_id: &str,
-    source: EventSource,
-    method: &str,
-    params: Value,
-) -> AppEvent {
     AppEvent {
         schema_version: APP_EVENT_SCHEMA_VERSION.to_string(),
         sequence: 0,
@@ -292,7 +219,7 @@ fn ephemeral_app_event(
         session_id: Some(session_id.to_owned()),
         session_sequence: None,
         run_id: None,
-        source,
+        source: EventSource::Codex,
         kind: method.to_owned(),
         payload: params,
         remote_sequence: None,

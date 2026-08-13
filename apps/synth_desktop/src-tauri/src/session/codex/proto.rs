@@ -1,7 +1,4 @@
 //! Codex request/response DTOs and the app-server ProviderTransport.
-use crate::session::approval::{
-    ApprovalDecision, ApprovalDelivery, ApprovalResolver, ApprovalScope, ResolverFuture,
-};
 use crate::synth_config::MultiAgentVersion;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -218,6 +215,12 @@ pub struct CodexSessionRecord {
     pub sandbox: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PendingApproval {
+    pub(crate) rpc_id: Value,
+    pub(crate) available_decisions: Vec<String>,
+}
+
 pub(crate) type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
 /// Waiters for `thread/compacted`, keyed by Desktop session id.
 /// Model-switch compaction waiters. A `thread/compacted` notification means
@@ -226,64 +229,14 @@ pub(crate) type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, S
 /// that terminal event can consume the user's destination prompt as the
 /// compaction turn and leave no answer.
 pub(crate) type CompactWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<Result<(), String>>>>>;
+pub(crate) type PendingApprovals = Arc<Mutex<HashMap<String, PendingApproval>>>;
+
 pub(crate) struct AppServer {
     pub(crate) child: Mutex<Child>,
     pub(crate) stdin: Arc<Mutex<tokio::process::ChildStdin>>,
     pub(crate) pending: Pending,
+    pub(crate) approvals: PendingApprovals,
     pub(crate) next_id: AtomicU64,
-}
-
-pub(crate) struct CodexResolver {
-    pub(crate) stdin: Arc<Mutex<tokio::process::ChildStdin>>,
-    pub(crate) rpc_id: Value,
-    pub(crate) available_decisions: Vec<String>,
-}
-
-impl ApprovalResolver for CodexResolver {
-    fn resolve<'a>(&'a self, decision: &'a ApprovalDecision) -> ResolverFuture<'a> {
-        Box::pin(async move {
-            let requested = match decision {
-                ApprovalDecision::Reject => "reject",
-                ApprovalDecision::Approve {
-                    scope: ApprovalScope::Once,
-                } => "once",
-                ApprovalDecision::Approve {
-                    scope: ApprovalScope::Session | ApprovalScope::Workspace,
-                } => "always",
-                ApprovalDecision::ApproveWithCap { .. } => {
-                    return Err(anyhow!(
-                        "Codex cannot resolve a capped paid-compute approval"
-                    ))
-                }
-            };
-            let selected = select_approval_decision(&self.available_decisions, requested)?;
-            super::event_pump::write_message(
-                &self.stdin,
-                &json!({"jsonrpc":"2.0","id":self.rpc_id,"result":{"decision":selected}}),
-            )
-            .await?;
-            Ok(ApprovalDelivery {
-                resolver_decision: Some(selected),
-            })
-        })
-    }
-
-    fn expire<'a>(&'a self, _reason: &'a str) -> ResolverFuture<'a> {
-        Box::pin(async move {
-            let response = super::event_pump::rejection_response(
-                &self.available_decisions,
-                self.rpc_id.clone(),
-            );
-            let selected = response
-                .pointer("/result/decision")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            super::event_pump::write_message(&self.stdin, &response).await?;
-            Ok(ApprovalDelivery {
-                resolver_decision: selected,
-            })
-        })
-    }
 }
 
 impl Drop for AppServer {
@@ -343,15 +296,24 @@ impl AppServer {
 
     pub(crate) async fn perform_resolve_approval(
         &self,
-        _approval_id: &str,
-        _requested: &str,
+        approval_id: &str,
+        requested: &str,
     ) -> Result<String> {
-        // v0.3 migration step 5 removes this trait method together with the
-        // renderer command rename. Until then, fail closed so no transport
-        // caller can bypass broker policy, journaling, or pending ownership.
-        Err(anyhow!(
-            "approval resolution moved to the Workshop approval broker"
-        ))
+        let pending = self
+            .approvals
+            .lock()
+            .await
+            .get(approval_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("approval is no longer pending: {approval_id}"))?;
+        let decision = select_approval_decision(&pending.available_decisions, requested)?;
+        super::event_pump::write_message(
+            &self.stdin,
+            &json!({"jsonrpc":"2.0","id":pending.rpc_id,"result":{"decision":decision}}),
+        )
+        .await?;
+        self.approvals.lock().await.remove(approval_id);
+        Ok(decision)
     }
 }
 

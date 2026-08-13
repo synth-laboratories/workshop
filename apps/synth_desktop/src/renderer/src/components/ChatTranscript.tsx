@@ -538,12 +538,13 @@ export function ChatTranscript({
 	// unresolved approvals at the live tail so a turn can never look like an
 	// inert "Working…" state while it is actually waiting for the operator.
 	const pendingApprovals = useMemo(() => {
+		if (!running) return [];
 		const byId = new Map<string, LocalActivityLine>();
 		for (const line of Object.values(activityByMessageId).flat()) {
 			if (line.kind === "approval" && line.approvalId) byId.set(line.approvalId, line);
 		}
 		return [...byId.values()];
-	}, [activityByMessageId]);
+	}, [activityByMessageId, running]);
 	const withoutPendingApproval = (line: LocalActivityLine) =>
 		!(line.kind === "approval" && line.approvalId);
 	const presentedActive = useMemo(
