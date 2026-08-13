@@ -177,6 +177,14 @@ export default function App() {
 						setApprovalPolicy={c.setApprovalPolicy}
 						setSandboxMode={c.setSandboxMode}
 						showToast={c.showToast}
+						startOptimizerAgent={async (title, prompt) => {
+							const targetId = c.selectedTargetId === "local-laguna" && c.state.codexOauthConfigured
+								? "chatgpt-luna"
+								: c.selectedTargetId;
+							const session = await c.createConversation(targetId, title);
+							const sent = await c.sendToSession(session.id, prompt);
+							if (!sent) throw new Error("The optimizer setup agent could not start");
+						}}
 						openChat={c.openChat}
 						openVisualRecord={c.openVisualRecord}
 						toggleArtifact={c.toggleArtifact}

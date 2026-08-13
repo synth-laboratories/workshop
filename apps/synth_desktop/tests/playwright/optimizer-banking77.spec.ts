@@ -25,6 +25,7 @@ test.beforeEach(async ({ page }) => {
 			usage: { costUsd: 0, rollouts: 0 }
 		});
 		(window as any).__optimizerCreateCount = 0;
+		(window as any).__optimizerAgentCalls = [];
 		(window as any).__setOptimizerRuns = (next: any[]) => { runs = next; };
 		(window as any).prompt = () => { throw new Error("window.prompt must not be used"); };
 		(window as any).synthOptimizers = {
@@ -74,34 +75,24 @@ test.beforeEach(async ({ page }) => {
 				};
 			},
 			onEvent: () => () => undefined,
-			onShow: (listener: (event: any) => void) => {
-				(window as any).__showOptimizerVisual = listener;
-				return () => { delete (window as any).__showOptimizerVisual; };
-			}
+			onShow: () => () => undefined
+		};
+		(window as any).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [],
+			start: async (request: any) => ({ sessionId: request.sessionId, threadId: `thread-${request.sessionId}` }),
+			startTurn: async (sessionId: string, prompt: string) => {
+				(window as any).__optimizerAgentCalls.push({ sessionId, prompt });
+				return { sessionId, threadId: `thread-${sessionId}`, turnId: "optimizer-setup-turn" };
+			},
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
 		};
 	});
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await page.getByRole("button", { name: "Optimizers" }).click();
-});
-
-test("an agent visual.show event opens the optimizer page in the chat side pane", async ({ page }) => {
-	await page.evaluate(() => {
-		(window as any).__showOptimizerVisual({
-			schemaVersion: "synth.desktop-app-event.v1",
-			sequence: 9,
-			eventId: "visual-show-9",
-			sessionId: "session_current",
-			source: "visual",
-			kind: "visual.show",
-			payload: { visualId: "visual-banking77_agent", title: "GEPA · Banking77" },
-			createdAt: "2026-08-09T16:00:09.000Z"
-		});
-	});
-
-	await expect(page.getByTestId("visual-pane")).toBeVisible();
-	await expect(page.getByTestId("visual-optimizer-run")).toBeVisible();
-	await expect(page.getByTestId("visual-pane")).toContainText("Banking77 GEPA smoke");
 });
 
 test("failed local recipes surface bounded stderr diagnostics and log paths", async ({ page }) => {
@@ -171,81 +162,42 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 	expect(download.suggestedFilename()).toBe("cand_seed.json");
 });
 
-test("CUA can review and explicitly start the bounded Banking77 GEPA recipe", async ({ page }) => {
-	await expect(page.getByTestId("banking77-gepa-launch-card")).toContainText("At most 480 total rollouts");
-	expect(await page.evaluate(() => (window as any).__optimizerCreateCount)).toBe(0);
-
-	await page.getByTestId("configure-banking77-gepa-smoke").click();
-	const dialog = page.getByTestId("banking77-gepa-launch-dialog");
-	await expect(dialog).toBeVisible();
-	await expect(page.getByTestId("banking77-gepa-bounds")).toContainText("480 total");
-	await expect(page.getByTestId("banking77-gepa-bounds")).toContainText("$4.90 total");
-	await expect(dialog).toContainText("20-example minibatches");
-	await expect(page.getByTestId("start-banking77-gepa-smoke")).toBeDisabled();
-	await page.getByTestId("confirm-banking77-gepa-cost").check();
-	await page.getByTestId("start-banking77-gepa-smoke").click();
-
-	await expect(dialog).toHaveCount(0);
-	await expect(page.getByTestId("optimizer-run-banking77_cua_smoke")).toBeVisible();
-	await expect(page.getByTestId("optimizer-execution-mode")).toContainText("Banking77 local container");
-	const request = await page.evaluate(() => (window as any).__optimizerCreateRequest);
-	expect(request.recipeId).toBe("gepa.banking77.sol.v1");
-	expect(request.openVisual).toBe(true);
-
-	await expect(page.getByTestId("visual-pane")).toBeVisible();
-	await expect(page.getByTestId("visual-optimizer-run")).toBeVisible();
-	await expect(page.getByTestId("optimizer-event-log")).toContainText("run.queued");
+test("optimizer entry points describe algorithms without binding them to environments", async ({ page }) => {
+	await expect(page.getByTestId("optimizer-guide-gepa")).toContainText("Propose");
+	await expect(page.getByTestId("optimizer-guide-go-ex")).toContainText("Explore");
+	await expect(page.getByTestId("optimizer-guide-sft")).toContainText("Collect");
+	await expect(page.getByTestId("optimizers-page")).not.toContainText("Banking77");
+	await expect(page.getByTestId("optimizers-page")).not.toContainText("Craftax");
+	await expect(page.getByTestId("start-gepa-agent")).toBeEnabled();
+	await expect(page.getByTestId("start-go-ex-agent")).toBeEnabled();
+	await expect(page.getByTestId("start-sft-agent")).toBeEnabled();
 });
 
-test("paid launcher releases the UI while long-lived GEPA recipes are still starting", async ({ page }) => {
-	await page.evaluate(() => {
-		(window as any).synthOptimizers.startRecipe = async () => new Promise(() => undefined);
-	});
-	await page.getByTestId("configure-banking77-gepa-smoke").click();
-	await page.getByTestId("confirm-banking77-gepa-cost").check();
-	await page.getByTestId("start-banking77-gepa-smoke").click();
-	await expect(page.getByTestId("banking77-gepa-launch-dialog")).toHaveCount(0);
-	await expect(page.getByRole("button", { name: "Visuals" })).toBeEnabled();
-});
-
-test("CUA can review and explicitly start the bounded Craftax SFT recipe", async ({ page }) => {
-	await expect(page.getByTestId("craftax-sft-launch-card")).toContainText("4 LoRA steps");
-	expect(await page.evaluate(() => (window as any).__optimizerCreateCount)).toBe(0);
-
-	await page.getByTestId("configure-craftax-sft-smoke").click();
-	const dialog = page.getByTestId("craftax-sft-launch-dialog");
-	await expect(dialog).toContainText("GPT-OSS-120B via Groq");
-	await expect(dialog).toContainText("bounded by rollouts and steps, not by a dollar ceiling");
-	await expect(page.getByTestId("start-craftax-sft-smoke")).toBeDisabled();
-	await page.getByTestId("confirm-craftax-sft-compute").check();
-	await page.getByTestId("start-craftax-sft-smoke").click();
-
-	await expect(dialog).toHaveCount(0);
-	await expect(page.getByTestId("optimizer-run-craftax_sft_cua_smoke")).toBeVisible();
-	const request = await page.evaluate(() => (window as any).__optimizerCreateRequest);
-	expect(request).toEqual({ recipeId: "sft.craftax.gpt-oss.smoke.v1", openVisual: true });
-});
-
-test("Craftax Nemotron Tinker SFT stays disabled when the recipe is unavailable", async ({ page }) => {
-	const card = page.getByTestId("craftax-nemotron-sft-launch-card");
-	await expect(card).toContainText("local Craftax slot");
-	await expect(page.getByTestId("start-craftax-nemotron-sft")).toBeDisabled();
+test("starting GELO opens an agent session that discovers the target before compute", async ({ page }) => {
+	await page.getByTestId("start-go-ex-agent").click();
+	await expect(page.getByTestId("chat-transcript")).toBeVisible();
+	await expect.poll(() => page.evaluate(() => (window as any).__optimizerAgentCalls.length)).toBe(1);
+	const [{ prompt }] = await page.evaluate(() => (window as any).__optimizerAgentCalls);
+	expect(prompt).toContain("which Container or evaluation target");
+	expect(prompt).toContain("checkpoints, and restore support");
+	expect(prompt).toContain("Do not start compute yet");
+	expect(prompt).toContain("explicit approval");
 	expect(await page.evaluate(() => (window as any).__optimizerCreateCount)).toBe(0);
 });
 
 test("an unresolved live optimizer binding is honest and never renders GEPA demo candidates", async ({ page }) => {
 	await page.evaluate(() => {
+		const run = {
+			schemaVersion: "optimizer_run.v1", id: "banking77_offline", algorithmId: "gepa", status: "queued", source: "local",
+			objective: "Offline GEPA", createdAt: new Date().toISOString(), cursorSeq: 0, capabilities: {}, executionBindings: [],
+			inputRefs: [], outputRefs: [], visualRefs: [{ kind: "visual", id: "visual-banking77_offline" }], summary: {}, usage: {}
+		};
+		(window as any).__setOptimizerRuns([run]);
 		(window as any).synthOptimizers.get = async () => { throw new Error("run is offline"); };
 		(window as any).synthOptimizers.eventsAfter = async () => { throw new Error("run is offline"); };
-		(window as any).synthOptimizers.startRecipe = async () => ({
-			schemaVersion: "optimizer_run.v1", id: "banking77_offline", algorithmId: "gepa", status: "queued", source: "local_recipe",
-			objective: "Banking77", createdAt: new Date().toISOString(), cursorSeq: 0, capabilities: {}, executionBindings: [],
-			inputRefs: [], outputRefs: [], visualRefs: [{ kind: "visual", id: "visual-banking77_offline" }], summary: {}, usage: {}
-		});
 	});
-	await page.getByTestId("configure-banking77-gepa-smoke").click();
-	await page.getByTestId("confirm-banking77-gepa-cost").check();
-	await page.getByTestId("start-banking77-gepa-smoke").click();
+	await page.getByTestId("optimizers-search").fill("Offline");
+	await page.getByTestId("open-optimizer-visual").click();
 	await expect(page.getByTestId("optimizer-run-unavailable")).toContainText("run is offline");
 	await expect(page.getByTestId("optimizer-candidate-cand_seed")).toHaveCount(0);
 });

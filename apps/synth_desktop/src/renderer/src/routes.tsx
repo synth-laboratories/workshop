@@ -84,6 +84,7 @@ export type MainRoutesProps = {
 	setApprovalPolicy: (policy: ApprovalPolicy) => void;
 	setSandboxMode: (mode: SandboxMode) => void;
 	showToast: (message: string) => void;
+	startOptimizerAgent: (title: string, prompt: string) => Promise<void>;
 	openChat: (chatId: string) => void;
 	openVisualRecord: (visual: VisualInstanceRecord | VisualRecord) => void;
 	toggleArtifact: (id: string | null) => void;
@@ -144,6 +145,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		setApprovalPolicy,
 		setSandboxMode,
 		showToast,
+		startOptimizerAgent,
 		openChat,
 		openVisualRecord,
 		toggleArtifact,
@@ -247,6 +249,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 			{view.kind === "optimizers" ? (
 				<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`} style={{ "--visual-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}>
 					<OptimizersPage
+						onStartAgent={(guide) => startOptimizerAgent(`Plan a ${guide.name} optimization`, guide.prompt)}
 						onOpenVisual={(visualId) => {
 							void (async () => {
 								if (!bridges.visuals) {

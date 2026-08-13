@@ -2,20 +2,45 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { OptimizerAlgorithmInfo, OptimizerRunRecord } from "@synth/runtime-protocol";
 import { bridges } from "../runtime/desktopBridge";
 
-const BANKING77_LUNA_RECIPE_ID = "gepa.banking77.luna.v1";
-const BANKING77_SOL_RECIPE_ID = "gepa.banking77.sol.v1";
-const BANKING77_RUN_COST_USD = 2.45;
-const BANKING77_RUN_ROLLOUTS = 240;
-const BANKING77_PAIR_COST_USD = BANKING77_RUN_COST_USD * 2;
-const BANKING77_PAIR_ROLLOUTS = BANKING77_RUN_ROLLOUTS * 2;
-const CRAFTAX_SFT_RECIPE_ID = "sft.craftax.gpt-oss.smoke.v1";
-const HOSTED_SFT_FIXTURE_RECIPE_ID = "sft.hosted.fixture.v1";
-const HOSTED_SFT_NEMOTRON_RECIPE_ID = "sft.craftax.nemotron-nano.tinker.v1";
-const CRAFTAX_SFT_ROLLOUTS = 8;
-const CRAFTAX_SFT_STEPS = 4;
+type OptimizerGuide = {
+	id: "gepa" | "go-ex" | "sft";
+	label: string;
+	name: string;
+	description: string;
+	flow: string[];
+	prompt: string;
+};
+
+const OPTIMIZER_GUIDES: OptimizerGuide[] = [
+	{
+		id: "gepa",
+		label: "GE",
+		name: "GEPA",
+		description: "Improve prompts by proposing candidates, evaluating them, and maintaining a quality frontier.",
+		flow: ["Propose", "Evaluate", "Select"],
+		prompt: "Help me set up a GEPA optimization in Workshop. Do not start compute yet. First ask what I want to optimize, then help me choose or create the evaluation Container, dataset splits, scoring contract, proposer model, budget, and stopping criteria. Verify the target and event-stream contracts before proposing a run. Explain tradeoffs and wait for my explicit approval before starting paid compute."
+	},
+	{
+		id: "go-ex",
+		label: "GX",
+		name: "GELO",
+		description: "Explore prompt-policy variants from rollout evidence and branch from useful intermediate states.",
+		flow: ["Explore", "Branch", "Verify"],
+		prompt: "Help me set up a prompt-only GELO (GoEx) optimization in Workshop. Do not start compute yet. First ask what behavior I want to improve and which Container or evaluation target should measure it. Discover the target's actual capabilities, including streaming, rewards, prompt treatment, checkpoints, and restore support; fail the plan early if required affordances are missing. Then help me choose seeds, proposer policy, budget, heldout evaluation, and stopping criteria. Wait for my explicit approval before starting paid compute."
+	},
+	{
+		id: "sft",
+		label: "SF",
+		name: "SFT",
+		description: "Collect strong demonstrations, train checkpoints, and compare the adapted model against its baseline.",
+		flow: ["Collect", "Train", "Compare"],
+		prompt: "Help me set up an SFT optimization in Workshop. Do not start compute yet. First ask what capability I want to improve and which Container or evaluation target should measure it. Help me design demonstration collection and filtering, the student and training provider, checkpoint cadence, baseline-versus-checkpoint evaluation, budget, and uplift criteria. Verify that training and inference targets are executable and that lifecycle events will be inspectable. Wait for my explicit approval before starting paid compute."
+	}
+];
 
 type Props = {
 	onOpenVisual: (visualId: string) => void;
+	onStartAgent: (guide: OptimizerGuide) => Promise<void>;
 	onBack: () => void;
 };
 
@@ -91,10 +116,9 @@ function runTitle(run: OptimizerRunRecord): string {
 		.replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
-export function OptimizersPage({ onOpenVisual, onBack }: Props) {
+export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 	const [runs, setRuns] = useState<OptimizerRunRecord[]>([]);
 	const [algorithms, setAlgorithms] = useState<OptimizerAlgorithmInfo[]>([]);
-	const [recipes, setRecipes] = useState<Array<{ id: string; availability: string }>>([]);
 	const [search, setSearch] = useState("");
 	const [status, setStatus] = useState("all");
 	const [algorithm, setAlgorithm] = useState("all");
@@ -102,10 +126,7 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
-	const [launcherOpen, setLauncherOpen] = useState(false);
-	const [launchConfirmed, setLaunchConfirmed] = useState(false);
-	const [sftLauncherOpen, setSftLauncherOpen] = useState(false);
-	const [sftLaunchConfirmed, setSftLaunchConfirmed] = useState(false);
+	const [startingAgent, setStartingAgent] = useState<OptimizerGuide["id"] | null>(null);
 
 	const refresh = useCallback(async () => {
 		if (!bridges.optimizers) {
@@ -113,19 +134,17 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 			return;
 		}
 		setError(null);
-		const [nextRuns, nextAlgorithms, nextRecipes] = await Promise.all([
+		const [nextRuns, nextAlgorithms] = await Promise.all([
 			bridges.optimizers.list({
 				search: search.trim() || undefined,
 				status: status === "all" ? undefined : status,
 				algorithmId: algorithm === "all" ? undefined : algorithm,
 				source: source === "all" ? undefined : source
 			}),
-			bridges.optimizers.listAlgorithms(),
-			bridges.optimizers.listRecipes?.() ?? Promise.resolve([])
+			bridges.optimizers.listAlgorithms()
 		]);
 		setRuns(nextRuns);
 		setAlgorithms(nextAlgorithms);
-		setRecipes(nextRecipes);
 		if (!selectedId && nextRuns[0]) setSelectedId(nextRuns[0].id);
 	}, [algorithm, search, selectedId, source, status]);
 
@@ -141,18 +160,18 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 		() => runs.find((run) => run.id === selectedId) ?? null,
 		[runs, selectedId]
 	);
-	const banking77RecipeAvailable = [BANKING77_LUNA_RECIPE_ID, BANKING77_SOL_RECIPE_ID].every(
-		(recipeId) => recipes.some((recipe) => recipe.id === recipeId && recipe.availability === "available")
-	);
-	const craftaxSftRecipeAvailable = recipes.some(
-		(recipe) => recipe.id === CRAFTAX_SFT_RECIPE_ID && recipe.availability === "available"
-	);
-	const hostedSftRecipeAvailable = recipes.some(
-		(recipe) => recipe.id === HOSTED_SFT_FIXTURE_RECIPE_ID && recipe.availability === "available"
-	);
-	const nemotronSftRecipeAvailable = recipes.some(
-		(recipe) => recipe.id === HOSTED_SFT_NEMOTRON_RECIPE_ID && recipe.availability === "available"
-	);
+
+	const startAgent = async (guide: OptimizerGuide) => {
+		setStartingAgent(guide.id);
+		setError(null);
+		try {
+			await onStartAgent(guide);
+		} catch (reason) {
+			setError(reason instanceof Error ? reason.message : String(reason));
+		} finally {
+			setStartingAgent(null);
+		}
+	};
 
 	const openSelectedVisual = async () => {
 		if (!selected || !bridges.optimizers) return;
@@ -216,98 +235,6 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 				});
 			}
 			await refresh();
-		} catch (reason) {
-			setError(String(reason));
-		} finally {
-			setBusy(false);
-		}
-	};
-
-	const launchBanking77Comparison = async () => {
-		if (!bridges.optimizers) return;
-		if (!launchConfirmed) return;
-		setBusy(true);
-		setError(null);
-		try {
-			const [lunaRun, solRun] = await Promise.all([
-				bridges.optimizers.startRecipe({
-					recipeId: BANKING77_LUNA_RECIPE_ID,
-					openVisual: true
-				}),
-				bridges.optimizers.startRecipe({
-					recipeId: BANKING77_SOL_RECIPE_ID,
-					openVisual: true
-				})
-			]);
-			setLauncherOpen(false);
-			setLaunchConfirmed(false);
-			setSelectedId(lunaRun.id);
-			await refresh();
-			const visualId = lunaRun.visualRefs.find((ref) => ref.kind === "visual")?.id
-				?? solRun.visualRefs.find((ref) => ref.kind === "visual")?.id;
-			if (visualId) onOpenVisual(visualId);
-		} catch (reason) {
-			setError(String(reason));
-		} finally {
-			setBusy(false);
-		}
-	};
-
-	const launchHostedSftFixture = async () => {
-		if (!bridges.optimizers || !hostedSftRecipeAvailable) return;
-		setBusy(true);
-		setError(null);
-		try {
-			const run = await bridges.optimizers.startRecipe({
-				recipeId: HOSTED_SFT_FIXTURE_RECIPE_ID,
-				openVisual: true
-			});
-			setSelectedId(run.id);
-			await refresh();
-			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
-			if (visualId) onOpenVisual(visualId);
-		} catch (reason) {
-			setError(String(reason));
-		} finally {
-			setBusy(false);
-		}
-	};
-
-	const launchCraftaxNemotronSft = async () => {
-		if (!bridges.optimizers || !nemotronSftRecipeAvailable) return;
-		setBusy(true);
-		setError(null);
-		try {
-			const run = await bridges.optimizers.startRecipe({
-				recipeId: HOSTED_SFT_NEMOTRON_RECIPE_ID,
-				openVisual: true
-			});
-			setSelectedId(run.id);
-			await refresh();
-			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
-			if (visualId) onOpenVisual(visualId);
-		} catch (reason) {
-			setError(String(reason));
-		} finally {
-			setBusy(false);
-		}
-	};
-
-	const launchCraftaxSftSmoke = async () => {
-		if (!bridges.optimizers || !sftLaunchConfirmed) return;
-		setBusy(true);
-		setError(null);
-		try {
-			const run = await bridges.optimizers.startRecipe({
-				recipeId: CRAFTAX_SFT_RECIPE_ID,
-				openVisual: true
-			});
-			setSftLauncherOpen(false);
-			setSftLaunchConfirmed(false);
-			setSelectedId(run.id);
-			await refresh();
-			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
-			if (visualId) onOpenVisual(visualId);
 		} catch (reason) {
 			setError(String(reason));
 		} finally {
@@ -383,83 +310,23 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 
 			<section className="optimizer-recipes" aria-labelledby="optimizer-recipes-title">
 				<div className="optimizer-recipes-head">
-					<div><span className="optimizer-eyebrow">Quick start</span><h2 id="optimizer-recipes-title">Start an optimizer</h2></div>
-					<p>Every recipe is preflighted before compute begins.</p>
+					<div><span className="optimizer-eyebrow">Agent-guided setup</span><h2 id="optimizer-recipes-title">What do you want to optimize?</h2></div>
+					<p>The agent will help choose the Container, evaluation, and budget.</p>
 				</div>
 				<div className="optimizer-recipe-grid">
-					<article className="optimizer-recipe-card featured" aria-labelledby="banking77-launch-title" data-testid="banking77-gepa-launch-card">
-						<div className="optimizer-recipe-top"><span className="optimizer-recipe-mark">GE</span><span className="optimizer-recipe-runtime">Local · paid</span></div>
-						<h3 id="banking77-launch-title">Banking77 · Luna vs Sol</h3>
-						<p>Two concurrent GEPA runs. At most {BANKING77_PAIR_ROLLOUTS} total rollouts · ${BANKING77_PAIR_COST_USD.toFixed(2)} cap.</p>
-						<button className="primary-button" type="button" disabled={busy || !banking77RecipeAvailable} onClick={() => setLauncherOpen(true)} data-testid="configure-banking77-gepa-smoke">{banking77RecipeAvailable ? "Review & start" : "Unavailable"}</button>
-					</article>
-
-					<article className={`optimizer-recipe-card${hostedSftRecipeAvailable ? "" : " unavailable"}`} aria-labelledby="hosted-sft-launch-title" data-testid="hosted-sft-launch-card">
-						<div className="optimizer-recipe-top"><span className="optimizer-recipe-mark">SF</span><span className="optimizer-recipe-runtime">Hosted · fixture</span></div>
-						<h3 id="hosted-sft-launch-title">SFT event-stream fixture</h3>
-						<p>Validate the hosted lifecycle without Tinker or provider charges.</p>
-						<button className="secondary-button" type="button" disabled={busy || !hostedSftRecipeAvailable} onClick={() => void launchHostedSftFixture()} data-testid="start-hosted-sft-fixture">{hostedSftRecipeAvailable ? "Start fixture" : "Needs beta"}</button>
-					</article>
-
-					<article className={`optimizer-recipe-card${nemotronSftRecipeAvailable ? "" : " unavailable"}`} aria-labelledby="craftax-nemotron-sft-launch-title" data-testid="craftax-nemotron-sft-launch-card">
-						<div className="optimizer-recipe-top"><span className="optimizer-recipe-mark">SF</span><span className="optimizer-recipe-runtime">Tinker · local Craftax slot</span></div>
-						<h3 id="craftax-nemotron-sft-launch-title">Craftax · Nemotron SFT</h3>
-						<p>Train a Nemotron 3.5 Lightning LoRA, then score checkpoint campaigns.</p>
-						<button className="secondary-button" type="button" disabled={busy || !nemotronSftRecipeAvailable} onClick={() => void launchCraftaxNemotronSft()} data-testid="start-craftax-nemotron-sft">{nemotronSftRecipeAvailable ? "Review & start" : "Needs beta + slot"}</button>
-					</article>
-
-					<article className={`optimizer-recipe-card${craftaxSftRecipeAvailable ? "" : " unavailable"}`} aria-labelledby="craftax-sft-launch-title" data-testid="craftax-sft-launch-card">
-						<div className="optimizer-recipe-top"><span className="optimizer-recipe-mark">SF</span><span className="optimizer-recipe-runtime">Local · Tinker</span></div>
-						<h3 id="craftax-sft-launch-title">Craftax · GPT-OSS smoke</h3>
-						<p>Four teacher rollouts · {CRAFTAX_SFT_STEPS} LoRA steps · {CRAFTAX_SFT_ROLLOUTS} evaluations.</p>
-						<button className="secondary-button" type="button" disabled={busy || !craftaxSftRecipeAvailable} onClick={() => setSftLauncherOpen(true)} data-testid="configure-craftax-sft-smoke">{craftaxSftRecipeAvailable ? "Review & start" : "Unavailable"}</button>
-					</article>
+					{OPTIMIZER_GUIDES.map((guide) => (
+						<article className="optimizer-recipe-card" aria-labelledby={`optimizer-guide-${guide.id}`} data-testid={`optimizer-guide-${guide.id}`} key={guide.id}>
+							<div className="optimizer-recipe-top"><span className="optimizer-recipe-mark">{guide.label}</span><span className="optimizer-recipe-runtime">Optimization algorithm</span></div>
+							<h3 id={`optimizer-guide-${guide.id}`}>{guide.name}</h3>
+							<p>{guide.description}</p>
+							<div className="optimizer-recipe-flow" aria-label={`${guide.name} workflow`}>{guide.flow.map((step) => <span key={step}>{step}</span>)}</div>
+							<button className="secondary-button" type="button" disabled={startingAgent !== null} onClick={() => void startAgent(guide)} data-testid={`start-${guide.id}-agent`}>
+								{startingAgent === guide.id ? "Opening agent…" : "Plan with agent"}
+							</button>
+						</article>
+					))}
 				</div>
 			</section>
-
-			{launcherOpen ? (
-				<div className="optimizer-launch-dialog" role="dialog" aria-modal="true" aria-labelledby="banking77-dialog-title" data-testid="banking77-gepa-launch-dialog">
-					<div className="optimizer-launch-dialog-card">
-						<div className="optimizer-launch-dialog-head">
-							<div><span className="optimizer-eyebrow">Review before starting paid compute</span><h2 id="banking77-dialog-title">Banking77 GEPA · Luna vs Sol</h2></div>
-							<button type="button" className="ghost-button" aria-label="Close Banking77 GEPA launcher" onClick={() => setLauncherOpen(false)} data-testid="close-banking77-gepa-launcher">×</button>
-						</div>
-						<dl className="optimizer-launch-summary" data-testid="banking77-gepa-bounds">
-							<div><dt>Optimizer</dt><dd>GEPA × 2</dd></div><div><dt>Dataset</dt><dd>Banking77</dd></div>
-							<div><dt>Proposers</dt><dd>Luna medium · Sol medium</dd></div><div><dt>Run IDs</dt><dd>Two, assigned on start</dd></div>
-							<div><dt>Rollout ceiling</dt><dd>{BANKING77_PAIR_ROLLOUTS} total</dd></div><div><dt>Cost ceiling</dt><dd>${BANKING77_PAIR_COST_USD.toFixed(2)} total</dd></div>
-						</dl>
-						<p className="optimizer-launch-prereq">Each run uses 50 train rows, 20-example minibatches, and 50 heldout rows. Proposers use the signed-in Codex ChatGPT account; Banking77 candidate evaluation uses the trusted Desktop OpenAI credential.</p>
-						<label className="optimizer-launch-confirm"><input type="checkbox" checked={launchConfirmed} onChange={(event) => setLaunchConfirmed(event.target.checked)} data-testid="confirm-banking77-gepa-cost" /> I approve both bounded runs and their API usage.</label>
-						<div className="optimizer-launch-dialog-actions">
-							<button type="button" className="secondary-button" onClick={() => setLauncherOpen(false)}>Cancel</button>
-							<button type="button" className="primary-button" disabled={busy || !launchConfirmed} onClick={() => void launchBanking77Comparison()} data-testid="start-banking77-gepa-smoke">{busy ? "Starting both…" : "Start Luna + Sol comparison"}</button>
-						</div>
-					</div>
-				</div>
-			) : null}
-
-			{sftLauncherOpen ? (
-				<div className="optimizer-launch-dialog" role="dialog" aria-modal="true" aria-labelledby="craftax-sft-dialog-title" data-testid="craftax-sft-launch-dialog">
-					<div className="optimizer-launch-dialog-card">
-						<div className="optimizer-launch-dialog-head">
-							<div><span className="optimizer-eyebrow">Review before starting paid compute</span><h2 id="craftax-sft-dialog-title">Craftax GPT-OSS bounded SFT smoke</h2></div>
-							<button type="button" className="ghost-button" aria-label="Close Craftax SFT launcher" onClick={() => setSftLauncherOpen(false)}>×</button>
-						</div>
-						<dl className="optimizer-launch-summary" data-testid="craftax-sft-bounds">
-							<div><dt>Teacher</dt><dd>GPT-OSS-120B via Groq</dd></div><div><dt>Student</dt><dd>GPT-OSS-20B LoRA via Tinker</dd></div>
-							<div><dt>Teacher rollouts</dt><dd>4</dd></div><div><dt>Training steps</dt><dd>{CRAFTAX_SFT_STEPS}</dd></div>
-							<div><dt>Held-out seeds</dt><dd>2 × base and adapter</dd></div><div><dt>Environment rollouts</dt><dd>{CRAFTAX_SFT_ROLLOUTS} maximum</dd></div>
-						</dl>
-						<p className="optimizer-launch-prereq">Uses the trusted Craftax binary (reusing port 8098 or owning it for this run) plus Groq and Tinker credentials in the trusted Desktop environment. Provider charges apply; this recipe is bounded by rollouts and steps, not by a dollar ceiling.</p>
-						<label className="optimizer-launch-confirm"><input type="checkbox" checked={sftLaunchConfirmed} onChange={(event) => setSftLaunchConfirmed(event.target.checked)} data-testid="confirm-craftax-sft-compute" /> I approve the bounded Groq and Tinker compute.</label>
-						<div className="optimizer-launch-dialog-actions">
-							<button type="button" className="secondary-button" onClick={() => setSftLauncherOpen(false)}>Cancel</button>
-							<button type="button" className="primary-button" disabled={busy || !sftLaunchConfirmed} onClick={() => void launchCraftaxSftSmoke()} data-testid="start-craftax-sft-smoke">{busy ? "Starting…" : "Start bounded Craftax SFT smoke"}</button>
-						</div>
-					</div>
-				</div>
-			) : null}
 
 			<div className="optimizer-toolbar" data-testid="optimizer-toolbar">
 				<div className="optimizer-filters">
@@ -497,7 +364,7 @@ export function OptimizersPage({ onOpenVisual, onBack }: Props) {
 								</button>
 							</li>
 						))}
-						{runs.length === 0 ? <li className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>↗</span><strong>No optimizer runs yet</strong><p>Import a local run, connect cloud history, or start the pinned Banking77 comparison.</p><button className="primary-button" type="button" disabled={busy || !banking77RecipeAvailable} onClick={() => setLauncherOpen(true)}>Configure Luna vs Sol</button></li> : null}
+						{runs.length === 0 ? <li className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>↗</span><strong>No optimizer runs yet</strong><p>Plan one with an agent above, import an existing run, or sync cloud history.</p></li> : null}
 					</ul>
 				</section>
 
