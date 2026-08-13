@@ -19,12 +19,21 @@ const SOL_ID = "banking77_gepa_sol_med_45856f25";
 const LUNA_ID = "banking77_gepa_luna_med_82f8136b";
 const SHOT_DIR = join(import.meta.dirname, "../../test-results/visual-gate");
 
+// The full QA matrix from docs/visuals_issues.md. 680 and 480 are the widths the
+// live GEPA review actually found problems at, so a gate that skips them is not
+// measuring the reported surface.
 const VIEWPORTS = [
 	{ width: 1440, height: 900 },
 	{ width: 1024, height: 768 },
 	{ width: 768, height: 1024 },
+	{ width: 680, height: 900 },
+	{ width: 480, height: 844 },
 	{ width: 390, height: 844 }
 ] as const;
+
+/** Widths that also get a 200% zoom pass. Screenshotting all six twice is not
+ * worth the wall clock; these two cover the wide and compact layouts. */
+const ZOOM_WIDTHS = new Set([1440, 768]);
 
 function loadRunEvents(runId: string): unknown[] | null {
 	const path = join(RUNS_DIR, runId, "events.optimizer.jsonl");
@@ -61,6 +70,27 @@ async function assertNoHorizontalOverflow(page: Page, label: string): Promise<vo
 	).toBeLessThanOrEqual(metrics.clientWidth + 1);
 }
 
+/**
+ * WCAG 1.4.4 reflow: at 200% zoom the layout must still not force horizontal
+ * scrolling. Chromium's `zoom` reproduces browser zoom rather than merely
+ * shrinking the viewport, so text scales too — which is the case that actually
+ * breaks sticky headers and single-line receipts.
+ */
+async function assertNoOverflowAtDoubleZoom(page: Page, label: string): Promise<void> {
+	await page.evaluate(() => {
+		document.documentElement.style.zoom = "2";
+	});
+	await page.waitForTimeout(150);
+	try {
+		await assertNoHorizontalOverflow(page, `${label} @200% zoom`);
+	} finally {
+		await page.evaluate(() => {
+			document.documentElement.style.zoom = "";
+		});
+		await page.waitForTimeout(150);
+	}
+}
+
 async function captureViewportSweep(page: Page, slug: string): Promise<void> {
 	mkdirSync(SHOT_DIR, { recursive: true });
 	const workspaceGeometry: Array<{ width: number; columns: number; sameRow: boolean }> = [];
@@ -69,6 +99,9 @@ async function captureViewportSweep(page: Page, slug: string): Promise<void> {
 		// Let CSS breakpoints and any resize observers settle.
 		await page.waitForTimeout(250);
 		await assertNoHorizontalOverflow(page, `${slug} @ ${viewport.width}px`);
+		if (ZOOM_WIDTHS.has(viewport.width)) {
+			await assertNoOverflowAtDoubleZoom(page, `${slug} @ ${viewport.width}px`);
+		}
 		const canvas = page.locator(".sv-workspace-canvas").first();
 		if (await canvas.count()) {
 			workspaceGeometry.push(await canvas.evaluate((element, width) => {
