@@ -16,6 +16,7 @@ printf '{"tokens":{"access_token":"fixture"}}\n' >"$TEST_ROOT/home/.codex/auth.j
 printf 'SYNTH_API_KEY=synth-fixture\nOPENROUTER_API_KEY=openrouter-fixture\nKEEP=yes\n' >"$TEST_ROOT/test-credentials.env"
 export SYNTH_DESKTOP_TEST_CREDENTIALS_FILE="$TEST_ROOT/test-credentials.env"
 export SYNTH_DESKTOP_DEV_OAUTH_FILE="$TEST_ROOT/home/.codex/auth.json"
+export SYNTH_DESKTOP_SHARED_ROOT="$TEST_ROOT/home/.synth-desktop/shared"
 
 alpha="$($ROOT/scripts/desktop-instance.sh print alpha)"
 beta="$($ROOT/scripts/desktop-instance.sh print beta)"
@@ -66,6 +67,8 @@ awk '
 ' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'if \(\$0 == exe \|\| \$0 == cua_exe\)' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_DEV_OAUTH_FILE' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE' "$ROOT/scripts/desktop-instance.sh"
+rg -q '\.synth-desktop/shared' "$ROOT/scripts/desktop-instance.sh"
 if rg -q 'SYNTH_DESKTOP_DEV_SHARE_CANONICAL_OAUTH|synth-desktop-dev-\$NAME' "$ROOT/scripts/desktop-instance.sh"; then
   echo "Desktop CUA launcher still contains a Keychain credential path" >&2
   exit 1

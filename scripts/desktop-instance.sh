@@ -480,12 +480,20 @@ dev_instance() {
   export SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST"
   export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
   export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
-  # Debug instances use the existing Codex file directly and never touch
-  # Keychain. An explicit path still wins for fixtures or alternate accounts.
+  # Debug instances use the existing Codex file as a seed and never touch
+  # Keychain. Refreshed credentials live in one private machine-local cache so
+  # rebuilds and differently named instances reuse a still-valid session.
+  local shared_oauth_root="${SYNTH_DESKTOP_SHARED_ROOT:-$HOME/.synth-desktop/shared}/oauth"
+  mkdir -p "$shared_oauth_root"
+  chmod 700 "$shared_oauth_root"
   if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" && -f "$HOME/.codex/auth.json" ]]; then
     SYNTH_DESKTOP_DEV_OAUTH_FILE="$HOME/.codex/auth.json"
   fi
   [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" ]] || export SYNTH_DESKTOP_DEV_OAUTH_FILE
+  if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}" ]]; then
+    SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$shared_oauth_root/codex.json"
+  fi
+  export SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE
   export CARGO_TARGET_DIR="$TARGET_ROOT"
   stage_gepa_runtime
 

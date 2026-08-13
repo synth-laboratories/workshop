@@ -6,11 +6,13 @@
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, SecondsFormat, Utc};
+use fs2::FileExt;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fmt, fs,
+    fs::OpenOptions,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -33,6 +35,7 @@ const KEYCHAIN_SERVICE: &str = "synth-desktop";
 const KEYCHAIN_ACCOUNT: &str = PROVIDER_ID;
 const KEYCHAIN_SERVICE_ENV: &str = "SYNTH_DESKTOP_OAUTH_KEYCHAIN_SERVICE";
 const DEV_CREDENTIAL_FILE_ENV: &str = "SYNTH_DESKTOP_DEV_OAUTH_FILE";
+const DEV_CREDENTIAL_STATE_FILE_ENV: &str = "SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE";
 
 fn keychain_service() -> String {
     std::env::var(KEYCHAIN_SERVICE_ENV)
@@ -76,7 +79,12 @@ pub trait CredentialStore: Send + Sync {
     fn load(&self) -> Result<Option<Credential>>;
     fn save(&self, credential: &Credential) -> Result<()>;
     fn delete(&self) -> Result<()>;
+    fn lock_refresh(&self) -> Result<Option<Box<dyn RefreshLock>>> {
+        Ok(None)
+    }
 }
+
+pub trait RefreshLock: Send {}
 
 pub struct SystemKeychain {
     service: String,
@@ -87,13 +95,14 @@ pub struct SystemKeychain {
 /// code-signing requirement and would otherwise prompt after local rebuilds.
 struct LocalInstanceCredentialStore;
 
-/// A named debug instance reads the canonical Codex file only as its initial
-/// seed. Successful refresh/re-auth and disconnect are persisted in an
-/// instance-local private overlay, so the source remains read-only and a
-/// rebuilt app never invokes Keychain.
+/// Named debug instances read the canonical Codex file only as their initial
+/// seed. Successful refresh/re-auth and disconnect are persisted in one
+/// machine-local private overlay shared by named instances. This keeps the
+/// source read-only, survives rebuilds and new instance names, and never
+/// invokes Keychain.
 struct DevFileCredentialStore {
     seed: PathBuf,
-    local: PathBuf,
+    state: PathBuf,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -108,6 +117,28 @@ fn set_private_file(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_dir(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_private_dir(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+struct FileRefreshLock(fs::File);
+
+impl RefreshLock for FileRefreshLock {}
+
+impl Drop for FileRefreshLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
 }
 
 #[cfg(not(unix))]
@@ -131,7 +162,7 @@ impl CredentialStore for LocalInstanceCredentialStore {
 
 impl CredentialStore for DevFileCredentialStore {
     fn load(&self) -> Result<Option<Credential>> {
-        match fs::read_to_string(&self.local) {
+        match fs::read_to_string(&self.state) {
             Ok(value) => {
                 return match serde_json::from_str::<InstanceCredentialState>(&value)
                     .context("invalid instance-local Codex OAuth state")?
@@ -159,20 +190,41 @@ impl CredentialStore for DevFileCredentialStore {
     fn delete(&self) -> Result<()> {
         self.write_local(&InstanceCredentialState::Disconnected)
     }
+
+    fn lock_refresh(&self) -> Result<Option<Box<dyn RefreshLock>>> {
+        let parent = self
+            .state
+            .parent()
+            .expect("shared OAuth path must have a parent directory");
+        fs::create_dir_all(parent)?;
+        set_private_dir(parent)?;
+        let lock_path = self.state.with_extension("lock");
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)?;
+        set_private_file(&lock_path)?;
+        file.lock_exclusive()?;
+        Ok(Some(Box::new(FileRefreshLock(file))))
+    }
 }
 
 impl DevFileCredentialStore {
     fn write_local(&self, state: &InstanceCredentialState) -> Result<()> {
         let parent = self
-            .local
+            .state
             .parent()
-            .expect("instance-local OAuth path must have a parent directory");
+            .expect("shared OAuth path must have a parent directory");
         fs::create_dir_all(parent)?;
-        let temporary = self.local.with_extension("json.tmp");
+        set_private_dir(parent)?;
+        let temporary = self
+            .state
+            .with_extension(format!("json.{}.tmp", std::process::id()));
         fs::write(&temporary, serde_json::to_vec_pretty(state)?)?;
         set_private_file(&temporary)?;
-        fs::rename(&temporary, &self.local)?;
-        set_private_file(&self.local)?;
+        fs::rename(&temporary, &self.state)?;
+        set_private_file(&self.state)?;
         Ok(())
     }
 }
@@ -337,16 +389,20 @@ impl Manager {
     pub fn production() -> Self {
         let named_instance = std::env::var_os("SYNTH_DESKTOP_INSTANCE").is_some();
         let dev_file = std::env::var_os(DEV_CREDENTIAL_FILE_ENV).map(PathBuf::from);
-        let store: Arc<dyn CredentialStore> =
-            match credential_store_mode(named_instance, cfg!(debug_assertions), dev_file.is_some())
-            {
-                CredentialStoreMode::Canonical => Arc::new(SystemKeychain::new(keychain_service())),
-                CredentialStoreMode::Isolated => Arc::new(LocalInstanceCredentialStore),
-                CredentialStoreMode::DevFile => Arc::new(DevFileCredentialStore {
-                    seed: dev_file.expect("debug credential file mode requires a path"),
-                    local: crate::storage::app_data_root().join("oauth/codex.json"),
-                }),
-            };
+        let dev_state_file = std::env::var_os(DEV_CREDENTIAL_STATE_FILE_ENV).map(PathBuf::from);
+        let store: Arc<dyn CredentialStore> = match credential_store_mode(
+            named_instance,
+            cfg!(debug_assertions),
+            dev_file.is_some() && dev_state_file.is_some(),
+        ) {
+            CredentialStoreMode::Canonical => Arc::new(SystemKeychain::new(keychain_service())),
+            CredentialStoreMode::Isolated => Arc::new(LocalInstanceCredentialStore),
+            CredentialStoreMode::DevFile => Arc::new(DevFileCredentialStore {
+                seed: dev_file.expect("debug credential file mode requires a path"),
+                state: dev_state_file
+                    .expect("debug credential file mode requires a shared state path"),
+            }),
+        };
         Self::new(store, AUTHORIZE_URL, TOKEN_URL)
     }
 
@@ -522,6 +578,7 @@ impl Manager {
                 .map(str::to_owned),
             last_refresh_ms: now,
         };
+        let _refresh_lock = self.store.lock_refresh()?;
         self.store.save(&credential)?;
         *self
             .failure
@@ -533,6 +590,10 @@ impl Manager {
     }
 
     pub async fn fresh_credential(&self) -> Result<Option<Credential>> {
+        // A refresh token may rotate. Serialize refresh across named local
+        // instances, then re-read in case another instance refreshed while
+        // this one waited for the lock.
+        let _refresh_lock = self.store.lock_refresh()?;
         let Some(current) = self.store.load()? else {
             return Ok(None);
         };
@@ -679,6 +740,7 @@ impl Manager {
 
     pub async fn disconnect(&self) -> Result<Status> {
         self.cancel().await?;
+        let _refresh_lock = self.store.lock_refresh()?;
         self.store.delete()?;
         *self
             .failure
@@ -946,7 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn debug_file_store_seeds_then_persists_only_instance_local_state() {
+    fn debug_file_store_seeds_then_persists_shared_private_state() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("oauth.json");
         let id_token = format!(
@@ -971,11 +1033,13 @@ mod tests {
         });
         fs::write(&path, serde_json::to_vec_pretty(&body).unwrap()).unwrap();
         let before = fs::read(&path).unwrap();
-        let local = temp.path().join("instance/oauth/codex.json");
+        let state = temp.path().join("shared/oauth/codex.json");
         let store = DevFileCredentialStore {
             seed: path.clone(),
-            local: local.clone(),
+            state: state.clone(),
         };
+        let refresh_lock = store.lock_refresh().unwrap();
+        drop(refresh_lock);
         let mut loaded = store.load().unwrap().unwrap();
         assert_eq!(loaded.access_token, "file-access");
         assert_eq!(loaded.account_id, "file-account");
@@ -985,7 +1049,8 @@ mod tests {
             store.load().unwrap().unwrap().access_token,
             "instance-access"
         );
-        assert!(local.is_file());
+        assert!(state.is_file());
+        assert!(state.with_extension("lock").is_file());
         store.delete().unwrap();
         assert!(store.load().unwrap().is_none());
         assert_eq!(fs::read(&path).unwrap(), before);
