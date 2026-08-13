@@ -64,7 +64,9 @@ const includeChatgptBranding = specificationPath.endsWith("chatgpt-branding.spec
 // properties have already been exercised, turning a clean trace into a harness
 // watchdog failure. Nightly exploration can still opt into a longer duration.
 const timeLimit = process.env.BOMBADIL_TIME_LIMIT
-	|| (includeBlankWorkedTurn || includeComposerToolbar || includeTerminalPolish || includeVisualContracts || includeChatgptBranding
+	|| (includeComposerToolbar
+		? "45s"
+		: includeBlankWorkedTurn || includeTerminalPolish || includeVisualContracts || includeChatgptBranding
 		? "10s"
 		: "5s");
 const timeLimitMatch = /^(\d+(?:\.\d+)?)(ms|s|m)$/.exec(timeLimit);
@@ -269,6 +271,31 @@ try {
 } catch (error) {
   console.warn("bombadil composer-toolbar prefs seed failed", error);
 }
+
+window.synthConfig = {
+  get: async () => ({
+    configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "test",
+    backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY",
+    apiKeyConfigured: true, workerKeyConfigured: false, openrouterApiKeyConfigured: true
+  }),
+  update: async () => { throw new Error("not used"); },
+  listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
+  getWorkspaceAccess: async () => ({ allowedRoots: [] }),
+  updateWorkspaceAccess: async () => ({ allowedRoots: [] })
+};
+window.synthCodexOauth = {
+  begin: async () => { throw new Error("not used"); },
+  completeManual: async () => ({ configured: true, accountHint: "bombadil@example.com" }),
+  status: async () => ({ configured: true, accountHint: "bombadil@example.com" }),
+  disconnect: async () => ({ configured: false }),
+  cancel: async () => undefined
+};
+window.synthLaguna.getStatus = async () => ({
+  phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm",
+  loadedModel: "/models/Laguna-XS-2.1-NVFP4-mlx", detail: "Ready", memoryBytes: null,
+  updatedAt: Date.now(), lastUsedAt: Date.now(), idleSeconds: 0,
+  idleUnloadAfterSeconds: 900, freeAt: Date.now() + 900000
+});
 
 window.synthModelPerformance = {
   summaries: async () => [{
