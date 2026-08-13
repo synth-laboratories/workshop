@@ -22,3 +22,13 @@ test("model picker reflects the Rust auth state and recovery action", () => {
 	assert.match(composer, /state\.codexOauthStatus\?\.state === "refresh_failed" \? "Re-sync failed"/);
 	assert.match(composer, /state\.codexOauthStatus\?\.action === "reauthenticate"/);
 });
+
+test("packaged startup refreshes an existing ChatGPT credential before showing models", () => {
+	const controller = read("src/renderer/src/hooks/useAppController.ts");
+	assert.match(controller, /const refreshOauthStatus = \(\) => \{/);
+	assert.match(controller, /bridges\.codexOauth\?\.ensureReady\(\)\.then/);
+	assert.doesNotMatch(
+		controller,
+		/const refreshOauthStatus = \(\) => \{[\s\S]*?bridges\.codexOauth\?\.status\(\)\.then/,
+	);
+});
