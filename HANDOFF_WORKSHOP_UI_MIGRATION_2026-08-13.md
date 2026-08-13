@@ -1,33 +1,64 @@
 # Handoff — wire the style layer into Optimizers and Data
 
-**Date:** 2026-08-13
-**Repo/branch:** `workshop` @ `josh/aug12-optimizers-workshop-visuals`
-**Status:** foundation built, committed, and **not wired to anything**
-**Scope:** two pages. Not a stylesheet rewrite.
+**Date:** 2026-08-13 (revised evening — half of this landed, half was reverted)
+**Repo/branch:** `workshop` @ `josh/aug12-optimizers-workshop-visuals` (`8ed2613`)
+**Scope:** one page, plus the lint that keeps it. Not a stylesheet rewrite.
 
 ## Why this exists
 
-The Optimizers and Data pages look bad, and it is not a taste problem. There is
-nothing in the codebase that can say no. `WORKSHOP_QUALITY_STYLE_GUIDE.md` §3 has
+The Optimizers and Data pages look bad, and it is not a taste problem. There was
+nothing in the codebase that could say no. `WORKSHOP_QUALITY_STYLE_GUIDE.md` §3 has
 prescribed an 8px rhythm and three radii since 2026-08-09, but `app.css` gave page
 authors only color roles — no space scale, no type scale — so everyone typed
 literals and every page became its own dialect.
 
-Measured in `app.css` this morning, and again this afternoon:
+## Status — read this before starting
 
-| | 2026-08-13 10:00 | 2026-08-13 15:07 |
+Since this handoff was first written, work landed. Two of the four steps are done,
+and **one of them was undone again**. Current state, measured at `8ed2613`:
+
+| step | state |
+|---|---|
+| 1. import the layer | **done** — `main.tsx:5-7`, correct order |
+| 2. Optimizers | **landed at `e25ff5a`, then reverted at `cae6fc3`** — see below |
+| 3. Data | **done** — 103 `.ws-*` usages in `DataPage.tsx` |
+| 4. the lint | **not done** — and this is why step 2 came back |
+
+`app.css` entropy is down but not resolved:
+
+| | 10:00 | 15:07 | now |
+|---|---:|---:|---:|
+| lines | 7,678 | 7,711 | 7,466 |
+| distinct hex colors | 372 | 394 | **357** |
+| distinct font sizes | 25 | 26 | 26 |
+| distinct border radii | 18 | 18 | 18 |
+
+### The Optimizers migration was reverted, and that is the main lesson
+
+Traced commit by commit on `OptimizersPage.tsx`:
+
+| commit | `ws-` usages | `className="optimizer*` |
 |---|---:|---:|
-| lines | 7,678 | 7,711 |
-| distinct hex colors | 372 | **394** |
-| distinct font sizes | 25 | 26 |
-| distinct border radii | 18 | 18 |
+| `e25ff5a` migrate optimizer and data pages | **97** | 0 |
+| `83e2a8f` demote unavailable launch action | 97 | 0 |
+| `cae6fc3` **make optimizer workspace run-first** | **0** | 47 |
+| `9dd326e` make optimizer setup agent-guided | 0 | 29 |
+| `8ed2613` (HEAD) | **0** | 29 |
 
-**The hex count rose by 22 in one working day.** That is the argument for step 4
-below, and it is why the guide alone has not worked.
+A concurrent redesign rewrote the page from scratch and reintroduced the bespoke
+classes; `app.css` now carries 91 `.optimizer*` selectors again. Nobody did
+anything wrong — there was no signal that the page had been converted and no check
+that failed when it was unconverted.
 
-## What is already done
+**So do step 4 first this time.** A migration that only lives in one page's JSX
+survives exactly until the next person redesigns that page.
 
-Committed and present at `apps/synth_desktop/src/renderer/src/styles/`:
+Design rationale and before/after renderings of both pages:
+<https://claude.ai/code/artifact/da518c0a-5c59-4241-843a-eca32698f463>
+
+## What the foundation gives you
+
+Committed at `apps/synth_desktop/src/renderer/src/styles/`:
 
 | file | what it is |
 |---|---|
@@ -35,85 +66,65 @@ Committed and present at `apps/synth_desktop/src/renderer/src/styles/`:
 | `primitives.css` | the shared component layer — `.ws-page`, `.ws-card`, `.ws-list`/`.ws-item`, `.ws-btn` tiers, `.ws-badge`, `.ws-tabs`, `.ws-toolbar`, `.ws-kv`, `.ws-note`, `.ws-empty`, `.ws-workbench`, `.ws-dialog` |
 | `README.md` | **the seven rules and the full class-by-class migration map.** Read this first; it is not duplicated here. |
 
-Design rationale and before/after renderings of both pages:
-<https://claude.ai/code/artifact/da518c0a-5c59-4241-843a-eca32698f463>
-
-## What is not done
-
-**Nothing imports it.** `main.tsx:5` is still only:
-
-```ts
-import "./styles/app.css";
-```
-
-No page has been migrated. `app.css` still carries 91 `.optimizer*` selectors.
+`DataPage.tsx` at HEAD is the worked example — read it before converting Optimizers.
 
 ## The work
 
-### 1. Import, in this order
+### 1. The lint — do this first
 
-```ts
-// apps/synth_desktop/src/renderer/src/main.tsx
-import "./styles/tokens.css";
-import "./styles/primitives.css";
-import "./styles/app.css";   // last, so un-migrated pages still win
-```
+Add a CI check over `app.css`: no hex literal, no bare `font-size`, no bare
+`border-radius`, and no new `.optimizer*` selector. Without it the numbers climb
+back and conversions get overwritten — 372 → 394 in one day, then a completed
+migration reverted within hours, are both evidence.
 
-Order matters. Page rules must keep winning until their page is converted, or you
-will half-restyle every screen at once.
+Seed the allowlist at today's counts (357 / 26 / 18) and ratchet down. A check that
+demands zero on day one gets disabled.
 
-### 2. Optimizers first
+### 2. Optimizers, again
 
-`components/OptimizersPage.tsx` — worst offender, most self-contained. Convert the
-JSX to `.ws-*` per the map in `styles/README.md`, then **delete the
+`components/OptimizersPage.tsx` — 29 `className="optimizer*` sites, 0 `.ws-*`.
+Convert per the map in `styles/README.md`, then **delete the
 `/* ── Optimizer workbench ── */` block from `app.css` in the same commit**. That
 block is ~110 lines and 52 hardcoded colors; leaving it behind is how you end up
 with two systems instead of one.
 
-Five defects to fix while you are in there — all visible in the artifact:
+`e25ff5a` is a working reference implementation of this exact conversion — read it
+(`git show e25ff5a -- .../OptimizersPage.tsx`) before rewriting from scratch. It
+does not apply cleanly onto the run-first redesign, but the class mapping it chose
+is the one to reuse.
 
-1. **Status is rendered as a primary button.** *Beta not configured*, *Recipe
-   unavailable* etc. are disabled `.primary-button`s, so the loudest things on the
-   page are the three you cannot do, at three different widths. Unavailability is a
-   `.ws-badge` next to a plain disabled control.
-2. **Six primaries**, three of which restate the recipe cards' own actions in the
+Defects to fix while you are in there:
+
+1. ~~**Status rendered as a primary button.**~~ Fixed at `83e2a8f`; the demotion
+   survived the revert. Leave it demoted.
+2. **Multiple primaries**, some restating the recipe cards' own actions in the
    toolbar. One primary per view; page-level actions move to `.ws-page-head-actions`.
 3. **Selection is purple** (`#7663ba`, `#6654a9`, `#d8d1ee`, `#f7f4ff`) while
    buttons are blue and the brand is orange. Use `--selected-*`; retire the purples.
-4. **Dark theme is already broken here** — 52 literals in 165 lines do not move
-   when the theme does.
-5. The four recipe cards touch: `.inventory-page` sets no gap and
+   Seven of these literals remain in `app.css`.
+4. **Dark theme is broken here** — the literals do not move when the theme does.
+5. The recipe cards touch: `.inventory-page` sets no gap and
    `.optimizer-launch-card` sets no margin.
 
-### 3. Then Data
+### 3. Data — done, verify only
 
-`components/DataPage.tsx`. The Visuals tab renders 24 near-identical records as 24
-separately bordered boxes with no width bound, so on a wide window each row's
-*Open* button sits ~1500px from its title. `.ws-list` + `.ws-item` inside
-`.ws-page` fixes both — dividers instead of per-row borders, and a bounded measure.
-
-Note the Traces tab already has the right structure (table shell, header row,
-badges). It becomes `.ws-panel` + `.ws-list` and stops being a bespoke dialect.
-
-### 4. The lint, or this reverts
-
-Add a CI check over `app.css`: no hex literal, no bare `font-size`, no bare
-`border-radius`. Without it the numbers climb back — 372 → 394 in a single day is
-the evidence. This is the step that makes the other three durable.
+`DataPage.tsx` renders from `.ws-*` (103 usages). 11 legacy class references remain;
+clean them up opportunistically, but this page is no longer the problem.
 
 ## Constraints
 
-- **Preserve every `data-testid`.** 38 in OptimizersPage, 19 in DataPage. The CUA
-  and Playwright suites key on them: `tests/playwright/optimizer-banking77.spec.ts`,
+- **Preserve every `data-testid`.** 19 in OptimizersPage, 18 in DataPage today
+  (down from 38/19 because of the run-first redesign, not because any were lost —
+  every id referenced by a test still resolves; I checked). The CUA and Playwright
+  suites key on them: `tests/playwright/optimizer-banking77.spec.ts`,
   `visual-responsive-gate.spec.ts`, `design-debt.spec.ts`, `poolside-polish.spec.ts`,
   `tests/bombadil/layout.spec.ts`, `trace-catalog-layout.spec.ts`,
   `shell-containment.spec.ts`, `tests/a11y_surface.test.mjs`.
 - **No new prose in the UI.** Trim, do not write. Standing rule.
-- **Check mtimes before editing.** Both pages were being written by another agent
-  earlier today (`OptimizersPage.tsx` at 09:59, `app.css` at 12:41). They are quiet
-  now, but confirm before you start — this repo has concurrent writers.
-- `app.css` also has uncommitted changes from other people. Do not sweep them into
-  your commit; stage by path.
+- **Check mtimes and recent commits before editing.** This repo has concurrent
+  writers — that is literally what reverted step 2. `git log --oneline -5 -- <file>`
+  before you start.
+- `app.css` may carry uncommitted changes from other people. Stage by path.
 
 ## Gates
 
@@ -129,12 +140,11 @@ clean run before assuming you broke something.
 
 ## Done means
 
-- `tokens.css` and `primitives.css` imported ahead of `app.css`
-- Optimizers and Data rendering from `.ws-*`, with their `app.css` blocks deleted
-- Both pages legible in dark theme (they are not today)
+- A lint that fails on a new hex literal or a new `.optimizer*` selector in `app.css`
+- Optimizers rendering from `.ws-*`, with its `app.css` block deleted
+- Both pages legible in dark theme
 - Every `data-testid` intact; UI gates no worse than baseline
-- A lint that fails on a new hex literal in `app.css`
-- `app.css` hex count **down**, not up
+- `app.css` hex count **below 357**
 
 ## Do not
 
@@ -143,3 +153,4 @@ clean run before assuming you broke something.
   surfaces and is deliberately separate; `--ws-*`/`--sp-*`/`--fs-*` are the desktop.
 - Restyle `.ws-*` from a page. If a page needs a variant, add a modifier to
   `primitives.css` so the next page inherits it.
+- Land the conversion without the lint. It was already tried; it lasted three commits.
