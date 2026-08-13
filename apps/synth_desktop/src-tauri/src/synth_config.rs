@@ -50,7 +50,7 @@ fn lookup_default(table: &[(&str, &str)], profile: &str) -> Option<String> {
         .map(|(_, url)| (*url).to_owned())
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "lowercase")]
 pub enum MultiAgentVersion {
     None,
@@ -58,7 +58,7 @@ pub enum MultiAgentVersion {
     V2,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelMultiAgentSetting {
     pub model_id: String,
@@ -68,23 +68,38 @@ pub struct ModelMultiAgentSetting {
     pub overridden: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelMultiAgentUpdate {
     pub model_id: String,
     pub version: Option<MultiAgentVersion>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceAccessSettings {
     pub allowed_roots: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceAccessUpdate {
     pub allowed_roots: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopPermissionSettings {
+    pub config_path: String,
+    pub approval_policy: String,
+    pub sandbox_mode: String,
+}
+
+#[derive(Clone, Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopPermissionUpdate {
+    pub approval_policy: String,
+    pub sandbox_mode: String,
 }
 
 const MODEL_MULTI_AGENT_PRESETS: &[(&str, &str, MultiAgentVersion)] = &[
@@ -96,7 +111,7 @@ const MODEL_MULTI_AGENT_PRESETS: &[(&str, &str, MultiAgentVersion)] = &[
     ("muse-spark-1.2", "Muse Spark 1.2", MultiAgentVersion::None),
 ];
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BackendSettings {
     pub config_path: String,
@@ -113,7 +128,7 @@ pub struct BackendSettings {
     pub openrouter_api_key_source: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BackendSettingsUpdate {
     pub profile: String,
@@ -282,6 +297,27 @@ pub fn allowed_workspace_roots() -> Result<Vec<String>> {
     Ok(workspace_access_settings()?.allowed_roots)
 }
 
+pub(crate) fn select_default_workspace_path(
+    allowed_roots: &[String],
+    sandbox_mode: &str,
+    launcher_workspace: Option<std::path::PathBuf>,
+    home: Option<std::path::PathBuf>,
+    isolated_default: std::path::PathBuf,
+) -> std::path::PathBuf {
+    if let Some(root) = allowed_roots.first() {
+        return root.into();
+    }
+    // `danger-full-access` is a machine-wide access promise. Keep an explicit
+    // attached root authoritative, but do not strand an otherwise unrestricted
+    // task in the named instance's empty workspace. Starting at the user's home
+    // makes normal repository discovery possible while Codex's sandbox setting
+    // remains the actual access boundary.
+    if sandbox_mode == "danger-full-access" {
+        return home.or(launcher_workspace).unwrap_or(isolated_default);
+    }
+    launcher_workspace.unwrap_or(isolated_default)
+}
+
 pub fn update_workspace_access(request: WorkspaceAccessUpdate) -> Result<WorkspaceAccessSettings> {
     let allowed_roots = validate_workspace_roots(request.allowed_roots)?;
     let path = config_path();
@@ -306,6 +342,87 @@ pub fn update_workspace_access(request: WorkspaceAccessUpdate) -> Result<Workspa
     );
     write_toml(&path, &document)?;
     Ok(WorkspaceAccessSettings { allowed_roots })
+}
+
+pub fn desktop_permission_settings() -> Result<DesktopPermissionSettings> {
+    desktop_permission_settings_at(&config_path())
+}
+
+pub fn update_desktop_permissions(
+    request: DesktopPermissionUpdate,
+) -> Result<DesktopPermissionSettings> {
+    update_desktop_permissions_at(&config_path(), request)
+}
+
+fn desktop_permission_settings_at(path: &Path) -> Result<DesktopPermissionSettings> {
+    let document = read_toml(path)?;
+    let permissions = document
+        .get("desktop")
+        .and_then(|value| value.get("permissions"));
+    let approval_policy = permissions
+        .and_then(|value| value.get("approval_policy"))
+        .and_then(toml::Value::as_str)
+        .filter(|value| is_approval_policy(value))
+        .unwrap_or("untrusted")
+        .to_owned();
+    let sandbox_mode = permissions
+        .and_then(|value| value.get("sandbox_mode"))
+        .and_then(toml::Value::as_str)
+        .filter(|value| is_sandbox_mode(value))
+        .unwrap_or("workspace-write")
+        .to_owned();
+    Ok(DesktopPermissionSettings {
+        config_path: path.display().to_string(),
+        approval_policy,
+        sandbox_mode,
+    })
+}
+
+fn update_desktop_permissions_at(
+    path: &Path,
+    request: DesktopPermissionUpdate,
+) -> Result<DesktopPermissionSettings> {
+    if !is_approval_policy(&request.approval_policy) {
+        return Err(anyhow!("unsupported approval policy"));
+    }
+    if !is_sandbox_mode(&request.sandbox_mode) {
+        return Err(anyhow!("unsupported sandbox mode"));
+    }
+    let mut document = read_toml(path)?;
+    let root = document
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
+    let desktop = root
+        .entry("desktop")
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("[desktop] must be a TOML table"))?;
+    let permissions = desktop
+        .entry("permissions")
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("[desktop.permissions] must be a TOML table"))?;
+    permissions.insert(
+        "approval_policy".into(),
+        toml::Value::String(request.approval_policy),
+    );
+    permissions.insert(
+        "sandbox_mode".into(),
+        toml::Value::String(request.sandbox_mode),
+    );
+    write_toml(path, &document)?;
+    desktop_permission_settings_at(path)
+}
+
+fn is_approval_policy(value: &str) -> bool {
+    matches!(value, "untrusted" | "on-request" | "never")
+}
+
+fn is_sandbox_mode(value: &str) -> bool {
+    matches!(
+        value,
+        "read-only" | "workspace-write" | "danger-full-access"
+    )
 }
 
 pub fn model_multi_agent_settings() -> Result<Vec<ModelMultiAgentSetting>> {
@@ -447,9 +564,17 @@ pub fn resolve() -> Result<ResolvedBackend> {
             "local" => "http://127.0.0.1:8000".into(),
             _ => "https://api.usesynth.ai".into(),
         });
-    // The dedicated Responses gateway is selected only from checked-in code.
-    // It is never derived from `endpoint`, process environment, or TOML.
-    let responses_gateway_url = lookup_default(DEFAULT_GATEWAYS, &profile);
+    // Named development instances may point their isolated cloud lane at a
+    // disposable local Responses backend. Canonical apps retain source-owned
+    // routing and deliberately ignore this process override.
+    let responses_gateway_url = if env::var_os(crate::instance::DATA_ROOT_ENV).is_some() {
+        env::var("SYNTH_RESPONSES_GATEWAY_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| lookup_default(DEFAULT_GATEWAYS, &profile))
+    } else {
+        lookup_default(DEFAULT_GATEWAYS, &profile)
+    };
     let env_file_raw = intern
         .and_then(|v| v.get("env_file"))
         .and_then(toml::Value::as_str)
@@ -873,6 +998,75 @@ mod tests {
             validate_workspace_roots(vec![root.join("missing").display().to_string()]).is_err()
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn full_system_access_starts_at_home_without_an_explicit_workspace() {
+        let selected = select_default_workspace_path(
+            &[],
+            "danger-full-access",
+            Some(PathBuf::from("/isolated/instance/workspace")),
+            Some(PathBuf::from("/Users/example")),
+            PathBuf::from("/isolated/default"),
+        );
+        assert_eq!(selected, PathBuf::from("/Users/example"));
+    }
+
+    #[test]
+    fn explicit_workspace_still_wins_under_full_system_access() {
+        let selected = select_default_workspace_path(
+            &["/Users/example/Documents/GitHub/containers".into()],
+            "danger-full-access",
+            Some(PathBuf::from("/isolated/instance/workspace")),
+            Some(PathBuf::from("/Users/example")),
+            PathBuf::from("/isolated/default"),
+        );
+        assert_eq!(
+            selected,
+            PathBuf::from("/Users/example/Documents/GitHub/containers")
+        );
+    }
+
+    #[test]
+    fn desktop_permissions_are_machine_config_and_preserve_other_settings() {
+        let root = env::temp_dir().join(format!("synth-permissions-{}", uuid::Uuid::new_v4()));
+        let path = root.join("config.toml");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&path, "[intern]\nprofile = \"staging\"\n").unwrap();
+        let defaults = desktop_permission_settings_at(&path).unwrap();
+        assert_eq!(defaults.approval_policy, "untrusted");
+        assert_eq!(defaults.sandbox_mode, "workspace-write");
+        let stored = update_desktop_permissions_at(
+            &path,
+            DesktopPermissionUpdate {
+                approval_policy: "never".into(),
+                sandbox_mode: "danger-full-access".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(stored.approval_policy, "never");
+        assert_eq!(stored.sandbox_mode, "danger-full-access");
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("[desktop.permissions]"));
+        assert!(contents.contains("approval_policy = \"never\""));
+        assert!(contents.contains("sandbox_mode = \"danger-full-access\""));
+        assert!(contents.contains("profile = \"staging\""));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn desktop_permissions_reject_unknown_values() {
+        let root = env::temp_dir().join(format!("synth-permissions-{}", uuid::Uuid::new_v4()));
+        let path = root.join("config.toml");
+        let result = update_desktop_permissions_at(
+            &path,
+            DesktopPermissionUpdate {
+                approval_policy: "YOLO".into(),
+                sandbox_mode: "danger-full-access".into(),
+            },
+        );
+        assert!(result.is_err());
+        assert!(!path.exists());
     }
 
     #[test]

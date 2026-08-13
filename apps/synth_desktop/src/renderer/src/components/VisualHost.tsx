@@ -3,21 +3,18 @@ import type { ArtifactRef } from "../types/landing";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import { propsFromBindings } from "@synth/visuals";
 import { loadVisualShell } from "../runtime/visualsLoader";
+import { bridges } from "../runtime/desktopBridge";
+import { mergeOptimizerEventPage, type OptimizerEventCursorState } from "../runtime/optimizerEventCursor";
+import { MermaidVisual } from "./MermaidVisual";
+import { SystemsMapVisual } from "./SystemsMapVisual";
+import { SystemsDynamicVisual } from "./SystemsDynamicVisual";
+import type { SubagentState } from "../runtime/sessionView";
 
 type ShellProps = {
 	title?: string;
 	lede?: string;
 	bindings?: Record<string, unknown>;
 	[key: string]: unknown;
-};
-
-type SubagentRow = {
-	id: string;
-	title: string;
-	summary?: string;
-	status: "active" | "done" | "failed";
-	startedAt: string;
-	updatedAt: string;
 };
 
 export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
@@ -27,7 +24,9 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 		title: visual.title,
 		templateId: visual.templateId,
 		visualId: visual.id,
+		rendererKind: visual.rendererKind,
 		bindings: visual.bindings,
+		metadata: visual.metadata,
 		summary: typeof visual.metadata?.summary === "string" ? visual.metadata.summary : undefined,
 		preview: {
 			variant:
@@ -47,17 +46,36 @@ function elapsedLabel(value: string, now: number): string {
 	return `${Math.floor(seconds / 3600)}h`;
 }
 
+function subagentStatusLabel(status: SubagentState["status"]): string {
+	return ({
+		starting: "Starting",
+		working: "Working",
+		completed: "Completed",
+		interrupted: "Interrupted",
+		failed: "Failed",
+		stopped: "Stopped",
+		unavailable: "Unavailable"
+	})[status];
+}
+
+function subagentMarker(id: string): string {
+	let value = 0;
+	for (let index = 0; index < id.length; index += 1) value = (value + id.charCodeAt(index)) % 2;
+	return value ? "✣" : "✺";
+}
+
 function SubagentsVisual({ artifact }: { artifact: ArtifactRef }) {
 	const resolved = propsFromBindings(artifact.bindings);
-	const agents = Array.isArray(resolved.props.agents) ? resolved.props.agents as SubagentRow[] : [];
+	const agents = Array.isArray(resolved.props.agents) ? resolved.props.agents as SubagentState[] : [];
 	const [now, setNow] = useState(Date.now());
 	useEffect(() => {
 		const timer = window.setInterval(() => setNow(Date.now()), 1_000);
 		return () => window.clearInterval(timer);
 	}, []);
 	const groups = [
-		{ label: "Active", agents: agents.filter((agent) => agent.status === "active") },
-		{ label: "Done", agents: agents.filter((agent) => agent.status !== "active") }
+		{ label: "Working", agents: agents.filter((agent) => agent.status === "starting" || agent.status === "working") },
+		{ label: "Needs attention", agents: agents.filter((agent) => agent.status === "interrupted" || agent.status === "failed" || agent.status === "stopped" || agent.status === "unavailable") },
+		{ label: "Completed", agents: agents.filter((agent) => agent.status === "completed") }
 	];
 	return (
 		<div className="subagents-visual" data-testid="visual-subagents">
@@ -65,14 +83,14 @@ function SubagentsVisual({ artifact }: { artifact: ArtifactRef }) {
 				<section key={group.label} className="subagents-group">
 					<h3>{group.label} · {group.agents.length}</h3>
 					{group.agents.length === 0 ? <p className="subagents-empty">No {group.label.toLowerCase()} subagents</p> : null}
-					{group.agents.map((agent, index) => (
+					{group.agents.map((agent) => (
 						<div className="subagent-row" key={agent.id} data-status={agent.status}>
-							<span className={`subagent-mark mark-${agent.status}`} aria-hidden>{index % 2 ? "✣" : "✺"}</span>
+							<span className={`subagent-mark mark-${agent.status}`} aria-hidden>{subagentMarker(agent.id)}</span>
 							<div className="subagent-copy">
-								<strong>{agent.title}</strong>
+								<div className="subagent-title-row"><strong>{agent.title}</strong><span className={`subagent-state state-${agent.status}`}>{subagentStatusLabel(agent.status)}</span></div>
 								{agent.summary ? <p>{agent.summary}</p> : null}
 							</div>
-							<time dateTime={agent.updatedAt}>{agent.status === "active" ? elapsedLabel(agent.startedAt, now) : elapsedLabel(agent.updatedAt, now) + " ago"}</time>
+							<time dateTime={agent.updatedAt}>{agent.status === "starting" || agent.status === "working" ? elapsedLabel(agent.startedAt, now) : elapsedLabel(agent.updatedAt, now) + " ago"}</time>
 						</div>
 					))}
 				</section>
@@ -170,6 +188,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [failed, setFailed] = useState(false);
 	const [optimizerPayload, setOptimizerPayload] = useState<Record<string, unknown> | null>(null);
 	const [optimizerLoadError, setOptimizerLoadError] = useState<string | null>(null);
+	const [comparisonPayload, setComparisonPayload] = useState<Record<string, unknown> | null>(null);
 	const resolved = useMemo(() => propsFromBindings(artifact.bindings), [artifact.bindings]);
 
 	useEffect(() => {
@@ -196,19 +215,49 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		const bindings = artifact.bindings as { slots?: Array<{ slot?: string; kind?: string; source?: string }> } | undefined;
 		const slot = bindings?.slots?.find((entry) => entry.slot === "optimizer_run" && entry.kind === "optimizer_run");
 		const optimizerRunId = slot?.source;
-		if (!optimizerRunId || !window.synthOptimizers) {
+		if (!optimizerRunId || !bridges.optimizers) {
 			setOptimizerPayload(null);
 			setOptimizerLoadError(optimizerRunId ? "Optimizer bridge is unavailable" : null);
 			return;
 		}
-		const load = async () => {
+		const pageSize = 500;
+		let current: OptimizerEventCursorState = { events: [], cursor: 0, gap: false };
+		let pending = Promise.resolve();
+		let stopPolling = false;
+		const terminal = new Set(["completed", "failed", "cancelled", "succeeded"]);
+		const readPersistedEvents = async (after: number) => {
+			let state: OptimizerEventCursorState = {
+				events: after === 0 ? [] : current.events,
+				cursor: after,
+				gap: false
+			};
+			for (;;) {
+				const page = await bridges.optimizers!.eventsAfter(optimizerRunId, state.cursor, pageSize);
+				if (!Array.isArray(page) || page.length === 0) return state;
+				const before = state.cursor;
+				state = mergeOptimizerEventPage(state, page);
+				if (state.gap || state.cursor === before || page.length < pageSize) return state;
+			}
+		};
+		const load = async (snapshot = false) => {
 			try {
-				const [run, events] = await Promise.all([
-					window.synthOptimizers!.get(optimizerRunId),
-					window.synthOptimizers!.eventsAfter(optimizerRunId, 0)
-				]);
+				const run = await bridges.optimizers!.get(optimizerRunId);
+				let next = await readPersistedEvents(snapshot ? 0 : current.cursor);
+				const runCursor = typeof run.cursorSeq === "number" ? run.cursorSeq : next.cursor;
+				if (!snapshot && (next.gap || runCursor < current.cursor || next.cursor < runCursor)) {
+					// A missed notification, truncated page, or replaced local import requires
+					// a durable snapshot reload. Never patch over a sequence hole.
+					next = await readPersistedEvents(0);
+				}
+				if (next.gap || next.cursor < runCursor) {
+					throw new Error(`Optimizer event history is incomplete at ${next.cursor}/${runCursor}`);
+				}
+				current = next;
+				if (typeof run.status === "string" && terminal.has(run.status)) {
+					stopPolling = true;
+				}
 				if (!cancelled) {
-					setOptimizerPayload({ run, events });
+					setOptimizerPayload({ run, events: current.events });
 					setOptimizerLoadError(null);
 				}
 			} catch (reason) {
@@ -218,15 +267,67 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				}
 			}
 		};
-		void load();
-		const unlisten = window.synthOptimizers.onEvent((event) => {
+		const enqueue = (snapshot = false) => {
+			pending = pending.then(() => load(snapshot));
+		};
+		enqueue(true);
+		const unlisten = bridges.optimizers.onEvent((event) => {
 			const eventRunId = typeof event.payload?.optimizerRunId === "string"
 				? event.payload.optimizerRunId
 				: typeof event.payload?.optimizer_run_id === "string" ? event.payload.optimizer_run_id : null;
-			if (!eventRunId || eventRunId === optimizerRunId) void load();
+			if (!eventRunId || eventRunId === optimizerRunId) enqueue(false);
 		});
-		return () => { cancelled = true; unlisten?.(); };
+		const poll = window.setInterval(() => {
+			if (stopPolling) return;
+			void bridges.optimizers!.refresh(optimizerRunId).catch(() => undefined);
+		}, 750);
+		return () => {
+			cancelled = true;
+			window.clearInterval(poll);
+			unlisten?.();
+		};
 	}, [artifact.bindings]);
+
+	const boundRun = optimizerPayload?.run as { id?: string; algorithmId?: string } | undefined;
+	const boundRunId = boundRun?.algorithmId === "gepa" ? boundRun.id ?? null : null;
+	useEffect(() => {
+		// Best-effort companion run for the GEPA comparison card (Luna vs Sol):
+		// the most recent sibling GEPA run sharing the recipe prefix of the id.
+		if (!boundRunId || !bridges.optimizers) {
+			setComparisonPayload(null);
+			return;
+		}
+		let cancelled = false;
+		void (async () => {
+			try {
+				const prefixOf = (id: string) => id.split("_").slice(0, 2).join("_");
+				const runs = await bridges.optimizers!.list({ algorithmId: "gepa" });
+				const sibling = runs
+					.filter((item) => item.id !== boundRunId && prefixOf(item.id) === prefixOf(boundRunId))
+					.sort((a, b) => Date.parse(b.createdAt ?? "") - Date.parse(a.createdAt ?? ""))[0];
+				if (!sibling) return;
+				const events: unknown[] = [];
+				let after = 0;
+				for (;;) {
+					const page = await bridges.optimizers!.eventsAfter(sibling.id, after, 500);
+					if (!Array.isArray(page) || page.length === 0) break;
+					events.push(...page);
+					const last = page[page.length - 1] as { sequenceNumber?: number; sequence_number?: number };
+					const next = Number(last.sequenceNumber ?? last.sequence_number ?? 0);
+					if (!next || next <= after || page.length < 500) break;
+					after = next;
+				}
+				if (!cancelled && events.length > 0) {
+					setComparisonPayload({ run: sibling, events });
+				}
+			} catch {
+				// The comparison card is optional; the primary run view stands alone.
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [boundRunId]);
 
 	if (failed) return <VisualInvalidState title="Template unavailable" detail={`No bundled shell is registered for ${artifact.templateId ?? "this visual"}.`} />;
 	if (resolved.errors.length > 0) return <VisualInvalidState title="Visual data unavailable" detail={resolved.errors.join(" · ")} />;
@@ -238,9 +339,11 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				title={artifact.title}
 				lede={artifact.summary}
 				bindings={artifact.bindings}
+				visualMetadata={artifact.metadata}
 				loadError={optimizerLoadError ?? undefined}
 				{...(optimizerPayload ?? {})}
 				data={optimizerPayload ?? resolved.props.optimizer_run}
+				comparison={comparisonPayload ?? undefined}
 			/>
 		</div>
 	);
@@ -264,6 +367,24 @@ class VisualErrorBoundary extends Component<{ children: ReactNode }, { error: Er
 
 /** Shared host used by chat cards, the right pane, and the Visuals library. */
 export function VisualHost({ artifact }: { artifact: ArtifactRef }) {
+	const isSystemsDynamic =
+		artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
+	if (isSystemsDynamic) {
+		return <VisualErrorBoundary key={`${artifact.id}:systems-dynamic`}><SystemsDynamicVisual artifact={artifact} /></VisualErrorBoundary>;
+	}
+	const isSystems = artifact.templateId === "diagram.systems.v1" || artifact.rendererKind === "systems";
+	if (isSystems) {
+		return <VisualErrorBoundary key={`${artifact.id}:systems`}><SystemsMapVisual artifact={artifact} /></VisualErrorBoundary>;
+	}
+	const isMermaid =
+		artifact.templateId === "diagram.mermaid.v1" || artifact.rendererKind === "mermaid";
+	if (isMermaid) {
+		return (
+			<VisualErrorBoundary key={`${artifact.id}:mermaid`}>
+				<MermaidVisual artifact={artifact} />
+			</VisualErrorBoundary>
+		);
+	}
 	if (artifact.templateId === "synth.subagents.v1") {
 		return (
 			<VisualErrorBoundary key={`${artifact.id}:${artifact.templateId ?? "subagents"}`}>
@@ -286,15 +407,36 @@ export function VisualHost({ artifact }: { artifact: ArtifactRef }) {
 }
 
 export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClose: () => void }) {
+	const [expanded, setExpanded] = useState(false);
 	const isSubagents = artifact.templateId === "synth.subagents.v1";
+	const isMermaid = artifact.templateId === "diagram.mermaid.v1" || artifact.rendererKind === "mermaid";
+	const isSystemsDynamic = artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
+	const isSystems = artifact.templateId === "diagram.systems.v1" || artifact.rendererKind === "systems";
+	const kindLabel = isSubagents ? "Agents" : isSystemsDynamic ? "Benjamin Dicken Style" : isSystems ? "Systems map · 2D" : isMermaid ? "Diagram" : "Visual";
 	return (
-		<aside className="visual-pane" data-testid="visual-pane" aria-label={isSubagents ? "Subagents" : "Visual artifact"}>
+		<aside
+			className={`visual-pane${expanded ? " visual-pane-expanded" : ""}`}
+			data-testid="visual-pane"
+			aria-label={isSubagents ? "Subagents" : "Visual artifact"}
+		>
 			<header className="visual-pane-head">
 				<div className="visual-pane-head-text">
-					<span className="visual-pane-kind">{isSubagents ? "Agents" : "Visual"}</span>
+					<span className="visual-pane-kind">{kindLabel}</span>
 					<span className="visual-pane-title">{artifact.title}</span>
 				</div>
-				<button type="button" className="visual-close" onClick={onClose} aria-label="Close visual">×</button>
+				<div className="visual-pane-head-actions">
+					<button
+						type="button"
+						className="visual-expand"
+						onClick={() => setExpanded((current) => !current)}
+						aria-pressed={expanded}
+						aria-label={expanded ? "Restore split view" : "Expand visual"}
+						data-testid="toggle-visual-expand"
+					>
+						{expanded ? "Restore" : "Expand"}
+					</button>
+					<button type="button" className="visual-close" onClick={onClose} aria-label="Close visual">×</button>
+				</div>
 			</header>
 			<div className="visual-pane-body">
 				<VisualHost artifact={artifact} />

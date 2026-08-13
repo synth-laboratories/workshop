@@ -1,10 +1,11 @@
 import type { AppEvent, ExecutionTarget, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexSessionStart, PersistedCodexSession } from "../env";
+import type { CodexEvent, CodexSessionStart, PersistedCodexSession } from "../bridge";
 
 export type ApprovalMode = "ask" | "accept-edits" | "allow-all";
 export type ApprovalPolicy = "untrusted" | "on-request" | "never";
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type PermissionConfig = { approvalPolicy: ApprovalPolicy; sandbox: SandboxMode };
+export type CodexServiceTier = "default" | "fast";
 
 export function approvalModeFromConfig(approvalPolicy?: string, sandbox?: string): ApprovalMode {
 	if (approvalPolicy === "never" && sandbox === "danger-full-access") return "allow-all";
@@ -33,7 +34,8 @@ export const DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:7333";
 export function codexStartRequest(
 	sessionId: string, workspace: string, target: ExecutionTarget, permissions: ApprovalMode | PermissionConfig = "ask",
 	autoCompactTokenLimits: Record<string, number> = { lagunaXs: 150_000, lagunaS: 250_000, luna: 250_000 },
-	localBaseUrl: string = DEFAULT_LOCAL_BASE_URL
+	localBaseUrl: string = DEFAULT_LOCAL_BASE_URL,
+	serviceTier: CodexServiceTier = "default"
 ): CodexSessionStart {
 	const approval = typeof permissions === "string" ? approvalModeConfig(permissions) : permissions;
 	if (target.kind === "intern") throw new Error("Intern sessions are owned by Synth Cloud");
@@ -46,13 +48,10 @@ export function codexStartRequest(
 			autoCompactTokenLimit, ...approval
 		};
 	}
-	if (target.kind !== "remote") throw new Error("Unsupported Codex execution target");
-	const autoCompactTokenLimit = target.model.includes("gpt-5.6-luna")
-		? autoCompactTokenLimits.luna ?? 250_000
-		: target.model.includes("muse-spark-1.2")
-			? 250_000
+	if (target.kind === "cloud") {
+		const autoCompactTokenLimit = target.model.includes("gpt-5.6-luna")
+			? autoCompactTokenLimits.luna ?? 250_000
 			: autoCompactTokenLimits.lagunaS ?? 250_000;
-	if (target.provider === "synth-cloud") {
 		return {
 			// baseUrl and providerEnvKey are both overwritten by the Rust host,
 			// which routes this provider through the native credential broker;
@@ -62,6 +61,20 @@ export function codexStartRequest(
 			providerEnvKey: "SYNTH_API_KEY", autoCompactTokenLimit, ...approval
 		};
 	}
+	if (target.kind !== "remote") throw new Error("Unsupported Codex execution target");
+	if (target.provider === "openai-codex-oauth") {
+		return {
+			sessionId, workspace, baseUrl: "https://chatgpt.com/backend-api/codex",
+			model: target.model, providerName: "openai-codex-oauth",
+			providerTitle: "ChatGPT subscription (Codex OAuth)", providerEnvKey: "",
+			autoCompactTokenLimit: autoCompactTokenLimits.luna ?? 250_000, serviceTier, ...approval
+		};
+	}
+	const autoCompactTokenLimit = target.model.includes("gpt-5.6-luna")
+		? autoCompactTokenLimits.luna ?? 250_000
+		: target.model.includes("muse-spark-1.2")
+			? 250_000
+			: autoCompactTokenLimits.lagunaS ?? 250_000;
 	return {
 		sessionId, workspace, baseUrl: "https://openrouter.ai/api/v1",
 		model: target.model, providerName: "openrouter", providerTitle: "OpenRouter Responses",
@@ -76,7 +89,7 @@ export function createCodexSession(
 	const approvalMode = approvalModeFromConfig(approval.approvalPolicy, approval.sandbox);
 	const now = new Date().toISOString();
 	return {
-		id, title: title || (target.kind === "local" ? "Laguna XS" : target.kind === "remote" ? target.model : "Intern"), target,
+		id, title: title || (target.kind === "local" ? "Laguna XS" : target.kind === "intern" ? "Intern" : target.model), target,
 		projectId, createdAt: now, updatedAt: now, status: "ready", latestCursor: 0,
 		metadata: { runtime: "codex-app-server", workspace, approvalMode, ...approval }
 	};
@@ -86,14 +99,17 @@ export function restoreCodexSession(value: PersistedCodexSession): Session {
 	const now = new Date().toISOString();
 	const local = value.providerName === "local-laguna";
 	const synthCloud = value.providerName === "synth-cloud";
+	const chatgpt = value.providerName === "openai-codex-oauth";
 	const target: ExecutionTarget = local
 		? { kind: "local", model: "laguna-xs-2.1", adapter: null }
-		: {
-			kind: "remote",
-			provider: synthCloud ? "synth-cloud" : "openrouter",
-			model: value.model,
-			adapter: null
-		};
+		: synthCloud
+			? { kind: "cloud", model: value.model, adapter: null }
+			: {
+				kind: "remote",
+				provider: chatgpt ? "openai-codex-oauth" : "openrouter",
+				model: value.model,
+				adapter: null
+			};
 	const allowedStatuses = new Set<Session["status"]>([
 		"created", "ready", "running", "waiting_for_input", "paused", "interrupted", "completed", "failed", "cancelled", "configuration_required"
 	]);

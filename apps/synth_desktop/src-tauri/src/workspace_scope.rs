@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceAccessMode {
     ReadOnly,
@@ -30,7 +30,7 @@ impl WorkspaceAccessMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum AttachmentSource {
     UserPicker,
@@ -49,7 +49,7 @@ impl AttachmentSource {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceAttachment {
     pub path: String,
@@ -58,19 +58,21 @@ pub struct WorkspaceAttachment {
     pub created_at: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationWorkspaceScope {
     pub session_id: String,
     pub workspace: String,
     pub attachments: Vec<WorkspaceAttachment>,
+    #[specta(type = specta_typescript::Unknown)]
     pub revision: i64,
+    #[specta(type = specta_typescript::Unknown)]
     pub bound_revision: i64,
     pub binding_status: String,
     pub binding_error: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceGrantRequest {
     pub id: String,

@@ -1,132 +1,514 @@
 {
   "tools": [
     {
-      "name": "visual_list_templates",
-      "description": "List all Synth Desktop visual templates (id, title, genre, slots).",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Direct tool for Synth visuals; do not call MCP resources or search the filesystem. For a diagram, load author-synth-diagrams, create with arguments.content, show, then capture_review and examine its returned image before review.",
       "inputSchema": {
-        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {
+            "additionalProperties": true,
+            "description": "capture_review requires visual_id and viewport {width,height}; it returns a PNG image and absolute screenshot_path.",
+            "type": "object"
+          },
+          "operation": {
+            "description": "Visual operation to run.",
+            "enum": [
+              "list_templates",
+              "list",
+              "get",
+              "create",
+              "update",
+              "bind",
+              "save",
+              "show",
+              "render",
+              "capture_review",
+              "authoring_context",
+              "review",
+              "mark_ready",
+              "fork",
+              "archive"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "arguments"
+        ],
+        "type": "object"
+      },
+      "name": "visual_manage"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List Synth visual templates",
+      "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "genre": {
-            "type": "string",
-            "description": "Optional genre filter (craftax, posttrain, reward, annotation, compare, live)"
+            "type": "string"
           }
         },
-        "additionalProperties": false
-      }
+        "type": "object"
+      },
+      "name": "visual_list_templates"
     },
     {
-      "name": "visual_create_from_template",
-      "description": "Create a visual. Prefer analysis.visual.v1 for ad-hoc evidence-driven blocks; use blank.canvas.v1 for bespoke sandboxed HTML/SVG/CSS compositions. Choose the visual grammar from the data and never imply a trend without an ordered or temporal x-axis.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List visuals in the local registry",
       "inputSchema": {
-        "type": "object",
+        "additionalProperties": false,
         "properties": {
-          "template_id": {
-            "type": "string",
-            "description": "Template id, e.g. craftax.eval_matrix.v1"
+          "search": {
+            "type": "string"
           },
-          "title": { "type": "string" },
-          "props": {
-            "type": "object",
-            "additionalProperties": true
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "visual_list"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Get a visual by id",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "visual_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "visual_id"
+        ],
+        "type": "object"
+      },
+      "name": "visual_get"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Create a visual from a trusted registered template. Interactive live viewers are configured templates; arbitrary TSX is not executed.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string"
           },
           "instance_id": {
-            "type": "string",
-            "description": "Optional stable instance id; auto-generated if omitted"
+            "type": "string"
+          },
+          "presentation": {
+            "enum": [
+              "canvas",
+              "pane"
+            ],
+            "type": "string"
+          },
+          "props": {
+            "type": "object"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "template_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "visual_config": {
+            "type": "object"
           }
         },
-        "required": ["template_id"],
-        "additionalProperties": false
-      }
+        "required": [
+          "template_id"
+        ],
+        "type": "object"
+      },
+      "name": "visual_create"
     },
     {
-      "name": "visual_bind_data_source",
-      "description": "Bind a data source to a template slot on an existing VisualInstance (trace_v5 | local_cas | live_sse | fixture).",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Alias of visual_create",
       "inputSchema": {
-        "type": "object",
+        "additionalProperties": false,
         "properties": {
-          "instance_id": { "type": "string" },
-          "slot": { "type": "string" },
-          "kind": {
-            "type": "string",
-            "enum": ["trace_v5", "local_cas", "live_sse", "fixture"]
+          "instance_id": {
+            "type": "string"
           },
-          "source": {
-            "type": "string",
-            "description": "Digest, CAS path, SSE URL, or fixture relative path"
+          "props": {
+            "type": "object"
+          },
+          "template_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "template_id"
+        ],
+        "type": "object"
+      },
+      "name": "visual_create_from_template"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Revise visual bindings, title, trusted-template configuration, or Mermaid content",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "bindings": {
+            "type": "object"
+          },
+          "content": {
+            "type": "string"
+          },
+          "presentation": {
+            "enum": [
+              "canvas",
+              "pane"
+            ],
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "visual_config": {
+            "type": "object"
+          },
+          "visual_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "visual_id"
+        ],
+        "type": "object"
+      },
+      "name": "visual_update"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Bind a slot on a visual",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "instance_id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "trace_v5",
+              "local_cas",
+              "live_sse",
+              "fixture"
+            ],
+            "type": "string"
           },
           "path": {
-            "type": "string",
-            "description": "Optional JSON pointer / dotted path into the payload"
+            "type": "string"
           },
-          "schema": { "type": "string" }
-        },
-        "required": ["instance_id", "slot", "kind", "source"],
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "visual_save_tsx",
-      "description": "Serialize a VisualInstance shell to visuals/instances/<id>.tsx and mark status=saved.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "instance_id": { "type": "string" },
-          "overwrite": {
-            "type": "boolean",
-            "default": true
+          "poll_url": {
+            "description": "Exact normalized poll URL declared beside a live SSE source",
+            "type": "string"
+          },
+          "slot": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
           }
         },
-        "required": ["instance_id"],
-        "additionalProperties": false
-      }
+        "required": [
+          "instance_id",
+          "slot",
+          "kind",
+          "source"
+        ],
+        "type": "object"
+      },
+      "name": "visual_bind_data_source"
     },
     {
-      "name": "visual_open_in_pane",
-      "description": "Open (or focus) a VisualInstance in the Desktop visual pane.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Open a visual in the Desktop right pane",
       "inputSchema": {
-        "type": "object",
+        "additionalProperties": false,
         "properties": {
-          "instance_id": { "type": "string" },
-          "tsx_path": {
-            "type": "string",
-            "description": "Optional path under visuals/ if opening a saved shell directly"
+          "session_id": {
+            "type": "string"
+          },
+          "visual_id": {
+            "type": "string"
           }
         },
-        "additionalProperties": false
-      }
+        "required": [
+          "visual_id"
+        ],
+        "type": "object"
+      },
+      "name": "visual_show"
     },
     {
-      "name": "visual_stream_live_eval",
-      "description": "Attach a live SSE (or fixture replay) stream to a live.* visual instance and open it in the pane.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Alias of visual_show",
       "inputSchema": {
-        "type": "object",
+        "additionalProperties": false,
         "properties": {
-          "template_id": {
-            "type": "string",
-            "enum": [
-              "live.eval_stream.v1",
-              "live.dock_harbor.v1",
-              "live.intern_acceptance.v1"
+          "instance_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "instance_id"
+        ],
+        "type": "object"
+      },
+      "name": "visual_open_in_pane"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Fork a visual",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "visual_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "visual_id"
+        ],
+        "type": "object"
+      },
+      "name": "visual_fork"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Get the template contract, example evidence, revision, presentation, and outstanding quality gate for one visual",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "visual_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "visual_id"
+        ],
+        "type": "object"
+      },
+      "name": "visual_authoring_context"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Record one rendered-view critique for the current revision. Include viewport and explicit landmark checks.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "checks": {
+            "type": "object"
+          },
+          "findings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "screenshot_path": {
+            "type": "string"
+          },
+          "viewport": {
+            "type": "object"
+          },
+          "visual_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "visual_id",
+          "revision",
+          "viewport",
+          "checks",
+          "findings"
+        ],
+        "type": "object"
+      },
+      "name": "visual_review"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Render the current visual revision to a real PNG review image at the requested viewport. Returns the PNG as tool image content and an absolute screenshot_path for visual_review.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "viewport": {
+            "additionalProperties": false,
+            "properties": {
+              "height": {
+                "maximum": 1800,
+                "minimum": 400,
+                "type": "integer"
+              },
+              "width": {
+                "maximum": 2400,
+                "minimum": 320,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "width",
+              "height"
             ],
-            "description": "Which live template to use; creates instance if instance_id omitted"
+            "type": "object"
           },
-          "instance_id": { "type": "string" },
-          "sse_url": {
-            "type": "string",
-            "description": "Live SSE URL for eval/dock/intern events"
-          },
-          "fixture": {
-            "type": "string",
-            "description": "Fixture path for offline replay (mutually exclusive with sse_url in demos)"
-          },
-          "title": { "type": "string" },
-          "open_pane": {
-            "type": "boolean",
-            "default": true
+          "visual_id": {
+            "type": "string"
           }
         },
-        "additionalProperties": false
-      }
+        "required": [
+          "visual_id",
+          "viewport"
+        ],
+        "type": "object"
+      },
+      "name": "visual_capture_review"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Mark the current revision ready after at least two passing rendered-view reviews",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "type": "integer"
+          },
+          "visual_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "visual_id",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "name": "visual_mark_ready"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Archive a visual",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "visual_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "visual_id"
+        ],
+        "type": "object"
+      },
+      "name": "visual_archive"
     }
   ]
 }

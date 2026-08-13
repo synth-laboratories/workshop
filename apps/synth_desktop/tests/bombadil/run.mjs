@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, extname, resolve } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -33,6 +33,34 @@ if (!rendererRoot) {
 	);
 }
 const bombadil = resolve(workshopRoot, "node_modules/.bin/bombadil");
+function playwrightChromeBinary() {
+	const cache = join(homedir(), "Library/Caches/ms-playwright");
+	if (!existsSync(cache)) return null;
+	const suffixes = [
+		"chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+		"chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+	];
+	for (const name of readdirSync(cache)) {
+		for (const suffix of suffixes) {
+			const bin = join(cache, name, suffix);
+			if (existsSync(bin)) return bin;
+		}
+	}
+	return null;
+}
+function ensureChromeOnPath() {
+	const systemChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+	const bin = existsSync(systemChrome) ? systemChrome : playwrightChromeBinary();
+	if (!bin) return;
+	process.env.CHROME = bin;
+	const shimDir = join(runtimeHome, "chrome-bin");
+	mkdirSync(shimDir, { recursive: true });
+	for (const name of ["google-chrome", "chromium", "chrome"]) {
+		const shim = join(shimDir, name);
+		try { symlinkSync(bin, shim); } catch { /* already linked */ }
+	}
+	process.env.PATH = `${shimDir}:${process.env.PATH ?? ""}`;
+}
 const specificationPath = process.env.BOMBADIL_SPEC
 	? resolve(workshopRoot, process.env.BOMBADIL_SPEC)
 	: resolve(here, "layout.spec.ts");
@@ -45,7 +73,8 @@ const outputPath = process.env.BOMBADIL_OUTPUT_PATH
 		specificationPath.replace(/.*\//, "").replace(/\.spec\.ts$/, "")
 	);
 const includeCuaAnalysisVisual = specificationPath.endsWith("launch-debt.spec.ts")
-	|| specificationPath.endsWith("visual-library-layout.spec.ts");
+	|| specificationPath.endsWith("visual-library-layout.spec.ts")
+	|| specificationPath.endsWith("visual-pane-boundaries.spec.ts");
 const includeBlankWorkedTurn = specificationPath.endsWith("empty-completed-turn.spec.ts")
 	|| specificationPath.endsWith("empty-outputs.spec.ts")
 	|| specificationPath.endsWith("inference-state-honesty.spec.ts")
@@ -58,12 +87,17 @@ const includeShellContainment = specificationPath.endsWith("shell-containment.sp
 const includeInferenceHonesty = specificationPath.endsWith("inference-state-honesty.spec.ts");
 const includeRunSummarySanity = specificationPath.endsWith("run-summary-sanity.spec.ts");
 const includeVisualContracts = specificationPath.endsWith("v0.1-visual-contracts.spec.ts");
+const includeChatgptBranding = specificationPath.endsWith("chatgpt-branding.spec.ts");
+const includeApprovalCard = specificationPath.endsWith("approval-card.spec.ts");
+const includeGroupedVisualEvidence = specificationPath.endsWith("grouped-visual-evidence.spec.ts");
 // Five seconds covers every directed/eventual horizon in layout.spec.ts. Longer
 // runs intermittently wedge the current Chromiumoxide transport after the
 // properties have already been exercised, turning a clean trace into a harness
 // watchdog failure. Nightly exploration can still opt into a longer duration.
 const timeLimit = process.env.BOMBADIL_TIME_LIMIT
-	|| (includeBlankWorkedTurn || includeComposerToolbar || includeTerminalPolish || includeVisualContracts
+	|| (includeComposerToolbar
+		? "45s"
+		: includeBlankWorkedTurn || includeTerminalPolish || includeVisualContracts || includeChatgptBranding || includeApprovalCard || includeGroupedVisualEvidence
 		? "10s"
 		: "5s");
 const timeLimitMatch = /^(\d+(?:\.\d+)?)(ms|s|m)$/.exec(timeLimit);
@@ -235,6 +269,239 @@ window.synthModelPerformance = {
 }
 
 /**
+ * Seeds a waiting shell-approval turn: pending approval card above Working…,
+ * with Reject / Approve once / Always allow. Used by approval-card.spec.ts.
+ */
+function approvalCardBridgeScript() {
+	return `
+const approvalSessionId = "v02-approval-session";
+function approvalAppEvent(sequence, kind, payload) {
+  return {
+    schemaVersion: "synth.desktop-app-event.v1",
+    sequence,
+    eventId: "approval-" + sequence,
+    sessionId: approvalSessionId,
+    sessionSequence: sequence,
+    runId: "turn-approval",
+    source: "codex",
+    kind,
+    payload,
+    createdAt: "2026-08-13T13:00:0" + sequence + "Z"
+  };
+}
+const approvalEvents = [
+  approvalAppEvent(1, "message.created", { messageId: "user-1", role: "user", content: "list the workspace" }),
+  approvalAppEvent(2, "run.started", { runId: "turn-approval" }),
+  approvalAppEvent(3, "approval.requested", {
+    approvalId: "appr_shell_1",
+    kind: "shell_command",
+    command: "ls /Users/joshuapurtell",
+    detail: "ls /Users/joshuapurtell",
+    alwaysSupported: true
+  })
+];
+const approvalListeners = [];
+window.__bombadilApprovalDecisions = [];
+window.synthLaguna.getStatus = async () => ({
+  phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm",
+  loadedModel: "/models/Laguna-XS-2.1-NVFP4-mlx", detail: "Ready", memoryBytes: null,
+  updatedAt: Date.now(), lastUsedAt: Date.now(), idleSeconds: 0,
+  idleUnloadAfterSeconds: 900, freeAt: Date.now() + 900000
+});
+window.synthCodex = {
+  defaultWorkspace: async () => "/Users/joshuapurtell",
+  list: async () => [{
+    sessionId: approvalSessionId,
+    threadId: "v02-approval-thread",
+    workspace: "/Users/joshuapurtell",
+    model: "poolside/Laguna-XS-2.1-NVFP4-mlx",
+    providerName: "local-laguna",
+    providerTitle: "Laguna XS Responses",
+    baseUrl: "http://127.0.0.1:7333/v1",
+    status: "running",
+    title: "Waiting approval",
+    approvalPolicy: "untrusted",
+    sandbox: "workspace-write"
+  }],
+  start: async () => ({ sessionId: approvalSessionId, threadId: "v02-approval-thread" }),
+  startTurn: async () => ({ sessionId: approvalSessionId, threadId: "v02-approval-thread", turnId: "turn-approval" }),
+  interrupt: async () => undefined,
+  resolveApproval: async (sessionId, approvalId, decision) => {
+    window.__bombadilApprovalDecisions.push({ sessionId, approvalId, decision });
+    const event = {
+      sessionId,
+      method: decision === "reject" ? "approval.rejected" : "approval.granted",
+      params: { approvalId, decision }
+    };
+    approvalListeners.forEach((listener) => listener(event));
+  },
+  close: async () => undefined,
+  onEvent: (listener) => {
+    approvalListeners.push(listener);
+    return () => {
+      const index = approvalListeners.indexOf(listener);
+      if (index >= 0) approvalListeners.splice(index, 1);
+    };
+  }
+};
+window.synthCore = {
+  diagnostics: async () => ({
+    databasePath: "bombadil-memory://core",
+    schemaVersion: 0,
+    integrityOk: true,
+    contentStorePath: "bombadil-memory://content",
+    journalHead: approvalEvents.length,
+    sessionCount: 1,
+    runCount: 1,
+    visualCount: 0,
+    migrationComplete: true
+  }),
+  eventsAfter: async () => approvalEvents,
+  sessionEventsAfter: async (sessionId) => sessionId === approvalSessionId ? approvalEvents : [],
+  onEvent: () => () => undefined
+};
+`;
+}
+
+/**
+ * Seeds the 2026-08-13 CUA W1 turn: assistant preamble plus four mixed
+ * container / shell / visual MCP calls that grouped mode used to collapse
+ * into "Ran commands, used tools 4 calls".
+ */
+function groupedVisualEvidenceBridgeScript() {
+	return `
+const groupedSessionId = "v02-grouped-visual-session";
+try {
+  localStorage.setItem("synth.accountChoiceMade", "1");
+  const prefs = JSON.parse(localStorage.getItem("synth.preferences.v1") || "{}");
+  const layout = prefs.layout && typeof prefs.layout === "object" ? prefs.layout : {};
+  const last = layout.last && typeof layout.last === "object" ? layout.last : {};
+  localStorage.setItem("synth.preferences.v1", JSON.stringify({
+    schemaVersion: 4,
+    ...prefs,
+    toolActivity: { mode: "grouped" },
+    layout: {
+      ...layout,
+      last: { ...last, selectedConversationId: groupedSessionId }
+    }
+  }));
+} catch (error) {
+  console.warn("bombadil grouped-visual prefs seed failed", error);
+}
+function groupedAppEvent(sequence, kind, payload) {
+  return {
+    schemaVersion: "synth.desktop-app-event.v1",
+    sequence,
+    eventId: "grouped-" + sequence,
+    sessionId: groupedSessionId,
+    sessionSequence: sequence,
+    runId: "turn-w1-craftax",
+    source: "codex",
+    kind,
+    payload,
+    createdAt: "2026-08-13T13:58:" + String(sequence).padStart(2, "0") + "Z"
+  };
+}
+const craftaxVisual = {
+  id: "vis_w1_craftax",
+  templateId: "live.craftax.v1",
+  title: "Craftax live",
+  messageId: "asst-w1",
+  bindings: {
+    schemaVersion: "synth.visual-bindings.v1",
+    slots: [{
+      slot: "stream", kind: "inline", schema: "synth.trace-stream-event.v1",
+      data: { events: [] }
+    }]
+  }
+};
+const groupedEvents = [
+  groupedAppEvent(1, "message.created", {
+    messageId: "user-w1", role: "user",
+    content: "find craftax rust gambeench containers, register it, run 10 steps, create a visual with the trace data/rewards you get"
+  }),
+  groupedAppEvent(2, "run.started", { runId: "turn-w1-craftax" }),
+  groupedAppEvent(3, "message.created", {
+    messageId: "asst-w1", role: "assistant",
+    content: "I'm using the Synth container skill to discover/register the Craftax Rust GameBench container, then the Synth visuals skill to build a visual from the resulting trace and reward evidence."
+  }),
+  groupedAppEvent(4, "item/completed", {
+    item: {
+      type: "mcpToolCall", id: "call-list", server: "synth_containers",
+      tool: "container_list", status: "completed", arguments: {}
+    }
+  }),
+  groupedAppEvent(5, "item/completed", {
+    item: {
+      type: "mcpToolCall", id: "call-register", server: "synth_containers",
+      tool: "container_register", status: "completed",
+      arguments: { name: "craftax-rust", base_url: "http://127.0.0.1:8097" },
+      result: { structuredContent: { container: { id: "ctr_craftax" } } }
+    }
+  }),
+  groupedAppEvent(6, "item/completed", {
+    item: { type: "commandExecution", id: "call-shell-1", command: "pwd", status: "completed" }
+  }),
+  groupedAppEvent(7, "item/completed", {
+    item: { type: "commandExecution", id: "call-shell-2", command: "ls", status: "completed" }
+  }),
+  groupedAppEvent(8, "item/completed", {
+    item: {
+      type: "mcpToolCall", id: "call-visual", server: "synth_visuals",
+      tool: "visual_create_from_template", status: "completed",
+      arguments: { template_id: "live.craftax.v1", title: "Craftax live" },
+      result: { structuredContent: { visual: craftaxVisual } }
+    }
+  }),
+  groupedAppEvent(9, "run.completed", { runId: "turn-w1-craftax" })
+];
+window.synthLaguna.getStatus = async () => ({
+  phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm",
+  loadedModel: "/models/Laguna-XS-2.1-NVFP4-mlx", detail: "Ready", memoryBytes: null,
+  updatedAt: Date.now(), lastUsedAt: Date.now(), idleSeconds: 0,
+  idleUnloadAfterSeconds: 900, freeAt: Date.now() + 900000
+});
+window.synthCodex = {
+  defaultWorkspace: async () => "/Users/joshuapurtell",
+  list: async () => [{
+    sessionId: groupedSessionId,
+    threadId: "v02-grouped-thread",
+    workspace: "/Users/joshuapurtell",
+    model: "poolside/Laguna-XS-2.1-NVFP4-mlx",
+    providerName: "local-laguna",
+    providerTitle: "Laguna XS Responses",
+    baseUrl: "http://127.0.0.1:7333/v1",
+    status: "ready",
+    title: "Find craftax rust gambeench",
+    approvalPolicy: "untrusted",
+    sandbox: "workspace-write"
+  }],
+  start: async () => ({ sessionId: groupedSessionId, threadId: "v02-grouped-thread" }),
+  startTurn: async () => ({ sessionId: groupedSessionId, threadId: "v02-grouped-thread", turnId: "turn-w1-craftax" }),
+  interrupt: async () => undefined,
+  close: async () => undefined,
+  onEvent: () => () => undefined
+};
+window.synthCore = {
+  diagnostics: async () => ({
+    databasePath: "bombadil-memory://core",
+    schemaVersion: 0,
+    integrityOk: true,
+    contentStorePath: "bombadil-memory://content",
+    journalHead: groupedEvents.length,
+    sessionCount: 1,
+    runCount: 1,
+    visualCount: 1,
+    migrationComplete: true
+  }),
+  eventsAfter: async () => groupedEvents,
+  sessionEventsAfter: async (sessionId) => sessionId === groupedSessionId ? groupedEvents : [],
+  onEvent: () => () => undefined
+};
+`;
+}
+
+/**
  * Seeds the CUA composer-toolbar collision: Never ask · Full system access
  * plus Unavailable tok/s observed p50 next to Thinking Max.
  */
@@ -268,6 +535,31 @@ try {
 } catch (error) {
   console.warn("bombadil composer-toolbar prefs seed failed", error);
 }
+
+window.synthConfig = {
+  get: async () => ({
+    configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "test",
+    backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY",
+    apiKeyConfigured: true, workerKeyConfigured: false, openrouterApiKeyConfigured: true
+  }),
+  update: async () => { throw new Error("not used"); },
+  listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
+  getWorkspaceAccess: async () => ({ allowedRoots: [] }),
+  updateWorkspaceAccess: async () => ({ allowedRoots: [] })
+};
+window.synthCodexOauth = {
+  begin: async () => { throw new Error("not used"); },
+  completeManual: async () => ({ configured: true, accountHint: "bombadil@example.com" }),
+  status: async () => ({ configured: true, accountHint: "bombadil@example.com" }),
+  disconnect: async () => ({ configured: false }),
+  cancel: async () => undefined
+};
+window.synthLaguna.getStatus = async () => ({
+  phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm",
+  loadedModel: "/models/Laguna-XS-2.1-NVFP4-mlx", detail: "Ready", memoryBytes: null,
+  updatedAt: Date.now(), lastUsedAt: Date.now(), idleSeconds: 0,
+  idleUnloadAfterSeconds: 900, freeAt: Date.now() + 900000
+});
 
 window.synthModelPerformance = {
   summaries: async () => [{
@@ -358,6 +650,8 @@ ${includeInferenceHonesty ? `globalThis.__SYNTH_TEST_INFERENCE_TRANSPORT__ = {
   unload: async () => ({ released: true, conflict: false, detail: null })
 };` : ""}
 ${includeBlankWorkedTurn ? blankWorkedTurnBridgeScript() : ""}
+${includeApprovalCard ? approvalCardBridgeScript() : ""}
+${includeGroupedVisualEvidence ? groupedVisualEvidenceBridgeScript() : ""}
 ${includeRunSummarySanity ? `blankWorkedEvents[0].createdAt = "2026-08-09T15:44:50.000Z";` : ""}
 ${includeInferenceHonesty ? `window.synthCodex.list = async () => [{
   sessionId: "blank-worked-turn", threadId: "blank-thread", workspace: "/workspaces/default",
@@ -367,6 +661,13 @@ ${includeInferenceHonesty ? `window.synthCodex.list = async () => [{
 }];` : ""}
 ${includeComposerToolbar ? composerToolbarBridgeScript() : ""}
 ${includeTerminalPolish ? terminalPolishBridgeScript() : ""}
+${includeChatgptBranding ? `window.synthCodexOauth = {
+  begin: async () => { throw new Error("not used"); },
+  completeManual: async () => ({ configured: true, accountHint: "test@openai.com" }),
+  status: async () => ({ configured: true, accountHint: "test@openai.com" }),
+  disconnect: async () => ({ configured: false }),
+  cancel: async () => undefined
+};` : ""}
 ${includeVisualContracts ? `window.synthConfig = {
   get: async () => ({
     configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod",
@@ -412,13 +713,26 @@ const cuaAnalysisVisual = {
   sourceAgentId: "laguna", sourceModel: "laguna-xs-2.1", contentDigest: null, previewDigest: null,
   metadata: {}, createdAt: "2026-08-09T13:24:48.000Z", updatedAt: "2026-08-09T13:24:48.000Z"
 };
-const fixtureVisuals = ${includeCuaAnalysisVisual ? "[cuaAnalysisVisual]" : "[]"};
+const groupedCraftaxVisual = {
+  schemaVersion: "synth.desktop-visual.v1", id: "vis_w1_craftax", currentRevision: 1,
+  title: "Craftax live", templateId: "live.craftax.v1", status: "saved", rendererKind: "template",
+  bindings: {
+    schemaVersion: "synth.visual-bindings.v1",
+    slots: [{
+      slot: "stream", kind: "inline", schema: "synth.trace-stream-event.v1",
+      data: { events: [] }
+    }]
+  },
+  sessionId: "v02-grouped-visual-session", messageId: "asst-w1", runId: "turn-w1-craftax",
+  metadata: {}, createdAt: "2026-08-13T13:58:08Z", updatedAt: "2026-08-13T13:58:08Z"
+};
+const fixtureVisuals = ${includeCuaAnalysisVisual ? "[cuaAnalysisVisual]" : includeGroupedVisualEvidence ? "[groupedCraftaxVisual]" : "[]"};
 window.synthVisuals = {
-  listTemplates: async () => [{ id: "analysis.visual.v1", title: "Agent-authored analysis", genre: "analysis" }],
-  getTemplate: async () => ({ id: "analysis.visual.v1", title: "Agent-authored analysis" }),
-  list: async () => fixtureVisuals, get: async () => cuaAnalysisVisual, revisions: async () => [],
-  create: async () => cuaAnalysisVisual, update: async () => cuaAnalysisVisual, save: async () => cuaAnalysisVisual,
-  fork: async () => cuaAnalysisVisual, archive: async () => cuaAnalysisVisual, show: async () => cuaAnalysisVisual,
+  listTemplates: async () => [{ id: ${includeGroupedVisualEvidence ? `"live.craftax.v1"` : `"analysis.visual.v1"`}, title: ${includeGroupedVisualEvidence ? `"Craftax live eval"` : `"Agent-authored analysis"`}, genre: ${includeGroupedVisualEvidence ? `"live"` : `"analysis"`} }],
+  getTemplate: async () => ({ id: ${includeGroupedVisualEvidence ? `"live.craftax.v1"` : `"analysis.visual.v1"`}, title: ${includeGroupedVisualEvidence ? `"Craftax live eval"` : `"Agent-authored analysis"`} }),
+  list: async () => fixtureVisuals, get: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, revisions: async () => [],
+  create: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, update: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, save: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"},
+  fork: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, archive: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, show: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"},
   onEvent: () => () => {}, onShow: () => () => {}
 };
 window.synthRuntime = {
@@ -540,11 +854,14 @@ try {
 	if (!address || typeof address === "string") throw new Error("Renderer server did not bind");
 	const origin = `http://127.0.0.1:${address.port}`;
 
+	ensureChromeOnPath();
+	const remoteDebugger = process.env.BOMBADIL_REMOTE_DEBUGGER;
 	bombadilProcess = spawn(bombadil, [
-		"browser", "test",
+		"browser", remoteDebugger ? "test-external" : "test",
+		...(remoteDebugger ? ["--remote-debugger", remoteDebugger, "--create-target"] : []),
 		origin,
 		specificationPath,
-		"--headless",
+		...(remoteDebugger ? [] : ["--headless"]),
 		"--width", "1280",
 		"--height", "840",
 		"--chrome-grant-permissions", "",
@@ -553,7 +870,7 @@ try {
 		"--exit-on-violation",
 		"--output-path", outputPath,
 		"--output-path-overwrite"
-	], { cwd: workshopRoot, stdio: "inherit", detached: true });
+	], { cwd: workshopRoot, stdio: "inherit", detached: true, env: { ...process.env } });
 	const code = await new Promise((resolvePromise, reject) => {
 		const timeout = setTimeout(() => {
 			if (bombadilProcess?.pid) process.kill(-bombadilProcess.pid, "SIGTERM");

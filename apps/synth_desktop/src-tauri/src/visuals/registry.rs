@@ -1,10 +1,14 @@
+use super::mermaid::{self, Theme};
 use super::models::{
     validate_bindings, RendererKind, VisualCreateRequest, VisualQuery, VisualRecord,
     VisualRevision, VisualStatus, VisualUpdateRequest, VISUAL_SCHEMA_VERSION,
 };
+use super::renditions::{self, VisualAsset, VisualRendition};
+use super::systems::{self, SystemsKind};
 use super::templates::{resolve_template, TemplateMeta};
 use crate::storage::{ContentStore, Database, EventAppend, EventJournal, EventSource};
 use anyhow::{anyhow, bail, Context, Result};
+use base64::Engine as _;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -56,9 +60,68 @@ impl VisualRegistry {
         validate_visual_id(&id)?;
         let bindings = request.bindings.unwrap_or_else(|| json!({}));
         validate_bindings(&bindings)?;
+        let is_mermaid = mermaid::is_mermaid_template(&template.id);
+        let systems_kind = systems::template_kind(&template.id);
+        if is_mermaid {
+            let source = request
+                .content
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow!("diagram.mermaid.v1 requires content"))?;
+            mermaid::validate_source(source)?;
+            refuse_mermaid_stream_slot(&bindings)?;
+        }
+        if let Some(kind) = systems_kind {
+            let source = request
+                .content
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow!("{} requires content", template.id))?;
+            systems::validate_source(source, kind)?;
+            refuse_mermaid_stream_slot(&bindings)?;
+        }
         let status = request.status.unwrap_or(VisualStatus::Draft);
-        let renderer_kind = request.renderer_kind.unwrap_or(RendererKind::Template);
-        let metadata = request.metadata.unwrap_or_else(|| json!({}));
+        let renderer_kind = if is_mermaid {
+            RendererKind::Mermaid
+        } else if systems_kind == Some(SystemsKind::Static) {
+            RendererKind::Systems
+        } else if systems_kind == Some(SystemsKind::Dynamic) {
+            RendererKind::SystemsDynamic
+        } else {
+            request.renderer_kind.unwrap_or(RendererKind::Template)
+        };
+        let mut metadata = request.metadata.unwrap_or_else(|| json!({}));
+        if is_mermaid {
+            if let Some(object) = metadata.as_object_mut() {
+                object
+                    .entry("presentation")
+                    .or_insert_with(|| json!("pane"));
+                object.insert("mediaType".into(), json!(mermaid::MEDIA_TYPE_SOURCE));
+                object.insert("renderStatus".into(), json!("queued"));
+                object.insert("rendererVersion".into(), json!(mermaid::RENDERER_VERSION));
+            }
+        }
+        if let Some(kind) = systems_kind {
+            let scene =
+                systems::parse_and_validate(request.content.as_deref().unwrap_or_default(), kind)?;
+            if let Some(object) = metadata.as_object_mut() {
+                object
+                    .entry("presentation")
+                    .or_insert_with(|| json!("pane"));
+                object.insert("mediaType".into(), json!(systems::MEDIA_TYPE_SOURCE));
+                object.insert("renderStatus".into(), json!("queued"));
+                object.insert("rendererVersion".into(), json!(systems::RENDERER_VERSION));
+                object.insert("visualKind".into(), json!(kind.as_str()));
+                if kind == SystemsKind::Dynamic {
+                    object.insert("durationMs".into(), json!(scene.duration_ms));
+                    object.insert("posterTimeMs".into(), json!(scene.poster_time_ms));
+                    object.insert("beatCount".into(), json!(scene.beats.len()));
+                    object.insert("reducedMotion".into(), json!(scene.reduced_motion));
+                }
+            }
+        }
         let content_digest = if let Some(content) = request.content.as_ref() {
             Some(self.content.put_bytes("blobs", content.as_bytes())?)
         } else {
@@ -136,6 +199,14 @@ impl VisualRegistry {
                 Ok((inserted, event))
             })
             .await?;
+        if mermaid::is_mermaid_template(&record.template_id) {
+            let rendered = self.render_mermaid(&record.id).await?;
+            return Ok((rendered, serde_json::to_value(event)?));
+        }
+        if systems::template_kind(&record.template_id).is_some() {
+            let rendered = self.render_systems(&record.id).await?;
+            return Ok((rendered, serde_json::to_value(event)?));
+        }
         Ok((record, serde_json::to_value(event)?))
     }
 
@@ -145,6 +216,25 @@ impl VisualRegistry {
         request: VisualUpdateRequest,
     ) -> Result<(VisualRecord, Value)> {
         validate_visual_id(&id)?;
+        let content_changed = request.content.is_some();
+        if let Some(source) = request.content.as_deref() {
+            let existing = self.get(id.clone()).await?;
+            if mermaid::is_mermaid_template(&existing.template_id) {
+                mermaid::validate_source(source)?;
+            }
+            if let Some(kind) = systems::template_kind(&existing.template_id) {
+                systems::validate_source(source, kind)?;
+            }
+        }
+        if let Some(bindings) = request.bindings.as_ref() {
+            let existing = self.get(id.clone()).await?;
+            if mermaid::is_mermaid_template(&existing.template_id) {
+                refuse_mermaid_stream_slot(bindings)?;
+            }
+            if systems::template_kind(&existing.template_id).is_some() {
+                refuse_mermaid_stream_slot(bindings)?;
+            }
+        }
         let db = self.db.clone();
         let content = self.content.clone();
         let (updated, event) = db
@@ -172,6 +262,7 @@ impl VisualRegistry {
                 }
                 if let Some(metadata) = request.metadata {
                     current.metadata = metadata;
+                    bumped = true;
                 }
                 let mut new_bindings = None;
                 if let Some(bindings) = request.bindings {
@@ -230,6 +321,14 @@ impl VisualRegistry {
                 Ok((current, event))
             })
             .await?;
+        if content_changed && mermaid::is_mermaid_template(&updated.template_id) {
+            let rendered = self.render_mermaid(&updated.id).await?;
+            return Ok((rendered, serde_json::to_value(event)?));
+        }
+        if content_changed && systems::template_kind(&updated.template_id).is_some() {
+            let rendered = self.render_systems(&updated.id).await?;
+            return Ok((rendered, serde_json::to_value(event)?));
+        }
         Ok((updated, serde_json::to_value(event)?))
     }
 
@@ -351,6 +450,473 @@ impl VisualRegistry {
     pub fn get_template(&self, template_id: &str) -> Result<TemplateMeta> {
         resolve_template(template_id)
     }
+
+    pub async fn mermaid_source(&self, id: String) -> Result<VisualAsset> {
+        self.visual_source(id).await
+    }
+
+    pub async fn visual_source(&self, id: String) -> Result<VisualAsset> {
+        let visual = self.get(id).await?;
+        let media_type = if mermaid::is_mermaid_template(&visual.template_id) {
+            mermaid::MEDIA_TYPE_SOURCE
+        } else if systems::template_kind(&visual.template_id).is_some() {
+            systems::MEDIA_TYPE_SOURCE
+        } else {
+            bail!(
+                "visual {} does not expose canonical renderer source",
+                visual.id
+            )
+        };
+        let digest = visual
+            .content_digest
+            .clone()
+            .ok_or_else(|| anyhow!("visual is missing canonical source"))?;
+        let bytes = self.content.get_bytes("blobs", &digest)?;
+        Ok(VisualAsset {
+            visual_id: visual.id,
+            revision: visual.current_revision,
+            format: "source".into(),
+            media_type: media_type.into(),
+            theme: None,
+            size_class: None,
+            digest,
+            base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            width_px: None,
+            height_px: None,
+        })
+    }
+
+    pub async fn list_renditions(&self, id: String) -> Result<Vec<VisualRendition>> {
+        let visual = self.get(id.clone()).await?;
+        let db = self.db.clone();
+        let revision = visual.current_revision;
+        db.run(move |conn| renditions::list_renditions(conn, &id, revision))
+            .await
+    }
+
+    pub async fn mermaid_rendition(
+        &self,
+        id: String,
+        format: Option<String>,
+        theme: Option<String>,
+        size_class: Option<String>,
+    ) -> Result<VisualAsset> {
+        self.visual_rendition(id, format, theme, size_class).await
+    }
+
+    pub async fn visual_rendition(
+        &self,
+        id: String,
+        format: Option<String>,
+        theme: Option<String>,
+        size_class: Option<String>,
+    ) -> Result<VisualAsset> {
+        let visual = self.get(id.clone()).await?;
+        let systems_kind = systems::template_kind(&visual.template_id);
+        if !mermaid::is_mermaid_template(&visual.template_id) && systems_kind.is_none() {
+            bail!("visual {} has no SVG rendition renderer", visual.id);
+        }
+        let format = if format.as_deref() == Some("png") {
+            "svg".to_string()
+        } else {
+            format.unwrap_or_else(|| "svg".into())
+        };
+        let theme = match theme {
+            Some(value) => value,
+            None if systems_kind.is_some() => {
+                let bytes = visual
+                    .content_digest
+                    .as_deref()
+                    .and_then(|d| self.content.get_bytes("blobs", d).ok())
+                    .unwrap_or_default();
+                serde_json::from_slice::<Value>(&bytes)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("theme").and_then(Value::as_str).map(|s| {
+                            if s == "technical-dark" {
+                                "dark".to_string()
+                            } else {
+                                "light".to_string()
+                            }
+                        })
+                    })
+                    .unwrap_or_else(|| "light".into())
+            }
+            None => "light".into(),
+        };
+        if !matches!(theme.as_str(), "light" | "dark") {
+            bail!("unsupported rendition theme {theme}");
+        }
+        let renderer_version = if systems_kind.is_some() {
+            systems::RENDERER_VERSION
+        } else {
+            mermaid::RENDERER_VERSION
+        };
+        let size_class = size_class.unwrap_or_else(|| "pane".into());
+        let db = self.db.clone();
+        let revision = visual.current_revision;
+        let visual_id = visual.id.clone();
+        let format_key = format.clone();
+        let theme_key = theme.clone();
+        let size_key = size_class.clone();
+        let rendition = db
+            .run(move |conn| {
+                renditions::get_rendition_for_renderer(
+                    conn,
+                    &visual_id,
+                    revision,
+                    &format_key,
+                    &theme_key,
+                    &size_key,
+                    renderer_version,
+                )
+            })
+            .await;
+        let rendition = match rendition {
+            Ok(value) => value,
+            Err(_) => {
+                self.render_visual(&id).await?;
+                let visual_id = id.clone();
+                let format_key = format.clone();
+                let theme_key = theme.clone();
+                let size_key = size_class.clone();
+                self.db
+                    .run(move |conn| {
+                        renditions::get_rendition_for_renderer(
+                            conn,
+                            &visual_id,
+                            revision,
+                            &format_key,
+                            &theme_key,
+                            &size_key,
+                            renderer_version,
+                        )
+                    })
+                    .await?
+            }
+        };
+        let bytes = self
+            .content
+            .get_bytes("previews", &rendition.content_digest)?;
+        Ok(VisualAsset {
+            visual_id: rendition.visual_id,
+            revision: rendition.revision,
+            format: rendition.format,
+            media_type: rendition.media_type,
+            theme: Some(rendition.theme),
+            size_class: Some(rendition.size_class),
+            digest: rendition.content_digest,
+            base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            width_px: rendition.width_px,
+            height_px: rendition.height_px,
+        })
+    }
+
+    pub async fn render_visual(&self, id: &str) -> Result<VisualRecord> {
+        let visual = self.get(id.to_string()).await?;
+        if mermaid::is_mermaid_template(&visual.template_id) {
+            self.render_mermaid(id).await
+        } else if systems::template_kind(&visual.template_id).is_some() {
+            self.render_systems(id).await
+        } else {
+            bail!("visual {id} has no dedicated renderer")
+        }
+    }
+
+    pub async fn render_mermaid(&self, id: &str) -> Result<VisualRecord> {
+        let visual = self.get(id.to_string()).await?;
+        if !mermaid::is_mermaid_template(&visual.template_id) {
+            bail!("visual {id} is not a mermaid diagram");
+        }
+        let digest = visual
+            .content_digest
+            .clone()
+            .ok_or_else(|| anyhow!("diagram.mermaid.v1 requires content"))?;
+        let bytes = self.content.get_bytes("blobs", &digest)?;
+        let source = String::from_utf8(bytes).context("mermaid source must be UTF-8")?;
+        let kind = mermaid::validate_source(&source)?;
+        let _ = self
+            .journal
+            .append(EventAppend {
+                event_id: None,
+                session_id: visual.session_id.clone(),
+                run_id: visual.run_id.clone(),
+                source: EventSource::Visual,
+                kind: "visual.render_requested".into(),
+                payload: json!({
+                    "visualId": visual.id,
+                    "revision": visual.current_revision,
+                    "diagramKind": kind.as_str(),
+                }),
+                remote_sequence: None,
+                command_id: None,
+                created_at: None,
+            })
+            .await;
+        let source_for_render = source.clone();
+        let rendered = tokio::task::spawn_blocking(move || {
+            mermaid::render_isolated(&source_for_render, Theme::Light)
+        })
+        .await
+        .context("join mermaid render")?;
+        match rendered {
+            Ok(diagram) => {
+                self.commit_mermaid_success(visual, kind.as_str(), diagram)
+                    .await
+            }
+            Err(error) => {
+                self.commit_mermaid_failure(visual, kind.as_str(), error)
+                    .await
+            }
+        }
+    }
+
+    pub async fn render_systems(&self, id: &str) -> Result<VisualRecord> {
+        let visual = self.get(id.to_string()).await?;
+        let kind = systems::template_kind(&visual.template_id)
+            .ok_or_else(|| anyhow!("visual {id} is not a systems diagram"))?;
+        let digest = visual
+            .content_digest
+            .clone()
+            .ok_or_else(|| anyhow!("{} requires content", visual.template_id))?;
+        let source = String::from_utf8(self.content.get_bytes("blobs", &digest)?)
+            .context("systems source must be UTF-8")?;
+        let scene = systems::parse_and_validate(&source, kind)?;
+        let _ = self.journal.append(EventAppend {
+            event_id: None, session_id: visual.session_id.clone(), run_id: visual.run_id.clone(),
+            source: EventSource::Visual, kind: "visual.render_requested".into(),
+            payload: json!({"visualId":visual.id,"revision":visual.current_revision,"visualKind":kind.as_str()}),
+            remote_sequence: None, command_id: None, created_at: None,
+        }).await;
+        let source_for_render = source.clone();
+        let rendered =
+            tokio::task::spawn_blocking(move || systems::render_svg(&source_for_render, kind))
+                .await
+                .context("join systems render")?;
+        match rendered {
+            Ok(poster) => {
+                self.commit_systems_success(visual, kind, scene, poster)
+                    .await
+            }
+            Err(error) => self.commit_systems_failure(visual, kind, error).await,
+        }
+    }
+
+    async fn commit_systems_success(
+        &self,
+        mut visual: VisualRecord,
+        kind: SystemsKind,
+        scene: systems::Scene,
+        poster: systems::RenderedSystems,
+    ) -> Result<VisualRecord> {
+        validate_svg_bytes(poster.svg.as_bytes())?;
+        let preview_digest = self.content.put_bytes("previews", poster.svg.as_bytes())?;
+        visual.preview_digest = Some(preview_digest.clone());
+        visual.updated_at = Utc::now().to_rfc3339();
+        if let Some(object) = visual.metadata.as_object_mut() {
+            object.insert("mediaType".into(), json!(systems::MEDIA_TYPE_SOURCE));
+            object.insert("visualKind".into(), json!(kind.as_str()));
+            object.insert("rendererVersion".into(), json!(systems::RENDERER_VERSION));
+            object.insert("renderStatus".into(), json!("ready"));
+            object.remove("renderError");
+            if kind == SystemsKind::Dynamic {
+                object.insert("durationMs".into(), json!(scene.duration_ms));
+                object.insert("posterTimeMs".into(), json!(scene.poster_time_ms));
+                object.insert("beatCount".into(), json!(scene.beats.len()));
+                object.insert("reducedMotion".into(), json!(scene.reduced_motion));
+            }
+        }
+        let stored = visual.clone();
+        let preview = preview_digest.clone();
+        let theme = if scene.theme == "technical-dark" {
+            "dark"
+        } else {
+            "light"
+        }
+        .to_string();
+        let width = poster.width;
+        let height = poster.height;
+        self.db.clone().run_transaction(move |conn| {
+            persist_visual(conn,&stored)?;
+            let empty=systems::RenderedSystems{svg:String::new(),width,height};
+            renditions::insert_systems_svg_rendition(conn,&stored.id,stored.current_revision,&preview,&empty,&theme,"pane")?;
+            renditions::insert_systems_svg_rendition(conn,&stored.id,stored.current_revision,&preview,&empty,&theme,"thumbnail")?;
+            crate::storage::append_event(conn,EventAppend{event_id:None,session_id:stored.session_id.clone(),run_id:stored.run_id.clone(),source:EventSource::Visual,kind:"visual.rendered".into(),payload:json!({"visualId":stored.id,"revision":stored.current_revision,"visualKind":kind.as_str(),"previewDigest":preview}),remote_sequence:None,command_id:None,created_at:None})?;
+            Ok(())
+        }).await?;
+        self.get(visual.id).await
+    }
+
+    async fn commit_systems_failure(
+        &self,
+        mut visual: VisualRecord,
+        kind: SystemsKind,
+        error: anyhow::Error,
+    ) -> Result<VisualRecord> {
+        let message = error.to_string();
+        visual.updated_at = Utc::now().to_rfc3339();
+        if let Some(object) = visual.metadata.as_object_mut() {
+            object.insert("visualKind".into(), json!(kind.as_str()));
+            object.insert("rendererVersion".into(), json!(systems::RENDERER_VERSION));
+            object.insert("renderStatus".into(), json!("failed"));
+            object.insert("renderError".into(), json!(message));
+        }
+        let stored = visual.clone();
+        let fail_message = message.clone();
+        self.db.clone().run_transaction(move|conn|{persist_visual(conn,&stored)?;crate::storage::append_event(conn,EventAppend{event_id:None,session_id:stored.session_id.clone(),run_id:stored.run_id.clone(),source:EventSource::Visual,kind:"visual.render_failed".into(),payload:json!({"visualId":stored.id,"revision":stored.current_revision,"visualKind":kind.as_str(),"error":fail_message}),remote_sequence:None,command_id:None,created_at:None})?;Ok(())}).await?;
+        self.get(visual.id).await
+    }
+
+    async fn commit_mermaid_success(
+        &self,
+        mut visual: VisualRecord,
+        diagram_kind: &str,
+        diagram: mermaid::RenderedDiagram,
+    ) -> Result<VisualRecord> {
+        validate_svg_bytes(diagram.svg.as_bytes())?;
+        let preview_digest = self.content.put_bytes("previews", diagram.svg.as_bytes())?;
+        visual.preview_digest = Some(preview_digest.clone());
+        visual.updated_at = Utc::now().to_rfc3339();
+        if let Some(object) = visual.metadata.as_object_mut() {
+            object.insert("mediaType".into(), json!(mermaid::MEDIA_TYPE_SOURCE));
+            object.insert("diagramKind".into(), json!(diagram_kind));
+            object.insert("rendererVersion".into(), json!(mermaid::RENDERER_VERSION));
+            object.insert("renderStatus".into(), json!("ready"));
+            object.remove("renderError");
+        }
+        let db = self.db.clone();
+        let stored = visual.clone();
+        let preview = preview_digest.clone();
+        let width = diagram.width;
+        let height = diagram.height;
+        let kind = diagram.kind;
+        let diagram_kind = diagram_kind.to_string();
+        db.run_transaction(move |conn| {
+            persist_visual(conn, &stored)?;
+            renditions::insert_svg_rendition(
+                conn,
+                &stored.id,
+                stored.current_revision,
+                &preview,
+                &mermaid::RenderedDiagram {
+                    kind,
+                    svg: String::new(),
+                    width,
+                    height,
+                },
+                Theme::Light,
+                "pane",
+            )?;
+            renditions::insert_svg_rendition(
+                conn,
+                &stored.id,
+                stored.current_revision,
+                &preview,
+                &mermaid::RenderedDiagram {
+                    kind,
+                    svg: String::new(),
+                    width,
+                    height,
+                },
+                Theme::Light,
+                "thumbnail",
+            )?;
+            crate::storage::append_event(
+                conn,
+                EventAppend {
+                    event_id: None,
+                    session_id: stored.session_id.clone(),
+                    run_id: stored.run_id.clone(),
+                    source: EventSource::Visual,
+                    kind: "visual.rendered".into(),
+                    payload: json!({
+                        "visualId": stored.id,
+                        "revision": stored.current_revision,
+                        "diagramKind": diagram_kind,
+                        "previewDigest": preview,
+                    }),
+                    remote_sequence: None,
+                    command_id: None,
+                    created_at: None,
+                },
+            )?;
+            Ok(())
+        })
+        .await?;
+        self.get(visual.id).await
+    }
+
+    async fn commit_mermaid_failure(
+        &self,
+        mut visual: VisualRecord,
+        diagram_kind: &str,
+        error: anyhow::Error,
+    ) -> Result<VisualRecord> {
+        let message = error.to_string();
+        let diagram_kind = diagram_kind.to_string();
+        visual.updated_at = Utc::now().to_rfc3339();
+        if let Some(object) = visual.metadata.as_object_mut() {
+            object.insert("diagramKind".into(), json!(diagram_kind));
+            object.insert("rendererVersion".into(), json!(mermaid::RENDERER_VERSION));
+            object.insert("renderStatus".into(), json!("failed"));
+            object.insert("renderError".into(), json!(message));
+        }
+        let db = self.db.clone();
+        let stored = visual.clone();
+        let fail_kind = diagram_kind.clone();
+        let fail_message = message.clone();
+        db.run_transaction(move |conn| {
+            persist_visual(conn, &stored)?;
+            crate::storage::append_event(
+                conn,
+                EventAppend {
+                    event_id: None,
+                    session_id: stored.session_id.clone(),
+                    run_id: stored.run_id.clone(),
+                    source: EventSource::Visual,
+                    kind: "visual.render_failed".into(),
+                    payload: json!({
+                        "visualId": stored.id,
+                        "revision": stored.current_revision,
+                        "diagramKind": fail_kind,
+                        "error": fail_message,
+                    }),
+                    remote_sequence: None,
+                    command_id: None,
+                    created_at: None,
+                },
+            )?;
+            Ok(())
+        })
+        .await?;
+        self.get(visual.id).await
+    }
+}
+
+fn refuse_mermaid_stream_slot(bindings: &Value) -> Result<()> {
+    let Some(slots) = bindings.get("slots").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for slot in slots {
+        if slot.get("slot").and_then(Value::as_str) == Some("stream") {
+            bail!("diagram.mermaid.v1 must not bind slot stream");
+        }
+    }
+    Ok(())
+}
+
+fn validate_svg_bytes(bytes: &[u8]) -> Result<()> {
+    let svg = std::str::from_utf8(bytes).context("rendition is not UTF-8")?;
+    let trimmed = svg.trim_start();
+    if !(trimmed.starts_with("<svg") || (trimmed.starts_with("<?xml") && trimmed.contains("<svg")))
+    {
+        bail!("rendition is not svg");
+    }
+    let lower = svg.to_ascii_lowercase();
+    if lower.contains("<script") || lower.contains("href=\"http") || lower.contains("file:") {
+        bail!("rendition svg failed safety checks");
+    }
+    Ok(())
 }
 
 fn validate_visual_id(id: &str) -> Result<()> {
@@ -420,7 +986,7 @@ fn ensure_session(conn: &Connection, session_id: &str) -> Result<()> {
         params![
             session_id,
             format!("Session {session_id}"),
-            json!({"kind":"local","model":"laguna-xs-2.1","adapter":null}).to_string(),
+            json!({"kind":"codex","model":"laguna-xs-2.1","adapter":null}).to_string(),
             now
         ],
     )?;
@@ -675,6 +1241,15 @@ mod tests {
     use crate::storage::Storage;
     use tempfile::tempdir;
 
+    fn non_mermaid_template(registry: &VisualRegistry) -> Option<String> {
+        registry.list_templates(None).ok().and_then(|templates| {
+            templates
+                .into_iter()
+                .find(|template| template.id != mermaid::TEMPLATE_ID)
+                .map(|template| template.id)
+        })
+    }
+
     #[tokio::test]
     async fn visual_create_rolls_back_when_journal_append_fails() {
         let dir = tempdir().unwrap();
@@ -685,10 +1260,7 @@ mod tests {
             EventJournal::new(db.clone()),
             ContentStore::new(storage.content_root()),
         );
-        let Ok(templates) = registry.list_templates(None) else {
-            return;
-        };
-        let Some(template) = templates.first() else {
+        let Some(template_id) = non_mermaid_template(&registry) else {
             return;
         };
         db.with_conn(|conn| {
@@ -704,7 +1276,7 @@ mod tests {
 
         let result = registry
             .create(VisualCreateRequest {
-                template_id: template.id.clone(),
+                template_id: template_id.clone(),
                 title: Some("Must roll back".into()),
                 bindings: Some(json!({})),
                 id: Some("vis_atomic_failure".into()),
@@ -751,13 +1323,9 @@ mod tests {
             ContentStore::new(storage.content_root()),
         );
         // Skip if templates are not present in this checkout layout.
-        let Ok(templates) = registry.list_templates(None) else {
+        let Some(template_id) = non_mermaid_template(&registry) else {
             return;
         };
-        if templates.is_empty() {
-            return;
-        }
-        let template_id = templates[0].id.clone();
         let (created, _) = registry
             .create(VisualCreateRequest {
                 template_id: template_id.clone(),
@@ -826,5 +1394,179 @@ mod tests {
             .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, created.id);
+    }
+
+    #[tokio::test]
+    async fn mermaid_create_requires_content_and_renders_svg() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let registry = VisualRegistry::new(
+            storage.database().clone(),
+            EventJournal::new(storage.database().clone()),
+            ContentStore::new(storage.content_root()),
+        );
+        if registry.get_template(mermaid::TEMPLATE_ID).is_err() {
+            return;
+        }
+        let missing = registry
+            .create(VisualCreateRequest {
+                template_id: mermaid::TEMPLATE_ID.into(),
+                title: Some("Policy pin".into()),
+                bindings: Some(json!({})),
+                id: Some("vis_mermaid_missing".into()),
+                status: None,
+                renderer_kind: None,
+                session_id: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: None,
+                source_model: None,
+                content: None,
+                metadata: None,
+            })
+            .await;
+        assert!(
+            missing.is_err(),
+            "mermaid create must fail closed without content"
+        );
+
+        let (created, _) = registry
+            .create(VisualCreateRequest {
+                template_id: mermaid::TEMPLATE_ID.into(),
+                title: Some("Policy pin".into()),
+                bindings: Some(json!({})),
+                id: Some("vis_mermaid_ok".into()),
+                status: Some(VisualStatus::Live),
+                renderer_kind: None,
+                session_id: Some("sess_mermaid".into()),
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: Some("mcp".into()),
+                source_model: None,
+                content: Some("flowchart LR\nAgent --> MCP --> Registry".into()),
+                metadata: Some(json!({"presentation": "pane"})),
+            })
+            .await
+            .unwrap();
+        assert_eq!(created.renderer_kind, RendererKind::Mermaid);
+        assert!(created.content_digest.is_some());
+        assert!(created.preview_digest.is_some());
+        assert_eq!(created.metadata["renderStatus"], "ready");
+        assert_eq!(created.metadata["diagramKind"], "flowchart");
+        let asset = registry
+            .mermaid_rendition(created.id.clone(), Some("svg".into()), None, None)
+            .await
+            .unwrap();
+        let svg = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(asset.base64)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(svg.contains("<svg"));
+        let source = registry.mermaid_source(created.id.clone()).await.unwrap();
+        assert_eq!(source.media_type, mermaid::MEDIA_TYPE_SOURCE);
+        let (updated, _) = registry
+            .update(
+                created.id.clone(),
+                VisualUpdateRequest {
+                    title: None,
+                    bindings: None,
+                    status: None,
+                    renderer_kind: None,
+                    message_id: None,
+                    run_id: None,
+                    trace_id: None,
+                    content: Some(
+                        "sequenceDiagram\nAgent->>MCP: policy_ref\nMCP->>Container: POST /rollouts"
+                            .into(),
+                    ),
+                    metadata: None,
+                    bump_revision: Some(true),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.current_revision, 2);
+        assert_eq!(updated.metadata["diagramKind"], "sequence");
+        assert_ne!(updated.content_digest, created.content_digest);
+    }
+
+    #[tokio::test]
+    async fn systems_scenes_create_render_and_persist_posters() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let registry = VisualRegistry::new(
+            storage.database().clone(),
+            EventJournal::new(storage.database().clone()),
+            ContentStore::new(storage.content_root()),
+        );
+        let static_source = r#"{"version":1,"theme":"technical-dark","canvas":{"width":500,"height":240},"nodes":[{"id":"a","x":20,"y":80,"width":120,"height":50,"label":"Source"},{"id":"b","x":350,"y":80,"width":120,"height":50,"label":"Target"}],"edges":[{"from":"a","to":"b","label":"evidence"}]}"#;
+        let (static_visual, _) = registry
+            .create(VisualCreateRequest {
+                template_id: systems::STATIC_TEMPLATE_ID.into(),
+                title: Some("Map".into()),
+                bindings: Some(json!({})),
+                id: Some("vis_systems_static".into()),
+                status: None,
+                renderer_kind: None,
+                session_id: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: None,
+                source_model: None,
+                content: Some(static_source.into()),
+                metadata: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(static_visual.renderer_kind, RendererKind::Systems);
+        assert_eq!(static_visual.metadata["renderStatus"], "ready");
+        assert!(static_visual.preview_digest.is_some());
+        let poster = registry
+            .visual_rendition(static_visual.id, Some("svg".into()), None, None)
+            .await
+            .unwrap();
+        assert_eq!(poster.theme.as_deref(), Some("dark"));
+        let svg = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(poster.base64)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(svg.contains("Source") && svg.contains("evidence"));
+
+        let dynamic_source = r#"{"version":1,"canvas":{"width":500,"height":240},"nodes":[{"id":"a","x":20,"y":80,"width":120,"height":50,"label":"Source"},{"id":"b","x":350,"y":80,"width":120,"height":50,"label":"Target","visible":false}],"durationMs":3000,"posterTimeMs":1500,"reducedMotion":"poster","beats":[{"id":"start","atMs":0,"caption":"Start"},{"id":"arrive","atMs":1000,"caption":"Arrive"}],"timeline":[{"atMs":1000,"durationMs":500,"easing":"ease-out","target":"b","changes":{"visible":true}}]}"#;
+        let (dynamic, _) = registry
+            .create(VisualCreateRequest {
+                template_id: systems::DYNAMIC_TEMPLATE_ID.into(),
+                title: Some("Explainer".into()),
+                bindings: Some(json!({})),
+                id: Some("vis_systems_dynamic".into()),
+                status: None,
+                renderer_kind: None,
+                session_id: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: None,
+                source_model: None,
+                content: Some(dynamic_source.into()),
+                metadata: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(dynamic.renderer_kind, RendererKind::SystemsDynamic);
+        assert_eq!(dynamic.metadata["durationMs"], 3000);
+        assert_eq!(dynamic.metadata["beatCount"], 2);
+        let source = registry.visual_source(dynamic.id).await.unwrap();
+        assert_eq!(source.media_type, systems::MEDIA_TYPE_SOURCE);
     }
 }

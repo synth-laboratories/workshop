@@ -36,6 +36,7 @@ const ENTER_OPTIONS: Array<{ id: ActiveEnterAction; label: string; description: 
 	{ id: "steer", label: "Steer", description: "Enter steers the active turn when supported. ⌘Enter enqueues." }
 ];
 
+
 /** Named fonts presented instead of raw CSS stacks; values stay full stacks. */
 const CODE_FONT_CHOICES: Array<{ label: string; value: string }> = [
 	{ label: "System monospace", value: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" },
@@ -203,6 +204,7 @@ export function GeneralPreferencesSettings({ preferences, onPreferencesChange }:
 					/>
 				</SettingsRow>
 			</SettingsCard>
+
 
 			<SettingsCard title="Tool activity" testId="settings-tool-activity">
 				<SettingsRow label="Presentation">

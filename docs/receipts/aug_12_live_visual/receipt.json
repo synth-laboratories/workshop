@@ -1,0 +1,72 @@
+{
+  "schema": "synth.live-eval-acceptance-receipt.v1",
+  "created_at": "2026-08-12T23:59:00-04:00",
+  "scope": "containers-and-workshop",
+  "source_state": "dirty-wip",
+  "revisions": {
+    "workshop": "b087418a7c72c6ef3148d98cb4a6ac6a7a26490a",
+    "containers": "35f6bde60fb80aee065c9f32e6477de08a71ed8d"
+  },
+  "run": {
+    "rollout_id": "roll_normalized_live_20260812",
+    "stream_id": "stream:roll_normalized_live_20260812",
+    "task_instance_id": "seed:0",
+    "environment_ref": "env:craftax_gold",
+    "world_ref": "world:craftax_default@symbolic_survival",
+    "policy_ref": { "harness": "react", "config": "luna_med" },
+    "evaluation_plan_ref": "eval:craftax.env_sum",
+    "high_water": 467,
+    "closed": true,
+    "trace_digest": "sha256:27f61806d79f0f967547bd9c6739d8002dd2255faa1999d0dbf26fbccc051bee"
+  },
+  "visual": {
+    "template_id": "live.craftax.v1",
+    "durable_envelopes_observed": 469,
+    "semantic_rows": 22,
+    "policy_focus_rows": 5,
+    "semantic_replay_checkpoints": 25,
+    "png_frames": 13,
+    "frame_dimensions": [256, 256],
+    "policy_calls": 2,
+    "policy_partials": 330,
+    "full_interaction_present": {
+      "input": true,
+      "thinking": true,
+      "output_state": "tool_only",
+      "tool_calls": true
+    }
+  },
+  "cua": {
+    "source": "real sealed Containers rollout replayed through the reference SSE server",
+    "viewports": [
+      { "width": 1440, "client_width": 1440, "scroll_width": 1440, "overflow": false },
+      { "width": 1024, "client_width": 1024, "scroll_width": 1024, "overflow": false },
+      { "width": 768, "client_width": 768, "scroll_width": 768, "overflow": false },
+      { "width": 390, "client_width": 390, "scroll_width": 390, "overflow": false }
+    ],
+    "accessible_controls": 43,
+    "unnamed_controls": 0,
+    "status_role": "status"
+  },
+  "tests": {
+    "workshop_visual": { "passed": 59, "failed": 0 },
+    "workshop_rust": { "passed": 368, "failed": 0, "ignored_paid": 1 },
+    "containers": { "passed": 257, "failed": 0, "skipped_platform": 8 },
+    "renderer_typecheck": "passed",
+    "renderer_build": "passed",
+    "desktop_instance_contract": "passed"
+  },
+  "cost": {
+    "run_cost_usd": null,
+    "new_cost_usd_this_pass": 0,
+    "truth_state": "not_reconciled_in_this_replay_receipt"
+  },
+  "external_drills_not_claimed": [
+    "live destructive SSE disconnect and container kill transcript",
+    "paid duplicate-call proof",
+    "browser heap and long-task benchmark during sustained live delivery",
+    "formal axe and screen-reader run",
+    "parallel budget/cancellation/auth-rotation drills",
+    "fresh-workspace agent failure-injection run"
+  ]
+}

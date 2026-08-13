@@ -3,7 +3,10 @@ use crate::cloud::intern::{
     RuntimeKind, SyncCommandKind, SyncCommandRequest, SyncCreateRequest,
 };
 use crate::core_runtime::CoreRuntime;
-use crate::domain::{CommandReceiptInput, RunCreate, RunStatus, SessionCreate, SessionStatus};
+use crate::domain::{
+    CommandReceiptInput, InternMode, RunCreate, RunStatus, RuntimeTarget, SessionCreate,
+    SessionKind, SessionStatus,
+};
 use crate::storage::{EventSource, SessionRecord};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -15,7 +18,7 @@ use uuid::Uuid;
 // and create two sessions for the same remote runtime.
 static ASYNC_BINDING_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternBindingRequest {
     pub factory_id: Option<String>,
@@ -41,16 +44,17 @@ impl From<Option<InternBindingRequest>> for RuntimeBinding {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternTarget {
     pub kind: String,
     pub mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(type = specta_typescript::Unknown)]
     pub binding: Option<Value>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternSessionCreateRequest {
     pub target: InternTarget,
@@ -59,46 +63,51 @@ pub struct InternSessionCreateRequest {
     pub project_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternSessionSendRequest {
     pub session_id: String,
     pub body: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternSessionControlRequest {
     pub session_id: String,
     pub kind: String,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub payload: Map<String, Value>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternSessionWire {
     pub id: String,
     pub title: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub target: Value,
     pub project_id: Option<String>,
     pub remote_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub status: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub state_generation: Option<i64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub latest_cursor: i64,
     pub active_run_id: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub metadata: Value,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternSendResult {
     pub run_id: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternControlResult {
     pub accepted: bool,
@@ -111,7 +120,7 @@ pub async fn list(core: &CoreRuntime) -> Result<Vec<InternSessionWire>> {
         .list(2_000)
         .await?
         .into_iter()
-        .filter(|session| session.target_json.get("kind").and_then(Value::as_str) == Some("intern"))
+        .filter(|session| session.kind == SessionKind::Intern.as_str())
         .map(Into::into)
         .collect())
 }
@@ -152,12 +161,21 @@ pub async fn create(
             "Background Intern".into()
         }
     });
-    let target = serde_json::to_value(&request.target)?;
+    let target = RuntimeTarget::InternRuntime {
+        mode: InternMode::parse(&request.target.mode).context("invalid Intern mode")?,
+        binding: Some(crate::domain::InternBinding {
+            factory_id: binding_request.factory_id.clone(),
+            project_id: binding_request.project_id.clone(),
+            effort_id: binding_request.effort_id.clone(),
+            run_id: binding_request.run_id.clone(),
+        }),
+    };
     let created = core
         .sessions()
         .create_or_update(SessionCreate {
             id: session_id.clone(),
             title: title.clone(),
+            kind: SessionKind::Intern,
             target: target.clone(),
             project_id: request.project_id,
             remote_id: None,
@@ -221,6 +239,7 @@ pub async fn create(
         .create_or_update(SessionCreate {
             id: created.value.id,
             title: title.clone(),
+            kind: SessionKind::Intern,
             target,
             project_id: created.value.project_id,
             remote_id: Some(runtime_id.clone()),
@@ -265,13 +284,8 @@ async fn existing_async_binding(core: &CoreRuntime) -> Result<Option<SessionReco
                     .get("internTransport")
                     .and_then(Value::as_str)
                     != Some("demo")
-                && session.target_json.get("kind").and_then(Value::as_str) == Some("intern")
-                && (session.target_json.get("mode").and_then(Value::as_str) == Some("async")
-                    || session
-                        .target_json
-                        .pointer("/intern/runtimeKind")
-                        .and_then(Value::as_str)
-                        == Some("async"))
+                && session.kind == SessionKind::Intern.as_str()
+                && session.target.intern_mode() == Some(InternMode::Async)
         }))
 }
 
@@ -558,13 +572,10 @@ async fn finish_command(
 
 fn intern_identity(session: &SessionRecord) -> Result<(&str, String)> {
     let mode = session
-        .target_json
-        .get("mode")
-        .and_then(Value::as_str)
-        .context("Intern session mode is missing")?;
-    if !matches!(mode, "sync" | "async") {
-        bail!("invalid Intern session mode");
-    }
+        .target
+        .intern_mode()
+        .context("Intern session mode is missing")?
+        .as_str();
     let remote = session
         .remote_id
         .clone()
@@ -574,16 +585,15 @@ fn intern_identity(session: &SessionRecord) -> Result<(&str, String)> {
 
 impl From<SessionRecord> for InternSessionWire {
     fn from(value: SessionRecord) -> Self {
-        let status = match value.status.as_str() {
-            "interrupted" => "paused",
-            "closed" => "completed",
-            other => other,
-        }
-        .to_owned();
+        let status = match SessionStatus::parse(&value.status).unwrap_or(SessionStatus::Ready) {
+            SessionStatus::Interrupted => "paused".to_owned(),
+            SessionStatus::Closed => "completed".to_owned(),
+            other => other.as_str().to_owned(),
+        };
         Self {
             id: value.id,
             title: value.title,
-            target: value.target_json,
+            target: value.target.to_json_value(),
             project_id: value.project_id,
             remote_id: value.remote_id,
             created_at: value.created_at,
@@ -883,7 +893,11 @@ mod tests {
             .create_or_update(SessionCreate {
                 id: "legacy-demo-async".into(),
                 title: "Async Intern".into(),
-                target: json!({"kind":"intern","mode":"async"}),
+                kind: SessionKind::Intern,
+                target: RuntimeTarget::InternRuntime {
+                    mode: InternMode::Async,
+                    binding: None,
+                },
                 project_id: None,
                 remote_id: Some("demo-async-org-singleton".into()),
                 codex_thread_id: None,

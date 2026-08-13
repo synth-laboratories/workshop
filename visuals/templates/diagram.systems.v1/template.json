@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "diagram.systems.v1",
+  "title": "2D systems map",
+  "genre": "diagram",
+  "version": "1.0.0",
+  "description": "An explicitly positioned, bounded JSON systems scene rendered deterministically to SVG.",
+  "accent": "#7C3AED",
+  "rendererKind": "systems",
+  "tags": ["diagram", "systems", "2d", "architecture"],
+  "slots": []
+}

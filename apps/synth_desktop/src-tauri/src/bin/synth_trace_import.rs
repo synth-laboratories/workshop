@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
         .map(|value| value.to_string_lossy().into_owned());
     let runtime = CoreRuntime::open_default().context("open Synth Desktop store")?;
     let (result, _) = runtime
-        .inventory()
+        .data()
         .ingest_trace_bundle(TraceBundleIngestRequest {
             source_path: source.display().to_string(),
             source_kind: Some("desktop_cli".into()),

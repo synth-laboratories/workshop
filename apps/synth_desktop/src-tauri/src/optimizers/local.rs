@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn imports_real_craftax_sft_smoke_when_present() {
         let path = PathBuf::from(
-            "/Users/joshuapurtell/Documents/GitHub/optimizers-beta/.out/sft_craftax_smokes/sft_craftax_ws_verify1",
+            "/Users/joshuapurtell/Documents/GitHub/optimizers-beta-sft/.out/sft_craftax_smokes/sft_craftax_ws_verify1",
         );
         if !path.join("artifacts/events.optimizer.jsonl").is_file() {
             return;
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn imports_real_craftax_gelo_completed_when_present() {
         let path = PathBuf::from(
-            "/Users/joshuapurtell/Documents/GitHub/optimizers-beta/.out/craftax_gelo_cli_runs/craftax_gelo_cli6",
+            "/Users/joshuapurtell/Documents/GitHub/optimizers-beta-sft/.out/craftax_gelo_cli_runs/craftax_gelo_cli6",
         );
         if !path.join("artifacts/events.optimizer.jsonl").is_file() {
             return;
@@ -290,7 +290,7 @@ mod tests {
     #[test]
     fn imports_real_craftax_gepa_smoke_when_present() {
         let path = PathBuf::from(
-            "/Users/joshuapurtell/Documents/GitHub/optimizers-beta/.out/gepa_craftax_smokes/gepa_craftax_ws_verify1",
+            "/Users/joshuapurtell/Documents/GitHub/optimizers-g1/.out/gepa_craftax_smokes/gepa_craftax_ws_verify1",
         );
         if !path.join("artifacts/events.optimizer.jsonl").is_file() {
             return;
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn imports_real_craftax_gelo_partial_when_present() {
         let path = PathBuf::from(
-            "/Users/joshuapurtell/Documents/GitHub/optimizers-beta/.out/local_service_runs/goex_76e77cabf1f94abca8c305f7430e2934/.out/local_service_runs/goex_76e77cabf1f94abca8c305f7430e2934/runs/goex_76e77cabf1f94abca8c305f7430e2934",
+            "/Users/joshuapurtell/Documents/GitHub/optimizers-beta-sft/.out/local_service_runs/goex_76e77cabf1f94abca8c305f7430e2934/.out/local_service_runs/goex_76e77cabf1f94abca8c305f7430e2934/runs/goex_76e77cabf1f94abca8c305f7430e2934",
         );
         if !path.join("artifacts/events.optimizer.jsonl").is_file() {
             return;

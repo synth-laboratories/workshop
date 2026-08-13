@@ -20,10 +20,23 @@ test("visuals package exposes the registered templates", () => {
     "annotation.overlay.v1",
     "model.compare.v1",
     "live.eval_stream.v1",
-    "live.dock_harbor.v1",
+    "live.harbor_eval.v1",
     "live.intern_acceptance.v1",
     "trace.rollout_inspector.v1",
     "live.container_rollouts.v1",
+    "live.craftax.v1",
+    "live.digbench.v1",
+    "optimizer.run.v1",
+    "optimizer.gepa.live.v1",
+    "optimizer.gepa.frontier.v1",
+    "optimizer.gepa.candidate.v1",
+    "optimizer.gepa.evaluations.v1",
+    "optimizer.sft.live.v1",
+    "optimizer.sft.checkpoints.v1",
+    "optimizer.sft.rollouts.v1",
+    "optimizer.sft.examples.v1",
+    "optimizer.sft.dataset.v1",
+    "optimizer.sft.lineage.v1",
   ]) {
     assert.ok(ids.includes(id), `missing ${id}`);
     const meta = JSON.parse(
@@ -32,6 +45,42 @@ test("visuals package exposes the registered templates", () => {
     assert.equal(meta.id, id);
     assert.equal(meta.schemaVersion, "synth.visual-template.v1");
     assert.ok(existsSync(join(templatesDir, id, "shell.tsx")));
+    if (
+      id === "live.harbor_eval.v1" ||
+      id === "live.container_rollouts.v1" ||
+      id === "live.eval_stream.v1" ||
+      id === "live.craftax.v1" ||
+      id === "live.digbench.v1"
+    ) {
+      assert.deepEqual(meta.slots.map((slot) => slot.name), ["stream"]);
+    }
+    if (id.startsWith("optimizer.")) {
+      const slotNames = meta.slots.map((slot) => slot.name);
+      assert.deepEqual(slotNames, ["optimizer_run"]);
+      assert.ok(!slotNames.includes("live"), `${id} must not bind slot live`);
+      assert.ok(!slotNames.includes("jobs"), `${id} must not bind slot jobs`);
+      assert.ok(!slotNames.includes("stream"), `${id} must not invent a second stream slot`);
+    }
+  }
+  const mermaid = JSON.parse(
+    readFileSync(join(templatesDir, "diagram.mermaid.v1", "template.json"), "utf8"),
+  );
+  assert.equal(mermaid.id, "diagram.mermaid.v1");
+  assert.equal(mermaid.genre, "diagram");
+  assert.equal(mermaid.rendererKind, "mermaid");
+  assert.equal(mermaid.slots.length, 0);
+  assert.ok(!existsSync(join(templatesDir, "diagram.mermaid.v1", "shell.tsx")));
+  assert.ok(!existsSync(join(templatesDir, "diagram.mermaid.v1", "examples")));
+  for (const [id, rendererKind] of [
+    ["diagram.systems.v1", "systems"],
+    ["diagram.systems.dynamic.v1", "systems-dynamic"],
+  ]) {
+    const meta = JSON.parse(readFileSync(join(templatesDir, id, "template.json"), "utf8"));
+    assert.equal(meta.id, id);
+    assert.equal(meta.genre, "diagram");
+    assert.equal(meta.rendererKind, rendererKind);
+    assert.deepEqual(meta.slots, []);
+    assert.ok(!existsSync(join(templatesDir, id, "shell.tsx")));
   }
 });
 
@@ -68,9 +117,11 @@ test("MCP tools schema lists agent entrypoints", () => {
     "visual_list_templates",
     "visual_create_from_template",
     "visual_bind_data_source",
-    "visual_save_tsx",
     "visual_open_in_pane",
     "visual_stream_live_eval",
+	"visual_authoring_context",
+	"visual_review",
+	"visual_mark_ready",
   ]) {
     assert.ok(names.includes(required), required);
   }

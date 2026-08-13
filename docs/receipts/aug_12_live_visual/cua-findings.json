@@ -1,0 +1,18 @@
+{
+  "schema": "synth.cua-findings.v1",
+  "fixed": [
+    "raw policy token deltas rendered as hundreds of indistinguishable rows",
+    "long rollout IDs overlapped adjacent cards and the policy panel",
+    "trace header controls collided with its title on narrow layouts",
+    "long trace sequence identities overflowed into adjacent rows",
+    "reference replay ingested and rerendered unrelated campaigns before filtering",
+    "main replay slider exposed transport deltas instead of semantic moments",
+    "tool-only responses appeared to have lost output",
+    "reference controls relied on implicit labels that the CUA accessibility audit did not expose"
+  ],
+  "remaining_external": [
+    "screenshots must be captured into the release receipt from the signed Workshop app",
+    "formal assistive-technology audit",
+    "100000-envelope renderer memory and virtualization profile"
+  ]
+}

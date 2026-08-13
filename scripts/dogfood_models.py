@@ -140,7 +140,7 @@ def main() -> int:
         f"{base}/v1/visuals/simulate-live",
         method="POST",
         token=token,
-        body={"kind": "dock"},
+        body={"kind": "harbor"},
     )
     results["live_visual"] = "PASS" if live.get("visual", {}).get("id") else "FAIL"
     print(f"[dogfood] live_visual → {results['live_visual']}")

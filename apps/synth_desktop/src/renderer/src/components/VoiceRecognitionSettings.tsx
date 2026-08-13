@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { WhisperDownloadProgress, WhisperModelHit } from "../env";
+import type { WhisperDownloadProgress, WhisperModelHit } from "../bridge";
+import { bridges } from "../runtime/desktopBridge";
 
 function formatBytes(bytes: number): string {
 	if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -9,7 +10,7 @@ function formatBytes(bytes: number): string {
 
 const DEFAULT_MODELS_ROOT = "~/.synth/whisper-models";
 
-/** Static fallback catalog shown until `window.synthWhisper.listModels()` reports real hits. */
+/** Static fallback catalog shown until `bridges.whisper.listModels()` reports real hits. */
 const STATIC_CATALOG: WhisperModelHit[] = [
 	{
 		id: "tiny",
@@ -63,7 +64,7 @@ export function VoiceRecognitionSettings() {
 	const refresh = useCallback(async () => {
 		setError(null);
 		try {
-			const listed = (await window.synthWhisper?.listModels()) ?? [];
+			const listed = (await bridges.whisper?.listModels()) ?? [];
 			setHits(listed);
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
@@ -76,7 +77,7 @@ export function VoiceRecognitionSettings() {
 		void refresh();
 	}, [refresh]);
 
-	useEffect(() => window.synthWhisper?.onDownloadProgress?.((progress) => {
+	useEffect(() => bridges.whisper?.onDownloadProgress?.((progress) => {
 		setDownloadProgress(progress);
 	}) ?? undefined, []);
 
@@ -90,7 +91,7 @@ export function VoiceRecognitionSettings() {
 			setDownloadProgress({ id, phase: "preparing", detail: "Preparing the private Whisper runtime…" });
 			setError(null);
 			try {
-				await window.synthWhisper?.downloadModel(id);
+				await bridges.whisper?.downloadModel(id);
 				await refresh();
 			} catch (reason) {
 				setError(reason instanceof Error ? reason.message : String(reason));
@@ -107,7 +108,7 @@ export function VoiceRecognitionSettings() {
 			setBusyId(id);
 			setError(null);
 			try {
-				await window.synthWhisper?.clearModel(id);
+				await bridges.whisper?.clearModel(id);
 				await refresh();
 			} catch (reason) {
 				setError(reason instanceof Error ? reason.message : String(reason));
@@ -123,7 +124,7 @@ export function VoiceRecognitionSettings() {
 			setBusyId(id);
 			setError(null);
 			try {
-				await window.synthWhisper?.setSelected(id);
+				await bridges.whisper?.setSelected(id);
 				await refresh();
 			} catch (reason) {
 				setError(reason instanceof Error ? reason.message : String(reason));

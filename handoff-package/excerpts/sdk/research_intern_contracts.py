@@ -350,7 +350,7 @@ class InternSyncSessionCreateRequest(_StrictContract):
     execution_mode: Literal["fast", "standard", "deep"] = "standard"
     objective_bounds: dict[str, Any] | None = None
     # Matches backend SyncSessionCreateRequest: True when an operator is present.
-    # Unattended Dock / CI must set False or write gates stall forever.
+    # Unattended eval / CI must set False or write gates stall forever.
     require_operator_approval: bool = True
 
 

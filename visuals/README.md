@@ -1,6 +1,6 @@
 # @synth/visuals
 
-First-class **deep visuals** for Synth Desktop. Coding agents form blog-quality eval visuals (Craftax-class, PostTrainBench rollout viewer, reward / annotation / model compare) into the Desktop visual pane, save them as TSX, and stream live dock / harbor / intern acceptance results into dedicated templates.
+First-class **deep visuals** for Synth Desktop. Coding agents form blog-quality eval visuals (Craftax-class, PostTrainBench rollout viewer, reward / annotation / model compare) into the Desktop visual pane, save them as TSX, and stream live Harbor / eval / intern acceptance results into dedicated templates.
 
 Colocated under `workshop/visuals/` (not cookbooks yet). Accent: Synth orange `#F05F22` / `#FF5C00`. Light chrome compatible with Poolside-like Desktop.
 
@@ -34,7 +34,7 @@ Desktop talks to templates through `@synth/visuals` exports only — no Next.js,
 3. Bind slots: `visual_bind_data_source` (`fixture` for demos; `trace_v5` / `local_cas` / `live_sse` in product).
 4. Persist: `visual_save_tsx` writes a thin shell wrapper under `instances/`.
 5. Show: `visual_open_in_pane`.
-6. Live: `visual_stream_live_eval` for `live.eval_stream.v1` · `live.dock_harbor.v1` · `live.intern_acceptance.v1`.
+6. Live: `visual_stream_live_eval` for `live.eval_stream.v1` · `live.harbor_eval.v1` · `live.intern_acceptance.v1`.
 
 See [`mcp/server.md`](./mcp/server.md) and [`mcp/tools.json`](./mcp/tools.json).
 
@@ -91,9 +91,19 @@ or
 | `annotation.overlay.v1` | Markers on sealed Trace V5 (overlay only) |
 | `model.compare.v1` | Multi-model table + sparklines |
 | `live.eval_stream.v1` | Live eval / acceptance event stream |
-| `live.dock_harbor.v1` | Dock/harbor job status + rollout stream |
+| `live.harbor_eval.v1` | Harbor job status + rollout stream |
 | `live.intern_acceptance.v1` | Intern sync/async acceptance cell stream |
-| `optimizer.run.v1` | Shared optimizer chrome + GEPA/GELO/SFT overlays |
+| `optimizer.run.v1` | Shared optimizer chrome + GEPA/GELO/SFT overlays (fallback) |
+| `optimizer.gepa.live.v1` | GEPA search / lineage / budget (`optimizer_event.v1`; no env frames) |
+| `optimizer.gepa.frontier.v1` | Pareto / incumbent slices (no merged Luna-vs-Sol overlay) |
+| `optimizer.gepa.candidate.v1` | Candidate lineage and prompt diff |
+| `optimizer.gepa.evaluations.v1` | Child `resource-ref` → Containers stream id + `/reward` |
+| `optimizer.sft.live.v1` | SFT curves, job status, live campaigns (aligned records) |
+| `optimizer.sft.checkpoints.v1` | Checkpoint rail; promotion ≠ ready |
+| `optimizer.sft.rollouts.v1` | Campaign child rollout refs |
+| `optimizer.sft.examples.v1` | Paired baseline vs checkpoint |
+| `optimizer.sft.dataset.v1` | Split roles and `dataset_digest` |
+| `optimizer.sft.lineage.v1` | Base → adapter → deployable |
 
 Each template directory contains `template.json`, `shell.tsx`, `examples/`, `README.md` (plus `components/` when needed).
 

@@ -532,8 +532,23 @@ export function ChatTranscript({
 	const containerIds = outputContainerIds(chat);
 	const hasResources = containerIds.length > 0 || artifacts.length > 0;
 	const activeLines = activityByMessageId.__active__ ?? [];
+	// A pending approval is a turn-level blocking condition, not ordinary
+	// message activity. Message-id rotation and replay ordering can attach it to
+	// a historical/user key that is not rendered as assistant activity. Pin all
+	// unresolved approvals at the live tail so a turn can never look like an
+	// inert "Working…" state while it is actually waiting for the operator.
+	const pendingApprovals = useMemo(() => {
+		if (!running) return [];
+		const byId = new Map<string, LocalActivityLine>();
+		for (const line of Object.values(activityByMessageId).flat()) {
+			if (line.kind === "approval" && line.approvalId) byId.set(line.approvalId, line);
+		}
+		return [...byId.values()];
+	}, [activityByMessageId, running]);
+	const withoutPendingApproval = (line: LocalActivityLine) =>
+		!(line.kind === "approval" && line.approvalId);
 	const presentedActive = useMemo(
-		() => presentActivityLines(activeLines, activityMode, { running, expandedGroupIds }),
+		() => presentActivityLines(activeLines.filter(withoutPendingApproval), activityMode, { running, expandedGroupIds }),
 		[activeLines, activityMode, running, expandedGroupIds]
 	);
 	const transcriptContentKey = useMemo(() => [
@@ -701,11 +716,11 @@ export function ChatTranscript({
 							? openArtifactId === primaryArtifact.id
 							: false;
 						const messageActivity = activityByMessageId[m.id] ?? [];
-						const presented = presentActivityLines(messageActivity.filter((line) => line.placement !== "after"), activityMode, {
+						const presented = presentActivityLines(messageActivity.filter((line) => line.placement !== "after" && withoutPendingApproval(line)), activityMode, {
 							running: false,
 							expandedGroupIds
 						});
-						const presentedAfter = presentActivityLines(messageActivity.filter((line) => line.placement === "after"), activityMode, {
+						const presentedAfter = presentActivityLines(messageActivity.filter((line) => line.placement === "after" && withoutPendingApproval(line)), activityMode, {
 							running: false,
 							expandedGroupIds
 						});
@@ -735,6 +750,7 @@ export function ChatTranscript({
 						);
 						})}
 						{renderPresented(presentedActive, [], false, running)}
+						{pendingApprovals.map((line) => renderActivityLine(line, [], false, false))}
 						{running ? (
 							<div className="model-working" role="status" aria-live="polite" data-testid="model-working">
 								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>

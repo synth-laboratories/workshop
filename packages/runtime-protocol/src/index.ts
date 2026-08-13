@@ -3,20 +3,31 @@ export const APP_EVENT_SCHEMA_VERSION = "synth.desktop-app-event.v1" as const;
 export const VISUAL_SCHEMA_VERSION = "synth.desktop-visual.v1" as const;
 export const RUNTIME_EVENT_SCHEMA_VERSION = "synth.desktop-runtime-event.v1" as const;
 
-export type LocalExecutionTarget = {
+/** On-device Laguna (MLX). Maps to Rust `RuntimeTarget::LocalRuntime`. */
+export type LocalRuntimeTarget = {
   kind: "local";
   model: "laguna-xs-2.1";
   adapter: string | null;
 };
 
-export type RemoteExecutionTarget = {
+/** OpenRouter-hosted models. Maps to Rust `RuntimeTarget::RemoteRuntime`. */
+export type RemoteRuntimeTarget = {
   kind: "remote";
-  provider: "openrouter" | "synth-cloud";
+  /** Present on wire for renderer compatibility; always openrouter when set. */
+  provider?: "openrouter" | "openai-codex-oauth";
   model: string;
   adapter: string | null;
 };
 
-export type InternExecutionTarget = {
+/** Synth gateway. Maps to Rust `RuntimeTarget::CloudRuntime`. */
+export type CloudRuntimeTarget = {
+  kind: "cloud";
+  model: string;
+  adapter: string | null;
+};
+
+/** Synth Intern sync|async. Maps to Rust `RuntimeTarget::InternRuntime`. */
+export type InternRuntimeTarget = {
   kind: "intern";
   mode: "sync" | "async";
   binding?: {
@@ -27,10 +38,54 @@ export type InternExecutionTarget = {
   };
 };
 
-export type ExecutionTarget =
-  | LocalExecutionTarget
-  | RemoteExecutionTarget
-  | InternExecutionTarget;
+/**
+ * Where a session runs inference / agent substrate.
+ * Distinct from SessionKind (Codex | Intern — Wave 1).
+ */
+export type RuntimeTarget =
+  | LocalRuntimeTarget
+  | RemoteRuntimeTarget
+  | CloudRuntimeTarget
+  | InternRuntimeTarget;
+
+/** @deprecated Historical synonym — prefer {@link RuntimeTarget}. */
+export type ExecutionTarget = RuntimeTarget;
+/** @deprecated Prefer {@link LocalRuntimeTarget}. */
+export type LocalExecutionTarget = LocalRuntimeTarget;
+/**
+ * @deprecated Prefer {@link RemoteRuntimeTarget} or {@link CloudRuntimeTarget}.
+ * Legacy payloads used `provider: "synth-cloud"` under `kind: "remote"`.
+ */
+export type RemoteExecutionTarget = {
+  kind: "remote";
+  provider: "openrouter" | "synth-cloud" | "openai-codex-oauth";
+  model: string;
+  adapter: string | null;
+};
+/** @deprecated Prefer {@link InternRuntimeTarget}. */
+export type InternExecutionTarget = InternRuntimeTarget;
+
+/** Accept legacy remote+synth-cloud bags and emit canonical RuntimeTarget. */
+export function normalizeRuntimeTarget(
+  target: RuntimeTarget | RemoteExecutionTarget
+): RuntimeTarget {
+  if (target.kind === "remote" && target.provider === "synth-cloud") {
+    return {
+      kind: "cloud",
+      model: target.model,
+      adapter: target.adapter
+    };
+  }
+  if (target.kind === "remote") {
+    return {
+      kind: "remote",
+      provider: "openrouter",
+      model: target.model,
+      adapter: target.adapter
+    };
+  }
+  return target;
+}
 
 export type SessionStatus =
   | "created"
@@ -56,7 +111,7 @@ export type RunStatus =
 export type Session = {
   id: string;
   title: string;
-  target: ExecutionTarget;
+  target: RuntimeTarget;
   projectId?: string | null;
   remoteId?: string | null;
   createdAt: string;
@@ -125,6 +180,14 @@ export type EventSource =
   | "visual";
 
 /**
+ * Who produced a boundary event (Wave 2).
+ * Matches Rust `contract::events::EventOrigin` — Provider (codex/app-server)
+ * vs Desktop (synthetic session/approval/health). Live Codex notifications
+ * share the single origin-tagged `runtime:event` channel.
+ */
+export type EventOrigin = "provider" | "desktop";
+
+/**
  * Unified durable journal event owned by the Rust CoreRuntime.
  * React projections and MCP must reconcile against committed AppEvents.
  */
@@ -155,7 +218,7 @@ export type AppEventPage = {
 };
 
 export type VisualStatus = "draft" | "live" | "saved" | "failed" | "archived";
-export type RendererKind = "template" | "tsx" | "html";
+export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic";
 export type VisualBindingKind = "inline" | "trace_v5" | "local_cas" | "run_ref" | "live_sse" | "fixture" | "optimizer_run";
 export type VisualBinding = {
   slot: string;
@@ -535,22 +598,24 @@ export type SemanticUiSnapshot = {
   }>;
 };
 
-export function targetLabel(target: ExecutionTarget): string {
+export function targetLabel(target: RuntimeTarget): string {
   if (target.kind === "local") {
     return target.adapter ? `Laguna XS 2.1 · ${target.adapter}` : "Laguna XS 2.1";
   }
+  if (target.kind === "cloud") {
+    const short = target.model.split("/").pop() ?? target.model;
+    return `Synth Cloud · ${short}`;
+  }
   if (target.kind === "remote") {
     const short = target.model.split("/").pop() ?? target.model;
-    return target.provider === "synth-cloud"
-      ? `Synth Cloud · ${short}`
-      : `OpenRouter · ${short}`;
+    return `OpenRouter · ${short}`;
   }
   return target.mode === "sync" ? "Intern · Live" : "Intern · Background";
 }
 
-export function targetMode(target: ExecutionTarget): Run["mode"] {
+export function targetMode(target: RuntimeTarget): Run["mode"] {
   if (target.kind === "local") return "local";
-  if (target.kind === "remote") return "remote";
+  if (target.kind === "remote" || target.kind === "cloud") return "remote";
   return target.mode;
 }
 

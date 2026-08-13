@@ -17,7 +17,7 @@ pub struct RuntimeBinding {
     pub run_id: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionMode {
     Fast,
@@ -307,25 +307,28 @@ impl AsyncCommandRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeKind {
     Sync,
     Async,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 pub struct CommandReceipt {
     pub schema_version: String,
     pub command_id: String,
     pub runtime_kind: RuntimeKind,
     pub runtime_id: String,
     pub status: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub previous_generation: u64,
+    #[specta(type = specta_typescript::Unknown)]
     pub state_generation: u64,
     pub decision_code: String,
     pub created_at: String,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub actuation: Option<Value>,
     #[serde(default)]
     pub duplicate: bool,

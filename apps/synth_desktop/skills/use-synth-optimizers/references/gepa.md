@@ -6,7 +6,7 @@ Use GEPA for prompt/candidate optimization with rollout-based evaluation.
 
 Recipe: `gepa.banking77.smoke.v1`.
 
-Before starting, report the catalog values. The current recipe fixes 4 train rows, 2 held-out rows, one generation, one proposal, at most 8 rollouts, and a $0.25 hard ceiling. It requires the Banking77 cookbook and `OPENAI_API_KEY` in the trusted Desktop environment.
+Before starting, report the catalog values. The current recipe fixes 50 train rows, 20-example minibatches, 50 held-out rows per terminal candidate, one generation, and one proposal. It allows at most 240 rollouts and a $2.45 hard ceiling per proposer so GEPA can compare the seed and a distinct winner on heldout. It requires the Banking77 cookbook and the trusted Desktop OpenAI credential.
 
 After explicit approval:
 

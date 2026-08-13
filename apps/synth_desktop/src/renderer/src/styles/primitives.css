@@ -1,0 +1,841 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Workshop primitives — the shared component layer.
+
+   Every list, card, toolbar, badge, and button in the product should come from
+   here. Pages compose these; pages do not restyle them. If a page needs a
+   variant, add a modifier here so the next page inherits it.
+
+   Consumes tokens.css only. No literal colors, no literal sizes.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* ── Page frame ───────────────────────────────────────────────────────────
+   A page is a single vertical rhythm inside a bounded content column. The
+   column is what keeps a row's action button next to its content instead of
+   pinned to the far edge of a 2000px window.                              */
+
+.ws-page {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	gap: var(--sp-6);
+	padding: var(--sp-6) var(--sp-6) var(--sp-8);
+	overflow: auto;
+	background: var(--surface-page);
+}
+
+.ws-page > * {
+	width: 100%;
+	max-width: var(--measure-page);
+}
+
+.ws-page-head {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--sp-4);
+}
+
+.ws-page-head-text {
+	min-width: 0;
+	display: grid;
+	gap: var(--sp-1);
+}
+
+.ws-title {
+	margin: 0;
+	font-size: var(--fs-h1);
+	font-weight: var(--fw-semi);
+	letter-spacing: var(--tracking-tight);
+	line-height: var(--lh-tight);
+}
+
+.ws-lede {
+	margin: 0;
+	max-width: var(--measure-lede);
+	color: var(--color-text-muted);
+	font-size: var(--fs-body);
+	line-height: var(--lh-body);
+}
+
+.ws-page-head-actions {
+	margin-left: auto;
+	display: flex;
+	align-items: center;
+	gap: var(--sp-2);
+}
+
+/* Section heading inside a page. */
+.ws-section-head {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: var(--sp-3);
+}
+
+.ws-section-title {
+	margin: 0;
+	font-size: var(--fs-title);
+	font-weight: var(--fw-semi);
+	letter-spacing: var(--tracking-tight);
+}
+
+/* Eyebrow: short, uppercase, one per group. Not once per row. */
+.ws-eyebrow {
+	font-size: var(--fs-micro);
+	font-weight: var(--fw-semi);
+	letter-spacing: var(--tracking-eyebrow);
+	text-transform: uppercase;
+	color: var(--color-text-faint);
+}
+
+/* ── Stack ────────────────────────────────────────────────────────────── */
+
+.ws-stack {
+	display: flex;
+	flex-direction: column;
+	gap: var(--sp-3);
+	min-width: 0;
+}
+
+.ws-stack-tight { gap: var(--sp-2); }
+.ws-stack-loose { gap: var(--sp-5); }
+
+/* ── Card ─────────────────────────────────────────────────────────────────
+   A card is for a small number of distinct objects. A long homogeneous list
+   is NOT a set of cards — use .ws-list. Cards never nest and never carry a
+   drop shadow.                                                            */
+
+.ws-card {
+	display: flex;
+	flex-direction: column;
+	gap: var(--sp-2);
+	padding: var(--sp-4) var(--sp-5);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-md);
+	background: var(--surface-raised);
+}
+
+/* Card whose body sits left and whose single action sits right. */
+.ws-card-split {
+	flex-direction: row;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--sp-5);
+}
+
+.ws-card-split > .ws-card-body { flex: 1; min-width: 0; }
+.ws-card-split > .ws-card-aside { flex: 0 0 auto; display: flex; align-items: center; gap: var(--sp-2); }
+
+.ws-card-body {
+	display: grid;
+	gap: var(--sp-2);
+	min-width: 0;
+}
+
+.ws-card-title {
+	margin: 0;
+	font-size: var(--fs-strong);
+	font-weight: var(--fw-semi);
+	line-height: var(--lh-tight);
+}
+
+.ws-card-text {
+	margin: 0;
+	max-width: var(--measure-prose);
+	color: var(--color-text-muted);
+	font-size: var(--fs-meta);
+	line-height: var(--lh-body);
+}
+
+/* A group of cards that read as one set. */
+.ws-card-group {
+	display: flex;
+	flex-direction: column;
+	gap: var(--sp-3);
+}
+
+/* Compact facts that belong to a card or summary, not to a data table. */
+.ws-metrics {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+	gap: 1px;
+	min-width: min(330px, 100%);
+	overflow: hidden;
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-sm);
+	background: var(--border-subtle);
+}
+
+.ws-metric {
+	display: grid;
+	gap: var(--sp-1);
+	padding: var(--sp-3);
+	background: var(--surface-raised);
+}
+
+.ws-metric strong { font-size: var(--fs-title); line-height: var(--lh-tight); }
+.ws-metric span { color: var(--color-text-faint); font-size: var(--fs-micro); white-space: nowrap; }
+
+/* ── List ─────────────────────────────────────────────────────────────────
+   The default for any homogeneous collection. One container, hairline
+   dividers, no per-row border. This is the fix for "wall of identical
+   floating boxes".                                                        */
+
+.ws-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-md);
+	background: var(--surface-raised);
+	overflow: hidden;
+}
+
+.ws-list > li + li {
+	border-top: 1px solid var(--border-subtle);
+}
+
+.ws-item {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-4);
+	width: 100%;
+	box-sizing: border-box;
+	padding: var(--sp-4) var(--sp-5);
+	border: 0;
+	background: transparent;
+	text-align: left;
+	color: inherit;
+}
+
+.ws-item-button { cursor: pointer; }
+.ws-item-button:hover { background: var(--surface-hover); }
+
+.ws-item[aria-current="true"],
+.ws-item.is-selected {
+	background: var(--selected-bg);
+	box-shadow: inset 2px 0 var(--selected-edge);
+}
+
+.ws-item-main {
+	flex: 1;
+	min-width: 0;
+	display: grid;
+	/* Title and its metadata line need real separation, or the row reads as
+	   one dense block. This gap is what keeps a list from feeling cramped. */
+	gap: var(--sp-2);
+}
+
+.ws-item-title {
+	font-size: var(--fs-body);
+	font-weight: var(--fw-semi);
+	line-height: var(--lh-tight);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.ws-item-meta {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-3);
+	min-width: 0;
+	color: var(--color-text-muted);
+	font-size: var(--fs-meta);
+}
+
+.ws-item-meta > * {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Right-hand column: status and the row's own action, kept together. */
+.ws-item-aside {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: var(--sp-4);
+}
+
+.ws-item-aside-stack {
+	display: grid;
+	justify-items: end;
+	gap: var(--sp-1);
+}
+
+/* Header strip above a list — count, filters, secondary switches. */
+.ws-list-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--sp-3);
+	padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5);
+	border-bottom: 1px solid var(--border-subtle);
+	background: var(--surface-sunken);
+}
+
+.ws-list-head-label {
+	display: flex;
+	align-items: baseline;
+	gap: var(--sp-2);
+	font-size: var(--fs-meta);
+	color: var(--color-text-muted);
+}
+
+/* A list that lives inside a bordered shell (list-head + list). */
+.ws-panel {
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-md);
+	background: var(--surface-raised);
+	overflow: hidden;
+}
+
+.ws-panel > .ws-list {
+	border: 0;
+	border-radius: 0;
+}
+
+/* Table-like lists retain a header on roomy surfaces and collapse to the
+   identity/action columns when their own panel becomes narrow. */
+.ws-table-head,
+.ws-item-table {
+	display: grid;
+	grid-template-columns: minmax(190px, 2fr) minmax(120px, 1.25fr) minmax(110px, 1fr) minmax(100px, 130px) 108px;
+	gap: var(--sp-4);
+	align-items: center;
+}
+
+.ws-table-head {
+	padding: var(--sp-3) var(--sp-4);
+	border-bottom: 1px solid var(--border-subtle);
+	background: var(--surface-sunken);
+	color: var(--color-text-faint);
+	font-size: var(--fs-micro);
+	font-weight: var(--fw-semi);
+	letter-spacing: var(--tracking-eyebrow);
+	text-transform: uppercase;
+}
+
+.ws-panel-responsive { container-type: inline-size; }
+
+@container (max-width: 760px) {
+	.ws-panel-responsive .ws-table-head { display: none; }
+	.ws-panel-responsive .ws-item-table { grid-template-columns: minmax(0, 1fr) auto; }
+	.ws-panel-responsive .ws-item-table > .ws-table-optional { display: none; }
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────────
+   Emphasis is a budget: at most ONE primary per view. If three things look
+   equally urgent, none of them read as urgent.                            */
+
+.ws-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: var(--sp-2);
+	min-height: 34px;
+	padding: 0 var(--sp-4);
+	border: 1px solid transparent;
+	border-radius: var(--radius-xs);
+	background: transparent;
+	color: var(--color-text-muted);
+	font-size: var(--fs-meta);
+	font-weight: var(--fw-medium);
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.ws-btn:disabled {
+	opacity: 0.45;
+	cursor: default;
+}
+
+.ws-btn-primary {
+	border-color: var(--selected-edge);
+	background: var(--selected-edge);
+	color: var(--selected-contrast);
+	font-weight: var(--fw-semi);
+}
+
+.ws-btn-primary:hover:not(:disabled) {
+	filter: brightness(1.06);
+}
+
+.ws-btn-secondary {
+	border-color: var(--border-subtle);
+	background: var(--surface-raised);
+	color: var(--color-text);
+}
+
+.ws-btn-secondary:hover:not(:disabled) {
+	border-color: var(--border-strong);
+	background: var(--surface-hover);
+}
+
+.ws-btn-ghost:hover:not(:disabled) {
+	background: var(--surface-hover);
+	color: var(--color-text);
+}
+
+.ws-btn-danger {
+	border-color: var(--tone-danger-bg);
+	background: var(--tone-danger-bg);
+	color: var(--tone-danger-fg);
+}
+
+.ws-btn-small {
+	min-height: 28px;
+	padding: 0 var(--sp-3);
+	font-size: var(--fs-micro);
+}
+
+.ws-btn-row {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-2);
+	flex-wrap: wrap;
+}
+
+.ws-btn-row-end { justify-content: flex-end; }
+
+/* ── Badge ────────────────────────────────────────────────────────────────
+   Status lives here, never in a button label. A thing you cannot do is not
+   a button that says why — it is a disabled control plus a badge.         */
+
+.ws-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--sp-2);
+	padding: 3px var(--sp-3);
+	border-radius: var(--radius-pill);
+	background: var(--tone-neutral-bg);
+	color: var(--tone-neutral-fg);
+	font-size: var(--fs-micro);
+	font-weight: var(--fw-semi);
+	line-height: 1.5;
+	white-space: nowrap;
+}
+
+.ws-badge-info { background: var(--tone-info-bg); color: var(--tone-info-fg); }
+.ws-badge-running { background: var(--tone-running-bg); color: var(--tone-running-fg); }
+.ws-badge-success { background: var(--tone-success-bg); color: var(--tone-success-fg); }
+.ws-badge-warn { background: var(--tone-warn-bg); color: var(--tone-warn-fg); }
+.ws-badge-danger { background: var(--tone-danger-bg); color: var(--tone-danger-fg); }
+
+/* Square-ish tag for a taxonomy value (algorithm, source, kind). */
+.ws-tag {
+	display: inline-flex;
+	align-items: center;
+	padding: 3px var(--sp-2);
+	border-radius: var(--radius-xs);
+	background: var(--tone-neutral-bg);
+	color: var(--tone-neutral-fg);
+	font-size: var(--fs-micro);
+	font-weight: var(--fw-semi);
+	letter-spacing: 0.02em;
+}
+
+/* Status dot — always accompanied by a word. */
+.ws-dot {
+	display: inline-block;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--tone-neutral-fg);
+	flex: 0 0 auto;
+}
+
+.ws-dot-success { background: var(--tone-success-fg); }
+.ws-dot-running { background: var(--tone-running-fg); }
+.ws-dot-warn { background: var(--tone-warn-fg); }
+.ws-dot-danger { background: var(--tone-danger-fg); }
+
+/* ── Tabs ─────────────────────────────────────────────────────────────── */
+
+.ws-tabs {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-1);
+	border-bottom: 1px solid var(--border-subtle);
+}
+
+.ws-tab {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--sp-2);
+	min-height: 40px;
+	padding: 0 var(--sp-3);
+	margin-bottom: -1px;
+	border: 0;
+	border-bottom: 2px solid transparent;
+	background: transparent;
+	color: var(--color-text-muted);
+	font-size: var(--fs-body);
+	font-weight: var(--fw-medium);
+	cursor: pointer;
+}
+
+.ws-tab:hover { color: var(--color-text); }
+
+.ws-tab[aria-selected="true"] {
+	color: var(--color-text);
+	border-bottom-color: var(--selected-edge);
+	font-weight: var(--fw-semi);
+}
+
+.ws-tab-count {
+	font-size: var(--fs-micro);
+	font-weight: var(--fw-semi);
+	color: var(--color-text-faint);
+	font-variant-numeric: tabular-nums;
+}
+
+.ws-tab[aria-selected="true"] .ws-tab-count { color: var(--color-text-muted); }
+
+/* ── Toolbar ──────────────────────────────────────────────────────────────
+   Filters left, actions right, one row. If it wraps to a second line you
+   have too many actions — demote some to a menu.                          */
+
+.ws-toolbar {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-2);
+	min-width: 0;
+}
+
+.ws-toolbar-filters {
+	flex: 1;
+	display: flex;
+	align-items: center;
+	gap: var(--sp-2);
+	min-width: 0;
+}
+
+.ws-toolbar-actions {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: var(--sp-2);
+}
+
+.ws-toolbar-wrap {
+	flex-wrap: wrap;
+	align-items: flex-end;
+}
+
+.ws-toolbar-wrap .ws-toolbar-filters { flex-wrap: wrap; }
+
+.ws-search {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-2);
+	flex: 1;
+	min-width: 160px;
+	max-width: 320px;
+	height: 34px;
+	padding: 0 var(--sp-3);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-xs);
+	background: var(--surface-raised);
+	color: var(--color-text-faint);
+}
+
+.ws-search:focus-within {
+	border-color: var(--selected-edge);
+	box-shadow: 0 0 0 3px var(--selected-bg);
+}
+
+.ws-search input {
+	width: 100%;
+	min-width: 0;
+	padding: 0;
+	border: 0;
+	outline: 0;
+	background: transparent;
+	color: var(--color-text);
+	font-size: var(--fs-body);
+}
+
+.ws-select {
+	height: 34px;
+	max-width: 170px;
+	padding: 0 var(--sp-6) 0 var(--sp-3);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-xs);
+	background-color: var(--surface-raised);
+	color: var(--color-text-muted);
+	font-size: var(--fs-meta);
+}
+
+.ws-field {
+	display: grid;
+	gap: var(--sp-1);
+	color: var(--color-text-muted);
+	font-size: var(--fs-micro);
+	font-weight: var(--fw-semi);
+}
+
+.ws-input {
+	min-height: 34px;
+	min-width: 160px;
+	padding: 0 var(--sp-3);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-xs);
+	background: var(--surface-raised);
+	color: var(--color-text);
+	font-size: var(--fs-body);
+}
+
+.ws-input:focus {
+	outline: 3px solid var(--selected-bg);
+	border-color: var(--selected-edge);
+}
+
+.ws-form-row {
+	display: flex;
+	align-items: flex-end;
+	gap: var(--sp-2);
+	flex-wrap: wrap;
+	padding: var(--sp-3);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-sm);
+	background: var(--surface-sunken);
+}
+
+/* ── Key / value ──────────────────────────────────────────────────────────
+   Inspector detail rows. Label left, value right, hairline between.       */
+
+.ws-kv {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	margin: 0;
+	border-top: 1px solid var(--border-subtle);
+}
+
+.ws-kv dt,
+.ws-kv dd {
+	margin: 0;
+	padding: var(--sp-3) 0;
+	border-bottom: 1px solid var(--border-subtle);
+	font-size: var(--fs-meta);
+}
+
+.ws-kv dt { color: var(--color-text-faint); }
+
+.ws-kv dd {
+	text-align: right;
+	color: var(--color-text);
+	overflow-wrap: anywhere;
+}
+
+/* ── Note ─────────────────────────────────────────────────────────────────
+   The honest way to say "this is unavailable" or "this failed". Replaces
+   error text stuffed into a disabled button.                              */
+
+.ws-note {
+	display: grid;
+	gap: var(--sp-2);
+	padding: var(--sp-4);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-sm);
+	background: var(--surface-sunken);
+	color: var(--color-text-muted);
+	font-size: var(--fs-meta);
+	line-height: var(--lh-body);
+}
+
+.ws-note strong { color: var(--color-text); font-weight: var(--fw-semi); }
+
+.ws-note-warn {
+	border-color: var(--tone-warn-bg);
+	background: var(--tone-warn-bg);
+	color: var(--tone-warn-fg);
+}
+
+.ws-note-warn strong { color: var(--tone-warn-fg); }
+
+.ws-note-danger {
+	border-color: var(--tone-danger-bg);
+	background: var(--tone-danger-bg);
+	color: var(--tone-danger-fg);
+}
+
+.ws-note-danger strong { color: var(--tone-danger-fg); }
+
+.ws-note p { margin: 0; }
+.ws-note code,
+.ws-note pre { font-family: var(--code-font-family); font-size: var(--fs-micro); overflow-wrap: anywhere; }
+.ws-note pre { max-height: 150px; margin: var(--sp-2) 0 0; padding: var(--sp-2); overflow: auto; white-space: pre-wrap; background: var(--surface-raised); }
+.ws-note details summary { width: fit-content; cursor: pointer; font-weight: var(--fw-medium); }
+
+.ws-disclosure {
+	padding-top: var(--sp-4);
+	border-top: 1px solid var(--border-subtle);
+	color: var(--color-text-muted);
+}
+
+.ws-disclosure > summary { cursor: pointer; font-weight: var(--fw-semi); }
+.ws-disclosure > .ws-list { margin-top: var(--sp-3); }
+
+/* ── Empty state ──────────────────────────────────────────────────────── */
+
+.ws-empty {
+	display: grid;
+	justify-items: center;
+	align-content: center;
+	gap: var(--sp-2);
+	min-height: 200px;
+	padding: var(--sp-6);
+	text-align: center;
+}
+
+.ws-empty-title {
+	color: var(--color-text);
+	font-size: var(--fs-strong);
+	font-weight: var(--fw-semi);
+}
+
+.ws-empty p {
+	max-width: 38ch;
+	margin: 0;
+	color: var(--color-text-faint);
+	font-size: var(--fs-meta);
+	line-height: var(--lh-body);
+}
+
+/* ── Text utilities ───────────────────────────────────────────────────── */
+
+.ws-mono {
+	font-family: var(--code-font-family);
+	font-size: var(--fs-meta);
+	overflow-wrap: anywhere;
+}
+
+/* Counts, costs, durations, tokens — always aligned. */
+.ws-num { font-variant-numeric: tabular-nums; }
+
+.ws-muted { color: var(--color-text-muted); }
+.ws-faint { color: var(--color-text-faint); }
+
+.ws-truncate {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* ── Two-pane workbench ───────────────────────────────────────────────────
+   List on the left, inspector on the right, one border around both.      */
+
+.ws-workbench {
+	flex: 1;
+	min-height: 360px;
+	display: grid;
+	grid-template-columns: minmax(0, 1.3fr) minmax(340px, 0.8fr);
+	overflow: hidden;
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-md);
+	background: var(--surface-raised);
+}
+
+.ws-workbench > * { min-width: 0; }
+.ws-workbench > * + * { border-left: 1px solid var(--border-subtle); }
+
+.ws-workbench .ws-list {
+	border: 0;
+	border-radius: 0;
+	background: transparent;
+}
+
+.ws-inspector {
+	display: flex;
+	flex-direction: column;
+	gap: var(--sp-5);
+	padding: var(--sp-6);
+	overflow: auto;
+}
+
+/* The eyebrow / title / subtitle block at the top of an inspector. */
+.ws-inspector-head {
+	display: grid;
+	gap: var(--sp-2);
+}
+
+.ws-inspector-title {
+	margin: 0;
+	font-size: var(--fs-h2);
+	font-weight: var(--fw-semi);
+	letter-spacing: var(--tracking-tight);
+}
+
+@media (max-width: 900px) {
+	.ws-workbench { grid-template-columns: minmax(0, 1fr); }
+	.ws-workbench > * + * { border-left: 0; border-top: 1px solid var(--border-subtle); }
+}
+
+/* ── Dialog ───────────────────────────────────────────────────────────── */
+
+.ws-dialog-scrim {
+	position: fixed;
+	inset: 0;
+	z-index: 90;
+	display: grid;
+	place-items: center;
+	padding: var(--sp-6);
+	background: rgba(24, 27, 33, 0.34);
+}
+
+.ws-dialog {
+	display: flex;
+	flex-direction: column;
+	gap: var(--sp-4);
+	width: min(600px, 100%);
+	max-height: calc(100vh - var(--sp-8));
+	overflow: auto;
+	padding: var(--sp-5);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-lg);
+	background: var(--surface-raised);
+	box-shadow: var(--shadow-dialog);
+}
+
+.ws-dialog-head {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: var(--sp-4);
+}
+
+.ws-dialog-title {
+	margin: var(--sp-1) 0 0;
+	font-size: var(--fs-h2);
+	font-weight: var(--fw-semi);
+	letter-spacing: var(--tracking-tight);
+}
+
+.ws-dialog-copy {
+	margin: 0;
+	color: var(--color-text-muted);
+	font-size: var(--fs-meta);
+	line-height: var(--lh-body);
+}
+
+.ws-dialog-confirm {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--sp-2);
+	padding: var(--sp-3);
+	border: 1px solid var(--tone-warn-bg);
+	border-radius: var(--radius-sm);
+	background: var(--tone-warn-bg);
+	color: var(--tone-warn-fg);
+	font-size: var(--fs-meta);
+	line-height: var(--lh-body);
+}
+
+@media (max-width: 620px) {
+	.ws-card-split { align-items: flex-start; flex-direction: column; }
+	.ws-card-split > .ws-card-aside { width: 100%; flex-wrap: wrap; }
+	.ws-page-head { flex-wrap: wrap; }
+	.ws-page-head-actions { width: 100%; margin-left: 0; }
+}

@@ -82,7 +82,7 @@ sealed Trace V5 (content-addressed bytes, digest = identity)
 | --- | --- |
 | Trace V5 sealing + provenance | **synth-containers** |
 | Native Harbor trajectory + verifier output | **Harbor** (`agent/trajectory.json`, etc.) |
-| Dock package materialization | **dock** |
+| Private Evals package materialization | **repository-internal** |
 | Execution lifecycle | SMR / backend |
 | Cross-source attempt indexing | **evals** |
 | Presentation / filtering | **Desktop viewers** (consumers only) |
@@ -119,7 +119,7 @@ Harbor is a **benchmark harness** over containerized agent envs (Codex-in-contai
 | Pipeline | `run → score → save evidence → index` — folders authority; indexes rebuildable |
 | Native artifacts | Harbor owns trajectory + verifier results; Desktop **references** or imports into Trace V5 / CAS with provenance |
 | Dual products | Gold Craftax (`:8098` frames/NEV) ≠ Harbor DEO (agent + verifier). Different event sources |
-| Live Harbor jobs | Template `live.dock_harbor.v1` — job status + rollout stream (SSE/fixtures), not gold `render.png` |
+| Live Harbor jobs | Template `live.harbor_eval.v1` — job status + rollout stream (SSE/fixtures), not gold `render.png` |
 
 Do **not** force Harbor trajectories through the Craftax gold container contract. Import path: Harbor JSON → seal/cite as Trace V5 (or bind with explicit `source: harbor` metadata) → same viewer.
 
@@ -154,7 +154,7 @@ canonical versioned projection instead of interpreting sealed trace internals.
 
 ### Harbor live
 
-- `live.dock_harbor.v1` — Dock/Harbor job cards + rollout events  
+- `live.harbor_eval.v1` — Harbor job cards + rollout events
 
 ### Planned generic eval family (from Rust/visuals handoff)
 
@@ -284,10 +284,10 @@ Priority order:
 
 | Doc / code | Why |
 | --- | --- |
-| `synth_desktop_research_eng.md` §4–6 | Evidence stack + Harbor/Dock/evals roles |
+| `synth_desktop_research_eng.md` §4–6 | Evidence stack + Harbor/Evals roles |
 | `visuals/templates/posttrain.rollout_viewer.v1/` | Default inspector |
 | `visuals/templates/annotation.overlay.v1/` | Overlay layer |
-| `visuals/templates/live.dock_harbor.v1/` | Harbor job stream (live, not sealed) |
+| `visuals/templates/live.harbor_eval.v1/` | Harbor job stream (live, not sealed) |
 | `HANDOFF_RUST_CORE_VISUALS_AND_INTERN.md` | `eval.rollout_inspector.v1` family |
 | `services/local-runtime/.../inventory.py` | Reference ingest/CAS behavior |
 | Poolside trajectories + Laguna S 2.1 blog | External UX bar |

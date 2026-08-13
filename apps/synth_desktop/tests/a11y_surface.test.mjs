@@ -20,7 +20,7 @@ test("stable accessibility testids remain on core surfaces", () => {
     "components/VisualPane.tsx",
     "components/VisualHost.tsx",
     "components/VisualsPage.tsx",
-    "components/InventoryPage.tsx",
+    "components/DataPage.tsx",
     "components/CloudDesk.tsx",
   ];
   const blob = files
@@ -66,12 +66,13 @@ test("execution targets include Laguna local + OpenRouter Luna/Laguna + Synth Cl
   assert.ok(composer.includes('data-testid={`${knob.testId}-select`}'));
   assert.ok(composer.includes('data-testid={`${knob.testId}-menu`}'));
   assert.ok(capabilities.includes('testId: "reasoning-effort"'));
-  assert.ok(bridge.includes("request: { sessionId, prompt, effort }"));
+  assert.ok(bridge.includes("clientMessageId: options?.clientMessageId"));
 });
 
 test("v0.1 exposes remote Muse Spark while excluding local Muse Glimmer, GGUF, and DFlash", () => {
   const files = [
     "App.tsx",
+    "hooks/useAppController.ts",
     "types/landing.ts",
     "components/Composer.tsx",
     "components/ProviderMark.tsx",
@@ -90,7 +91,7 @@ test("v0.1 exposes remote Muse Spark while excluding local Muse Glimmer, GGUF, a
 test("model knobs are registered once and consumed without model-specific UI or transport branches", () => {
   const registry = read("runtime/modelCapabilities.ts");
   const composer = read("components/Composer.tsx");
-  const app = read("App.tsx");
+  const controller = read("hooks/useAppController.ts");
   for (const target of ["local-laguna", "openrouter-luna", "openrouter-laguna-s", "synth-cloud-laguna-s"]) {
     assert.ok(registry.includes(`targetId: "${target}"`), target);
   }
@@ -100,27 +101,28 @@ test("model knobs are registered once and consumed without model-specific UI or 
   assert.ok(!composer.includes('state.selectedTargetId === "openrouter-laguna-s"'));
   // Match the call, not the caller's local name: the point is that effort comes
   // from the registry helper rather than a per-model branch at the send site.
-  assert.match(app, /turnStartEffortForExecutionTarget\(\s*\w+\s*,\s*modelKnobValues\s*\)/);
-  assert.ok(!app.includes('session.target.model === "openai/gpt-5.6-luna"'));
-  assert.ok(!app.includes('session.target.model === "poolside/laguna-s-2.1"'));
+  assert.match(controller, /turnStartEffortForExecutionTarget\(\s*\w+\s*,\s*modelKnobValues\s*\)/);
+  assert.ok(!controller.includes('session.target.model === "openai/gpt-5.6-luna"'));
+  assert.ok(!controller.includes('session.target.model === "poolside/laguna-s-2.1"'));
 });
 
 test("renderer keeps the HTTP runtime bridge browser-only", () => {
   const bridge = read("runtime/desktopBridge.ts");
   assert.ok(bridge.includes("browserRuntimeBridge"));
-  assert.ok(bridge.includes("if (!isTauri) window.synthRuntime ??="));
+  assert.ok(bridge.includes("if (!isTauri && import.meta.env.DEV) window.synthRuntime ??="));
   assert.ok(!bridge.includes('invoke<T>("runtime_request"'));
   assert.ok(!bridge.includes('"runtime_subscribe"'));
 });
 
 test("renderer uses Tauri commands for desktop capabilities", () => {
   const bridge = read("runtime/desktopBridge.ts");
-  assert.ok(bridge.includes('"workspace_choose_directory"'));
-  assert.ok(bridge.includes('"laguna_get_status"'));
+  const constants = read("bridge/protocolConstants.ts");
+  assert.ok(constants.includes("WORKSPACE_CHOOSE_DIRECTORY"));
+  assert.ok(constants.includes("LAGUNA_GET_STATUS"));
+  assert.ok(constants.includes("INTERN_SESSION_EVENTS_AFTER"));
+  assert.ok(constants.includes("CODEX_SESSIONS_LIST"));
   assert.ok(!bridge.includes('"core_projects_list"'));
-  assert.ok(bridge.includes('"intern_session_events_after"'));
-  assert.ok(bridge.includes('listen<AppEvent>("runtime:event"'));
-  assert.ok(bridge.includes('"codex_sessions_list"'));
+  assert.ok(bridge.includes("EVENT_CHANNELS.RUNTIME") || bridge.includes("listen<AppEvent>(EVENT_CHANNELS.RUNTIME"));
 });
 
 test("parked Projects feature is absent from the active renderer and IPC bridge", () => {
@@ -136,13 +138,14 @@ test("parked Projects feature is absent from the active renderer and IPC bridge"
 });
 
 test("native Codex sessions use one sequence allocator and restore persisted sessions", () => {
-  const app = read("App.tsx");
+  const controller = read("hooks/useAppController.ts");
+  const codexBridge = read("hooks/useCodexEventBridge.ts");
   const nativeCodex = read("runtime/nativeCodex.ts");
-  assert.ok(app.includes("allocateNativeSequence(event.sessionId)"));
-  assert.ok(app.includes("allocateNativeSequence(sessionId)"));
-  assert.ok(app.includes('persisted.filter((session) => session.status !== "closed").map(restoreCodexSession)'));
-	assert.ok(app.includes("await nativeCodex.start("));
-	assert.ok(app.includes("threadId: typeof session.metadata.threadId"));
+  assert.ok(codexBridge.includes("allocateNativeSequence(event.sessionId)"));
+  assert.ok(controller.includes("allocateNativeSequence(sessionId)"));
+  assert.ok(controller.includes('persisted.filter((session) => session.status !== "closed").map(restoreCodexSession)'));
+	assert.ok(controller.includes("await nativeCodex.start("));
+	assert.ok(controller.includes("threadId: typeof session.metadata.threadId") || read("runtime/codexTurn.ts").includes("threadId: typeof session.metadata.threadId"));
   assert.ok(nativeCodex.includes('eventKind = "run.failed"'));
   assert.ok(nativeCodex.includes('eventKind = "run.cancelled"'));
 });
@@ -187,70 +190,72 @@ test("Synth API settings keep routing in TOML while credentials remain in native
 });
 
 test("dormant native Intern cannot be selected from v0.1 App routes", () => {
-  const app = read("App.tsx");
-  assert.ok(app.includes('throw new Error("Enter an objective to start an Intern session")'));
-  assert.ok(app.includes("objective: internObjective!"));
-  assert.ok(app.includes("objectiveConsumed"));
-  assert.ok(app.includes("if (!ensured.objectiveConsumed)"));
+  const controller = read("hooks/useAppController.ts");
+  assert.ok(controller.includes('throw new Error("Enter an objective to start an Intern session")'));
+  assert.ok(controller.includes("objective: internObjective!"));
+  assert.ok(controller.includes("objectiveConsumed"));
+  assert.ok(controller.includes("if (!ensured.objectiveConsumed)"));
   // v0.1 removal contract: the dormant creation path above may remain, but the
   // entry points that selected an Intern target must not. See PRODUCT-NO-INTERN-V0P1.
-  assert.ok(!app.includes('setSelectedTargetId("intern-sync")'));
-  assert.ok(!app.includes('setSelectedTargetId("intern-async")'));
+  assert.ok(!controller.includes('setSelectedTargetId("intern-sync")'));
+  assert.ok(!controller.includes('setSelectedTargetId("intern-async")'));
 });
 
 test("native Intern projection changes refresh the renderer session cache", () => {
-  const app = read("App.tsx");
-  assert.ok(app.includes('event.eventKind === "intern.projection_updated"'));
-  assert.ok(app.includes('event.eventKind === "session.updated"'));
-  assert.ok(app.includes('event.eventKind === "command.resolved"'));
+  const foreignBridge = read("hooks/useForeignSessionEventBridge.ts");
+  assert.ok(foreignBridge.includes('event.eventKind === "intern.projection_updated"'));
+  assert.ok(foreignBridge.includes('event.eventKind === "session.updated"'));
+  assert.ok(foreignBridge.includes('event.eventKind === "command.resolved"'));
 });
 
 test("migrated demo async pins cannot mask the Rust singleton", () => {
-  // The App-side guard went out with the Async Intern pin (v0.1 removal
-  // contract); sessionView is now the single place the singleton is enforced.
+  // sessionView is the single place the singleton is enforced (per-session slice).
   const sessionView = read("runtime/sessionView.ts");
-  assert.ok(sessionView.includes('const isRustIntern = session.metadata.runtime === "rust-intern"'));
-  assert.ok(sessionView.includes("if (asyncIntern && !isRustIntern) continue"));
+  assert.ok(sessionView.includes('isRustIntern: session.metadata.runtime === "rust-intern"'));
+  assert.ok(sessionView.includes("if (asyncIntern && !slice.isRustIntern) continue"));
 });
 
 test("renderer exposes CoreRuntime visual registry bridge commands", () => {
   const bridge = read("runtime/desktopBridge.ts");
-  assert.ok(bridge.includes('"visuals_list"'));
-  assert.ok(bridge.includes('"visuals_create"'));
-  assert.ok(bridge.includes('"visuals_show"'));
+  const constants = read("bridge/protocolConstants.ts");
+  assert.ok(constants.includes("VISUALS_LIST"));
+  assert.ok(constants.includes("VISUALS_CREATE"));
+  assert.ok(constants.includes("VISUALS_SHOW"));
   assert.ok(bridge.includes("window.synthVisuals ??="));
-  assert.ok(bridge.includes('"visual:show"'));
+  assert.ok(constants.includes("VISUAL_SHOW"));
 });
 
 test("Rust run counts remain projected without a Runtime Settings surface", () => {
-  const app = read("App.tsx");
+  const controller = read("hooks/useAppController.ts");
   const settings = read("components/SettingsPage.tsx");
-  assert.ok(app.includes("runs: core.runCount"));
+  assert.ok(controller.includes("runs: core.runCount"));
   assert.ok(!settings.includes('id: "runtime"'));
   assert.ok(!settings.includes("health?.dataStore?.runs"));
-  assert.ok(!app.includes("runs: 0"));
+  assert.ok(!controller.includes("runs: 0"));
 });
 
 test("v0.2 Intern bridge remains typed while v0.1 creation stays unreachable", () => {
   const bridge = read("runtime/desktopBridge.ts");
-  const app = read("App.tsx");
+  const constants = read("bridge/protocolConstants.ts");
+  const controller = read("hooks/useAppController.ts");
+  const foreignBridge = read("hooks/useForeignSessionEventBridge.ts");
   for (const command of [
-    "intern_sessions_list",
-    "intern_session_create",
-    "intern_session_send",
-    "intern_session_control",
-    "intern_session_events_after",
-  ]) assert.ok(bridge.includes(`"${command}"`), command);
-  assert.ok(bridge.includes('listen<AppEvent>("runtime:event"'));
-	assert.ok(app.includes("nativeIntern.createSession"));
-	assert.ok(!app.includes('setSelectedTargetId("intern-sync")'));
-	assert.ok(!app.includes('setSelectedTargetId("intern-async")'));
-  assert.ok(app.includes("nativeIntern.eventsAfter"));
-  assert.ok(app.includes("appEventToRuntimeEvent"));
+    "INTERN_SESSIONS_LIST",
+    "INTERN_SESSION_CREATE",
+    "INTERN_SESSION_SEND",
+    "INTERN_SESSION_CONTROL",
+    "INTERN_SESSION_EVENTS_AFTER",
+  ]) assert.ok(constants.includes(command), command);
+  assert.ok(bridge.includes("EVENT_CHANNELS.RUNTIME") || bridge.includes("listen<AppEvent>(EVENT_CHANNELS.RUNTIME"));
+	assert.ok(controller.includes("nativeIntern.createSession"));
+	assert.ok(!controller.includes('setSelectedTargetId("intern-sync")'));
+	assert.ok(!controller.includes('setSelectedTargetId("intern-async")'));
+  assert.ok(foreignBridge.includes("nativeIntern.eventsAfter"));
+  assert.ok(controller.includes("appEventToRuntimeEvent") || foreignBridge.includes("appEventToRuntimeEvent"));
 });
 
 test("stale Tauri binaries produce an actionable restart message", () => {
-  const app = read("App.tsx");
-  assert.ok(app.includes("Desktop backend was updated; fully quit and reopen Synth Desktop."));
-  assert.ok(app.includes("unknown command"));
+  const codexTurn = read("runtime/codexTurn.ts");
+  assert.ok(codexTurn.includes("Desktop backend was updated; fully quit and reopen Synth Desktop."));
+  assert.ok(codexTurn.includes("unknown command"));
 });

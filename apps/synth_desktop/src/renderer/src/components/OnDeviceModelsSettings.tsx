@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import type { LagunaDownloadProgress, LagunaModelHit, LagunaStatus } from "../env";
+import type { LagunaDownloadProgress, LagunaModelHit, LagunaStatus } from "../bridge";
 import { ProviderMark } from "./ProviderMark";
+import { bridges } from "../runtime/desktopBridge";
 
 function formatBytes(bytes: number): string {
 	if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -41,7 +42,7 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 		setBusy(true);
 		setError(null);
 		try {
-			setHits((await window.synthLaguna?.listModels()) ?? []);
+			setHits((await bridges.laguna?.listModels()) ?? []);
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
 		} finally {
@@ -53,7 +54,7 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 		void refresh();
 	}, [refresh]);
 
-	useEffect(() => window.synthLaguna?.onDownloadProgress?.(setDownloadProgress), []);
+	useEffect(() => bridges.laguna?.onDownloadProgress?.(setDownloadProgress), []);
 
 	const selected = hits.find((hit) => hit.selected) ?? null;
 	const modelsRoot = selected?.modelsRoot ?? hits[0]?.modelsRoot ?? "~/.synth-desktop/models";
@@ -64,8 +65,8 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 		setBusy(true);
 		setError(null);
 		try {
-			await window.synthLaguna?.downloadModel(modelId);
-			setHits((await window.synthLaguna?.listModels()) ?? []);
+			await bridges.laguna?.downloadModel(modelId);
+			setHits((await bridges.laguna?.listModels()) ?? []);
 			setReloadState("reloading");
 			setReloadDetail("Starting the selected model…");
 			const status = await onReloadLaguna();
@@ -84,8 +85,8 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 		setBusy(true);
 		setError(null);
 		try {
-			await window.synthLaguna?.deleteModel(modelId);
-			setHits((await window.synthLaguna?.listModels()) ?? []);
+			await bridges.laguna?.deleteModel(modelId);
+			setHits((await bridges.laguna?.listModels()) ?? []);
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
 		} finally {
@@ -97,10 +98,10 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 		setBusy(true);
 		setError(null);
 		try {
-			const path = await window.synthLaguna?.chooseModelDirectory();
+			const path = await bridges.laguna?.chooseModelDirectory();
 			if (!path) return;
-			await window.synthLaguna?.setModelDirectory(path);
-			setHits((await window.synthLaguna?.listModels()) ?? []);
+			await bridges.laguna?.setModelDirectory(path);
+			setHits((await bridges.laguna?.listModels()) ?? []);
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
 		} finally {
@@ -112,8 +113,8 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 		setBusy(true);
 		setError(null);
 		try {
-			await window.synthLaguna?.setModelDirectory(path);
-			setHits((await window.synthLaguna?.listModels()) ?? []);
+			await bridges.laguna?.setModelDirectory(path);
+			setHits((await bridges.laguna?.listModels()) ?? []);
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
 		} finally {

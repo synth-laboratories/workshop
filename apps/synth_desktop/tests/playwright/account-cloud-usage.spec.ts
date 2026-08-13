@@ -413,10 +413,11 @@ test("an exhausted allowance blocks the cloud model and offers upgrade; local st
 	await page.keyboard.press("Escape");
 
 	await page.getByTestId("model-picker").click();
-	await expect(page.getByTestId("model-option-allowance-blocked")).toContainText("allowance is used up");
+	await expect(page.getByTestId("model-option-allowance-blocked").first()).toContainText("allowance is used up");
+	await expect(page.getByTestId("model-option-allowance-blocked")).toHaveCount(2);
 	// The local target is untouched by a cloud billing state.
 	await expect(page.getByTestId("model-option-local-laguna")).toBeVisible();
-	await page.getByTestId("model-resolve-synth-billing").click();
+	await page.getByTestId("model-resolve-synth-billing").first().click();
 	await expect(page.getByTestId("usage-sheet")).toBeVisible();
 	await expect(page.getByTestId("usage-sheet-blocked")).toContainText("allowance is used up");
 	await expect(page.getByTestId("usage-sheet-primary-action")).toContainText("Upgrade");

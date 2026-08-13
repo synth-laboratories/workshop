@@ -18,59 +18,91 @@ import {
 } from "../runtime/modelCapabilities";
 import { IconSparkle, SlashCommandMenu, type SlashCommandId, type SlashCommandMenuHandle } from "./SlashCommandMenu";
 import type { Skill } from "../runtime/skills";
-import type { ComposerImageAttachment, ConversationWorkspaceScope } from "../env";
+import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
+import { bridges } from "../runtime/desktopBridge";
+
+/** Permission chip + menus — injectable like InferenceTransport. */
+export type ComposerPermissions = {
+	approvalPolicy: ApprovalPolicy;
+	sandboxMode: SandboxMode;
+	onSelect: (approvalPolicy: ApprovalPolicy, sandboxMode: SandboxMode) => void;
+};
+
+export type ComposerModelControls = {
+	knobValues: ModelKnobValues;
+	onSelectKnob: (targetId: string, knobId: string, value: ModelKnobTransportValue) => void;
+	/** Rolling median decode speed for the currently selected model. */
+	medianTpsLabel?: string | null;
+	/** Cross-session aggregate speeds keyed by model target id. */
+	aggregateTpsLabels?: Readonly<Record<string, string>>;
+};
+
+export type ComposerQueue = {
+	prompts?: Array<{ id: string; text: string }>;
+	onEnqueue?: (text: string) => void;
+	onEdit?: (id: string, text: string) => void;
+	onRemove?: (id: string) => void;
+	onPromote?: (id: string, text: string) => void | Promise<void>;
+	/** After stop, offer send-next / keep / remove for leftover queue items. */
+	afterStop?: boolean;
+	onSendNext?: () => void;
+	onKeep?: () => void;
+};
+
+/** In-flight turn controls (steer / enter action / send failure). */
+export type ComposerTurn = {
+	agentWorking?: boolean;
+	activeEnterAction?: "steer" | "enqueue";
+	steerSupported?: boolean;
+	steerError?: string | null;
+	onSteer?: (text: string) => void | Promise<void>;
+	/** Recoverable turn-start failure, rendered above the input inside its dock. */
+	sendFailure?: { message: string; onRetry: () => void } | null;
+};
+
+export type ComposerWorkspace = {
+	sessionId?: string | null;
+	onEnsureSession?: () => Promise<string | null>;
+	fallback?: string | null;
+	scope?: ConversationWorkspaceScope | null;
+	onScopeChange?: (scope: ConversationWorkspaceScope) => void;
+	onError?: (message: string) => void;
+};
+
+export type ComposerSlash = {
+	/** Skills selectable from the "/" menu; each attaches as a removable chip. */
+	skills?: Array<Skill>;
+	onNew?: () => void;
+	onMode?: () => void;
+	onModel?: () => void;
+	onMcp?: () => void;
+	onRename?: () => void;
+	onCompact?: () => void | Promise<void>;
+};
+
+export type ComposerAccountNav = {
+	onConfigureAccount?: () => void;
+	onConfigureModels?: () => void;
+	/** Opens the plan/billing recovery path when cloud spend is blocked. */
+	onResolveBilling?: () => void;
+	/** Opens Settings → Voice so the user can pick/download a Whisper model. */
+	onOpenVoiceSettings?: () => void;
+};
 
 type Props = {
 	state: LandingState;
+	/** User messages from the active chat, oldest first. */
+	sentMessages?: string[];
 	onSend: (text: string, images?: ComposerImageAttachment[]) => void | Promise<void>;
 	onSelectTarget: (id: string) => void;
-	onConfigureAccount?: () => void;
-	/** Opens the plan/billing recovery path when cloud spend is blocked. */
-	onResolveBilling?: () => void;
-	approvalPolicy: ApprovalPolicy;
-	sandboxMode: SandboxMode;
-	onSelectPermissions: (approvalPolicy: ApprovalPolicy, sandboxMode: SandboxMode) => void;
-	modelKnobValues: ModelKnobValues;
-	onSelectModelKnob: (targetId: string, knobId: string, value: ModelKnobTransportValue) => void;
-	/** Rolling median decode speed for the currently selected model. */
-	modelMedianTpsLabel?: string | null;
-	/** Cross-session aggregate speeds keyed by model target id. */
-	aggregateModelTpsLabels?: Readonly<Record<string, string>>;
-	/** True while the active conversation has a non-terminal run. */
-	agentWorking?: boolean;
-	/** Preferred Enter action while working. */
-	activeEnterAction?: "steer" | "enqueue";
-	onSteer?: (text: string) => void | Promise<void>;
-	onEnqueue?: (text: string) => void;
-	queuedPrompts?: Array<{ id: string; text: string }>;
-	onEditQueuedPrompt?: (id: string, text: string) => void;
-	onRemoveQueuedPrompt?: (id: string) => void;
-	onPromoteQueuedPrompt?: (id: string, text: string) => void | Promise<void>;
-	/** After stop, offer send-next / keep / remove for leftover queue items. */
-	queueAfterStop?: boolean;
-	onSendNextQueued?: () => void;
-	onKeepQueued?: () => void;
-	steerSupported?: boolean;
-	steerError?: string | null;
-	/** Recoverable turn-start failure, rendered above the input inside its dock. */
-	sendFailure?: { message: string; onRetry: () => void } | null;
-	/** Opens Settings → Voice so the user can pick/download a Whisper model. */
-	onOpenVoiceSettings?: () => void;
-	/** Skills selectable from the "/" menu; each attaches as a removable chip. */
-	skills?: Array<Skill>;
-	onSlashNew?: () => void;
-	onSlashMode?: () => void;
-	onSlashModel?: () => void;
-	onSlashMcp?: () => void;
-	onSlashRename?: () => void;
-	onSlashCompact?: () => void | Promise<void>;
-	workspaceSessionId?: string | null;
-	onEnsureWorkspaceSession?: () => Promise<string | null>;
-	workspaceFallback?: string | null;
-	workspaceScope?: ConversationWorkspaceScope | null;
-	onWorkspaceScopeChange?: (scope: ConversationWorkspaceScope) => void;
-	onWorkspaceError?: (message: string) => void;
+	permissions: ComposerPermissions;
+	model: ComposerModelControls;
+	queue: ComposerQueue;
+	turn: ComposerTurn;
+	workspace: ComposerWorkspace;
+	slash: ComposerSlash;
+	account: ComposerAccountNav;
 };
 
 const APPROVAL_OPTIONS: Array<{ id: ApprovalPolicy; label: string; description: string }> = [
@@ -329,7 +361,7 @@ function composerPlaceholder(state: LandingState): string {
 	if (state.selectedTargetId === "local-laguna") {
 		return state.composerPlaceholder;
 	}
-	if (state.selectedTargetId === "synth-cloud-laguna-s") {
+	if (state.selectedTargetId.startsWith("synth-cloud-")) {
 		if (state.apiKeyConfigured !== true) return "Configure Synth API key in Settings → Account";
 		return state.cloudBlockedReason ?? "Ask anything…";
 	}
@@ -337,6 +369,11 @@ function composerPlaceholder(state: LandingState): string {
 		return state.openrouterApiKeyConfigured
 			? "Ask anything…"
 			: "Configure an OpenRouter API key in Settings → Account";
+	}
+	if (state.selectedTargetId.startsWith("chatgpt-")) {
+		return state.codexOauthConfigured
+			? "Ask anything…"
+			: "Connect ChatGPT subscription in Settings → Models";
 	}
 	if (
 		(state.selectedTargetId === "intern-sync" || state.selectedTargetId === "intern-async") &&
@@ -350,7 +387,7 @@ function composerPlaceholder(state: LandingState): string {
 }
 
 function composerEnabled(state: LandingState): boolean {
-	if (state.selectedTargetId === "synth-cloud-laguna-s") {
+	if (state.selectedTargetId.startsWith("synth-cloud-")) {
 		// Local models keep working when cloud spend is blocked; only the
 		// billable cloud target is closed off.
 		return state.apiKeyConfigured === true && !state.cloudBlockedReason;
@@ -358,13 +395,16 @@ function composerEnabled(state: LandingState): boolean {
 	if (state.selectedTargetId.startsWith("openrouter-")) {
 		return state.openrouterApiKeyConfigured === true;
 	}
+	if (state.selectedTargetId.startsWith("chatgpt-")) {
+		return state.codexOauthConfigured === true;
+	}
 	if (state.selectedTargetId === "intern-sync" || state.selectedTargetId === "intern-async") {
 		return state.internMode !== "unconfigured";
 	}
 	return state.composerEnabled;
 }
 
-const GROUP_ORDER: ExecutionTargetOption["group"][] = ["local", "remote", "cloud"];
+const GROUP_ORDER: ExecutionTargetOption["group"][] = ["local", "remote", "subscription", "cloud"];
 
 function formatSkillMention(skill: Skill): string {
 	const slug = skill.name.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
@@ -377,6 +417,7 @@ function ModelMenu({
 	aggregateModelTpsLabels,
 	onSelectTarget,
 	onConfigureAccount,
+	onConfigureModels,
 	onResolveBilling,
 	open,
 	onOpenChange
@@ -386,6 +427,7 @@ function ModelMenu({
 	aggregateModelTpsLabels?: Readonly<Record<string, string>>;
 	onSelectTarget: (id: string) => void;
 	onConfigureAccount?: () => void;
+	onConfigureModels?: () => void;
 	onResolveBilling?: () => void;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -456,11 +498,13 @@ function ModelMenu({
 											state.model.status === "starting" ||
 											state.model.status === "loading");
 									const needsSynthKey =
-										target.id === "synth-cloud-laguna-s" && state.apiKeyConfigured !== true;
+										target.id.startsWith("synth-cloud-") && state.apiKeyConfigured !== true;
 									const needsOpenRouterKey =
 										target.id.startsWith("openrouter-") && state.openrouterApiKeyConfigured !== true;
+									const needsCodexOauth =
+										target.id.startsWith("chatgpt-") && state.codexOauthConfigured !== true;
 									const allowanceBlocked =
-										target.id === "synth-cloud-laguna-s" && !needsSynthKey && Boolean(state.cloudBlockedReason);
+										target.id.startsWith("synth-cloud-") && !needsSynthKey && Boolean(state.cloudBlockedReason);
 									const localProgress =
 										target.id === "local-laguna"
 											? state.model.status === "downloading"
@@ -502,8 +546,8 @@ function ModelMenu({
 											</div>
 										);
 									}
-									if (needsSynthKey || needsOpenRouterKey) {
-										const providerName = needsOpenRouterKey ? "OpenRouter" : "Synth";
+									if (needsSynthKey || needsOpenRouterKey || needsCodexOauth) {
+										const providerName = needsCodexOauth ? "ChatGPT subscription" : needsOpenRouterKey ? "OpenRouter" : "Synth";
 										return (
 											<div
 												key={target.id}
@@ -517,18 +561,18 @@ function ModelMenu({
 													aria-disabled="true"
 												>
 													<span className="composer-model-option-label">{target.label}</span>
-												<span className="composer-model-option-desc">{providerName} API key required</span>
+											<span className="composer-model-option-desc">{needsCodexOauth ? (state.codexOauthStatus?.state === "expired" ? "Authorization expired" : state.codexOauthStatus?.state === "refresh_failed" ? "Re-sync failed" : "Connect in Settings → Models") : `${providerName} API key required`}</span>
 												</span>
-												<button
-													type="button"
-													className="composer-model-configure"
-												data-testid={`composer-model-configure-${providerName.toLowerCase()}-api-key`}
+										<button
+											type="button"
+											className="composer-model-configure"
+											data-testid={needsCodexOauth ? "composer-model-configure-chatgpt-subscription" : `composer-model-configure-${providerName.toLowerCase()}-api-key`}
 													onClick={() => {
-														onConfigureAccount?.();
+														(needsCodexOauth ? onConfigureModels : onConfigureAccount)?.();
 														onOpenChange(false);
 													}}
 												>
-												Configure {providerName} API key
+											{needsCodexOauth ? (state.codexOauthStatus?.action === "reauthenticate" || state.codexOauthStatus?.action === "retry" ? "Re-sync ChatGPT" : "Connect ChatGPT subscription") : `Configure ${providerName} API key`}
 												</button>
 											</div>
 										);
@@ -600,51 +644,65 @@ function ModelMenu({
 
 export function Composer({
 	state,
+	sentMessages = [],
 	onSend,
 	onSelectTarget,
-	onConfigureAccount,
-	onResolveBilling,
-	approvalPolicy,
-	sandboxMode,
-	onSelectPermissions,
-	modelKnobValues,
-	onSelectModelKnob,
-	modelMedianTpsLabel,
-	aggregateModelTpsLabels,
-	agentWorking = false,
-	activeEnterAction = "enqueue",
-	onSteer,
-	onEnqueue,
-	queuedPrompts = [],
-	onEditQueuedPrompt,
-	onRemoveQueuedPrompt,
-	onPromoteQueuedPrompt,
-	queueAfterStop = false,
-	onSendNextQueued,
-	onKeepQueued,
-	steerSupported = false,
-	steerError = null,
-	sendFailure = null,
-	onOpenVoiceSettings,
-	skills = [],
-	onSlashNew,
-	onSlashMode,
-	onSlashModel,
-	onSlashMcp,
-	onSlashRename,
-	onSlashCompact,
-	workspaceSessionId,
-	onEnsureWorkspaceSession,
-	workspaceFallback,
-	workspaceScope,
-	onWorkspaceScopeChange,
-	onWorkspaceError
+	permissions,
+	model,
+	queue,
+	turn,
+	workspace,
+	slash,
+	account
 }: Props) {
+	const { approvalPolicy, sandboxMode, onSelect: onSelectPermissions } = permissions;
+	const {
+		knobValues: modelKnobValues,
+		onSelectKnob: onSelectModelKnob,
+		medianTpsLabel: modelMedianTpsLabel,
+		aggregateTpsLabels: aggregateModelTpsLabels
+	} = model;
+	const {
+		prompts: queuedPrompts = [],
+		onEnqueue,
+		onEdit: onEditQueuedPrompt,
+		onRemove: onRemoveQueuedPrompt,
+		onPromote: onPromoteQueuedPrompt,
+		afterStop: queueAfterStop = false,
+		onSendNext: onSendNextQueued,
+		onKeep: onKeepQueued
+	} = queue;
+	const {
+		agentWorking = false,
+		activeEnterAction = "enqueue",
+		steerSupported = false,
+		steerError = null,
+		onSteer,
+		sendFailure = null
+	} = turn;
+	const {
+		sessionId: workspaceSessionId,
+		onEnsureSession: onEnsureWorkspaceSession,
+		fallback: workspaceFallback,
+		scope: workspaceScope,
+		onScopeChange: onWorkspaceScopeChange,
+		onError: onWorkspaceError
+	} = workspace;
+	const {
+		skills = [],
+		onNew: onSlashNew,
+		onMode: onSlashMode,
+		onModel: onSlashModel,
+		onMcp: onSlashMcp,
+		onRename: onSlashRename,
+		onCompact: onSlashCompact
+	} = slash;
+	const { onConfigureAccount, onConfigureModels, onResolveBilling, onOpenVoiceSettings } = account;
 	const [value, setValue] = useState("");
 	const [submitting, setSubmitting] = useState(false);
 	const [recording, setRecording] = useState(false);
 	const [transcribing, setTranscribing] = useState(false);
-	const [whisperRuntime, setWhisperRuntime] = useState<import("../env").WhisperRuntimeStatus | null>(null);
+	const [whisperRuntime, setWhisperRuntime] = useState<WhisperRuntimeStatus | null>(null);
 	const [voiceError, setVoiceError] = useState<string | null>(null);
 	const [imageAttachments, setImageAttachments] = useState<ComposerImageAttachment[]>([]);
 	const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -660,6 +718,8 @@ export function Composer({
 	const [workspaceMenuSignal, setWorkspaceMenuSignal] = useState(0);
 	const dockRef = useRef<HTMLDivElement>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	const historyIndexRef = useRef<number | null>(null);
+	const historyDraftRef = useRef("");
 	const slashMenuRef = useRef<SlashCommandMenuHandle>(null);
 	const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 	const audioChunksRef = useRef<Blob[]>([]);
@@ -679,11 +739,18 @@ export function Composer({
 
 	useEffect(() => {
 		setValue("");
+		historyIndexRef.current = null;
+		historyDraftRef.current = "";
 		setSkillChip(null);
 		setSlashDismissed(false);
 		setImageAttachments([]);
 		setAttachmentError(null);
 	}, [state.id]);
+
+	useEffect(() => {
+		historyIndexRef.current = null;
+		historyDraftRef.current = "";
+	}, [workspaceSessionId]);
 
 	useEffect(() => {
 		const handleImageDrag = (rawEvent: Event) => {
@@ -788,8 +855,8 @@ export function Composer({
 	}, []);
 
 	useEffect(() => {
-		void window.synthWhisper?.getRuntimeStatus?.().then(setWhisperRuntime).catch(() => undefined);
-		return window.synthWhisper?.onRuntimeStatus?.(setWhisperRuntime);
+		void bridges.whisper?.getRuntimeStatus?.().then(setWhisperRuntime).catch(() => undefined);
+		return bridges.whisper?.onRuntimeStatus?.(setWhisperRuntime);
 	}, []);
 
 	const stopMicStream = () => {
@@ -808,7 +875,7 @@ export function Composer({
 			const recordedBlob = new Blob(chunks, { type: mimeType });
 			const wavBlob = await recordingToWhisperWav(recordedBlob);
 			const base64 = await blobToBase64(wavBlob);
-			const text = await window.synthWhisper?.transcribeAudio?.(base64, "audio/wav");
+			const text = await bridges.whisper?.transcribeAudio?.(base64, "audio/wav");
 			if (text?.trim()) {
 				setValue((current) => (current.trim().length ? `${current.trim()} ${text.trim()}` : text.trim()));
 			}
@@ -861,7 +928,7 @@ export function Composer({
 			return;
 		}
 		try {
-			const models = (await window.synthWhisper?.listModels()) ?? [];
+			const models = (await bridges.whisper?.listModels()) ?? [];
 			const selectedModel = models.find((model) => model.selected);
 			if (!selectedModel || (!selectedModel.path && !selectedModel.installedBytes)) {
 				onOpenVoiceSettings?.();
@@ -873,7 +940,7 @@ export function Composer({
 		}
 		// Load the model while the user is speaking, just like Laguna warms its
 		// inference model before the first token is needed.
-		void window.synthWhisper?.warmSelected?.().catch((reason) => {
+		void bridges.whisper?.warmSelected?.().catch((reason) => {
 			setVoiceError(reason instanceof Error ? reason.message : String(reason));
 		});
 		await startRecording();
@@ -983,6 +1050,40 @@ export function Composer({
 		void perform(alternateAction);
 	};
 
+	const showHistoryValue = (next: string) => {
+		setValue(next);
+		setSlashDismissed(true);
+		window.requestAnimationFrame(() => {
+			const textarea = textareaRef.current;
+			if (textarea) textarea.setSelectionRange(next.length, next.length);
+		});
+	};
+
+	const navigateSentHistory = (direction: "older" | "newer") => {
+		const history = sentMessages.map((message) => message.trim()).filter(Boolean);
+		if (!history.length) return false;
+		const current = historyIndexRef.current;
+		if (direction === "older") {
+			if (current === null) {
+				historyDraftRef.current = value;
+				historyIndexRef.current = history.length - 1;
+			} else {
+				historyIndexRef.current = Math.max(0, current - 1);
+			}
+			showHistoryValue(history[historyIndexRef.current]);
+			return true;
+		}
+		if (current === null) return false;
+		if (current < history.length - 1) {
+			historyIndexRef.current = current + 1;
+			showHistoryValue(history[historyIndexRef.current]);
+		} else {
+			historyIndexRef.current = null;
+			showHistoryValue(historyDraftRef.current);
+		}
+		return true;
+	};
+
 	const handleQueuedPromptEnter = (id: string, text: string) => {
 		if (!agentWorking || !steerSupported || promotingQueuedPromptId || !text.trim()) return;
 		const now = Date.now();
@@ -1078,6 +1179,12 @@ export function Composer({
 					<button type="button" onClick={onConfigureAccount} data-testid="configure-openrouter-api-key">Open Settings</button>
 				</div>
 			) : null}
+			{state.selectedTargetId.startsWith("chatgpt-") && !state.codexOauthConfigured ? (
+				<div className="composer-configuration-required" role="alert" data-testid="codex-oauth-required">
+					<span><strong>{state.codexOauthStatus?.state === "expired" ? "ChatGPT authorization expired" : state.codexOauthStatus?.state === "refresh_failed" ? "ChatGPT re-sync failed" : "ChatGPT subscription required"}</strong> {state.codexOauthStatus?.guidance ?? "Connect it under Settings → Models before sending a message."}</span>
+					<button type="button" onClick={onConfigureModels} data-testid="configure-codex-oauth">{state.codexOauthStatus?.action === "reauthenticate" || state.codexOauthStatus?.action === "retry" ? "Re-sync ChatGPT" : "Open Models settings"}</button>
+				</div>
+			) : null}
 			{whisperRuntime?.phase !== "unloaded" ? (
 				<p className={`composer-whisper-status is-${whisperRuntime?.phase}`} role="status" data-testid="composer-whisper-status">
 					<span aria-hidden />
@@ -1099,10 +1206,23 @@ export function Composer({
 					value={value}
 					onChange={(e) => {
 						setValue(e.target.value);
+						historyIndexRef.current = null;
+						historyDraftRef.current = e.target.value;
 						setSlashDismissed(false);
 					}}
 					onKeyDown={(e) => {
 						if (slashMenuVisible && slashMenuRef.current?.handleKeyDown(e)) return;
+						if (e.key === "ArrowUp") {
+							const atStart = e.currentTarget.selectionStart === 0 && e.currentTarget.selectionEnd === 0;
+							if ((historyIndexRef.current !== null || atStart || !value) && navigateSentHistory("older")) {
+								e.preventDefault();
+								return;
+							}
+						}
+						if (e.key === "ArrowDown" && historyIndexRef.current !== null && navigateSentHistory("newer")) {
+							e.preventDefault();
+							return;
+						}
 						if (e.key !== "Enter" || e.shiftKey) return;
 						e.preventDefault();
 						if (e.metaKey || e.ctrlKey) submitAlternate();
@@ -1129,7 +1249,7 @@ export function Composer({
 				) : null}
 				<div className="composer-toolbar">
 					<div className="composer-left">
-						<button type="button" className="composer-icon-btn composer-image-button" aria-label={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Add screenshots — selected model does not support image input"} title={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Selected model does not support image input"} data-testid="composer-add-images" disabled={!enabled || submitting} onClick={() => void window.synthDesktop.chooseImageFiles().then((images) => {
+						<button type="button" className="composer-icon-btn composer-image-button" aria-label={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Add screenshots — selected model does not support image input"} title={modelSupportsImageInput(state.selectedTargetId) ? "Add screenshots" : "Selected model does not support image input"} data-testid="composer-add-images" disabled={!enabled || submitting} onClick={() => void bridges.desktop.chooseImageFiles().then((images) => {
 							setImageAttachments((current) => [...current, ...images.filter((image) => !current.some((item) => item.path === image.path))].slice(0, 4));
 							setAttachmentError(images.length && !modelSupportsImageInput(state.selectedTargetId) ? "This model does not support image input. Choose a multimodal model or remove the screenshots before sending." : null);
 						})}><IconImage />{!modelSupportsImageInput(state.selectedTargetId) ? <IconImageUnsupported /> : null}</button>
@@ -1178,6 +1298,7 @@ export function Composer({
 							aggregateModelTpsLabels={aggregateModelTpsLabels}
 							onSelectTarget={onSelectTarget}
 							onConfigureAccount={onConfigureAccount}
+							onConfigureModels={onConfigureModels}
 							onResolveBilling={onResolveBilling}
 							open={modelMenuOpen}
 							onOpenChange={setModelMenuOpen}

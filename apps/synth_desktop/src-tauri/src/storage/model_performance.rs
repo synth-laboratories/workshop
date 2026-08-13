@@ -12,7 +12,9 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, specta::Type,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum MeasurementKind {
     Decode,
@@ -40,12 +42,13 @@ impl MeasurementKind {
     }
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelPerformanceSummary {
     pub provider: String,
     pub model_id: String,
     pub measurement_kind: MeasurementKind,
+    #[specta(type = specta_typescript::Unknown)]
     pub sample_count: usize,
     pub tps_p50: Option<f64>,
     pub tps_p95: Option<f64>,

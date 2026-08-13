@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { COMMANDS, invokeCommand } from "../bridge";
 import { formatCount, formatMs, formatTps, useInferenceMonitor } from "./InferencePanel";
+
+import { MODEL_OBSERVABILITY_REFRESH_MS } from "../limits";
 
 export type CloudModelPerformance = {
 	modelId: string;
@@ -25,7 +27,7 @@ export type CloudModelPerformanceSnapshot = {
 };
 
 const WINDOW_MINUTES = 24 * 60;
-const REFRESH_MS = 15_000;
+const REFRESH_MS = MODEL_OBSERVABILITY_REFRESH_MS;
 
 export function formatTpm(value: number | null | undefined): string {
 	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "Unavailable";
@@ -66,7 +68,7 @@ export function ModelObservabilitySettings() {
 	const refresh = useCallback(async () => {
 		setRefreshing(true);
 		try {
-			setCloud(await invoke<CloudModelPerformanceSnapshot>("model_performance_get", { windowMinutes: WINDOW_MINUTES }));
+			setCloud(await invokeCommand<CloudModelPerformanceSnapshot>(COMMANDS.MODEL_PERFORMANCE_GET, { windowMinutes: WINDOW_MINUTES }));
 			setCloudError(null);
 		} catch (reason) {
 			const raw = reason instanceof Error ? reason.message : String(reason);

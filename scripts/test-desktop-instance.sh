@@ -11,6 +11,12 @@ cleanup() {
 trap cleanup EXIT
 
 export SYNTH_DESKTOP_INSTANCES_ROOT="$TEST_ROOT/instances"
+mkdir -p "$TEST_ROOT/home/.codex" "$TEST_ROOT/home/.synth-desktop"
+printf '{"tokens":{"access_token":"fixture"}}\n' >"$TEST_ROOT/home/.codex/auth.json"
+printf 'SYNTH_API_KEY=synth-fixture\nOPENROUTER_API_KEY=openrouter-fixture\nKEEP=yes\n' >"$TEST_ROOT/test-credentials.env"
+export SYNTH_DESKTOP_TEST_CREDENTIALS_FILE="$TEST_ROOT/test-credentials.env"
+export SYNTH_DESKTOP_DEV_OAUTH_FILE="$TEST_ROOT/home/.codex/auth.json"
+export SYNTH_DESKTOP_SHARED_ROOT="$TEST_ROOT/home/.synth-desktop/shared"
 
 alpha="$($ROOT/scripts/desktop-instance.sh print alpha)"
 beta="$($ROOT/scripts/desktop-instance.sh print beta)"
@@ -38,6 +44,42 @@ printf '%s' "$default_instance" | jq -e '
 [[ "$(printf '%s' "$alpha" | jq -r .iconLabel)" == "1" ]]
 [[ "$(printf '%s' "$beta" | jq -r .iconLabel)" == "2" ]]
 [[ -f "$(printf '%s' "$alpha" | jq -r .icon)" ]]
+alpha_env="$TEST_ROOT/instances/v02/alpha/data/.env"
+[[ "$(stat -f '%Lp' "$alpha_env")" == "600" ]]
+rg -q '^SYNTH_API_KEY=' "$alpha_env"
+rg -q '^OPENROUTER_API_KEY=' "$alpha_env"
+
+# Credential refresh updates only the allowlist and preserves instance-local
+# non-secret values.
+printf 'SYNTH_API_KEY=stale\nOPENROUTER_API_KEY=stale\nLOCAL_ONLY=yes\n' >"$alpha_env"
+$ROOT/scripts/desktop-instance.sh print alpha >/dev/null
+rg -q '^LOCAL_ONLY=yes$' "$alpha_env"
+rg -q '^SYNTH_API_KEY=.synth-fixture.$' "$alpha_env"
+rg -q '^OPENROUTER_API_KEY=.openrouter-fixture.$' "$alpha_env"
+
+# Packaged apps must run exclusively from their isolated instance. A cwd or
+# runtime fallback under ~/Documents causes macOS Files & Folders prompts.
+awk '
+  /if \[\[ "\$COMMAND" == "cua"/{in_cua=1}
+  in_cua && /cd "\$INSTANCE_ROOT"/{safe_cwd=NR}
+  in_cua && /exec "\$app_executable"/{exec_line=NR}
+  END { exit !(safe_cwd && exec_line && safe_cwd < exec_line) }
+' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'if \(\$0 == exe \|\| \$0 == cua_exe\)' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'SYNTH_DESKTOP_DEV_OAUTH_FILE' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE' "$ROOT/scripts/desktop-instance.sh"
+rg -q '\.synth-desktop/shared' "$ROOT/scripts/desktop-instance.sh"
+if rg -q 'SYNTH_DESKTOP_DEV_SHARE_CANONICAL_OAUTH|synth-desktop-dev-\$NAME' "$ROOT/scripts/desktop-instance.sh"; then
+  echo "Desktop CUA launcher still contains a Keychain credential path" >&2
+  exit 1
+fi
+if rg -n 'home\.join\("Documents/|dirs::home_dir\(\).*Documents/|\.join\("Documents/' \
+  "$ROOT/apps/synth_desktop/src-tauri/src/optimizers/recipes.rs" \
+  "$ROOT/apps/synth_desktop/src-tauri/src/optimizers/sft_recipes.rs" \
+  "$ROOT/apps/synth_desktop/src-tauri/src/trace_ingest.rs" >/dev/null; then
+  echo "Desktop runtime still probes protected Documents paths" >&2
+  exit 1
+fi
 
 if "$ROOT/scripts/desktop-instance.sh" print '../unsafe' >/dev/null 2>&1; then
   echo "unsafe instance name was accepted" >&2
@@ -53,11 +95,18 @@ jq -e '
   .productName == "Synth Workshop v0.2 · alpha" and
   .version == "0.2.0" and
   (.bundle.icon | length) == 2 and
+  .bundle.targets == ["app"] and
   .bundle.macOS.minimumSystemVersion == "14.0"
 ' \
   "$TEST_ROOT/instances/v02/alpha/generated/tauri.instance.json" >/dev/null
 jq -e '.bundle.macOS.minimumSystemVersion == "14.0"' \
   "$ROOT/apps/synth_desktop/src-tauri/tauri.conf.json" >/dev/null
+
+# Local CUA builds must be passwordless by default. Certificate-backed
+# signing is allowed only behind an explicit opt-in.
+rg -q 'SYNTH_DESKTOP_USE_DEV_SIGNER:-0' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'codesign --force --deep --sign -' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'SYNTH_DESKTOP_REBUILD_ADAPTERS:-0' "$ROOT/scripts/desktop-instance.sh"
 
 # Canonical lifecycle commands must never stop an arbitrary copied app or a
 # named development instance. Exact executable paths are the process authority.

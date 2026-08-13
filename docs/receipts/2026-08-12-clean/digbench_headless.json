@@ -1,0 +1,79 @@
+{
+  "schema": "synth.workshop.headless-digbench-receipt.v1",
+  "claim": "NOT A8",
+  "test": "dig.bench headless pytest — mock + local relay, no Desktop visual, no public token",
+  "notA8": true,
+  "notWorkshopDesktop": true,
+  "notPublicRelay": true,
+  "when": "2026-08-13T01:18:20Z",
+  "containers": {
+    "repo": "/Users/joshuapurtell/Documents/GitHub/containers",
+    "revision": "a20f994534b08240fb0165de697cd72052c44438",
+    "shortRevision": "a20f994",
+    "branch": "josh/aug12-containers-platform"
+  },
+  "command": "uv run --with pytest pytest tests/test_digbench_live.py tests/test_after_bind_surface.py -q",
+  "digbenchApiTokenPresent": false,
+  "publicRelayHit": false,
+  "pytest": {
+    "collected": 18,
+    "passed": 18,
+    "failed": 0,
+    "skipped": 0,
+    "durationSeconds": 4.86,
+    "files": {
+      "tests/test_digbench_live.py": 9,
+      "tests/test_after_bind_surface.py": 9
+    },
+    "passedNodeids": [
+      "tests/test_digbench_live.py::test_mock_and_public_split_environments",
+      "tests/test_digbench_live.py::test_public_without_token_does_not_invent_a_dungeon",
+      "tests/test_digbench_live.py::test_live_relay_maps_seven_kinds_and_hides_token",
+      "tests/test_digbench_live.py::test_live_agentic_mcp_spans_share_the_eval_stream",
+      "tests/test_digbench_live.py::test_live_reconnect_get_does_not_add_checkpoint_kinds",
+      "tests/test_digbench_live.py::test_live_illegal_action_from_api_is_invalid_action",
+      "tests/test_digbench_live.py::test_live_token_absent_from_trace_seal",
+      "tests/test_digbench_live.py::test_live_freezes_first_listed_game_when_p1_missing",
+      "tests/test_digbench_live.py::test_live_does_not_silently_swap_a_pinned_game",
+      "tests/test_after_bind_surface.py::test_info_classifies_families_and_advertises_policy_refs",
+      "tests/test_after_bind_surface.py::test_health_names_runtime_family",
+      "tests/test_after_bind_surface.py::test_prepare_get_returns_prepared_before_start",
+      "tests/test_after_bind_surface.py::test_auto_transport_refused_on_authoritative_prepare",
+      "tests/test_after_bind_surface.py::test_craftax_eleventh_lease_is_typed_429",
+      "tests/test_after_bind_surface.py::test_harbor_fixture_subscribe_before_trial_and_no_frames",
+      "tests/test_after_bind_surface.py::test_harbor_docker_info_is_distinct_from_fixture",
+      "tests/test_after_bind_surface.py::test_digbench_mock_both_harnesses_share_one_eval_stream",
+      "tests/test_after_bind_surface.py::test_digbench_public_without_token_allows_subscribe_before_start_session"
+    ]
+  },
+  "passCriteria": {
+    "tokenNeverInEventsOrBindings": true,
+    "noFrames": true,
+    "basicReactAndAgenticCodexMcpAreTwoPolicyRefs": true,
+    "policyRefs": [
+      ["react_legal_actions", "react_legal_actions"],
+      ["codex", "agentic_codex"]
+    ],
+    "rewardFromEnvStatus": {
+      "completedTo1": {
+        "provenInTheseFiles": true,
+        "nodeids": [
+          "tests/test_digbench_live.py::test_live_relay_maps_seven_kinds_and_hides_token",
+          "tests/test_after_bind_surface.py::test_digbench_mock_both_harnesses_share_one_eval_stream"
+        ]
+      },
+      "gameOverTo0": {
+        "implementedIn": "src/synth_containers/platform/runtimes/digbench.py::_apply_env_status_reward",
+        "provenInTheseFiles": false,
+        "note": "These two files do not start a game_over outcome. Mapping exists; C8-05 in conformance covers it and was not re-run here."
+      },
+      "incompleteToNull": {
+        "provenInTheseFiles": true,
+        "via": "credential_missing public start leaves /reward null",
+        "nodeid": "tests/test_after_bind_surface.py::test_digbench_public_without_token_allows_subscribe_before_start_session"
+      }
+    },
+    "relayUsed": "in-process HTTP mock on 127.0.0.1; SYNTH_DIGBENCH_URL monkeypatched; not api.digbench.ai"
+  },
+  "verdict": "PASS 18/18 headless mock/relay. Token absent. NOT A8."
+}

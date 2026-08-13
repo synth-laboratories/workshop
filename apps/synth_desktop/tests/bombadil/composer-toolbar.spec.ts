@@ -1,24 +1,42 @@
 import { actions, always, eventually, extract } from "@antithesishq/bombadil";
 
 /**
- * Composer toolbar geometry from the 2026-08-10 CUA shot:
- *   1. "Never ask · Full system access" wraps so "access" stacks on a second line
- *   2. "Unavailable tok/s observed p50" collides with the Thinking "Max" chip
+ * Exhaustive composer-toolbar geometry matrix.
  *
- * Fixture (run.mjs) seeds allow-all permissions + an implausible throughput
- * sample. This run opens Laguna S (Max) and fuzzes widths — expected RED until
- * the toolbar keeps those controls single-line and non-overlapping.
+ * The directed action walks every selectable model and every supported
+ * Thinking/Reasoning x Speed combination at the constrained chat width. The
+ * fixture exposes all provider credentials and a ready local model so coverage
+ * cannot pass by silently skipping disabled model rows.
  *
  * BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/composer-toolbar.spec.ts \
  *   npm run test:bombadil:composer-toolbar --workspace @synth/synth-desktop
  */
-function overlaps(a: DOMRect, b: DOMRect, pad = 1): boolean {
-	return !(
-		a.right <= b.left + pad ||
-		b.right <= a.left + pad ||
-		a.bottom <= b.top + pad ||
-		b.bottom <= a.top + pad
-	);
+type MatrixModel = {
+	targetId: string;
+	reasoning: string[];
+	speed: string[];
+};
+
+const MODELS: MatrixModel[] = [
+	{ targetId: "local-laguna", reasoning: ["Minimal", "Max"], speed: [""] },
+	{ targetId: "openrouter-luna", reasoning: ["Low", "Medium", "High", "XHigh", "Max"], speed: [""] },
+	{ targetId: "openrouter-laguna-s", reasoning: ["None", "Max"], speed: [""] },
+	{ targetId: "openrouter-muse-spark", reasoning: ["Low", "Medium", "High", "XHigh"], speed: [""] },
+	{ targetId: "chatgpt-luna", reasoning: ["Low", "Medium", "High", "XHigh", "Max"], speed: ["Standard", "Fast"] },
+	{ targetId: "chatgpt-sol", reasoning: ["Low", "Medium", "High", "XHigh", "Max"], speed: ["Standard", "Fast"] },
+	{ targetId: "chatgpt-terra", reasoning: ["Low", "Medium", "High", "XHigh", "Max"], speed: ["Standard", "Fast"] },
+	{ targetId: "synth-cloud-laguna-s", reasoning: ["None", "Max"], speed: [""] },
+	{ targetId: "synth-cloud-muse-spark", reasoning: ["Low", "Medium", "High", "XHigh"], speed: [""] }
+];
+
+const COMBINATIONS = MODELS.flatMap((model) =>
+	model.reasoning.flatMap((reasoning) =>
+		model.speed.map((speed) => ({ targetId: model.targetId, reasoning, speed }))
+	)
+);
+
+function overlaps(a: DOMRect, b: DOMRect): boolean {
+	return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 }
 
 function center(rect: DOMRect | null | undefined) {
@@ -28,83 +46,173 @@ function center(rect: DOMRect | null | undefined) {
 }
 
 const toolbar = extract((state: any) => {
-	const document = state.document;
-	const viewport = state.window;
-	const composer = document.querySelector<HTMLElement>('[data-testid="composer"]');
-	const permission = document.querySelector<HTMLElement>('[data-testid="approval-mode-select"]');
-	const permissionLabel = permission?.querySelector<HTMLElement>("span") ?? null;
-	const model = document.querySelector<HTMLElement>('[data-testid="composer-model"]');
-	const reasoning = document.querySelector<HTMLElement>('[data-testid="reasoning-effort-select"]');
-	const modelMenu = document.querySelector<HTMLElement>('[data-testid="composer-model-menu"]');
-	const lagunaOption = document.querySelector<HTMLElement>(
-		'[data-testid="composer-model-option-openrouter-laguna-s"]'
+	const document = state.document as Document;
+	const viewport = state.window as Window;
+	const matrixWindow = viewport as Window & {
+		__synthBombadilComposerMatrix?: {
+			activeTarget: string;
+			visited: Record<string, boolean>;
+		};
+	};
+	const tracker = matrixWindow.__synthBombadilComposerMatrix ??= {
+		activeTarget: "local-laguna",
+		visited: {}
+	};
+
+	const selectedByMenu = document.querySelector<HTMLElement>(
+		'[data-testid^="composer-model-option-"][aria-selected="true"]'
 	);
-	const permissionRect = permission?.getBoundingClientRect() ?? null;
-	const permissionLabelRect = permissionLabel?.getBoundingClientRect() ?? null;
-	const modelRect = model?.getBoundingClientRect() ?? null;
-	const reasoningRect = reasoning?.getBoundingClientRect() ?? null;
-	const permissionText = (permissionLabel?.textContent ?? "").replace(/\s+/g, " ").trim();
-	const showsFullSystemAccess = /Never ask.*Full system access/i.test(permissionText)
-		|| /Never ask.*Full system/i.test(permissionText);
-	// getClientRects() reports one rect per wrapped line for inline text.
-	const permissionLineCount = permissionLabel
-		? Math.max(1, permissionLabel.getClientRects().length)
-		: 0;
-	const permissionStacksVertically = showsFullSystemAccess && (
-		permissionLineCount > 1
-		|| Boolean(permissionRect && permissionRect.height > 36)
+	const selectedTestId = selectedByMenu?.dataset.testid ?? "";
+	if (selectedTestId.startsWith("composer-model-option-")) {
+		tracker.activeTarget = selectedTestId.slice("composer-model-option-".length);
+	}
+	const lastActionName = String(state.lastAction?.Click?.name ?? "");
+	if (lastActionName.startsWith("Select model ")) {
+		tracker.activeTarget = lastActionName.slice("Select model ".length);
+	}
+
+	const buttonText = (testId: string) => (
+		document.querySelector<HTMLElement>(`[data-testid="${testId}"] span`)?.textContent ?? ""
+	).trim();
+	const reasoning = buttonText("reasoning-effort-select");
+	const speed = buttonText("service-tier-select");
+	const activeDefinition = MODELS.find((model) => model.targetId === tracker.activeTarget);
+	if (
+		activeDefinition?.reasoning.includes(reasoning)
+		&& activeDefinition.speed.includes(speed)
+	) {
+		tracker.visited[`${tracker.activeTarget}|${reasoning}|${speed}`] = true;
+	}
+
+	const next = COMBINATIONS.find((combination) => (
+		!tracker.visited[`${combination.targetId}|${combination.reasoning}|${combination.speed}`]
+	)) ?? null;
+	const modelMenuOpen = Boolean(document.querySelector('[data-testid="composer-model-menu"]'));
+	const reasoningMenuOpen = Boolean(document.querySelector('[data-testid="reasoning-effort-menu"]'));
+	const speedMenuOpen = Boolean(document.querySelector('[data-testid="service-tier-menu"]'));
+	const point = (selector: string) => center(
+		document.querySelector<HTMLElement>(selector)?.getBoundingClientRect()
 	);
-	const modelOverlapsReasoning = Boolean(
-		modelRect && reasoningRect && overlaps(modelRect, reasoningRect, 0)
-	);
+	const optionPoint = (menuTestId: string, label: string) => {
+		const options = Array.from(document.querySelectorAll<HTMLElement>(
+			`[data-testid="${menuTestId}"] [role="option"]`
+		));
+		return center(options.find((option) => option.textContent?.trim().startsWith(label))?.getBoundingClientRect());
+	};
+
+	const toolbarElement = document.querySelector<HTMLElement>(".composer-toolbar");
+	const toolbarRect = toolbarElement?.getBoundingClientRect() ?? null;
+	const controlSelectors = [
+		'[data-testid="composer-add-images"]',
+		'[data-testid="composer-slash-btn"]',
+		'[data-testid="approval-mode-select"]',
+		'[data-testid="composer-model"]',
+		'[data-testid="reasoning-effort-select"]',
+		'[data-testid="service-tier-select"]',
+		'[data-testid="composer-mic"]',
+		'[data-testid="composer-send"]'
+	];
+	const controls = controlSelectors.flatMap((selector) => {
+		const element = document.querySelector<HTMLElement>(selector);
+		if (!element) return [];
+		const rect = element.getBoundingClientRect();
+		return rect.width > 0 && rect.height > 0 ? [{ selector, rect }] : [];
+	});
+	const overlapPairs: string[] = [];
+	for (let left = 0; left < controls.length; left += 1) {
+		for (let right = left + 1; right < controls.length; right += 1) {
+			if (overlaps(controls[left].rect, controls[right].rect)) {
+				overlapPairs.push(`${controls[left].selector} / ${controls[right].selector}`);
+			}
+		}
+	}
+	const controlsInsideToolbar = !toolbarRect || controls.every(({ rect }) => (
+		rect.left >= toolbarRect.left - 1
+		&& rect.right <= toolbarRect.right + 1
+		&& rect.top >= toolbarRect.top - 1
+		&& rect.bottom <= toolbarRect.bottom + 1
+	));
+
 	return {
-		composerReady: Boolean(composer),
-		modelPoint: center(modelRect),
-		lagunaOptionPoint: center(lagunaOption?.getBoundingClientRect()),
-		modelMenuOpen: Boolean(modelMenu),
-		showsFullSystemAccess,
-		permissionStacksVertically,
-		permissionLineCount,
-		permissionHeight: permissionRect?.height ?? 0,
-		reasoningVisible: Boolean(reasoning),
-		modelOverlapsReasoning,
-		viewportWidth: viewport.innerWidth
+		composerReady: Boolean(document.querySelector('[data-testid="composer"]')),
+		viewportWidth: viewport.innerWidth,
+		activeTarget: tracker.activeTarget,
+		reasoning,
+		speed,
+		next,
+		modelMenuOpen,
+		reasoningMenuOpen,
+		speedMenuOpen,
+		modelPoint: point('[data-testid="composer-model"]'),
+		nextModelPoint: next ? point(`[data-testid="composer-model-option-${next.targetId}"]`) : null,
+		reasoningPoint: point('[data-testid="reasoning-effort-select"]'),
+		nextReasoningPoint: next ? optionPoint("reasoning-effort-menu", next.reasoning) : null,
+		speedPoint: point('[data-testid="service-tier-select"]'),
+		nextSpeedPoint: next?.speed ? optionPoint("service-tier-menu", next.speed) : null,
+		visitedCount: Object.keys(tracker.visited).length,
+		totalCount: COMBINATIONS.length,
+		overlapPairs,
+		controlsInsideToolbar,
+		permissionStacksVertically: Boolean(
+			document.querySelector<HTMLElement>('[data-testid="approval-mode-select"]')?.getBoundingClientRect().height! > 36
+		),
+		noHorizontalOverflow: document.documentElement.scrollWidth <= viewport.innerWidth + 1
 	};
 });
 
-export const select_laguna_s_with_max_thinking = actions(() => {
+/** Deterministically visit every model/knob tuple instead of hoping fuzzing samples it. */
+export const visit_every_model_speed_and_thinking_combination = actions<any>(() => {
 	if (!toolbar.current.composerReady) return ["Wait"];
-	if (!toolbar.current.modelMenuOpen && toolbar.current.modelPoint) {
-		return [{ Click: { name: "Open model picker for Laguna S", point: toolbar.current.modelPoint } }];
+	if (toolbar.current.viewportWidth !== 960) {
+		return [{ SetViewport: { width: 960, height: 720 } }];
 	}
-	if (toolbar.current.modelMenuOpen && toolbar.current.lagunaOptionPoint) {
-		return [
-			{ Click: { name: "Select OpenRouter Laguna S 2.1", point: toolbar.current.lagunaOptionPoint } },
-			"Wait"
-		];
+	const next = toolbar.current.next;
+	if (!next) return ["Wait"];
+	if (next.targetId !== toolbar.current.activeTarget) {
+		if (!toolbar.current.modelMenuOpen && toolbar.current.modelPoint) {
+			return [{ Click: { name: "Open model matrix picker", point: toolbar.current.modelPoint } }];
+		}
+		if (toolbar.current.modelMenuOpen && toolbar.current.nextModelPoint) {
+			return [{ Click: { name: `Select model ${next.targetId}`, point: toolbar.current.nextModelPoint } }];
+		}
+		return ["Wait"];
 	}
-	return [
-		{ SetViewport: { width: 960, height: 640 } },
-		{ SetViewport: { width: 1100, height: 700 } },
-		{ SetViewport: { width: 1280, height: 840 } },
-		{ SetViewport: { width: 1440, height: 900 } }
-	];
+	if (next.reasoning !== toolbar.current.reasoning) {
+		if (!toolbar.current.reasoningMenuOpen && toolbar.current.reasoningPoint) {
+			return [{ Click: { name: `Open reasoning for ${next.targetId}`, point: toolbar.current.reasoningPoint } }];
+		}
+		if (toolbar.current.reasoningMenuOpen && toolbar.current.nextReasoningPoint) {
+			return [{ Click: { name: `Select reasoning ${next.reasoning}`, point: toolbar.current.nextReasoningPoint } }];
+		}
+		return ["Wait"];
+	}
+	if (next.speed !== toolbar.current.speed) {
+		if (!toolbar.current.speedMenuOpen && toolbar.current.speedPoint) {
+			return [{ Click: { name: `Open speed for ${next.targetId}`, point: toolbar.current.speedPoint } }];
+		}
+		if (toolbar.current.speedMenuOpen && toolbar.current.nextSpeedPoint) {
+			return [{ Click: { name: `Select speed ${next.speed}`, point: toolbar.current.nextSpeedPoint } }];
+		}
+	}
+	return ["Wait"];
 });
 
-export const toolbar_fixture_reaches_laguna_and_permissions = eventually(() =>
-	toolbar.current.showsFullSystemAccess
-		&& toolbar.current.reasoningVisible
-).within(10, "seconds");
+export const all_49_model_speed_and_thinking_combinations_are_exercised = eventually(() =>
+	toolbar.current.visitedCount === toolbar.current.totalCount
+).within(40, "seconds");
 
-/** CUA: "Never ask · Full system access" must stay one line in the toolbar. */
-export const permission_control_never_stacks_full_system_access = always(() =>
-	!toolbar.current.showsFullSystemAccess || !toolbar.current.permissionStacksVertically
+export const composer_controls_never_overlap_for_any_combination = always(() =>
+	toolbar.current.overlapPairs.length === 0
 );
 
-/**
- * CUA: the compact model chip must not paint through the Thinking Max chip.
- */
-export const throughput_never_overlaps_thinking_chip = always(() =>
-	!toolbar.current.reasoningVisible
-		|| !toolbar.current.modelOverlapsReasoning
+export const composer_controls_never_escape_the_toolbar = always(() =>
+	toolbar.current.controlsInsideToolbar
+);
+
+export const permission_control_never_stacks = always(() =>
+	!toolbar.current.permissionStacksVertically
+);
+
+export const composer_matrix_never_creates_horizontal_overflow = always(() =>
+	toolbar.current.noHorizontalOverflow
 );

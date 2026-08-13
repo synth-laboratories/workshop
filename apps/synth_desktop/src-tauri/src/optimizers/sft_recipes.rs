@@ -12,6 +12,7 @@ use std::{
 use tokio::{process::Command, sync::watch, time::sleep};
 
 use super::{
+    ingest,
     models::{
         OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope,
         OptimizerExecutionBinding, OptimizerRecipeRunRequest, OptimizerResourceRef,
@@ -268,12 +269,20 @@ async fn ingest_stdout(service: &OptimizerService, run_id: &str, path: &Path) ->
         .iter()
         .filter_map(|e| e.event_id.as_deref())
         .collect::<std::collections::HashSet<_>>();
-    let mut sequence = service.get(run_id.to_string()).await?.cursor_seq;
-    let mut events = Vec::new();
+    let mut hosted = Vec::new();
+    let mut legacy = Vec::new();
     for (index, line) in fs::read_to_string(path)?.lines().enumerate() {
         let Ok(raw) = serde_json::from_str::<Value>(line) else {
             continue;
         };
+        if raw
+            .get("schema_version")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.starts_with("optimizer_event"))
+        {
+            hosted.push(raw);
+            continue;
+        }
         let event_id = format!("{run_id}:sft-stdout:{}", index + 1);
         if existing_ids.contains(event_id.as_str()) {
             continue;
@@ -281,6 +290,52 @@ async fn ingest_stdout(service: &OptimizerService, run_id: &str, path: &Path) ->
         let Some((event_type, item, delta, snapshot, usage)) = canonicalize(&raw) else {
             continue;
         };
+        legacy.push((event_id, event_type, item, delta, snapshot, usage, raw));
+    }
+    if !hosted.is_empty() {
+        let mut upstream = existing
+            .iter()
+            .filter_map(|event| {
+                event
+                    .raw
+                    .get("sourceSequenceNumber")
+                    .and_then(Value::as_u64)
+            })
+            .max()
+            .unwrap_or(0);
+        hosted.sort_by_key(|event| {
+            event
+                .get("sequence_number")
+                .or_else(|| event.get("sequenceNumber"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        });
+        let new_hosted = hosted
+            .into_iter()
+            .filter(|event| {
+                event
+                    .get("sequence_number")
+                    .or_else(|| event.get("sequenceNumber"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    > upstream
+            })
+            .collect::<Vec<_>>();
+        if !new_hosted.is_empty() {
+            let page = json!({
+                "schema_version": "optimizer_event_page.v1",
+                "run_id": run_id,
+                "after_sequence": upstream,
+                "next_sequence": new_hosted.last().and_then(|event| event.get("sequence_number").and_then(Value::as_u64)).unwrap_or(upstream),
+                "terminal": false,
+                "events": new_hosted,
+            });
+            ingest::ingest_event_page(service, run_id, "sft", &page, &mut upstream).await?;
+        }
+    }
+    let mut sequence = service.get(run_id.to_string()).await?.cursor_seq;
+    let mut events = Vec::new();
+    for (event_id, event_type, item, delta, snapshot, usage, raw) in legacy {
         sequence += 1;
         events.push(OptimizerEventEnvelope {
             schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
@@ -570,7 +625,9 @@ fn prerequisites() -> Result<(PathBuf, PathBuf, PathBuf)> {
     Ok((resolve_script()?, resolve_python()?, resolve_craftax()?))
 }
 fn resolve_script() -> Result<PathBuf> {
-    let path=std::env::var_os("SYNTH_CRAFTAX_SFT_SCRIPT").map(PathBuf::from).or_else(||dirs::home_dir().map(|h|h.join("Documents/GitHub/optimizers-beta/.out/craftax_sft_uplift/run_craftax_sft_uplift.py"))).ok_or_else(||anyhow!("cannot resolve home"))?;
+    let path = std::env::var_os("SYNTH_CRAFTAX_SFT_SCRIPT")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("SYNTH_CRAFTAX_SFT_SCRIPT is not configured"))?;
     if !path.is_file() {
         bail!("Craftax SFT bridge script unavailable")
     };
@@ -580,8 +637,7 @@ fn resolve_script() -> Result<PathBuf> {
 fn resolve_python() -> Result<PathBuf> {
     let path = std::env::var_os("SYNTH_CRAFTAX_SFT_PYTHON")
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join("Documents/GitHub/synth-ai/.venv/bin/python")))
-        .ok_or_else(|| anyhow!("cannot resolve home"))?;
+        .ok_or_else(|| anyhow!("SYNTH_CRAFTAX_SFT_PYTHON is not configured"))?;
     if !path.is_file() {
         bail!("Craftax SFT Python unavailable")
     };
@@ -591,8 +647,7 @@ fn resolve_python() -> Result<PathBuf> {
 fn resolve_craftax() -> Result<PathBuf> {
     let path = std::env::var_os("SYNTH_CRAFTAX_GOLD_PATH")
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join("Documents/GitHub/gamebench/tasks/craftax-singleplayer/gold_rust/target/release/craftax_gold")))
-        .ok_or_else(|| anyhow!("cannot resolve home"))?;
+        .ok_or_else(|| anyhow!("SYNTH_CRAFTAX_GOLD_PATH is not configured"))?;
     if !path.is_file() {
         bail!("Craftax gold binary unavailable; build craftax_gold or set SYNTH_CRAFTAX_GOLD_PATH")
     }
@@ -615,9 +670,9 @@ fn resolve_secret(name: &str) -> Result<String> {
             return Ok(v);
         }
     }
-    let path = dirs::home_dir()
-        .ok_or_else(|| anyhow!("cannot resolve home"))?
-        .join("Documents/GitHub/synth-ai/.env");
+    let path = std::env::var_os("SYNTH_CRAFTAX_SFT_SECRET_ENV_FILE")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("SYNTH_CRAFTAX_SFT_SECRET_ENV_FILE is not configured"))?;
     let text = fs::read_to_string(path).unwrap_or_default();
     for line in text.lines() {
         let line = line.trim().strip_prefix("export ").unwrap_or(line.trim());
@@ -630,7 +685,7 @@ fn resolve_secret(name: &str) -> Result<String> {
             }
         }
     }
-    bail!("Craftax SFT requires {name}; configure it in the Desktop process or synth-ai/.env")
+    bail!("Craftax SFT requires {name}; configure it in the Desktop process or the staged SFT secret env file")
 }
 
 #[cfg(test)]

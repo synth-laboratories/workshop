@@ -3,8 +3,9 @@
 use crate::cloud::intern::{
     InternProviderManager, InternRuntime, InternSessionBinding, PollerConfig, RuntimeKind,
 };
-use crate::domain::{RunService, RunStatus, SessionService};
-use crate::inventory::{ContainerDeployment, ContainerRegisterRequest, InventoryStore};
+use crate::contract::events::{origin_for_source_and_kind, tag_event, EventChannel};
+use crate::data::{ContainerDeployment, ContainerRegisterRequest, DataStore};
+use crate::domain::{RunService, RunStatus, SessionKind, SessionService, SessionStatus};
 use crate::optimizers::OptimizerService;
 use crate::storage::{
     AppEvent, ContentStore, CoreDiagnostics, EventAppend, EventJournal, EventSource, SessionRecord,
@@ -17,8 +18,8 @@ use std::{sync::Arc, time::Duration};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::broadcast;
 
-pub const RUNTIME_EVENT_CHANNEL: &str = "runtime:event";
-pub const VISUAL_SHOW_CHANNEL: &str = "visual:show";
+pub const RUNTIME_EVENT_CHANNEL: &str = EventChannel::RUNTIME;
+pub const VISUAL_SHOW_CHANNEL: &str = EventChannel::VISUAL_SHOW;
 
 #[derive(Clone)]
 pub struct CoreRuntime {
@@ -26,7 +27,7 @@ pub struct CoreRuntime {
     journal: EventJournal,
     content: ContentStore,
     visuals: VisualRegistry,
-    inventory: InventoryStore,
+    data: DataStore,
     optimizers: OptimizerService,
     intern: Arc<InternRuntime>,
     intern_provider: Arc<InternProviderManager>,
@@ -40,10 +41,12 @@ impl CoreRuntime {
         let storage = Storage::open(root)?;
         let backend = crate::synth_config::resolve().context("resolve Synth backend")?;
         let intern = Arc::new(match backend.api_key {
-            Some(api_key) => {
-                InternRuntime::configured(&backend.backend_url, api_key, Duration::from_secs(30))
-                    .context("configure Rust Intern runtime")?
-            }
+            Some(api_key) => InternRuntime::configured(
+                &backend.backend_url,
+                api_key,
+                crate::limits::INTERN_HTTP_TIMEOUT,
+            )
+            .context("configure Rust Intern runtime")?,
             None => InternRuntime::unconfigured(),
         });
         Ok(Self::from_parts(storage, intern))
@@ -54,9 +57,7 @@ impl CoreRuntime {
         let content = ContentStore::new(storage.content_root());
         let visuals =
             VisualRegistry::new(storage.database().clone(), journal.clone(), content.clone());
-        let inventory = InventoryStore::new(storage.database().clone(), content.clone());
-        let optimizers =
-            OptimizerService::new(storage.database().clone(), journal.clone(), visuals.clone());
+        let data = DataStore::new(storage.database().clone(), content.clone());
         let intern_provider = Arc::new(InternProviderManager::new(
             intern.clone(),
             storage.database().clone(),
@@ -64,12 +65,20 @@ impl CoreRuntime {
         let sessions = SessionService::new(storage.database().clone());
         let runs = RunService::new(storage.database().clone());
         let (events_tx, _) = broadcast::channel(512);
+        let optimizer_manager = Arc::new(crate::optimizers::OptimizerManager::new());
+        let optimizers = OptimizerService::new_with_manager(
+            storage.database().clone(),
+            journal.clone(),
+            visuals.clone(),
+            events_tx.clone(),
+            optimizer_manager,
+        );
         Self {
             storage,
             journal,
             content,
             visuals,
-            inventory,
+            data,
             optimizers,
             intern,
             intern_provider,
@@ -107,8 +116,8 @@ impl CoreRuntime {
         &self.visuals
     }
 
-    pub fn inventory(&self) -> &InventoryStore {
-        &self.inventory
+    pub fn data(&self) -> &DataStore {
+        &self.data
     }
 
     pub fn optimizers(&self) -> &OptimizerService {
@@ -184,31 +193,21 @@ impl CoreRuntime {
     async fn resume_intern_providers_inner(&self, reconcile_restart: bool) -> Result<usize> {
         let mut resumed = 0;
         for session in self.sessions.list(2_000).await? {
-            if session.status == "closed" {
+            if session.status == SessionStatus::Closed.as_str() {
                 continue;
             }
-            if session
-                .target_json
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                != Some("intern")
-            {
+            if session.kind != SessionKind::Intern.as_str() {
                 continue;
             }
             let Some(runtime_id) = session.remote_id.clone() else {
                 continue;
             };
-            let Some(mode) = session
-                .target_json
-                .get("mode")
-                .and_then(serde_json::Value::as_str)
-            else {
+            let Some(mode) = session.target.intern_mode() else {
                 continue;
             };
             let runtime_kind = match mode {
-                "sync" => RuntimeKind::Sync,
-                "async" => RuntimeKind::Async,
-                _ => continue,
+                crate::domain::InternMode::Sync => RuntimeKind::Sync,
+                crate::domain::InternMode::Async => RuntimeKind::Async,
             };
             if reconcile_restart {
                 self.reconcile_intern_active_run(&session).await?;
@@ -278,7 +277,11 @@ impl CoreRuntime {
         match backend.api_key {
             Some(api_key) => {
                 self.intern
-                    .reconfigure(&backend.backend_url, api_key, Duration::from_secs(30))
+                    .reconfigure(
+                        &backend.backend_url,
+                        api_key,
+                        crate::limits::INTERN_HTTP_TIMEOUT,
+                    )
                     .await
                     .context("reconfigure Rust Intern runtime")?;
                 self.resume_intern_providers_inner(false)
@@ -335,7 +338,7 @@ impl CoreRuntime {
         health: serde_json::Value,
     ) -> Result<ContainerDeployment> {
         let (container, event) = self
-            .inventory
+            .data
             .update_container_health(id, status, health)
             .await?;
         let _ = self.events_tx.send(event);
@@ -351,7 +354,7 @@ impl CoreRuntime {
         task_family: Option<String>,
     ) -> Result<ContainerDeployment> {
         let (container, event) = self
-            .inventory
+            .data
             .upsert_container(request, status, health, metadata, task_family)
             .await?;
         let _ = self.events_tx.send(event);
@@ -367,7 +370,7 @@ impl CoreRuntime {
         task_family: Option<String>,
     ) -> Result<ContainerDeployment> {
         let (container, event) = self
-            .inventory
+            .data
             .update_container_hydration(id, status, health, metadata, task_family)
             .await?;
         let _ = self.events_tx.send(event);
@@ -380,7 +383,7 @@ impl CoreRuntime {
         rollout_id: String,
     ) -> Result<ContainerDeployment> {
         let (container, event) = self
-            .inventory
+            .data
             .update_container_last_rollout(id, rollout_id)
             .await?;
         let _ = self.events_tx.send(event);
@@ -411,7 +414,11 @@ impl CoreRuntime {
             loop {
                 match rx.recv().await {
                     Ok(event) => {
-                        let _ = app.emit(RUNTIME_EVENT_CHANNEL, &event);
+                        let tagged = tag_event(
+                            origin_for_source_and_kind(event.source.as_str(), &event.kind),
+                            event.clone(),
+                        );
+                        let _ = app.emit(RUNTIME_EVENT_CHANNEL, &tagged);
                         if event.kind == "visual.show" {
                             let _ = app.emit(VISUAL_SHOW_CHANNEL, &event);
                         }

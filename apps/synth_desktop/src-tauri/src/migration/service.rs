@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 const PLAN_TTL_MINUTES: i64 = 10;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LegacyCandidate {
     pub detection: LegacyDetection,
@@ -25,7 +25,7 @@ pub struct LegacyCandidate {
     pub already_migrated: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationPlan {
     pub confirmation_token: String,
@@ -35,11 +35,12 @@ pub struct MigrationPlan {
     pub destination_database: String,
     pub backup_directory: String,
     pub expires_at: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub estimated_counts: BTreeMap<String, u64>,
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationApplyRequest {
     pub confirmation_token: String,

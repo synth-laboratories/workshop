@@ -12,6 +12,7 @@ import type {
   VisualBindingKind,
   VisualTemplateMeta
 } from "./types.ts";
+import { assertDeclaredStreamSource, assertLiveEvalSlot } from "./liveStream.ts";
 
 export type BoundSlotPayload = {
   slot: string;
@@ -46,6 +47,8 @@ export type BindContext = {
   loadLocalCas?: LocalCasLoader;
   loadRun?: (runId: string) => Promise<unknown> | unknown;
   loadOptimizerRun?: (optimizerRunId: string) => Promise<unknown> | unknown;
+  /** Declared create-rollout stream descriptor; required to bind guessed-looking URLs. */
+  declaredStream?: import("./liveStream.ts").DeclaredStreamDescriptor | null;
   /** When true, missing optional slots are ignored. */
   skipOptional?: boolean;
 };
@@ -98,8 +101,14 @@ async function resolveBinding(
       return dig(await ctx.loadOptimizerRun(binding.source!), binding.path);
     }
     case "live_sse": {
-      // Live slots bind the URL; consumers subscribe via subscribeLiveSlot.
-      return { sse_url: binding.source, schema: binding.schema ?? "synth.live_eval.v1" };
+      if (!binding.source) throw new Error("live_sse binding requires a source");
+      const guessed = assertDeclaredStreamSource(binding.source, ctx.declaredStream);
+      if (guessed) throw new Error(guessed);
+      return {
+        sse_url: binding.source,
+        ...(binding.poll_url ? { poll_url: binding.poll_url } : {}),
+        schema: binding.schema ?? "synth.live_eval.v1"
+      };
     }
     default: {
       const _exhaustive: never = binding.kind;
@@ -122,7 +131,14 @@ export async function bindTemplateSlots(
   const slots: Record<string, BoundSlotPayload> = {};
   const errors: string[] = [];
 
+  for (const binding of bindingSlots) {
+    const slotError = assertLiveEvalSlot(binding.slot, template.id);
+    if (slotError) errors.push(slotError);
+  }
+
   for (const slot of template.slots) {
+    const slotError = assertLiveEvalSlot(slot.name, template.id);
+    if (slotError) errors.push(slotError);
     const binding = bySlot.get(slot.name);
     const required = slot.required !== false;
     if (!binding) {
@@ -159,6 +175,13 @@ export function isVisualBindings(value: unknown): value is VisualBindings {
   return candidate.schemaVersion === "synth.visual-bindings.v1" && Array.isArray(candidate.slots);
 }
 
+/** Desktop passes the bindings envelope; some hosts still pass a raw slot array. */
+export function bindingSlots(value: unknown): VisualBinding[] {
+  if (Array.isArray(value)) return value as VisualBinding[];
+  if (isVisualBindings(value)) return value.slots;
+  return [];
+}
+
 export function propsFromBindings(value: unknown): { props: Record<string, unknown>; errors: string[] } {
   if (!isVisualBindings(value)) {
     if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -169,18 +192,28 @@ export function propsFromBindings(value: unknown): { props: Record<string, unkno
   const props: Record<string, unknown> = {};
   const errors: string[] = [];
   for (const binding of value.slots) {
-    if (!binding.slot || typeof binding.slot !== "string") errors.push("A visual binding is missing its slot name");
-    else if (binding.kind === "inline") {
+    if (!binding.slot || typeof binding.slot !== "string") {
+      errors.push("A visual binding is missing its slot name");
+      continue;
+    }
+    const slotError = assertLiveEvalSlot(binding.slot);
+    if (slotError) {
+      errors.push(slotError);
+      continue;
+    }
+    if (binding.kind === "inline") {
       if (!("data" in binding)) errors.push(`Inline slot "${binding.slot}" has no data`);
       else props[binding.slot] = binding.data;
     } else if (binding.kind === "live_sse" && binding.source) {
-      // Live bindings are intentionally unresolved: the browser owns the
-      // EventSource lifecycle. Preserve the endpoint as a slot payload so a
-      // saved visual can reconnect when its pane is reopened.
-      props[binding.slot] = {
-        sse_url: binding.source,
-        schema: binding.schema ?? "evals.event-stream.v1"
-      };
+      const guessed = assertDeclaredStreamSource(binding.source);
+      if (guessed) errors.push(guessed);
+      else {
+        props[binding.slot] = {
+          sse_url: binding.source,
+          ...(binding.poll_url ? { poll_url: binding.poll_url } : {}),
+          schema: binding.schema ?? "evals.event-stream.v1"
+        };
+      }
     } else if (binding.kind === "optimizer_run" && binding.source) {
       props[binding.slot] = {
         optimizer_run_id: binding.source,
@@ -205,6 +238,8 @@ export function subscribeLiveSlot(
     throw new Error(`subscribeLiveSlot expects live_sse, got ${binding.kind}`);
   }
   if (!binding.source) throw new Error("live_sse binding requires a source");
+  const guessed = assertDeclaredStreamSource(binding.source);
+  if (guessed) throw new Error(guessed);
   return subscribe(binding.source, onEvent, onError);
 }
 

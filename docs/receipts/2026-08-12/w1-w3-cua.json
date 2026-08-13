@@ -1,0 +1,96 @@
+{
+  "schema": "workshop.agent-workflow-receipt.v1",
+  "capturedAt": "2026-08-13T03:18:00Z",
+  "acceptanceDate": "2026-08-12",
+  "workshopRevision": "ef50724ba41ce3dc5b85b49377929c482f4c88ac",
+  "instance": "w1final",
+  "executionClass": "dirty-tree-cua",
+  "qualificationScope": "Agent golden-path/operator-loop evidence from an isolated Desktop instance; this is not an installed-binary Tier 4 receipt.",
+  "model": {
+    "provider": "openai-codex-oauth",
+    "id": "gpt-5.6-sol"
+  },
+  "result": "PARTIAL",
+  "w1": {
+    "result": "PASS",
+    "declaredEndpoint": "http://127.0.0.1:8298",
+    "registeredContainerId": "ctr_fa132769f60e4f949ecb33a9f3cd00e5",
+    "worldRef": "world:craftax_default@symbolic_survival",
+    "environmentRef": "env:craftax_gold",
+    "evaluatorRef": "eval:craftax.env_sum",
+    "policy": "react/muse_spark_medium",
+    "visualFirst": true,
+    "rolloutsStarted": 10,
+    "rolloutsCompleted": 10,
+    "retries": 0,
+    "replacementRollouts": 0,
+    "ambiguousStarts": 0,
+    "allRecoveredFalse": true,
+    "rewardSum": 18.6,
+    "rewards": [3.0, 0.0, 1.5, 2.0, 1.1, 3.9, 5.0, 0.0, 0.1, 2.0],
+    "terminalCauses": {"max_steps": 5, "death": 5},
+    "usage": {"policyCalls": 82, "tokens": 442779, "costUsd": 0.70864055},
+    "rollouts": [
+      {"id":"w1-20260812-muse-spark-medium-seed-0","reward":3.0,"terminal":"max_steps","steps":120,"cursor":1215,"frame":"/rollouts/w1-20260812-muse-spark-medium-seed-0/frames/120.png","frameDigest":"bca969747e820e75"},
+      {"id":"w1-20260812-muse-spark-medium-seed-1","reward":0.0,"terminal":"death","steps":35,"cursor":406,"frame":"/rollouts/w1-20260812-muse-spark-medium-seed-1/frames/35.png","frameDigest":"7fbe43cc3d75ab7a"},
+      {"id":"w1-20260812-muse-spark-medium-seed-2","reward":1.5,"terminal":"max_steps","steps":120,"cursor":1308,"frame":"/rollouts/w1-20260812-muse-spark-medium-seed-2/frames/120.png","frameDigest":"5e4f15cc090ed0dd"},
+      {"id":"w1-20260812-muse-spark-medium-seed-3","reward":2.0,"terminal":"death","steps":66,"cursor":749,"frame":"/rollouts/w1-20260812-muse-spark-medium-seed-3/frames/66.png","frameDigest":"704fb6c459bf1b00"},
+      {"id":"w1-20260812-muse-spark-medium-seed-4","reward":1.1,"terminal":"death","steps":86,"cursor":983,"frame":"/rollouts/w1-20260812-muse-spark-medium-seed-4/frames/86.png","frameDigest":"93956116aebd3ad8"},
+      {"id":"w1-20260812-muse-spark-medium-seed-5","reward":3.9,"terminal":"max_steps","steps":120,"cursor":1313,"frame":"/rollouts/w1-20260812-muse-spark-medium-seed-5/frames/120.png","frameDigest":"f030228b9e493cc9"},
+      {"id":"w1-20260812-muse-spark-medium-seed-6","reward":5.0,"terminal":"max_steps","steps":120,"cursor":1276,"frame":"/rollouts/w1-20260812-muse-spark-medium-seed-6/frames/120.png","frameDigest":"7b4a72a845528881"},
+      {"id":"w1-20260812-muse-spark-medium-seed-7","reward":0.0,"terminal":"death","steps":65,"cursor":733,"frame":"/rollouts/w1-20260812-muse-spark-medium-seed-7/frames/65.png","frameDigest":"d26e8874b05f05a6"},
+      {"id":"w1-20260812-muse-spark-medium-seed-8","reward":0.1,"terminal":"death","steps":44,"cursor":506,"frame":"/rollouts/w1-20260812-muse-spark-medium-seed-8/frames/44.png","frameDigest":"52bc51440b9ba943"},
+      {"id":"w1-20260812-muse-spark-medium-seed-9","reward":2.0,"terminal":"max_steps","steps":120,"cursor":1352,"frame":"/rollouts/w1-20260812-muse-spark-medium-seed-9/frames/120.png","frameDigest":"3b7bef4fe58c7f97"}
+    ],
+    "allStreamsClosed": true,
+    "allVisualsPostStartReviewed": true,
+    "historicalEvidenceUsed": false,
+    "screenshotSubstitutedForFrame": false
+  },
+  "w2": {
+    "result": "PASS",
+    "visualId": "vis_ff81361fa5f54ec6b92c2df286be41f0",
+    "templateId": "trace.rollout_inspector.v1",
+    "revision": 2,
+    "revisionSummary": "Added an above-the-fold evidence review summary with verdict, rationale, score, and evidence digest; cards reflow in compact expanded state.",
+    "wideProof": {"viewport":"1280x900","sha256":"b5b67a253c8f14750d2f75c5a41f544b9520db079e1bd511a3aeb702f15bf549"},
+    "compactProof": {"viewport":"768x1024","state":"expanded visual","sha256":"280c415df04bcaaa3503657ad97f22a955f0a06a1eaf1f417f8360f6f7b7e640"},
+    "verification": {"playwright":"1 passed","visualTests":"66 passed","typecheck":"passed"},
+    "completedBeforePaidStart": true
+  },
+  "w3": {
+    "result": "PARTIAL_PASS_QUOTA_BLOCKED",
+    "missingVisualMcp": {
+      "result": "PASS_SAFE_STOP",
+      "injection": "The isolated w1sol visuals IPC descriptor was temporarily moved aside and restored at the same path.",
+      "observedFailure": "MCP -32000: No such file or directory (os error 2)",
+      "rolloutsStarted": 0,
+      "evidenceFabricated": false
+    },
+    "remainingProxyDrills": {
+      "proxy": "http://127.0.0.1:18097 -> http://127.0.0.1:8298",
+      "stateRestored": true,
+      "proxyStopped": true,
+      "poll503": "NOT_RUN",
+      "frame404": "NOT_RUN",
+      "policyPinRefusal": "NOT_RUN",
+      "blocker": "Required ChatGPT GPT-5.6 Sol task stopped before tool use with: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 18th, 2026 9:45 PM.",
+      "additionalPaidRollouts": 0
+    }
+  },
+  "installedBinaryTier4": {
+    "result": "PREPARED_BLOCKED",
+    "reason": "A clean isolated v0.2.0 CUA candidate was built from 859110f6a316f282445f6a6f71cad07df4fc8833 and passed deterministic preflight. Its canonical ChatGPT credential could not refresh, and the required Sol allowance remains reset-gated, so no Tier 4 prompt or rollout ran.",
+    "preflightReceipt": "../2026-08-13/w1-w3-tier4-preflight.json"
+  },
+  "a2Safety": {
+    "orbstackRestarted": false,
+    "reason": "Restarting OrbStack would disrupt foreign shared containers.",
+    "dockerExecution": "blocked_hanging",
+    "packageStaticInspection": "Pinned GameBench image contains the task tree, runner, verifier, and scorer; no execution score receipt was produced."
+  },
+  "a8": {
+    "result": "BLOCKED",
+    "reason": "DIGBENCH_API_TOKEN was absent from the process environment and existing authorized local configuration checked for this run."
+  }
+}

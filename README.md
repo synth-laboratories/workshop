@@ -96,7 +96,7 @@ backup, and installation remain uncached and explicit.
 - Local Laguna XS 2.1 agent path through Codex app-server and the Responses-compatible MLX sidecar
 - Configured Responses-compatible model APIs through Codex app-server
 - Inventory: local + cloud containers, Trace V5 ingest, 9 visual templates, save-as-TSX
-- Live dock/eval visual simulation
+- Live Harbor/eval visual simulation
 - Intern sync demo mailbox
 - Accessibility surface testids + semantic eval hook
 - Intern endpoint profiles (`prod`, `staging`, `local`) via `~/.synth-desktop/config.toml`

@@ -1,0 +1,73 @@
+{
+  "schema": "synth.live-eval-acceptance-receipt.v1",
+  "created_at": "2026-08-12T21:05:00-04:00",
+  "scope": "containers-and-workshop-native-live-run",
+  "source_state": "dirty-wip",
+  "revisions": {
+    "workshop": "7804a3d2a2881e572213e9446d5c1f471b5f4e9a",
+    "containers": "a20f994534b08240fb0165de697cd72052c44438"
+  },
+  "desktop": {
+    "instance": "livecraftax",
+    "bundle_id": "com.synth.desktop.v02.dev.livecraftax",
+    "signing_identity": "Synth Workshop Development",
+    "rebuilt_and_relaunched_without_keychain_prompt": true
+  },
+  "run": {
+    "rollout_id": "roll_workshop_live_craftax_20260812_2102",
+    "stream_id": "stream:roll_workshop_live_craftax_20260812_2102",
+    "task_instance_id": "craftax:test:8",
+    "seed": 8,
+    "environment_ref": "env:craftax_gold",
+    "world_ref": "world:craftax_default@symbolic_survival",
+    "policy_ref": { "harness": "react", "config": "muse_spark_medium" },
+    "evaluation_plan_ref": "eval:craftax.env_sum",
+    "high_water": 148,
+    "closed": true,
+    "durable_envelopes": 148,
+    "reward": -0.2,
+    "achievements": 0,
+    "trace_digest": "sha256:795c21cb22b16695288da3e5d42f1fa68ee882233f9015d9d688589c21823ea6"
+  },
+  "transport": {
+    "schema": "synth.rollout.stream.v1",
+    "sse_url": "http://127.0.0.1:18101/rollouts/roll_workshop_live_craftax_20260812_2102/stream",
+    "poll_url": "http://127.0.0.1:18101/rollouts/roll_workshop_live_craftax_20260812_2102/events",
+    "bound_before_start": true,
+    "stream_subscribed_before_start": true,
+    "poll_recovery_observed": true,
+    "missing_or_guessed_transport": false
+  },
+  "visual": {
+    "visual_id": "vis_b2665c9ec8f94b0f845b0a08ed9351de",
+    "template_id": "live.craftax.v1",
+    "ready_revision": 7,
+    "png_frames": 13,
+    "semantic_events": 22,
+    "selected_policy_event": "policy.call",
+    "full_interaction_present": {
+      "input": true,
+      "thinking": "not_emitted_by_provider",
+      "output": true,
+      "tool_calls": "not_emitted_by_policy"
+    },
+    "native_cua_confirmed": true
+  },
+  "usage": {
+    "calls": 1,
+    "prompt_tokens": 2400,
+    "completion_tokens": 3934,
+    "total_tokens": 6334,
+    "cost_usd": 0.0188208
+  },
+  "acceptance": {
+    "visual_open_before_paid_start": true,
+    "real_gameplay_frames_rendered": true,
+    "reward_and_achievement_plots_rendered": true,
+    "through_time_controls_rendered": true,
+    "full_trace_input_output_rendered": true,
+    "missing_reasoning_or_tools_not_fabricated": true,
+    "sealed_reconciled": true,
+    "passed": true
+  }
+}

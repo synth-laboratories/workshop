@@ -1,6 +1,6 @@
 [package]
 name = "synth-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Synth Desktop Tauri host"
 edition = "2021"
 default-run = "synth-desktop"
@@ -28,18 +28,27 @@ fs2 = "0.4"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+libc = "0.2"
+mermaid-to-svg = { path = "third_party/mermaid-to-svg" }
 portable-pty = "0.9"
+png = "0.17"
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+# Wave 2 boundary codegen (tauri-specta). Pin RC versions together — specta
+# RCs are not semver-stable across minor bumps.
+specta = { version = "=2.0.0-rc.25", features = ["derive", "serde_json"] }
+specta-typescript = "0.0.12"
 toml = "0.8"
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["specta"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }

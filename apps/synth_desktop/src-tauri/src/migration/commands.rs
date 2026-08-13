@@ -5,13 +5,14 @@ use serde::Serialize;
 use std::path::PathBuf;
 use tauri::State;
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationCancelResult {
     pub cancelled: bool,
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn migration_scan(
     state: State<'_, MigrationService>,
 ) -> Result<Vec<LegacyCandidate>, String> {
@@ -22,6 +23,7 @@ pub async fn migration_scan(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn migration_prepare(
     state: State<'_, MigrationService>,
     source_path: String,
@@ -33,6 +35,7 @@ pub async fn migration_prepare(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn migration_apply(
     state: State<'_, MigrationService>,
     request: MigrationApplyRequest,
@@ -44,6 +47,7 @@ pub async fn migration_apply(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn migration_cancel(
     state: State<'_, MigrationService>,
     confirmation_token: String,

@@ -47,10 +47,10 @@ test("Landing Set up an agent card is removed; Laguna reload stays a typed bridg
 	assert.doesNotMatch(landing, /quick-setup-agent/);
 	assert.doesNotMatch(landing, /Set up an agent/);
 	assert.doesNotMatch(landing, /onSetupAgent/);
-	assert.match(app, /onReloadLaguna=\{onReloadLaguna\}/);
+	assert.match(app, /onReloadLaguna=\{c\.onReloadLaguna\}/);
 	assert.doesNotMatch(app, /Reload Laguna — stub/);
 	const bridge = read("runtime/desktopBridge.ts");
-	assert.match(bridge, /invoke<LagunaStatus>\("laguna_reload"\)/);
+	assert.match(bridge, /invokeCommand<LagunaStatus>\(COMMANDS\.LAGUNA_RELOAD\)/);
 	const rust = readFileSync(join(appRoot, "src-tauri/src/lib.rs"), "utf8");
 	assert.match(rust, /async fn laguna_reload/);
 });
@@ -81,6 +81,9 @@ test("design debt: agent-authored analysis shell normalizes persisted type-block
 	assert.match(shell, /normalizeBlock/);
 	assert.match(shell, /block\.type/);
 	assert.match(shell, /if \(kind === "note"\)/);
+	// Malformed ranked-bars without items must not cast-and-map (CUA crash).
+	assert.match(shell, /kind === "ranked-bars"/);
+	assert.match(shell, /!Array\.isArray\(block\.items\)/);
 });
 
 test("composer approval policy control is wired and test-addressable", () => {
@@ -112,7 +115,7 @@ test("intended design: deferred LoRA support leaves no fixture catalog or placeh
 });
 
 test("intended design: Inventory Attach defaults to GameBench Craftax :8098", () => {
-	const inventory = read("components/InventoryPage.tsx");
+	const inventory = read("components/DataPage.tsx");
 	assert.match(inventory, /127\.0\.0\.1:8098/);
 	assert.match(inventory, /data-testid="attach-container"/);
 	assert.match(inventory, /data-testid="import-trace-v5"/);

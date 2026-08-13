@@ -1,6 +1,6 @@
 {
   "name": "@synth/synth-desktop",
-  "version": "0.1.0",
+	"version": "0.2.0",
   "private": true,
   "description": "Synth Desktop — local-first research engineering workbench",
   "type": "module",
@@ -14,11 +14,12 @@
     "frontend:dev": "vite --host 127.0.0.1",
     "frontend:build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+	"typecheck": "tsc --noEmit -p tsconfig.json",
+	"lint:app-css": "node scripts/lint-app-css.mjs",
     "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml",
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:playwright": "playwright test --config playwright.config.ts",
-    "test:ui-gates": "../../scripts/desktop-ui-gates.sh",
+	"test:ui-gates": "npm run lint:app-css && ../../scripts/desktop-ui-gates.sh",
     "test:ui-gates:bombadil": "../../scripts/desktop-ui-gates.sh bombadil",
     "test:ui-gates:playwright": "../../scripts/desktop-ui-gates.sh playwright",
     "test:bombadil": "npm run frontend:build && node tests/bombadil/run.mjs",
@@ -29,7 +30,9 @@
 		"test:bombadil:empty-turn": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/empty-completed-turn.spec.ts node tests/bombadil/run.mjs",
 		"test:bombadil:composer-toolbar": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/composer-toolbar.spec.ts node tests/bombadil/run.mjs",
 		"test:bombadil:terminal": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/terminal-polish.spec.ts node tests/bombadil/run.mjs",
-		"test:bombadil:v0.1-visuals": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/v0.1-visual-contracts.spec.ts node tests/bombadil/run.mjs"
+		"test:bombadil:v0.1-visuals": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/v0.1-visual-contracts.spec.ts node tests/bombadil/run.mjs",
+		"test:bombadil:approval": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/approval-card.spec.ts node tests/bombadil/run.mjs",
+		"test:bombadil:grouped-visual": "npm run frontend:build && BOMBADIL_SPEC=apps/synth_desktop/tests/bombadil/grouped-visual-evidence.spec.ts node tests/bombadil/run.mjs"
   },
   "dependencies": {
     "@synth/runtime-protocol": "*",
@@ -44,6 +47,7 @@
   },
   "devDependencies": {
     "@antithesishq/bombadil": "^0.6.1",
+    "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.62.1",
     "@tauri-apps/cli": "^2.11.4",
     "@types/react": "^19.1.0",

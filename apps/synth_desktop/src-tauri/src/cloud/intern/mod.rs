@@ -39,7 +39,7 @@ impl InternRuntime {
         timeout: Duration,
     ) -> Result<Self, InternClientError> {
         Ok(Self {
-            client: RwLock::new(Some(Arc::new(InternClient::new(
+            client: RwLock::new(Some(Arc::new(InternClient::connect(
                 base_url, api_key, timeout,
             )?))),
             poller: Arc::new(InternPoller::default()),
@@ -62,7 +62,7 @@ impl InternRuntime {
         api_key: impl Into<String>,
         timeout: Duration,
     ) -> Result<(), InternClientError> {
-        let client = Arc::new(InternClient::new(base_url, api_key, timeout)?);
+        let client = Arc::new(InternClient::connect(base_url, api_key, timeout)?);
         self.poller.shutdown().await;
         *self.client.write().await = Some(client);
         Ok(())

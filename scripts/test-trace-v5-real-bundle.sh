@@ -13,8 +13,9 @@ if [[ ! -e "$trace_bundle" ]]; then
   exit 2
 fi
 
-uv sync --project "$containers_root" --quiet
-trace_cli="$containers_root/.venv/bin/synth-trace"
+"$containers_root/scripts/register-local-dev-build.sh" >/dev/null
+containers_version=$(uv run --directory "$containers_root" python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+trace_cli="$HOME/.synth-desktop/dev-builds/synth-containers/$containers_version/current/.venv/bin/synth-trace"
 if [[ ! -x "$trace_cli" ]]; then
   echo "synth-trace was not installed at $trace_cli" >&2
   exit 2
@@ -41,7 +42,6 @@ inspection="$($trace_cli inspect-input "$staged_bundle")"
 python3 -c 'import json,sys; p=json.load(sys.stdin); assert p["trusted"] and p["validation"]["valid"] and p["traces"], p' <<<"$inspection"
 
 cd "$workshop_root"
-SYNTH_TRACE_CLI="$trace_cli" \
 SYNTH_TRACE_V5_REAL_BUNDLE="$staged_bundle" \
 cargo test --manifest-path apps/synth_desktop/src-tauri/Cargo.toml \
   --test trace_v5_e2e \

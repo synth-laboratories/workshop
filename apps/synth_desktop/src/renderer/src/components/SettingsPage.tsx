@@ -8,7 +8,7 @@ import type {
 	SynthBackendSettings,
 	TariffCard,
 	UpdateStatus
-} from "../env";
+} from "../bridge";
 import type { AccountViewModel } from "../runtime/accountView";
 import type { DeviceUsageSummary } from "./UsageSheet";
 import { OnDeviceModelsSettings } from "./OnDeviceModelsSettings";
@@ -20,6 +20,8 @@ import { GeneralPreferencesSettings } from "./GeneralPreferencesSettings";
 import { SettingsCard } from "./SettingsCard";
 import type { DesktopPreferences } from "../preferences";
 import { ProviderMark } from "./ProviderMark";
+import { bridges } from "../runtime/desktopBridge";
+import { ChatgptCodexSubscriptionCard } from "./ChatgptCodexSubscriptionCard";
 
 type Props = {
 	onBack: () => void;
@@ -28,6 +30,7 @@ type Props = {
 	onReloadLaguna: () => Promise<LagunaStatus>;
 	lagunaPhase?: string | null;
 	initialSection?: SectionId;
+	onSectionChange?: (section: SectionId) => void;
 	preferences?: DesktopPreferences;
 	onPreferencesChange?: (prefs: DesktopPreferences) => void;
 };
@@ -127,6 +130,34 @@ const MULTI_AGENT_OPTIONS: Array<{ value: MultiAgentVersion; label: string }> = 
 
 const CHANGELOG = [
 	{
+		version: "0.2.0",
+		date: "August 12, 2026",
+		groups: [
+			{
+				label: "New",
+				items: [
+					"ChatGPT subscription (Codex OAuth) is available from Models: connect once, then choose a Codex model from the ChatGPT subscription group.",
+					"Subscription usage is clearly shown as ChatGPT plan allowance, separate from Synth Cloud and API-key providers.",
+					"Mermaid visuals now render locally through the pinned Grok renderer, with support for flowcharts, sequence, state, class, ER, C4, and additional Mermaid families."
+				]
+			},
+			{
+				label: "Improved",
+				items: [
+					"Mermaid diagrams now fit the active pane by default, with compact zoom, fit, source, copy, and SVG export controls.",
+					"Diagram typography, node spacing, edge labels, colors, and lifecycle layouts are clearer and more polished at compact desktop sizes."
+				]
+			},
+			{
+				label: "Fixed",
+				items: [
+					"Sequence diagrams render multiline labels instead of showing literal break markup, and wide diagrams no longer open clipped offscreen.",
+					"Named development instances can use an explicit read-only Codex auth file without creating or opening a Keychain credential prompt."
+				]
+			}
+		]
+	},
+	{
 		version: "0.1.0",
 		date: "August 10, 2026",
 		groups: [
@@ -188,7 +219,7 @@ function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSett
 	// estimation uses — never from strings kept in the renderer.
 	const [tariffs, setTariffs] = useState<TariffCard[]>([]);
 	useEffect(() => {
-		void window.synthTariffs?.catalog()
+		void bridges.tariffs?.catalog()
 			.then(setTariffs)
 			.catch(() => setTariffs([]));
 	}, []);
@@ -201,7 +232,10 @@ function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSett
 		);
 	}
 	if (connection?.apiKeyConfigured) {
-		models.push({ id: "synth-cloud-laguna-s", name: "Laguna S 2.1", provider: "Synth Cloud", providerMark: "synth", modelId: "openrouter/poolside/laguna-s-2.1", planMetered: true });
+		models.push(
+			{ id: "synth-cloud-laguna-s", name: "Laguna S 2.1", provider: "Synth Cloud", providerMark: "synth", modelId: "openrouter/poolside/laguna-s-2.1", planMetered: true },
+			{ id: "synth-cloud-muse-spark", name: "Muse Spark 1.2", provider: "Synth Cloud · Meta", providerMark: "meta", modelId: "meta/muse-spark-1.2", planMetered: true }
+		);
 	}
 	if (!models.length) return null;
 	const tariffFor = (model: AuthorizedModel) =>
@@ -243,7 +277,7 @@ function MultiAgentModelSettings() {
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
-		void window.synthConfig?.listModelMultiAgent()
+		void bridges.config?.listModelMultiAgent()
 			.then(setModels)
 			.catch((reason) => setError(String(reason)));
 	}, []);
@@ -252,7 +286,7 @@ function MultiAgentModelSettings() {
 		setBusyModel(modelId);
 		setError(null);
 		try {
-			const next = await window.synthConfig?.updateModelMultiAgent({ modelId, version });
+			const next = await bridges.config?.updateModelMultiAgent({ modelId, version });
 			if (next) setModels(next);
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
@@ -307,6 +341,7 @@ export function SettingsPage({
 	onReloadLaguna,
 	lagunaPhase,
 	initialSection = "general",
+	onSectionChange,
 	preferences,
 	onPreferencesChange
 }: Props) {
@@ -323,11 +358,11 @@ export function SettingsPage({
 	}, [initialSection]);
 
 	useEffect(() => {
-		void window.synthDesktop.getInstanceDiagnostics().then(setDesktopIdentity).catch(() => undefined);
+		void bridges.desktop.getInstanceDiagnostics().then(setDesktopIdentity).catch(() => undefined);
 	}, []);
 
 	useEffect(() => {
-		void window.synthUpdates?.status()
+		void bridges.updates?.status()
 			.then(setUpdateStatus)
 			.catch(() => setUpdateStatus(null));
 	}, []);
@@ -351,7 +386,10 @@ export function SettingsPage({
 								type="button"
 								className={`settings-nav-item${section === s.id ? " active" : ""}`}
 								aria-current={section === s.id ? "page" : undefined}
-								onClick={() => setSection(s.id)}
+								onClick={() => {
+									setSection(s.id);
+									onSectionChange?.(s.id);
+								}}
 							>
 								<Icon />
 								<span>{s.label}</span>
@@ -382,6 +420,7 @@ export function SettingsPage({
 								<OnDeviceModelsSettings lagunaPhase={lagunaPhase} onReloadLaguna={onReloadLaguna} />
 							</SettingsCard>
 							<AuthorizedModelsSettings connection={account.connection} />
+							<ChatgptCodexSubscriptionCard />
 							<SettingsCard testId="models-all" className="settings-card-embed">
 								<ModelObservabilitySettings />
 								<MultiAgentModelSettings />
@@ -431,7 +470,7 @@ export function SettingsPage({
 											type="button"
 											className="settings-update-available"
 											data-testid="about-update-available"
-											onClick={() => void window.synthUpdates?.openDownload()}
+											onClick={() => void bridges.updates?.openDownload()}
 										>
 											{`Update available · v${updateStatus.latestVersion}`}
 										</button>

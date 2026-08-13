@@ -203,10 +203,10 @@ test("a failed snapshot in prod offers retry and no plan", () => {
 	assert.deepEqual(view.primaryAction, { kind: "retry", label: "Retry" });
 });
 
-test("dollars format to two places, and nullish reads as zero rather than NaN", () => {
+test("dollars format to two places, and nullish/NaN read as UNKNOWN (never invent $0.00)", () => {
 	assert.equal(formatUsd(157.5), "$157.50");
-	assert.equal(formatUsd(undefined), "$0.00");
-	assert.equal(formatUsd(Number.NaN), "$0.00");
+	assert.equal(formatUsd(undefined), "UNKNOWN");
+	assert.equal(formatUsd(Number.NaN), "UNKNOWN");
 });
 
 // ── `Usage remaining` — the expandable cloud allowance summary ──────────────

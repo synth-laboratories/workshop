@@ -1,0 +1,94 @@
+{
+  "schema": "synth.workshop.a3-receipt.v1",
+  "test": "A3 — two live Banking77 GEPA (Luna vs Sol) through Workshop visuals IPC",
+  "result": "PASS",
+  "sourceRevision": {
+    "workshop": "77b9440f7451-dirty",
+    "g1": "c13d146f14d-dirty",
+    "note": "A3 fixes are uncommitted; unrelated dirty Workshop changes were preserved."
+  },
+  "instance": "a3retry",
+  "cua": false,
+  "pushed": false,
+  "fixes": {
+    "globalIndex": "exclusive fs2 lock covers read, dedupe, append, flush, and sync",
+    "workshop404": "typed not-indexed error is retried only while the recipe child is alive; post-exit drain fails closed",
+    "proposerTimeout": {
+      "timeoutSeconds": 300,
+      "messageStallTimeoutSeconds": 120,
+      "errorPath": "G1 app-server runtime returns an actionable model/deadline/child-termination error on timeout"
+    }
+  },
+  "verification": {
+    "g1ConcurrentAppend": "PASS 1/1",
+    "workshop404NotEmpty": "PASS 1/1",
+    "workshopDualSpawnIsolationFlipRead": "PASS 2/2",
+    "workshopMaterializedTimeoutBounds": "PASS 1/1",
+    "solProviderRoute": {
+      "result": "PASS",
+      "model": "gpt-5.6-sol",
+      "response": "SOL_ROUTE_OK",
+      "authMode": "chatgpt",
+      "tokensPresent": true,
+      "apiKeyFieldPresent": false,
+      "secretsPrinted": false
+    }
+  },
+  "lanes": {
+    "luna": {
+      "recipeId": "gepa.banking77.luna.v1",
+      "optimizerRunId": "banking77_gepa_luna_med_cf98a77a",
+      "proposerPolicyRef": {"harness": "gepa_proposer", "config": "luna_med"},
+      "status": "completed",
+      "ipcEventHighWater": 846,
+      "ipcSequenceMin": 1,
+      "ipcSequenceMax": 846,
+      "ipcProposerDeltaCount": 232,
+      "ipcChildResourceRefCount": 140,
+      "ipcChildResourceRefShapeOk": true,
+      "rollouts": 140,
+      "promptTokens": 168984,
+      "completionTokens": 673,
+      "wallTimeMs": 121410,
+      "costUsd": null,
+      "visual": {"id": "vis_a448d52a29244a5698ed3492354b15e4", "templateId": "optimizer.gepa.live.v1"},
+      "spoolPath": "/Users/joshuapurtell/.synth-desktop/instances/v02/a3retry/data/optimizers/spools/banking77_gepa_luna_med_cf98a77a"
+    },
+    "sol": {
+      "recipeId": "gepa.banking77.sol.v1",
+      "optimizerRunId": "banking77_gepa_sol_med_34883bde",
+      "proposerPolicyRef": {"harness": "gepa_proposer", "config": "sol_med"},
+      "status": "completed",
+      "ipcEventHighWater": 861,
+      "ipcSequenceMin": 1,
+      "ipcSequenceMax": 861,
+      "ipcProposerDeltaCount": 247,
+      "ipcChildResourceRefCount": 140,
+      "ipcChildResourceRefShapeOk": true,
+      "rollouts": 140,
+      "promptTokens": 182024,
+      "completionTokens": 680,
+      "wallTimeMs": 166006,
+      "costUsd": null,
+      "visual": {"id": "vis_ba94506d9a0c45a68c0fa42af356ca66", "templateId": "optimizer.gepa.live.v1"},
+      "spoolPath": "/Users/joshuapurtell/.synth-desktop/instances/v02/a3retry/data/optimizers/spools/banking77_gepa_sol_med_34883bde"
+    }
+  },
+  "multiplex": {
+    "method": "alternating GET /v1/optimizers/runs/{id}/events reads",
+    "unfocusedLaneAdvanced": true,
+    "evidence": "Sol advanced from cursor 221/no delta to cursor 649/247 deltas while Luna advanced to completion; both then completed with distinct durable spools."
+  },
+  "assertions": {
+    "distinctRunIds": true,
+    "distinctSpools": true,
+    "bothManagerSpawned": true,
+    "bothGepaLiveVisuals": true,
+    "ipcBothProducedProposerDelta": true,
+    "ipcBothProducedTypedChildResourceRefs": true,
+    "flipDidNotStallUnfocusedProducer": true,
+    "missingCostNotCoercedToZero": true
+  },
+  "setupNote": "A delayed client command briefly created one extra Luna/Sol pair; both extras were cancelled during initialization before proposer work. The retained pair above is the A3 authority.",
+  "teardown": "Desktop a3retry and its managed children stopped after receipt capture."
+}

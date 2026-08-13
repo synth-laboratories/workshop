@@ -1,0 +1,28 @@
+{
+  "schema": "synth.v02-e2e-gates.receipt.v1",
+  "generatedAt": "2026-08-13T20:37:11.308Z",
+  "tester": "Codex implementation run",
+  "commit": "d26be420ca17884516dbeccca1adb6093106c14f",
+  "cleanState": true,
+  "worktreeStatus": [],
+  "rendererBuilt": true,
+  "gates": [
+    {
+      "name": "visuals_family_truth",
+      "status": "pass"
+    },
+    {
+      "name": "desktop_surface_mcp",
+      "status": "pass"
+    },
+    {
+      "name": "playwright_v02",
+      "status": "pass"
+    },
+    {
+      "name": "bombadil_evidence",
+      "status": "pass"
+    }
+  ],
+  "result": "pass"
+}

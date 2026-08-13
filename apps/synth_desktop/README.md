@@ -204,6 +204,60 @@ configuration when a new session starts. Named development instances store the
 same file under `~/.synth-desktop/instances/<name>/data/config.toml`. Reset removes the override and returns
 the model family to its preset.
 
+## Desktop permission defaults
+
+The composer permission picker is a machine-level Synth setting. Changes are
+stored under `[desktop.permissions]` in `~/.synth-desktop/config.toml` and are
+used for new and restored chats after restart. Named development instances use
+their isolated `config.toml`.
+
+```toml
+[desktop.permissions]
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+```
+
+## Subagents
+
+Synth Workshop treats delegated work as a first-class session surface rather
+than parent-chat noise. It normalizes both Codex app-server collaboration
+protocols before rendering:
+
+- **V1** binds a provisional `collabAgentToolCall` spawn to its child thread
+  and uses the authoritative `agentsStates` snapshot for lifecycle state.
+- **V2** creates a child from `subAgentActivity` and uses that child's own turn
+  lifecycle for result state.
+
+The visual has three lifecycle groups:
+
+- **Working** — starting or actively running children, with task, latest
+  summary, and elapsed time.
+- **Needs attention** — interrupted, failed, stopped, or unavailable children.
+- **Completed** — successfully finished children, retaining their final summary
+  and completion time for review.
+
+### Screenshot flow
+
+1. In **Settings → Models**, select a model with **Multi-agent
+   compatibility** set to V1 or V2. This applies to new Codex sessions.
+2. Start a new Codex chat with that model.
+3. Ask the parent to delegate two independent tasks—for example, “Delegate one
+   subagent to review the API boundary and another to inspect the tests.”
+4. The first child spawn automatically opens the Subagents pane. Capture the
+   **Working** state while both tasks are running.
+5. Let the parent synthesize the results, then capture the **Completed** state
+   with each child’s final summary.
+
+Child-agent output stays in this pane; the parent transcript records concise
+start/finish events instead of duplicating the child conversation. Compatibility
+is model-scoped: a provider that does not support the selected V1/V2 protocol
+can reject delegation or fail to read delegated tasks.
+
+The surface is driven by V1 `collabAgentToolCall` state and V2
+`subAgentActivity` plus child-turn lifecycle events, without polling or
+synthetic progress states. In both versions, `thread/status/changed: idle`
+means the child is not currently turning; it never means the child completed.
+
 ## First-class inventory
 
 Sidebar → **Inventory**:
@@ -225,28 +279,25 @@ skill catalog entries. Skill bodies and references load only when their scoped
 workflow is selected. Codex sees one compact `visual_manage` dispatcher rather
 than 13 visual schemas on every turn; its operation payloads live in the lazy
 visual skill, while legacy visual tool names remain available to other MCP
-clients. The container MCP provides list, explicit register, get, probe, and a
-bounded `container_run_rollouts` transport-acceptance operation. That last
-operation accepts only a previously registered loopback HTTP URL, disables
-redirects, limits each request to 1–8 rollouts and 1–64 explicit actions, and
-returns the engine's exact rollout IDs, states, and event logs. It proves live
-agent-to-MCP-to-container dispatch; it is not evidence of LLM policy quality.
-Policy evaluation belongs to the workspace-owned benchmark harness:
-coding agents discover the container contract, run real LLM policy rollouts,
-seal the result as Trace V5, and let Desktop derive its read-only inspector
-projection. Workshop embeds no Craftax policy.
+clients. The container MCP provides list, explicit register, get, probe,
+`container_prepare_rollout`, and `container_start_prepared_rollout` for live
+policy evals (the coding agent must pass `policy_ref`; the host does not pick
+`luna_med`). `container_run_rollouts` remains a bounded scripted
+transport-acceptance operation. That last operation accepts only a previously
+registered loopback HTTP URL, disables redirects, limits each request to 1–10
+rollouts and 1–64 **explicit** actions, and returns the engine's exact rollout
+IDs, states, and event logs. It proves live agent-to-MCP-to-container dispatch;
+it is not evidence of LLM policy quality. Policy evaluation belongs to the
+workspace-owned benchmark harness: coding agents discover the container
+contract, name `policy_ref`, run real LLM policy rollouts, seal the result as
+Trace V5, and let Desktop derive its read-only inspector projection. Workshop
+embeds no Craftax policy.
 
 The two bundled loopback MCP servers are provisioned with
 `default_tools_approval_mode = "approve"`. This trust is deliberately limited to Desktop's
 packaged container and visual adapters; it lets an agent complete the local
 workflow under “Always ask” without weakening shell or third-party MCP
 approvals.
-
-Codex `collabAgentToolCall` and child-thread lifecycle events produce a
-first-class **Subagents** visual for local, configured-provider, and Intern
-sessions. It opens on the first spawn, maintains Active and Done groups from
-the live app-server stream, and keeps child-agent output in that visual rather
-than duplicating it into the parent transcript.
 
 ## Accessibility / eval
 

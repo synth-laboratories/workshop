@@ -1,0 +1,351 @@
+{
+  "run": {
+    "schemaVersion": "optimizer_run.v1",
+    "id": "opt_sft_campaign",
+    "algorithmId": "sft",
+    "algorithmVersion": "0.1.0",
+    "status": "running",
+    "source": "hosted",
+    "objective": "banking77 adapter · selection F1, heldout measurement-only",
+    "createdAt": "2026-08-12T17:00:00Z",
+    "startedAt": "2026-08-12T17:00:10Z",
+    "cursorSeq": 16,
+    "capabilities": {
+      "cancel": true,
+      "pause": true,
+      "resume": true,
+      "streamEvents": true,
+      "stateSlices": true,
+      "checkpoints": true,
+      "checkpointEvaluations": true
+    },
+    "summary": {
+      "baseModel": "openai/gpt-oss-20b",
+      "adapter": "lora_r16",
+      "backend": "tinker",
+      "step": 100,
+      "epoch": 2
+    },
+    "executionBindings": [
+      { "kind": "hosted_job", "id": "sft_job_a", "status": "running", "label": "Tinker job A" }
+    ]
+  },
+  "events": [
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:1",
+      "type": "optimizer.run.created",
+      "sequenceNumber": 1,
+      "occurredAt": "2026-08-12T17:00:01Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "delta": { "status": "starting" },
+      "snapshot": {
+        "summary": {
+          "baseModel": "openai/gpt-oss-20b",
+          "adapter": "lora_r16",
+          "backend": "tinker"
+        }
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:2",
+      "type": "sft.dataset.validated",
+      "sequenceNumber": 2,
+      "occurredAt": "2026-08-12T17:00:05Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "snapshot": {
+        "dataset_digest": "sha256:dataset_banking77_v3",
+        "format": "chat_jsonl",
+        "rejected": 42,
+        "splits": {
+          "train": { "count": 8000, "digest": "sha256:train_v3", "role": "train" },
+          "selection": { "count": 1000, "digest": "sha256:selection_v3", "role": "selection" },
+          "heldout": { "count": 1000, "digest": "sha256:heldout_v3", "role": "heldout" }
+        }
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:3",
+      "type": "sft.training.queued",
+      "sequenceNumber": 3,
+      "occurredAt": "2026-08-12T17:00:08Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "delta": { "status": "queued", "reason": "accelerator_busy" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:4",
+      "type": "sft.training.started",
+      "sequenceNumber": 4,
+      "occurredAt": "2026-08-12T17:00:10Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "delta": { "status": "running" },
+      "usageDelta": { "cost_usd": 0.2, "wall_time_ms": 1000 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:5",
+      "type": "sft.step.metrics",
+      "sequenceNumber": 5,
+      "occurredAt": "2026-08-12T17:00:30Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "delta": {
+        "step": 50,
+        "epoch": 1,
+        "train_loss": 1.8,
+        "validation_loss": 1.6,
+        "learning_rate": 0.0002
+      },
+      "snapshot": { "summary": { "step": 50, "epoch": 1 } },
+      "usageDelta": { "cost_usd": 1.0, "wall_time_ms": 20000 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:6",
+      "type": "sft.checkpoint.created",
+      "sequenceNumber": 6,
+      "occurredAt": "2026-08-12T17:01:00Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "item": {
+        "kind": "checkpoint",
+        "id": "ckpt_50",
+        "status": "ready",
+        "raw": { "step": 50, "digest": "sha256:ckpt50", "promoted": false }
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:7",
+      "type": "sft.campaign.updated",
+      "sequenceNumber": 7,
+      "occurredAt": "2026-08-12T17:01:05Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "item": { "kind": "campaign", "id": "camp_ckpt_50", "status": "running" },
+      "delta": {
+        "checkpointId": "ckpt_50",
+        "split_role": "selection",
+        "children": [
+          {
+            "kind": "container_rollout",
+            "id": "rollout_ckpt50_ex1",
+            "role": "checkpoint_evaluation",
+            "attributes": {
+              "stream_id": "stream_ckpt50_ex1",
+              "reward_url": "/reward?rollout_id=rollout_ckpt50_ex1",
+              "reward": 0.74
+            }
+          },
+          {
+            "kind": "container_rollout",
+            "id": "rollout_ckpt50_ex2",
+            "role": "checkpoint_evaluation",
+            "attributes": {
+              "stream_id": "stream_ckpt50_ex2",
+              "reward_url": "/reward?rollout_id=rollout_ckpt50_ex2"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:8",
+      "type": "sft.checkpoint_eval.completed",
+      "sequenceNumber": 8,
+      "occurredAt": "2026-08-12T17:01:20Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "item": {
+        "kind": "evaluation",
+        "id": "eval_ckpt_50",
+        "status": "completed",
+        "raw": { "checkpointId": "ckpt_50" }
+      },
+      "delta": {
+        "metric": "macro_f1",
+        "score": 0.74,
+        "split": "selection",
+        "role": "selection"
+      },
+      "usageDelta": { "cost_usd": 0.5, "wall_time_ms": 10000 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:9",
+      "type": "sft.step.metrics",
+      "sequenceNumber": 9,
+      "occurredAt": "2026-08-12T17:02:00Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "delta": {
+        "step": 100,
+        "epoch": 2,
+        "train_loss": 1.1,
+        "validation_loss": 1.05,
+        "learning_rate": 0.00015
+      },
+      "snapshot": { "summary": { "step": 100, "epoch": 2 } },
+      "usageDelta": { "cost_usd": 1.4, "wall_time_ms": 40000 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:10",
+      "type": "sft.checkpoint.created",
+      "sequenceNumber": 10,
+      "occurredAt": "2026-08-12T17:02:10Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "item": {
+        "kind": "checkpoint",
+        "id": "ckpt_100",
+        "status": "ready",
+        "raw": { "step": 100, "digest": "sha256:ckpt100", "promoted": false }
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:11",
+      "type": "sft.campaign.updated",
+      "sequenceNumber": 11,
+      "occurredAt": "2026-08-12T17:02:15Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "item": { "kind": "campaign", "id": "camp_ckpt_100", "status": "running" },
+      "delta": {
+        "checkpointId": "ckpt_100",
+        "split_role": "selection",
+        "children": [
+          {
+            "kind": "container_rollout",
+            "id": "rollout_ckpt100_ex1",
+            "role": "checkpoint_evaluation",
+            "attributes": {
+              "stream_id": "stream_ckpt100_ex1",
+              "reward_url": "/reward?rollout_id=rollout_ckpt100_ex1",
+              "reward": 0.81
+            }
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:12",
+      "type": "sft.checkpoint_eval.completed",
+      "sequenceNumber": 12,
+      "occurredAt": "2026-08-12T17:02:30Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "item": {
+        "kind": "evaluation",
+        "id": "eval_ckpt_100",
+        "status": "completed",
+        "raw": { "checkpointId": "ckpt_100" }
+      },
+      "delta": {
+        "metric": "macro_f1",
+        "score": 0.81,
+        "split": "selection",
+        "role": "selection"
+      },
+      "usageDelta": { "cost_usd": 0.5, "wall_time_ms": 10000 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:13",
+      "type": "sft.checkpoint.promoted",
+      "sequenceNumber": 13,
+      "occurredAt": "2026-08-12T17:02:40Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "item": {
+        "kind": "checkpoint",
+        "id": "ckpt_100",
+        "status": "promoted",
+        "raw": { "step": 100, "digest": "sha256:ckpt100", "promoted": true }
+      },
+      "delta": { "checkpointId": "ckpt_100" },
+      "snapshot": { "summary": { "promotedCheckpointId": "ckpt_100" } }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:14",
+      "type": "sft.examples.updated",
+      "sequenceNumber": 14,
+      "occurredAt": "2026-08-12T17:02:50Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "snapshot": {
+        "examples": [
+          {
+            "id": "ex_1",
+            "intent": "balance_not_updated_after_cheque_or_cash_deposit",
+            "baseline": "ask for the last four of the card",
+            "checkpoint": "confirm the deposit channel, then the expected posting window",
+            "ckpt": "confirm the deposit channel, then the expected posting window",
+            "improved": true
+          },
+          {
+            "id": "ex_2",
+            "intent": "fee_charged",
+            "baseline": "apologize and close",
+            "checkpoint": "name the fee, cite the tariff, offer a waiver path",
+            "ckpt": "name the fee, cite the tariff, offer a waiver path",
+            "improved": true
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:15",
+      "type": "sft.model.materialized",
+      "sequenceNumber": 15,
+      "occurredAt": "2026-08-12T17:03:00Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "item": {
+        "kind": "artifact",
+        "id": "model_ckpt_100",
+        "status": "ready",
+        "raw": {
+          "baseModel": "openai/gpt-oss-20b",
+          "adapter": "lora_r16",
+          "checkpointId": "ckpt_100",
+          "deployable": "sft://opt_sft_campaign/ckpt_100",
+          "digest": "sha256:model100"
+        }
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_sft_campaign:16",
+      "type": "sft.heldout_eval.completed",
+      "sequenceNumber": 16,
+      "occurredAt": "2026-08-12T17:03:20Z",
+      "optimizerRunId": "opt_sft_campaign",
+      "algorithmId": "sft",
+      "item": {
+        "kind": "evaluation",
+        "id": "eval_heldout_ckpt_100",
+        "status": "completed",
+        "raw": { "checkpointId": "ckpt_100" }
+      },
+      "delta": {
+        "metric": "macro_f1",
+        "split": "heldout",
+        "role": "heldout",
+        "measurementOnly": true
+      }
+    }
+  ]
+}

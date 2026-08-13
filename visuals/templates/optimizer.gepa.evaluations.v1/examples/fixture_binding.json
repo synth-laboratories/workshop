@@ -1,0 +1,9 @@
+{
+  "bindings": [
+    {
+      "slot": "optimizer_run",
+      "kind": "fixture",
+      "source": "templates/optimizer.gepa.evaluations.v1/examples/events.json"
+    }
+  ]
+}

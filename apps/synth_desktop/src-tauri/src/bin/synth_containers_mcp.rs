@@ -1,11 +1,11 @@
 //! Stdio MCP adapter for Synth Desktop's local container registry.
 
+#[path = "../ipc/mcp_stdio.rs"]
+mod mcp_stdio;
+
+use mcp_stdio::{run_stdio_server, McpServerInfo};
 use serde_json::{json, Value};
-use std::{
-    env, fs,
-    io::{self, BufRead, Write},
-    path::PathBuf,
-};
+use std::{env, fs, io, io::Write, path::PathBuf};
 
 #[derive(serde::Deserialize)]
 struct Connection {
@@ -29,10 +29,23 @@ fn connection_file() -> PathBuf {
         })
 }
 
+fn display_err(error: impl std::fmt::Display) -> String {
+    error.to_string()
+}
+
 fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
-    let connection: Connection =
-        serde_json::from_str(&fs::read_to_string(connection_file()).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+    request_inner(method, path, body).map_err(display_err)
+}
+
+fn request_inner(
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value, synth_desktop_lib::error::AppError> {
+    let connection: Connection = serde_json::from_str(
+        &fs::read_to_string(connection_file()).map_err(synth_desktop_lib::error::AppError::from)?,
+    )
+    .map_err(synth_desktop_lib::error::AppError::from)?;
     let payload = body
         .map(|v| serde_json::to_vec(&v).unwrap_or_default())
         .unwrap_or_default();
@@ -43,22 +56,24 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
         .next()
         .unwrap_or_default()
         .parse::<std::net::SocketAddr>()
-        .map_err(|e| e.to_string())?;
-    let mut stream = std::net::TcpStream::connect(addr).map_err(|e| e.to_string())?;
+        .map_err(synth_desktop_lib::error::AppError::from)?;
+    let mut stream =
+        std::net::TcpStream::connect(addr).map_err(synth_desktop_lib::error::AppError::from)?;
     let wire = format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", connection.token, payload.len());
     stream
         .write_all(wire.as_bytes())
         .and_then(|_| stream.write_all(&payload))
-        .map_err(|e| e.to_string())?;
+        .map_err(synth_desktop_lib::error::AppError::from)?;
     let mut response = String::new();
-    io::Read::read_to_string(&mut stream, &mut response).map_err(|e| e.to_string())?;
+    io::Read::read_to_string(&mut stream, &mut response)
+        .map_err(synth_desktop_lib::error::AppError::from)?;
     serde_json::from_str(
         response
             .split("\r\n\r\n")
             .nth(1)
-            .ok_or("empty IPC response")?,
+            .ok_or_else(|| synth_desktop_lib::error::AppError::message("empty IPC response"))?,
     )
-    .map_err(|e| e.to_string())
+    .map_err(synth_desktop_lib::error::AppError::from)
 }
 
 fn tools() -> Value {
@@ -67,7 +82,11 @@ fn tools() -> Value {
         {"name":"container_register","description":"Register and hydrate one container URL explicitly supplied by the user or workspace. This does not scan or guess ports.","inputSchema":{"type":"object","properties":{"base_url":{"type":"string"},"name":{"type":"string"},"location":{"type":"string","default":"local"},"task_family":{"type":"string"},"metadata":{"type":"object"}},"required":["base_url"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}},
         {"name":"container_get","description":"Get a container including cached health and hydrated /info metadata","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
         {"name":"container_probe","description":"Probe one registered container and refresh /health and /info; never scans ports","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
-        ,{"name":"container_run_rollouts","description":"Run 1-8 bounded live rollouts against one registered loopback container; returns exact rollout IDs, states, and event logs","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":8},"seeds":{"type":"array","items":{"type":"integer"},"maxItems":8},"actions":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64}},"required":["container_id","count"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":true}}
+        ,{"name":"container_prepare_rollout","description":"Idempotently prepare one caller-stable rollout identity and return its declared stream descriptor. Repeating the same rollout_id restores the same preparation; changed transport or retention conflicts.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"},"task_instance_id":{"type":"string"},"seed":{"type":"integer"},"policy_ref":{"type":"object","properties":{"harness":{"type":"string"},"config":{"type":"string"},"code":{}},"additionalProperties":true},"telemetry":{"type":"object"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}}
+        ,{"name":"container_start_prepared_rollout","description":"Idempotently start the exact prepared rollout after stream.subscribed and a current visual.ready receipt. A reconnect replays the same immutable rollout identity; changed task or policy conflicts. The host does not pick luna_med.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"},"stream":{"type":"object"},"visual_id":{"type":"string"},"seed":{"type":"integer"},"task_instance_id":{"type":"string"},"policy_ref":{"type":"object","properties":{"harness":{"type":"string"},"config":{"type":"string"},"code":{}},"required":["harness"],"additionalProperties":true},"telemetry":{"type":"object"}},"required":["container_id","rollout_id","stream","visual_id","policy_ref"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}}
+        ,{"name":"container_get_rollout","description":"Restore authoritative rollout lifecycle state after a timeout or reconnect without starting work.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"}},"required":["container_id","rollout_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
+        ,{"name":"container_poll_rollout","description":"Resume the exact declared poll stream after a sequence cursor. Returns events plus authoritative high_water and closed cursor state; it never re-executes the rollout.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"},"stream":{"type":"object"},"after":{"type":"integer","minimum":0}},"required":["container_id","rollout_id","stream"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
+        ,{"name":"container_run_rollouts","description":"Scripted engine-acceptance only: 1-10 bounded rollouts with an explicit action list. Not a ReAct or model evaluation. Live policy evals use container_prepare_rollout then container_start_prepared_rollout with policy_ref.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":10},"seeds":{"type":"array","items":{"type":"integer"},"maxItems":10},"actions":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64}},"required":["container_id","count","actions"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":true}}
     ]})
 }
 
@@ -102,6 +121,32 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             &format!("/v1/containers/{}/probe", id()?),
             Some(json!({})),
         ),
+        "container_prepare_rollout" => request(
+            "POST",
+            &format!("/v1/containers/{}/rollouts/prepare", id()?),
+            Some(args.clone()),
+        ),
+        "container_start_prepared_rollout" => request(
+            "POST",
+            &format!("/v1/containers/{}/rollouts/start", id()?),
+            Some(args.clone()),
+        ),
+        "container_get_rollout" => {
+            let rollout_id = args
+                .get("rollout_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "rollout_id required".to_string())?;
+            request(
+                "GET",
+                &format!("/v1/containers/{}/rollouts/{rollout_id}", id()?),
+                None,
+            )
+        }
+        "container_poll_rollout" => request(
+            "POST",
+            &format!("/v1/containers/{}/rollouts/poll", id()?),
+            Some(args.clone()),
+        ),
         "container_run_rollouts" => request(
             "POST",
             &format!("/v1/containers/{}/rollouts", id()?),
@@ -112,45 +157,14 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
 }
 
 fn main() {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
-    for line in stdin.lock().lines().map_while(Result::ok) {
-        let Ok(req) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        let id = req.get("id").cloned().unwrap_or(Value::Null);
-        let result = match req
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-        {
-            "initialize" => {
-                json!({"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"synth-containers-mcp","version":"0.1.0"}})
-            }
-            "tools/list" => tools(),
-            "tools/call" => {
-                let params = req.get("params").cloned().unwrap_or(json!({}));
-                let name = params
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                match call_tool(name, &args) {
-                    Ok(v) => {
-                        json!({"content":[{"type":"text","text":serde_json::to_string_pretty(&v).unwrap_or_default()}],"structuredContent":v})
-                    }
-                    Err(e) => json!({"content":[{"type":"text","text":e}],"isError":true}),
-                }
-            }
-            _ => continue,
-        };
-        let _ = writeln!(
-            stdout,
-            "{}",
-            json!({"jsonrpc":"2.0","id":id,"result":result})
-        );
-        let _ = stdout.flush();
-    }
+    run_stdio_server(
+        McpServerInfo {
+            name: "synth-containers-mcp",
+            version: "0.1.0",
+        },
+        tools,
+        |name, args| call_tool(name, args),
+    );
 }
 
 #[cfg(test)]
@@ -166,11 +180,46 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "container_run_rollouts")
             .unwrap();
-        assert_eq!(rollout["inputSchema"]["properties"]["count"]["maximum"], 8);
+        assert_eq!(rollout["inputSchema"]["properties"]["count"]["maximum"], 10);
+        assert_eq!(
+            rollout["inputSchema"]["properties"]["seeds"]["maxItems"],
+            10
+        );
         assert_eq!(
             rollout["inputSchema"]["properties"]["actions"]["maxItems"],
             64
         );
         assert_eq!(rollout["annotations"]["idempotentHint"], false);
+        assert!(rollout["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "actions"));
+        let start = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "container_start_prepared_rollout")
+            .unwrap();
+        assert!(start["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "policy_ref"));
+        assert!(start["description"]
+            .as_str()
+            .unwrap()
+            .contains("does not pick luna_med"));
+        assert_eq!(start["annotations"]["idempotentHint"], true);
+        for name in ["container_get_rollout", "container_poll_rollout"] {
+            let tool = catalog["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap();
+            assert_eq!(tool["annotations"]["readOnlyHint"], true);
+            assert_eq!(tool["annotations"]["idempotentHint"], true);
+        }
     }
 }

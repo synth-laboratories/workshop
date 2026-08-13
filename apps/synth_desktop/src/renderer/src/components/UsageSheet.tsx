@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { UsageBreakdown, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
-import type { SynthAccountSummary } from "../env";
+import type { SynthAccountSummary } from "../bridge";
 import {
 	type AccountViewModel,
 	formatDate,
@@ -8,6 +8,7 @@ import {
 	formatTokens,
 	formatUsd
 } from "../runtime/accountView";
+import { bridges } from "../runtime/desktopBridge";
 
 /**
  * Usage sheet: two sections that are never blended.
@@ -173,7 +174,7 @@ export function UsageSheet({
 
 	useEffect(() => {
 		if (!open) return;
-		const bridge = window.synthUsage;
+		const bridge = bridges.usage;
 		if (!bridge) {
 			setUsage(null);
 			setUsageFailed(true);
@@ -458,7 +459,7 @@ export function UsageSheet({
 							onClick={onOpenDeviceUsage}
 							data-testid="usage-sheet-open-inventory"
 						>
-							Open Inventory → Usage
+							Open Data → Usage
 						</button>
 					</div>
 				</section>

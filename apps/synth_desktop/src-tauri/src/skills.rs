@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillHit {
     pub id: String,
@@ -38,6 +38,10 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
     BundledSkill {
         id: "run-live-container-evals",
         content: include_str!("../../skills/run-live-container-evals/SKILL.md"),
+    },
+    BundledSkill {
+        id: "author-synth-diagrams",
+        content: include_str!("../../skills/author-synth-diagrams/SKILL.md"),
     },
 ];
 
@@ -70,6 +74,7 @@ pub fn list_skills() -> Vec<SkillHit> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn skills_list() -> Vec<SkillHit> {
     list_skills()
 }

@@ -19,7 +19,11 @@ usage() {
 Usage: ./scripts/desktop-instance.sh <command> [name]
 
   dev [name]       Run an isolated foreground Tauri/Vite development instance
+  cua [name]       Build and run a named debug .app for Computer Use
+  cua-build [name] Build and sign the named debug .app without launching it
+  cua-run [name]   Run the existing signed CUA app without rebuilding
   status [name]    Show the exact process and instance paths
+  stage [name]     Stage protected-folder-free runtime inputs without launching
   stop [name]      Stop only the named instance
   clean [name]     Stop and move the named instance data to Trash
   print [name]     Print the resolved instance contract without launching
@@ -44,6 +48,7 @@ ICON_PNG="$GENERATED_ROOT/icon.png"
 ICON_ICNS="$GENERATED_ROOT/icon.icns"
 EXE="$TARGET_ROOT/debug/synth-desktop"
 APP_TITLE="Synth Workshop $RELEASE_LINE · $NAME"
+CUA_EXE="$TARGET_ROOT/debug/bundle/macos/$APP_TITLE.app/Contents/MacOS/synth-desktop"
 BUNDLE_ID="com.synth.desktop.$RELEASE_SLUG.dev.$NAME"
 CHECKSUM="$(printf '%s' "$NAME" | cksum | awk '{print $1}')"
 VITE_PORT=$((14200 + CHECKSUM % 1000))
@@ -66,13 +71,67 @@ case "$NAME" in
 esac
 
 instance_processes() {
-  ps -axo pid=,args= | awk -v exe="$EXE" '
+  ps -axo pid=,args= | awk -v exe="$EXE" -v cua_exe="$CUA_EXE" '
     {
       pid=$1
       sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", $0)
-      if ($0 == exe) print pid "\t" $0
+      if ($0 == exe || $0 == cua_exe) print pid "\t" $0
     }
   '
+}
+
+# Named Workshop instances are disposable test clients. Refresh their provider
+# credentials from the developer's private machine profile on every launch so
+# CUA/eval runs do not begin in a misleading signed-out state. Only the three
+# allowlisted values are copied; instance routing and other settings remain
+# isolated. The destination is private and is never printed.
+stage_test_credentials() {
+  local source_env="${SYNTH_DESKTOP_TEST_CREDENTIALS_FILE:-$HOME/.synth-desktop/.env}"
+  local destination_env="$DATA_ROOT/.env"
+  python3 - "$source_env" "$destination_env" <<'PY'
+import os
+import re
+import sys
+from pathlib import Path
+
+source, destination = map(Path, sys.argv[1:])
+allowed = ("SYNTH_API_KEY", "OPENROUTER_API_KEY")
+
+def parse(path):
+    values = {}
+    if not path.is_file():
+        return values
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key in allowed:
+            values[key] = value.strip().strip("'\"")
+    return values
+
+seed = parse(source)
+for key in allowed:
+    if os.environ.get(key, "").strip():
+        seed[key] = os.environ[key].strip()
+
+existing = destination.read_text().splitlines() if destination.is_file() else []
+kept = [line for line in existing if not re.match(r"^\s*(?:export\s+)?(?:SYNTH_API_KEY|OPENROUTER_API_KEY)\s*=", line)]
+for key in allowed:
+    value = seed.get(key)
+    if value:
+        escaped = value.replace("'", "'\"'\"'")
+        kept.append(f"{key}='{escaped}'")
+
+destination.parent.mkdir(parents=True, exist_ok=True)
+temporary = destination.with_suffix(".env.tmp")
+temporary.write_text("\n".join(kept).rstrip() + "\n")
+temporary.chmod(0o600)
+temporary.replace(destination)
+PY
 }
 
 write_contract() {
@@ -106,15 +165,18 @@ EOF
       chmod 600 "$DATA_ROOT/.env"
     fi
   fi
+  stage_test_credentials
 
-  python3 "$ROOT/scripts/generate-desktop-instance-icon.py" \
-    --source "$ROOT/apps/synth_desktop/resources/icon.png" \
-    --png "$ICON_PNG" \
-    --icns "$ICON_ICNS" \
-    --release-label "$RELEASE_LINE" \
-    --instance-label "$ICON_LABEL"
+  if [[ ! -f "$ICON_PNG" || ! -f "$ICON_ICNS" ]]; then
+    python3 "$ROOT/scripts/generate-desktop-instance-icon.py" \
+      --source "$ROOT/apps/synth_desktop/resources/icon.png" \
+      --png "$ICON_PNG" \
+      --icns "$ICON_ICNS" \
+      --release-label "$RELEASE_LINE" \
+      --instance-label "$ICON_LABEL"
+  fi
 
-  cat >"$CONFIG" <<EOF
+  cat >"$CONFIG.tmp" <<EOF
 {
   "productName": "$APP_TITLE",
   "version": "$APP_VERSION",
@@ -139,6 +201,7 @@ EOF
     }]
   },
   "bundle": {
+    "targets": ["app"],
     "icon": ["$ICON_PNG", "$ICON_ICNS"],
     "macOS": {
       "minimumSystemVersion": "14.0"
@@ -146,6 +209,11 @@ EOF
   }
 }
 EOF
+  if [[ -f "$CONFIG" ]] && cmp -s "$CONFIG.tmp" "$CONFIG"; then
+    rm "$CONFIG.tmp"
+  else
+    mv "$CONFIG.tmp" "$CONFIG"
+  fi
 
   if [[ -f "$MANIFEST" ]]; then
     old_runtime="$(jq -c '.runtime // empty' "$MANIFEST" 2>/dev/null || true)"
@@ -304,6 +372,66 @@ status_instance() {
   echo "[desktop:$NAME] manifest $MANIFEST"
 }
 
+stage_gepa_runtime() {
+  local runtime_root="$INSTANCE_ROOT/runtime/gepa"
+  local cookbook_target="$runtime_root/banking77_container"
+  local cookbook_source="${SYNTH_BANKING77_GEPA_COOKBOOK_SOURCE:-$(dirname "$ROOT")/synth-cookbooks-public/cookbooks/optimizers/gepa/banking77_container}"
+  local optimizer_target="$runtime_root/optimizer-project"
+  local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-$(dirname "$ROOT")/optimizers-g1}"
+  local secret_target="$DATA_ROOT/banking77-secret.env"
+  local secret_source="${SYNTH_BANKING77_SECRET_ENV_SOURCE:-$(dirname "$ROOT")/synth-ai/.env}"
+
+  if [[ ! -f "$cookbook_source/gepa.toml" || ! -f "$cookbook_source/synth_service_app.py" ]]; then
+    echo "[desktop:$NAME] ERROR GEPA cookbook source is unavailable: $cookbook_source" >&2
+    exit 1
+  fi
+  mkdir -p "$cookbook_target"
+  rsync -a --delete \
+    --exclude '.venv' \
+    --exclude '__pycache__' \
+    --exclude 'runs' \
+    "$cookbook_source/" "$cookbook_target/"
+  export SYNTH_BANKING77_GEPA_COOKBOOK_ROOT="$cookbook_target"
+
+  if [[ ! -f "$optimizer_source/pyproject.toml" || ! -f "$optimizer_source/rust/crates/synth_gepa/Cargo.toml" ]]; then
+    echo "[desktop:$NAME] ERROR optimizer project source is unavailable: $optimizer_source" >&2
+    exit 1
+  fi
+  mkdir -p "$optimizer_target"
+  rsync -a --delete \
+    --exclude '.git' \
+    --exclude '.venv' \
+    --exclude 'target' \
+    --exclude '.out' \
+    --exclude '.pytest_cache' \
+    --exclude '.ruff_cache' \
+    --exclude '__pycache__' \
+    "$optimizer_source/" "$optimizer_target/"
+  export SYNTH_OPTIMIZER_PROJECT_ROOT="$optimizer_target"
+
+  # Finder-launched apps do not inherit shell secrets. Stage only the one
+  # allowlisted key inside the mode-0700 instance data root so the app never
+  # probes protected source folders at runtime.
+  if [[ ! -s "$secret_target" && -f "$secret_source" ]]; then
+    local secret_tmp="$secret_target.tmp"
+    umask 077
+    awk '/^[[:space:]]*(export[[:space:]]+)?OPENAI_API_KEY=/{print; exit}' "$secret_source" >"$secret_tmp"
+    if [[ -s "$secret_tmp" ]]; then
+      mv "$secret_tmp" "$secret_target"
+    else
+      rm -f "$secret_tmp"
+    fi
+  fi
+  export SYNTH_BANKING77_SECRET_ENV_FILE="$secret_target"
+}
+
+stage_instance() {
+  write_contract
+  stage_gepa_runtime
+  echo "[desktop:$NAME] staged GEPA runtime under $INSTANCE_ROOT/runtime/gepa"
+  echo "[desktop:$NAME] app runtime requires no Documents-folder paths"
+}
+
 dev_instance() {
   write_contract
   if [[ -n "$(instance_processes)" ]]; then
@@ -333,10 +461,14 @@ dev_instance() {
   local port_holder
   port_holder="$(lsof -nP -iTCP:"$SYNTH_LAGUNA_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
   if [[ -n "$port_holder" ]]; then
-    echo "[desktop:$NAME] ERROR Laguna port $SYNTH_LAGUNA_PORT is held by pid $port_holder:" >&2
-    ps -p "$port_holder" -o command= >&2 || true
-    echo "[desktop:$NAME] stop that process, or set SYNTH_LAGUNA_PORT to a free port for this instance" >&2
-    exit 1
+    if lsof -p "$port_holder" 2>/dev/null | rg -F "$laguna_home/" >/dev/null; then
+      echo "[desktop:$NAME] reusing owned Laguna daemon pid $port_holder"
+    else
+      echo "[desktop:$NAME] ERROR Laguna port $SYNTH_LAGUNA_PORT is held by pid $port_holder:" >&2
+      ps -p "$port_holder" -o command= >&2 || true
+      echo "[desktop:$NAME] stop that process, or set SYNTH_LAGUNA_PORT to a free port for this instance" >&2
+      exit 1
+    fi
   fi
 
   export SYNTH_DESKTOP_INSTANCE="$NAME"
@@ -348,7 +480,22 @@ dev_instance() {
   export SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST"
   export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
   export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
+  # Debug instances use the existing Codex file as a seed and never touch
+  # Keychain. Refreshed credentials live in one private machine-local cache so
+  # rebuilds and differently named instances reuse a still-valid session.
+  local shared_oauth_root="${SYNTH_DESKTOP_SHARED_ROOT:-$HOME/.synth-desktop/shared}/oauth"
+  mkdir -p "$shared_oauth_root"
+  chmod 700 "$shared_oauth_root"
+  if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" && -f "$HOME/.codex/auth.json" ]]; then
+    SYNTH_DESKTOP_DEV_OAUTH_FILE="$HOME/.codex/auth.json"
+  fi
+  [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" ]] || export SYNTH_DESKTOP_DEV_OAUTH_FILE
+  if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}" ]]; then
+    SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$shared_oauth_root/codex.json"
+  fi
+  export SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE
   export CARGO_TARGET_DIR="$TARGET_ROOT"
+  stage_gepa_runtime
 
   # Export profile/account-backend routing from the instance TOML. Responses
   # gateway routing is source-owned by Rust and has no launcher override.
@@ -377,6 +524,17 @@ PY
   fi
   echo "[desktop:$NAME] profile=${SYNTH_INTERN_PROFILE:-} backend=${SYNTH_BACKEND_URL:-} gateway=source-owned"
 
+  if [[ "$COMMAND" == "cua-run" ]]; then
+    if [[ ! -x "$CUA_EXE" ]]; then
+      echo "[desktop:$NAME] signed CUA app is missing; run cua-build first" >&2
+      exit 1
+    fi
+    codesign --verify --deep --strict "$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
+    echo "[desktop:$NAME] launching existing signed CUA app from $INSTANCE_ROOT"
+    cd "$INSTANCE_ROOT"
+    exec "$CUA_EXE"
+  fi
+
   # The adapter prebuild compiles the shared desktop library and therefore
   # runs Tauri code generation too. Give it the same overlay as `tauri dev`;
   # otherwise Cargo can cache the canonical bundle identifier and the named
@@ -385,20 +543,75 @@ PY
   export TAURI_CONFIG
   TAURI_CONFIG="$(<"$CONFIG")"
 
-  echo "[desktop:$NAME] building embedded-agent MCP adapters"
-  cargo build \
-    --manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
-    --bin synth-containers-mcp \
-    --bin synth-visuals-mcp \
-    --bin synth-optimizers-mcp
+  local adapters_ready=1 adapter
+  for adapter in synth-containers-mcp synth-visuals-mcp synth-optimizers-mcp; do
+    [[ -x "$TARGET_ROOT/debug/$adapter" ]] || adapters_ready=0
+  done
+  if [[ "$adapters_ready" == "0" || "${SYNTH_DESKTOP_REBUILD_ADAPTERS:-0}" == "1" ]]; then
+    echo "[desktop:$NAME] building embedded-agent MCP adapters"
+    cargo build \
+      --manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
+      --bin synth-containers-mcp \
+      --bin synth-visuals-mcp \
+      --bin synth-optimizers-mcp
+  else
+    echo "[desktop:$NAME] reusing embedded-agent MCP adapters (set SYNTH_DESKTOP_REBUILD_ADAPTERS=1 to refresh)"
+  fi
 
   revalidate_provenance "post-build" "$pre_build_revision"
   export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
 
-  echo "[desktop:$NAME] launching $APP_TITLE"
+  if [[ "$COMMAND" == "cua-build" ]]; then
+    echo "[desktop:$NAME] building $APP_TITLE without launch"
+  else
+    echo "[desktop:$NAME] launching $APP_TITLE"
+  fi
   echo "[desktop:$NAME] data=$DATA_ROOT vite=$VITE_PORT laguna=$SYNTH_LAGUNA_BASE_URL home=$laguna_home"
   echo "[desktop:$NAME] provenance $SOURCE_REVISION digest=$(executable_digest)"
   cd "$ROOT/apps/synth_desktop"
+  if [[ "$COMMAND" == "cua" || "$COMMAND" == "cua-build" ]]; then
+    # Raw `tauri dev` binaries have no LaunchServices app identity, so macOS
+    # accessibility clients cannot address a named instance reliably. A debug
+    # bundle preserves the isolated environment and registers the unique ID.
+    # Build only the runnable .app. A DMG adds time and has no use in the
+    # local CUA loop.
+    npx tauri build --debug --bundles app --config "$CONFIG"
+    local app_bundle="$CARGO_TARGET_DIR/debug/bundle/macos/$APP_TITLE.app"
+    local app_executable="$CUA_EXE"
+    if [[ ! -x "$app_executable" ]]; then
+      echo "[desktop:$NAME] expected CUA bundle executable missing: $app_executable" >&2
+      exit 1
+    fi
+    # Local test builds must never open a Keychain/password dialog. Ad-hoc
+    # signing requires no secret. Stable certificate signing remains an
+    # explicit opt-in for workflows that need a persistent CUA identity.
+    if [[ "${SYNTH_DESKTOP_USE_DEV_SIGNER:-0}" == "1" ]]; then
+      local dev_signing_identity="${SYNTH_DESKTOP_DEV_SIGNING_IDENTITY:-Synth Workshop Development}"
+      local dev_signing_keychain
+      dev_signing_keychain="$("$ROOT/scripts/setup-desktop-dev-signing.sh")"
+      security unlock-keychain \
+        -p "$(<"${SYNTH_DESKTOP_DEV_SIGNING_ROOT:-$HOME/.synth-desktop/dev-signing}/keychain-password")" \
+        "$dev_signing_keychain"
+      codesign --force --deep --sign "$dev_signing_identity" \
+        --keychain "$dev_signing_keychain" \
+        --identifier "com.synth.desktop.v02.dev.shared" "$app_bundle"
+    else
+      codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$app_bundle"
+    fi
+    codesign --verify --deep --strict "$app_bundle"
+    echo "[desktop:$NAME] CUA bundle $app_bundle"
+    echo "[desktop:$NAME] CUA target $BUNDLE_ID"
+    if [[ "$COMMAND" == "cua-build" ]]; then
+      echo "[desktop:$NAME] build complete; app was not launched"
+      return
+    fi
+    # Never launch the packaged app with the source checkout as its current
+    # directory. On macOS, a cwd under ~/Documents attributes source-tree
+    # traversal to the app and triggers an unnecessary Files & Folders prompt.
+    # Runtime data and workspaces already live under this isolated instance.
+    cd "$INSTANCE_ROOT"
+    exec "$app_executable"
+  fi
   exec npx tauri dev --config "$CONFIG"
 }
 
@@ -418,8 +631,9 @@ clean_instance() {
 }
 
 case "$COMMAND" in
-  dev) dev_instance ;;
+  dev|cua|cua-build|cua-run) dev_instance ;;
   status) status_instance ;;
+  stage) stage_instance ;;
   stop) stop_instance ;;
   clean) clean_instance ;;
   print) print_contract ;;

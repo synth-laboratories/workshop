@@ -1,0 +1,56 @@
+{
+  "run": {
+    "schemaVersion": "optimizer_run.v1",
+    "id": "opt_gepa_banking77",
+    "algorithmId": "gepa",
+    "status": "running",
+    "source": "local",
+    "objective": "banking77 prompt · maximize macro-F1",
+    "cursorSeq": 7
+  },
+  "events": [
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_banking77:4",
+      "type": "gepa.evaluation.linked",
+      "sequenceNumber": 4,
+      "occurredAt": "2026-08-12T16:00:21Z",
+      "optimizerRunId": "opt_gepa_banking77",
+      "algorithmId": "gepa",
+      "item": { "kind": "candidate", "id": "cand_seed", "status": "evaluated" },
+      "delta": {
+        "resource_ref": {
+          "kind": "container_rollout",
+          "id": "rollout_cand_seed",
+          "role": "candidate_evaluation",
+          "attributes": {
+            "stream_id": "stream_cand_seed",
+            "reward_url": "/reward?rollout_id=rollout_cand_seed",
+            "reward": 0.71
+          }
+        }
+      }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_gepa_banking77:7",
+      "type": "gepa.evaluation.linked",
+      "sequenceNumber": 7,
+      "occurredAt": "2026-08-12T16:01:41Z",
+      "optimizerRunId": "opt_gepa_banking77",
+      "algorithmId": "gepa",
+      "item": { "kind": "candidate", "id": "cand_m1", "status": "evaluated" },
+      "delta": {
+        "resource_ref": {
+          "kind": "container_rollout",
+          "id": "rollout_cand_m1",
+          "role": "candidate_evaluation",
+          "attributes": {
+            "stream_id": "stream_cand_m1",
+            "reward_url": "/reward?rollout_id=rollout_cand_m1"
+          }
+        }
+      }
+    }
+  ]
+}

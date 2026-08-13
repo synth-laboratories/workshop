@@ -27,7 +27,7 @@ const CREDITS_UNKNOWN_PATH: &str = "/api/v1/billing/credits-unknown";
 const CACHE_TTL_SECONDS: i64 = 60;
 pub const SCHEMA_VERSION: &str = "synth.desktop-account.v1";
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudAccount {
     pub id: String,
     #[serde(default)]
@@ -38,7 +38,7 @@ pub struct CloudAccount {
     pub avatar_url: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudOrganization {
     pub id: String,
     #[serde(default)]
@@ -47,12 +47,13 @@ pub struct CloudOrganization {
     pub role: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudPlan {
     pub tier: String,
     pub display_name: String,
     pub state: String,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub price_cents: i64,
     #[serde(default)]
     pub renews_at: Option<String>,
@@ -60,15 +61,18 @@ pub struct CloudPlan {
     pub is_paid: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudAllowance {
     /// `None` means the backend does not meter this account in dollars. The UI
     /// must then show no dollar figure at all.
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub limit_cents: Option<i64>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub used_cents: Option<i64>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub remaining_cents: Option<i64>,
     #[serde(default)]
     pub resets_at: Option<String>,
@@ -76,17 +80,20 @@ pub struct CloudAllowance {
     pub source: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudUsageWindow {
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub events: i64,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub billed_cents: i64,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub nominal_cents: i64,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudUsageWindows {
     #[serde(default)]
     pub today: CloudUsageWindow,
@@ -96,7 +103,7 @@ pub struct CloudUsageWindows {
     pub thirty_days: CloudUsageWindow,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudBillingActions {
     #[serde(default)]
     pub checkout_url: Option<String>,
@@ -106,17 +113,19 @@ pub struct CloudBillingActions {
     pub upgrade_tier: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudPlanOption {
     pub tier: String,
     pub display_name: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub price_cents: i64,
+    #[specta(type = specta_typescript::Unknown)]
     pub monthly_allowance_cents: i64,
     #[serde(default)]
     pub interval: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudSnapshot {
     #[serde(default)]
     pub schema_version: String,
@@ -151,7 +160,7 @@ pub struct SnapshotRead {
     pub unauthenticated: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum BillingAction {
     Upgrade,
@@ -194,7 +203,9 @@ fn connection_identity(backend_url: &str, api_key: &str) -> u64 {
 #[derive(Clone, Debug)]
 pub enum AccountError {
     /// Connection refused, DNS failure, TLS failure, or timeout.
-    Unreachable { detail: String },
+    Unreachable {
+        detail: String,
+    },
     Unauthorized,
     /// The backend answered, but does not serve the account contract.
     MissingRoute,
@@ -204,9 +215,13 @@ pub enum AccountError {
     UnexpectedStatus(u16),
     /// A schema this build does not speak. The reported version is backend text
     /// and stays out of the copy.
-    UnsupportedSchema { reported: String },
+    UnsupportedSchema {
+        reported: String,
+    },
     /// A 200 whose body is not an account snapshot.
-    Malformed { detail: String },
+    Malformed {
+        detail: String,
+    },
 }
 
 impl AccountError {
@@ -277,17 +292,14 @@ pub struct AccountCloudClient {
 
 impl Default for AccountCloudClient {
     fn default() -> Self {
-        Self::new()
+        Self::open()
     }
 }
 
 impl AccountCloudClient {
-    pub fn new() -> Self {
+    pub fn open() -> Self {
         Self {
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(12))
-                .build()
-                .expect("account-snapshot HTTP client"),
+            http: crate::http::http_client_with_timeout(crate::limits::ACCOUNT_CLOUD_TIMEOUT),
             cache: Mutex::new(None),
         }
     }
@@ -512,7 +524,6 @@ impl AccountCloudClient {
         }
         Ok(session.url)
     }
-
 }
 
 #[cfg(test)]
@@ -575,7 +586,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_key_reads_as_unauthenticated_without_touching_the_network() {
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let read = client.read("http://127.0.0.1:1", None, false, now()).await;
         assert!(read.unauthenticated);
         assert!(read.snapshot.is_none());
@@ -585,7 +596,7 @@ mod tests {
     #[tokio::test]
     async fn a_fresh_snapshot_is_parsed_and_then_served_from_cache() {
         let (origin, served) = spawn_backend(vec![(200, snapshot_body("pro", 15_750))]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let first = client.read(&origin, Some("sk_test"), false, now()).await;
         let snapshot = first.snapshot.expect("snapshot parsed");
         assert_eq!(snapshot.plan.tier, "pro");
@@ -615,7 +626,7 @@ mod tests {
             (200, snapshot_body("pro", 20_000)),
             (503, r#"{"detail":"down"}"#.into()),
         ]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         let stale = client
             .read(
@@ -640,7 +651,7 @@ mod tests {
     #[tokio::test]
     async fn a_different_key_never_reads_another_accounts_cache() {
         let (origin, _) = spawn_backend(vec![(200, snapshot_body("pro", 20_000))]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_one"), false, now()).await;
         // The second key has no cache entry and the fake backend is exhausted,
         // so the read must fail rather than return the first account's plan.
@@ -653,7 +664,7 @@ mod tests {
     #[tokio::test]
     async fn an_unauthorized_snapshot_explains_itself_without_leaking_the_key() {
         let (origin, _) = spawn_backend(vec![(401, r#"{"detail":"bad key"}"#.into())]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let read = client.read(&origin, Some("sk_dead"), false, now()).await;
         let error = read.error.expect("error surfaced");
         assert_eq!(
@@ -668,7 +679,7 @@ mod tests {
         let body = snapshot_body("pro", 20_000)
             .replace("synth.desktop-account.v1", "synth.desktop-account.v2");
         let (origin, _) = spawn_backend(vec![(200, body)]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let read = client.read(&origin, Some("sk_test"), false, now()).await;
         assert!(read.snapshot.is_none());
         assert_eq!(
@@ -683,7 +694,7 @@ mod tests {
     async fn a_different_backend_never_reads_another_origins_cache_for_the_same_key() {
         let (first_origin, _) = spawn_backend(vec![(200, snapshot_body("pro", 20_000))]);
         let (second_origin, _) = spawn_backend(vec![(503, r#"{"detail":"down"}"#.into())]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client
             .read(&first_origin, Some("sk_same"), false, now())
             .await;
@@ -702,7 +713,7 @@ mod tests {
     #[tokio::test]
     async fn a_backend_without_the_snapshot_endpoint_gets_the_specific_update_copy() {
         let (origin, _) = spawn_backend(vec![(404, r#"{"detail":"missing"}"#.into())]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let read = client.read(&origin, Some("sk_test"), false, now()).await;
         assert!(read.snapshot.is_none());
         assert_eq!(
@@ -719,7 +730,7 @@ mod tests {
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", closed.local_addr().unwrap());
         drop(closed);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let read = client.read(&origin, Some("sk_test"), false, now()).await;
         assert_eq!(
             read.error.as_deref(),
@@ -733,7 +744,7 @@ mod tests {
     #[tokio::test]
     async fn an_outage_after_a_good_read_keeps_the_plan_and_marks_it_stale() {
         let (origin, _) = spawn_backend(vec![(200, snapshot_body("pro", 15_000))]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         // The scripted backend is exhausted and its listener is closed, so the
         // refresh fails at the transport layer.
@@ -766,10 +777,7 @@ mod tests {
             }
         });
         let client = AccountCloudClient {
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_millis(150))
-                .build()
-                .unwrap(),
+            http: crate::http::http_client_with_timeout(Duration::from_millis(150)),
             cache: Mutex::new(None),
         };
         let read = client.read(&origin, Some("sk_test"), false, now()).await;
@@ -782,7 +790,7 @@ mod tests {
     #[tokio::test]
     async fn a_two_hundred_that_is_not_a_snapshot_is_refused_with_stable_copy() {
         let (origin, _) = spawn_backend(vec![(200, r#"{"unexpected": true}"#.into())]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let read = client.read(&origin, Some("sk_test"), false, now()).await;
         assert!(read.snapshot.is_none());
         assert_eq!(
@@ -838,7 +846,7 @@ mod tests {
             (200, snapshot_body("starter", 2_000)),
             (500, r#"{"detail":"no provider"}"#.into()),
         ]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         let error = client
             .billing_url(&origin, Some("sk_test"), BillingAction::Upgrade, None)
@@ -854,7 +862,7 @@ mod tests {
             (200, snapshot_body("starter", 2_000)),
             (200, r#"{"not_a_url": true}"#.into()),
         ]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         let error = client
             .billing_url(&origin, Some("sk_test"), BillingAction::Manage, None)
@@ -876,7 +884,7 @@ mod tests {
                 r#"{"url":"https://checkout.test/session/abc","mode":"provider"}"#.into(),
             ),
         ]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         let url = client
             .billing_url(&origin, Some("sk_test"), BillingAction::Manage, None)
@@ -894,7 +902,7 @@ mod tests {
                 r#"{"url":"https://app.test/usage?upgrade=starter","mode":"hosted_web"}"#.into(),
             ),
         ]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         let error = client
             .billing_url(
@@ -921,7 +929,7 @@ mod tests {
                 r#"{"url":"https://checkout.test/session/abc","mode":"provider","session_id":"cs_test_1"}"#.into(),
             ),
         ]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         let url = client
             .billing_url(
@@ -944,7 +952,7 @@ mod tests {
                 r#"{"url":"https://checkout.test/session/abc","mode":"provider"}"#.into(),
             ),
         ]);
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         client.read(&origin, Some("sk_test"), false, now()).await;
         let error = client
             .billing_url(
@@ -964,7 +972,7 @@ mod tests {
 
     #[tokio::test]
     async fn billing_requires_a_signed_in_device() {
-        let client = AccountCloudClient::new();
+        let client = AccountCloudClient::open();
         let error = client
             .billing_url("http://127.0.0.1:1", None, BillingAction::Manage, None)
             .await

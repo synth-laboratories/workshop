@@ -5,27 +5,47 @@ description: Use when creating, updating, inspecting, or opening a Synth Desktop
 
 # Use Synth Visuals
 
-Choose the visual grammar from the evidence. Treat registered templates as optional shortcuts, not mandates. For ad-hoc analysis, prefer `analysis.visual.v1` and author its ordered `spec.blocks` at creation time. Use `blank.canvas.v1` when the composition cannot be expressed cleanly with those blocks.
+Choose the visual grammar from the evidence. Treat registered templates as optional shortcuts, not mandates. For ad-hoc analysis, prefer `analysis.visual.v1` and author its ordered `spec.blocks` at creation time. Use `blank.canvas.v1` when the composition cannot be expressed cleanly with those blocks. If the artifact is a system, UML, flow picture, or time-aware technical explainer, load `author-synth-diagrams`. It chooses among `diagram.mermaid.v1`, `diagram.systems.v1`, `diagram.systems.dynamic.v1`, or a focused combination; do not dump SVG/HTML/JavaScript into a canvas.
 
-Codex advertises one compact custom tool, `mcp__synth_visuals`, instead of all
-visual schemas on every turn. Call it with `method: "visual_manage"`, an
-`operation`, and an operation-specific `arguments` object:
+## Intended approach
+
+A visual is a concise explanation of evidence, not a graphical evidence dump.
+
+1. **Ground:** establish the exact facts, their provenance, and what is missing. Never use design to imply unavailable evidence.
+2. **Claim:** write the one sentence the visual should make obvious. If there are several independent claims, use beats, details, or separate focused visuals.
+3. **Reduce:** choose the smallest grammar and fewest marks that communicate that claim. Keep exact records available as detail instead of placing every identifier and event on the primary surface.
+4. **Compose:** create hierarchy before decoration—primary result, supporting mechanism, then provenance/caveats. Prefer direct labels, whitespace, and progressive disclosure.
+5. **Render:** show the artifact in its real Desktop pane. Source validity is not visual validity.
+6. **Critique:** capture, open, and inspect wide and compact screenshots. Revise the same visual ID until the claim is legible without collisions, ambiguous truncation, or excessive density.
+7. **Certify:** record screenshot-backed reviews and mark ready only after automated findings and human-visible problems are resolved.
+
+The first draft is expected to be revised. Do not describe a visual as polished merely because it rendered or passed schema validation.
+
+Codex advertises one compact custom tool,
+`mcp__synth_visuals__visual_manage`, instead of all visual schemas on every
+turn. In code mode call it as
+`tools.mcp__synth_visuals__visual_manage({ operation, arguments })`. There is
+**no** top-level `method` field. Do not use `resources/list`, `resources/read`,
+or filesystem search to discover this tool.
 
 | Operation | Arguments |
 | --- | --- |
 | `list_templates` | `{ "genre"?: string }` |
 | `list` | `{ "search"?: string, "status"?: string, "session_id"?: string }` |
 | `get` | `{ "visual_id": string }` |
-| `create` | `{ "template_id": string, "title"?: string, "props"?: object, "session_id"?: string, "instance_id"?: string }` |
-| `update` | `{ "visual_id": string, "title"?: string, "bindings"?: object, "status"?: string }` |
+| `create` | `{ "template_id": string, "title"?: string, "content"?: string, "props"?: object, "session_id"?: string, "instance_id"?: string }` |
+| `update` | `{ "visual_id": string, "title"?: string, "content"?: string, "bindings"?: object, "status"?: string }` |
 | `bind` | `{ "instance_id": string, "slot": string, "kind": string, "source": string, "path"?: string, "schema"?: string }` |
-| `save` | `{ "visual_id": string, "tsx"?: string }` |
 | `show` | `{ "visual_id": string, "session_id"?: string }` |
 | `fork` | `{ "visual_id": string, "title"?: string }` |
 | `archive` | `{ "visual_id": string }` |
+| `authoring_context` | `{ "visual_id": string }` |
+| `capture_review` | `{ "visual_id": string, "viewport": {"width": number, "height": number} }` — returns an attached PNG plus `screenshot_path` |
+| `review` | `{ "visual_id": string, "revision": number, "viewport": {"width": number, "height": number}, "checks": object, "findings": string[], "screenshot_path"?: string }` (`screenshot_path` is required for systems visuals) |
+| `mark_ready` | `{ "visual_id": string, "revision": number }` |
 
 For example, list templates with
-`{"method":"visual_manage","operation":"list_templates","arguments":{}}`.
+`{"operation":"list_templates","arguments":{}}`.
 Do not invent separate callable names such as
 `mcp__synth_visuals__visual_create`; legacy MCP names remain compatible for
 other clients but are intentionally not advertised to Codex.
@@ -35,10 +55,12 @@ other clients but are intentionally not advertised to Codex.
 1. Inspect the available evidence before choosing a chart: task metadata, rollout count, seeds, traces, reward components, achievements, costs, tokens, latency, and failure state.
 2. State the analytical question in one sentence: “Which arm achieves more per dollar?”, “Where do rewards diverge?”, or “What happened during this rollout?”
 3. Choose only visual forms that answer that question. Read [visual-recipes.md](references/visual-recipes.md) for mappings.
-4. Create the smallest useful visual with the `create` operation, a stable ID, and a title that names the task and comparison.
+4. Create the smallest useful visual with the `create` operation, a stable ID, and a title that names the task and comparison. Use `presentation: "canvas"` for gameplay, trace workbenches, and dense live dashboards.
 5. Show exact units and provenance. Preserve small costs rather than rounding them to `$0.00`.
 6. Call the `show` operation after creation or update so the result opens in the Desktop pane.
-7. Inspect the rendered pane. Fix clipped labels, empty sections, misleading encodings, and excessive whitespace before reporting completion.
+7. Inspect the rendered visual in Desktop canvas mode. Fix clipped labels, empty sections, misleading encodings, weak hierarchy, and excessive whitespace.
+8. Perform at least two explicit render-and-critique iterations at distinct viewport widths. Call `capture_review` for every visual family—evals (`analysis.*`, `live.*`, `craftax.*`), optimizers (`optimizer.*`), UML/Mermaid, static 2D systems maps, and Benjamin Dicken Style dynamic systems visuals. For each viewport inspect the PNG attached to the tool result. Pass its returned `screenshot_path` to `review`; never shell-search for captures, invent a path, or submit checks without looking at the image. Do not reuse a review after the visual revision changes. For systems visuals, resolve every deterministic finding returned by `authoring_context` before readiness.
+9. Call `mark_ready` only when all required landmarks pass. A trusted live template is configured through `visual_config`; saved arbitrary TSX is retained as source evidence but is never executed by Desktop.
 
 ## Composition rules
 
@@ -79,21 +101,61 @@ For a Trace V5 record, bind the canonical `synth.trace-projection.rollout-inspec
 
 ## Live container evals
 
-Use `live.container_rollouts.v1` for an eval that is still running. Bind its required `stream` slot as `live_sse` with an absolute endpoint that emits native `evals.event-stream.v1` events.
+Use the task-family live template for an eval that is still running:
+`live.craftax.v1`, `live.harbor_eval.v1`, or `live.digbench.v1`. Bind its required
+`stream` slot as `live_sse` with the absolute SSE endpoint and exact poll
+endpoint declared by rollout preparation. The stream emits
+`synth.trace-stream-event.v1`; never guess or rewrite either route. Discover the
+container with `container_list` / `container_probe` and inspect advertised
+transports before binding.
 
 Prepare in this order:
 
-1. Start the SSE bridge or eval service without starting rollouts.
-2. Create the visual and bind the `stream` slot.
-3. Call the `show` operation and confirm the pane says it is waiting or connected.
-4. Start the eval only after the pane is ready.
-5. Leave the pane open through terminal status and confirm every lane finishes or exposes its named failure.
+1. Discover the provider and inspect capabilities. Do not construct `/events`.
+2. Call `container_prepare_rollout`; it must return the exact descriptor and `visual_binding` without starting execution.
+3. Create the task-family visual with `presentation: "canvas"`, bind the returned `stream` slot, and call `show`. Review at least twice, then `mark_ready`.
+4. Get `authoring_context`. Use a prior real trace or the template's example only to develop layout; label example evidence and replace it with the declared stream before readiness.
+5. Wait until the control envelope reports `stream.subscribed` with `ready: true`. HTTP 200 and heartbeats are not ready.
+6. Call `container_start_prepared_rollout` with the exact prepared stream descriptor, `visual_id`, `task_instance_id` or `seed`, and `policy_ref` (`harness` + `config`). Desktop refuses a missing pin, a stale visual receipt, and still waits for control-only `stream.subscribed`. The host does not pick `luna_med`.
+7. **Refuse start** if visuals MCP is down, declared poll returns 503, the URL was guessed, or `stream.subscribed` is missing. Never fabricate evidence, frames, rewards, or usage.
+8. Leave the canvas open through terminal status and confirm every lane finishes or exposes its named failure.
 
-The live view should emphasize true `progress.done / progress.total`, rollout state, cumulative reward, achievement count, vitals, usage/cost when present, and the latest semantic engine event. Never substitute elapsed time for step progress. Do not fill the pane with raw JSON or full Craftax maps; show a concise recent-activity tail and retain the underlying stream for deeper inspection.
+Harbor: open `live.harbor_eval.v1` from register `metadata.liveEval` before trial start. Two `policy_ref`s (`luna_med` and `sol_med`). `live_frames=native` fails.
+
+dig.bench: open `live.digbench.v1` before `start_session`. Basic ReAct and agentic Codex + `digbench-mcp` on the same game. No frames. Token never in bindings or screenshots. `/reward` is `completed` → 1, `game_over` → 0, incomplete → null.
+
+## Iteration rubric
+
+Every review supplies these booleans: `rendered`, `noOverflow`, `primarySurfaceVisible`, `temporalControls`, `traceInspector`, and `realEvidence`. Systems visuals additionally require `noTextCollisions`, `focalDensity`, and `screenshotInspected`; their reviews require a PNG/JPEG screenshot path, and readiness is refused while deterministic authoring findings remain. `live.craftax.v1` additionally requires `imageReplay`, which is true only when ordered Containers PNG frame URLs render and can be scrubbed or played. Also critique:
+
+- Is the primary environment or decision surface dominant above the fold?
+- Can the operator tell environment facts from policy facts and evaluator authority?
+- Do evaluation-time and rollout-time controls share an explicit cutoff?
+- Are reward, achievements, usage, failures, and missing values visually distinct?
+- Is raw trace evidence selectable without taking over the main story?
+- Does compact mode preserve the task, frame/state, live status, and critical outcome?
+
+The live view should emphasize true environment step progress, rollout state,
+cumulative reward, achievement count, vitals, usage/cost when present, and the
+latest semantic engine event. Craftax also exposes a per-lane through-time
+cutoff and policy span partials. Never substitute elapsed time for step progress,
+invent missing values, or fill the pane with raw JSON; retain the journal and
+sealed Trace V5 for deeper inspection and post-run reopening.
+
+## Live optimizer runs
+
+Optimizer visuals are owned by the optimizer service. Start an allowlisted recipe
+through `use-synth-optimizers` with `open_visual: true`, or call its `open_visual`
+operation for an existing run. Do not create a parallel `analysis.visual.v1` or
+bind an optimizer feed manually. The host selects the GEPA, GELO, or SFT family,
+binds slot `optimizer_run`, shows the same durable visual ID in the current chat's
+right pane, and keeps reading the optimizer event cursor while the agent continues
+to talk or poll. Reopening after a restart must reuse that ID and replay persisted
+events; unknown score, reward, cost, coverage, or evidence integrity remains missing.
 
 ## `blank.canvas.v1`
 
-Use the blank canvas for bespoke diagrams, dense dashboards, environment-state illustrations, unusual trace layouts, or publication-style visual stories. Supply a `document` containing:
+Use the blank canvas for dense dashboards, environment-state illustrations, unusual trace layouts, or publication-style visual stories that are not a Mermaid diagram. Supply a `document` containing:
 
 - `html`: semantic, self-contained HTML or inline SVG;
 - `css`: optional scoped presentation CSS;
@@ -107,7 +169,7 @@ Prefer semantic HTML and SVG with meaningful `<title>`, `<desc>`, headings, labe
 
 ## Quality gate
 
-Before showing a visual, verify:
+Before marking a visual ready, verify:
 
 - every mark maps to real data;
 - the chart form matches the sample structure;

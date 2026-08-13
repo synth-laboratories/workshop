@@ -4,7 +4,7 @@
 //! normal CI because the real Harbor bundle is intentionally not committed.
 
 use std::{env, path::PathBuf};
-use synth_desktop_lib::inventory::InventoryStore;
+use synth_desktop_lib::data::DataStore;
 use synth_desktop_lib::storage::{ContentStore, Database, Storage};
 use synth_desktop_lib::trace_ingest::TraceBundleIngestRequest;
 use tempfile::tempdir;
@@ -27,7 +27,7 @@ async fn imports_real_bundle_into_trusted_catalog_and_keeps_duplicate_identity()
 
     let root = tempdir().unwrap();
     let storage = Storage::open(root.path()).unwrap();
-    let inventory = InventoryStore::new(
+    let data = DataStore::new(
         storage.database().clone(),
         ContentStore::new(storage.content_root()),
     );
@@ -38,7 +38,7 @@ async fn imports_real_bundle_into_trusted_catalog_and_keeps_duplicate_identity()
         source_uri: Some("dogfood://harbor/trace-v5".into()),
     };
 
-    let (first, first_event) = inventory
+    let (first, first_event) = data
         .ingest_trace_bundle(request.clone())
         .await
         .expect("first real-bundle import");
@@ -59,11 +59,11 @@ async fn imports_real_bundle_into_trusted_catalog_and_keeps_duplicate_identity()
         Some("trace.bundle.imported")
     );
 
-    let listed = inventory.list_traces().await.unwrap();
+    let listed = data.list_traces().await.unwrap();
     assert_eq!(listed.len(), first.traces.len());
     let expected = &first.traces[0];
-    let by_id = inventory.get_trace(expected.id.clone()).await.unwrap();
-    let by_digest = inventory.get_trace(expected.digest.clone()).await.unwrap();
+    let by_id = data.get_trace(expected.id.clone()).await.unwrap();
+    let by_digest = data.get_trace(expected.digest.clone()).await.unwrap();
     assert_eq!(by_id, by_digest);
     assert_eq!(by_id.title, "Real Trace V5 smoke");
 
@@ -76,7 +76,7 @@ async fn imports_real_bundle_into_trusted_catalog_and_keeps_duplicate_identity()
     assert!(archive_path.is_file());
     assert!(archive_path.starts_with(storage.content_root().join("traces")));
 
-    let projection = inventory
+    let projection = data
         .resolve_trace_projection(by_id.digest.clone(), "rollout-inspector".into())
         .await
         .expect("resolve viewer packet from the trusted archive");
@@ -95,7 +95,7 @@ async fn imports_real_bundle_into_trusted_catalog_and_keeps_duplicate_identity()
         .is_some_and(|items| !items.is_empty()));
 
     let counts_before = catalog_counts(storage.database());
-    let (second, second_event) = inventory
+    let (second, second_event) = data
         .ingest_trace_bundle(request)
         .await
         .expect("duplicate real-bundle import");

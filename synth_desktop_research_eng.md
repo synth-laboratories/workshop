@@ -167,7 +167,7 @@ Evals authority split (from eval standard):
 | --- | --- |
 | Trace V5 sealing + provenance | synth-containers |
 | Harbor trajectories / native verifiers | Harbor |
-| Dock package materialization | dock |
+| Private Evals package materialization | repository-internal |
 | Execution lifecycle | SMR / backend |
 | Cross-source attempt indexing | evals |
 
@@ -182,9 +182,9 @@ Beyond Trace V5, containers, and visuals:
 
 | Layer | Role |
 | --- | --- |
-| **evals** | TOML matrix: `run → score → save evidence → index`; Dock + Harbor lanes |
+| **evals** | TOML matrix: `run → score → save evidence → index`; private + Harbor lanes, both through Containers |
 | **Harbor** | Benchmark harness over container envs |
-| **Dock + SMR** | Package materialization + managed runtime launch |
+| **Private Evals runner** | Package materialization + managed runtime launch through Containers |
 | **synth-optimizers** | GEPA (local) + hosted GELO; consumer of container contract |
 | **cookbooks** (private → public) | Runnable recipes; **visual template distribution** |
 | **synth-ai SDK** | Research Factory / Efforts / Intern / projects |
@@ -243,7 +243,7 @@ Beyond Trace V5, containers, and visuals:
 ║                         SYNTH CLOUD  (desktop tracks; does not own bytes)            ║
 ║  Factory · Effort · Project · Intern mailbox · Swarm / SMR                           ║
 ║  Artifact Platform (CAS) · Trace V5 catalog (facts) · Visual Registry                ║
-║  Container pools · synth-tunnel · Harbor / Dock jobs · hosted optimizers (GELO/…)    ║
+║  Container pools · synth-tunnel · Harbor / private Evals jobs · optimizers (GELO/…) ║
 ║  Desktop tracks: ids, digests, cursors, status, spend summaries, open/resume handles ║
 ╚══════════════════════════════════════════════════════════════════════════════════════╝
 ```

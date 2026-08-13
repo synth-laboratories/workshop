@@ -1,0 +1,756 @@
+{
+  "schema": "synth.workshop.a1-receipt.v1",
+  "test": "A1 / CRAFTAX-LUNA-010 / TS-E01",
+  "result": "PASS",
+  "driver": {
+    "url": "http://127.0.0.1:57079",
+    "sourceRevision": "7804a3d2a288",
+    "instanceName": "a1final"
+  },
+  "sourceRevision": {
+    "workshop": "7804a3d2a288",
+    "containers": "a20f994534b0",
+    "workshopDriver": "7804a3d2a288"
+  },
+  "facade": "http://127.0.0.1:8297",
+  "goldCraftax": "http://127.0.0.1:18100",
+  "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+  "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe",
+  "visualOpenedAt": "2026-08-13T02:01:17Z",
+  "visualBoundBeforeFirstPaidCall": true,
+  "liveEval": {
+    "family": "craftax",
+    "liveFrames": "native",
+    "slot": "stream",
+    "templateId": "live.craftax.v1"
+  },
+  "policyRef": {
+    "harness": "react",
+    "config": "luna_med"
+  },
+  "model": "openai/gpt-5.6-luna",
+  "paid": true,
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "preflight": {
+    "chatUrl": "https://openrouter.ai/api/v1/chat/completions",
+    "model": "openai/gpt-5.6-luna",
+    "ok": true,
+    "provider": "openrouter"
+  },
+  "results": {
+    "0": {
+      "achievements": [
+        "collect_food",
+        "eat_cow"
+      ],
+      "baseUrl": "http://127.0.0.1:8297",
+      "calls": 14,
+      "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+      "model": "gpt-5.6-luna",
+      "policyAuthority": "container",
+      "provider": "openrouter",
+      "reasoningEffort": "medium",
+      "recovered": false,
+      "reward": 1.0,
+      "rolloutId": "a1final2_craftax_seed_0",
+      "schemaVersion": "synth.eval-policy-rollout.v1",
+      "score": 1.0,
+      "seed": 0,
+      "spoolDigest": "2512aad944ae43b203435384a98e491de50a81aae09b5181c6f37d13c0c04d21",
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:a1final2_craftax_seed_0",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/a1final2_craftax_seed_0/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/a1final2_craftax_seed_0/events"
+          },
+          "sse": {
+            "url": "/rollouts/a1final2_craftax_seed_0/stream"
+          },
+          "websocket": null
+        }
+      },
+      "taskInstanceId": "craftax:seed:0",
+      "terminated": true,
+      "traceCorrelation": {
+        "actionCount": 45,
+        "authority": "container_stream",
+        "boundRolloutId": "a1final2_craftax_seed_0",
+        "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+        "rolloutId": "a1final2_craftax_seed_0",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 0,
+        "spoolDigest": "2512aad944ae43b203435384a98e491de50a81aae09b5181c6f37d13c0c04d21",
+        "taskInstanceId": "craftax:seed:0",
+        "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe"
+      },
+      "truncated": false,
+      "usage": {
+        "calls": 14,
+        "completionTokens": 3764,
+        "costUsd": 0.0035717649999999997,
+        "promptTokens": 50167,
+        "totalTokens": 53931
+      },
+      "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe",
+      "wallS": 61.41234,
+      "driverWallS": 61.448118083993904
+    },
+    "1": {
+      "achievements": [],
+      "baseUrl": "http://127.0.0.1:8297",
+      "calls": 9,
+      "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+      "model": "gpt-5.6-luna",
+      "policyAuthority": "container",
+      "provider": "openrouter",
+      "reasoningEffort": "medium",
+      "recovered": false,
+      "reward": -1.0,
+      "rolloutId": "a1final2_craftax_seed_1",
+      "schemaVersion": "synth.eval-policy-rollout.v1",
+      "score": -1.0,
+      "seed": 1,
+      "spoolDigest": "3a5ea1715ed9a7d077218205075cdd1fada68e97b0d00680825b076040332702",
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:a1final2_craftax_seed_1",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/a1final2_craftax_seed_1/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/a1final2_craftax_seed_1/events"
+          },
+          "sse": {
+            "url": "/rollouts/a1final2_craftax_seed_1/stream"
+          },
+          "websocket": null
+        }
+      },
+      "taskInstanceId": "craftax:seed:1",
+      "terminated": true,
+      "traceCorrelation": {
+        "actionCount": 55,
+        "authority": "container_stream",
+        "boundRolloutId": "a1final2_craftax_seed_1",
+        "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+        "rolloutId": "a1final2_craftax_seed_1",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 1,
+        "spoolDigest": "3a5ea1715ed9a7d077218205075cdd1fada68e97b0d00680825b076040332702",
+        "taskInstanceId": "craftax:seed:1",
+        "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe"
+      },
+      "truncated": false,
+      "usage": {
+        "calls": 9,
+        "completionTokens": 1974,
+        "costUsd": 0.001963515,
+        "promptTokens": 22289,
+        "totalTokens": 24263
+      },
+      "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe",
+      "wallS": 31.614373,
+      "driverWallS": 31.652376082958654
+    },
+    "2": {
+      "achievements": [],
+      "baseUrl": "http://127.0.0.1:8297",
+      "calls": 6,
+      "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+      "model": "gpt-5.6-luna",
+      "policyAuthority": "container",
+      "provider": "openrouter",
+      "reasoningEffort": "medium",
+      "recovered": false,
+      "reward": -1.0,
+      "rolloutId": "a1final2_craftax_seed_2",
+      "schemaVersion": "synth.eval-policy-rollout.v1",
+      "score": -1.0,
+      "seed": 2,
+      "spoolDigest": "3dc903c1616a9b28f7dd61f34e560fe747a8536c2ab4818c07dc23fe6dc2963d",
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:a1final2_craftax_seed_2",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/a1final2_craftax_seed_2/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/a1final2_craftax_seed_2/events"
+          },
+          "sse": {
+            "url": "/rollouts/a1final2_craftax_seed_2/stream"
+          },
+          "websocket": null
+        }
+      },
+      "taskInstanceId": "craftax:seed:2",
+      "terminated": true,
+      "traceCorrelation": {
+        "actionCount": 37,
+        "authority": "container_stream",
+        "boundRolloutId": "a1final2_craftax_seed_2",
+        "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+        "rolloutId": "a1final2_craftax_seed_2",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 2,
+        "spoolDigest": "3dc903c1616a9b28f7dd61f34e560fe747a8536c2ab4818c07dc23fe6dc2963d",
+        "taskInstanceId": "craftax:seed:2",
+        "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe"
+      },
+      "truncated": false,
+      "usage": {
+        "calls": 6,
+        "completionTokens": 2085,
+        "costUsd": 0.0017734899999999995,
+        "promptTokens": 11159,
+        "totalTokens": 13244
+      },
+      "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe",
+      "wallS": 34.822396167,
+      "driverWallS": 34.859297792077996
+    },
+    "3": {
+      "achievements": [
+        "collect_wood"
+      ],
+      "baseUrl": "http://127.0.0.1:8297",
+      "calls": 9,
+      "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+      "model": "gpt-5.6-luna",
+      "policyAuthority": "container",
+      "provider": "openrouter",
+      "reasoningEffort": "medium",
+      "recovered": false,
+      "reward": -5.551115123125783E-17,
+      "rolloutId": "a1final2_craftax_seed_3",
+      "schemaVersion": "synth.eval-policy-rollout.v1",
+      "score": -5.551115123125783E-17,
+      "seed": 3,
+      "spoolDigest": "37dd1021fef2b012599bbd57259bc57aa1b4103c4099b0940d45a8dc75e26427",
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:a1final2_craftax_seed_3",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/a1final2_craftax_seed_3/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/a1final2_craftax_seed_3/events"
+          },
+          "sse": {
+            "url": "/rollouts/a1final2_craftax_seed_3/stream"
+          },
+          "websocket": null
+        }
+      },
+      "taskInstanceId": "craftax:seed:3",
+      "terminated": true,
+      "traceCorrelation": {
+        "actionCount": 17,
+        "authority": "container_stream",
+        "boundRolloutId": "a1final2_craftax_seed_3",
+        "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+        "rolloutId": "a1final2_craftax_seed_3",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 3,
+        "spoolDigest": "37dd1021fef2b012599bbd57259bc57aa1b4103c4099b0940d45a8dc75e26427",
+        "taskInstanceId": "craftax:seed:3",
+        "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe"
+      },
+      "truncated": false,
+      "usage": {
+        "calls": 9,
+        "completionTokens": 3068,
+        "costUsd": 0.002613965,
+        "promptTokens": 22020,
+        "totalTokens": 25088
+      },
+      "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe",
+      "wallS": 54.241250875,
+      "driverWallS": 54.27116479200777
+    },
+    "4": {
+      "achievements": [],
+      "baseUrl": "http://127.0.0.1:8297",
+      "calls": 7,
+      "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+      "model": "gpt-5.6-luna",
+      "policyAuthority": "container",
+      "provider": "openrouter",
+      "reasoningEffort": "medium",
+      "recovered": false,
+      "reward": -0.9,
+      "rolloutId": "a1final2_craftax_seed_4",
+      "schemaVersion": "synth.eval-policy-rollout.v1",
+      "score": -0.9,
+      "seed": 4,
+      "spoolDigest": "a320c1bd463707fb00efd7e4bc427b97f95b17a714863e864a52ea9c25e36c5e",
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:a1final2_craftax_seed_4",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/a1final2_craftax_seed_4/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/a1final2_craftax_seed_4/events"
+          },
+          "sse": {
+            "url": "/rollouts/a1final2_craftax_seed_4/stream"
+          },
+          "websocket": null
+        }
+      },
+      "taskInstanceId": "craftax:seed:4",
+      "terminated": true,
+      "traceCorrelation": {
+        "actionCount": 11,
+        "authority": "container_stream",
+        "boundRolloutId": "a1final2_craftax_seed_4",
+        "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+        "rolloutId": "a1final2_craftax_seed_4",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 4,
+        "spoolDigest": "a320c1bd463707fb00efd7e4bc427b97f95b17a714863e864a52ea9c25e36c5e",
+        "taskInstanceId": "craftax:seed:4",
+        "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe"
+      },
+      "truncated": false,
+      "usage": {
+        "calls": 7,
+        "completionTokens": 2975,
+        "costUsd": 0.00236607,
+        "promptTokens": 13919,
+        "totalTokens": 16894
+      },
+      "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe",
+      "wallS": 44.748389125,
+      "driverWallS": 44.77501983300317
+    },
+    "5": {
+      "achievements": [
+        "collect_sapling",
+        "place_plant",
+        "collect_wood",
+        "place_table"
+      ],
+      "baseUrl": "http://127.0.0.1:8297",
+      "calls": 19,
+      "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+      "model": "gpt-5.6-luna",
+      "policyAuthority": "container",
+      "provider": "openrouter",
+      "reasoningEffort": "medium",
+      "recovered": false,
+      "reward": 5.0,
+      "rolloutId": "a1final2_craftax_seed_5",
+      "schemaVersion": "synth.eval-policy-rollout.v1",
+      "score": 5.0,
+      "seed": 5,
+      "spoolDigest": "ba5b87bef34e19491d80e531f02865a42a2af491c57548defe6d3d033e89fb13",
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:a1final2_craftax_seed_5",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/a1final2_craftax_seed_5/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/a1final2_craftax_seed_5/events"
+          },
+          "sse": {
+            "url": "/rollouts/a1final2_craftax_seed_5/stream"
+          },
+          "websocket": null
+        }
+      },
+      "taskInstanceId": "craftax:seed:5",
+      "terminated": true,
+      "traceCorrelation": {
+        "actionCount": 34,
+        "authority": "container_stream",
+        "boundRolloutId": "a1final2_craftax_seed_5",
+        "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+        "rolloutId": "a1final2_craftax_seed_5",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 5,
+        "spoolDigest": "ba5b87bef34e19491d80e531f02865a42a2af491c57548defe6d3d033e89fb13",
+        "taskInstanceId": "craftax:seed:5",
+        "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe"
+      },
+      "truncated": false,
+      "usage": {
+        "calls": 19,
+        "completionTokens": 6101,
+        "costUsd": 0.0055917549999999995,
+        "promptTokens": 70669,
+        "totalTokens": 76770
+      },
+      "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe",
+      "wallS": 95.758766541,
+      "driverWallS": 95.83845195895992
+    },
+    "6": {
+      "achievements": [
+        "collect_wood"
+      ],
+      "baseUrl": "http://127.0.0.1:8297",
+      "calls": 14,
+      "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+      "model": "gpt-5.6-luna",
+      "policyAuthority": "container",
+      "provider": "openrouter",
+      "reasoningEffort": "medium",
+      "recovered": false,
+      "reward": 3.0,
+      "rolloutId": "a1final2_craftax_seed_6",
+      "schemaVersion": "synth.eval-policy-rollout.v1",
+      "score": 3.0,
+      "seed": 6,
+      "spoolDigest": "625b8625118b4dc6f74c3356f52dfad461a03dc6d8af770dabd747d54edba935",
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:a1final2_craftax_seed_6",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/a1final2_craftax_seed_6/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/a1final2_craftax_seed_6/events"
+          },
+          "sse": {
+            "url": "/rollouts/a1final2_craftax_seed_6/stream"
+          },
+          "websocket": null
+        }
+      },
+      "taskInstanceId": "craftax:seed:6",
+      "terminated": true,
+      "traceCorrelation": {
+        "actionCount": 59,
+        "authority": "container_stream",
+        "boundRolloutId": "a1final2_craftax_seed_6",
+        "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+        "rolloutId": "a1final2_craftax_seed_6",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 6,
+        "spoolDigest": "625b8625118b4dc6f74c3356f52dfad461a03dc6d8af770dabd747d54edba935",
+        "taskInstanceId": "craftax:seed:6",
+        "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe"
+      },
+      "truncated": false,
+      "usage": {
+        "calls": 14,
+        "completionTokens": 3651,
+        "costUsd": 0.00349903,
+        "promptTokens": 49639,
+        "totalTokens": 53290
+      },
+      "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe",
+      "wallS": 55.396877875,
+      "driverWallS": 55.475982500007376
+    },
+    "7": {
+      "achievements": [
+        "collect_sapling",
+        "place_plant"
+      ],
+      "baseUrl": "http://127.0.0.1:8297",
+      "calls": 8,
+      "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+      "model": "gpt-5.6-luna",
+      "policyAuthority": "container",
+      "provider": "openrouter",
+      "reasoningEffort": "medium",
+      "recovered": false,
+      "reward": 1.0,
+      "rolloutId": "a1final2_craftax_seed_7",
+      "schemaVersion": "synth.eval-policy-rollout.v1",
+      "score": 1.0,
+      "seed": 7,
+      "spoolDigest": "e7f9e9a6e58dc14e55678d6101068283bc6418501d0430c7f072f19c2000ba6c",
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:a1final2_craftax_seed_7",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/a1final2_craftax_seed_7/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/a1final2_craftax_seed_7/events"
+          },
+          "sse": {
+            "url": "/rollouts/a1final2_craftax_seed_7/stream"
+          },
+          "websocket": null
+        }
+      },
+      "taskInstanceId": "craftax:seed:7",
+      "terminated": true,
+      "traceCorrelation": {
+        "actionCount": 36,
+        "authority": "container_stream",
+        "boundRolloutId": "a1final2_craftax_seed_7",
+        "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+        "rolloutId": "a1final2_craftax_seed_7",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 7,
+        "spoolDigest": "e7f9e9a6e58dc14e55678d6101068283bc6418501d0430c7f072f19c2000ba6c",
+        "taskInstanceId": "craftax:seed:7",
+        "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe"
+      },
+      "truncated": false,
+      "usage": {
+        "calls": 8,
+        "completionTokens": 2479,
+        "costUsd": 0.002201545,
+        "promptTokens": 18723,
+        "totalTokens": 21202
+      },
+      "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe",
+      "wallS": 35.435172833,
+      "driverWallS": 35.47842858405784
+    },
+    "8": {
+      "achievements": [],
+      "baseUrl": "http://127.0.0.1:8297",
+      "calls": 11,
+      "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+      "model": "gpt-5.6-luna",
+      "policyAuthority": "container",
+      "provider": "openrouter",
+      "reasoningEffort": "medium",
+      "recovered": false,
+      "reward": 2.0,
+      "rolloutId": "a1final2_craftax_seed_8",
+      "schemaVersion": "synth.eval-policy-rollout.v1",
+      "score": 2.0,
+      "seed": 8,
+      "spoolDigest": "93463aab4a4baeeb3bd4ff28f97d96a1d36c8c71f0ebdba9f999002f55ce90ec",
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:a1final2_craftax_seed_8",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/a1final2_craftax_seed_8/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/a1final2_craftax_seed_8/events"
+          },
+          "sse": {
+            "url": "/rollouts/a1final2_craftax_seed_8/stream"
+          },
+          "websocket": null
+        }
+      },
+      "taskInstanceId": "craftax:seed:8",
+      "terminated": true,
+      "traceCorrelation": {
+        "actionCount": 10,
+        "authority": "container_stream",
+        "boundRolloutId": "a1final2_craftax_seed_8",
+        "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+        "rolloutId": "a1final2_craftax_seed_8",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 8,
+        "spoolDigest": "93463aab4a4baeeb3bd4ff28f97d96a1d36c8c71f0ebdba9f999002f55ce90ec",
+        "taskInstanceId": "craftax:seed:8",
+        "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe"
+      },
+      "truncated": false,
+      "usage": {
+        "calls": 11,
+        "completionTokens": 3749,
+        "costUsd": 0.00324838,
+        "promptTokens": 32540,
+        "totalTokens": 36289
+      },
+      "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe",
+      "wallS": 61.951187625,
+      "driverWallS": 61.984332583029754
+    },
+    "9": {
+      "achievements": [
+        "collect_wood",
+        "collect_sapling",
+        "place_plant"
+      ],
+      "baseUrl": "http://127.0.0.1:8297",
+      "calls": 16,
+      "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+      "model": "gpt-5.6-luna",
+      "policyAuthority": "container",
+      "provider": "openrouter",
+      "reasoningEffort": "medium",
+      "recovered": false,
+      "reward": 3.0,
+      "rolloutId": "a1final2_craftax_seed_9",
+      "schemaVersion": "synth.eval-policy-rollout.v1",
+      "score": 3.0,
+      "seed": 9,
+      "spoolDigest": "402bdfc24be24ff1e69cf02afae5bb084424da8e96c7d1f7407d2938a8610018",
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:a1final2_craftax_seed_9",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/a1final2_craftax_seed_9/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/a1final2_craftax_seed_9/events"
+          },
+          "sse": {
+            "url": "/rollouts/a1final2_craftax_seed_9/stream"
+          },
+          "websocket": null
+        }
+      },
+      "taskInstanceId": "craftax:seed:9",
+      "terminated": true,
+      "traceCorrelation": {
+        "actionCount": 48,
+        "authority": "container_stream",
+        "boundRolloutId": "a1final2_craftax_seed_9",
+        "containerId": "ctr_803ee8681b984fc58b43043d7c63eaa7",
+        "rolloutId": "a1final2_craftax_seed_9",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 9,
+        "spoolDigest": "402bdfc24be24ff1e69cf02afae5bb084424da8e96c7d1f7407d2938a8610018",
+        "taskInstanceId": "craftax:seed:9",
+        "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe"
+      },
+      "truncated": false,
+      "usage": {
+        "calls": 16,
+        "completionTokens": 4357,
+        "costUsd": 0.00421352,
+        "promptTokens": 66130,
+        "totalTokens": 70487
+      },
+      "visualId": "vis_2ce673bcf5384d6694f5e4140ed200fe",
+      "wallS": 69.1393355,
+      "driverWallS": 69.18249595793895
+    }
+  },
+  "errors": {},
+  "finishedAt": "2026-08-13T02:10:46Z",
+  "visualBoundBeforeFirstPaidCallDetail": "open_visual completed before the batch; the eval driver rebound the declared SSE stream and observed stream.subscribed before each POST /rollouts",
+  "summary": {
+    "completed": 10,
+    "totalCalls": 113,
+    "totalTokens": 391458,
+    "totalCostUsd": 0.031043034999999997,
+    "rewardSum": 12.1
+  },
+  "excludedProbe": {
+    "instanceName": "a1final",
+    "rolloutPrefix": "a1final_craftax_seed_",
+    "lanes": 10,
+    "paidCalls": 0,
+    "reason": "Façade was initially launched without OPENROUTER_API_KEY; all lanes closed policy_error before a provider call. Excluded from A1."
+  },
+  "goldCraftaxSource": {
+    "repository": "gamebench",
+    "revision": "0230d41bc4c6503d030c00d6693f77bc271be19a",
+    "evalsPinnedRevision": "ef6bb06a23820dfae532d28b83401a2345f5a5eb",
+    "allowDrift": true,
+    "note": "The resumed handoff required the existing rust gold service contract; evals source.toml currently pins a different GameBench revision, so serve was launched with --allow-drift and the difference is recorded here."
+  }
+}

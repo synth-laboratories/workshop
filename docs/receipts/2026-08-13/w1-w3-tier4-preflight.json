@@ -1,0 +1,62 @@
+{
+  "schema": "workshop.agent-golden-path-tier4-preflight.v1",
+  "capturedAt": "2026-08-13T14:54:18Z",
+  "result": "BLOCKED_AUTH_AND_SOL_QUOTA",
+  "candidate": {
+    "sourceRevision": "859110f6a316f282445f6a6f71cad07df4fc8833",
+    "sourceCleanAtBuild": true,
+    "appVersion": "0.2.0",
+    "instance": "v02golden",
+    "bundleId": "com.synth.desktop.v02.dev.v02golden",
+    "artifactClass": "isolated_ad_hoc_signed_debug_cua",
+    "signature": "adhoc",
+    "cdHash": "9e754e1b4225d829064ae8927284c10a2645f54c",
+    "executableSha256": "b44ad5f93bdd8a191c2556895249c2f287d3681bb0784627027ff1139b733cf7"
+  },
+  "deterministicPreflight": {
+    "desktopInstanceContract": "PASS",
+    "visualFamilyTruth": {"passed": 30, "failed": 0},
+    "desktopMcpSurface": {"passed": 14, "failed": 0},
+    "playwrightV02": {"passed": 8, "failed": 0},
+    "bombadil": {
+      "approvalCard": "PASS",
+      "groupedVisualEvidence": "PASS"
+    },
+    "focusedOauthRecovery": {"passed": 3, "failed": 0},
+    "typescript": "PASS",
+    "codesignVerifyDeepStrict": "PASS"
+  },
+  "computerUsePreflight": {
+    "plainCuaRunLaunched": true,
+    "passwordOrKeychainModal": false,
+    "displayedVersion": "0.2.0",
+    "modelCatalogIncludes": ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"],
+    "chatgptOauth": {
+      "result": "BLOCKED",
+      "stateBeforeFix": "expired",
+      "startupRefreshFixCommit": "859110f6a316f282445f6a6f71cad07df4fc8833",
+      "stateAfterFix": "refresh_failed",
+      "guidance": "ChatGPT subscription authorization expired. Reauthenticate in Settings → Models; Workshop will not fall back to another provider.",
+      "credentialOrTokenCaptured": false
+    }
+  },
+  "w1": {
+    "result": "NOT_RUN",
+    "reason": "The required GPT-5.6 Sol authorization was not ready in the clean candidate. No prompt was sent and no rollout was started."
+  },
+  "w2": {
+    "result": "NOT_RUN",
+    "reason": "W2 must precede paid W1 execution in the same authorized clean candidate."
+  },
+  "w3": {
+    "result": "NOT_RUN",
+    "reason": "The three scoped proxy drills still require a fresh legitimate GPT-5.6 Sol task after the documented quota reset on 2026-08-18 21:45 America/New_York."
+  },
+  "paidRolloutsStarted": 0,
+  "fabricatedEvidence": false,
+  "nextActions": [
+    "Reauthenticate the existing ChatGPT subscription in the isolated candidate with explicit operator confirmation.",
+    "After the Sol quota reset, run W2 before W1 and preserve the exact candidate SHA and executable digest.",
+    "Run poll-503, frame-404, and policy-pin-refusal through a fresh proxy-only registration, restoring the same declared resource after each fault."
+  ]
+}

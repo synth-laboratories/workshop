@@ -1,5 +1,5 @@
 import type { ExecutionTarget } from "@synth/runtime-protocol";
-import { OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL, OPENROUTER_MUSE_SPARK_MODEL, SYNTH_CLOUD_LAGUNA_S_MODEL } from "../types/landing";
+import { OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL, OPENROUTER_MUSE_SPARK_MODEL, SYNTH_CLOUD_LAGUNA_S_MODEL, SYNTH_CLOUD_MUSE_SPARK_MODEL } from "../types/landing";
 
 /**
  * Declarative registry for model-specific composer controls.
@@ -7,8 +7,8 @@ import { OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL, OPENROUTER_MUSE_SPARK
  * Register a model knob here instead of branching on model ids in App or Composer.
  * The same entry owns rendering, validation, persistence, defaults, and turn transport.
  */
-export type ModelKnobTransportValue = "none" | "low" | "medium" | "high" | "xhigh" | "max";
-export type ModelKnobDisplayValue = "Minimal" | "None" | "Low" | "Medium" | "High" | "XHigh" | "Max";
+export type ModelKnobTransportValue = "none" | "low" | "medium" | "high" | "xhigh" | "max" | "default" | "fast";
+export type ModelKnobDisplayValue = "Minimal" | "None" | "Low" | "Medium" | "High" | "XHigh" | "Max" | "Standard" | "Fast";
 
 export type ModelKnobOption = {
 	displayValue: ModelKnobDisplayValue;
@@ -23,12 +23,12 @@ export type ModelKnobSpec = {
 	legacyStorageKeys?: string[];
 	defaultValue: ModelKnobTransportValue;
 	options: ModelKnobOption[];
-	turnStartField: "effort";
+	turnStartField: "effort" | "serviceTier";
 };
 
 export type ModelCapabilitySpec = {
 	targetId: string;
-	target: { kind: "local" } | { kind: "remote"; models: string[] };
+	target: { kind: "local" } | { kind: "remote" | "cloud"; models: string[] };
 	knobs: ModelKnobSpec[];
 	/**
 	 * How the provider's reasoning payload may be shown in the transcript.
@@ -67,7 +67,39 @@ const LOCAL_THINKING_OPTIONS: ModelKnobOption[] = [
 	{ displayValue: "Max", transportValue: "high" }
 ];
 
+const SERVICE_TIER_OPTIONS: ModelKnobOption[] = [
+	{ displayValue: "Standard", transportValue: "default" },
+	{ displayValue: "Fast", transportValue: "fast" }
+];
+
 export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
+	{
+		targetId: "chatgpt-luna",
+		target: { kind: "remote", models: ["gpt-5.6-luna"] },
+		knobs: [
+			{ id: "reasoning", label: "Thinking", testId: "reasoning-effort", storageKey: "synth.models.chatgpt-luna.reasoning", defaultValue: "medium", options: LUNA_EFFORT_OPTIONS, turnStartField: "effort" },
+			{ id: "service-tier", label: "Speed", testId: "service-tier", storageKey: "synth.models.chatgpt-luna.service-tier", defaultValue: "default", options: SERVICE_TIER_OPTIONS, turnStartField: "serviceTier" }
+		],
+		reasoningDisplay: "summary", inputModalities: ["text", "image"], maxContextTokens: 272_000
+	},
+	{
+		targetId: "chatgpt-sol",
+		target: { kind: "remote", models: ["gpt-5.6-sol"] },
+		knobs: [
+			{ id: "reasoning", label: "Thinking", testId: "reasoning-effort", storageKey: "synth.models.chatgpt-sol.reasoning", defaultValue: "medium", options: LUNA_EFFORT_OPTIONS, turnStartField: "effort" },
+			{ id: "service-tier", label: "Speed", testId: "service-tier", storageKey: "synth.models.chatgpt-sol.service-tier", defaultValue: "default", options: SERVICE_TIER_OPTIONS, turnStartField: "serviceTier" }
+		],
+		reasoningDisplay: "summary", inputModalities: ["text", "image"], maxContextTokens: 272_000
+	},
+	{
+		targetId: "chatgpt-terra",
+		target: { kind: "remote", models: ["gpt-5.6-terra"] },
+		knobs: [
+			{ id: "reasoning", label: "Thinking", testId: "reasoning-effort", storageKey: "synth.models.chatgpt-terra.reasoning", defaultValue: "medium", options: LUNA_EFFORT_OPTIONS, turnStartField: "effort" },
+			{ id: "service-tier", label: "Speed", testId: "service-tier", storageKey: "synth.models.chatgpt-terra.service-tier", defaultValue: "default", options: SERVICE_TIER_OPTIONS, turnStartField: "serviceTier" }
+		],
+		reasoningDisplay: "summary", inputModalities: ["text", "image"], maxContextTokens: 272_000
+	},
 	{
 		targetId: "local-laguna",
 		target: { kind: "local" },
@@ -144,7 +176,7 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 	},
 	{
 		targetId: "synth-cloud-laguna-s",
-		target: { kind: "remote", models: [SYNTH_CLOUD_LAGUNA_S_MODEL] },
+		target: { kind: "cloud", models: [SYNTH_CLOUD_LAGUNA_S_MODEL] },
 		knobs: [{
 			id: "reasoning",
 			label: "Thinking",
@@ -158,6 +190,22 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 		reasoningDisplay: "summary",
 		inputModalities: ["text"],
 		maxContextTokens: 262_144
+	},
+	{
+		targetId: "synth-cloud-muse-spark",
+		target: { kind: "remote", models: [SYNTH_CLOUD_MUSE_SPARK_MODEL] },
+		knobs: [{
+			id: "reasoning",
+			label: "Reasoning effort",
+			testId: "reasoning-effort",
+			storageKey: "synth.models.synth-cloud-muse-spark.reasoning",
+			defaultValue: "medium",
+			options: SPARK_EFFORT_OPTIONS,
+			turnStartField: "effort"
+		}],
+		reasoningDisplay: "summary",
+		inputModalities: ["text", "image"],
+		maxContextTokens: 1_048_576
 	}
 ];
 
@@ -220,4 +268,11 @@ export function turnStartEffortForExecutionTarget(
 		(candidate) => candidate.turnStartField === "effort"
 	);
 	return capability && knob ? modelKnobValue(values, capability.targetId, knob) : undefined;
+}
+
+export function serviceTierForExecutionTarget(target: ExecutionTarget, values: ModelKnobValues): "default" | "fast" | undefined {
+	const capability = modelCapabilitiesForExecutionTarget(target);
+	const knob = capability?.knobs.find((candidate) => candidate.turnStartField === "serviceTier");
+	const value = capability && knob ? modelKnobValue(values, capability.targetId, knob) : undefined;
+	return value === "fast" || value === "default" ? value : undefined;
 }

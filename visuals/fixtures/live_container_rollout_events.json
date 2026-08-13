@@ -1,6 +1,7 @@
 {
   "run_id": "craftax-live-demo",
   "events": [
+    {"occurred_at":"2026-08-09T15:00:00Z","run_id":"craftax-live-demo","kind":"stream.subscribed","payload":{"stream.id":"stream_craftax_demo","next_sequence":1,"ready":true}},
     {"occurred_at":"2026-08-09T15:00:00Z","run_id":"craftax-live-demo","lane":"craftax#0","kind":"eval.phase","payload":{"phase":"rollout.opened","policy":{"model":"openai/gpt-5.6-luna"}}},
     {"occurred_at":"2026-08-09T15:00:00Z","run_id":"craftax-live-demo","lane":"craftax#1","kind":"eval.phase","payload":{"phase":"rollout.opened","policy":{"model":"openai/gpt-5.6-luna"}}},
     {"occurred_at":"2026-08-09T15:00:01Z","run_id":"craftax-live-demo","lane":"craftax#0","kind":"snapshot","payload":{"step":2,"reward":0,"progress":{"done":2,"total":10},"inventory":{"health":9,"food":8,"drink":8,"energy":9},"achievements":[]}},

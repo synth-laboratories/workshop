@@ -152,6 +152,35 @@ function DetailValue({ value }: { value: unknown }) {
   return <code style={{ fontSize: 10, whiteSpace: "pre-wrap" }}>{JSON.stringify(value, null, 2)}</code>;
 }
 
+function EvidenceReviewSummary({ evidence, digestBound }: { evidence: InspectorItem[]; digestBound: boolean }) {
+  if (!evidence.length) return <section className="sv-section" aria-label="Evidence review summary" data-testid="trace-evidence-summary" style={{ marginTop: 14, borderLeft: "4px solid #9aa3b2" }}>
+    <div className="sv-section-head"><h3>Evidence review</h3><span className="sv-mono">none captured</span></div>
+    <p style={{ margin: 0, color: "var(--sv-text-faint)", fontSize: 11 }}>This trace has no evaluator evidence to review.</p>
+  </section>;
+  const decisive = evidence.filter((item) => /pass|fail|decisive|complete|valid/i.test(item.status ?? "")).length;
+  return <section className="sv-section" aria-label="Evidence review summary" data-testid="trace-evidence-summary" style={{ marginTop: 14, borderLeft: `4px solid ${decisive === evidence.length ? "#238558" : "#b67a00"}` }}>
+    <div className="sv-section-head">
+      <h3>Evidence review</h3>
+      <span className="sv-mono">{decisive}/{evidence.length} decisive · {digestBound ? "digest bound" : "unbound"}</span>
+    </div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 210px), 1fr))", gap: 8 }}>
+      {evidence.slice(0, 3).map((item) => {
+        const detail = item.detail ?? {};
+        const rationale = text(detail.rationale) || text(detail.verdict) || primary(item);
+        return <article key={item.item_id} style={{ minWidth: 0, padding: 10, border: "1px solid var(--sv-border)", borderRadius: 9, background: "var(--sv-surface)" }}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+            <strong style={{ minWidth: 0, fontSize: 11, overflowWrap: "anywhere" }}>{item.title ?? item.kind}</strong>
+            <span style={{ flex: "0 0 auto", color: statusColor(item.status), fontSize: 9, fontWeight: 800, textTransform: "uppercase" }}>{item.status ?? "recorded"}</span>
+          </div>
+          <p style={{ margin: "6px 0 0", color: "var(--sv-text-faint)", fontSize: 10, lineHeight: 1.4, overflowWrap: "anywhere" }}>{rationale}</p>
+          {number(detail.score) != null ? <div className="sv-mono" style={{ marginTop: 6, fontSize: 10 }}>score {number(detail.score)}</div> : null}
+        </article>;
+      })}
+    </div>
+    {evidence.length > 3 ? <p className="sv-mono" style={{ margin: "8px 0 0", color: "var(--sv-text-faint)", fontSize: 9 }}>+ {evidence.length - 3} more in Evidence</p> : null}
+  </section>;
+}
+
 function EventCard({ item, expanded, onToggle }: { item: InspectorItem; expanded: boolean; onToggle: () => void }) {
   const meta = FAMILY_META[family(item)]; const body = primary(item); const toolOutput = output(item);
   const command = family(item) === "tool"; const isLong = body.length > 360 || toolOutput.length > 260;
@@ -234,6 +263,7 @@ export function Shell({ title, lede, projection, data }: ShellProps) {
       { label: "Evidence", value: String(evidence.length) }
     ]} />
     <CraftaxComparison summary={craftax} />
+    <EvidenceReviewSummary evidence={evidence} digestBound={Boolean(payload.evidence_digest)} />
     <nav aria-label="Trace views" style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--sv-border)", marginTop: 14 }}>
       {(["trace", "evidence", "metadata"] as const).map((value) => <button key={value} type="button" className="sv-btn" aria-current={tab === value ? "page" : undefined} onClick={() => setTab(value)} style={{ border: 0, borderRadius: "7px 7px 0 0", borderBottom: tab === value ? "2px solid var(--sv-accent)" : "2px solid transparent", background: tab === value ? "var(--sv-accent-soft)" : "transparent", textTransform: "capitalize" }}>{value}</button>)}
     </nav>

@@ -1,9 +1,13 @@
 //! Stdio MCP adapter for Synth optimizers. Forwards tools through Desktop visuals IPC.
 
+#[path = "../ipc/mcp_stdio.rs"]
+mod mcp_stdio;
+
+use mcp_stdio::{run_stdio_server, McpServerInfo};
 use serde_json::{json, Value};
 use std::{
     env, fs,
-    io::{self, BufRead, Write},
+    io::{self, Write},
     path::PathBuf,
 };
 
@@ -30,10 +34,32 @@ fn connection_file() -> PathBuf {
         })
 }
 
+fn display_err(error: impl std::fmt::Display) -> String {
+    error.to_string()
+}
+
+fn resolved_session_ref(args: &Value, fallback: Option<&str>) -> Option<Value> {
+    args.get("session_ref")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| fallback.map(str::trim).filter(|value| !value.is_empty()))
+        .map(|value| Value::String(value.to_string()))
+}
+
 fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
-    let connection: Connection =
-        serde_json::from_str(&fs::read_to_string(connection_file()).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+    request_inner(method, path, body).map_err(display_err)
+}
+
+fn request_inner(
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value, synth_desktop_lib::error::AppError> {
+    let connection: Connection = serde_json::from_str(
+        &fs::read_to_string(connection_file()).map_err(synth_desktop_lib::error::AppError::from)?,
+    )
+    .map_err(synth_desktop_lib::error::AppError::from)?;
     let payload = body
         .map(|v| serde_json::to_vec(&v).unwrap_or_default())
         .unwrap_or_default();
@@ -44,8 +70,9 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
         .next()
         .unwrap_or_default()
         .parse::<std::net::SocketAddr>()
-        .map_err(|e| e.to_string())?;
-    let mut stream = std::net::TcpStream::connect(addr).map_err(|e| e.to_string())?;
+        .map_err(synth_desktop_lib::error::AppError::from)?;
+    let mut stream =
+        std::net::TcpStream::connect(addr).map_err(synth_desktop_lib::error::AppError::from)?;
     let wire = format!(
         "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         connection.token,
@@ -54,16 +81,17 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
     stream
         .write_all(wire.as_bytes())
         .and_then(|_| stream.write_all(&payload))
-        .map_err(|e| e.to_string())?;
+        .map_err(synth_desktop_lib::error::AppError::from)?;
     let mut response = String::new();
-    io::Read::read_to_string(&mut stream, &mut response).map_err(|e| e.to_string())?;
+    io::Read::read_to_string(&mut stream, &mut response)
+        .map_err(synth_desktop_lib::error::AppError::from)?;
     serde_json::from_str(
         response
             .split("\r\n\r\n")
             .nth(1)
-            .ok_or("empty IPC response")?,
+            .ok_or_else(|| synth_desktop_lib::error::AppError::message("empty IPC response"))?,
     )
-    .map_err(|e| e.to_string())
+    .map_err(synth_desktop_lib::error::AppError::from)
 }
 
 fn tools() -> Value {
@@ -71,7 +99,7 @@ fn tools() -> Value {
         {"name":"optimizer_manage","description":"Operate Synth optimizer runs. Load the use-synth-optimizers skill for operation arguments and safe recipe sequencing.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_algorithms","list_recipes","start_recipe","list_runs","get_run","watch_run","get_state","reconcile_cloud","cancel_run","open_visual"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
         {"name":"optimizer_list_algorithms","description":"List optimizer algorithms and availability","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"optimizer_list_recipes","description":"List product-owned bounded optimizer recipes and their hard limits","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-        {"name":"optimizer_start_recipe","description":"Start an allowlisted optimizer recipe. No commands, paths, credentials, or arbitrary config are accepted.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.smoke.v1","sft.craftax.gpt-oss.smoke.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"}},"required":["recipe_id"],"additionalProperties":false}},
+        {"name":"optimizer_start_recipe","description":"Start an allowlisted optimizer recipe. No commands, paths, credentials, or arbitrary config are accepted. Optional base_model must be an id from docs/sft_tinker_base_models.toml; dataset_shard must be advertised by the selected recipe.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.luna.v1","gepa.banking77.sol.v1","gelo.craftax.hosted.v1","sft.craftax.gpt-oss.smoke.v1","sft.hosted.fixture.v1","sft.craftax.nemotron-nano.tinker.v1","sft.banking77.nemotron-lightning.tinker.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]}},"required":["recipe_id"],"additionalProperties":false}},
         {"name":"optimizer_list_runs","description":"List local optimizer run mirrors","inputSchema":{"type":"object","properties":{"status":{"type":"string"},"algorithm_id":{"type":"string"},"source":{"type":"string"},"search":{"type":"string"}},"additionalProperties":false}},
         {"name":"optimizer_get_run","description":"Get one optimizer run mirror","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
         {"name":"optimizer_create_run","description":"Create an optimizer run (local stub, cloud-hosted, fixture, or local path import)","inputSchema":{"type":"object","properties":{"algorithm_id":{"type":"string"},"objective":{"type":"string"},"session_ref":{"type":"string"},"source":{"type":"string","enum":["local","cloud"]},"local_path":{"type":"string"},"seed_fixture":{"type":"string"},"cloud_config":{"type":"object"},"open_visual":{"type":"boolean"}},"required":["algorithm_id"],"additionalProperties":false}},
@@ -81,7 +109,7 @@ fn tools() -> Value {
         {"name":"optimizer_get_state","description":"Read one or more projected state slices","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"},"slice_id":{"type":"string"},"slices":{"type":"array","items":{"type":"string"}},"at_seq":{"type":"integer"}},"required":["optimizer_run_id"],"additionalProperties":false}},
         {"name":"optimizer_watch_run","description":"Read optimizer events after a sequence","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"},"after_seq":{"type":"integer"},"limit":{"type":"integer"}},"required":["optimizer_run_id"],"additionalProperties":false}},
         {"name":"optimizer_cancel_run","description":"Cancel an optimizer run when capability allows","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
-        {"name":"optimizer_open_visual","description":"Open or create the linked optimizer visual","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}}
+        {"name":"optimizer_open_visual","description":"Create or reuse the optimizer's primary visual and show it live in the current Desktop conversation","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"},"session_ref":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}}
     ]})
 }
 
@@ -112,6 +140,8 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             .and_then(Value::as_str)
             .ok_or_else(|| "optimizer_run_id required".to_string())
     };
+    let current_session = env::var("SYNTH_SESSION_ID").ok();
+    let session_ref = || resolved_session_ref(args, current_session.as_deref());
     match name {
         "optimizer_list_algorithms" => request("GET", "/v1/optimizers/algorithms", None),
         "optimizer_list_recipes" => request("GET", "/v1/optimizers/recipes", None),
@@ -120,8 +150,10 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             "/v1/optimizers/recipes/run",
             Some(json!({
                 "recipeId": args.get("recipe_id"),
-                "sessionRef": args.get("session_ref"),
-                "openVisual": args.get("open_visual").cloned().unwrap_or(json!(true))
+                "sessionRef": session_ref(),
+                "openVisual": args.get("open_visual").cloned().unwrap_or(json!(true)),
+                "baseModel": args.get("base_model"),
+                "datasetShard": args.get("dataset_shard")
             })),
         ),
         "optimizer_list_runs" => request(
@@ -141,7 +173,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             Some(json!({
                 "algorithmId": args.get("algorithm_id"),
                 "objective": args.get("objective"),
-                "sessionRef": args.get("session_ref"),
+                "sessionRef": session_ref(),
                 "source": args.get("source"),
                 "localPath": args.get("local_path"),
                 "seedFixture": args.get("seed_fixture"),
@@ -154,7 +186,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             "/v1/optimizers/import_local",
             Some(json!({
                 "path": args.get("path"),
-                "sessionRef": args.get("session_ref"),
+                "sessionRef": session_ref(),
                 "openVisual": args.get("open_visual").cloned().unwrap_or(json!(true))
             })),
         ),
@@ -210,66 +242,21 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         "optimizer_open_visual" => request(
             "POST",
             &format!("/v1/optimizers/runs/{}/open_visual", id()?),
-            None,
+            Some(json!({ "sessionRef": session_ref() })),
         ),
         _ => Err(format!("unknown tool {name}")),
     }
 }
 
 fn main() {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let request: Value = match serde_json::from_str(&line) {
-            Ok(value) => value,
-            Err(error) => {
-                let _ = writeln!(
-                    stdout,
-                    "{}",
-                    json!({"jsonrpc":"2.0","error":{"code":-32700,"message":error.to_string()}})
-                );
-                continue;
-            }
-        };
-        let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request.get("method").and_then(Value::as_str).unwrap_or("");
-        let response = match method {
-            "initialize" => json!({
-                "jsonrpc":"2.0","id":id,
-                "result":{
-                    "protocolVersion":"2024-11-05",
-                    "capabilities":{"tools":{}},
-                    "serverInfo":{"name":"synth-optimizers-mcp","version":"0.1.0"}
-                }
-            }),
-            "tools/list" => json!({"jsonrpc":"2.0","id":id,"result":tools()}),
-            "tools/call" => {
-                let params = request.get("params").cloned().unwrap_or(json!({}));
-                let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-                let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                match call_tool(name, &args) {
-                    Ok(result) => json!({
-                        "jsonrpc":"2.0","id":id,
-                        "result":{"content":[{"type":"text","text":serde_json::to_string_pretty(&result).unwrap_or_default()}],"structuredContent":result}
-                    }),
-                    Err(error) => json!({
-                        "jsonrpc":"2.0","id":id,
-                        "error":{"code":-32000,"message":error}
-                    }),
-                }
-            }
-            "notifications/initialized" | "notifications/cancelled" => continue,
-            _ => {
-                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":format!("method not found: {method}")}})
-            }
-        };
-        let _ = writeln!(stdout, "{response}");
-        let _ = stdout.flush();
-    }
+    run_stdio_server(
+        McpServerInfo {
+            name: "synth-optimizers-mcp",
+            version: "0.1.0",
+        },
+        tools,
+        call_tool,
+    );
 }
 
 #[cfg(test)]
@@ -282,8 +269,32 @@ mod tests {
         let tools = catalog["tools"].as_array().unwrap();
         assert!(tools.iter().any(|tool| tool["name"] == "optimizer_manage"));
         let encoded = catalog.to_string();
-        assert!(encoded.contains("gepa.banking77.smoke.v1"));
+        assert!(encoded.contains("gepa.banking77.luna.v1"));
+        assert!(encoded.contains("gepa.banking77.sol.v1"));
         assert!(encoded.contains("sft.craftax.gpt-oss.smoke.v1"));
+        assert!(encoded.contains("sft.hosted.fixture.v1"));
+        assert!(encoded.contains("sft.craftax.nemotron-nano.tinker.v1"));
+        assert!(encoded.contains("sft.banking77.nemotron-lightning.tinker.v1"));
+        assert!(encoded.contains("dataset_shard"));
         assert!(!encoded.contains("api_key"));
+    }
+
+    #[test]
+    fn defaults_presentation_to_the_current_conversation() {
+        assert_eq!(
+            resolved_session_ref(&json!({}), Some("session_current")),
+            Some(json!("session_current"))
+        );
+        assert_eq!(
+            resolved_session_ref(
+                &json!({"session_ref": "session_explicit"}),
+                Some("session_current")
+            ),
+            Some(json!("session_explicit"))
+        );
+        assert_eq!(
+            resolved_session_ref(&json!({"session_ref": null}), Some("session_current")),
+            Some(json!("session_current"))
+        );
     }
 }

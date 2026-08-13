@@ -1,0 +1,692 @@
+{
+  "schema": "synth.workshop.a1-receipt.v1",
+  "test": "A1 / CRAFTAX-LUNA-010 / TS-E01",
+  "driver": {
+    "url": "http://127.0.0.1:58587",
+    "sourceRevision": "b087418a7c72-dirty"
+  },
+  "facade": "http://127.0.0.1:8097",
+  "containerId": "ctr_09e158f07c2d45249e47b29db6012ed4",
+  "liveEval": {
+    "family": "craftax",
+    "liveFrames": "native",
+    "slot": "stream",
+    "templateId": "live.craftax.v1"
+  },
+  "visualId": "vis_fd4915fa93454fadae79addea5c952be",
+  "policyRef": {
+    "harness": "react",
+    "config": "luna_med"
+  },
+  "model": "openai/gpt-5.6-luna",
+  "paid": true,
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "errors": {},
+  "results": {
+    "0": {
+      "rolloutId": "craftax_luna_010_craftax_seed_0",
+      "taskInstanceId": "craftax:seed:0",
+      "seed": 0,
+      "provider": "openrouter",
+      "model": "openai/gpt-5.6-luna",
+      "reasoningEffort": "medium",
+      "calls": 15,
+      "wallS": 78.053390209,
+      "reward": 4.0,
+      "achievements": [
+        "collect_sapling",
+        "collect_food",
+        "eat_cow",
+        "place_plant"
+      ],
+      "terminated": true,
+      "truncated": false,
+      "spoolDigest": "6743d5545c62f39de594a626bad4f01fbf33c2f0b7fdbc23dde0b848ee9e037d",
+      "visualId": "vis_fd4915fa93454fadae79addea5c952be",
+      "policyAuthority": "container",
+      "recovered": false,
+      "usage": {
+        "calls": 15,
+        "completionTokens": 5125,
+        "costUsd": 0.004503345,
+        "promptTokens": 56601,
+        "totalTokens": 61726
+      },
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:craftax_luna_010_craftax_seed_0",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/craftax_luna_010_craftax_seed_0/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_0/events"
+          },
+          "sse": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_0/stream"
+          },
+          "websocket": null
+        }
+      },
+      "actionCount": 120,
+      "eventCount": 2856,
+      "traceCorrelation": {
+        "actionCount": 120,
+        "authority": "container_stream",
+        "boundRolloutId": "craftax_luna_010_craftax_seed_0",
+        "containerId": "ctr_09e158f07c2d45249e47b29db6012ed4",
+        "rolloutId": "craftax_luna_010_craftax_seed_0",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 0,
+        "spoolDigest": "6743d5545c62f39de594a626bad4f01fbf33c2f0b7fdbc23dde0b848ee9e037d",
+        "taskInstanceId": "craftax:seed:0",
+        "visualId": "vis_fd4915fa93454fadae79addea5c952be"
+      }
+    },
+    "1": {
+      "rolloutId": "craftax_luna_010_craftax_seed_1",
+      "taskInstanceId": "craftax:seed:1",
+      "seed": 1,
+      "provider": "openrouter",
+      "model": "openai/gpt-5.6-luna",
+      "reasoningEffort": "medium",
+      "calls": 17,
+      "wallS": 82.683028166,
+      "reward": 3.0,
+      "achievements": [
+        "defeat_zombie",
+        "collect_wood",
+        "collect_sapling"
+      ],
+      "terminated": true,
+      "truncated": false,
+      "spoolDigest": "84fc25d811db9d70245beb83d89b543360e57e9f6e403d3144958eab4baa4442",
+      "visualId": "vis_fd4915fa93454fadae79addea5c952be",
+      "policyAuthority": "container",
+      "recovered": false,
+      "usage": {
+        "calls": 17,
+        "completionTokens": 4310,
+        "costUsd": 0.004310544999999999,
+        "promptTokens": 63716,
+        "totalTokens": 68026
+      },
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:craftax_luna_010_craftax_seed_1",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/craftax_luna_010_craftax_seed_1/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_1/events"
+          },
+          "sse": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_1/stream"
+          },
+          "websocket": null
+        }
+      },
+      "actionCount": 120,
+      "eventCount": 2440,
+      "traceCorrelation": {
+        "actionCount": 120,
+        "authority": "container_stream",
+        "boundRolloutId": "craftax_luna_010_craftax_seed_1",
+        "containerId": "ctr_09e158f07c2d45249e47b29db6012ed4",
+        "rolloutId": "craftax_luna_010_craftax_seed_1",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 1,
+        "spoolDigest": "84fc25d811db9d70245beb83d89b543360e57e9f6e403d3144958eab4baa4442",
+        "taskInstanceId": "craftax:seed:1",
+        "visualId": "vis_fd4915fa93454fadae79addea5c952be"
+      }
+    },
+    "2": {
+      "rolloutId": "craftax_luna_010_craftax_seed_2",
+      "taskInstanceId": "craftax:seed:2",
+      "seed": 2,
+      "provider": "openrouter",
+      "model": "openai/gpt-5.6-luna",
+      "reasoningEffort": "medium",
+      "calls": 13,
+      "wallS": 61.429512291,
+      "reward": 2.8,
+      "achievements": [
+        "defeat_zombie",
+        "collect_sapling",
+        "place_plant"
+      ],
+      "terminated": true,
+      "truncated": false,
+      "spoolDigest": "cd08a0995d47abaad7fd3b68a1e194ed9e226a54a1ad6d9b7e82e6cfbe5841c2",
+      "visualId": "vis_fd4915fa93454fadae79addea5c952be",
+      "policyAuthority": "container",
+      "recovered": false,
+      "usage": {
+        "calls": 13,
+        "completionTokens": 3699,
+        "costUsd": 0.0038140650000000006,
+        "promptTokens": 45335,
+        "totalTokens": 49034
+      },
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:craftax_luna_010_craftax_seed_2",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/craftax_luna_010_craftax_seed_2/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_2/events"
+          },
+          "sse": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_2/stream"
+          },
+          "websocket": null
+        }
+      },
+      "actionCount": 120,
+      "eventCount": 2625,
+      "traceCorrelation": {
+        "actionCount": 120,
+        "authority": "container_stream",
+        "boundRolloutId": "craftax_luna_010_craftax_seed_2",
+        "containerId": "ctr_09e158f07c2d45249e47b29db6012ed4",
+        "rolloutId": "craftax_luna_010_craftax_seed_2",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 2,
+        "spoolDigest": "cd08a0995d47abaad7fd3b68a1e194ed9e226a54a1ad6d9b7e82e6cfbe5841c2",
+        "taskInstanceId": "craftax:seed:2",
+        "visualId": "vis_fd4915fa93454fadae79addea5c952be"
+      }
+    },
+    "3": {
+      "rolloutId": "craftax_luna_010_craftax_seed_3",
+      "taskInstanceId": "craftax:seed:3",
+      "seed": 3,
+      "provider": "openrouter",
+      "model": "openai/gpt-5.6-luna",
+      "reasoningEffort": "medium",
+      "calls": 6,
+      "wallS": 37.359024667,
+      "reward": 1.1,
+      "achievements": [
+        "collect_wood",
+        "collect_drink"
+      ],
+      "terminated": true,
+      "truncated": false,
+      "spoolDigest": "c09c5a1ec965e535e8eeeea90be6c883ea2bda683a8e57f2e5f0a79b269e4112",
+      "visualId": "vis_fd4915fa93454fadae79addea5c952be",
+      "policyAuthority": "container",
+      "recovered": false,
+      "usage": {
+        "calls": 6,
+        "completionTokens": 2069,
+        "costUsd": 0.0017544900000000005,
+        "promptTokens": 10963,
+        "totalTokens": 13032
+      },
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:craftax_luna_010_craftax_seed_3",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/craftax_luna_010_craftax_seed_3/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_3/events"
+          },
+          "sse": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_3/stream"
+          },
+          "websocket": null
+        }
+      },
+      "actionCount": 51,
+      "eventCount": 1270,
+      "traceCorrelation": {
+        "actionCount": 51,
+        "authority": "container_stream",
+        "boundRolloutId": "craftax_luna_010_craftax_seed_3",
+        "containerId": "ctr_09e158f07c2d45249e47b29db6012ed4",
+        "rolloutId": "craftax_luna_010_craftax_seed_3",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 3,
+        "spoolDigest": "c09c5a1ec965e535e8eeeea90be6c883ea2bda683a8e57f2e5f0a79b269e4112",
+        "taskInstanceId": "craftax:seed:3",
+        "visualId": "vis_fd4915fa93454fadae79addea5c952be"
+      }
+    },
+    "4": {
+      "rolloutId": "craftax_luna_010_craftax_seed_4",
+      "taskInstanceId": "craftax:seed:4",
+      "seed": 4,
+      "provider": "openrouter",
+      "model": "openai/gpt-5.6-luna",
+      "reasoningEffort": "medium",
+      "calls": 6,
+      "wallS": 48.092619667,
+      "reward": -1.0,
+      "achievements": [],
+      "terminated": true,
+      "truncated": false,
+      "spoolDigest": "00ee767ece9eb454c475cb133ee6b84b8ad226f79bfe7d7011dd42bffe18e822",
+      "visualId": "vis_fd4915fa93454fadae79addea5c952be",
+      "policyAuthority": "container",
+      "recovered": false,
+      "usage": {
+        "calls": 6,
+        "completionTokens": 4204,
+        "costUsd": 0.0030375,
+        "promptTokens": 10960,
+        "totalTokens": 15164
+      },
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:craftax_luna_010_craftax_seed_4",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/craftax_luna_010_craftax_seed_4/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_4/events"
+          },
+          "sse": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_4/stream"
+          },
+          "websocket": null
+        }
+      },
+      "actionCount": 47,
+      "eventCount": 1753,
+      "traceCorrelation": {
+        "actionCount": 47,
+        "authority": "container_stream",
+        "boundRolloutId": "craftax_luna_010_craftax_seed_4",
+        "containerId": "ctr_09e158f07c2d45249e47b29db6012ed4",
+        "rolloutId": "craftax_luna_010_craftax_seed_4",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 4,
+        "spoolDigest": "00ee767ece9eb454c475cb133ee6b84b8ad226f79bfe7d7011dd42bffe18e822",
+        "taskInstanceId": "craftax:seed:4",
+        "visualId": "vis_fd4915fa93454fadae79addea5c952be"
+      }
+    },
+    "5": {
+      "rolloutId": "craftax_luna_010_craftax_seed_5",
+      "taskInstanceId": "craftax:seed:5",
+      "seed": 5,
+      "provider": "openrouter",
+      "model": "openai/gpt-5.6-luna",
+      "reasoningEffort": "medium",
+      "calls": 18,
+      "wallS": 88.529769,
+      "reward": 1.6,
+      "achievements": [
+        "collect_wood",
+        "place_table"
+      ],
+      "terminated": true,
+      "truncated": false,
+      "spoolDigest": "170efa80efc99a7af46cd14b7599976d8d63bf24ecadc0ef8492148e936956b8",
+      "visualId": "vis_fd4915fa93454fadae79addea5c952be",
+      "policyAuthority": "container",
+      "recovered": false,
+      "usage": {
+        "calls": 18,
+        "completionTokens": 5064,
+        "costUsd": 0.00517759,
+        "promptTokens": 72099,
+        "totalTokens": 77163
+      },
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:craftax_luna_010_craftax_seed_5",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/craftax_luna_010_craftax_seed_5/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_5/events"
+          },
+          "sse": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_5/stream"
+          },
+          "websocket": null
+        }
+      },
+      "actionCount": 120,
+      "eventCount": 2860,
+      "traceCorrelation": {
+        "actionCount": 120,
+        "authority": "container_stream",
+        "boundRolloutId": "craftax_luna_010_craftax_seed_5",
+        "containerId": "ctr_09e158f07c2d45249e47b29db6012ed4",
+        "rolloutId": "craftax_luna_010_craftax_seed_5",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 5,
+        "spoolDigest": "170efa80efc99a7af46cd14b7599976d8d63bf24ecadc0ef8492148e936956b8",
+        "taskInstanceId": "craftax:seed:5",
+        "visualId": "vis_fd4915fa93454fadae79addea5c952be"
+      }
+    },
+    "6": {
+      "rolloutId": "craftax_luna_010_craftax_seed_6",
+      "taskInstanceId": "craftax:seed:6",
+      "seed": 6,
+      "provider": "openrouter",
+      "model": "openai/gpt-5.6-luna",
+      "reasoningEffort": "medium",
+      "calls": 9,
+      "wallS": 44.130438667,
+      "reward": -0.9,
+      "achievements": [],
+      "terminated": true,
+      "truncated": false,
+      "spoolDigest": "874c6445c6a4c93992f4c94d9efae19e8eb0b53a1b75e24869df87cbfa7e06c7",
+      "visualId": "vis_fd4915fa93454fadae79addea5c952be",
+      "policyAuthority": "container",
+      "recovered": false,
+      "usage": {
+        "calls": 9,
+        "completionTokens": 2870,
+        "costUsd": 0.002484055,
+        "promptTokens": 21851,
+        "totalTokens": 24721
+      },
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:craftax_luna_010_craftax_seed_6",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/craftax_luna_010_craftax_seed_6/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_6/events"
+          },
+          "sse": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_6/stream"
+          },
+          "websocket": null
+        }
+      },
+      "actionCount": 69,
+      "eventCount": 1446,
+      "traceCorrelation": {
+        "actionCount": 69,
+        "authority": "container_stream",
+        "boundRolloutId": "craftax_luna_010_craftax_seed_6",
+        "containerId": "ctr_09e158f07c2d45249e47b29db6012ed4",
+        "rolloutId": "craftax_luna_010_craftax_seed_6",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 6,
+        "spoolDigest": "874c6445c6a4c93992f4c94d9efae19e8eb0b53a1b75e24869df87cbfa7e06c7",
+        "taskInstanceId": "craftax:seed:6",
+        "visualId": "vis_fd4915fa93454fadae79addea5c952be"
+      }
+    },
+    "7": {
+      "rolloutId": "craftax_luna_010_craftax_seed_7",
+      "taskInstanceId": "craftax:seed:7",
+      "seed": 7,
+      "provider": "openrouter",
+      "model": "openai/gpt-5.6-luna",
+      "reasoningEffort": "medium",
+      "calls": 4,
+      "wallS": 36.367988959,
+      "reward": -1.0,
+      "achievements": [],
+      "terminated": true,
+      "truncated": false,
+      "spoolDigest": "314b74964da227c01844fe4d1069f6c09ec38397d0adeca7431aba30659c4e91",
+      "visualId": "vis_fd4915fa93454fadae79addea5c952be",
+      "policyAuthority": "container",
+      "recovered": false,
+      "usage": {
+        "calls": 4,
+        "completionTokens": 2279,
+        "costUsd": 0.0017317549999999998,
+        "promptTokens": 5679,
+        "totalTokens": 7958
+      },
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:craftax_luna_010_craftax_seed_7",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/craftax_luna_010_craftax_seed_7/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_7/events"
+          },
+          "sse": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_7/stream"
+          },
+          "websocket": null
+        }
+      },
+      "actionCount": 35,
+      "eventCount": 946,
+      "traceCorrelation": {
+        "actionCount": 35,
+        "authority": "container_stream",
+        "boundRolloutId": "craftax_luna_010_craftax_seed_7",
+        "containerId": "ctr_09e158f07c2d45249e47b29db6012ed4",
+        "rolloutId": "craftax_luna_010_craftax_seed_7",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 7,
+        "spoolDigest": "314b74964da227c01844fe4d1069f6c09ec38397d0adeca7431aba30659c4e91",
+        "taskInstanceId": "craftax:seed:7",
+        "visualId": "vis_fd4915fa93454fadae79addea5c952be"
+      }
+    },
+    "8": {
+      "rolloutId": "craftax_luna_010_craftax_seed_8",
+      "taskInstanceId": "craftax:seed:8",
+      "seed": 8,
+      "provider": "openrouter",
+      "model": "openai/gpt-5.6-luna",
+      "reasoningEffort": "medium",
+      "calls": 8,
+      "wallS": 39.974736708,
+      "reward": 0.09999999999999996,
+      "achievements": [
+        "collect_wood"
+      ],
+      "terminated": true,
+      "truncated": false,
+      "spoolDigest": "8e52d409ea33dd0873c0f9276bdd5637230ad949baac3065ef6f97086b12c3de",
+      "visualId": "vis_fd4915fa93454fadae79addea5c952be",
+      "policyAuthority": "container",
+      "recovered": false,
+      "usage": {
+        "calls": 8,
+        "completionTokens": 3004,
+        "costUsd": 0.00251288,
+        "promptTokens": 18583,
+        "totalTokens": 21587
+      },
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:craftax_luna_010_craftax_seed_8",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/craftax_luna_010_craftax_seed_8/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_8/events"
+          },
+          "sse": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_8/stream"
+          },
+          "websocket": null
+        }
+      },
+      "actionCount": 54,
+      "eventCount": 1202,
+      "traceCorrelation": {
+        "actionCount": 54,
+        "authority": "container_stream",
+        "boundRolloutId": "craftax_luna_010_craftax_seed_8",
+        "containerId": "ctr_09e158f07c2d45249e47b29db6012ed4",
+        "rolloutId": "craftax_luna_010_craftax_seed_8",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 8,
+        "spoolDigest": "8e52d409ea33dd0873c0f9276bdd5637230ad949baac3065ef6f97086b12c3de",
+        "taskInstanceId": "craftax:seed:8",
+        "visualId": "vis_fd4915fa93454fadae79addea5c952be"
+      }
+    },
+    "9": {
+      "rolloutId": "craftax_luna_010_craftax_seed_9",
+      "taskInstanceId": "craftax:seed:9",
+      "seed": 9,
+      "provider": "openrouter",
+      "model": "openai/gpt-5.6-luna",
+      "reasoningEffort": "medium",
+      "calls": 8,
+      "wallS": 33.095102416,
+      "reward": 0.1,
+      "achievements": [
+        "collect_wood"
+      ],
+      "terminated": true,
+      "truncated": false,
+      "spoolDigest": "6ecdf912f7291ca4e2f1c512b990eac6ae896c9cde2a372ce423dacca4000f44",
+      "visualId": "vis_fd4915fa93454fadae79addea5c952be",
+      "policyAuthority": "container",
+      "recovered": false,
+      "usage": {
+        "calls": 8,
+        "completionTokens": 1854,
+        "costUsd": 0.00180919,
+        "promptTokens": 18367,
+        "totalTokens": 20221
+      },
+      "stream": {
+        "auth": {
+          "mode": "none"
+        },
+        "cursor": {
+          "kind": "sequence",
+          "producer_kind": null
+        },
+        "id": "stream:craftax_luna_010_craftax_seed_9",
+        "retention": "run",
+        "reward": {
+          "url": "/rollouts/craftax_luna_010_craftax_seed_9/reward"
+        },
+        "schema": "synth.rollout.stream.v1",
+        "transports": {
+          "poll": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_9/events"
+          },
+          "sse": {
+            "url": "/rollouts/craftax_luna_010_craftax_seed_9/stream"
+          },
+          "websocket": null
+        }
+      },
+      "actionCount": 56,
+      "eventCount": 958,
+      "traceCorrelation": {
+        "actionCount": 56,
+        "authority": "container_stream",
+        "boundRolloutId": "craftax_luna_010_craftax_seed_9",
+        "containerId": "ctr_09e158f07c2d45249e47b29db6012ed4",
+        "rolloutId": "craftax_luna_010_craftax_seed_9",
+        "schemaVersion": "synth.trace-correlation.v1",
+        "seed": 9,
+        "spoolDigest": "6ecdf912f7291ca4e2f1c512b990eac6ae896c9cde2a372ce423dacca4000f44",
+        "taskInstanceId": "craftax:seed:9",
+        "visualId": "vis_fd4915fa93454fadae79addea5c952be"
+      }
+    }
+  },
+  "note": "Lean receipt. Per-lane event logs stay in the container stream and the Workshop spool (spoolDigest); they are not copied into the repo."
+}

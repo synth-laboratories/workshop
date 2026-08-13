@@ -8,7 +8,6 @@
 //! "no update known", never an error surface.
 
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 /// Baked at build time. Stable and nightly are separate installed apps with
 /// separate bundle identifiers; a build only ever reads its own channel's
@@ -23,9 +22,8 @@ pub const CHANNEL: &str = match option_env!("SYNTH_DESKTOP_CHANNEL") {
 pub const DOWNLOAD_PAGE: &str = "https://usesynth.ai/download";
 
 const DEFAULT_MANIFEST_BASE: &str = "https://usesynth.ai/releases";
-const MANIFEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStatus {
     pub current_version: String,
@@ -68,10 +66,7 @@ pub async fn status() -> UpdateStatus {
 }
 
 async fn fetch_latest_version(url: &str) -> Option<String> {
-    let client = reqwest::Client::builder()
-        .timeout(MANIFEST_TIMEOUT)
-        .build()
-        .ok()?;
+    let client = crate::http::http_client_with_timeout(crate::limits::UPDATE_MANIFEST_TIMEOUT);
     let manifest = client
         .get(url)
         .send()
@@ -209,7 +204,10 @@ mod tests {
     async fn a_live_manifest_yields_its_version() {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/stable/latest.json", listener.local_addr().unwrap());
+        let url = format!(
+            "http://{}/stable/latest.json",
+            listener.local_addr().unwrap()
+        );
         std::thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut buf = [0u8; 4096];

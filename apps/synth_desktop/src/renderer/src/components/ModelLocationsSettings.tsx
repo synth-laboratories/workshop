@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import type { LagunaModelHit } from "../env";
+import type { LagunaModelHit } from "../bridge";
+import { bridges } from "../runtime/desktopBridge";
 
 function formatBytes(bytes: number): string {
 	if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -16,7 +17,7 @@ export function ModelLocationsSettings() {
 		setBusy(true);
 		setError(null);
 		try {
-			setHits(await window.synthLaguna?.listModels() ?? []);
+			setHits(await bridges.laguna?.listModels() ?? []);
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
 		} finally {
@@ -30,10 +31,10 @@ export function ModelLocationsSettings() {
 		setBusy(true);
 		setError(null);
 		try {
-			const path = await window.synthLaguna?.chooseModelDirectory();
+			const path = await bridges.laguna?.chooseModelDirectory();
 			if (!path) return;
-			await window.synthLaguna?.setModelDirectory(path);
-			setHits(await window.synthLaguna?.listModels() ?? []);
+			await bridges.laguna?.setModelDirectory(path);
+			setHits(await bridges.laguna?.listModels() ?? []);
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
 		} finally {
@@ -45,8 +46,8 @@ export function ModelLocationsSettings() {
 		setBusy(true);
 		setError(null);
 		try {
-			await window.synthLaguna?.clearModelDirectory();
-			setHits(await window.synthLaguna?.listModels() ?? []);
+			await bridges.laguna?.clearModelDirectory();
+			setHits(await bridges.laguna?.listModels() ?? []);
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
 		} finally {
@@ -80,7 +81,7 @@ export function ModelLocationsSettings() {
 							{hit.selected ? <span className="model-location-badge">In use</span> : (
 								<button type="button" className="settings-secondary-btn" disabled={busy} onClick={async () => {
 									setBusy(true); setError(null);
-									try { await window.synthLaguna?.setModelDirectory(hit.path); await refresh(); }
+									try { await bridges.laguna?.setModelDirectory(hit.path); await refresh(); }
 									catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); setBusy(false); }
 								}}>Use this copy</button>
 							)}

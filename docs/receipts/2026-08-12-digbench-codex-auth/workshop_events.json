@@ -1,0 +1,2266 @@
+{
+  "schema": "synth.trace-stream-event.v1",
+  "run_id": "dig_canary_comparison",
+  "events": [
+    {
+      "ts": "2026-08-13T02:00:00.010000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "trace.opened",
+      "sequence": 1,
+      "payload": {
+        "rollout_id": "dig_canary_luna_r1",
+        "world_ref": "world:digbench:local-canary-v1",
+        "environment_ref": "env:digbench_local_canary",
+        "task_instance_id": "local-r1",
+        "policy_ref": {
+          "harness": "codex",
+          "config": "codex_exec_luna_medium",
+          "model": "gpt-5.6-luna",
+          "replicate": 1
+        }
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.020000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "session.opened",
+      "sequence": 2,
+      "payload": {
+        "game": "local-canary-v1",
+        "session_id": "dig_canary_luna_r1"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.030000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "observation",
+      "sequence": 3,
+      "payload": {
+        "text": "Authenticated Codex Luna replicate 1: five hidden-rule games."
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.040000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "legal_actions",
+      "sequence": 4,
+      "payload": {
+        "actions": [
+          "environment supplied per step"
+        ]
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.050000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 5,
+      "payload": {
+        "action": "amber",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.060000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 6,
+      "payload": {
+        "action": "cobalt",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.070000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 7,
+      "payload": {
+        "action": "amber",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.080000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 8,
+      "payload": {
+        "action": "ivory",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.090000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 9,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.100000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 10,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.110000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 11,
+      "payload": {
+        "action": "moon",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.120000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 12,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.130000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 13,
+      "payload": {
+        "action": "moon",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.140000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 14,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.150000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 15,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.160000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 16,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.170000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 17,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.180000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 18,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.190000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 19,
+      "payload": {
+        "action": "three",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.200000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 20,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.210000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 21,
+      "payload": {
+        "action": "three",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.220000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 22,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.230000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 23,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.240000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 24,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.250000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 25,
+      "payload": {
+        "action": "north",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.260000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 26,
+      "payload": {
+        "action": "east",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.270000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 27,
+      "payload": {
+        "action": "south",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.280000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 28,
+      "payload": {
+        "action": "A",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.290000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "action",
+      "sequence": 29,
+      "payload": {
+        "action": "B",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.300000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "stats",
+      "sequence": 30,
+      "payload": {
+        "level": 5,
+        "lives": 5,
+        "steps_remaining": 0,
+        "elapsed_seconds": 124.115,
+        "total_actions": 25
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:00.310000Z",
+      "run_id": "dig_canary_luna_r1",
+      "kind": "status",
+      "sequence": 31,
+      "payload": {
+        "status": "completed",
+        "reward": 1.0
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.010000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "trace.opened",
+      "sequence": 1,
+      "payload": {
+        "rollout_id": "dig_canary_luna_r2",
+        "world_ref": "world:digbench:local-canary-v1",
+        "environment_ref": "env:digbench_local_canary",
+        "task_instance_id": "local-r2",
+        "policy_ref": {
+          "harness": "codex",
+          "config": "codex_exec_luna_medium",
+          "model": "gpt-5.6-luna",
+          "replicate": 2
+        }
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.020000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "session.opened",
+      "sequence": 2,
+      "payload": {
+        "game": "local-canary-v1",
+        "session_id": "dig_canary_luna_r2"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.030000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "observation",
+      "sequence": 3,
+      "payload": {
+        "text": "Authenticated Codex Luna replicate 2: five hidden-rule games."
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.040000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "legal_actions",
+      "sequence": 4,
+      "payload": {
+        "actions": [
+          "environment supplied per step"
+        ]
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.050000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 5,
+      "payload": {
+        "action": "amber",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.060000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 6,
+      "payload": {
+        "action": "cobalt",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.070000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 7,
+      "payload": {
+        "action": "amber",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.080000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 8,
+      "payload": {
+        "action": "ivory",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.090000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 9,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.100000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 10,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.110000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 11,
+      "payload": {
+        "action": "moon",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.120000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 12,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.130000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 13,
+      "payload": {
+        "action": "moon",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.140000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 14,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.150000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 15,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.160000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 16,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.170000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 17,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.180000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 18,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.190000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 19,
+      "payload": {
+        "action": "three",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.200000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 20,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.210000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 21,
+      "payload": {
+        "action": "three",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.220000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 22,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.230000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 23,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.240000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 24,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.250000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 25,
+      "payload": {
+        "action": "north",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.260000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 26,
+      "payload": {
+        "action": "east",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.270000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 27,
+      "payload": {
+        "action": "south",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.280000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 28,
+      "payload": {
+        "action": "A",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.290000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "action",
+      "sequence": 29,
+      "payload": {
+        "action": "B",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.300000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "stats",
+      "sequence": 30,
+      "payload": {
+        "level": 5,
+        "lives": 5,
+        "steps_remaining": 0,
+        "elapsed_seconds": 87.752,
+        "total_actions": 25
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:01.310000Z",
+      "run_id": "dig_canary_luna_r2",
+      "kind": "status",
+      "sequence": 31,
+      "payload": {
+        "status": "completed",
+        "reward": 1.0
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.010000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "trace.opened",
+      "sequence": 1,
+      "payload": {
+        "rollout_id": "dig_canary_luna_r3",
+        "world_ref": "world:digbench:local-canary-v1",
+        "environment_ref": "env:digbench_local_canary",
+        "task_instance_id": "local-r3",
+        "policy_ref": {
+          "harness": "codex",
+          "config": "codex_exec_luna_medium",
+          "model": "gpt-5.6-luna",
+          "replicate": 3
+        }
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.020000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "session.opened",
+      "sequence": 2,
+      "payload": {
+        "game": "local-canary-v1",
+        "session_id": "dig_canary_luna_r3"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.030000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "observation",
+      "sequence": 3,
+      "payload": {
+        "text": "Authenticated Codex Luna replicate 3: five hidden-rule games."
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.040000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "legal_actions",
+      "sequence": 4,
+      "payload": {
+        "actions": [
+          "environment supplied per step"
+        ]
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.050000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 5,
+      "payload": {
+        "action": "amber",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.060000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 6,
+      "payload": {
+        "action": "cobalt",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.070000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 7,
+      "payload": {
+        "action": "ivory",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.080000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 8,
+      "payload": {
+        "action": "cobalt",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.090000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 9,
+      "payload": {
+        "action": "amber",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.100000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 10,
+      "payload": {
+        "action": "ivory",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.110000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "invalid_action",
+      "sequence": 11,
+      "payload": {
+        "action": "sun",
+        "reason": "tool_path_typo"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.120000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 12,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.130000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 13,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.140000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 14,
+      "payload": {
+        "action": "moon",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.150000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 15,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.160000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 16,
+      "payload": {
+        "action": "moon",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.170000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 17,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.180000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 18,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.190000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 19,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.200000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 20,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.210000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 21,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.220000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 22,
+      "payload": {
+        "action": "three",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.230000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 23,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.240000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 24,
+      "payload": {
+        "action": "three",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.250000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 25,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.260000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 26,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.270000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 27,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.280000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 28,
+      "payload": {
+        "action": "north",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.290000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 29,
+      "payload": {
+        "action": "east",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.300000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 30,
+      "payload": {
+        "action": "south",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.310000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 31,
+      "payload": {
+        "action": "A",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.320000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "action",
+      "sequence": 32,
+      "payload": {
+        "action": "B",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-luna"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.330000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "stats",
+      "sequence": 33,
+      "payload": {
+        "level": 5,
+        "lives": 5,
+        "steps_remaining": 0,
+        "elapsed_seconds": 91.008,
+        "total_actions": 27
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:02.340000Z",
+      "run_id": "dig_canary_luna_r3",
+      "kind": "status",
+      "sequence": 34,
+      "payload": {
+        "status": "completed",
+        "reward": 1.0
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.010000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "trace.opened",
+      "sequence": 1,
+      "payload": {
+        "rollout_id": "dig_canary_terra_r1",
+        "world_ref": "world:digbench:local-canary-v1",
+        "environment_ref": "env:digbench_local_canary",
+        "task_instance_id": "local-r1",
+        "policy_ref": {
+          "harness": "codex",
+          "config": "codex_exec_terra_medium",
+          "model": "gpt-5.6-terra",
+          "replicate": 1
+        }
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.020000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "session.opened",
+      "sequence": 2,
+      "payload": {
+        "game": "local-canary-v1",
+        "session_id": "dig_canary_terra_r1"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.030000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "observation",
+      "sequence": 3,
+      "payload": {
+        "text": "Authenticated Codex Terra replicate 1: five hidden-rule games."
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.040000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "legal_actions",
+      "sequence": 4,
+      "payload": {
+        "actions": [
+          "environment supplied per step"
+        ]
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.050000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 5,
+      "payload": {
+        "action": "amber",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.060000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 6,
+      "payload": {
+        "action": "cobalt",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.070000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 7,
+      "payload": {
+        "action": "amber",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.080000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 8,
+      "payload": {
+        "action": "ivory",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.090000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 9,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.100000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 10,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.110000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 11,
+      "payload": {
+        "action": "moon",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.120000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 12,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.130000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 13,
+      "payload": {
+        "action": "moon",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.140000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 14,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.150000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 15,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.160000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 16,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.170000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 17,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.180000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 18,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.190000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 19,
+      "payload": {
+        "action": "three",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.200000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 20,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.210000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 21,
+      "payload": {
+        "action": "three",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.220000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 22,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.230000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 23,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.240000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 24,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.250000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 25,
+      "payload": {
+        "action": "north",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.260000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 26,
+      "payload": {
+        "action": "east",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.270000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 27,
+      "payload": {
+        "action": "south",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.280000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 28,
+      "payload": {
+        "action": "A",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.290000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "action",
+      "sequence": 29,
+      "payload": {
+        "action": "B",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.300000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "stats",
+      "sequence": 30,
+      "payload": {
+        "level": 5,
+        "lives": 5,
+        "steps_remaining": 0,
+        "elapsed_seconds": 87.914,
+        "total_actions": 25
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:03.310000Z",
+      "run_id": "dig_canary_terra_r1",
+      "kind": "status",
+      "sequence": 31,
+      "payload": {
+        "status": "completed",
+        "reward": 1.0
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.010000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "trace.opened",
+      "sequence": 1,
+      "payload": {
+        "rollout_id": "dig_canary_terra_r2",
+        "world_ref": "world:digbench:local-canary-v1",
+        "environment_ref": "env:digbench_local_canary",
+        "task_instance_id": "local-r2",
+        "policy_ref": {
+          "harness": "codex",
+          "config": "codex_exec_terra_medium",
+          "model": "gpt-5.6-terra",
+          "replicate": 2
+        }
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.020000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "session.opened",
+      "sequence": 2,
+      "payload": {
+        "game": "local-canary-v1",
+        "session_id": "dig_canary_terra_r2"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.030000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "observation",
+      "sequence": 3,
+      "payload": {
+        "text": "Authenticated Codex Terra replicate 2: five hidden-rule games."
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.040000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "legal_actions",
+      "sequence": 4,
+      "payload": {
+        "actions": [
+          "environment supplied per step"
+        ]
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.050000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 5,
+      "payload": {
+        "action": "amber",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.060000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 6,
+      "payload": {
+        "action": "cobalt",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.070000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 7,
+      "payload": {
+        "action": "amber",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.080000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 8,
+      "payload": {
+        "action": "ivory",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.090000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 9,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.100000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 10,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.110000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 11,
+      "payload": {
+        "action": "moon",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.120000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 12,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.130000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 13,
+      "payload": {
+        "action": "moon",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.140000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 14,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.150000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 15,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.160000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 16,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.170000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 17,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.180000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 18,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.190000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 19,
+      "payload": {
+        "action": "three",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.200000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 20,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.210000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 21,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.220000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 22,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.230000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 23,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.240000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 24,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.250000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 25,
+      "payload": {
+        "action": "north",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.260000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 26,
+      "payload": {
+        "action": "east",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.270000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 27,
+      "payload": {
+        "action": "south",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.280000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 28,
+      "payload": {
+        "action": "A",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.290000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "action",
+      "sequence": 29,
+      "payload": {
+        "action": "B",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.300000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "stats",
+      "sequence": 30,
+      "payload": {
+        "level": 5,
+        "lives": 5,
+        "steps_remaining": 0,
+        "elapsed_seconds": 82.22,
+        "total_actions": 25
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:04.310000Z",
+      "run_id": "dig_canary_terra_r2",
+      "kind": "status",
+      "sequence": 31,
+      "payload": {
+        "status": "completed",
+        "reward": 1.0
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.010000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "trace.opened",
+      "sequence": 1,
+      "payload": {
+        "rollout_id": "dig_canary_terra_r3",
+        "world_ref": "world:digbench:local-canary-v1",
+        "environment_ref": "env:digbench_local_canary",
+        "task_instance_id": "local-r3",
+        "policy_ref": {
+          "harness": "codex",
+          "config": "codex_exec_terra_medium",
+          "model": "gpt-5.6-terra",
+          "replicate": 3
+        }
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.020000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "session.opened",
+      "sequence": 2,
+      "payload": {
+        "game": "local-canary-v1",
+        "session_id": "dig_canary_terra_r3"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.030000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "observation",
+      "sequence": 3,
+      "payload": {
+        "text": "Authenticated Codex Terra replicate 3: five hidden-rule games."
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.040000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "legal_actions",
+      "sequence": 4,
+      "payload": {
+        "actions": [
+          "environment supplied per step"
+        ]
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.050000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 5,
+      "payload": {
+        "action": "amber",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.060000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 6,
+      "payload": {
+        "action": "cobalt",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.070000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 7,
+      "payload": {
+        "action": "amber",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.080000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 8,
+      "payload": {
+        "action": "ivory",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.090000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 9,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.100000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 10,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.110000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 11,
+      "payload": {
+        "action": "moon",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.120000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 12,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.130000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 13,
+      "payload": {
+        "action": "moon",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.140000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 14,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.150000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 15,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.160000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 16,
+      "payload": {
+        "action": "sun",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.170000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 17,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.180000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 18,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.190000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 19,
+      "payload": {
+        "action": "three",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.200000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 20,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.210000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 21,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.220000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 22,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.230000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 23,
+      "payload": {
+        "action": "one",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.240000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 24,
+      "payload": {
+        "action": "two",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.250000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 25,
+      "payload": {
+        "action": "north",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.260000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 26,
+      "payload": {
+        "action": "east",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.270000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 27,
+      "payload": {
+        "action": "south",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.280000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 28,
+      "payload": {
+        "action": "A",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.290000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "action",
+      "sequence": 29,
+      "payload": {
+        "action": "B",
+        "harness": "codex",
+        "action_authority": "codex_exec_live",
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.300000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "stats",
+      "sequence": 30,
+      "payload": {
+        "level": 5,
+        "lives": 5,
+        "steps_remaining": 0,
+        "elapsed_seconds": 91.46,
+        "total_actions": 25
+      }
+    },
+    {
+      "ts": "2026-08-13T02:00:05.310000Z",
+      "run_id": "dig_canary_terra_r3",
+      "kind": "status",
+      "sequence": 31,
+      "payload": {
+        "status": "completed",
+        "reward": 1.0
+      }
+    }
+  ]
+}

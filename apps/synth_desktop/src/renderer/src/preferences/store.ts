@@ -92,6 +92,7 @@ export function setAutoCompactTokenLimit(model: CompactContextModel, autoCompact
 	return updatePreferences((current) => ({
 		...current,
 		agentContext: {
+			...current.agentContext,
 			autoCompactTokenLimits: {
 				...current.agentContext.autoCompactTokenLimits,
 				[model]: autoCompactTokenLimit
@@ -99,6 +100,7 @@ export function setAutoCompactTokenLimit(model: CompactContextModel, autoCompact
 		}
 	}));
 }
+
 
 export function setActiveEnterAction(action: ActiveEnterAction): DesktopPreferences {
 	return updatePreferences((current) => ({

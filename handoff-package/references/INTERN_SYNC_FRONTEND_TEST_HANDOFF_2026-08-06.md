@@ -16,7 +16,7 @@ This is the `Downstream / FE cockpit` row of `evals/suites/product/intern/ACCEPT
 
 **You are consuming slot2, which is a contended, exclusive resource.** The sync eval rerun (WS2 of the master handoff) and the async eval both drive the same runtime. **Confirm with the lead that slot2 is yours before you start**, and hand it back when you're done. Do not run concurrently with an eval — you will corrupt each other's receipts and neither result will be trustworthy.
 
-Slot2 is the only known-good Intern slot. slot1 is mid-investigation by the Dock lane; slot3/4 are claimed by others; slot5/6 are `lease_lapsed` and lack the Laguna hot-patch, the OpenRouter key, and the exe.dev override.
+Slot2 is the only known-good Intern slot. slot1 is mid-investigation by a private Evals lane; slot3/4 are claimed by others; slot5/6 are `lease_lapsed` and lack the Laguna hot-patch, the OpenRouter key, and the exe.dev override.
 
 ---
 
@@ -178,6 +178,6 @@ After a restart the slot reads `observed_healthy_unlatched` — re-latch: `./loc
 
 - Run while an eval is driving slot2.
 - Push, or commit frontend changes beyond `.env.local` (and don't commit that).
-- Touch slot1 (Dock lane) or slot4 (env-authority burn history).
+- Touch slot1 (private Evals lane) or slot4 (env-authority burn history).
 - Hand-author factory/project/effort/run ids.
 - `source` the full `compose.env` into your shell — it poisons the env and a shell `OPENROUTER_API_KEY` will override compose's on the next recreate. Export only what you need.

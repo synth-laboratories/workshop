@@ -1,5 +1,6 @@
 use super::database::Database;
 use super::models::{AppEvent, EventSource, SessionRecord, APP_EVENT_SCHEMA_VERSION};
+use crate::domain::RuntimeTarget;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -229,14 +230,16 @@ fn ensure_session_exists(conn: &Connection, session_id: &str) -> Result<()> {
         return Ok(());
     }
     let now = Utc::now().to_rfc3339();
+    let target = RuntimeTarget::local_laguna();
     conn.execute(
         "INSERT INTO sessions(
-            id, title, target_json, status, latest_cursor, metadata_json, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, 'created', 0, '{}', ?4, ?4)",
+            id, title, kind, target_json, runtime_target_kind, status, latest_cursor, metadata_json, created_at, updated_at
+         ) VALUES (?1, ?2, 'codex', ?3, ?4, 'created', 0, '{}', ?5, ?5)",
         params![
             session_id,
             format!("Session {session_id}"),
-            json!({"kind":"local","model":"laguna-xs-2.1","adapter":null}).to_string(),
+            target.to_json_value().to_string(),
+            target.kind_str(),
             now
         ],
     )?;
@@ -253,25 +256,18 @@ fn upsert_codex_session(
     status: &str,
 ) -> Result<SessionRecord> {
     let now = Utc::now().to_rfc3339();
-    let target = json!({
-        "kind": "local",
-        "model": "laguna-xs-2.1",
-        "adapter": null,
-        "codex": {
-            "model": model,
-            "workspace": workspace,
-            "threadId": thread_id
-        }
-    });
+    let target = RuntimeTarget::local_laguna();
     let metadata = json!({ "workspace": workspace, "model": model });
     conn.execute(
         "INSERT INTO sessions(
-            id, title, target_json, codex_thread_id, status, latest_cursor,
+            id, title, kind, target_json, runtime_target_kind, codex_thread_id, status, latest_cursor,
             metadata_json, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?7)
+         ) VALUES (?1, ?2, 'codex', ?3, ?4, ?5, ?6, 0, ?7, ?8, ?8)
          ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
+            kind = excluded.kind,
             target_json = excluded.target_json,
+            runtime_target_kind = excluded.runtime_target_kind,
             codex_thread_id = excluded.codex_thread_id,
             status = excluded.status,
             metadata_json = excluded.metadata_json,
@@ -279,7 +275,8 @@ fn upsert_codex_session(
         params![
             session_id,
             title,
-            target.to_string(),
+            target.to_json_value().to_string(),
+            target.kind_str(),
             thread_id,
             status,
             metadata.to_string(),
@@ -291,7 +288,7 @@ fn upsert_codex_session(
 
 fn load_session(conn: &Connection, session_id: &str) -> Result<SessionRecord> {
     conn.query_row(
-        "SELECT id, title, target_json, project_id, remote_id, codex_thread_id, status,
+        "SELECT id, title, kind, target_json, project_id, remote_id, codex_thread_id, status,
                 state_generation, latest_cursor, active_run_id, metadata_json, created_at, updated_at
          FROM sessions WHERE id = ?1",
         params![session_id],
@@ -299,17 +296,23 @@ fn load_session(conn: &Connection, session_id: &str) -> Result<SessionRecord> {
             Ok(SessionRecord {
                 id: row.get(0)?,
                 title: row.get(1)?,
-                target_json: serde_json::from_str(&row.get::<_, String>(2)?).unwrap_or(Value::Null),
-                project_id: row.get(3)?,
-                remote_id: row.get(4)?,
-                codex_thread_id: row.get(5)?,
-                status: row.get(6)?,
-                state_generation: row.get(7)?,
-                latest_cursor: row.get(8)?,
-                active_run_id: row.get(9)?,
-                metadata: serde_json::from_str(&row.get::<_, String>(10)?).unwrap_or(json!({})),
-                created_at: row.get(11)?,
-                updated_at: row.get(12)?,
+                kind: row.get(2)?,
+                target: {
+                    let raw: String = row.get(3)?;
+                    let value: Value =
+                        serde_json::from_str(&raw).unwrap_or(Value::Null);
+                    RuntimeTarget::from_json_value_lenient(&value)
+                },
+                project_id: row.get(4)?,
+                remote_id: row.get(5)?,
+                codex_thread_id: row.get(6)?,
+                status: row.get(7)?,
+                state_generation: row.get(8)?,
+                latest_cursor: row.get(9)?,
+                active_run_id: row.get(10)?,
+                metadata: serde_json::from_str(&row.get::<_, String>(11)?).unwrap_or(json!({})),
+                created_at: row.get(12)?,
+                updated_at: row.get(13)?,
             })
         },
     )

@@ -10,7 +10,11 @@ import {
 	OPENROUTER_LAGUNA_S_MODEL,
 	OPENROUTER_LUNA_MODEL,
 	OPENROUTER_MUSE_SPARK_MODEL,
+	CHATGPT_LUNA_MODEL,
+	CHATGPT_SOL_MODEL,
+	CHATGPT_TERRA_MODEL,
 	SYNTH_CLOUD_LAGUNA_S_MODEL,
+	SYNTH_CLOUD_MUSE_SPARK_MODEL,
 	type ActivityEvent,
 	type ArtifactRef,
 	type AsyncInternPin,
@@ -23,6 +27,7 @@ import {
 	type SyncSession,
 	type SyncSessionStatus
 } from "../types/landing";
+import { assertLocalActivityPlacementInvariant } from "./activityPlacementInvariant";
 import { modelCapabilitiesForExecutionTarget } from "./modelCapabilities";
 
 /** Transcript divider copy for `thread/compacted` events. */
@@ -70,6 +75,15 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 	const adapter = null;
 
 	switch (targetId) {
+		case "chatgpt-luna":
+		case "chatgpt-sol":
+		case "chatgpt-terra":
+			return {
+				kind: "remote",
+				provider: "openai-codex-oauth",
+				model: targetId === "chatgpt-sol" ? CHATGPT_SOL_MODEL : targetId === "chatgpt-terra" ? CHATGPT_TERRA_MODEL : CHATGPT_LUNA_MODEL,
+				adapter
+			};
 		case "openrouter-luna":
 			return {
 				kind: "remote",
@@ -94,9 +108,14 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 			};
 		case "synth-cloud-laguna-s":
 			return {
-				kind: "remote",
-				provider: "synth-cloud",
+				kind: "cloud",
 				model: SYNTH_CLOUD_LAGUNA_S_MODEL,
+				adapter
+			};
+		case "synth-cloud-muse-spark":
+			return {
+				kind: "cloud",
+				model: SYNTH_CLOUD_MUSE_SPARK_MODEL,
 				adapter
 			};
 		case "intern-sync":
@@ -118,8 +137,13 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 	if (target.kind === "intern") {
 		return target.mode === "async" ? "intern-async" : "intern-sync";
 	}
-	if (target.provider === "synth-cloud") {
-		return "synth-cloud-laguna-s";
+	if (target.kind === "cloud") {
+		return target.model === SYNTH_CLOUD_MUSE_SPARK_MODEL
+			? "synth-cloud-muse-spark"
+			: "synth-cloud-laguna-s";
+	}
+	if (target.provider === "openai-codex-oauth") {
+		return target.model === CHATGPT_SOL_MODEL ? "chatgpt-sol" : target.model === CHATGPT_TERRA_MODEL ? "chatgpt-terra" : "chatgpt-luna";
 	}
 	if (target.model === OPENROUTER_LUNA_MODEL || target.model.includes("kimi")) {
 		return "openrouter-luna";
@@ -129,7 +153,7 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 }
 
 export function sessionIsLocalChat(session: Session): boolean {
-	return session.target.kind === "local" || session.target.kind === "remote";
+	return session.target.kind === "local" || session.target.kind === "remote" || session.target.kind === "cloud";
 }
 
 export function sessionIsSync(session: Session): boolean {
@@ -184,6 +208,12 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 
 	for (const event of events) {
 		const payload = event.payload ?? {};
+		// Child-thread events drive the Subagents visual, never the parent
+		// transcript. In particular, every V2 child has its own turn lifecycle;
+		// letting those terminal events reach the parent would manufacture
+		// "provider ended" messages and reset the parent's streaming state.
+		const sourceThreadId = eventThreadId(payload, eventItem(event));
+		if (sourceThreadId && subagentIds.has(sourceThreadId)) continue;
 		if (event.eventKind === "run.started") {
 			activeAssistantId = null;
 			producedAssistantForTurn = false;
@@ -201,10 +231,10 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 		if (safeToolActivity(event) || event.eventKind.startsWith("approval.")) {
 			activeAssistantId = null;
 		}
-		const eventThreadId = typeof payload.threadId === "string"
+		const messageThreadId = typeof payload.threadId === "string"
 			? payload.threadId
 			: typeof payload.thread_id === "string" ? payload.thread_id : undefined;
-		if (eventThreadId && subagentIds.has(eventThreadId) && event.eventKind.startsWith("message.")) {
+		if (messageThreadId && subagentIds.has(messageThreadId) && event.eventKind.startsWith("message.")) {
 			continue;
 		}
 		const isInternAgentMessage =
@@ -699,11 +729,17 @@ function actionCountLabel(counts: { commands: number; reads: number; writes: num
 	return parts.join(", ");
 }
 
-type SubagentState = {
+export type SubagentLifecycle = "starting" | "working" | "completed" | "interrupted" | "failed" | "stopped" | "unavailable";
+export type SubagentProtocol = "v1" | "v2";
+
+export type SubagentState = {
 	id: string;
 	title: string;
 	summary?: string;
-	status: "active" | "done" | "failed";
+	status: SubagentLifecycle;
+	protocol: SubagentProtocol;
+	agentPath?: string;
+	lastAction?: "started" | "contacted" | "interrupted";
 	startedAt: string;
 	updatedAt: string;
 };
@@ -740,13 +776,26 @@ function collabTool(item: Record<string, unknown>): string | undefined {
 	return stringField(item, "tool", "name")?.toLowerCase();
 }
 
-function subagentStatus(value: unknown): SubagentState["status"] | undefined {
+function subagentActivityKind(item: Record<string, unknown>): "started" | "interacted" | "interrupted" | undefined {
+	const itemType = stringField(item, "type")?.toLowerCase() ?? "";
+	if (!itemType.includes("subagentactivity") && !itemType.includes("sub_agent_activity")) return undefined;
+	const kind = stringField(item, "kind")?.toLowerCase();
+	return kind === "started" || kind === "interacted" || kind === "interrupted" ? kind : undefined;
+}
+
+function subagentLifecycle(value: unknown): SubagentLifecycle | undefined {
 	const record = objectValue(value);
 	const raw = typeof value === "string" ? value : record ? stringField(record, "type", "status") : undefined;
 	if (!raw) return undefined;
-	if (/failed|error|cancelled|interrupted/i.test(raw)) return "failed";
-	if (/completed|idle|shutdown|closed|done/i.test(raw)) return "done";
-	if (/active|running|working|pending|starting/i.test(raw)) return "active";
+	if (/pending.?init|pending|starting/i.test(raw)) return "starting";
+	if (/active|running|working/i.test(raw)) return "working";
+	if (/completed|done/i.test(raw)) return "completed";
+	if (/interrupted|cancelled/i.test(raw)) return "interrupted";
+	if (/errored|error|failed/i.test(raw)) return "failed";
+	if (/shutdown|closed/i.test(raw)) return "stopped";
+	if (/not.?found/i.test(raw)) return "unavailable";
+	// `ThreadStatus::Idle` means this thread has no active turn. It is not the
+	// collaboration agent's terminal result and must never become “completed”.
 	return undefined;
 }
 
@@ -754,11 +803,113 @@ function subagentTitle(prompt: string): string {
 	return prompt.split(/[\n.!?]/, 1)[0].trim().slice(0, 64) || "Subagent";
 }
 
+function subagentTitleFromPath(path: string | undefined): string {
+	const leaf = path?.split("/").filter(Boolean).at(-1);
+	if (!leaf) return "Subagent";
+	return leaf
+		.replace(/[_-]+/g, " ")
+		.replace(/\b\p{L}/gu, (letter) => letter.toUpperCase())
+		.slice(0, 64);
+}
+
+function eventThreadId(payload: Record<string, unknown>, item: Record<string, unknown>): string | undefined {
+	return stringField(payload, "threadId", "thread_id") ?? stringField(item, "threadId", "thread_id");
+}
+
+function stateMessage(value: unknown): string | undefined {
+	const record = objectValue(value);
+	return record ? stringField(record, "message", "content", "text") : undefined;
+}
+
+function eventResultPreview(payload: Record<string, unknown>, item: Record<string, unknown>): string | undefined {
+	const direct = stringField(payload, "content", "text", "message", "lastAgentMessage", "last_agent_message")
+		?? stringField(item, "content", "text", "message");
+	if (direct) return direct;
+	const turn = objectValue(payload.turn);
+	const turnText = turn && stringField(turn, "lastAgentMessage", "last_agent_message", "message", "text");
+	if (turnText) return turnText;
+	const error = objectValue(payload.error) ?? (turn && objectValue(turn.error));
+	return error && stringField(error, "message", "detail");
+}
+
+function eventLifecycle(event: RuntimeEvent): SubagentLifecycle | undefined {
+	const kind = event.eventKind.toLowerCase();
+	if (kind === "run.started" || kind === "turn/started") return "working";
+	if (kind === "run.completed" || kind === "turn/completed") return "completed";
+	if (kind === "run.failed" || kind === "turn/failed") return "failed";
+	if (kind === "run.cancelled" || kind === "turn/interrupted") return "interrupted";
+	return undefined;
+}
+
+function isTerminalSubagentStatus(status: SubagentLifecycle): boolean {
+	return status === "completed" || status === "interrupted" || status === "failed" || status === "stopped" || status === "unavailable";
+}
+
+function upsertSubagent(
+	agents: Map<string, SubagentState>,
+	id: string,
+	next: Omit<SubagentState, "id" | "startedAt" | "updatedAt"> & Partial<Pick<SubagentState, "startedAt">>,
+	updatedAt: string,
+	options: { allowReactivation?: boolean } = {}
+): void {
+	const existing = agents.get(id);
+	if (!existing) {
+		agents.set(id, {
+			id,
+			title: next.title,
+			summary: next.summary,
+			status: next.status,
+			protocol: next.protocol,
+			agentPath: next.agentPath,
+			lastAction: next.lastAction,
+			startedAt: next.startedAt ?? updatedAt,
+			updatedAt
+		});
+		return;
+	}
+	const requestedStatus = next.status;
+	const status =
+		!options.allowReactivation && isTerminalSubagentStatus(existing.status) && !isTerminalSubagentStatus(requestedStatus)
+			? existing.status
+			: existing.status === "working" && requestedStatus === "starting"
+				? existing.status
+				: requestedStatus;
+	agents.set(id, {
+		...existing,
+		...next,
+		status,
+		title: next.title || existing.title,
+		summary: next.summary ?? existing.summary,
+		agentPath: next.agentPath ?? existing.agentPath,
+		lastAction: next.lastAction ?? existing.lastAction,
+		startedAt: existing.startedAt,
+		updatedAt
+	});
+}
+
 export function eventsToSubagents(events: RuntimeEvent[]): SubagentState[] {
 	const agents = new Map<string, SubagentState>();
 	for (const event of events) {
 		const payload = event.payload ?? {};
 		const item = eventItem(event);
+		const activityKind = subagentActivityKind(item);
+		if (activityKind) {
+			const id = stringField(item, "agentThreadId", "agent_thread_id");
+			if (!id) continue;
+			const agentPath = stringField(item, "agentPath", "agent_path");
+			const previous = agents.get(id);
+			const status = activityKind === "interrupted" ? "interrupted" : previous?.status ?? "starting";
+			upsertSubagent(agents, id, {
+				title: previous?.title && previous.title !== "Subagent" ? previous.title : subagentTitleFromPath(agentPath),
+				summary: activityKind === "interrupted" ? "Interrupted" : previous?.summary,
+				status,
+				protocol: "v2",
+				agentPath,
+				lastAction: activityKind === "interacted" ? "contacted" : activityKind
+			}, event.createdAt);
+			continue;
+		}
+
 		const tool = collabTool(item);
 		if (tool && /spawn.?agent/.test(tool)) {
 			const callId = stringField(item, "id") ?? `subagent-${event.sequence}`;
@@ -768,14 +919,35 @@ export function eventsToSubagents(events: RuntimeEvent[]): SubagentState[] {
 			if (ids.length && provisional && !ids.includes(callId)) agents.delete(callId);
 			for (const id of ids.length ? ids : [callId]) {
 				const existing = agents.get(id);
-				agents.set(id, {
-					id,
+				upsertSubagent(agents, id, {
 					title: subagentTitle(prompt),
 					summary: existing?.summary ?? prompt,
-					status: existing?.status ?? "active",
-					startedAt: existing?.startedAt ?? provisional?.startedAt ?? event.createdAt,
-					updatedAt: event.createdAt
-				});
+					status: existing?.status ?? "starting",
+					protocol: "v1",
+					startedAt: existing?.startedAt ?? provisional?.startedAt ?? event.createdAt
+				}, event.createdAt);
+			}
+		}
+		// V2's direct collaboration protocol can conclude a parent `wait` with
+		// an empty receiver list and no `agentsStates` payload. The child message
+		// is already available at that point, and the completed wait is the
+		// authoritative parent-level acknowledgement that it was joined. This is
+		// deliberately narrower than treating a child `idle` state as terminal.
+		if (
+			tool === "wait" &&
+			event.eventKind === "item/completed" &&
+			subagentLifecycle(stringField(item, "status")) === "completed"
+		) {
+			for (const [id, agent] of agents) {
+				if (agent.protocol !== "v2" || !agent.summary || isTerminalSubagentStatus(agent.status)) continue;
+				upsertSubagent(agents, id, {
+					title: agent.title,
+					summary: agent.summary,
+					status: "completed",
+					protocol: "v2",
+					agentPath: agent.agentPath,
+					lastAction: agent.lastAction
+				}, event.createdAt);
 			}
 		}
 
@@ -783,25 +955,35 @@ export function eventsToSubagents(events: RuntimeEvent[]): SubagentState[] {
 			?? objectValue(payload.agentsStates) ?? objectValue(payload.agents_states);
 		if (states) {
 			for (const [id, value] of Object.entries(states)) {
-				const agent = agents.get(id);
-				const status = subagentStatus(value);
-				if (agent && status) agents.set(id, { ...agent, status, updatedAt: event.createdAt });
+				const existing = agents.get(id);
+				const status = subagentLifecycle(value);
+				if (!status) continue;
+				upsertSubagent(agents, id, {
+					title: existing?.title ?? "Subagent",
+					summary: stateMessage(value) ?? existing?.summary,
+					status,
+					protocol: existing?.protocol ?? "v1",
+					agentPath: existing?.agentPath,
+					lastAction: existing?.lastAction
+				}, event.createdAt);
 			}
 		}
 
-		const threadId = stringField(payload, "threadId", "thread_id")
-			?? stringField(item, "threadId", "thread_id");
+		const threadId = eventThreadId(payload, item);
 		if (!threadId || !agents.has(threadId)) continue;
 		const agent = agents.get(threadId)!;
-		const status = subagentStatus(payload.status) ?? subagentStatus(item.status);
-		const content = stringField(payload, "content", "text", "message")
-			?? stringField(item, "content", "text", "message");
-		agents.set(threadId, {
-			...agent,
-			status: status ?? agent.status,
-			summary: content && /message.*completed/i.test(event.eventKind) ? content : agent.summary,
-			updatedAt: event.createdAt
-		});
+		const lifecycle = eventLifecycle(event) ?? (agent.protocol === "v1" ? subagentLifecycle(payload.status) : undefined);
+		const content = eventResultPreview(payload, item);
+		const isChildMessage = event.eventKind === "message.completed" || (event.eventKind === "item/completed" && /agentmessage/i.test(stringField(item, "type") ?? ""));
+		if (!lifecycle && !(content && isChildMessage)) continue;
+		upsertSubagent(agents, threadId, {
+			title: agent.title,
+			summary: content && (isChildMessage || lifecycle === "completed" || lifecycle === "failed") ? content : agent.summary,
+			status: lifecycle ?? agent.status,
+			protocol: agent.protocol,
+			agentPath: agent.agentPath,
+			lastAction: agent.lastAction
+		}, event.createdAt, { allowReactivation: agent.protocol === "v2" && lifecycle === "working" });
 	}
 	return [...agents.values()];
 }
@@ -809,9 +991,11 @@ export function eventsToSubagents(events: RuntimeEvent[]): SubagentState[] {
 export function eventsToLocalActivity(
 	events: RuntimeEvent[],
 	messages: ChatMessage[],
-	reasoningDisplay: "none" | "full" | "summary" = "none"
+	reasoningDisplay: "none" | "full" | "summary" = "none",
+	options?: { enforcePlacementInvariant?: boolean }
 ): Record<string, LocalActivityLine[]> {
 	const assistantIds = messages.filter((message) => message.role === "assistant").map((message) => message.id);
+	const lastContentSequenceByMessageId = new Map<string, number>();
 	const approvalKey = (event: RuntimeEvent): string | undefined => {
 		const payload = event.payload ?? {};
 		for (const field of ["approvalId", "requestId", "commandId", "toolCallId", "id"]) {
@@ -875,6 +1059,45 @@ export function eventsToLocalActivity(
 			continue;
 		}
 		const item = eventItem(event);
+		const subagentAction = subagentActivityKind(item);
+		if (subagentAction) {
+			const id = stringField(item, "agentThreadId", "agent_thread_id");
+			if (!id) continue;
+			const path = stringField(item, "agentPath", "agent_path");
+			const title = subagentTitleFromPath(path);
+			subagentTitles.set(id, title);
+			if (subagentAction === "started" && !shownSubagentStarts.has(id)) {
+				shownSubagentStarts.add(id);
+				(byMessage[current] ??= []).push({
+					id: `activity-${event.sequence}`,
+					label: `${title} started`,
+					detail: path,
+					artifactId: "codex-subagents",
+					kind: "subagent"
+				});
+			}
+			if (subagentAction === "interacted") {
+				(byMessage[current] ??= []).push({
+					id: `activity-${event.sequence}`,
+					label: `${title} contacted`,
+					artifactId: "codex-subagents",
+					kind: "subagent"
+				});
+			}
+			if (subagentAction === "interrupted") {
+				const key = `${id}:interrupted`;
+				if (!shownSubagentEnds.has(key)) {
+					shownSubagentEnds.add(key);
+					(byMessage[current] ??= []).push({
+						id: `activity-${event.sequence}`,
+						label: `${title} interrupted`,
+						artifactId: "codex-subagents",
+						kind: "subagent"
+					});
+				}
+			}
+			continue;
+		}
 		const tool = collabTool(item);
 		if (tool && /spawn.?agent/.test(tool)) {
 			const callId = stringField(item, "id") ?? `subagent-${event.sequence}`;
@@ -894,16 +1117,32 @@ export function eventsToLocalActivity(
 			}
 			continue;
 		}
-		const threadId = stringField(payload, "threadId", "thread_id")
-			?? stringField(item, "threadId", "thread_id");
-		const status = subagentStatus(payload.status) ?? subagentStatus(item.status);
-		if (threadId && status && status !== "active" && subagentTitles.has(threadId)) {
+		const states = objectValue(item.agentsStates) ?? objectValue(item.agents_states)
+			?? objectValue(payload.agentsStates) ?? objectValue(payload.agents_states);
+		if (states) {
+			for (const [id, value] of Object.entries(states)) {
+				const status = subagentLifecycle(value);
+				if (!status || !isTerminalSubagentStatus(status) || !subagentTitles.has(id)) continue;
+				const key = `${id}:${status}`;
+				if (shownSubagentEnds.has(key)) continue;
+				shownSubagentEnds.add(key);
+				(byMessage[current] ??= []).push({
+					id: `activity-${event.sequence}-${id}`,
+					label: `${subagentTitles.get(id)} ${status === "failed" ? "failed" : status === "interrupted" ? "interrupted" : "finished"}`,
+					artifactId: "codex-subagents",
+					kind: "subagent"
+				});
+			}
+		}
+		const threadId = eventThreadId(payload, item);
+		const status = eventLifecycle(event) ?? subagentLifecycle(payload.status);
+		if (threadId && status && isTerminalSubagentStatus(status) && subagentTitles.has(threadId)) {
 			const key = `${threadId}:${status}`;
 			if (!shownSubagentEnds.has(key)) {
 				shownSubagentEnds.add(key);
 				(byMessage[current] ??= []).push({
 					id: `activity-${event.sequence}`,
-					label: `${subagentTitles.get(threadId)} ${status === "failed" ? "failed" : "finished"}`,
+					label: `${subagentTitles.get(threadId)} ${status === "failed" ? "failed" : status === "interrupted" ? "interrupted" : "finished"}`,
 					artifactId: "codex-subagents",
 					kind: "subagent"
 				});
@@ -935,6 +1174,7 @@ export function eventsToLocalActivity(
 				delete byMessage.__active__;
 			}
 			current = resolvedAssistant;
+			if (messageText) lastContentSequenceByMessageId.set(resolvedAssistant, event.sequence);
 		}
 		if (event.eventKind === "message.created" && payload.role === "user") {
 			const userIndex = messages.findIndex((message) => message.id === explicit);
@@ -987,6 +1227,7 @@ export function eventsToLocalActivity(
 				id: `context-compaction-${event.sequence}`,
 				label: contextCompactionLabel(source),
 				placement: source === "manual" ? "after" : "before",
+				sequence: event.sequence,
 				kind: "context_compaction",
 				tokensBefore: lastTokenTotal
 			};
@@ -1014,6 +1255,7 @@ export function eventsToLocalActivity(
 					label,
 					detail: supplied,
 					placement: current === "__active__" ? undefined : "after",
+					sequence: event.sequence,
 					kind: "thought",
 					reasoningDisplay
 				});
@@ -1043,6 +1285,7 @@ export function eventsToLocalActivity(
 					detail: safeTool.detail,
 					path: safeTool.path,
 					placement: current === "__active__" ? undefined : "after",
+					sequence: event.sequence,
 					kind: safeTool.kind,
 					artifactId: safeTool.artifactId,
 					containerId: safeTool.containerId,
@@ -1067,6 +1310,7 @@ export function eventsToLocalActivity(
 			id: `activity-${event.sequence}`,
 			label,
 			placement: current === "__active__" ? undefined : "after",
+			sequence: event.sequence,
 			approvalId: event.eventKind === "approval.requested"
 				? approvalKey(event) ?? `approval-${event.sequence}`
 				: undefined,
@@ -1076,14 +1320,26 @@ export function eventsToLocalActivity(
 			kind: activityKind(event.eventKind)
 		});
 	}
+	if (runStartedAt && lastTokenTotal != null) {
+		const tail = byMessage[current]?.at(-1);
+		if (tail) tail.tokenTotal = lastTokenTotal;
+	}
 	for (const [messageId, lines] of Object.entries(byMessage)) {
 		byMessage[messageId] = lines.filter((line, index) => {
 			const previous = lines[index - 1];
 			return !previous || previous.kind !== line.kind || previous.label !== line.label || previous.detail !== line.detail;
 		});
 	}
+	const enforce =
+		options?.enforcePlacementInvariant
+		?? (typeof import.meta !== "undefined" && Boolean(import.meta.env?.DEV));
+	if (enforce) {
+		assertLocalActivityPlacementInvariant(messages, byMessage, lastContentSequenceByMessageId);
+	}
 	return byMessage;
 }
+
+export { assertLocalActivityPlacementInvariant } from "./activityPlacementInvariant";
 
 function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 	const item = eventItem(event);
@@ -1127,6 +1383,7 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 		}
 		if (
 			event.eventKind !== "visual.created" &&
+			event.eventKind !== "visual.show" &&
 			event.eventKind !== "resource_ref.created"
 		) {
 			continue;
@@ -1141,22 +1398,25 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 		const title =
 			typeof payload.title === "string" ? payload.title : "Visual";
 		const templateId =
-			typeof payload.templateId === "string" ? payload.templateId : undefined;
+			typeof payload.templateId === "string"
+				? payload.templateId
+				: artifacts.get(id)?.templateId;
+		const prior = artifacts.get(id);
 		artifacts.set(id, {
 			id,
 			kind: "report",
-			title,
+			title: typeof payload.title === "string" ? payload.title : prior?.title ?? title,
 			summary:
-				typeof payload.summary === "string" ? payload.summary : undefined,
+				typeof payload.summary === "string" ? payload.summary : prior?.summary,
 			messageId:
-				typeof payload.messageId === "string" ? payload.messageId : undefined,
+				typeof payload.messageId === "string" ? payload.messageId : prior?.messageId,
 			shownByAgent: true,
 			templateId,
 			visualId: id,
 			bindings:
 				payload.bindings && typeof payload.bindings === "object"
 					? (payload.bindings as Record<string, unknown>)
-					: undefined,
+					: prior?.bindings,
 			preview: {
 				variant: templateId?.includes("scrub") ? "craftax_frame" : "generic"
 			}
@@ -1168,7 +1428,7 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			id: "codex-subagents",
 			kind: "report",
 			title: "Subagents",
-			summary: `${agents.filter((agent) => agent.status === "active").length} active · ${agents.filter((agent) => agent.status !== "active").length} done`,
+			summary: `${agents.filter((agent) => agent.status === "starting" || agent.status === "working").length} working · ${agents.filter((agent) => agent.status === "interrupted" || agent.status === "failed" || agent.status === "stopped" || agent.status === "unavailable").length} need attention · ${agents.filter((agent) => agent.status === "completed").length} completed`,
 			shownByAgent: true,
 			templateId: "synth.subagents.v1",
 			bindings: { agents },
@@ -1188,6 +1448,7 @@ export function visualRecordToArtifact(visual: VisualInstanceRecord): ArtifactRe
 		title: visual.title,
 		templateId: visual.templateId,
 		visualId: visual.id,
+		rendererKind: typeof visual.metadata?.rendererKind === "string" ? visual.metadata.rendererKind : undefined,
 		bindings: visual.bindings,
 		preview: {
 			variant:
@@ -1290,6 +1551,132 @@ export function healthToModelStatus(
 	};
 }
 
+/**
+ * Per-session view slice cache.
+ *
+ * Token events append to one session's events array (new reference for that
+ * key only). Caching by `(session, events, codexActivity)` identity means
+ * `buildLandingState` recomputes only the dirty session on each store commit
+ * instead of O(sessions × events) for every token.
+ *
+ * Partial: the LandingState aggregate still reallocates the chats/sync arrays
+ * on every call; only the expensive events→messages/activity/artifacts work is
+ * memoized per session. Prefer `useSessionEvents` + `buildSessionViewSlice` in
+ * active-chat surfaces when you need a single-session subscription.
+ */
+type SessionViewSliceCacheKey = {
+	session: Session;
+	events: RuntimeEvent[];
+	codexActivity: CodexActivityEvent[];
+	reasoningDisplay: "none" | "summary" | "full";
+};
+
+type SessionViewSlice =
+	| { kind: "chat"; chat: LocalChat }
+	| { kind: "sync"; session: SyncSession }
+	| { kind: "async"; intern: AsyncInternPin; isRustIntern: boolean };
+
+const sessionViewSliceCache = new WeakMap<object, { key: SessionViewSliceCacheKey; value: SessionViewSlice | null }>();
+
+function artifactEventsForSession(
+	events: RuntimeEvent[],
+	codexActivity: CodexActivityEvent[]
+): RuntimeEvent[] {
+	return [
+		...events,
+		...codexActivity.map(
+			(event, index): RuntimeEvent => ({
+				schemaVersion: "synth.desktop-runtime-event.v1",
+				sessionId: event.sessionId,
+				sequence: events.length + index + 1,
+				eventKind: event.eventKind,
+				payload: event.payload,
+				createdAt: event.createdAt,
+				source: "intern"
+			})
+		)
+	].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+/** Build (or reuse) the expensive per-session projection. */
+export function buildSessionViewSlice(
+	session: Session,
+	events: RuntimeEvent[],
+	codexActivity: CodexActivityEvent[] = []
+): SessionViewSlice | null {
+	const reasoningDisplay =
+		modelCapabilitiesForExecutionTarget(session.target)?.reasoningDisplay ?? "none";
+	const cached = sessionViewSliceCache.get(events);
+	if (
+		cached &&
+		cached.key.session === session &&
+		cached.key.events === events &&
+		cached.key.codexActivity === codexActivity &&
+		cached.key.reasoningDisplay === reasoningDisplay
+	) {
+		return cached.value;
+	}
+
+	const messages = eventsToMessages(events);
+	const artifacts = eventsToArtifacts(artifactEventsForSession(events, codexActivity));
+	let value: SessionViewSlice | null = null;
+
+	if (sessionIsLocalChat(session)) {
+		value = {
+			kind: "chat",
+			chat: {
+				id: session.id,
+				title: session.title,
+				messages,
+				artifacts,
+				activityByMessageId: eventsToLocalActivity(events, messages, reasoningDisplay)
+			}
+		};
+	} else if (sessionIsSync(session)) {
+		value = {
+			kind: "sync",
+			session: {
+				id: session.id,
+				title: session.title,
+				status: mapSessionStatus(session.status),
+				remoteId: session.remoteId ?? session.id,
+				cursor: session.latestCursor,
+				messages,
+				activity: eventsToActivity(events, codexActivity),
+				artifacts
+			}
+		};
+	} else if (sessionIsAsync(session)) {
+		const activity = eventsToActivity(events, codexActivity);
+		const phase = mapAsyncPhase(session.status, events);
+		value = {
+			kind: "async",
+			isRustIntern: session.metadata.runtime === "rust-intern",
+			intern: {
+				phase,
+				summary:
+					session.status === "waiting_for_input"
+						? "Waiting for operator input"
+						: phase === "sleeping"
+							? "Checkpoint saved · waiting for the next cycle"
+							: session.title,
+				needsInput: session.status === "waiting_for_input",
+				leaveSafe: true,
+				remoteId: session.remoteId ?? session.id,
+				cursor: session.latestCursor,
+				messages,
+				activity
+			}
+		};
+	}
+
+	sessionViewSliceCache.set(events, {
+		key: { session, events, codexActivity, reasoningDisplay },
+		value
+	});
+	return value;
+}
+
 export function buildLandingState(args: {
 	health: RuntimeHealth | null;
 	sessions: Session[];
@@ -1303,6 +1690,8 @@ export function buildLandingState(args: {
 	} | null;
 	apiKeyConfigured?: boolean;
 	openrouterApiKeyConfigured?: boolean;
+	codexOauthConfigured?: boolean;
+	codexOauthStatus?: import("../bridge").CodexOauthStatus;
 	cloudBlockedReason?: string | null;
 }): LandingState {
 	const model = healthToModelStatus(args.health, args.laguna);
@@ -1313,74 +1702,22 @@ export function buildLandingState(args: {
 	for (const session of args.sessions) {
 		const events = args.eventsBySession[session.id] ?? [];
 		const codexActivity = args.codexActivityBySession?.[session.id] ?? [];
-		const messages = eventsToMessages(events);
-		const artifactEvents = [
-			...events,
-			...codexActivity.map((event, index): RuntimeEvent => ({
-				schemaVersion: "synth.desktop-runtime-event.v1",
-				sessionId: event.sessionId,
-				sequence: events.length + index + 1,
-				eventKind: event.eventKind,
-				payload: event.payload,
-				createdAt: event.createdAt,
-				source: "intern"
-			}))
-		].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
-		const artifacts = eventsToArtifacts(artifactEvents);
+		const slice = buildSessionViewSlice(session, events, codexActivity);
+		if (!slice) continue;
 
-		if (sessionIsLocalChat(session)) {
-			chats.push({
-				id: session.id,
-				title: session.title,
-				messages,
-				artifacts,
-				activityByMessageId: eventsToLocalActivity(
-					events,
-					messages,
-					modelCapabilitiesForExecutionTarget(session.target)?.reasoningDisplay ?? "none"
-				)
-			});
+		if (slice.kind === "chat") {
+			chats.push(slice.chat);
 			continue;
 		}
-
-		if (sessionIsSync(session)) {
-			syncSessions.push({
-				id: session.id,
-				title: session.title,
-				status: mapSessionStatus(session.status),
-				remoteId: session.remoteId ?? session.id,
-				cursor: session.latestCursor,
-				messages,
-				activity: eventsToActivity(events, codexActivity),
-				artifacts
-			});
+		if (slice.kind === "sync") {
+			syncSessions.push(slice.session);
 			continue;
 		}
-
-		if (sessionIsAsync(session)) {
-			// A migrated demo pin may coexist with the real organization singleton.
-			// Once a Rust-backed binding exists it is the canonical Background
-			// Intern projection and must not be overwritten by historical demo data.
-			const isRustIntern = session.metadata.runtime === "rust-intern";
-			if (asyncIntern && !isRustIntern) continue;
-			const activity = eventsToActivity(events, codexActivity);
-			const phase = mapAsyncPhase(session.status, events);
-			asyncIntern = {
-				phase,
-				summary:
-					session.status === "waiting_for_input"
-						? "Waiting for operator input"
-						: phase === "sleeping"
-							? "Checkpoint saved · waiting for the next cycle"
-						: session.title,
-				needsInput: session.status === "waiting_for_input",
-				leaveSafe: true,
-				remoteId: session.remoteId ?? session.id,
-				cursor: session.latestCursor,
-				messages,
-				activity
-			};
-		}
+		// A migrated demo pin may coexist with the real organization singleton.
+		// Once a Rust-backed binding exists it is the canonical Background
+		// Intern projection and must not be overwritten by historical demo data.
+		if (asyncIntern && !slice.isRustIntern) continue;
+		asyncIntern = slice.intern;
 	}
 
 	return {
@@ -1398,6 +1735,8 @@ export function buildLandingState(args: {
 		internMode: args.health?.intern.mode,
 		apiKeyConfigured: args.apiKeyConfigured,
 		openrouterApiKeyConfigured: args.openrouterApiKeyConfigured ?? args.health?.openrouter.mode === "ready",
+		codexOauthConfigured: args.codexOauthConfigured,
+		codexOauthStatus: args.codexOauthStatus,
 		cloudBlockedReason: args.cloudBlockedReason ?? null,
 		composerEnabled: model.composerEnabled,
 		composerPlaceholder: model.composerPlaceholder

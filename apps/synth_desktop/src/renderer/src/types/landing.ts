@@ -52,7 +52,7 @@ export type ExecutionTargetOption = {
 	label: string;
 	description: string;
 	/** Where tokens run — local Metal, remote API, or Synth Cloud Intern. */
-	group: "local" | "remote" | "cloud";
+	group: "local" | "remote" | "subscription" | "cloud";
 };
 
 /** First-class visual / artifact (Claude Artifacts analogue, Synth-shaped). */
@@ -80,9 +80,13 @@ export type ArtifactRef = {
 	};
 	/** Runtime visual template id (e.g. craftax.eval_matrix.v1). */
 	templateId?: string;
+	/** Rust renderer kind; first-class diagrams bypass the TSX template shell. */
+	rendererKind?: string;
 	/** Runtime visual instance id from `/v1/visuals`. */
 	visualId?: string;
 	bindings?: import("@synth/runtime-protocol").VisualBindings | Record<string, unknown>;
+	/** Durable visual metadata, including presentation and authoring review receipts. */
+	metadata?: Record<string, unknown>;
 };
 
 /** Inline activity line in a local Laguna transcript (Poolside-style). */
@@ -109,9 +113,13 @@ export type LocalActivityLine = {
 	toolStatus?: "running" | "completed" | "failed";
 	/** Transcript placement relative to the assistant response owning this activity. */
 	placement?: "before" | "after";
+	/** Source event sequence — used by the placement chronology invariant. */
+	sequence?: number;
 	/** Token totals surrounding a context compaction (for the disclosure). */
 	tokensBefore?: number;
 	tokensAfter?: number;
+	/** Latest observed total for the active turn's compact activity tail. */
+	tokenTotal?: number;
 	kind?: "thought" | "search" | "command" | "file_read" | "file_write" | "visual" | "subagent" | "run_summary" | "context_compaction" | "approval" | "working";
 };
 
@@ -168,6 +176,10 @@ export type LandingState = {
 	apiKeyConfigured?: boolean;
 	/** OpenRouter API key present — gates direct OpenRouter models. Boolean only; never the secret. */
 	openrouterApiKeyConfigured?: boolean;
+	/** ChatGPT subscription OAuth present in the native keychain. */
+	codexOauthConfigured?: boolean;
+	/** Rust-owned ChatGPT auth state and recovery instructions. */
+	codexOauthStatus?: import("../bridge").CodexOauthStatus;
 	/**
 	 * Backend-authored reason billable Synth Cloud actions are blocked for this
 	 * account (exhausted allowance, past due, cancelled). Local models are never
@@ -184,6 +196,10 @@ export const OPENROUTER_LAGUNA_S_MODEL = "poolside/laguna-s-2.1";
 export const OPENROUTER_MUSE_SPARK_MODEL = "meta/muse-spark-1.2";
 /** Fully qualified — bare `laguna-s-2.1` resolves to a different catalog entry server-side. */
 export const SYNTH_CLOUD_LAGUNA_S_MODEL = "openrouter/poolside/laguna-s-2.1";
+export const SYNTH_CLOUD_MUSE_SPARK_MODEL = "meta/muse-spark-1.2";
+export const CHATGPT_LUNA_MODEL = "gpt-5.6-luna";
+export const CHATGPT_SOL_MODEL = "gpt-5.6-sol";
+export const CHATGPT_TERRA_MODEL = "gpt-5.6-terra";
 
 export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 	{
@@ -211,8 +227,32 @@ export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 		group: "remote"
 	},
 	{
+		id: "chatgpt-luna",
+		label: "GPT-5.6 Luna",
+		description: "ChatGPT · Codex plan allowance",
+		group: "subscription"
+	},
+	{
+		id: "chatgpt-sol",
+		label: "GPT-5.6 Sol",
+		description: "ChatGPT · Codex plan allowance",
+		group: "subscription"
+	},
+	{
+		id: "chatgpt-terra",
+		label: "GPT-5.6 Terra",
+		description: "ChatGPT · Codex plan allowance",
+		group: "subscription"
+	},
+	{
 		id: "synth-cloud-laguna-s",
 		label: "Laguna S 2.1",
+		description: "Synth Cloud · usage tracked",
+		group: "cloud"
+	},
+	{
+		id: "synth-cloud-muse-spark",
+		label: "Muse Spark 1.2",
 		description: "Synth Cloud · usage tracked",
 		group: "cloud"
 	},
@@ -246,6 +286,7 @@ export const OPENROUTER_POOLSIDE_TARGET_ID = "openrouter-laguna-s";
 export const TARGET_GROUP_LABEL: Record<ExecutionTargetOption["group"], string> = {
 	local: "Local",
 	remote: "Remote · OpenRouter",
+	subscription: "ChatGPT · subscription",
 	cloud: "Synth Cloud"
 };
 

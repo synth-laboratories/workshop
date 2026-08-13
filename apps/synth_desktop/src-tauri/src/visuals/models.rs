@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 pub const VISUAL_SCHEMA_VERSION: &str = "synth.desktop-visual.v1";
 pub const VISUAL_BINDINGS_SCHEMA_VERSION: &str = "synth.visual-bindings.v1";
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub enum VisualStatus {
     Draft,
@@ -36,12 +36,15 @@ impl VisualStatus {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "kebab-case")]
 pub enum RendererKind {
     Template,
     Tsx,
     Html,
+    Mermaid,
+    Systems,
+    SystemsDynamic,
 }
 
 impl RendererKind {
@@ -50,6 +53,9 @@ impl RendererKind {
             Self::Template => "template",
             Self::Tsx => "tsx",
             Self::Html => "html",
+            Self::Mermaid => "mermaid",
+            Self::Systems => "systems",
+            Self::SystemsDynamic => "systems-dynamic",
         }
     }
 
@@ -57,21 +63,26 @@ impl RendererKind {
         match value {
             "tsx" => Self::Tsx,
             "html" => Self::Html,
+            "mermaid" => Self::Mermaid,
+            "systems" => Self::Systems,
+            "systems-dynamic" => Self::SystemsDynamic,
             _ => Self::Template,
         }
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct VisualRecord {
     pub schema_version: String,
     pub id: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub current_revision: i64,
     pub title: String,
     pub template_id: String,
     pub status: VisualStatus,
     pub renderer_kind: RendererKind,
+    #[specta(type = specta_typescript::Unknown)]
     pub bindings: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -91,15 +102,17 @@ pub struct VisualRecord {
     pub content_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_digest: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub metadata: Value,
     pub created_at: String,
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct VisualRevision {
     pub visual_id: String,
+    #[specta(type = specta_typescript::Unknown)]
     pub revision: i64,
     pub template_id: String,
     pub renderer_kind: RendererKind,
@@ -108,21 +121,24 @@ pub struct VisualRevision {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bindings_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(type = specta_typescript::Unknown)]
     pub bindings: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(type = specta_typescript::Unknown)]
     pub parent_revision: Option<i64>,
     pub created_at: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct VisualCreateRequest {
     pub template_id: String,
     pub title: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub bindings: Option<Value>,
     pub id: Option<String>,
     pub status: Option<VisualStatus>,
@@ -135,13 +151,15 @@ pub struct VisualCreateRequest {
     pub source_agent_id: Option<String>,
     pub source_model: Option<String>,
     pub content: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub metadata: Option<Value>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct VisualUpdateRequest {
     pub title: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub bindings: Option<Value>,
     pub status: Option<VisualStatus>,
     pub renderer_kind: Option<RendererKind>,
@@ -149,19 +167,22 @@ pub struct VisualUpdateRequest {
     pub run_id: Option<String>,
     pub trace_id: Option<String>,
     pub content: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub metadata: Option<Value>,
     /// When true, content/bindings changes create a new revision.
     pub bump_revision: Option<bool>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct VisualQuery {
     pub status: Option<String>,
     pub session_id: Option<String>,
     pub template_id: Option<String>,
     pub search: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
     pub limit: Option<i64>,
+    #[specta(type = specta_typescript::Unknown)]
     pub offset: Option<i64>,
 }
 
@@ -183,9 +204,11 @@ pub fn validate_bindings(bindings: &Value) -> anyhow::Result<()> {
         let slot = slot
             .as_object()
             .ok_or_else(|| anyhow::anyhow!("visual binding slots must be objects"))?;
-        if slot.get("slot").and_then(Value::as_str).is_none() {
-            anyhow::bail!("visual binding slot requires a slot name");
-        }
+        let slot_name = slot
+            .get("slot")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("visual binding slot requires a slot name"))?;
+        super::live_eval::assert_live_eval_slot(slot_name)?;
         let kind = slot.get("kind").and_then(Value::as_str).unwrap_or_default();
         if !matches!(
             kind,
@@ -204,6 +227,11 @@ pub fn validate_bindings(bindings: &Value) -> anyhow::Result<()> {
         }
         if kind != "inline" && slot.get("source").and_then(Value::as_str).is_none() {
             anyhow::bail!("{kind} visual binding requires source");
+        }
+        if kind == "live_sse" {
+            if let Some(source) = slot.get("source").and_then(Value::as_str) {
+                super::live_eval::assert_declared_stream_source(source)?;
+            }
         }
     }
     Ok(())
@@ -250,5 +278,20 @@ mod tests {
             "slots": [{"slot":"matrix", "kind":"local_cas"}]
         }))
         .is_err());
+        assert!(validate_bindings(&json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "slots": [{"slot":"jobs", "kind":"live_sse", "source":"http://127.0.0.1:8098/declared"}]
+        }))
+        .is_err());
+        assert!(validate_bindings(&json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "slots": [{"slot":"stream", "kind":"live_sse", "source":"http://127.0.0.1:8098/events"}]
+        }))
+        .is_err());
+        validate_bindings(&json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "slots": [{"slot":"stream", "kind":"live_sse", "source":"http://127.0.0.1:8098/rollouts/r1/stream"}]
+        }))
+        .unwrap();
     }
 }

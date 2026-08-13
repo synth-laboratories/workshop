@@ -106,6 +106,6 @@ Show progress, throughput, completed/failed counts, running reward summary, and 
 
 ## Choosing the blank canvas
 
-Choose `blank.canvas.v1` when the intended result is more like an authored visual explanation than a standard chart: a task-and-results story, a trace topology, a reward-flow diagram, a compact experiment dashboard, or a bespoke environment-state panel.
+Choose `blank.canvas.v1` when the intended result is more like a task-and-results story, compact experiment dashboard, or bespoke environment-state panel than a standard chart. System pictures belong to `author-synth-diagrams`: exact sequence/state/types use `diagram.mermaid.v1`; broad topology, ownership, before/after, and missing edges use `diagram.systems.v1`; mechanisms whose changing state is the lesson use `diagram.systems.dynamic.v1`. Use a focused combination when spatial context and exact behavior are both material. Do not dump SVG, HTML, or JavaScript into a canvas.
 
 Keep using `analysis.visual.v1` for ordinary metric, bar, frequency-difference, table, and scatter compositions. The blank canvas increases freedom and review burden; inspect it carefully at the actual Desktop pane width.

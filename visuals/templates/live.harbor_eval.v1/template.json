@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "live.harbor_eval.v1",
+  "title": "Harbor eval live",
+  "genre": "live",
+  "version": "1.0.0",
+  "description": "Harbor trial/verifier live view. Bind slot stream only.",
+  "accent": "#FF5C00",
+  "shell": "shell.tsx",
+  "tags": ["live", "harbor", "eval", "job", "rollout"],
+  "slots": [
+    {
+      "name": "stream",
+      "description": "Declared live SSE or fixture with trial/verifier events",
+      "accepts": ["live_sse", "fixture", "inline"],
+      "required": true,
+      "schema": "synth.trace-stream-event.v1"
+    }
+  ]
+}
