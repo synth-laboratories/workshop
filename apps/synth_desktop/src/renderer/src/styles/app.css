@@ -5386,22 +5386,50 @@ a,
 /* ChatGPT subscription: a compact, self-contained provider status rather
  * than a generic settings row plus an overly sparse pricing table. */
 .codex-subscription-status {
-	padding: 18px;
-	border: 1px solid #dfe3ea;
-	border-radius: 16px;
-	background: linear-gradient(135deg, #fbfcff 0%, #f6f8fb 100%);
+	position: relative;
+	overflow: hidden;
+	padding: 18px 20px 17px;
+	border: 1px solid #d9e0ea;
+	border-radius: 18px;
+	background: radial-gradient(circle at 95% 0%, rgba(91, 118, 190, .10), transparent 32%), linear-gradient(145deg, #fcfdff 0%, #f5f7fb 100%);
+	box-shadow: 0 10px 30px rgba(34, 48, 75, .06), inset 0 1px 0 rgba(255,255,255,.9);
 }
-.codex-subscription-status.is-connected { border-color: #cbd8fa; background: linear-gradient(135deg, #f8faff 0%, #f2f6ff 100%); }
+.codex-subscription-status::before { position: absolute; inset: 0 auto 0 0; width: 4px; background: #8a97aa; content: ""; }
+.codex-subscription-status[data-auth-state="expired"] { border-color: #ead7cd; background: radial-gradient(circle at 95% 0%, rgba(219, 111, 76, .10), transparent 34%), linear-gradient(145deg, #fffdfc 0%, #faf6f3 100%); }
+.codex-subscription-status[data-auth-state="expired"]::before,
+.codex-subscription-status[data-auth-state="refresh_failed"]::before { background: linear-gradient(#ef7b58, #cf4f45); }
+.codex-subscription-status[data-auth-state="refresh_failed"] { border-color: #e8cecc; background: radial-gradient(circle at 95% 0%, rgba(205, 75, 68, .11), transparent 34%), linear-gradient(145deg, #fffdfd 0%, #faf4f4 100%); }
+.codex-subscription-status.is-connected { border-color: #c9dfd3; background: radial-gradient(circle at 95% 0%, rgba(58, 153, 104, .10), transparent 34%), linear-gradient(145deg, #fbfffd 0%, #f2f8f5 100%); }
+.codex-subscription-status.is-connected::before { background: linear-gradient(#58b986, #278d60); }
 .codex-subscription-status-head { display: flex; align-items: center; gap: 11px; }
-.codex-subscription-orb { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid #d8dfe9; border-radius: 11px; background: #fff; box-shadow: 0 5px 14px rgba(48, 63, 84, .12); }
+.codex-subscription-orb { display: grid; place-items: center; width: 38px; height: 38px; border: 1px solid rgba(184, 194, 208, .72); border-radius: 12px; background: rgba(255,255,255,.88); box-shadow: 0 6px 16px rgba(48, 63, 84, .12); }
 .codex-subscription-openai-mark { width: 18px; height: 18px; object-fit: contain; }
 .codex-subscription-status-head > div { display: grid; gap: 1px; }
-.codex-subscription-status-head strong { font-size: 15px; letter-spacing: -.01em; }
+.codex-subscription-status-head strong { color: #262d37; font-size: 15.5px; letter-spacing: -.015em; }
 .codex-subscription-account { color: #667085; font: 11.5px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
-.codex-subscription-allowance { margin-left: auto; padding: 4px 8px; border: 1px solid #cfd9f5; border-radius: 999px; background: rgba(255,255,255,.72); color: #49639c; font-size: 10.5px; font-weight: 700; letter-spacing: .02em; white-space: nowrap; }
-.codex-subscription-status p { max-width: 720px; margin: 14px 0 0; color: #697482; font-size: 12.5px; line-height: 1.48; }
-.codex-subscription-status .codex-subscription-note { margin-top: 4px; color: #566987; }
-.codex-subscription-actions { margin-top: 15px; }
+.codex-subscription-allowance { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; padding: 5px 9px; border: 1px solid rgba(151, 168, 205, .48); border-radius: 999px; background: rgba(255,255,255,.72); color: #50658e; font-size: 10.5px; font-weight: 700; letter-spacing: .02em; white-space: nowrap; }
+.codex-subscription-allowance > span { width: 6px; height: 6px; border-radius: 50%; background: #6689d5; box-shadow: 0 0 0 3px rgba(102,137,213,.12); }
+.codex-subscription-status.is-connected .codex-subscription-allowance > span { background: #36a46d; box-shadow: 0 0 0 3px rgba(54,164,109,.13); }
+.codex-subscription-guidance { display: flex; gap: 10px; max-width: 790px; margin-top: 14px; padding: 11px 13px; border: 1px solid rgba(202, 210, 222, .65); border-radius: 12px; background: rgba(255,255,255,.58); }
+.codex-subscription-guidance-icon { width: 8px; height: 8px; flex: 0 0 auto; margin-top: 5px; border-radius: 50%; background: #8090a7; box-shadow: 0 0 0 4px rgba(128,144,167,.12); }
+.codex-subscription-status[data-auth-state="expired"] .codex-subscription-guidance-icon,
+.codex-subscription-status[data-auth-state="refresh_failed"] .codex-subscription-guidance-icon { background: #dd684f; box-shadow: 0 0 0 4px rgba(221,104,79,.12); }
+.codex-subscription-status.is-connected .codex-subscription-guidance-icon { background: #36a46d; box-shadow: 0 0 0 4px rgba(54,164,109,.12); }
+.codex-subscription-status p { max-width: 720px; margin: 0; color: #596677; font-size: 12.5px; line-height: 1.48; }
+.codex-subscription-status .codex-subscription-note { margin-top: 3px; color: #788393; font-size: 11.5px; }
+.codex-subscription-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 13px; }
+.codex-subscription-actions button,
+.codex-subscription-manual button { min-height: 32px; padding: 0 12px; border: 1px solid transparent; border-radius: 9px; font-size: 11.5px; font-weight: 650; letter-spacing: -.005em; transition: transform .14s ease, border-color .14s ease, background .14s ease, box-shadow .14s ease; }
+.codex-subscription-actions button:hover:not(:disabled),
+.codex-subscription-manual button:hover:not(:disabled) { transform: translateY(-1px); }
+.codex-subscription-primary { display: inline-flex; align-items: center; gap: 7px; border-color: #426dc4 !important; background: linear-gradient(180deg, #5b82d6, #416bc2) !important; color: #fff !important; box-shadow: 0 5px 12px rgba(65,107,194,.22); }
+.codex-subscription-primary:hover:not(:disabled) { box-shadow: 0 7px 16px rgba(65,107,194,.28); }
+.codex-subscription-primary:disabled { opacity: .55; }
+.codex-subscription-secondary { border-color: #d1d8e3 !important; background: rgba(255,255,255,.76) !important; color: #3f4b5b !important; }
+.codex-subscription-tertiary { padding-inline: 8px !important; background: transparent !important; color: #647184 !important; }
+.codex-subscription-tertiary:hover:not(:disabled) { background: rgba(255,255,255,.58) !important; color: #354257 !important; }
+.codex-subscription-manual { display: grid; grid-template-columns: minmax(220px, 1fr) auto; gap: 8px; margin-top: 10px; padding: 10px; border: 1px solid rgba(202,210,222,.72); border-radius: 12px; background: rgba(255,255,255,.62); }
+.codex-subscription-manual input { min-width: 0; border-color: #cfd7e3; border-radius: 8px; background: rgba(255,255,255,.9); }
 .codex-subscription-models { margin-top: 14px; }
 .codex-subscription-models-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 2px 9px; }
 .codex-subscription-models-head div { display: grid; gap: 2px; }
@@ -5415,7 +5443,12 @@ a,
 .codex-subscription-model strong { color: #343b47; font-size: 12.5px; }
 .codex-subscription-model span { color: #7a8593; font-size: 11px; }
 .codex-subscription-model code { overflow: hidden; color: #8a94a1; font: 10px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
-@media (max-width: 760px) { .codex-subscription-model-grid { grid-template-columns: 1fr; } }
+@media (max-width: 760px) {
+	.codex-subscription-model-grid { grid-template-columns: 1fr; }
+	.codex-subscription-status { padding: 15px; }
+	.codex-subscription-allowance { display: none; }
+	.codex-subscription-manual { grid-template-columns: 1fr; }
+}
 
 .settings-update-available {
 	align-self: flex-start;

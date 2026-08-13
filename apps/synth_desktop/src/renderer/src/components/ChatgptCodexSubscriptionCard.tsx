@@ -113,20 +113,25 @@ export function ChatgptCodexSubscriptionCard() {
 						<strong data-testid="codex-oauth-status">{busy ? "Waiting for browser sign-in…" : ({ disconnected: "Not connected", authenticating: "Authenticating", ready: "Connected", expiring: "Refresh required", expired: "Authorization expired", refresh_failed: "Refresh failed" } as const)[status.state]}</strong>
 						{status.accountHint ? <span className="codex-subscription-account">{status.accountHint}</span> : null}
 					</div>
-					<span className="codex-subscription-allowance">Plan allowance</span>
+					<span className="codex-subscription-allowance"><span aria-hidden />Plan allowance</span>
 				</div>
-				<p data-testid="codex-oauth-guidance">{status.guidance}</p>
-				<p className="codex-subscription-note">Uses your Codex allowance — not API credits or Platform API access.</p>
+				<div className="codex-subscription-guidance">
+					<span className="codex-subscription-guidance-icon" aria-hidden />
+					<div>
+						<p data-testid="codex-oauth-guidance">{status.guidance}</p>
+						<p className="codex-subscription-note">Uses your Codex allowance, not API credits or Platform API access.</p>
+					</div>
+				</div>
 				<div className="settings-inline-actions codex-subscription-actions">
-					<button type="button" data-testid="codex-oauth-connect" disabled={busy} onClick={() => void connect()}>{status.action === "reauthenticate" || status.action === "retry" ? "Re-sync ChatGPT" : status.configured ? "Re-authenticate" : "Connect ChatGPT"}</button>
-					{busy ? <button type="button" data-testid="codex-oauth-restart" onClick={() => void restart()}>Start over</button> : null}
-					{busy ? <button type="button" data-testid="codex-oauth-cancel" onClick={() => void cancel()}>Cancel</button> : null}
-					{status.configured ? <button type="button" data-testid="codex-oauth-disconnect" disabled={busy} onClick={() => void disconnect()}>Disconnect</button> : null}
-					<button type="button" data-testid="codex-oauth-show-manual" onClick={() => setManual((value) => !value)}>Paste redirect URL</button>
+					<button className="codex-subscription-primary" type="button" data-testid="codex-oauth-connect" disabled={busy} onClick={() => void connect()}><span aria-hidden>{busy ? "···" : "↻"}</span>{status.action === "reauthenticate" || status.action === "retry" ? "Re-sync ChatGPT" : status.configured ? "Re-authenticate" : "Connect ChatGPT"}</button>
+					{busy ? <button className="codex-subscription-secondary" type="button" data-testid="codex-oauth-restart" onClick={() => void restart()}>Start over</button> : null}
+					{busy ? <button className="codex-subscription-tertiary" type="button" data-testid="codex-oauth-cancel" onClick={() => void cancel()}>Cancel</button> : null}
+					{status.configured ? <button className="codex-subscription-secondary" type="button" data-testid="codex-oauth-disconnect" disabled={busy} onClick={() => void disconnect()}>Disconnect</button> : null}
+					<button className="codex-subscription-tertiary" type="button" data-testid="codex-oauth-show-manual" aria-expanded={manual} onClick={() => setManual((value) => !value)}>{manual ? "Hide redirect URL" : "Paste redirect URL"}</button>
 				</div>
-				{manual ? <div className="settings-inline-actions" data-testid="codex-oauth-manual">
+				{manual ? <div className="settings-inline-actions codex-subscription-manual" data-testid="codex-oauth-manual">
 					<input aria-label="ChatGPT OAuth redirect URL" value={redirectUrl} onChange={(event) => setRedirectUrl(event.target.value)} placeholder="http://localhost:1455/auth/callback?code=…&state=…" />
-					<button type="button" disabled={busy || !redirectUrl.trim()} onClick={() => void completeManual()}>Complete sign-in</button>
+					<button className="codex-subscription-primary" type="button" disabled={busy || !redirectUrl.trim()} onClick={() => void completeManual()}>Complete sign-in</button>
 				</div> : null}
 				{error ? <div className="model-locations-error" role="alert"><strong>Couldn’t re-sync ChatGPT.</strong> {error} Use Start over to create a fresh authorization attempt.</div> : null}
 			</div>
