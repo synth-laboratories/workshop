@@ -23,3 +23,7 @@ jobs:
 
       - name: Print SynthStyle CONFORM CHECK counts
         run: ./scripts/desktop.sh conform
+
+      - name: Reject new app.css style literals
+        working-directory: apps/synth_desktop
+        run: npm run lint:app-css
