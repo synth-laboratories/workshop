@@ -43,7 +43,7 @@ use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc};
-use tauri::{AppHandle, Manager, PhysicalSize, Size};
+use tauri::{AppHandle, LogicalSize, Manager, Size};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -160,16 +160,29 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
     if !(320..=2400).contains(&width) || !(400..=1800).contains(&height) {
         anyhow::bail!("review window must be within 320x400 and 2400x1800");
     }
-    let previous = window.inner_size().context("read review window size")?;
+    // A review viewport is a CSS viewport, so every size on this endpoint is
+    // logical. `inner_size` reports physical pixels: on a 2x display a
+    // 1440-wide window reads back as 2880, which the caller then sends here to
+    // restore and which this bound rejects — leaving the user's window stuck at
+    // the review size. Applying a logical request as physical also halved the
+    // captured viewport on those displays, so responsive review ran at the
+    // wrong breakpoint.
+    let scale = window.scale_factor().context("read display scale factor")?;
+    let previous = window
+        .inner_size()
+        .context("read review window size")?
+        .to_logical::<f64>(scale);
     window
-        .set_size(Size::Physical(PhysicalSize::new(
-            width as u32,
-            height as u32,
-        )))
+        .set_size(Size::Logical(LogicalSize::new(width as f64, height as f64)))
         .context("resize review window")?;
+    // Report what the window manager actually gave us; it may clamp.
+    let current = window
+        .inner_size()
+        .context("read resized review window size")?
+        .to_logical::<f64>(scale);
     Ok(json!({
-        "previous": {"width": previous.width, "height": previous.height},
-        "current": {"width": width, "height": height}
+        "previous": {"width": previous.width.round(), "height": previous.height.round()},
+        "current": {"width": current.width.round(), "height": current.height.round()}
     }))
 }
 

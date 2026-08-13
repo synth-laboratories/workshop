@@ -698,13 +698,19 @@ fn capture_macos_desktop_review(
         "/v1/review-window/resize",
         Some(json!({"width":width,"height":height})),
     )?;
-    let previous = resize
-        .get("previous")
-        .cloned()
-        .ok_or("review window resize omitted previous size")?;
+    // Do not `?` between here and the restore. The window is already resized;
+    // any early return from this span leaves the user's Desktop at the review
+    // size with nothing left to put it back.
+    let previous = resize.get("previous").cloned();
     std::thread::sleep(std::time::Duration::from_millis(500));
     let result = capture_current_macos_window(width, height, png_path);
-    let restore = request("POST", "/v1/review-window/resize", Some(previous));
+    let restore = match previous {
+        Some(previous) => request("POST", "/v1/review-window/resize", Some(previous)),
+        None => Err(
+            "review window resize omitted its previous size, so the Desktop window was left at the review size"
+                .to_string(),
+        ),
+    };
     match (result, restore) {
         (Err(error), _) => Err(error),
         (Ok(()), Err(error)) => Err(format!(
