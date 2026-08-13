@@ -1671,6 +1671,7 @@ a,
 .composer {
 	width: 100%;
 	max-width: 720px;
+	container: composer / inline-size;
 	border: 1px solid #e3e6ea;
 	border-radius: 18px;
 	background: #fff;
@@ -1790,6 +1791,7 @@ a,
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
+	gap: 8px;
 	padding: 4px 10px 10px;
 	border-top: none;
 }
@@ -1802,16 +1804,28 @@ a,
 	min-width: 0;
 }
 
+.composer-left {
+	flex: 1 1 45%;
+}
+
 .composer-right {
+	flex: 1 1 55%;
+	max-width: 55%;
 	justify-content: flex-end;
 	gap: 4px;
+}
+
+.composer-left > .workspace-scope-wrap,
+.composer-model-wrap {
+	flex: 1 1 auto;
 }
 
 .model-chip {
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
-	max-width: min(280px, 42vw);
+	width: 100%;
+	max-width: 100%;
 	min-width: 0;
 	padding: 5px 8px;
 	border-radius: 8px;
@@ -1848,6 +1862,21 @@ a,
 .composer-model-wrap {
 	position: relative;
 	min-width: 0;
+}
+
+@container composer (max-width: 480px) {
+	.permission-select-part > span,
+	.permission-select-separator,
+	.workspace-scope-chip > span:not(:first-child) {
+		display: none;
+	}
+
+	.permission-select,
+	.workspace-scope-chip {
+		width: 30px;
+		justify-content: center;
+		padding-inline: 4px;
+	}
 }
 
 .reasoning-effort-wrap {
