@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import { artifactFromVisualRecord, VisualHost } from "./VisualHost";
+import { PaneResizeHandle } from "./PaneResizeHandle";
 import { bridges } from "../runtime/desktopBridge";
+
+const VISUALS_LIST_WIDTH_KEY = "synth.visuals.list-width";
+const DEFAULT_VISUALS_LIST_WIDTH = 560;
+
+function initialListWidth(): number {
+	const stored = Number(window.localStorage.getItem(VISUALS_LIST_WIDTH_KEY));
+	return Number.isFinite(stored) && stored > 0 ? stored : DEFAULT_VISUALS_LIST_WIDTH;
+}
 
 type Tab = "all" | "recent" | "live" | "templates";
 
@@ -24,6 +33,11 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [focusVisualId, setFocusVisualId] = useState<string | null>(null);
+	const [listWidth, setListWidth] = useState(initialListWidth);
+	const updateListWidth = (width: number) => {
+		setListWidth(width);
+		window.localStorage.setItem(VISUALS_LIST_WIDTH_KEY, String(width));
+	};
 
 	useEffect(() => {
 		let cancelled = false;
@@ -118,7 +132,10 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 			{error ? <p className="visuals-error">{error}</p> : null}
 			{loading ? <p className="visuals-loading">Loading visuals…</p> : null}
 
-			<div className={`visuals-layout${focusVisualId ? " focus" : ""}`}>
+			<div
+				className={`visuals-layout${focusVisualId ? " focus" : ""}`}
+				style={focusVisualId ? undefined : { gridTemplateColumns: `${listWidth}px 8px minmax(360px, 1fr)` }}
+			>
 				<div className="visuals-grid" data-testid="visuals-grid" hidden={Boolean(focusVisualId)}>
 					{filtered.length === 0 && !loading ? (
 						<p className="visuals-empty">No visuals yet. Create one from chat, MCP, or New visual.</p>
@@ -144,6 +161,16 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 						</article>
 					))}
 				</div>
+				{selected && !focusVisualId ? (
+					<PaneResizeHandle
+						value={listWidth}
+						onChange={updateListWidth}
+						minPrimary={280}
+						minSecondary={360}
+						ariaLabel="Resize visual list and preview"
+						direction="primary"
+					/>
+				) : null}
 				{selected ? (
 					<div className="visuals-preview" data-testid="visuals-preview">
 						<header>

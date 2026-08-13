@@ -5937,8 +5937,28 @@ a,
 .visuals-layout {
 	display: grid;
 	grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
-	gap: 16px;
+	gap: 0;
 	min-height: 420px;
+}
+
+.visuals-layout > .visuals-grid {
+	margin-right: 12px;
+}
+
+.visuals-layout > .visuals-preview {
+	margin-left: 12px;
+}
+
+.primary-resize-handle {
+	width: 8px;
+	height: 100%;
+	min-height: 420px;
+	justify-self: stretch;
+}
+
+.primary-resize-handle::after {
+	left: 3px;
+	right: auto;
 }
 
 .visuals-layout.focus {
@@ -6017,6 +6037,7 @@ a,
 	border: 0;
 	border-radius: 0;
 	background: transparent;
+	margin-left: 0;
 }
 
 .visuals-layout.focus .visuals-preview > header {

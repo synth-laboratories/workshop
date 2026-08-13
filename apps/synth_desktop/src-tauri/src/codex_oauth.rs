@@ -154,6 +154,7 @@ fn parse_dev_auth_file(value: &str) -> Result<Credential> {
             .map(str::to_owned)
             .ok_or_else(|| anyhow!("debug Codex OAuth file omitted {name}"))
     };
+    let access_token = required("access_token")?;
     let id_token = required("id_token")?;
     let claims = jwt_claims(&id_token)?;
     let account_id = tokens
@@ -162,9 +163,14 @@ fn parse_dev_auth_file(value: &str) -> Result<Credential> {
         .map(str::to_owned)
         .or_else(|| account_id(&claims))
         .ok_or_else(|| anyhow!("debug Codex OAuth file omitted account_id"))?;
-    let expires_ms = claims
-        .get("exp")
-        .and_then(|value| value.as_i64())
+    // Codex access tokens can remain valid substantially longer than their ID
+    // tokens. The ID token proves identity; it does not govern API access.
+    // Prefer the access-token JWT expiry and retain the ID-token expiry only as
+    // a compatibility fallback for opaque access tokens.
+    let expires_ms = jwt_claims(&access_token)
+        .ok()
+        .and_then(|claims| claims.get("exp").and_then(|value| value.as_i64()))
+        .or_else(|| claims.get("exp").and_then(|value| value.as_i64()))
         .unwrap_or_else(|| Utc::now().timestamp() + 3600)
         * 1000;
     let last_refresh_ms = auth
@@ -174,7 +180,7 @@ fn parse_dev_auth_file(value: &str) -> Result<Credential> {
         .map(|value| value.timestamp_millis())
         .unwrap_or_else(|| Utc::now().timestamp_millis());
     Ok(Credential {
-        access_token: required("access_token")?,
+        access_token,
         refresh_token: required("refresh_token")?,
         id_token,
         expires_ms,
@@ -762,6 +768,12 @@ mod tests {
     fn debug_file_store_reads_codex_auth_without_mutating_it() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("oauth.json");
+        let access_token = format!(
+            "x.{}.y",
+            URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(&serde_json::json!({"exp": 2_100_000_000_i64})).unwrap()
+            )
+        );
         let id_token = format!(
             "x.{}.y",
             URL_SAFE_NO_PAD.encode(
@@ -775,7 +787,7 @@ mod tests {
         let body = serde_json::json!({
             "auth_mode": "chatgpt",
             "tokens": {
-                "access_token": "file-access",
+                "access_token": access_token,
                 "refresh_token": "file-refresh",
                 "id_token": id_token,
                 "account_id": "file-account"
@@ -786,7 +798,7 @@ mod tests {
         let before = fs::read(&path).unwrap();
         let store = DevFileCredentialStore(path.clone());
         let loaded = store.load().unwrap().unwrap();
-        assert_eq!(loaded.access_token, "file-access");
+        assert_eq!(loaded.expires_ms, 2_100_000_000_000);
         assert_eq!(loaded.account_id, "file-account");
         store.save(&loaded).unwrap();
         store.delete().unwrap();
