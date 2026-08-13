@@ -118,6 +118,8 @@ export type LocalActivityLine = {
 	/** Token totals surrounding a context compaction (for the disclosure). */
 	tokensBefore?: number;
 	tokensAfter?: number;
+	/** Latest observed total for the active turn's compact activity tail. */
+	tokenTotal?: number;
 	kind?: "thought" | "search" | "command" | "file_read" | "file_write" | "visual" | "subagent" | "run_summary" | "context_compaction" | "approval" | "working";
 };
 

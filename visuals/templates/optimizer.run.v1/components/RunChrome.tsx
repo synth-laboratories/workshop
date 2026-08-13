@@ -102,9 +102,9 @@ export function GlobalTimeline({
 }
 
 export function UsageCards({ usage }: { usage: Record<string, number | null> }) {
-  const tokenTotal = usage.promptTokens == null && usage.completionTokens == null
+  const tokenTotal = usage.promptTokens == null || usage.completionTokens == null
     ? null
-    : (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);
+    : usage.promptTokens + usage.completionTokens;
   return (
     <section className="sv-section" aria-label="Usage">
       <div className="sv-section-head">

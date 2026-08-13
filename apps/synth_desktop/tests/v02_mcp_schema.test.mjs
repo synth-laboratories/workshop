@@ -9,23 +9,33 @@ const tools = JSON.parse(
 );
 
 const ADVERTISED = [
+	"visual_manage",
 	"visual_list_templates",
+	"visual_list",
+	"visual_get",
+	"visual_create",
 	"visual_create_from_template",
+	"visual_update",
 	"visual_bind_data_source",
 	"visual_authoring_context",
 	"visual_review",
+	"visual_capture_review",
 	"visual_mark_ready",
 	"visual_open_in_pane",
-	"visual_stream_live_eval"
+	"visual_show",
+	"visual_fork",
+	"visual_archive"
 ];
 
-test("v0.2 Visuals MCP advertises only implemented tools, not resources/* or visual_manage", () => {
+test("v0.2 Visuals MCP dump advertises the implemented bin surface", () => {
 	const names = tools.tools.map((tool) => tool.name);
 	assert.deepEqual([...names].sort(), [...ADVERTISED].sort());
 	assert.ok(!names.includes("resources/list"));
 	assert.ok(!names.includes("resources/read"));
 	assert.ok(!names.includes("resources/templates/list"));
-	assert.ok(!names.includes("visual_manage"));
+	assert.ok(names.includes("visual_manage"));
+	assert.ok(names.includes("visual_capture_review"));
+	assert.ok(!names.includes("visual_stream_live_eval"));
 	assert.ok(!names.includes("shell"));
 });
 

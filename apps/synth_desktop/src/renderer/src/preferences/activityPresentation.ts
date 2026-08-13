@@ -109,9 +109,13 @@ function summarizeGroup(lines: LocalActivityLine[]): { label: string; summary: s
 	const actionLabel = categories.length > 0 ? categories.join(", ") : status === "running" ? "working" : "activity";
 	const label = actionLabel.charAt(0).toUpperCase() + actionLabel.slice(1);
 	const toolCount = tools.length;
-	const summary = toolCount > 0
+	const baseSummary = toolCount > 0
 		? `${toolCount} call${toolCount === 1 ? "" : "s"}`
 		: `${lines.length} update${lines.length === 1 ? "" : "s"}`;
+	const tokenTotal = [...lines].reverse().find((line) => line.tokenTotal != null)?.tokenTotal;
+	const summary = tokenTotal == null
+		? baseSummary
+		: `${baseSummary} · ${new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(tokenTotal)} tokens`;
 	return { label, summary, status, toolCount };
 }
 

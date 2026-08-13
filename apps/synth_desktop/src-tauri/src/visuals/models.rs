@@ -37,7 +37,7 @@ impl VisualStatus {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "kebab-case")]
 pub enum RendererKind {
     Template,
     Tsx,

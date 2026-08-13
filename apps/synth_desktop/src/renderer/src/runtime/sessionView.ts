@@ -1320,6 +1320,10 @@ export function eventsToLocalActivity(
 			kind: activityKind(event.eventKind)
 		});
 	}
+	if (runStartedAt && lastTokenTotal != null) {
+		const tail = byMessage[current]?.at(-1);
+		if (tail) tail.tokenTotal = lastTokenTotal;
+	}
 	for (const [messageId, lines] of Object.entries(byMessage)) {
 		byMessage[messageId] = lines.filter((line, index) => {
 			const previous = lines[index - 1];

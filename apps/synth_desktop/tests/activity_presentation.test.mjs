@@ -46,6 +46,13 @@ test("grouped mode folds consecutive calls and their intervening thoughts", () =
 	});
 });
 
+test("active activity tail renders the latest token total as a compact value", () => {
+	const lines = [command("c1"), { ...command("c2", "running"), tokenTotal: 12_345 }];
+	const [group] = presentActivityLines(lines, "grouped", { running: true });
+	assert.equal(group.kind, "group");
+	assert.equal(group.summary, "2 calls · 12.3K tokens");
+});
+
 test("mixed tool runs receive a concise Codex-style action label", () => {
 	const lines = [
 		{ id: "w1", label: "Wrote", kind: "file_write", path: "/tmp/a.ts", toolStatus: "completed" },

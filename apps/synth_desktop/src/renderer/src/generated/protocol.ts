@@ -1219,7 +1219,7 @@ export type OptimizerUsageSummary = {
 	extra?: unknown,
 };
 
-export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systemsDynamic";
+export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic";
 
 export type ResolvedTraceProjection = {
 	traceDigest: string,

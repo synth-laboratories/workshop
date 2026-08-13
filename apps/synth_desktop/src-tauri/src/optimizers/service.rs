@@ -1269,7 +1269,22 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
 /// a later known receipt cannot turn an earlier unknown charge into a partial
 /// confident sum.
 fn apply_reported_cost(usage: &mut OptimizerUsageSummary, delta: &Map<String, Value>) {
-    let Some(raw) = delta.get("cost_usd").or_else(|| delta.get("costUsd")) else {
+    let raw = delta.get("cost_usd").or_else(|| delta.get("costUsd"));
+    let reports_tokens = [
+        "prompt_tokens",
+        "promptTokens",
+        "completion_tokens",
+        "completionTokens",
+    ]
+    .iter()
+    .any(|key| delta.contains_key(*key));
+    let Some(raw) = raw else {
+        if reports_tokens {
+            usage
+                .extra
+                .insert("costTelemetryComplete".into(), Value::Bool(false));
+            usage.cost_usd = None;
+        }
         return;
     };
     let was_complete = usage
@@ -2678,6 +2693,24 @@ mod tests {
         apply_reported_cost(
             &mut usage,
             &serde_json::from_value(json!({"cost_usd": 0.03})).unwrap(),
+        );
+        assert_eq!(usage.cost_usd, None);
+        assert_eq!(
+            usage.extra.get("costTelemetryComplete"),
+            Some(&Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn token_receipt_without_cost_poisons_cost_completeness() {
+        let mut usage = OptimizerUsageSummary::default();
+        apply_reported_cost(
+            &mut usage,
+            &serde_json::from_value(json!({"cost_usd": 0.02})).unwrap(),
+        );
+        apply_reported_cost(
+            &mut usage,
+            &serde_json::from_value(json!({"prompt_tokens": 10, "completion_tokens": 2})).unwrap(),
         );
         assert_eq!(usage.cost_usd, None);
         assert_eq!(

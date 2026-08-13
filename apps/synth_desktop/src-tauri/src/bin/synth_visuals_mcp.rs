@@ -107,16 +107,36 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
         .map_err(|error| error.to_string())?;
     let mut response = String::new();
     io::Read::read_to_string(&mut stream, &mut response).map_err(|error| error.to_string())?;
+    parse_http_response(&response)
+}
+
+fn parse_http_response(response: &str) -> Result<Value, String> {
+    let status = response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| "invalid visuals IPC HTTP status".to_string())?;
     let body = response
         .split("\r\n\r\n")
         .nth(1)
         .ok_or_else(|| "empty visuals IPC response".to_string())?;
-    serde_json::from_str(body).map_err(|error| error.to_string())
+    let parsed: Value = serde_json::from_str(body).map_err(|error| error.to_string())?;
+    if !(200..300).contains(&status) {
+        let detail = parsed
+            .get("error")
+            .or_else(|| parsed.get("detail"))
+            .and_then(|value| value.as_str())
+            .unwrap_or(body);
+        return Err(format!("visuals IPC HTTP {status}: {detail}"));
+    }
+    Ok(parsed)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{managed_tool_name, socket_addr, tools};
+    use super::{managed_tool_name, parse_http_response, socket_addr, tools, VISUAL_OPERATIONS};
+    use serde_json::Value;
 
     #[test]
     fn parses_loopback_connection_without_treating_request_path_as_part_of_address() {
@@ -164,6 +184,20 @@ mod tests {
         assert_eq!(managed_tool_name("fork").unwrap(), "visual_fork");
         assert_eq!(managed_tool_name("archive").unwrap(), "visual_archive");
         assert!(managed_tool_name("delete_everything").is_err());
+        let listed = tools();
+        let advertised = listed["tools"][0]["inputSchema"]["properties"]["operation"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            advertised,
+            VISUAL_OPERATIONS
+                .iter()
+                .map(|(operation, _)| *operation)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -206,40 +240,60 @@ mod tests {
         assert!(advertised.contains("do not call MCP resources"));
         assert!(advertised.contains("arguments.content"));
     }
+
+    #[test]
+    fn http_errors_preserve_the_actionable_server_detail() {
+        let error = parse_http_response(
+            "HTTP/1.1 400 Bad Request\r\nContent-Length: 34\r\n\r\n{\"error\":\"template_not_renderable\"}",
+        )
+        .unwrap_err();
+        assert_eq!(error, "visuals IPC HTTP 400: template_not_renderable");
+    }
 }
 
+const VISUAL_OPERATIONS: &[(&str, &str)] = &[
+    ("list_templates", "visual_list_templates"),
+    ("list", "visual_list"),
+    ("get", "visual_get"),
+    ("create", "visual_create"),
+    ("update", "visual_update"),
+    ("bind", "visual_bind_data_source"),
+    ("save", "visual_save"),
+    ("show", "visual_show"),
+    ("render", "visual_render"),
+    ("capture_review", "visual_capture_review"),
+    ("authoring_context", "visual_authoring_context"),
+    ("review", "visual_review"),
+    ("mark_ready", "visual_mark_ready"),
+    ("fork", "visual_fork"),
+    ("archive", "visual_archive"),
+];
+
 fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
-    match operation {
-        "list_templates" => Ok("visual_list_templates"),
-        "list" => Ok("visual_list"),
-        "get" => Ok("visual_get"),
-        "create" => Ok("visual_create"),
-        "update" => Ok("visual_update"),
-        "bind" => Ok("visual_bind_data_source"),
-        "save" => Ok("visual_save"),
-        "show" => Ok("visual_show"),
-        "render" => Ok("visual_render"),
-        "capture_review" => Ok("visual_capture_review"),
-        "authoring_context" => Ok("visual_authoring_context"),
-        "review" => Ok("visual_review"),
-        "mark_ready" => Ok("visual_mark_ready"),
-        "fork" => Ok("visual_fork"),
-        "archive" => Ok("visual_archive"),
-        other => Err(format!("unknown visual operation {other}")),
-    }
+    VISUAL_OPERATIONS
+        .iter()
+        .find_map(|(candidate, tool)| (*candidate == operation).then_some(*tool))
+        .ok_or_else(|| {
+            let supported = VISUAL_OPERATIONS
+                .iter()
+                .map(|(candidate, _)| *candidate)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("unknown visual operation {operation}; supported operations: {supported}")
+        })
 }
 
 fn tools() -> Value {
     let mut result = json!({
         "tools": [
-            {"name":"visual_manage","description":"Direct tool for Synth visuals; do not call MCP resources or search the filesystem. For a diagram, load author-synth-diagrams, create with arguments.content, show, then capture_review and inspect its returned image before review.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Operation to run. Diagram path: create, show, capture_review, inspect, review.","enum":["list_templates","list","get","create","update","bind","show","fork","archive","authoring_context","review","mark_ready","render","capture_review"]},"arguments":{"type":"object","description":"capture_review requires visual_id and viewport {width,height}; it returns a PNG image and absolute screenshot_path.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+            {"name":"visual_manage","description":"Direct tool for Synth visuals; do not call MCP resources or search the filesystem. For a diagram, load author-synth-diagrams, create with arguments.content, show, then capture_review and examine its returned image before review.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual operation to run."},"arguments":{"type":"object","description":"capture_review requires visual_id and viewport {width,height}; it returns a PNG image and absolute screenshot_path.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
             {"name":"visual_list_templates","description":"List Synth visual templates","inputSchema":{"type":"object","properties":{"genre":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_get","description":"Get a visual by id","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_create","description":"Create a visual from a trusted registered template. Interactive live viewers are configured templates; arbitrary TSX is not executed.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"props":{"type":"object"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
             {"name":"visual_create_from_template","description":"Alias of visual_create","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"props":{"type":"object"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
             {"name":"visual_update","description":"Revise visual bindings, title, trusted-template configuration, or Mermaid content","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"bindings":{"type":"object"},"status":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["visual_id"],"additionalProperties":false}},
-            {"name":"visual_bind_data_source","description":"Bind a slot on a visual","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"slot":{"type":"string"},"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string","description":"Exact normalized poll URL declared beside a live SSE source"},"path":{"type":"string"}},"required":["instance_id","slot","kind","source"],"additionalProperties":false}},
+            {"name":"visual_bind_data_source","description":"Bind a slot on a visual","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"slot":{"type":"string"},"kind":{"type":"string","enum":["trace_v5","local_cas","live_sse","fixture"]},"source":{"type":"string"},"poll_url":{"type":"string","description":"Exact normalized poll URL declared beside a live SSE source"},"path":{"type":"string"}},"required":["instance_id","slot","kind","source"],"additionalProperties":false}},
             {"name":"visual_show","description":"Open a visual in the Desktop right pane","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"session_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_open_in_pane","description":"Alias of visual_show","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"}},"required":["instance_id"],"additionalProperties":false}},
             {"name":"visual_fork","description":"Fork a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
@@ -251,6 +305,17 @@ fn tools() -> Value {
         ]
     });
     if let Some(items) = result.get_mut("tools").and_then(Value::as_array_mut) {
+        if let Some(facade) = items
+            .iter_mut()
+            .find(|tool| tool["name"] == "visual_manage")
+        {
+            facade["inputSchema"]["properties"]["operation"]["enum"] = Value::Array(
+                VISUAL_OPERATIONS
+                    .iter()
+                    .map(|(operation, _)| Value::String((*operation).into()))
+                    .collect(),
+            );
+        }
         for tool in items {
             let name = tool
                 .get("name")
@@ -505,7 +570,7 @@ fn capture_review(args: &Value) -> Result<Value, String> {
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     let stem = format!("{id}-r{revision}-{width}x{height}");
     let png_path = root.join(format!("{stem}.png"));
-    let capture_mode = if matches!(renderer_kind, "mermaid" | "systems" | "systemsDynamic") {
+    let capture_mode = if matches!(renderer_kind, "mermaid" | "systems" | "systems-dynamic") {
         request("POST", &format!("/v1/visuals/{id}/render"), None)?;
         capture_svg_review(id, renderer_kind, width, height, &root, &stem, &png_path)?;
         "deterministic-svg"
@@ -874,6 +939,13 @@ mod webkit_tests {
 }
 
 fn main() {
+    if std::env::args().any(|argument| argument == "--dump-tools") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&tools()).unwrap_or_default()
+        );
+        return;
+    }
     run_stdio_server(
         McpServerInfo {
             name: "synth-visuals-mcp",

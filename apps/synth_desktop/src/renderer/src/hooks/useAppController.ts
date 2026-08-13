@@ -760,7 +760,7 @@ export function useAppController() {
 			showToast("Container inventory requires Synth Desktop");
 			return;
 		}
-		try {
+			try {
 			const container = await bridges.inventory.getContainer(id);
 			setOpenArtifactId(null);
 			setStandaloneVisual(null);
@@ -953,9 +953,13 @@ export function useAppController() {
 						eventKind: "message.created", payload: { messageId, role: "user", content: text },
 						createdAt: now, source: "local"
 					});
-					const effort = turnStartEffortForExecutionTarget(executionTarget, modelKnobValues);
-					let started: CodexSessionInfo;
-					try {
+						const effort = turnStartEffortForExecutionTarget(executionTarget, modelKnobValues);
+						let started: CodexSessionInfo;
+						// A fence from an earlier completed Stop must never apply to this
+						// new operator message. A Stop during the async start handshake
+						// re-adds it and is handled immediately after sendTurn resolves.
+						staleRunFenceRef.current.delete(sessionId);
+						try {
 						// One round trip owns attach/resume and turn/start, so the
 						// app-server cannot exit in a gap the renderer can see.
 						// Model switches compact on the source model inside sendTurn
@@ -976,10 +980,10 @@ export function useAppController() {
 								await nativeCodex.start(startRequest);
 								return nativeCodex.startTurn(sessionId, text, effort, { clientMessageId: messageId });
 							})();
-					} catch (reason) {
-						failTurnStart(sessionId, text, messageId, reason);
-						return false;
-					}
+						} catch (reason) {
+							failTurnStart(sessionId, text, messageId, reason);
+							return false;
+						}
 					// Stop may be pressed while sendTurn is still attaching the app-server,
 					// before Rust has a turn id to interrupt. Preserve that intent across
 					// the handshake and interrupt the newly-created turn immediately.
