@@ -9,6 +9,15 @@ Use when the user needs a **picture of a system**. Choose the grammar that answe
 
 Live eval evidence stays on `live.*.v1`. Optimizer runs stay on `optimizer.*.v1`. Do not route system pictures through `blank.canvas.v1`.
 
+## Intended approach
+
+- Start with one visual claim and the evidence that establishes it.
+- Preserve semantic truth before style: direction, containment, time, absence, and uncertainty must match the source evidence.
+- Use the least expressive sufficient grammar. Mermaid owns formal UML semantics; static 2D owns deliberate spatial composition; Benjamin Dicken Style owns explanation through time.
+- Design a reading path. The first glance should reveal the claim, the second the mechanism, and the third the exact evidence or caveat.
+- Prefer progressive disclosure over completeness on one frame. A diagram is not improved by showing every available identifier, connector, or result simultaneously.
+- Treat rendering as the start of review. Inspect the actual pixels at wide and compact sizes, revise, and only then certify readiness.
+
 ## Workflow
 
 1. State the visual claim, then choose a mode from the selection rules below. The common path does not require template discovery, MCP resources, or filesystem search.

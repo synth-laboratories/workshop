@@ -2,6 +2,10 @@
 
 Use `diagram.systems.v1` when deliberate placement carries meaning: broad topology, ownership and trust boundaries, before/after composition, or missing and unproven edges.
 
+Compose for a reading path rather than maximum coverage. Use groups for a few meaningful boundaries, 5–7 primary nodes when possible, short labels, and whitespace as structure. Move exact paths, IDs, and caveats into compact notes only when they are necessary to interpret the map. If the map needs many sequential facts, use a Mermaid sequence or a Benjamin Dicken Style explanation instead of forcing them into one poster.
+
+After creation, use the same screenshot-backed wide/compact QA loop described by the parent skill. Explicit coordinates make the author responsible for label fit, connector crossings, balance, and density; a valid rectangle is not evidence that the composition is readable.
+
 The `content` value is bounded JSON, serialized as a string for `visual_manage`:
 
 ```json

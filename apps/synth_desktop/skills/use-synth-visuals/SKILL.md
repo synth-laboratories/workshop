@@ -7,6 +7,20 @@ description: Use when creating, updating, inspecting, or opening a Synth Desktop
 
 Choose the visual grammar from the evidence. Treat registered templates as optional shortcuts, not mandates. For ad-hoc analysis, prefer `analysis.visual.v1` and author its ordered `spec.blocks` at creation time. Use `blank.canvas.v1` when the composition cannot be expressed cleanly with those blocks. If the artifact is a system, UML, flow picture, or time-aware technical explainer, load `author-synth-diagrams`. It chooses among `diagram.mermaid.v1`, `diagram.systems.v1`, `diagram.systems.dynamic.v1`, or a focused combination; do not dump SVG/HTML/JavaScript into a canvas.
 
+## Intended approach
+
+A visual is a concise explanation of evidence, not a graphical evidence dump.
+
+1. **Ground:** establish the exact facts, their provenance, and what is missing. Never use design to imply unavailable evidence.
+2. **Claim:** write the one sentence the visual should make obvious. If there are several independent claims, use beats, details, or separate focused visuals.
+3. **Reduce:** choose the smallest grammar and fewest marks that communicate that claim. Keep exact records available as detail instead of placing every identifier and event on the primary surface.
+4. **Compose:** create hierarchy before decoration—primary result, supporting mechanism, then provenance/caveats. Prefer direct labels, whitespace, and progressive disclosure.
+5. **Render:** show the artifact in its real Desktop pane. Source validity is not visual validity.
+6. **Critique:** capture, open, and inspect wide and compact screenshots. Revise the same visual ID until the claim is legible without collisions, ambiguous truncation, or excessive density.
+7. **Certify:** record screenshot-backed reviews and mark ready only after automated findings and human-visible problems are resolved.
+
+The first draft is expected to be revised. Do not describe a visual as polished merely because it rendered or passed schema validation.
+
 Codex advertises one compact custom tool,
 `mcp__synth_visuals__visual_manage`, instead of all visual schemas on every
 turn. In code mode call it as
@@ -26,7 +40,7 @@ or filesystem search to discover this tool.
 | `fork` | `{ "visual_id": string, "title"?: string }` |
 | `archive` | `{ "visual_id": string }` |
 | `authoring_context` | `{ "visual_id": string }` |
-| `review` | `{ "visual_id": string, "revision": number, "viewport": {"width": number, "height": number}, "checks": object, "findings": string[], "screenshot_path"?: string }` |
+| `review` | `{ "visual_id": string, "revision": number, "viewport": {"width": number, "height": number}, "checks": object, "findings": string[], "screenshot_path"?: string }` (`screenshot_path` is required for systems visuals) |
 | `mark_ready` | `{ "visual_id": string, "revision": number }` |
 
 For example, list templates with
@@ -154,7 +168,7 @@ Prefer semantic HTML and SVG with meaningful `<title>`, `<desc>`, headings, labe
 
 ## Quality gate
 
-Before showing a visual, verify:
+Before marking a visual ready, verify:
 
 - every mark maps to real data;
 - the chart form matches the sample structure;
