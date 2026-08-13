@@ -139,6 +139,15 @@ test("ingest de-dupes, ignores heartbeats, and treats stream.subscribed as ready
   assert.equal(state.events[1].event_id, "e2");
 });
 
+test("finite fixture replay is ready without a live subscription control", () => {
+  const hook = readFileSync(join(root, "chrome/useLiveEvalStream.ts"), "utf8");
+  assert.match(
+    hook,
+    /if \(fixtureEvents\?\.length\) \{\s*\/\/[^]*?setReady\(true\);\s*setLive\(true\);/,
+    "local fixtures must finish as ready instead of falling back to connecting"
+  );
+});
+
 test("multiplexed rollout-local event ids never collapse across lanes", () => {
   const state = ingestLiveEnvelopes([
     { kind: "observation", event_id: "1", sequence: 1, rollout_id: "seed-0", lane: "seed-0", payload: { step: 0 } },

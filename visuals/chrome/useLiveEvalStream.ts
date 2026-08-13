@@ -180,6 +180,9 @@ export function useLiveEvalStream(options: {
     }
 
     if (fixtureEvents?.length) {
+      // A finite fixture is already available locally. It must not depend on a
+      // live-only `stream.subscribed` control envelope to leave "connecting".
+      setReady(true);
       setLive(true);
       const id = window.setInterval(() => {
         if (idx.current >= fixtureEvents.length) {

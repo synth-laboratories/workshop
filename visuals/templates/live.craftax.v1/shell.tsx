@@ -154,8 +154,18 @@ function summarizeLanes(events: LiveEvalEvent[]): Map<string, LaneSummary> {
     if (event.kind === "reward_signal") {
       const value = finite(object(event.payload).value);
       if (value != null) summary.reward = (summary.reward ?? 0) + value;
+    } else if (event.kind === "snapshot") {
+      const payload = object(event.payload);
+      const reward = finite(payload.total_reward);
+      if (reward != null) summary.reward = reward;
+      const achievements = Array.isArray(payload.achievements) ? payload.achievements.length : finite(payload.achievement_count);
+      if (achievements != null) summary.achievements = Math.max(summary.achievements, achievements);
     } else if (event.kind === "achievement_unlocked") {
       summary.achievements += 1;
+    } else if (event.kind === "eval.run.terminal") {
+      const reward = finite(object(event.payload).reward);
+      if (reward != null) summary.reward = reward;
+      summary.terminal = true;
     } else if (event.kind === "trace.reconciled") {
       summary.terminal = true;
     } else if (event.kind === "status") {
@@ -236,10 +246,16 @@ export function Shell(props: ShellProps) {
       return undefined;
     }
   }, [viewer.frameUrl, failedFrameUrl, sseUrl]);
-  const rewardSeries = rewardSignals.reduce<number[]>((series, event) => {
-    series.push((series.at(-1) ?? 0) + (finite(event.payload.value) ?? 0));
-    return series;
-  }, []);
+  const rewardSeries = rewardSignals.length
+    ? rewardSignals.reduce<number[]>((series, event) => {
+        series.push((series.at(-1) ?? 0) + (finite(event.payload.value) ?? 0));
+        return series;
+      }, [])
+    : visibleEvents.flatMap((event) => {
+        if (event.kind !== "snapshot") return [];
+        const value = finite(object(event.payload).total_reward);
+        return value == null ? [] : [value];
+      });
   const achievementSeries = visibleEvents.reduce<number[]>((series, event) => {
     if (event.kind === "achievement_unlocked") series.push((series.at(-1) ?? 0) + 1);
     else if (event.kind === "reward_signal") series.push(series.at(-1) ?? 0);

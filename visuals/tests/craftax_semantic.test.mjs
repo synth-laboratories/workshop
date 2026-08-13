@@ -130,3 +130,37 @@ test("tool-only responses are labeled, not presented as lost output", () => {
   assert.equal(call.interaction.responseType, "tool_call");
   assert.equal(call.interaction.output ?? undefined, undefined, "no text output is recorded as absent, not fabricated");
 });
+
+test("native Craftax snapshot and eval.run.terminal envelopes project without rewriting evidence", () => {
+  const events = [
+    envelope("snapshot", 1, {
+      ascii: "@..\\n.T.",
+      step_index: 0,
+      total_reward: 0,
+      achievements: []
+    }),
+    envelope("snapshot", 2, {
+      ascii: ".@.\\n.T.",
+      step_index: 12,
+      total_reward: 1.5,
+      achievements: ["collect_wood"]
+    }),
+    envelope("eval.run.terminal", 3, {
+      stopped_on: "death",
+      terminated: true,
+      env_steps: 12,
+      reward: 1.5
+    })
+  ];
+  const projection = projectCraftaxViewer(events);
+  const semantic = projectCraftaxSemanticTrace(projection.ordered);
+
+  assert.equal(projection.terminal, true);
+  assert.equal(projection.reward, 1.5);
+  assert.equal(projection.ascii, ".@.\\n.T.");
+  assert.deepEqual(projection.achievements, ["collect_wood"]);
+  assert.equal(semantic.filter((item) => item.kind === "environment.step").length, 2);
+  assert.equal(semantic.at(-1)?.kind, "eval.run.terminal");
+  assert.equal(semantic.at(-1)?.label, "Run death");
+  assert.equal(semantic.at(-1)?.rawEvents[0], events[2], "the original terminal envelope remains the evidence");
+});

@@ -72,7 +72,7 @@ function observationGrid(event: LiveEvalEvent | undefined): string | null {
   const payload = object(event.payload);
   const readout = object(payload.readout);
   const nested = object(readout.observation);
-  for (const value of [payload.grid, payload.text, readout.grid, readout.ascii, nested.grid, nested.ascii]) {
+  for (const value of [payload.grid, payload.text, payload.ascii, readout.grid, readout.ascii, nested.grid, nested.ascii]) {
     if (typeof value === "string" && value.length > 0) return value;
   }
   return null;
@@ -296,16 +296,36 @@ export function projectCraftaxSemanticTrace(events: LiveEvalEvent[]): CraftaxSem
       });
       continue;
     }
+    if (event.kind === "snapshot") {
+      const payload = eventPayload(event);
+      const step = eventStep(event);
+      const sequence = craftaxEventSequence(event, index);
+      items.push({
+        id: `snapshot:${step ?? sequence}:${sequence}`,
+        category: "environment",
+        kind: "environment.step",
+        label: `Step ${step ?? "—"} · snapshot`,
+        sequenceStart: sequence,
+        sequenceEnd: sequence,
+        step,
+        rawEvents: [event]
+      });
+      continue;
+    }
     if (event.kind === "achievement_unlocked") {
       const sequence = craftaxEventSequence(event, index);
       const payload = eventPayload(event);
       items.push({ id: `achievement:${sequence}`, category: "achievement", kind: event.kind, label: String(payload.achievement ?? "Achievement unlocked"), sequenceStart: sequence, sequenceEnd: sequence, step: eventStep(event), rawEvents: [event] });
       continue;
     }
-    if (["trace.opened", "env.episode.opened", "env.episode.closed", "policy.session.opened", "policy.session.closed", "status", "capture.closed", "trace.reconciled", "terminal", "episode_truncated"].includes(event.kind)) {
+    if (["trace.opened", "env.episode.opened", "env.episode.closed", "policy.session.opened", "policy.session.closed", "status", "capture.closed", "trace.reconciled", "terminal", "episode_truncated", "eval.run.terminal"].includes(event.kind)) {
       const sequence = craftaxEventSequence(event, index);
       const category = event.kind.startsWith("trace.") || event.kind === "capture.closed" ? "evidence" : "lifecycle";
-      items.push({ id: `${event.kind}:${sequence}`, category, kind: event.kind, label: event.kind.replaceAll(".", " "), sequenceStart: sequence, sequenceEnd: sequence, step: eventStep(event), rawEvents: [event] });
+      const payload = eventPayload(event);
+      const terminalLabel = event.kind === "eval.run.terminal"
+        ? `Run ${String(payload.stopped_on ?? (payload.terminated ? "terminated" : "finished"))}`
+        : event.kind.replaceAll(".", " ");
+      items.push({ id: `${event.kind}:${sequence}`, category, kind: event.kind, label: terminalLabel, sequenceStart: sequence, sequenceEnd: sequence, step: eventStep(event), rawEvents: [event] });
     }
   }
   flushPolicy();
@@ -424,7 +444,7 @@ export function projectCraftaxViewer(
   const frameEvents = laneEvents.filter((event) =>
     event.kind === "frame" && typeof event.payload.url === "string" && event.payload.url.length > 0
   );
-  const observation = lastKind(visibleEvents, "observation");
+  const observation = lastKind(visibleEvents, "observation") ?? lastKind(visibleEvents, "snapshot");
   const frameUrl = typeof frame?.payload.url === "string" && frame.payload.url.length > 0
     ? frame.payload.url
     : null;
@@ -459,7 +479,7 @@ export function projectCraftaxViewer(
   const provider = text(policyData.provider) ?? text(nestedPolicy.provider) ?? text(openedCall.provider);
   const model = text(policyData.model) ?? text(nestedPolicy.model) ?? text(openedCall.model);
   const terminal = visibleEvents.some((event) => {
-    if (event.kind === "trace.reconciled") return true;
+    if (event.kind === "trace.reconciled" || event.kind === "eval.run.terminal") return true;
     if (event.kind !== "status") return false;
     const status = String(event.payload.status ?? "").toLowerCase();
     return ["completed", "finished", "failed", "cancelled"].includes(status);
