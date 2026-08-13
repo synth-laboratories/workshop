@@ -70,6 +70,24 @@ test("native Laguna readiness overrides missing legacy runtime health", async ({
 	await expect(page.getByTestId("runtime-status")).toHaveCount(0);
 });
 
+test("new conversation keeps the configured machine permission defaults", async ({ page }) => {
+	await page.evaluate(() => {
+		const adapter = window.__synthPreferences;
+		if (!adapter) throw new Error("preferences adapter unavailable");
+		const current = adapter.get() as Record<string, unknown>;
+		adapter.set({
+			...current,
+			approvalMode: "allow-all",
+			approvalPolicy: "never",
+			sandboxMode: "danger-full-access"
+		});
+	});
+	const permissions = page.getByTestId("approval-mode-select");
+	await expect(permissions).toHaveAccessibleName("Permissions: Never ask; Full system access");
+	await page.getByTestId("new-conversation").click();
+	await expect(permissions).toHaveAccessibleName("Permissions: Never ask; Full system access");
+});
+
 for (const phase of ["starting", "loading"] as const) {
 	test(`the model menu describes ${phase} without fake download progress`, async ({ page }) => {
 		await installLagunaFixture(page, phase);

@@ -226,18 +226,22 @@ export function useAppController() {
 		applyPreferencesToDocument(next);
 	}), []);
 
+	const loadMachinePermissions = useCallback(async () => {
+		if (!isDesktop || !bridges.config) {
+			return { approvalPolicy, sandboxMode };
+		}
+		const stored = await bridges.config.getDesktopPermissions();
+		setPreferences(setPermissionPreferences(stored.approvalPolicy, stored.sandboxMode));
+		return { approvalPolicy: stored.approvalPolicy, sandboxMode: stored.sandboxMode };
+	}, [approvalPolicy, isDesktop, sandboxMode]);
+
 	useEffect(() => {
-		if (!isDesktop) return;
 		let disposed = false;
-		void bridges.config?.getDesktopPermissions()
-			.then((stored) => {
-				if (!disposed) setPreferences(setPermissionPreferences(stored.approvalPolicy, stored.sandboxMode));
-			})
-			.catch((reason) => {
-				if (!disposed) showToast(`Could not load machine permissions: ${reason instanceof Error ? reason.message : String(reason)}`);
-			});
+		void loadMachinePermissions().catch((reason) => {
+			if (!disposed) showToast(`Could not load machine permissions: ${reason instanceof Error ? reason.message : String(reason)}`);
+		});
 		return () => { disposed = true; };
-	}, [isDesktop, showToast]);
+	}, [loadMachinePermissions, showToast]);
 
 	useEffect(() => {
 		applyPreferencesToDocument(preferences);
@@ -833,7 +837,11 @@ export function useAppController() {
 					const id = crypto.randomUUID();
 					// Every local/configured-provider task starts in the configured safe workspace.
 					const workspace = await nativeCodex.defaultWorkspace();
-					const permissions = { approvalPolicy, sandbox: sandboxMode };
+					const machinePermissions = await loadMachinePermissions();
+					const permissions = {
+						approvalPolicy: machinePermissions.approvalPolicy,
+						sandbox: machinePermissions.sandboxMode
+					};
 					await nativeCodex.start(codexStartRequest(id, workspace, target, permissions, preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined, serviceTierForExecutionTarget(target, modelKnobValues) ?? "default"));
 					const session = createCodexSession(id, target, null, workspace, title, permissions);
 					sessionsRef.current = [session, ...sessionsRef.current.filter((item) => item.id !== session.id)];
@@ -866,7 +874,7 @@ export function useAppController() {
 				setBusy(false);
 			}
 		},
-		[approvalPolicy, sandboxMode, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
+		[laguna?.baseUrl, loadMachinePermissions, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
 	);
 
 	const ensureActiveSession = useCallback(async (objective: string): Promise<{ sessionId: string; objectiveConsumed: boolean } | null> => {
@@ -1066,10 +1074,14 @@ export function useAppController() {
 	}, []);
 
 	const onNewConversation = useCallback(() => {
-		setView({ kind: "landing" });
-		setOpenArtifactId(null);
-		setStandaloneVisual(null);
-	}, []);
+		void loadMachinePermissions()
+			.catch((reason) => showToast(`Could not load machine permissions: ${reason instanceof Error ? reason.message : String(reason)}`))
+			.finally(() => {
+				setView({ kind: "landing" });
+				setOpenArtifactId(null);
+				setStandaloneVisual(null);
+			});
+	}, [loadMachinePermissions, showToast]);
 
 	const openChat = useCallback((id: string) => {
 		setView({ kind: "chat", chatId: id });
