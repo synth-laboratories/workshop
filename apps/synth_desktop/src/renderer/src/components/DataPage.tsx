@@ -371,29 +371,29 @@ export function DataPage({
 
 
 	return (
-		<div className="inventory-page" data-testid="inventory-page">
-			<header className="inventory-head">
-				<button type="button" className="desk-back" onClick={onBack}>
+		<div className="ws-page" data-testid="inventory-page">
+			<header className="ws-page-head">
+				<button type="button" className="desk-back ws-btn ws-btn-ghost" onClick={onBack}>
 					← Back
 				</button>
-				<div>
-					<h1>Data</h1>
-					<p className="inventory-lede">
+				<div className="ws-page-head-text">
+					<h1 className="ws-title">Data</h1>
+					<p className="ws-lede">
 						Local containers, Trace V5 records, and visual instances from the runtime vault.
 					</p>
 				</div>
-				<button type="button" className="inventory-refresh" onClick={() => void refresh()}>
+				<button type="button" className="ws-btn ws-btn-secondary ws-page-head-actions" onClick={() => void refresh()}>
 					Refresh
 				</button>
 			</header>
 
 			{error ? (
-				<div className="inventory-error" role="alert">
+				<div className="ws-note ws-note-danger" role="alert">
 					{error}
 				</div>
 			) : null}
 
-			<div className="inventory-tabs" role="tablist" aria-label="Data sections">
+			<div className="ws-tabs" role="tablist" aria-label="Data sections">
 				{(
 					[
 						["containers", "Containers", activeContainers.length],
@@ -408,18 +408,18 @@ export function DataPage({
 						type="button"
 						role="tab"
 						aria-selected={tab === id}
-						className={`inventory-tab${tab === id ? " active" : ""}`}
+						className="ws-tab"
 						onClick={() => setTab(id)}
 						data-testid={`inventory-tab-${id}`}
 					>
 						{label}
-						{count == null ? null : <span className="inventory-tab-count">{count}</span>}
+						{count == null ? null : <span className="ws-tab-count">{count}</span>}
 					</button>
 				))}
 			</div>
 
 			{tab === "inference" ? (
-				<div className="inventory-panel" data-testid="inventory-inference">
+				<div data-testid="inventory-inference">
 					{/* The panel owns its own subscription and only runs while it
 					    is the selected tab. */}
 					<InferencePanel visible />
@@ -427,36 +427,36 @@ export function DataPage({
 			) : null}
 
 			{tab === "containers" ? (
-				<div className="inventory-panel" data-testid="inventory-containers">
-					<div className="inventory-container-tools">
-						<button type="button" className="inventory-row-action" data-testid="attach-container" onClick={() => setAttachOpen((value) => !value)}>Attach container</button>
-						{attachOpen ? <form onSubmit={(event) => { event.preventDefault(); void attach(); }} className="inventory-attach-form">
-							<label>Name<input value={attachName} onChange={(event) => setAttachName(event.target.value)} /></label>
-							<label>Base URL<input value={attachUrl} onChange={(event) => setAttachUrl(event.target.value)} inputMode="url" required /></label>
-							<button type="submit" disabled={busyId === "attach"}>{busyId === "attach" ? "Attaching…" : "Attach"}</button>
+				<div className="ws-stack" data-testid="inventory-containers">
+					<div className="ws-stack-tight">
+						<button type="button" className="ws-btn ws-btn-secondary" data-testid="attach-container" onClick={() => setAttachOpen((value) => !value)}>Attach container</button>
+						{attachOpen ? <form onSubmit={(event) => { event.preventDefault(); void attach(); }} className="ws-form-row">
+							<label className="ws-field">Name<input className="ws-input" value={attachName} onChange={(event) => setAttachName(event.target.value)} /></label>
+							<label className="ws-field">Base URL<input className="ws-input" value={attachUrl} onChange={(event) => setAttachUrl(event.target.value)} inputMode="url" required /></label>
+							<button className="ws-btn ws-btn-secondary" type="submit" disabled={busyId === "attach"}>{busyId === "attach" ? "Attaching…" : "Attach"}</button>
 						</form> : null}
 					</div>
 					{activeContainers.length === 0 ? (
-						<p className="inventory-empty">No containers yet.</p>
+						<div className="ws-empty"><p>No containers yet.</p></div>
 					) : (
-						<ul className="inventory-list">
+						<ul className="ws-list">
 							{activeContainers.map((c) => {
 								const visibleStatus = visibleContainerStatus(c.status);
 								return (
-								<li key={c.id} className={`inventory-row inventory-container-row${openContainerId === c.id ? " selected" : ""}`} data-testid={`inventory-container-${c.id}`}>
-									<div className="inventory-row-main">
-										<button type="button" className="inventory-container-name" onClick={() => onOpenContainer(c.id)} aria-pressed={openContainerId === c.id} aria-label={`Inspect ${c.name}`}><strong>{c.name}</strong></button>
-										<span className="inventory-row-meta">
-											<span className={`inventory-status-dot ${visibleStatus.tone}`} aria-hidden="true" />{c.location} · {visibleStatus.label}
+								<li key={c.id} className={`ws-item${openContainerId === c.id ? " is-selected" : ""}`} data-testid={`inventory-container-${c.id}`}>
+									<div className="ws-item-main">
+										<button type="button" className="ws-item-title" onClick={() => onOpenContainer(c.id)} aria-pressed={openContainerId === c.id} aria-label={`Inspect ${c.name}`}>{c.name}</button>
+										<span className="ws-item-meta">
+											<span className={`ws-dot ${visibleStatus.tone === "ready" ? "ws-dot-success" : visibleStatus.tone === "unknown" ? "ws-dot-warn" : "ws-dot-danger"}`} aria-hidden="true" />{c.location} · {visibleStatus.label}
 											{c.taskFamily ? ` · ${c.taskFamily}` : ""}
 										</span>
-										{c.baseUrl ? <span className="inventory-row-meta">{c.baseUrl}</span> : null}
-										{c.lastRolloutId ? <span className="inventory-row-meta">last rollout · {c.lastRolloutId}</span> : null}
-										<span className="inventory-row-when">{formatWhen(c.updatedAt)}</span>
+										{c.baseUrl ? <span className="ws-item-meta">{c.baseUrl}</span> : null}
+										{c.lastRolloutId ? <span className="ws-item-meta">last rollout · {c.lastRolloutId}</span> : null}
+										<span className="ws-item-meta ws-faint">{formatWhen(c.updatedAt)}</span>
 									</div>
 									<button
 										type="button"
-										className="inventory-row-action"
+										className="ws-btn ws-btn-secondary ws-btn-small"
 										disabled={busyId === c.id}
 										onClick={() => void probe(c.id)}
 										data-testid={`probe-container-${c.id}`}
@@ -467,12 +467,12 @@ export function DataPage({
 							);})}
 						</ul>
 					)}
-					{archivedContainers.length ? <details className="inventory-archived-containers">
+					{archivedContainers.length ? <details className="ws-disclosure">
 						<summary>Archived containers ({archivedContainers.length})</summary>
-						<ul className="inventory-list">
-							{archivedContainers.map((container) => <li key={container.id} className="inventory-row inventory-container-row archived">
-								<div className="inventory-row-main"><strong>{container.name}</strong><span className="inventory-row-meta"><span className="inventory-status-dot gone" aria-hidden="true" />known gone · {container.baseUrl}</span></div>
-								<button type="button" className="inventory-row-action" onClick={() => { setArchivedContainerIds((current) => { const next = new Set(current); next.delete(container.id); window.localStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next])); return next; }); void probe(container.id); }}>Retry</button>
+						<ul className="ws-list">
+							{archivedContainers.map((container) => <li key={container.id} className="ws-item">
+								<div className="ws-item-main"><strong className="ws-item-title">{container.name}</strong><span className="ws-item-meta"><span className="ws-dot ws-dot-danger" aria-hidden="true" />known gone · {container.baseUrl}</span></div>
+								<button type="button" className="ws-btn ws-btn-secondary ws-btn-small" onClick={() => { setArchivedContainerIds((current) => { const next = new Set(current); next.delete(container.id); window.localStorage.setItem("synth.archivedContainerIds", JSON.stringify([...next])); return next; }); void probe(container.id); }}>Retry</button>
 							</li>)}
 						</ul>
 					</details> : null}
@@ -480,22 +480,22 @@ export function DataPage({
 			) : null}
 
 			{tab === "traces" ? (
-				<div className="inventory-panel inventory-traces-panel" data-testid="inventory-traces">
-					<section className="trace-catalog-hero" aria-label="Trace catalog summary">
-						<div>
-							<span className="trace-eyebrow">TRACE V5 CATALOG</span>
-							<h2>Inspect runs, not files</h2>
-							<p>Select a trace to open its event timeline, tool output, evidence, usage, and provenance in the right pane.</p>
+				<div className="ws-stack ws-stack-loose" data-testid="inventory-traces">
+					<section className="ws-card ws-card-split" aria-label="Trace catalog summary">
+						<div className="ws-card-body">
+							<span className="ws-eyebrow">TRACE V5 CATALOG</span>
+							<h2 className="ws-card-title">Inspect runs, not files</h2>
+							<p className="ws-card-text">Select a trace to open its event timeline, tool output, evidence, usage, and provenance in the right pane.</p>
 						</div>
-						<div className="trace-summary-metrics">
-							<div><strong>{traces.length}</strong><span>traces</span></div>
-							<div><strong>{traceStats.events.toLocaleString()}</strong><span>events</span></div>
-							<div><strong>{traceStats.withEvidence}</strong><span>with evidence</span></div>
-							<div><strong>{traceStats.models}</strong><span>models</span></div>
+						<div className="ws-metrics">
+							<div className="ws-metric"><strong>{traces.length}</strong><span>traces</span></div>
+							<div className="ws-metric"><strong>{traceStats.events.toLocaleString()}</strong><span>events</span></div>
+							<div className="ws-metric"><strong>{traceStats.withEvidence}</strong><span>with evidence</span></div>
+							<div className="ws-metric"><strong>{traceStats.models}</strong><span>models</span></div>
 						</div>
 					</section>
-					<div className="trace-catalog-tools">
-						<label className="trace-search">
+					<div className="ws-toolbar">
+						<label className="ws-search">
 							<span aria-hidden="true">⌕</span>
 							<span className="sr-only">Filter traces</span>
 							<input
@@ -507,7 +507,7 @@ export function DataPage({
 						</label>
 						<button
 							type="button"
-							className="trace-import-action"
+							className="ws-btn ws-btn-primary"
 							disabled={busyId === "trace-import"}
 							onClick={() => void importTrace()}
 							data-testid="import-trace-v5"
@@ -515,50 +515,50 @@ export function DataPage({
 							{busyId === "trace-import" ? "Importing…" : "+ Import Trace V5"}
 						</button>
 					</div>
-					<div className="trace-filter-bar" aria-label="Trace filters">
-						<label><span>Container</span><select aria-label="Related container" value={traceContainer} onChange={(event) => setTraceContainer(event.target.value)} data-testid="filter-traces-container"><option value="all">All containers</option>{traceContainerOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></label>
-						<label><span>Model</span><select aria-label="Trace model" value={traceModel} onChange={(event) => setTraceModel(event.target.value)} data-testid="filter-traces-model"><option value="all">All models</option>{traceModelOptions.map((model) => <option key={model} value={model}>{model === "unknown" ? "Unknown model" : model}</option>)}</select></label>
-						<label><span>Created</span><select aria-label="Time created" value={traceCreated} onChange={(event) => setTraceCreated(event.target.value)} data-testid="filter-traces-created"><option value="all">Any time</option><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></select></label>
-						<label><span>Source</span><select aria-label="Trace source" value={traceSource} onChange={(event) => setTraceSource(event.target.value)}><option value="all">All sources</option><option value="local">Local</option><option value="cloud">Cloud</option><option value="import">Imported</option></select></label>
-						<label><span>Evidence</span><select aria-label="Evidence status" value={traceEvidence} onChange={(event) => setTraceEvidence(event.target.value)}><option value="all">Any evidence</option><option value="yes">Has evidence</option><option value="no">No evidence</option></select></label>
-						<div className="trace-filter-result" role="status"><strong>{filteredTraces.length}</strong> of {traces.length}</div>
-						{traceFiltersActive ? <button type="button" className="trace-filter-reset" onClick={resetTraceFilters}>Clear filters</button> : null}
+					<div className="ws-toolbar ws-toolbar-wrap" aria-label="Trace filters">
+						<label className="ws-field"><span>Container</span><select className="ws-select" aria-label="Related container" value={traceContainer} onChange={(event) => setTraceContainer(event.target.value)} data-testid="filter-traces-container"><option value="all">All containers</option>{traceContainerOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></label>
+						<label className="ws-field"><span>Model</span><select className="ws-select" aria-label="Trace model" value={traceModel} onChange={(event) => setTraceModel(event.target.value)} data-testid="filter-traces-model"><option value="all">All models</option>{traceModelOptions.map((model) => <option key={model} value={model}>{model === "unknown" ? "Unknown model" : model}</option>)}</select></label>
+						<label className="ws-field"><span>Created</span><select className="ws-select" aria-label="Time created" value={traceCreated} onChange={(event) => setTraceCreated(event.target.value)} data-testid="filter-traces-created"><option value="all">Any time</option><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></select></label>
+						<label className="ws-field"><span>Source</span><select className="ws-select" aria-label="Trace source" value={traceSource} onChange={(event) => setTraceSource(event.target.value)}><option value="all">All sources</option><option value="local">Local</option><option value="cloud">Cloud</option><option value="import">Imported</option></select></label>
+						<label className="ws-field"><span>Evidence</span><select className="ws-select" aria-label="Evidence status" value={traceEvidence} onChange={(event) => setTraceEvidence(event.target.value)}><option value="all">Any evidence</option><option value="yes">Has evidence</option><option value="no">No evidence</option></select></label>
+						<div className="ws-muted" role="status"><strong>{filteredTraces.length}</strong> of {traces.length}</div>
+						{traceFiltersActive ? <button type="button" className="ws-btn ws-btn-ghost" onClick={resetTraceFilters}>Clear filters</button> : null}
 					</div>
-					{traceNotice ? <p className="inventory-row-meta" role="status">{traceNotice}</p> : null}
+					{traceNotice ? <p className="ws-note" role="status">{traceNotice}</p> : null}
 					{traces.length === 0 ? (
-						<p className="inventory-empty">No traces yet.</p>
+						<div className="ws-empty"><p>No traces yet.</p></div>
 					) : filteredTraces.length === 0 ? (
-						<p className="inventory-empty">No traces match that filter.</p>
+						<div className="ws-empty"><p>No traces match that filter.</p></div>
 					) : (
-						<div className="trace-table-shell">
-						<div className="trace-table-head" aria-hidden="true"><span>Run</span><span>Context</span><span>Signals</span><span>Created</span><span /></div>
-						<ul className="trace-catalog-list">
+						<div className="ws-panel ws-panel-responsive">
+						<div className="ws-table-head" aria-hidden="true"><span>Run</span><span>Context</span><span>Signals</span><span>Created</span><span /></div>
+						<ul className="ws-list">
 							{filteredTraces.map((t) => {
 								const meta = traceMeta(t);
 								const containerName = t.containerId ? containers.find((container) => container.id === t.containerId)?.name ?? t.containerId : null;
-								return <li key={t.id} className={`trace-catalog-card${selectedTraceId === t.id ? " selected" : ""}`} data-testid={`inventory-trace-${t.id}`}>
-									<div className="trace-card-identity">
-										<div className="trace-card-title-row">
-											<span className={`trace-source-badge source-${t.source}`}>{t.source}</span>
-											{meta.status ? <span className="trace-status"><i />{meta.status}</span> : null}
-											{meta.hasEvidence ? <span className="trace-evidence-badge">evidence</span> : null}
+								return <li key={t.id} className={`ws-item ws-item-table${selectedTraceId === t.id ? " is-selected" : ""}`} data-testid={`inventory-trace-${t.id}`}>
+									<div className="ws-item-main">
+										<div className="ws-item-meta">
+											<span className="ws-tag">{t.source}</span>
+											{meta.status ? <span className="ws-badge ws-badge-success"><span className="ws-dot ws-dot-success" />{meta.status}</span> : null}
+											{meta.hasEvidence ? <span className="ws-badge ws-badge-info">evidence</span> : null}
 										</div>
-										<strong className="trace-card-title">{t.title}</strong>
-										<span className="trace-digest">#{shortDigest(t.digest)} · {meta.schemaVersion ?? "Trace V5"}</span>
-										{traceErrors[t.id] ? <span className="trace-card-error" role="alert" title={traceErrors[t.id]}>{traceErrors[t.id]}</span> : null}
+										<strong className="ws-item-title">{t.title}</strong>
+										<span className="ws-item-meta ws-mono">#{shortDigest(t.digest)} · {meta.schemaVersion ?? "Trace V5"}</span>
+										{traceErrors[t.id] ? <span className="ws-item-meta" role="alert" title={traceErrors[t.id]}>{traceErrors[t.id]}</span> : null}
 									</div>
-									<div className="trace-card-context"><strong>{meta.model ?? "Unknown model"}</strong><span>{containerName ? `container · ${containerName}` : "no related container"}</span>{meta.benchmark ? <span>{meta.benchmark}</span> : null}</div>
-									<div className="trace-card-metrics">
+									<div className="ws-item-main ws-table-optional"><strong className="ws-item-title">{meta.model ?? "Unknown model"}</strong><span className="ws-item-meta">{containerName ? `container · ${containerName}` : "no related container"}</span>{meta.benchmark ? <span className="ws-item-meta">{meta.benchmark}</span> : null}</div>
+									<div className="ws-item-meta ws-table-optional">
 										<span><strong>{meta.events ?? "—"}</strong> events</span>
 										<span><strong>{meta.toolCalls ?? meta.spans ?? "—"}</strong> {meta.toolCalls != null ? "tools" : "spans"}</span>
 										{t.reward != null ? <span><strong>{t.reward}</strong> reward</span> : null}
 										{meta.durationMs != null ? <span><strong>{formatDuration(meta.durationMs)}</strong></span> : null}
 										{meta.costUsd != null ? <span><strong>${meta.costUsd.toFixed(4)}</strong></span> : null}
 									</div>
-									<time className="trace-card-created">{formatWhen(t.createdAt)}</time>
+									<time className="ws-item-meta ws-table-optional">{formatWhen(t.createdAt)}</time>
 									<button
 										type="button"
-										className="trace-inspect-action"
+										className="ws-btn ws-btn-secondary ws-btn-small"
 										disabled={busyId === t.id}
 										onClick={() => void openTrace(t)}
 										data-testid={`open-trace-${t.id}`}
@@ -574,21 +574,21 @@ export function DataPage({
 			) : null}
 
 			{tab === "visuals" ? (
-				<div className="inventory-panel" data-testid="inventory-visuals">
+				<div data-testid="inventory-visuals">
 					{visuals.length === 0 ? (
-						<p className="inventory-empty">No visuals yet.</p>
+						<div className="ws-empty"><p>No visuals yet.</p></div>
 					) : (
-						<ul className="inventory-list">
+						<ul className="ws-list">
 							{visuals.map((v) => (
-								<li key={v.id} className="inventory-row" data-testid={`inventory-visual-${v.id}`}>
-									<div className="inventory-row-main">
-										<strong>{v.title}</strong>
-										<span className="inventory-row-meta">{v.templateId}</span>
-										<span className="inventory-row-when">{formatWhen(v.updatedAt)}</span>
+								<li key={v.id} className="ws-item" data-testid={`inventory-visual-${v.id}`}>
+									<div className="ws-item-main">
+										<strong className="ws-item-title">{v.title}</strong>
+										<span className="ws-item-meta">{v.templateId}</span>
+										<span className="ws-item-meta ws-faint">{formatWhen(v.updatedAt)}</span>
 									</div>
 									<button
 										type="button"
-										className="inventory-row-action"
+										className="ws-btn ws-btn-secondary ws-btn-small"
 										onClick={() => onOpenVisual(v)}
 										data-testid={`open-visual-${v.id}`}
 									>
@@ -602,16 +602,16 @@ export function DataPage({
 			) : null}
 
 			{tab === "usage" ? (
-				<div className="inventory-panel" data-testid="inventory-usage">
-					<div className="storage-summary">
+				<div className="ws-stack" data-testid="inventory-usage">
+					<div className="ws-note">
 						<strong>Rust CoreRuntime Data store</strong>
 						<span>{counts.containers} containers · {counts.traces} traces · {counts.usage} usage entries</span>
 					</div>
-					{usage.length === 0 ? <p className="inventory-empty">No usage entries yet.</p> : (
-						<ul className="inventory-list">
+					{usage.length === 0 ? <div className="ws-empty"><p>No usage entries yet.</p></div> : (
+						<ul className="ws-list">
 							{usage.map((entry) => (
-								<li key={entry.id} className="inventory-row">
-									<div className="inventory-row-main"><strong>{entry.model}</strong><span className="inventory-row-meta">{entry.provider} · {entry.totalTokens} tokens{entry.costUsd != null ? ` · $${entry.costUsd.toFixed(4)}` : ""}</span><span className="inventory-row-when">{formatWhen(entry.createdAt)}</span></div>
+								<li key={entry.id} className="ws-item">
+									<div className="ws-item-main"><strong className="ws-item-title">{entry.model}</strong><span className="ws-item-meta">{entry.provider} · {entry.totalTokens} tokens{entry.costUsd != null ? ` · $${entry.costUsd.toFixed(4)}` : ""}</span><span className="ws-item-meta ws-faint">{formatWhen(entry.createdAt)}</span></div>
 								</li>
 							))}
 						</ul>

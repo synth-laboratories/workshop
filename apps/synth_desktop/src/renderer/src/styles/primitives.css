@@ -154,6 +154,28 @@
 	gap: var(--sp-3);
 }
 
+/* Compact facts that belong to a card or summary, not to a data table. */
+.ws-metrics {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+	gap: 1px;
+	min-width: min(330px, 100%);
+	overflow: hidden;
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-sm);
+	background: var(--border-subtle);
+}
+
+.ws-metric {
+	display: grid;
+	gap: var(--sp-1);
+	padding: var(--sp-3);
+	background: var(--surface-raised);
+}
+
+.ws-metric strong { font-size: var(--fs-title); line-height: var(--lh-tight); }
+.ws-metric span { color: var(--color-text-faint); font-size: var(--fs-micro); white-space: nowrap; }
+
 /* ── List ─────────────────────────────────────────────────────────────────
    The default for any homogeneous collection. One container, hairline
    dividers, no per-row border. This is the fix for "wall of identical
@@ -178,6 +200,7 @@
 	align-items: center;
 	gap: var(--sp-4);
 	width: 100%;
+	box-sizing: border-box;
 	padding: var(--sp-4) var(--sp-5);
 	border: 0;
 	background: transparent;
@@ -271,6 +294,35 @@
 .ws-panel > .ws-list {
 	border: 0;
 	border-radius: 0;
+}
+
+/* Table-like lists retain a header on roomy surfaces and collapse to the
+   identity/action columns when their own panel becomes narrow. */
+.ws-table-head,
+.ws-item-table {
+	display: grid;
+	grid-template-columns: minmax(190px, 2fr) minmax(120px, 1.25fr) minmax(110px, 1fr) minmax(100px, 130px) 108px;
+	gap: var(--sp-4);
+	align-items: center;
+}
+
+.ws-table-head {
+	padding: var(--sp-3) var(--sp-4);
+	border-bottom: 1px solid var(--border-subtle);
+	background: var(--surface-sunken);
+	color: var(--color-text-faint);
+	font-size: var(--fs-micro);
+	font-weight: var(--fw-semi);
+	letter-spacing: var(--tracking-eyebrow);
+	text-transform: uppercase;
+}
+
+.ws-panel-responsive { container-type: inline-size; }
+
+@container (max-width: 760px) {
+	.ws-panel-responsive .ws-table-head { display: none; }
+	.ws-panel-responsive .ws-item-table { grid-template-columns: minmax(0, 1fr) auto; }
+	.ws-panel-responsive .ws-item-table > .ws-table-optional { display: none; }
 }
 
 /* ── Buttons ──────────────────────────────────────────────────────────────
@@ -467,6 +519,13 @@
 	gap: var(--sp-2);
 }
 
+.ws-toolbar-wrap {
+	flex-wrap: wrap;
+	align-items: flex-end;
+}
+
+.ws-toolbar-wrap .ws-toolbar-filters { flex-wrap: wrap; }
+
 .ws-search {
 	display: flex;
 	align-items: center;
@@ -507,6 +566,41 @@
 	background-color: var(--surface-raised);
 	color: var(--color-text-muted);
 	font-size: var(--fs-meta);
+}
+
+.ws-field {
+	display: grid;
+	gap: var(--sp-1);
+	color: var(--color-text-muted);
+	font-size: var(--fs-micro);
+	font-weight: var(--fw-semi);
+}
+
+.ws-input {
+	min-height: 34px;
+	min-width: 160px;
+	padding: 0 var(--sp-3);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-xs);
+	background: var(--surface-raised);
+	color: var(--color-text);
+	font-size: var(--fs-body);
+}
+
+.ws-input:focus {
+	outline: 3px solid var(--selected-bg);
+	border-color: var(--selected-edge);
+}
+
+.ws-form-row {
+	display: flex;
+	align-items: flex-end;
+	gap: var(--sp-2);
+	flex-wrap: wrap;
+	padding: var(--sp-3);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-sm);
+	background: var(--surface-sunken);
 }
 
 /* ── Key / value ──────────────────────────────────────────────────────────
@@ -568,6 +662,21 @@
 }
 
 .ws-note-danger strong { color: var(--tone-danger-fg); }
+
+.ws-note p { margin: 0; }
+.ws-note code,
+.ws-note pre { font-family: var(--code-font-family); font-size: var(--fs-micro); overflow-wrap: anywhere; }
+.ws-note pre { max-height: 150px; margin: var(--sp-2) 0 0; padding: var(--sp-2); overflow: auto; white-space: pre-wrap; background: var(--surface-raised); }
+.ws-note details summary { width: fit-content; cursor: pointer; font-weight: var(--fw-medium); }
+
+.ws-disclosure {
+	padding-top: var(--sp-4);
+	border-top: 1px solid var(--border-subtle);
+	color: var(--color-text-muted);
+}
+
+.ws-disclosure > summary { cursor: pointer; font-weight: var(--fw-semi); }
+.ws-disclosure > .ws-list { margin-top: var(--sp-3); }
 
 /* ── Empty state ──────────────────────────────────────────────────────── */
 
@@ -702,4 +811,31 @@
 	font-size: var(--fs-h2);
 	font-weight: var(--fw-semi);
 	letter-spacing: var(--tracking-tight);
+}
+
+.ws-dialog-copy {
+	margin: 0;
+	color: var(--color-text-muted);
+	font-size: var(--fs-meta);
+	line-height: var(--lh-body);
+}
+
+.ws-dialog-confirm {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--sp-2);
+	padding: var(--sp-3);
+	border: 1px solid var(--tone-warn-bg);
+	border-radius: var(--radius-sm);
+	background: var(--tone-warn-bg);
+	color: var(--tone-warn-fg);
+	font-size: var(--fs-meta);
+	line-height: var(--lh-body);
+}
+
+@media (max-width: 620px) {
+	.ws-card-split { align-items: flex-start; flex-direction: column; }
+	.ws-card-split > .ws-card-aside { width: 100%; flex-wrap: wrap; }
+	.ws-page-head { flex-wrap: wrap; }
+	.ws-page-head-actions { width: 100%; margin-left: 0; }
 }

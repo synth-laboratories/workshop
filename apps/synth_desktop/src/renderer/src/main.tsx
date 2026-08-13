@@ -2,6 +2,8 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { bridges, installDesktopBridge } from "./runtime/desktopBridge";
+import "./styles/tokens.css";
+import "./styles/primitives.css";
 import "./styles/app.css";
 
 installDesktopBridge();
