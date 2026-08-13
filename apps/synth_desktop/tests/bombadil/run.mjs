@@ -300,6 +300,8 @@ const approvalEvents = [
     alwaysSupported: true
   })
 ];
+const approvalListeners = [];
+window.__bombadilApprovalDecisions = [];
 window.synthLaguna.getStatus = async () => ({
   phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm",
   loadedModel: "/models/Laguna-XS-2.1-NVFP4-mlx", detail: "Ready", memoryBytes: null,
@@ -324,8 +326,23 @@ window.synthCodex = {
   start: async () => ({ sessionId: approvalSessionId, threadId: "v02-approval-thread" }),
   startTurn: async () => ({ sessionId: approvalSessionId, threadId: "v02-approval-thread", turnId: "turn-approval" }),
   interrupt: async () => undefined,
+  resolveApproval: async (sessionId, approvalId, decision) => {
+    window.__bombadilApprovalDecisions.push({ sessionId, approvalId, decision });
+    const event = {
+      sessionId,
+      method: decision === "reject" ? "approval.rejected" : "approval.granted",
+      params: { approvalId, decision }
+    };
+    approvalListeners.forEach((listener) => listener(event));
+  },
   close: async () => undefined,
-  onEvent: () => () => undefined
+  onEvent: (listener) => {
+    approvalListeners.push(listener);
+    return () => {
+      const index = approvalListeners.indexOf(listener);
+      if (index >= 0) approvalListeners.splice(index, 1);
+    };
+  }
 };
 window.synthCore = {
   diagnostics: async () => ({

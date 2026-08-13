@@ -22,7 +22,11 @@ const approval = extract((state: any) => {
 		workingVisible: Boolean(working),
 		rejectVisible: Boolean(reject),
 		approveVisible: Boolean(approve),
+		approvePoint: point(".approval-card .approval-approve"),
 		approveOnce: (approve?.textContent ?? "").includes("Approve once"),
+		approvalDecisions: Array.isArray((state.window as any).__bombadilApprovalDecisions)
+			? (state.window as any).__bombadilApprovalDecisions
+			: [],
 		cardAboveWorking: !cardRect || !workingRect || cardRect.bottom <= workingRect.top + 1,
 		noHorizontalOverflow: document.documentElement.scrollWidth <= state.window.innerWidth + 1
 	};
@@ -34,6 +38,13 @@ export const open_the_waiting_turn = actions(() => {
 	}
 	if (!approval.current.cardVisible && approval.current.chatPoint) {
 		return [{ Click: { name: "Open the waiting approval turn", point: approval.current.chatPoint } }];
+	}
+	return ["Wait"];
+});
+
+export const approve_the_waiting_turn_once = actions(() => {
+	if (approval.current.approvePoint && approval.current.approvalDecisions.length === 0) {
+		return [{ Click: { name: "Approve once", point: approval.current.approvePoint } }];
 	}
 	return ["Wait"];
 });
@@ -51,3 +62,10 @@ export const approval_card_pins_above_working_with_reject_and_approve_once = eve
 export const waiting_turn_does_not_overflow_the_page = always(() =>
 	approval.current.noHorizontalOverflow
 );
+
+export const approve_once_resolves_the_card_and_records_the_effect = eventually(() => {
+	const decision = approval.current.approvalDecisions[0];
+	return approval.current.cardVisible === false
+		&& decision?.approvalId === "appr_shell_1"
+		&& decision?.decision === "once";
+}).within(8, "seconds");

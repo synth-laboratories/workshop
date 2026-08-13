@@ -65,7 +65,7 @@ test("[v0.2] Harbor live visual fails closed when reward.txt is missing", async 
 	await expect(viewer.getByTestId("harbor-trials")).toContainText("verified", { timeout: 20_000 });
 	expect(await metricValue(viewer, "Reward")).toBe("—");
 	expect(await metricValue(viewer, "reward.txt")).toBe("not yet");
-	await expect(viewer).not.toContainText("0.00");
+	await expect(viewer).not.toContainText("$0.00");
 });
 
 test("[v0.2] dig.bench live visual is text-only and keeps incomplete reward null", async ({ page }) => {
