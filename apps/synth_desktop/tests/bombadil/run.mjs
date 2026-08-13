@@ -406,7 +406,14 @@ const craftaxVisual = {
   id: "vis_w1_craftax",
   templateId: "live.craftax.v1",
   title: "Craftax live",
-  messageId: "asst-w1"
+  messageId: "asst-w1",
+  bindings: {
+    schemaVersion: "synth.visual-bindings.v1",
+    slots: [{
+      slot: "stream", kind: "inline", schema: "synth.trace-stream-event.v1",
+      data: { events: [] }
+    }]
+  }
 };
 const groupedEvents = [
   groupedAppEvent(1, "message.created", {
@@ -709,7 +716,14 @@ const cuaAnalysisVisual = {
 const groupedCraftaxVisual = {
   schemaVersion: "synth.desktop-visual.v1", id: "vis_w1_craftax", currentRevision: 1,
   title: "Craftax live", templateId: "live.craftax.v1", status: "saved", rendererKind: "template",
-  bindings: {}, sessionId: "v02-grouped-visual-session", messageId: "asst-w1", runId: "turn-w1-craftax",
+  bindings: {
+    schemaVersion: "synth.visual-bindings.v1",
+    slots: [{
+      slot: "stream", kind: "inline", schema: "synth.trace-stream-event.v1",
+      data: { events: [] }
+    }]
+  },
+  sessionId: "v02-grouped-visual-session", messageId: "asst-w1", runId: "turn-w1-craftax",
   metadata: {}, createdAt: "2026-08-13T13:58:08Z", updatedAt: "2026-08-13T13:58:08Z"
 };
 const fixtureVisuals = ${includeCuaAnalysisVisual ? "[cuaAnalysisVisual]" : includeGroupedVisualEvidence ? "[groupedCraftaxVisual]" : "[]"};

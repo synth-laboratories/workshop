@@ -15,6 +15,22 @@ const evidence = extract((state: any) => {
 	const assistant = document.querySelector<HTMLElement>(".local-assistant p");
 	const chat = document.querySelector<HTMLElement>('[data-testid="local-chat-v02-grouped-visual-session"]');
 	const chatRect = chat?.getBoundingClientRect();
+	const visualChip = document.querySelector<HTMLElement>('[data-testid="artifact-chip-vis_w1_craftax"]');
+	const visualChipRect = visualChip?.getBoundingClientRect();
+	const visualPane = document.querySelector<HTMLElement>('[data-testid="visual-pane"]');
+	const visualHeader = visualPane?.querySelector<HTMLElement>(".visual-pane-head");
+	const visualBody = visualPane?.querySelector<HTMLElement>(".visual-pane-body");
+	const craftaxCanvas = visualPane?.querySelector<HTMLElement>('[data-testid="visual-live-craftax"]');
+	const headerRect = visualHeader?.getBoundingClientRect();
+	const bodyRect = visualBody?.getBoundingClientRect();
+	const canvasRect = craftaxCanvas?.getBoundingClientRect();
+	const bodyStyle = visualBody ? state.window.getComputedStyle(visualBody) : null;
+	const bodyPaddingIsZero = Boolean(bodyStyle && [
+		bodyStyle.paddingTop,
+		bodyStyle.paddingRight,
+		bodyStyle.paddingBottom,
+		bodyStyle.paddingLeft
+	].every((value) => Math.abs(Number.parseFloat(value)) <= 1));
 	const firstRun = document.querySelector<HTMLElement>('[data-testid="first-run-account-choice"] button');
 	const firstRunRect = firstRun?.getBoundingClientRect();
 	const text = transcript?.textContent ?? "";
@@ -35,7 +51,18 @@ const evidence = extract((state: any) => {
 		transcriptReady: Boolean(transcript),
 		containerToolVisible: /synth_containers\.container_(?:list|register)/.test(text),
 		visualToolVisible: /synth_visuals\.visual_create/.test(text),
-		visualChipVisible: Boolean(document.querySelector('[data-testid="artifact-chip-vis_w1_craftax"]')),
+		visualChipVisible: Boolean(visualChip),
+		visualChipPoint: visualChipRect && visualChipRect.width > 0 && visualChipRect.height > 0
+			? { x: visualChipRect.left + visualChipRect.width / 2, y: visualChipRect.top + visualChipRect.height / 2 }
+			: null,
+		visualPaneVisible: Boolean(bodyRect && bodyRect.width > 0 && bodyRect.height > 0),
+		craftaxCanvasVisible: Boolean(canvasRect && canvasRect.width > 0 && canvasRect.height > 0),
+		craftaxCanvasFlush: !headerRect || !bodyRect || !canvasRect || (
+			bodyPaddingIsZero
+			&& Math.abs(canvasRect.top - headerRect.bottom) <= 1
+			&& Math.abs(canvasRect.top - bodyRect.top) <= 1
+			&& Math.abs(canvasRect.left - bodyRect.left) <= 1
+		),
 		opaqueUsedToolsGroup: groupLabels.some((label) => /used tools/i.test(label)),
 		assistantFullText: Boolean(assistant && /trace and reward evidence/.test(assistant.textContent ?? "")),
 		assistantTruncated,
@@ -53,6 +80,9 @@ export const open_the_w1_visual_turn = actions(() => {
 	if (evidence.current.chatPoint && !evidence.current.containerToolVisible) {
 		return [{ Click: { name: "Open the W1 Craftax visual turn", point: evidence.current.chatPoint } }];
 	}
+	if (evidence.current.visualChipPoint && !evidence.current.visualPaneVisible) {
+		return [{ Click: { name: "Open the Craftax visual", point: evidence.current.visualChipPoint } }];
+	}
 	return ["Wait"];
 });
 
@@ -63,6 +93,14 @@ export const container_and_visual_mcp_calls_stay_named_in_the_transcript = event
 export const created_visual_has_a_transcript_chip = eventually(() =>
 	evidence.current.visualChipVisible
 ).within(8, "seconds");
+
+export const craftax_canvas_is_flush_with_the_visual_pane = eventually(() =>
+	evidence.current.craftaxCanvasVisible && evidence.current.craftaxCanvasFlush
+).within(8, "seconds");
+
+export const craftax_canvas_never_regains_a_double_padded_moat = always(() =>
+	!evidence.current.craftaxCanvasVisible || evidence.current.craftaxCanvasFlush
+);
 
 export const grouped_activity_never_hides_w1_evidence_as_used_tools = always(() =>
 	!evidence.current.transcriptReady || !evidence.current.opaqueUsedToolsGroup

@@ -3812,7 +3812,11 @@ a,
 	padding: 16px;
 }
 
-/* Optimizer workspaces own their padding (sticky header bleeds to the pane edge). */
+/* Template canvases own their own internal spacing. Keeping the pane's generic
+   16px padding here creates a second, light-colored moat around full-bleed
+   surfaces such as Craftax and breaks the header-to-canvas edge. */
+.visual-pane-body:has([data-synth-visual]),
+.visual-pane-body:has([data-visual-landmark]),
 .visual-pane-body:has(.sv-workspace) {
 	padding: 0;
 }
