@@ -257,10 +257,16 @@ mod tests {
     fn export_specta_protocol_bindings() {
         let committed_path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(PROTOCOL_TS_RELATIVE);
+        // The thread name under `cargo test` is the full test path, which
+        // contains `::` — an illegal filename character on Windows. Keep only
+        // characters that are portable across the platforms we build on.
+        let thread = std::thread::current()
+            .name()
+            .unwrap_or("test")
+            .replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "_");
         let path = std::env::temp_dir().join(format!(
-            "synth-desktop-protocol-{}-{}.ts",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            "synth-desktop-protocol-{}-{thread}.ts",
+            std::process::id()
         ));
         export_typescript_bindings_to(&path).expect("render specta TypeScript bindings");
         let body = std::fs::read_to_string(&path).expect("read generated protocol.ts");
@@ -285,7 +291,24 @@ mod tests {
         );
         assert_eq!(
             body, committed,
-            "committed protocol.ts is stale; regenerate it explicitly before committing"
+            "committed protocol.ts is stale; regenerate it with\n  \
+             cargo test -p synth-desktop --lib regenerate_protocol_bindings -- --ignored\n  \
+             then review the diff before committing"
         );
+    }
+
+    /// The canonical regeneration flow, and the only caller of
+    /// [`export_typescript_bindings`] outside the app.
+    ///
+    /// Ignored by default because it writes into the repository: a plain
+    /// `cargo test` must report drift, never silently repair it. Debug startup
+    /// used to regenerate this file as a side effect, which is how a stale
+    /// build could quietly delete types from the committed contract; making
+    /// regeneration an explicit, named command is what keeps that from
+    /// happening again.
+    #[test]
+    #[ignore = "writes generated/protocol.ts; run explicitly to regenerate"]
+    fn regenerate_protocol_bindings() {
+        export_typescript_bindings().expect("regenerate committed protocol.ts");
     }
 }
