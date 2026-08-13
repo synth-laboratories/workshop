@@ -334,8 +334,8 @@ test("canonical GELO lifecycle events keep candidates and child streams inspecta
   const projected = projectAtCursor(run, [
     { ...base, type: "goex.seed_candidate_registered", sequenceNumber: 1, delta: { candidate_id: "cand_local" } },
     { ...base, type: "goex.theme_state_changed", sequenceNumber: 2, delta: { theme_id: "survival", name: "Survival", to: "active" } },
-    { ...base, type: "child.rollout.registered", sequenceNumber: 3, delta: { candidate_id: "cand_local", split: "train", evaluation_stage: "search_fresh", status: "subscribed", resource_ref } },
-    { ...base, type: "child.rollout.completed", sequenceNumber: 4, delta: { candidate_id: "cand_local", split: "train", evaluation_stage: "search_fresh", status: "completed", reward: 0.5, resource_ref } },
+    { ...base, type: "child.rollout.registered", sequenceNumber: 3, delta: { candidate_id: "cand_local", seed: 101, split: "train", evaluation_stage: "search_fresh", status: "subscribed", resource_ref } },
+    { ...base, type: "child.rollout.completed", sequenceNumber: 4, delta: { candidate_id: "cand_local", seed: 101, split: "train", evaluation_stage: "search_fresh", status: "completed", reward: 0.5, resource_ref } },
     { ...base, type: "candidate.registered", sequenceNumber: 5, delta: { candidate_id: "cand_proposed", parent_id: "cand_local", source: "core_proposer", values: { system: "Inspect the live proposal" } } },
     { ...base, type: "proposer.delta", sequenceNumber: 6, delta: { generation: 0, channel: "content", text: "proposal " } },
     { ...base, type: "proposer.delta", sequenceNumber: 7, delta: { generation: 0, channel: "content", text: "reasoning" } },
@@ -343,6 +343,7 @@ test("canonical GELO lifecycle events keep candidates and child streams inspecta
     { ...base, type: "candidate.evaluated", sequenceNumber: 9, delta: { candidate_id: "cand_proposed", status: "accepted", decision: "accepted", search_mean: 0.75, heldout_mean: null, rollout_ids: ["rollout_local_1"] } },
     { ...base, type: "goex.acceptance_completed", sequenceNumber: 10, delta: { champion_candidate_id: "cand_proposed", baseline_candidate_id: "cand_local" } },
     { ...base, type: "goex.best_base_decided", sequenceNumber: 11, delta: { candidate_id: "cand_local", fresh_reward_mean: 0.5 } },
+    { ...base, type: "goex.run_finished", sequenceNumber: 12, delta: { status: "completed", cost_usd: 0.03, usage: { prompt_tokens: 1000, completion_tokens: 100, rollout_calls: 1 } } },
   ]);
   assert.equal(projected.goex.candidates.length, 2);
   assert.equal(projected.goex.candidates.find((candidate) => candidate.candidate_id === "cand_local").on_frontier, true);
@@ -359,6 +360,11 @@ test("canonical GELO lifecycle events keep candidates and child streams inspecta
   assert.equal(projected.goex.rollouts[0].ref.id, "rollout_local_1");
   assert.equal(projected.goex.rollouts[0].ref.attributes.stream_id, "stream:rollout_local_1");
   assert.equal(projected.goex.rollouts[0].reward, 0.5);
+  assert.equal(projected.goex.rollouts[0].seed, 101);
+  assert.equal(projected.summary.status, "completed");
+  assert.equal(projected.usage.costUsd, 0.03);
+  assert.equal(projected.usage.promptTokens, 1000);
+  assert.equal(projected.usage.completionTokens, 100);
 });
 
 test("optimizer normalization fails closed when sequence is missing", () => {

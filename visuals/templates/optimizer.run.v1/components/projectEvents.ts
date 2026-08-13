@@ -644,16 +644,29 @@ export function projectAtCursor(
     } else if (event.type === "runtime.job.completed") {
       applyUsage(event.delta ?? {});
     }
-    if (event.type === "gepa.run.finished") {
+    if (event.type === "gepa.run.finished" || event.type === "goex.run_finished") {
       // GEPA's terminal event is the authoritative total. Replacing accumulated
       // counters avoids double counting while preserving summed job wall time.
       applyUsage(event.delta ?? {}, true);
     }
+    // Item lifecycle events also carry `status`; those describe candidates,
+    // checkpoints, or child rollouts and must never overwrite the run status.
+    const runLifecycleEvent = event.type.startsWith("optimizer.run.")
+      || event.type.startsWith("gepa.run.")
+      || event.type === "goex.run_started"
+      || event.type === "goex.run_finished"
+      || event.type === "goex.run_failed"
+      || event.type.startsWith("sft.run.")
+      || event.type === "run.queued"
+      || event.type === "run.started"
+      || event.type === "run.completed"
+      || event.type === "run.failed";
     const nextStatus = (
-      event.snapshot?.status ??
-      event.delta?.status ??
+      (runLifecycleEvent ? event.snapshot?.status ?? event.delta?.status : undefined) ??
       (event.type === "optimizer.state.transitioned" ? event.delta?.to : undefined) ??
-      (event.type === "gepa.run.finished" ? event.delta?.state : undefined)
+      (event.type === "gepa.run.finished" ? event.delta?.state : undefined) ??
+      (event.type === "goex.run_finished" ? "completed" : undefined) ??
+      (event.type === "goex.run_failed" ? "failed" : undefined)
     ) as string | undefined;
     if (nextStatus) status = nextStatus;
     if (event.type === "rollout.circuit_breaker.tripped") {
@@ -1559,6 +1572,7 @@ export function projectAtCursor(
           ...(goexEventRollouts.get(id) ?? {}),
           rollout_id: id,
           candidate_id: event.delta?.candidate_id,
+          seed: event.delta?.seed,
           split: event.delta?.split,
           lane: event.delta?.evaluation_stage,
           status: event.delta?.status,
