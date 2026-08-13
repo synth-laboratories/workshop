@@ -27,6 +27,7 @@ import { ComparisonCard, type ComparisonColumn } from "./ComparisonCard.tsx";
 import { FrontierPanel } from "./FrontierPanel.tsx";
 import { HillClimbPanel } from "./HillClimbPanel.tsx";
 import { ProposerTracePanel } from "./ProposerTracePanel.tsx";
+import { SearchOverviewPanel } from "./SearchOverviewPanel.tsx";
 import {
   candidateName,
   elapsedLabel,
@@ -48,6 +49,7 @@ function statusPresentation(status: string, terminal: boolean): {
   dot: boolean;
 } {
   if (status === "failed") return { text: "Failed", tone: "bad", dot: false };
+  if (status === "terminated") return { text: "Terminated", tone: "bad", dot: false };
   if (["canceled", "cancelled"].includes(status)) return { text: "Canceled", tone: "warn", dot: false };
   if (terminal) return { text: "Completed", tone: "ok", dot: false };
   if (["created", "queued", "pending", "loading"].includes(status)) {
@@ -62,7 +64,9 @@ function EvidenceIntegrity({ gepa }: { gepa: NonNullable<ProjectedState["gepa"]>
   const required = gepa.coverage.reduce((sum, row) => sum + row.required, 0);
   const scored = gepa.coverage.reduce((sum, row) => sum + row.scored, 0);
   const failed = gepa.coverage.reduce((sum, row) => sum + row.failed, 0);
-  const pending = gepa.coverage.reduce((sum, row) => sum + row.pending, 0);
+  const unresolved = gepa.coverage.reduce((sum, row) => sum + row.pending, 0);
+  const aborted = gepa.activity.terminal ? unresolved : 0;
+  const pending = gepa.activity.terminal ? 0 : unresolved;
   const complete = gepa.coverage.length > 0 && failed === 0 && pending === 0 && scored === required;
   if (gepa.coverage.length === 0 && gepa.failedAttempts.length === 0 && !gepa.heldout?.blocked) return null;
   return (
@@ -73,14 +77,15 @@ function EvidenceIntegrity({ gepa }: { gepa: NonNullable<ProjectedState["gepa"]>
           {complete ? "complete" : failed > 0 ? "incomplete · promotion blocked" : "collecting"}
         </span>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", border: "1px solid var(--sv-border)", borderRadius: 9, overflow: "hidden" }}>
-        {[["Required", required], ["Scored", scored], ["Failed", failed], ["Pending", pending]].map(([label, value]) => (
-          <div key={String(label)} style={{ padding: "10px 12px", borderRight: label === "Pending" ? undefined : "1px solid var(--sv-border)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${aborted > 0 ? 5 : 4}, minmax(0, 1fr))`, border: "1px solid var(--sv-border)", borderRadius: 9, overflow: "hidden" }}>
+        {[["Required", required], ["Scored", scored], ["Failed", failed], ["Pending", pending], ...(aborted > 0 ? [["Aborted", aborted] as [string, number]] : [])].map(([label, value], index, rows) => (
+          <div key={String(label)} style={{ padding: "10px 12px", borderRight: index === rows.length - 1 ? undefined : "1px solid var(--sv-border)" }}>
             <div style={{ color: "var(--sv-text-faint)", fontSize: 10, textTransform: "uppercase", letterSpacing: ".08em" }}>{label}</div>
             <div className="sv-mono" style={{ marginTop: 3, fontSize: 17 }}>{value}</div>
           </div>
         ))}
       </div>
+      {aborted > 0 ? <p style={{ margin: "7px 0 0", color: "var(--sv-text-muted)", fontSize: 10.5 }}>The job is terminal, so unresolved planned rows are aborted—not still pending and not scored as zero.</p> : null}
       {gepa.failedAttempts.length > 0 ? (
         <details style={{ marginTop: 8 }}>
           <summary style={{ cursor: "pointer", color: "#b23830", fontSize: 12, fontWeight: 650 }}>
@@ -104,6 +109,26 @@ function EvidenceIntegrity({ gepa }: { gepa: NonNullable<ProjectedState["gepa"]>
           Heldout promotion was blocked because the evidence set was incomplete. No missing result was treated as zero.
         </p>
       ) : null}
+    </section>
+  );
+}
+
+function JobTerminationNotice({ gepa }: { gepa: NonNullable<ProjectedState["gepa"]> }) {
+  const job = gepa.runtime.job;
+  if (!job || !["terminated", "failed", "cancelled"].includes(job.state)) return null;
+  const reason = job.reason?.replaceAll("_", " ") ?? job.message ?? "The job ended before completion.";
+  const rate = job.rollingFailureRate != null && job.tolerance != null
+    ? `${(job.rollingFailureRate * 100).toFixed(2)}% rolling failure rate exceeded ${(job.tolerance * 100).toFixed(2)}% tolerance.`
+    : undefined;
+  return (
+    <section role="alert" aria-label="Optimizer job termination" data-testid="gepa-job-termination" style={{ margin: "0 0 12px", border: "1px solid #d7a39f", borderLeft: "4px solid #b23830", borderRadius: 9, padding: "10px 12px", background: "#fff8f7" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
+        <strong style={{ color: "#8f2923" }}>Job {job.state}</strong>
+        <span className="sv-mono" style={{ color: "var(--sv-text-muted)", fontSize: 10 }}>{job.eventType ?? "runtime terminal event"}</span>
+        {job.occurredAt ? <time style={{ marginLeft: "auto", color: "var(--sv-text-faint)", fontSize: 10 }}>{new Date(job.occurredAt).toLocaleString()}</time> : null}
+      </div>
+      <div style={{ marginTop: 4, fontSize: 12 }}>{reason}{rate ? ` · ${rate}` : ""}</div>
+      {gepa.heldout?.reward == null ? <div style={{ marginTop: 4, color: "var(--sv-text-muted)", fontSize: 11 }}>Heldout was not run; no score was imputed.</div> : null}
     </section>
   );
 }
@@ -134,6 +159,7 @@ export function GepaWorkspace({
   const gepa = projected.gepa;
   const [stageFilter, setStageFilter] = useState<string | null>(null);
   const tracesRef = useRef<HTMLDivElement | null>(null);
+  const candidateInspectorRef = useRef<HTMLDivElement | null>(null);
   const comparisonProjection = useMemo(() => {
     if (!comparison) return null;
     try {
@@ -226,6 +252,19 @@ export function GepaWorkspace({
 
   if (!gepa) return null;
 
+  const selectAndRevealCandidate = (id: string) => {
+    setSelectedCandidate(id);
+    // Candidate links in the proposer trace live well below the inspector.
+    // Move the viewport only after React has committed the new selection so
+    // the click produces an immediate, visible result in embedded panels too.
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        candidateInspectorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        candidateInspectorRef.current?.focus({ preventScroll: true });
+      });
+    });
+  };
+
   const status = String(projected.summary.status ?? run.status ?? "");
   const terminal = gepa.activity.terminal;
   const presentation = statusPresentation(status, terminal);
@@ -237,7 +276,9 @@ export function GepaWorkspace({
   const rolloutSpent = rolloutSpentValue > 0 ? rolloutSpentValue : undefined;
   const proposerSpent = proposerLimit?.spent ??
     (gepa.proposerTraces.filter((trace) => trace.status === "completed").length || undefined);
-  const costSpent = costLimit?.spent ?? projected.usage.costUsd;
+  const costSpent = costLimit?.spent ??
+    (gepa.runtime.costTelemetryComplete ? gepa.runtime.reportedCostUsd : undefined) ??
+    projected.usage.costUsd;
   const heldoutValue = gepa.heldout?.blocked
     ? "blocked"
     : gepa.heldout?.skipped
@@ -246,13 +287,14 @@ export function GepaWorkspace({
       ? gepa.heldout.reward.toFixed(2)
       : gepa.best?.heldoutReward != null
         ? gepa.best.heldoutReward.toFixed(2)
-        : "—";
+        : terminal ? "not run" : "—";
   const bestScore = gepa.best?.trainReward ??
     (typeof (projected.summary.summary as Record<string, unknown> | undefined)?.bestScore === "number"
       ? (projected.summary.summary as Record<string, number>).bestScore
       : undefined);
 
   const metrics: WorkspaceMetric[] = [
+    { label: "Job", value: gepa.runtime.job?.state ? gepa.runtime.job.state[0].toUpperCase() + gepa.runtime.job.state.slice(1) : terminal ? "Ended" : "Running", title: gepa.runtime.job?.reason?.replaceAll("_", " ") },
     { label: "Best train", value: bestScore != null ? bestScore.toFixed(2) : "—" },
     { label: "Heldout", value: heldoutValue },
     {
@@ -264,6 +306,26 @@ export function GepaWorkspace({
     {
       label: "Proposer calls",
       value: proposerSpent != null ? `${Math.round(proposerSpent)}` : "—"
+    },
+    {
+      label: "Concurrency",
+      value: terminal
+        ? "stopped"
+        : gepa.runtime.semaphoreSize != null
+        ? `${Math.round(gepa.runtime.activeWorkers ?? 0)} / ${Math.round(gepa.runtime.semaphoreSize)}`
+        : "unavailable",
+      title: gepa.runtime.queuedRollouts != null
+        ? `${Math.round(gepa.runtime.queuedRollouts)} queued rollouts`
+        : "The runtime has not reported its semaphore yet"
+    },
+    {
+      label: "Rollouts / min",
+      value: terminal
+        ? "—"
+        : gepa.runtime.rolloutsPerMinute != null
+        ? gepa.runtime.rolloutsPerMinute.toFixed(1)
+        : gepa.rolloutsCompleted === 1 ? "warming" : "—",
+      title: "Rolling observed completion rate over the most recent minute"
     },
     {
       label: "Cost",
@@ -283,7 +345,7 @@ export function GepaWorkspace({
       label: "Proposing",
       active: gepa.activity.proposalActive,
       detail: gepa.activity.proposalActive
-        ? `${gepa.models.proposer ?? "proposer"} · gen ${gepa.activity.generation ?? 0}`
+        ? `${gepa.models.proposer ?? "proposer"} · gen ${gepa.activity.generation ?? 0}${gepa.activity.requestedProposalCount != null ? ` · ${gepa.activity.requestedProposalCount} requested` : ""}`
         : "idle"
     },
     {
@@ -323,6 +385,8 @@ export function GepaWorkspace({
         }}
         testId="gepa-stage-timeline"
       />
+      <JobTerminationNotice gepa={gepa} />
+      <SearchOverviewPanel gepa={gepa} />
       <EvidenceIntegrity gepa={gepa} />
       <HillClimbPanel gepa={gepa} onSelect={setSelectedCandidate} />
       <div className="sv-workspace-canvas">
@@ -330,7 +394,7 @@ export function GepaWorkspace({
           <FrontierPanel gepa={gepa} selectedId={selectedCandidate} onSelect={setSelectedCandidate} />
           <CandidateList gepa={gepa} selectedId={selectedCandidate} onSelect={setSelectedCandidate} />
         </div>
-        <div>
+        <div ref={candidateInspectorRef} tabIndex={-1} style={{ scrollMarginTop: 12, outline: "none" }}>
           <CandidateInspector
             gepa={gepa}
             selectedId={selectedCandidate}
@@ -348,7 +412,7 @@ export function GepaWorkspace({
         testId="gepa-child-evaluations"
       />
       <div ref={tracesRef}>
-        <ProposerTracePanel gepa={gepa} onSelectCandidate={setSelectedCandidate} />
+        <ProposerTracePanel gepa={gepa} onSelectCandidate={selectAndRevealCandidate} />
       </div>
       {comparisonProjection ? (
         <ComparisonCard

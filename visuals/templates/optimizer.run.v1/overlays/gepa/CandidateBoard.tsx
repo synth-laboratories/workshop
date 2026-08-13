@@ -9,6 +9,7 @@ import { formatMissingNumber } from "../../../../runtime/liveStream.ts";
 import type { GepaState } from "../../components/projectEvents.ts";
 import {
   candidateName,
+  candidatePalette,
   candidateValues,
   decisionText,
   metricsByCandidate,
@@ -70,10 +71,12 @@ export function CandidateList({
           const parentMinibatch = scoreOf(candidate, "parentMinibatchReward");
           const heldoutScore = scoreOf(candidate, "heldout_reward");
           const delta = minibatch != null && parentMinibatch != null ? minibatch - parentMinibatch : undefined;
+          const decisionGate = (candidate.decision as { gate?: string } | undefined)?.gate;
           const decision = decisionText(candidate);
+          const palette = candidatePalette(candidate);
           const scoreBits = [
             train != null ? `train ${train.toFixed(2)}` : null,
-            minibatch != null ? `minibatch ${minibatch.toFixed(2)}${parentMinibatch != null ? ` vs ${parentMinibatch.toFixed(2)}` : ""}` : null,
+            minibatch != null ? `minibatch diagnostic ${minibatch.toFixed(2)}${parentMinibatch != null ? ` vs parent ${parentMinibatch.toFixed(2)}` : ""}` : null,
             heldoutScore != null ? `heldout ${heldoutScore.toFixed(2)}` : null
           ].filter(Boolean);
           return (
@@ -87,6 +90,7 @@ export function CandidateList({
               aria-pressed={selected}
               aria-label={`Inspect candidate ${candidateName(candidate)}`}
               onClick={() => onSelect?.(id)}
+              style={{ borderLeft: `4px solid ${palette.color}`, background: selected ? palette.tint : undefined }}
             >
               <span style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8 }}>
                 <strong style={{ fontSize: 12.5 }}>{candidateName(candidate)}</strong>
@@ -97,7 +101,7 @@ export function CandidateList({
               </span>
               <span style={{ display: "block", marginTop: 4, fontSize: 11.5, color: "var(--sv-text-muted)" }}>
                 {scoreBits.length > 0 ? scoreBits.join(" · ") : "no scores yet"}
-                {delta != null ? (
+                {delta != null && decisionGate !== "full_train" ? (
                   <span style={{ marginLeft: 6, fontWeight: 700, color: delta > 0 ? "#1e7a43" : delta < 0 ? "#b23830" : "var(--sv-text-muted)" }}>
                     Δ {delta >= 0 ? "+" : ""}{delta.toFixed(2)}
                   </span>
@@ -107,6 +111,9 @@ export function CandidateList({
                 <span style={{ display: "block", marginTop: 2, fontSize: 11, color: "var(--sv-accent)" }}>
                   evaluating · {String(candidate.stage).replaceAll("_", " ")}
                 </span>
+              ) : null}
+              {candidate.status === "aborted" ? (
+                <span style={{ display: "block", marginTop: 2, fontSize: 11, color: "var(--sv-text-faint)" }}>run ended before this candidate received a complete score</span>
               ) : null}
               {decision ? (
                 <span style={{ display: "block", marginTop: 2, fontSize: 11, color: "var(--sv-text-muted)" }}>{decision}</span>
@@ -179,6 +186,7 @@ export function CandidateInspector({
   const decisionOutcome = (selected.decision as { outcome?: string } | undefined)?.outcome;
   const generation = typeof selected.generation === "number" ? selected.generation : undefined;
   const relatedTrace = generation != null ? gepa.proposerTraces.find((trace) => trace.generation === generation) : undefined;
+  const palette = candidatePalette(selected);
 
   const stageRows = [
     { label: "Minibatch", candidate: scoreOf(selected, "minibatchReward"), parent: scoreOf(selected, "parentMinibatchReward") },
@@ -220,7 +228,7 @@ export function CandidateInspector({
   return (
     <section className="sv-section" aria-label="Candidate inspector" data-testid="gepa-selected-candidate" style={{ marginTop: 0 }}>
       <div className="sv-section-head">
-        <h3>{candidateName(selected)}</h3>
+        <h3 style={{ display: "flex", alignItems: "center", gap: 7 }}><span aria-hidden style={{ width: 9, height: 9, borderRadius: "50%", background: palette.color }} />{candidateName(selected)}</h3>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span className="sv-chip" data-tone={statusTone(selected.status)}>{statusLabel(selected.status)}</span>
           <button className="sv-btn" type="button" disabled={valueEntries.length === 0} onClick={() => void copyCandidate()} data-testid="copy-gepa-candidate">

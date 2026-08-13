@@ -1,26 +1,42 @@
 /**
- * Pareto search canvas: every evaluated candidate on the quality × coverage
- * plane, frontier membership, incumbent, parent links, and honest states for
- * zero / one / many members. Rejected and dominated candidates stay visible —
- * the chart explains the search, not just the survivors.
+ * GEPA's frontier is a frontier over per-example reward vectors, not a generic
+ * reward × coverage trade-off curve. A candidate remains selectable when no
+ * other train-evaluated candidate is at least as good on every example and
+ * strictly better on one. The cell map also explains the paper's parent
+ * selector: candidates receive credit for examples on which they are best.
  */
 
 import type { GepaState } from "../../components/projectEvents.ts";
-import {
-  candidateName,
-  candidatePoint,
-  metricsByCandidate,
-  statusLabel
-} from "./model.ts";
+import { candidateName, candidatePalette, statusLabel, type CandidateRecord } from "./model.ts";
 
-const PLOT = { left: 46, right: 396, top: 18, bottom: 208 };
+type CandidateRow = {
+  candidate: CandidateRecord;
+  id: string;
+  scores: Map<string, number>;
+  mean?: number;
+  wins: number;
+  onFrontier: boolean;
+};
 
-function x(coverage: number): number {
-  return PLOT.left + coverage * (PLOT.right - PLOT.left);
+function isTrainSelectable(candidate: CandidateRecord): boolean {
+  return String(candidate.source ?? "") === "seed" ||
+    ["accepted", "full_train_evaluated", "rejected_full_train"].includes(String(candidate.status ?? ""));
 }
 
-function y(quality: number): number {
-  return PLOT.bottom - quality * (PLOT.bottom - PLOT.top);
+function fullTrainScores(gepa: GepaState, candidateId: string): Map<string, number> {
+  const scores = new Map<string, number>();
+  for (const evaluation of gepa.evaluations) {
+    if (evaluation.candidateId !== candidateId || evaluation.reward == null || !evaluation.exampleId) continue;
+    if (!["seed_full_train", "candidate_full_train"].includes(evaluation.stage ?? "")) continue;
+    scores.set(evaluation.exampleId, evaluation.reward);
+  }
+  return scores;
+}
+
+function cellColor(reward: number, winner: boolean): string {
+  if (winner) return "var(--sv-accent)";
+  if (reward > 0) return "var(--sv-border-strong)";
+  return "var(--sv-surface-muted)";
 }
 
 export function FrontierPanel({
@@ -32,138 +48,129 @@ export function FrontierPanel({
   selectedId?: string | null;
   onSelect?: (id: string) => void;
 }) {
-  const metrics = metricsByCandidate(gepa.evaluations);
-  const frontierIds = new Set(gepa.frontier.map((cell) => String(cell.candidateId)));
-  const incumbentId = gepa.incumbentId ?? gepa.best?.candidateId;
-
-  const plotted = gepa.candidates.map((candidate) => {
+  const frontierIds = new Set(gepa.frontier.map((member) => String(member.candidateId)));
+  const selectable = gepa.candidates.filter(isTrainSelectable);
+  const allExamples = [...new Set(selectable.flatMap((candidate) =>
+    [...fullTrainScores(gepa, String(candidate.id ?? "")).keys()]
+  ))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const bestByExample = new Map<string, number>();
+  for (const exampleId of allExamples) {
+    const values = selectable
+      .map((candidate) => fullTrainScores(gepa, String(candidate.id ?? "")).get(exampleId))
+      .filter((value): value is number => value != null);
+    if (values.length) bestByExample.set(exampleId, Math.max(...values));
+  }
+  const rows: CandidateRow[] = selectable.map((candidate) => {
     const id = String(candidate.id ?? "");
-    const point = candidatePoint(candidate, metrics.get(id));
-    return { candidate, id, point };
+    const scores = fullTrainScores(gepa, id);
+    const values = [...scores.values()];
+    const wins = [...scores].filter(([exampleId, reward]) =>
+      Math.abs(reward - (bestByExample.get(exampleId) ?? Number.POSITIVE_INFINITY)) <= Number.EPSILON
+    ).length;
+    return {
+      candidate,
+      id,
+      scores,
+      mean: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined,
+      wins,
+      onFrontier: frontierIds.has(id)
+    };
+  }).sort((a, b) => Number(b.onFrontier) - Number(a.onFrontier) || b.wins - a.wins);
+  const pending = gepa.candidates.filter((candidate) => !isTrainSelectable(candidate));
+  const frontierRows = rows.filter((row) => row.onFrontier);
+  const frontierCoverage = new Set(frontierRows.flatMap((row) =>
+    [...row.scores].filter(([, reward]) => reward > 0).map(([exampleId]) => exampleId)
+  )).size;
+  const progress = gepa.frontierHistory.filter((snapshot) => snapshot.totalExamples != null && (snapshot.optimisticSolved != null || snapshot.bestCandidateSolved != null)).filter((snapshot, index, snapshots) => {
+    const previous = snapshots[index - 1];
+    return !previous || snapshot.bestCandidateId !== previous.bestCandidateId || snapshot.bestCandidateSolved !== previous.bestCandidateSolved || snapshot.optimisticSolved !== previous.optimisticSolved || snapshot.frontierSize !== previous.frontierSize;
   });
-  const placeable = plotted.filter(({ point }) => point.quality != null && point.coverage != null);
-  const unplaced = plotted.filter(({ point }) => point.quality == null || point.coverage == null);
-
-  const edges = placeable.flatMap(({ candidate, id, point }) => {
-    const parentId = candidate.parentId == null ? null : String(candidate.parentId);
-    if (!parentId) return [];
-    const parent = placeable.find((entry) => entry.id === parentId);
-    if (!parent) return [];
-    return [{
-      key: `${parentId}->${id}`,
-      x1: x(parent.point.coverage!),
-      y1: y(parent.point.quality!),
-      x2: x(point.coverage!),
-      y2: y(point.quality!)
-    }];
-  });
-
-  const caption = (() => {
-    if (gepa.candidates.length === 0) return "No candidates yet — the seed prompt is evaluated first.";
-    if (placeable.length === 0) return "Candidates are registered but no rollouts have scored yet.";
-    if (placeable.length === 1) {
-      const only = placeable[0];
-      const rejectedCount = plotted.filter(({ candidate }) => String(candidate.status ?? "").startsWith("rejected")).length;
-      return `The frontier holds one candidate: ${candidateName(only.candidate)} at score ${only.point.quality!.toFixed(2)}, solving ${(only.point.coverage! * 100).toFixed(0)}% of examples.${rejectedCount > 0 ? ` ${rejectedCount} proposal${rejectedCount === 1 ? "" : "s"} failed to beat it.` : " Proposals must beat it to join."}`;
-    }
-    return null;
-  })();
 
   return (
-    <section className="sv-section" aria-label="Pareto frontier" data-testid="gepa-pareto-frontier" style={{ marginTop: 0 }}>
+    <section className="sv-section" aria-label="GEPA Pareto frontier" data-testid="gepa-pareto-frontier" style={{ marginTop: 0 }}>
       <div className="sv-section-head">
-        <h3>Search space</h3>
-        <span className="sv-mono">
-          {gepa.frontier.length} frontier · {gepa.candidates.length} candidate{gepa.candidates.length === 1 ? "" : "s"}
-        </span>
+        <h3>GEPA Pareto frontier</h3>
+        <span className="sv-mono">{frontierRows.length} member{frontierRows.length === 1 ? "" : "s"} · {allExamples.length} example dimensions</span>
       </div>
-      <div style={{ border: "1px solid var(--sv-border)", borderRadius: 9, padding: "8px 10px" }}>
-        <svg viewBox="0 0 430 248" width="100%" role="img" aria-label="Candidate quality versus example coverage" style={{ display: "block", maxWidth: 650, margin: "0 auto" }}>
-          {[0, 0.25, 0.5, 0.75, 1].map((tick) => (
-            <g key={`grid-${tick}`}>
-              <line x1={x(tick)} y1={PLOT.top} x2={x(tick)} y2={PLOT.bottom} stroke="var(--sv-border)" strokeWidth="1" />
-              <line x1={PLOT.left} y1={y(tick)} x2={PLOT.right} y2={y(tick)} stroke="var(--sv-border)" strokeWidth="1" />
-              <text x={x(tick)} y={PLOT.bottom + 14} textAnchor="middle" fontSize="9" fill="var(--sv-text-faint)">
-                {(tick * 100).toFixed(0)}%
-              </text>
-              <text x={PLOT.left - 8} y={y(tick) + 3} textAnchor="end" fontSize="9" fill="var(--sv-text-faint)">
-                {tick.toFixed(2)}
-              </text>
-            </g>
-          ))}
-          <text x={(PLOT.left + PLOT.right) / 2} y={240} textAnchor="middle" fontSize="10" fill="var(--sv-text-muted)">
-            examples solved (coverage)
-          </text>
-          <text x={12} y={(PLOT.top + PLOT.bottom) / 2} textAnchor="middle" fontSize="10" fill="var(--sv-text-muted)" transform={`rotate(-90 12 ${(PLOT.top + PLOT.bottom) / 2})`}>
-            score (mean reward)
-          </text>
-          {edges.map((edge) => (
-            <line key={edge.key} x1={edge.x1} y1={edge.y1} x2={edge.x2} y2={edge.y2} stroke="var(--sv-border-strong)" strokeWidth="1.2" strokeDasharray="3 3" />
-          ))}
-          {placeable.map(({ candidate, id, point }) => {
-            const rejected = String(candidate.status ?? "").startsWith("rejected");
-            const evaluating = candidate.status === "evaluating";
-            const onFrontier = frontierIds.has(id);
-            const isIncumbent = id === incumbentId;
-            const isSelected = id === selectedId;
-            const cx = x(point.coverage!);
-            const cy = y(point.quality!);
-            const fill = onFrontier ? "var(--sv-accent)" : rejected ? "var(--sv-surface)" : "#5c6573";
-            const stroke = rejected ? "#b23830" : onFrontier ? "var(--sv-accent)" : "#5c6573";
-            return (
-              <g
-                key={id}
-                role="button"
-                tabIndex={0}
-                aria-label={`${candidateName(candidate)} · ${statusLabel(candidate.status)} · score ${point.quality!.toFixed(2)} · coverage ${(point.coverage! * 100).toFixed(0)}%`}
-                data-testid={`frontier-point-${id}`}
-                onClick={() => onSelect?.(id)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") onSelect?.(id);
-                }}
-                style={{ cursor: "pointer" }}
-              >
-                {isIncumbent ? <circle cx={cx} cy={cy} r={10} fill="none" stroke="var(--sv-accent)" strokeWidth="1.5" /> : null}
-                {isSelected ? <circle cx={cx} cy={cy} r={13} fill="none" stroke="var(--sv-border-strong)" strokeWidth="1.5" /> : null}
-                <circle cx={cx} cy={cy} r={6} fill={fill} stroke={stroke} strokeWidth="1.5" strokeDasharray={evaluating ? "2 2" : undefined} />
-                {rejected ? (
-                  <>
-                    <line x1={cx - 3} y1={cy - 3} x2={cx + 3} y2={cy + 3} stroke="#b23830" strokeWidth="1.4" />
-                    <line x1={cx - 3} y1={cy + 3} x2={cx + 3} y2={cy - 3} stroke="#b23830" strokeWidth="1.4" />
-                  </>
-                ) : null}
-                <text x={cx} y={cy - 14} textAnchor="middle" fontSize="9" fill="var(--sv-text-muted)">
-                  {candidateName(candidate)}
-                </text>
-              </g>
-            );
-          })}
-        </svg>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 4, fontSize: 10.5, color: "var(--sv-text-muted)" }} aria-hidden="true">
-          <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, background: "var(--sv-accent)", marginRight: 4 }} />frontier</span>
-          <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, background: "#5c6573", marginRight: 4 }} />evaluated</span>
-          <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, border: "1.5px solid #b23830", marginRight: 4 }} />rejected</span>
-          <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, border: "1.5px solid var(--sv-accent)", marginRight: 4 }} />incumbent ring</span>
-          <span>dashes link parent → child</span>
+      <p style={{ margin: "0 0 9px", color: "var(--sv-text-muted)", fontSize: 11.5 }}>
+        Non-dominated per-example reward vectors. Orange cells mark examples where a candidate is currently best; aggregate mean is context, not a Pareto axis.
+      </p>
+      {progress.length ? (
+        <div data-testid="gepa-explore-exploit" style={{ border: "1px solid var(--sv-border)", borderRadius: 9, padding: "10px 12px", marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+            <strong style={{ fontSize: 12 }}>Explore ↔ exploit</strong>
+            <span className="sv-mono" style={{ color: "var(--sv-text-faint)", fontSize: 9.5 }}>{progress.at(-1)?.coverageSemantics?.replaceAll("_", " ") ?? "per-example reward"}</span>
+          </div>
+          <div style={{ display: "grid", gap: 7, marginTop: 9 }}>
+            {progress.map((snapshot, index) => {
+              const total = snapshot.totalExamples ?? 0;
+              const optimistic = snapshot.optimisticSolved ?? 0;
+              const incumbent = snapshot.bestCandidateSolved ?? 0;
+              return (
+                <div key={snapshot.sequence} style={{ display: "grid", gridTemplateColumns: "110px minmax(160px, 1fr) 135px", gap: 9, alignItems: "center" }}>
+                  <span style={{ fontSize: 10.5 }}>{index === 0 ? "Seed" : `Generation ${snapshot.generation ?? index - 1}`}</span>
+                  <span style={{ position: "relative", height: 13, borderRadius: 99, background: "var(--sv-surface-muted)", overflow: "hidden" }} title={`Optimistic union ${optimistic}/${total}; incumbent ${incumbent}/${total}`}>
+                    <span style={{ position: "absolute", inset: 0, width: total ? `${optimistic / total * 100}%` : "0%", background: "var(--sv-border-strong)" }} />
+                    <span style={{ position: "absolute", inset: 0, width: total ? `${incumbent / total * 100}%` : "0%", background: "var(--sv-accent)" }} />
+                  </span>
+                  <span className="sv-mono" style={{ fontSize: 9.5, color: "var(--sv-text-muted)" }}>{incumbent}/{total} incumbent · {optimistic}/{total} ever</span>
+                </div>
+              );
+            })}
+          </div>
+          <p style={{ margin: "8px 0 0", color: "var(--sv-text-faint)", fontSize: 10.5 }}>Orange is what one deployable incumbent solves (exploitation). Gray extension is the optimistic union ever solved by retained frontier members (exploration); it is not a deployable score.</p>
         </div>
-        {caption ? <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--sv-text-muted)" }}>{caption}</p> : null}
-        {unplaced.length > 0 ? (
-          <p style={{ margin: "6px 0 0", fontSize: 11.5, color: "var(--sv-text-faint)" }}>
-            Not plotted (no scored rollouts yet):{" "}
-            {unplaced.map(({ candidate, id }, index) => (
-              <button
-                key={id}
-                type="button"
-                className="sv-btn"
-                style={{ padding: "1px 7px", fontSize: 11, marginLeft: index === 0 ? 0 : 4 }}
-                onClick={() => onSelect?.(id)}
-              >
-                {candidateName(candidate)}
-              </button>
-            ))}
-          </p>
-        ) : null}
+      ) : null}
+      <div style={{ border: "1px solid var(--sv-border)", borderRadius: 9, overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(150px, .7fr) minmax(220px, 1.3fr)", gap: 10, padding: "7px 10px", background: "var(--sv-surface-muted)", borderBottom: "1px solid var(--sv-border)", color: "var(--sv-text-faint)", fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".07em" }}>
+          <span>Candidate / selection credit</span><span>Per-example reward vector</span>
+        </div>
+        {rows.map((row) => {
+          const palette = candidatePalette(row.candidate);
+          return (
+          <button
+            key={row.id}
+            type="button"
+            onClick={() => onSelect?.(row.id)}
+            data-testid={`frontier-point-${row.id}`}
+            aria-pressed={row.id === selectedId}
+            aria-label={`${candidateName(row.candidate)} · ${row.onFrontier ? "Pareto member" : "dominated"} · ${row.wins} winning example cells`}
+            style={{ display: "grid", gridTemplateColumns: "minmax(150px, .7fr) minmax(220px, 1.3fr)", gap: 10, width: "100%", padding: "9px 10px", border: 0, borderLeft: `4px solid ${palette.color}`, borderBottom: "1px solid var(--sv-border)", background: row.id === selectedId ? palette.tint : "var(--sv-surface)", color: "var(--sv-text)", textAlign: "left", cursor: "pointer" }}
+          >
+            <span>
+              <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <strong style={{ fontSize: 11.5 }}>{candidateName(row.candidate)}</strong>
+                <span className="sv-chip" data-tone={row.onFrontier ? "ok" : undefined}>{row.onFrontier ? "frontier" : "dominated"}</span>
+              </span>
+              <span className="sv-mono" style={{ display: "block", marginTop: 4, color: "var(--sv-text-muted)", fontSize: 9.5 }}>
+                {row.wins} best cells · mean {row.mean?.toFixed(3) ?? "—"}
+              </span>
+            </span>
+            <span style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(1, allExamples.length)}, minmax(5px, 1fr))`, gap: 2, alignSelf: "center" }}>
+              {allExamples.map((exampleId) => {
+                const reward = row.scores.get(exampleId);
+                const winner = reward != null && Math.abs(reward - (bestByExample.get(exampleId) ?? Number.POSITIVE_INFINITY)) <= Number.EPSILON;
+                return <span key={exampleId} title={`${exampleId}: ${reward == null ? "missing" : reward.toFixed(3)}${winner ? " · best" : ""}`} style={{ height: 16, minWidth: 5, borderRadius: 2, border: "1px solid var(--sv-border)", background: reward == null ? "transparent" : cellColor(reward, winner), opacity: row.onFrontier ? 1 : .55 }} />;
+              })}
+            </span>
+          </button>
+          );
+        })}
+        {!rows.length ? <p style={{ margin: 0, padding: 12, color: "var(--sv-text-faint)", fontSize: 12 }}>The seed becomes frontier-eligible after its complete train evaluation.</p> : null}
       </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 7, color: "var(--sv-text-muted)", fontSize: 10.5 }}>
+        <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: "var(--sv-accent)", marginRight: 4 }} />best on example</span>
+        <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: "var(--sv-border-strong)", marginRight: 4 }} />positive, not best</span>
+        <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, border: "1px solid var(--sv-border)", marginRight: 4 }} />zero / missing</span>
+      </div>
+      <p style={{ margin: "8px 0 0", color: "var(--sv-text-muted)", fontSize: 11.5 }}>
+        Frontier coverage: {frontierCoverage}/{allExamples.length || "—"} examples solved by at least one retained candidate. This is distinct from the single best candidate's mean reward.
+      </p>
+      {pending.length ? (
+        <p style={{ margin: "6px 0 0", color: "var(--sv-text-faint)", fontSize: 11 }}>
+          {gepa.activity.terminal ? "Not train-evaluated before the run ended" : "Awaiting complete full-train vectors"}: {pending.map((candidate) => `${candidateName(candidate)} (${statusLabel(candidate.status)})`).join(", ")}.
+        </p>
+      ) : null}
     </section>
   );
 }

@@ -4,13 +4,38 @@ import type { GepaEvaluation, GepaState } from "../../components/projectEvents.t
 
 export type CandidateRecord = Record<string, unknown>;
 
+const GENERATION_PALETTE = [
+  { color: "#2563eb", tint: "#eff6ff" },
+  { color: "#7c3aed", tint: "#f5f3ff" },
+  { color: "#0f766e", tint: "#f0fdfa" },
+  { color: "#b45309", tint: "#fffbeb" },
+  { color: "#be123c", tint: "#fff1f2" },
+  { color: "#0369a1", tint: "#f0f9ff" }
+] as const;
+const SEED_COLOR = { color: "#667085", tint: "#f5f6f7" } as const;
+
+export function candidateGeneration(candidate: CandidateRecord): number | undefined {
+  return typeof candidate.generation === "number" && Number.isFinite(candidate.generation)
+    ? Math.max(0, Math.floor(candidate.generation))
+    : undefined;
+}
+
+export function generationPalette(generation?: number): { color: string; tint: string } {
+  if (generation == null) return SEED_COLOR;
+  return GENERATION_PALETTE[generation % GENERATION_PALETTE.length];
+}
+
+export function candidatePalette(candidate: CandidateRecord): { color: string; tint: string } {
+  return generationPalette(candidateGeneration(candidate));
+}
+
 export function shortId(id: string): string {
   return id.replace(/^gepa_/, "").slice(0, 8) || id;
 }
 
 export function candidateName(candidate: CandidateRecord): string {
   if (String(candidate.source ?? "") === "seed" || candidate.parentId == null) return "Seed";
-  const generation = typeof candidate.generation === "number" ? candidate.generation : undefined;
+  const generation = candidateGeneration(candidate);
   const index = typeof candidate.proposal_index === "number" ? candidate.proposal_index : undefined;
   if (generation != null) {
     return `Gen ${generation} proposal${index != null ? ` ${index + 1}` : ""}`;
@@ -43,8 +68,10 @@ export function statusLabel(status: unknown): string {
     full_train_evaluated: "Train scored",
     accepted: "Accepted",
     rejected_minibatch: "Rejected",
+    rejected_full_train: "Rejected · train scored",
     rejected: "Rejected",
-    deferred_budget: "Deferred"
+    deferred_budget: "Deferred",
+    aborted: "Not evaluated"
   };
   return labels[value] ?? (value ? value.replaceAll("_", " ") : "—");
 }
@@ -54,6 +81,7 @@ export function statusTone(status: unknown): "ok" | "bad" | "warn" | "live" | un
   if (value === "accepted") return "ok";
   if (value.startsWith("rejected")) return "bad";
   if (value.startsWith("deferred")) return "warn";
+  if (value === "aborted") return "warn";
   if (value === "evaluating") return "live";
   return undefined;
 }
@@ -65,25 +93,64 @@ const REASON_TEXT: Record<string, string> = {
 
 export function decisionText(candidate: CandidateRecord): string | undefined {
   const decision = candidate.decision as
-    | { outcome: string; gate: string; reason?: string; candidateScore?: number; parentScore?: number }
+    | { outcome: string; gate: string; reason?: string; comparison?: string; candidateScore?: number; parentScore?: number; incumbentId?: string; selectionObjective?: string; selectionDelta?: number; rationale?: string }
     | undefined;
   if (!decision) return undefined;
   const gateLabel = decision.gate === "minibatch" ? "minibatch gate" : decision.gate === "full_train" ? "full-train gate" : "budget";
   if (decision.outcome === "accepted") {
-    return `Accepted at the ${gateLabel}${decision.candidateScore != null ? ` · scored ${decision.candidateScore.toFixed(2)}` : ""}`;
+    const incumbent = decision.incumbentId ? ` over incumbent ${shortId(decision.incumbentId)}` : "";
+    const delta = decision.selectionDelta;
+    return `Accepted at the ${gateLabel}${incumbent}${decision.candidateScore != null ? ` · scored ${decision.candidateScore.toFixed(3)}` : ""}${delta != null ? ` · Δ ${delta >= 0 ? "+" : ""}${delta.toFixed(3)}` : ""}`;
   }
   if (decision.outcome === "deferred") {
     return `Deferred · ${REASON_TEXT[decision.reason ?? ""] ?? decision.reason ?? "budget"}`;
   }
-  const delta = decision.candidateScore != null && decision.parentScore != null
+  const delta = decision.selectionDelta ?? (decision.candidateScore != null && decision.parentScore != null
     ? decision.candidateScore - decision.parentScore
-    : undefined;
+    : undefined);
   const parts = [`Rejected at the ${gateLabel}`];
   if (delta != null) {
-    parts.push(`Δ ${delta >= 0 ? "+" : ""}${delta.toFixed(2)} vs parent (${decision.parentScore!.toFixed(2)} → ${decision.candidateScore!.toFixed(2)})`);
+    const target = decision.incumbentId ? `incumbent ${shortId(decision.incumbentId)}` : "incumbent";
+    const scores = decision.parentScore != null && decision.candidateScore != null
+      ? ` (${decision.parentScore.toFixed(3)} → ${decision.candidateScore.toFixed(3)})`
+      : "";
+    parts.push(`Δ ${delta >= 0 ? "+" : ""}${delta.toFixed(3)} vs ${target}${scores}`);
   }
-  parts.push(REASON_TEXT[decision.reason ?? ""] ?? (decision.reason ? decision.reason.replaceAll("_", " ") : "did not beat the parent"));
+  parts.push(decision.rationale ?? REASON_TEXT[decision.reason ?? ""] ?? (decision.reason ? decision.reason.replaceAll("_", " ") : "did not beat the incumbent"));
   return parts.join(" · ");
+}
+
+export function fullTrainCandidateScore(candidate: CandidateRecord): number | undefined {
+  const status = String(candidate.status ?? "");
+  if (!(["accepted", "full_train_evaluated", "rejected_full_train"].includes(status) || String(candidate.source ?? "") === "seed")) return undefined;
+  for (const value of [candidate.train_reward, candidate.candidate_train_reward, candidate.score]) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+export function orderedScoredCandidates(gepa: GepaState) {
+  return gepa.candidates.map((candidate) => ({
+    candidate,
+    id: String(candidate.id ?? ""),
+    sequence: typeof candidate.sequence === "number" ? candidate.sequence : 0,
+    score: fullTrainCandidateScore(candidate)
+  })).filter((point): point is { candidate: CandidateRecord; id: string; sequence: number; score: number } => point.score != null)
+    .sort((a, b) => a.sequence - b.sequence);
+}
+
+export function incumbentCandidateIds(gepa: GepaState): string[] {
+  const ids: string[] = [];
+  for (const snapshot of gepa.frontierHistory) {
+    if (snapshot.bestCandidateId && ids.at(-1) !== snapshot.bestCandidateId) ids.push(snapshot.bestCandidateId);
+  }
+  if (ids.length === 0) {
+    for (const candidate of gepa.candidates) {
+      const id = String(candidate.id ?? "");
+      if ((String(candidate.source ?? "") === "seed" || candidate.status === "accepted") && id && ids.at(-1) !== id) ids.push(id);
+    }
+  }
+  return ids;
 }
 
 export type StageMetrics = {
@@ -227,8 +294,10 @@ export function formatDurationMs(ms?: number): string {
 
 export function elapsedLabel(timing: GepaState["timing"] | undefined, terminal: boolean): string {
   if (!timing?.startedAt) return "—";
-  const end = terminal ? timing.endedAt ?? timing.lastEventAt : timing.lastEventAt;
-  if (!end) return "—";
-  const ms = Date.parse(end) - Date.parse(timing.startedAt);
+  const endMs = terminal
+    ? Date.parse(timing.endedAt ?? timing.lastEventAt ?? "")
+    : Date.now();
+  if (!Number.isFinite(endMs)) return "—";
+  const ms = endMs - Date.parse(timing.startedAt);
   return formatDurationMs(ms);
 }

@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { projectAtCursor } from "../templates/optimizer.run.v1/components/projectEvents.ts";
+import { candidatePalette, elapsedLabel, generationPalette, incumbentCandidateIds, orderedScoredCandidates } from "../templates/optimizer.run.v1/overlays/gepa/model.ts";
 
 // Condensed from the real banking77_gepa_sol_med_45856f25 run: same event
 // types, field names, and decision values, with the 140 per-rollout events
 // reduced to representatives.
 const RUN = { id: "banking77_gepa_sol_med_45856f25", algorithmId: "gepa", status: "running" };
 const base = { occurredAt: "2026-08-12T20:57:34Z", optimizerRunId: RUN.id, algorithmId: "gepa" };
+
+test("generation colors are stable and keep the seed neutral", () => {
+  assert.equal(candidatePalette({ source: "seed" }).color, "#667085");
+  assert.equal(candidatePalette({ generation: 0 }).color, "#2563eb");
+  assert.equal(candidatePalette({ generation: 1 }).color, "#7c3aed");
+  assert.notEqual(candidatePalette({ generation: 0 }).color, candidatePalette({ generation: 1 }).color);
+  assert.deepEqual(generationPalette(6), generationPalette(0), "the bounded palette repeats deterministically");
+});
 
 function solEvents() {
   let seq = 0;
@@ -163,7 +172,7 @@ test("proposer.delta chunks stream into one open trace and transcript reconciles
   const events = [
     {
       ...base, sequenceNumber: 1, type: "optimizer.state.transitioned",
-      delta: { trigger: "proposer_started", to: "proposing", details: { generation: 0, model: "gpt-5.6-sol" } }
+      delta: { trigger: "proposer_started", to: "proposing", details: { generation: 0, model: "gpt-5.6-sol", proposal_count: 3 } }
     },
     ...Array.from({ length: 40 }, (_, index) => ({
       ...base, sequenceNumber: 2 + index, type: "proposer.delta",
@@ -193,6 +202,7 @@ test("proposer.delta chunks stream into one open trace and transcript reconciles
   assert.equal(streamingView.gepa.proposerTraces.length, 1, "chunks extend one trace, never add rows");
   const streamingTrace = streamingView.gepa.proposerTraces[0];
   assert.equal(streamingTrace.status, "running");
+  assert.equal(streamingView.gepa.activity.requestedProposalCount, 3);
   assert.match(streamingTrace.streaming.reasoning, /^chunk0 chunk1 /);
   assert.ok(streamingTrace.streaming.reasoning.includes("chunk39"));
   assert.equal(streamingTrace.streaming.content, "Final proposal text.");
@@ -204,6 +214,36 @@ test("proposer.delta chunks stream into one open trace and transcript reconciles
   assert.equal(finalTrace.reflection.proposals[0].proposalType, "parent_variation");
   assert.equal(finalTrace.reflection.proposals[0].proposedPayload.truncated, true);
   assert.equal(finalTrace.reflection.proposals[0].proposedPayload.totalChars, 9000);
+});
+
+test("sealed Trace V5 projection preserves proposer input, visible thinking, tools, and output", () => {
+  const items = [
+    { id: "input-1", sequence: 1, family: "input", kind: "message.input", title: "GEPA proposer request", body: "Improve the parent prompt." },
+    { id: "thinking-1", sequence: 2, family: "thinking", kind: "reasoning.summary", title: "Reasoning summary", body: "I will inspect the failing examples." },
+    { id: "tool-1", sequence: 3, family: "tool", kind: "tool.shell", title: "Run shell command", body: "python analyze.py", detail: "12 failure clusters", status: "completed" },
+    { id: "artifact-1", sequence: 4, family: "artifact", kind: "tool.file_change", title: "proposal/manifest.json", detail: "create proposal/manifest.json" },
+    { id: "output-1", sequence: 5, family: "output", kind: "message.output", title: "Proposer response", body: "Created three candidates." }
+  ];
+  const projected = projectAtCursor(RUN, [
+    { ...base, sequenceNumber: 1, type: "optimizer.state.transitioned", delta: { trigger: "proposer_started", to: "proposing", details: { generation: 0, model: "gpt-5.6-sol" } } },
+    { ...base, sequenceNumber: 2, type: "proposer.trace_v5.loaded", delta: { generation: 0, items } }
+  ]);
+  assert.deepEqual(projected.gepa.proposerTraces[0].traceV5Items, items);
+  assert.deepEqual(projected.gepa.proposerTraces[0].traceV5Items.map((item) => item.family), ["input", "thinking", "tool", "artifact", "output"]);
+  assert.equal(projected.gepa.proposerTraces[0].traceV5Items[2].detail, "12 failure clusters");
+});
+
+test("live elapsed time advances beyond the last quiet proposer event", () => {
+  const originalNow = Date.now;
+  Date.now = () => Date.parse("2026-08-12T20:59:00Z");
+  try {
+    assert.equal(elapsedLabel({
+      startedAt: "2026-08-12T20:57:00Z",
+      lastEventAt: "2026-08-12T20:57:30Z"
+    }, false), "2m 0s");
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("mid-run projection keeps live lanes and selections honest", () => {
@@ -221,6 +261,98 @@ test("mid-run projection keeps live lanes and selections honest", () => {
   const fresh = registered.gepa.candidates.find((candidate) => candidate.id === "gepa_proposal");
   assert.equal(fresh.status, "registered");
   assert.equal(fresh.score, undefined);
+});
+
+test("a partial result creates a rollout immediately and checkpoint replay is idempotent", () => {
+  const child = {
+    kind: "container_rollout", id: "roll_live_1", role: "candidate_evaluation",
+    schema: "synth.resource-ref.v1", attributes: { stream_id: "stream:roll_live_1" }
+  };
+  const result = {
+    ...base, type: "optimizer.evaluation_result.received",
+    delta: {
+      evaluation_id: "seed:seed_full_train:train:2", candidate_id: "gepa_seed",
+      stage: "seed_full_train", example_id: "train:2", rollout_id: "roll_live_1",
+      child_resource_ref: child, reward: 0.75, cost_usd: null, partial: true,
+      active_workers: 3, semaphore_size: 3, queued_rollouts: 8
+    }
+  };
+  const projected = projectAtCursor(RUN, [
+    { ...base, sequenceNumber: 1, type: "optimizer.candidate_evaluation.allocated", delta: { candidate_id: "gepa_seed", stage: "seed_full_train", example_id: "train:2", child_resource_ref: child } },
+    { ...base, sequenceNumber: 2, type: "optimizer.child_rollout.attached", delta: { candidate_id: "gepa_seed", stage: "seed_full_train", example_id: "train:2", child_resource_ref: child } },
+    { ...result, sequenceNumber: 3 },
+    { ...result, sequenceNumber: 4, delta: { ...result.delta, partial: false } }
+  ]);
+  assert.equal(projected.gepa.evaluations.length, 1);
+  assert.equal(projected.gepa.evaluations[0].reward, 0.75);
+  assert.equal(projected.gepa.evaluations[0].costUsd, undefined);
+  assert.equal(projected.gepa.rolloutsCompleted, 1);
+  assert.deepEqual(projected.gepa.runtime, {
+    activeWorkers: 3, semaphoreSize: 3, queuedRollouts: 8, costTelemetryComplete: false,
+    job: { state: "running", occurredAt: "2026-08-12T20:57:34Z" }
+  });
+});
+
+test("observed rollout throughput uses completion timestamps, not configured capacity", () => {
+  const result = (sequenceNumber, second, id) => ({
+    ...base, sequenceNumber, occurredAt: `2026-08-12T20:57:${String(second).padStart(2, "0")}Z`,
+    type: "optimizer.evaluation_result.received",
+    delta: {
+      candidate_id: "gepa_seed", stage: "seed_full_train", example_id: `train:${id}`,
+      rollout_id: `roll_${id}`, reward: 1, partial: true,
+      active_workers: 3, semaphore_size: 3, queued_rollouts: 6 - id,
+      child_resource_ref: {
+        kind: "container_rollout", id: `roll_${id}`, role: "candidate_evaluation",
+        schema: "synth.resource-ref.v1", attributes: {}
+      }
+    }
+  });
+  const projected = projectAtCursor(RUN, [result(1, 0, 0), result(2, 10, 1), result(3, 20, 2)]);
+  assert.equal(projected.gepa.runtime.rolloutsPerMinute, 6);
+  assert.equal(projected.gepa.runtime.activeWorkers, 3);
+  assert.equal(projected.gepa.runtime.semaphoreSize, 3);
+  assert.equal(projected.gepa.runtime.queuedRollouts, 4);
+});
+
+test("live cost sums only when every completed rollout reports cost", () => {
+  const ref = (id) => ({ kind: "container_rollout", id, role: "candidate_evaluation", schema: "synth.resource-ref.v1", attributes: {} });
+  const event = (sequenceNumber, cost_usd) => ({
+    ...base, sequenceNumber, type: "optimizer.evaluation_result.received",
+    delta: { candidate_id: "gepa_seed", stage: "seed_full_train", example_id: `train:${sequenceNumber}`, rollout_id: `r${sequenceNumber}`, child_resource_ref: ref(`r${sequenceNumber}`), reward: 1, cost_usd }
+  });
+  assert.equal(projectAtCursor(RUN, [event(1, 0.01), event(2, 0.02)]).gepa.runtime.reportedCostUsd, 0.03);
+  const unknown = projectAtCursor(RUN, [event(1, 0.01), event(2, null)]).gepa.runtime;
+  assert.equal(unknown.costTelemetryComplete, false);
+  assert.equal(unknown.reportedCostUsd, undefined);
+});
+
+test("usage projection preserves null after a later known receipt", () => {
+  const usageEvent = (sequenceNumber, cost_usd) => ({
+    ...base,
+    sequenceNumber,
+    type: "runtime.job.completed",
+    usageDelta: { cost_usd, prompt_tokens: 10 }
+  });
+  const projected = projectAtCursor(RUN, [
+    usageEvent(1, 0.01),
+    usageEvent(2, null),
+    usageEvent(3, 0.02)
+  ]);
+  assert.equal(projected.usage.costUsd, null);
+  assert.equal(projected.usage.promptTokens, 30);
+});
+
+test("terminal replacement and token-only receipts cannot restore unknown cost", () => {
+  const projected = projectAtCursor(RUN, [
+    { ...base, sequenceNumber: 1, type: "runtime.job.completed", usageDelta: { cost_usd: null, prompt_tokens: 10 } },
+    { ...base, sequenceNumber: 2, type: "optimizer.run.completed", snapshot: { usage: { cost_usd: 0.02, prompt_tokens: 10 } } }
+  ]);
+  assert.equal(projected.usage.costUsd, null);
+
+  const omitted = projectAtCursor(RUN, [
+    { ...base, sequenceNumber: 1, type: "runtime.job.completed", usageDelta: { prompt_tokens: 10, completion_tokens: 2 } }
+  ]);
+  assert.equal(omitted.usage.costUsd, null);
 });
 
 test("failed rollout evidence stays null, updates coverage, and blocks heldout promotion", () => {
@@ -253,4 +385,88 @@ test("failed rollout evidence stays null, updates coverage, and blocks heldout p
   assert.equal(projected.gepa.heldout.blocked, true);
   assert.equal(projected.gepa.heldout.reward, undefined);
   assert.equal(projected.gepa.stages.find((stage) => stage.id === "heldout").status, "failed");
+});
+
+test("a circuit breaker overrides stale running metadata and explains termination", () => {
+  const projected = projectAtCursor(
+    { ...RUN, status: "running" },
+    [
+      { ...base, sequenceNumber: 1, type: "optimizer.state.transitioned", delta: { to: "rollout_running", trigger: "rollouts_started", details: { stage: "parent_minibatch_reference" } } },
+      {
+        ...base,
+        sequenceNumber: 2,
+        occurredAt: "2026-08-13T18:08:41Z",
+        type: "rollout.circuit_breaker.tripped",
+        delta: {
+          message: "Rollout circuit breaker tripped",
+          reason: "rolling_failure_rate_exceeded",
+          rolling_failure_rate: 0.15625,
+          tolerance: 0.15,
+          sample_count: 32
+        }
+      }
+    ]
+  );
+  assert.equal(projected.summary.status, "terminated");
+  assert.equal(projected.gepa.activity.terminal, true);
+  assert.equal(projected.gepa.activity.label, "Run terminated");
+  assert.match(projected.gepa.activity.detail, /15\.63% failure rate exceeded 15\.00% tolerance/);
+  assert.deepEqual(projected.gepa.runtime.job, {
+    state: "terminated",
+    eventType: "rollout.circuit_breaker.tripped",
+    reason: "rolling_failure_rate_exceeded",
+    message: "Rollout circuit breaker tripped",
+    occurredAt: "2026-08-13T18:08:41Z",
+    rollingFailureRate: 0.15625,
+    tolerance: 0.15
+  });
+  assert.equal(projected.gepa.heldout, undefined);
+});
+
+test("terminal projection converts unfinished candidates to honest not-evaluated state", () => {
+  const projected = projectAtCursor(RUN, [
+    { ...base, sequenceNumber: 1, type: "candidate.registered", delta: { candidate_id: "queued", generation: 1 } },
+    { ...base, sequenceNumber: 2, type: "optimizer.candidate_evaluation.allocated", delta: { candidate_id: "active", stage: "candidate_full_train" } },
+    { ...base, sequenceNumber: 3, type: "rollout.circuit_breaker.tripped", delta: { reason: "rolling_failure_rate_exceeded", message: "stopped" } }
+  ]);
+  assert.deepEqual(projected.gepa.candidates.map((candidate) => candidate.status), ["aborted", "aborted"]);
+  assert.ok(projected.gepa.candidates.every((candidate) => candidate.abortedReason === "rolling_failure_rate_exceeded"));
+});
+
+test("authoritative full-train rejection compares against the decision-time incumbent", () => {
+  const projected = projectAtCursor(RUN, [
+    { ...base, sequenceNumber: 1, type: "candidate.registered", delta: { candidate_id: "seed", source: "seed" } },
+    { ...base, sequenceNumber: 2, type: "candidate.evaluated", delta: { candidate_id: "seed", train_reward: .41 } },
+    { ...base, sequenceNumber: 3, type: "candidate.registered", delta: { candidate_id: "winner", parent_id: "seed", generation: 0 } },
+    { ...base, sequenceNumber: 4, type: "candidate.accepted", delta: { candidate_id: "winner", candidate_train_reward: .58, score: { evaluation_stage: "candidate_full_train", challenger_selection_score: .58, incumbent_selection_score: .41, selection_delta: .17, selection_objective: "physician_score", comparison: { result: "challenger_dominates", incumbent_candidate_id: "seed", rationale: "strict improvement" } } } },
+    { ...base, sequenceNumber: 5, type: "candidate.registered", delta: { candidate_id: "sibling", parent_id: "seed", generation: 0 } },
+    { ...base, sequenceNumber: 6, type: "candidate.rejected", delta: { candidate_id: "sibling", candidate_train_reward: .49, parent_minibatch_reward: .30, score: { evaluation_stage: "candidate_full_train", challenger_selection_score: .49, incumbent_selection_score: .58, selection_delta: -.09, selection_objective: "physician_score", comparison: { result: "incumbent_dominates", incumbent_candidate_id: "winner", rationale: "winner remains stronger" } } } }
+  ]);
+  const sibling = projected.gepa.candidates.find((candidate) => candidate.id === "sibling");
+  assert.equal(sibling.status, "rejected_full_train");
+  assert.equal(sibling.decision.incumbentId, "winner");
+  assert.equal(sibling.decision.parentScore, .58);
+  assert.equal(sibling.decision.selectionDelta, -.09);
+  assert.equal(projected.gepa.incumbentId, "winner");
+  assert.deepEqual(orderedScoredCandidates(projected.gepa).map((point) => point.id), ["seed", "winner", "sibling"]);
+  assert.deepEqual(incumbentCandidateIds(projected.gepa), ["seed", "winner"]);
+});
+
+test("contract, frontier coverage history, and limit forecasts preserve durable semantics", () => {
+  const projected = projectAtCursor(RUN, [
+    { ...base, sequenceNumber: 1, type: "container.task_info.loaded", delta: { task_id: "healthbench", task_name: "HealthBench", objective: "safe care", output_kind: "text" } },
+    { ...base, sequenceNumber: 2, type: "container.program.loaded", delta: { program_id: "health_assistant", mutable_fields: ["system_prompt"] } },
+    { ...base, sequenceNumber: 3, type: "objective_set.declared", delta: { objective_set_id: "hb", frontier_type: "per_example", selection_objective: "physician_score", objectives: [{ name: "physician_score", direction: "maximize", aggregation: "mean", split_policy: "train" }] } },
+    { ...base, sequenceNumber: 4, type: "taskset.tasks.loaded", delta: { minibatch_rows: 20, reflection_rows: 20, pareto_rows: 60, heldout_rows: 50 } },
+    { ...base, sequenceNumber: 5, type: "container.contract.verified", delta: { runtime_family: "normalized", target_id: "healthbench", reward_authority: "container", policy_refs: [{ harness: "chat_completions", config: "groq-8b" }], scale_leases: 30, retention: "durable" } },
+    { ...base, sequenceNumber: 6, type: "frontier.updated", delta: { best_candidate_id: "seed", best_train_reward: .41, best_candidate_example_count: 53, covered_train_example_count: 59, train_example_count: 60, coverage_semantics: "solved_reward_positive", frontier_size: 2, members: [], added_candidate_ids: ["seed"], removed_candidate_ids: [] } },
+    { ...base, sequenceNumber: 7, type: "optimizer.limit.estimate_updated", delta: { limits: [{ kind: "total_rollouts", max: 710, spent: 332, reserved: 30, remaining: 348, utilization: .467, hard: true, source: "recipe", forecast: { confidence: "medium", model: "linear", seconds_to_limit: 1120, sample_count: 8 } }], nearest: { kind: "total_rollouts", max: 710, spent: 332, remaining: 348 } } }
+  ]);
+  assert.equal(projected.gepa.contract.objectiveSet.frontierType, "per_example");
+  assert.equal(projected.gepa.contract.container.scaleLeases, 30);
+  assert.equal(projected.gepa.frontierHistory[0].optimisticSolved, 59);
+  assert.equal(projected.gepa.frontierHistory[0].bestCandidateSolved, 53);
+  assert.equal(projected.gepa.limits[0].reserved, 30);
+  assert.equal(projected.gepa.limits[0].forecast.secondsToLimit, 1120);
+  assert.equal(projected.gepa.nearestLimit.kind, "total_rollouts");
 });

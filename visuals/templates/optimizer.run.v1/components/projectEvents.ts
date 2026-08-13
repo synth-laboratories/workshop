@@ -62,9 +62,22 @@ export type GepaLimit = {
   kind: string;
   max?: number;
   spent?: number;
+  reserved?: number;
   remaining?: number;
   utilization?: number;
   hard?: boolean;
+  source?: string;
+  forecast?: {
+    confidence?: string;
+    model?: string;
+    predictedCrossingAt?: string;
+    predictedCrossingAtLow?: string;
+    predictedCrossingAtHigh?: string;
+    secondsToLimit?: number;
+    secondsToLimitLow?: number;
+    secondsToLimitHigh?: number;
+    sampleCount?: number;
+  };
 };
 
 export type GepaStageStatus = "pending" | "active" | "completed" | "skipped" | "failed";
@@ -85,6 +98,48 @@ export type GepaDecision = {
   comparison?: string;
   candidateScore?: number;
   parentScore?: number;
+  incumbentId?: string;
+  selectionObjective?: string;
+  selectionDelta?: number;
+  rationale?: string;
+};
+
+export type GepaFrontierSnapshot = {
+  sequence: number;
+  occurredAt?: string;
+  generation?: number;
+  reason?: string;
+  bestCandidateId?: string;
+  bestTrainReward?: number;
+  bestCandidateSolved?: number;
+  optimisticSolved?: number;
+  totalExamples?: number;
+  coverageSemantics?: string;
+  frontierSize?: number;
+  addedCandidateIds: string[];
+  removedCandidateIds: string[];
+};
+
+export type GepaContract = {
+  task?: { id?: string; name?: string; objective?: string; outputKind?: string };
+  program?: { id?: string; mutableFields: string[] };
+  objectiveSet?: {
+    id?: string;
+    hash?: string;
+    frontierType?: string;
+    selectionObjective?: string;
+    objectives: Array<{ name: string; direction?: string; aggregation?: string; splitPolicy?: string }>;
+  };
+  splits?: { minibatch?: number; reflection?: number; pareto?: number; heldout?: number };
+  container?: {
+    runtimeFamily?: string;
+    targetId?: string;
+    rewardAuthority?: string;
+    policyHarness?: string;
+    policyConfig?: string;
+    scaleLeases?: number;
+    retention?: string;
+  };
 };
 
 export type GepaEvaluation = {
@@ -179,6 +234,18 @@ export type GepaProposerTrace = {
   streaming?: Record<string, string>;
   /** Reflection narrative from `proposer.transcript.loaded` (durable reopen). */
   reflection?: GepaProposerReflection;
+  /** Canonical, user-visible Trace V5 items projected from the sealed app-server event log. */
+  traceV5Items?: Array<{
+    id: string;
+    sequence: number;
+    family: "input" | "thinking" | "tool" | "output" | "artifact" | "system";
+    kind: string;
+    title: string;
+    occurredAt?: string;
+    body?: string;
+    detail?: string;
+    status?: string;
+  }>;
 };
 
 export type GepaState = {
@@ -187,6 +254,9 @@ export type GepaState = {
   reflections: Array<Record<string, unknown>>;
   budget?: Record<string, unknown>;
   limits: GepaLimit[];
+  nearestLimit?: GepaLimit;
+  contract: GepaContract;
+  frontierHistory: GepaFrontierSnapshot[];
   stages: GepaStage[];
   evaluations: GepaEvaluation[];
   failedAttempts: GepaFailedAttempt[];
@@ -201,6 +271,7 @@ export type GepaState = {
     evaluationStage?: string;
     activeCandidateIds: string[];
     generation?: number;
+    requestedProposalCount?: number;
     sequence?: number;
     terminal: boolean;
   };
@@ -210,6 +281,23 @@ export type GepaState = {
   models: { proposer?: string; policy?: string };
   timing: { startedAt?: string; endedAt?: string; lastEventAt?: string };
   rolloutsCompleted: number;
+  runtime: {
+    activeWorkers?: number;
+    semaphoreSize?: number;
+    queuedRollouts?: number;
+    rolloutsPerMinute?: number;
+    reportedCostUsd?: number;
+    costTelemetryComplete?: boolean;
+    job?: {
+      state: "running" | "completed" | "failed" | "cancelled" | "terminated";
+      eventType?: string;
+      reason?: string;
+      message?: string;
+      occurredAt?: string;
+      rollingFailureRate?: number;
+      tolerance?: number;
+    };
+  };
 };
 
 export type ProjectedState = {
@@ -349,6 +437,12 @@ export function projectAtCursor(
   const proposerTraces = new Map<number, GepaProposerTrace>();
   let budget: Record<string, unknown> | undefined;
   let limits: GepaLimit[] = [];
+  let nearestLimit: GepaLimit | undefined;
+  const contract: GepaContract = {
+    program: { mutableFields: [] },
+    objectiveSet: { objectives: [] }
+  };
+  const frontierHistory: GepaFrontierSnapshot[] = [];
   const stageOrder: Array<GepaStage["id"]> = ["seed", "proposal", "minibatch", "full_train", "heldout", "complete"];
   const stageLabels: Record<GepaStage["id"], string> = {
     seed: "Seed evaluation",
@@ -376,6 +470,8 @@ export function projectAtCursor(
   let heldout: GepaState["heldout"];
   const models: GepaState["models"] = {};
   let rolloutsCompleted = 0;
+  const rolloutCompletionTimes: number[] = [];
+  const runtime: GepaState["runtime"] = {};
   let runStartedAt: string | undefined;
   let runEndedAt: string | undefined;
   let lastEventAt: string | undefined;
@@ -384,6 +480,8 @@ export function projectAtCursor(
   let activityDetail: string | undefined;
   let activitySequence: number | undefined;
   let activityGeneration: number | undefined;
+  let requestedProposalCount: number | undefined;
+  let jobTermination: NonNullable<GepaState["runtime"]["job"]> | undefined;
   let proposalActive = false;
   let evaluationActive = false;
   let evaluationStage: string | undefined;
@@ -432,9 +530,17 @@ export function projectAtCursor(
     if (event.item?.status) return event.item.status;
     if (event.type === "candidate.registered") return "registered";
     if (event.type === "candidate.evaluated") return "full_train_evaluated";
+    if (event.type === "candidate.full_train_evaluated") return "full_train_evaluated";
     if (event.type === "candidate.minibatch_evaluated") return "minibatch_evaluated";
     if (event.type === "candidate.accepted") return "accepted";
-    if (event.type === "candidate.rejected") return "rejected_minibatch";
+    if (event.type === "candidate.rejected") {
+      const score = event.delta?.score && typeof event.delta.score === "object" && !Array.isArray(event.delta.score)
+        ? event.delta.score as Record<string, unknown>
+        : {};
+      return score.evaluation_stage === "candidate_full_train" || event.delta?.candidate_train_reward != null
+        ? "rejected_full_train"
+        : "rejected_minibatch";
+    }
     if (event.type === "candidate.deferred") return "deferred_budget";
     if (event.type === "optimizer.candidate_evaluation.allocated" || event.type === "optimizer.child_rollout.attached") {
       return "evaluating";
@@ -474,12 +580,14 @@ export function projectAtCursor(
             ? nested.costUsd
             : undefined;
     const costPresent = costSource !== undefined;
+    const tokenUsagePresent = ["prompt_tokens", "promptTokens", "completion_tokens", "completionTokens"]
+      .some((key) => Object.prototype.hasOwnProperty.call(source, key) || Object.prototype.hasOwnProperty.call(nested, key));
     const reportedCost = missingNumber(costSource);
     if (costPresent) {
       if (replace) {
         costReceiptSeen = true;
-        costTelemetryComplete = reportedCost != null;
-        usage.costUsd = reportedCost ?? null;
+        costTelemetryComplete = costTelemetryComplete && reportedCost != null;
+        usage.costUsd = costTelemetryComplete && reportedCost != null ? reportedCost : null;
       } else {
         costReceiptSeen = true;
         if (reportedCost == null) costTelemetryComplete = false;
@@ -487,6 +595,10 @@ export function projectAtCursor(
           ? (usage.costUsd ?? 0) + (reportedCost ?? 0)
           : null;
       }
+    } else if (tokenUsagePresent) {
+      costReceiptSeen = true;
+      costTelemetryComplete = false;
+      usage.costUsd = null;
     }
     const values = {
       promptTokens: missingNumber(
@@ -542,10 +654,87 @@ export function projectAtCursor(
       (event.type === "gepa.run.finished" ? event.delta?.state : undefined)
     ) as string | undefined;
     if (nextStatus) status = nextStatus;
+    if (event.type === "rollout.circuit_breaker.tripped") {
+      const rollingFailureRate = missingNumber(event.delta?.rolling_failure_rate);
+      const tolerance = missingNumber(event.delta?.tolerance);
+      const reason = typeof event.delta?.reason === "string" ? event.delta.reason : "circuit_breaker_tripped";
+      const message = typeof event.delta?.message === "string" ? event.delta.message : "Rollout circuit breaker tripped";
+      status = "terminated";
+      runEndedAt = event.occurredAt || runEndedAt;
+      activityPhase = "terminated";
+      activityDetail = rollingFailureRate != null && tolerance != null
+        ? `${message}: ${(rollingFailureRate * 100).toFixed(2)}% failure rate exceeded ${(tolerance * 100).toFixed(2)}% tolerance`
+        : `${message}: ${reason.replaceAll("_", " ")}`;
+      activitySequence = event.sequenceNumber;
+      proposalActive = false;
+      evaluationActive = false;
+      clearActiveCandidates();
+      jobTermination = {
+        state: "terminated",
+        eventType: event.type,
+        reason,
+        message,
+        occurredAt: event.occurredAt || undefined,
+        rollingFailureRate: rollingFailureRate ?? undefined,
+        tolerance: tolerance ?? undefined
+      };
+    }
     if (event.snapshot?.summary && typeof event.snapshot.summary === "object") {
       summary = { ...summary, ...(event.snapshot.summary as Record<string, unknown>) };
     }
     if (typeof event.snapshot?.bestScore === "number") summary.bestScore = event.snapshot.bestScore;
+
+    const eventDelta = event.delta ?? {};
+    if (event.type === "container.task_info.loaded") {
+      contract.task = {
+        id: typeof eventDelta.task_id === "string" ? eventDelta.task_id : undefined,
+        name: typeof eventDelta.task_name === "string" ? eventDelta.task_name : undefined,
+        objective: typeof eventDelta.objective === "string" ? eventDelta.objective : undefined,
+        outputKind: typeof eventDelta.output_kind === "string" ? eventDelta.output_kind : undefined
+      };
+    }
+    if (event.type === "container.program.loaded") {
+      contract.program = {
+        id: typeof eventDelta.program_id === "string" ? eventDelta.program_id : undefined,
+        mutableFields: Array.isArray(eventDelta.mutable_fields) ? eventDelta.mutable_fields.map(String) : []
+      };
+    }
+    if (event.type === "objective_set.declared") {
+      const objectives = Array.isArray(eventDelta.objectives) ? eventDelta.objectives : [];
+      contract.objectiveSet = {
+        id: typeof eventDelta.objective_set_id === "string" ? eventDelta.objective_set_id : undefined,
+        hash: typeof eventDelta.objective_set_hash === "string" ? eventDelta.objective_set_hash : undefined,
+        frontierType: typeof eventDelta.frontier_type === "string" ? eventDelta.frontier_type : undefined,
+        selectionObjective: typeof eventDelta.selection_objective === "string" ? eventDelta.selection_objective : undefined,
+        objectives: objectives.filter((value): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value))).map((value) => ({
+          name: String(value.name ?? value.id ?? "objective"),
+          direction: typeof value.direction === "string" ? value.direction : undefined,
+          aggregation: typeof value.aggregation === "string" ? value.aggregation : undefined,
+          splitPolicy: typeof value.split_policy === "string" ? value.split_policy : undefined
+        }))
+      };
+    }
+    if (event.type === "taskset.tasks.loaded") {
+      contract.splits = {
+        minibatch: missingNumber(eventDelta.minibatch_rows),
+        reflection: missingNumber(eventDelta.reflection_rows),
+        pareto: missingNumber(eventDelta.pareto_rows),
+        heldout: missingNumber(eventDelta.heldout_rows)
+      };
+    }
+    if (event.type === "container.contract.verified") {
+      const refs = Array.isArray(eventDelta.policy_refs) ? eventDelta.policy_refs : [];
+      const policy = refs.find((value) => value && typeof value === "object" && !Array.isArray(value)) as Record<string, unknown> | undefined;
+      contract.container = {
+        runtimeFamily: typeof eventDelta.runtime_family === "string" ? eventDelta.runtime_family : undefined,
+        targetId: typeof eventDelta.target_id === "string" ? eventDelta.target_id : undefined,
+        rewardAuthority: typeof eventDelta.reward_authority === "string" ? eventDelta.reward_authority : undefined,
+        policyHarness: typeof policy?.harness === "string" ? policy.harness : undefined,
+        policyConfig: typeof policy?.config === "string" ? policy.config : undefined,
+        scaleLeases: missingNumber(eventDelta.scale_leases),
+        retention: typeof eventDelta.retention === "string" ? eventDelta.retention : undefined
+      };
+    }
 
     if (event.type === "optimizer.state.transitioned") {
       const details = event.delta?.details && typeof event.delta.details === "object" && !Array.isArray(event.delta.details)
@@ -555,10 +744,14 @@ export function projectAtCursor(
       const message = typeof event.delta?.message === "string" ? event.delta.message : undefined;
       const trigger = typeof event.delta?.trigger === "string" ? event.delta.trigger : undefined;
       const generation = missingNumber(details.generation ?? event.delta?.generation);
+      const proposalCount = missingNumber(details.proposal_count ?? event.delta?.proposal_count);
       activityPhase = nextPhase;
       activityDetail = message;
       activitySequence = event.sequenceNumber;
       if (generation != null) activityGeneration = generation;
+      if (trigger === "proposer_started" && proposalCount != null) {
+        requestedProposalCount = proposalCount;
+      }
       if (trigger === "proposer_started" || nextPhase === "proposing") proposalActive = true;
       if (trigger === "proposer_finished") proposalActive = false;
       if (trigger === "rollouts_started" || trigger === "rollouts_queued") evaluationActive = true;
@@ -601,28 +794,46 @@ export function projectAtCursor(
       if (id) {
         const previous = candidates.get(id) ?? {};
         const nextStatus = candidateStatusFor(event);
+        const scoreRecord = event.delta?.score && typeof event.delta.score === "object" && !Array.isArray(event.delta.score)
+          ? event.delta.score as Record<string, unknown>
+          : {};
+        const comparisonRecord = scoreRecord.comparison && typeof scoreRecord.comparison === "object" && !Array.isArray(scoreRecord.comparison)
+          ? scoreRecord.comparison as Record<string, unknown>
+          : {};
+        const decisionGate: GepaDecision["gate"] = scoreRecord.evaluation_stage === "candidate_full_train" || event.delta?.candidate_train_reward != null
+          ? "full_train"
+          : "minibatch";
+        const authoritativeCandidateScore = missingNumber(scoreRecord.challenger_selection_score);
+        const authoritativeIncumbentScore = missingNumber(scoreRecord.incumbent_selection_score);
+        const commonDecision = {
+          gate: decisionGate,
+          candidateScore: authoritativeCandidateScore ?? missingNumber(
+            decisionGate === "full_train"
+              ? event.delta?.candidate_train_reward ?? event.delta?.train_reward
+              : event.delta?.candidate_minibatch_reward ?? event.delta?.minibatch_reward
+          ),
+          parentScore: authoritativeIncumbentScore ?? missingNumber(event.delta?.parent_minibatch_reward),
+          incumbentId: typeof comparisonRecord.incumbent_candidate_id === "string" ? comparisonRecord.incumbent_candidate_id : incumbentId,
+          selectionObjective: typeof scoreRecord.selection_objective === "string" ? scoreRecord.selection_objective : undefined,
+          selectionDelta: missingNumber(scoreRecord.selection_delta),
+          rationale: typeof comparisonRecord.rationale === "string" ? comparisonRecord.rationale : undefined,
+          comparison: typeof comparisonRecord.result === "string"
+            ? comparisonRecord.result
+            : typeof scoreRecord.comparison_result === "string"
+              ? scoreRecord.comparison_result
+              : typeof event.delta?.comparison_result === "string" ? event.delta.comparison_result : undefined
+        };
         const decision: GepaDecision | undefined =
           event.type === "candidate.accepted"
             ? {
                 outcome: "accepted",
-                gate: event.delta?.train_reward != null || event.delta?.candidate_train_reward != null
-                  ? "full_train"
-                  : "minibatch",
-                candidateScore: missingNumber(
-                  event.delta?.train_reward ?? event.delta?.candidate_train_reward ?? event.delta?.candidate_minibatch_reward
-                ),
-                parentScore: missingNumber(event.delta?.parent_minibatch_reward)
+                ...commonDecision
               }
             : event.type === "candidate.rejected"
               ? {
                   outcome: "rejected",
-                  gate: event.delta?.candidate_train_reward == null ? "minibatch" : "full_train",
+                  ...commonDecision,
                   reason: typeof event.delta?.reason === "string" ? event.delta.reason : undefined,
-                  comparison: typeof event.delta?.comparison_result === "string" ? event.delta.comparison_result : undefined,
-                  candidateScore: missingNumber(
-                    event.delta?.candidate_minibatch_reward ?? event.delta?.candidate_train_reward
-                  ),
-                  parentScore: missingNumber(event.delta?.parent_minibatch_reward)
                 }
               : event.type === "candidate.deferred"
                 ? {
@@ -653,18 +864,22 @@ export function projectAtCursor(
         if (["candidate.evaluated", "candidate.minibatch_evaluated", "candidate.accepted", "candidate.rejected", "candidate.deferred"].includes(event.type)) {
           activeCandidateIds.delete(id);
         }
+        if (event.type === "candidate.accepted") incumbentId = id;
         if (event.type === "candidate.evaluated") {
           const source = String(previous.source ?? event.delta?.source ?? "");
           const seedish = source === "seed" || String(event.delta?.message ?? "").toLowerCase().includes("seed");
           markStage(seedish ? "seed" : "full_train", "completed", event.occurredAt);
         }
-        if (["candidate.minibatch_evaluated", "candidate.accepted", "candidate.rejected"].includes(event.type)) {
+        if (event.type === "candidate.minibatch_evaluated" || ((event.type === "candidate.accepted" || event.type === "candidate.rejected") && decision?.gate === "minibatch")) {
           markStage(
             "minibatch",
             "completed",
             event.occurredAt,
             decision ? `${id} ${decision.outcome}${decision.reason ? ` · ${decision.reason.replaceAll("_", " ")}` : ""}` : undefined
           );
+        }
+        if (event.type === "candidate.full_train_evaluated" || ((event.type === "candidate.accepted" || event.type === "candidate.rejected") && decision?.gate === "full_train")) {
+          markStage("full_train", "completed", event.occurredAt, decision ? `${id} ${decision.outcome}` : undefined);
         }
         if (event.type === "candidate.registered" && event.delta?.source !== "seed") {
           const generation = missingNumber(event.delta?.generation);
@@ -738,6 +953,25 @@ export function projectAtCursor(
         };
       }
       if (bestTrain != null) summary = { ...summary, bestScore: bestTrain };
+      const added = Array.isArray(event.delta?.added_candidate_ids) ? event.delta.added_candidate_ids.map(String) : [];
+      const removed = Array.isArray(event.delta?.removed_candidate_ids) ? event.delta.removed_candidate_ids.map(String) : [];
+      if (!frontierHistory.some((entry) => entry.sequence === event.sequenceNumber)) {
+        frontierHistory.push({
+          sequence: event.sequenceNumber,
+          occurredAt: event.occurredAt || undefined,
+          generation: missingNumber(event.delta?.generation),
+          reason: typeof event.delta?.reason === "string" ? event.delta.reason : undefined,
+          bestCandidateId: bestId,
+          bestTrainReward: bestTrain ?? undefined,
+          bestCandidateSolved: missingNumber(event.delta?.best_candidate_example_count),
+          optimisticSolved: missingNumber(event.delta?.covered_train_example_count),
+          totalExamples: missingNumber(event.delta?.train_example_count ?? event.delta?.train_row_count),
+          coverageSemantics: typeof event.delta?.coverage_semantics === "string" ? event.delta.coverage_semantics : undefined,
+          frontierSize: missingNumber(event.delta?.frontier_size) ?? frontier.length,
+          addedCandidateIds: added,
+          removedCandidateIds: removed
+        });
+      }
     }
     if (event.type === "gepa.reflection" || event.type === "proposer.completed") {
       reflections.push({
@@ -959,6 +1193,19 @@ export function projectAtCursor(
         }
       });
     }
+    if (event.type === "proposer.trace_v5.loaded") {
+      const generation = missingNumber(event.delta?.generation);
+      const items = event.delta?.items;
+      if (generation != null && Array.isArray(items)) {
+        const existing = proposerTraces.get(generation);
+        proposerTraces.set(generation, {
+          ...(existing ?? { generation, sequence: event.sequenceNumber, status: "completed", candidateIds: [], steps: [] }),
+          traceV5Items: items.filter((item): item is NonNullable<GepaProposerTrace["traceV5Items"]>[number] =>
+            Boolean(item && typeof item === "object" && !Array.isArray(item) && typeof (item as Record<string, unknown>).id === "string")
+          ) as NonNullable<GepaProposerTrace["traceV5Items"]>
+        });
+      }
+    }
     if (event.type === "heldout.completed") {
       const id = candidateIdFrom(event);
       if (id) {
@@ -979,14 +1226,36 @@ export function projectAtCursor(
       markStage("heldout", "completed", event.occurredAt);
     }
     if (event.type === "optimizer.limit.estimate_updated" && Array.isArray(event.delta?.limits)) {
-      limits = (event.delta.limits as Array<Record<string, unknown>>).map((limit) => ({
+      const parseLimit = (limit: Record<string, unknown>): GepaLimit => {
+        const forecast = limit.forecast && typeof limit.forecast === "object" && !Array.isArray(limit.forecast)
+          ? limit.forecast as Record<string, unknown>
+          : {};
+        return {
         kind: String(limit.kind ?? "unknown"),
         max: missingNumber(limit.max_value ?? limit.max),
         spent: missingNumber(limit.spent),
+        reserved: missingNumber(limit.reserved),
         remaining: missingNumber(limit.remaining),
         utilization: missingNumber(limit.utilization),
-        hard: typeof limit.hard === "boolean" ? limit.hard : undefined
-      }));
+        hard: typeof limit.hard === "boolean" ? limit.hard : undefined,
+        source: typeof limit.source === "string" ? limit.source : undefined,
+        forecast: Object.keys(forecast).length ? {
+          confidence: typeof forecast.confidence === "string" ? forecast.confidence : undefined,
+          model: typeof forecast.model === "string" ? forecast.model : undefined,
+          predictedCrossingAt: typeof forecast.predicted_crossing_at === "string" ? forecast.predicted_crossing_at : undefined,
+          predictedCrossingAtLow: typeof forecast.predicted_crossing_at_low === "string" ? forecast.predicted_crossing_at_low : undefined,
+          predictedCrossingAtHigh: typeof forecast.predicted_crossing_at_high === "string" ? forecast.predicted_crossing_at_high : undefined,
+          secondsToLimit: missingNumber(forecast.seconds_to_limit),
+          secondsToLimitLow: missingNumber(forecast.seconds_to_limit_low),
+          secondsToLimitHigh: missingNumber(forecast.seconds_to_limit_high),
+          sampleCount: missingNumber(forecast.sample_count)
+        } : undefined
+      };
+      };
+      limits = (event.delta.limits as Array<Record<string, unknown>>).map(parseLimit);
+      if (event.delta.nearest && typeof event.delta.nearest === "object" && !Array.isArray(event.delta.nearest)) {
+        nearestLimit = parseLimit(event.delta.nearest as Record<string, unknown>);
+      }
     }
     if (event.type === "gepa.run.finished") {
       runEndedAt = event.occurredAt || undefined;
@@ -1035,23 +1304,81 @@ export function projectAtCursor(
         ...refsFromUnknown(event.artifactRefs)
       ];
       for (const ref of refs) {
+        const candidateId = event.item?.id ??
+          (typeof event.delta?.candidate_id === "string" ? event.delta.candidate_id : undefined);
+        const stage = typeof event.delta?.stage === "string" ? event.delta.stage : undefined;
+        const exampleId = typeof event.delta?.example_id === "string" ? event.delta.example_id : undefined;
+        const existing = gepaEvaluations.find((entry) =>
+          entry.ref.id === ref.id ||
+          (entry.candidateId === candidateId && entry.stage === stage && entry.exampleId === exampleId)
+        );
+        if (existing) {
+          existing.ref = ref;
+          continue;
+        }
         gepaEvaluations.push({
-          candidateId: event.item?.id ??
-            (typeof event.delta?.candidate_id === "string" ? event.delta.candidate_id : undefined),
+          candidateId,
           sequence: event.sequenceNumber,
           ref,
-          stage: typeof event.delta?.stage === "string" ? event.delta.stage : undefined,
-          exampleId: typeof event.delta?.example_id === "string" ? event.delta.example_id : undefined,
+          stage,
+          exampleId,
           occurredAt: event.occurredAt || undefined
         });
       }
+    }
+    if (event.type === "optimizer.rollout_queue.updated") {
+      const activeWorkers = missingNumber(event.delta?.active_workers);
+      const semaphoreSize = missingNumber(event.delta?.semaphore_size);
+      const queuedRollouts = missingNumber(event.delta?.queued_rollouts);
+      if (activeWorkers != null) runtime.activeWorkers = activeWorkers;
+      if (semaphoreSize != null) runtime.semaphoreSize = semaphoreSize;
+      if (queuedRollouts != null) runtime.queuedRollouts = queuedRollouts;
     }
     if (event.type === "optimizer.evaluation_result.received") {
       const rolloutId = typeof event.delta?.rollout_id === "string"
         ? event.delta.rollout_id
         : refsFromUnknown(event.delta?.child_resource_ref)[0]?.id;
-      rolloutsCompleted += 1;
-      const evaluation = gepaEvaluations.find((entry) => entry.ref.id === rolloutId);
+      const candidateId = candidateIdFrom(event);
+      const stage = typeof event.delta?.stage === "string" ? event.delta.stage : undefined;
+      const exampleId = typeof event.delta?.example_id === "string" ? event.delta.example_id : undefined;
+      let evaluation = gepaEvaluations.find((entry) =>
+        (rolloutId != null && entry.ref.id === rolloutId) ||
+        (entry.candidateId === candidateId && entry.stage === stage && entry.exampleId === exampleId)
+      );
+      if (!evaluation) {
+        const childRef = refsFromUnknown(event.delta?.child_resource_ref)[0];
+        if (childRef) {
+          evaluation = {
+            candidateId,
+            sequence: event.sequenceNumber,
+            ref: childRef,
+            stage,
+            exampleId,
+            occurredAt: event.occurredAt || undefined
+          };
+          gepaEvaluations.push(evaluation);
+        }
+      }
+      const firstCompletion = evaluation?.reward == null;
+      if (firstCompletion) {
+        rolloutsCompleted += 1;
+        const completedAt = Date.parse(event.occurredAt);
+        if (Number.isFinite(completedAt)) rolloutCompletionTimes.push(completedAt);
+        const reportedCost = missingNumber(event.delta?.cost_usd);
+        if (reportedCost == null) {
+          runtime.costTelemetryComplete = false;
+          delete runtime.reportedCostUsd;
+        } else if (runtime.costTelemetryComplete !== false) {
+          runtime.costTelemetryComplete = true;
+          runtime.reportedCostUsd = (runtime.reportedCostUsd ?? 0) + reportedCost;
+        }
+      }
+      const activeWorkers = missingNumber(event.delta?.active_workers);
+      const semaphoreSize = missingNumber(event.delta?.semaphore_size);
+      const queuedRollouts = missingNumber(event.delta?.queued_rollouts);
+      if (activeWorkers != null) runtime.activeWorkers = activeWorkers;
+      if (semaphoreSize != null) runtime.semaphoreSize = semaphoreSize;
+      if (queuedRollouts != null) runtime.queuedRollouts = queuedRollouts;
       if (evaluation) {
         evaluation.reward = missingNumber(event.delta?.reward);
         evaluation.costUsd = missingNumber(event.delta?.cost_usd) ?? undefined;
@@ -1359,12 +1686,12 @@ export function projectAtCursor(
 
   if (run.algorithmId === "gepa") {
     const statusText = String(status);
-    const terminal = ["completed", "failed", "canceled", "cancelled", "succeeded"].includes(statusText);
+    const terminal = ["completed", "failed", "canceled", "cancelled", "succeeded", "terminated"].includes(statusText);
     if (terminal) {
       proposalActive = false;
       evaluationActive = false;
     }
-    const failed = statusText === "failed";
+    const failed = statusText === "failed" || statusText === "terminated";
     const stages: GepaStage[] = stageOrder.map((id) => {
       const entry = stageState.get(id);
       if (entry) {
@@ -1384,7 +1711,9 @@ export function projectAtCursor(
       return { id, label: stageLabels[id], status: terminal ? "skipped" : "pending" };
     });
     const failedStage = stages.find((stage) => stage.status === "failed");
-    const activityLabel = terminal
+    const activityLabel = statusText === "terminated"
+      ? "Run terminated"
+      : terminal
       ? failed
         ? `${failedStage?.label ?? "Search"} failed`
         : "Search complete"
@@ -1399,12 +1728,36 @@ export function projectAtCursor(
               : activityPhase === "ready"
                 ? "Updating Pareto frontier"
                 : activityDetail ?? "Preparing search";
+    const recentCompletionTimes = rolloutCompletionTimes.length > 0
+      ? rolloutCompletionTimes.filter((time) => time >= rolloutCompletionTimes.at(-1)! - 60_000)
+      : [];
+    if (recentCompletionTimes.length >= 2) {
+      const elapsedMs = recentCompletionTimes.at(-1)! - recentCompletionTimes[0];
+      if (elapsedMs > 0) {
+        runtime.rolloutsPerMinute = (recentCompletionTimes.length - 1) * 60_000 / elapsedMs;
+      }
+    }
+    runtime.job = jobTermination ?? {
+      state: statusText === "failed"
+        ? "failed"
+        : ["canceled", "cancelled"].includes(statusText)
+          ? "cancelled"
+          : ["completed", "succeeded"].includes(statusText)
+            ? "completed"
+            : "running",
+      occurredAt: terminal ? runEndedAt : lastEventAt
+    };
     projected.gepa = {
-      candidates: [...candidates.values()],
+      candidates: [...candidates.values()].map((candidate) => terminal && ["registered", "evaluating"].includes(String(candidate.status ?? ""))
+        ? { ...candidate, status: "aborted", abortedReason: jobTermination?.reason ?? "run_ended_before_evaluation" }
+        : candidate),
       frontier,
       reflections,
       budget,
       limits,
+      nearestLimit,
+      contract,
+      frontierHistory,
       stages,
       evaluations: gepaEvaluations,
       failedAttempts: gepaFailedAttempts,
@@ -1419,6 +1772,7 @@ export function projectAtCursor(
         evaluationStage,
         activeCandidateIds: [...activeCandidateIds],
         generation: activityGeneration,
+        requestedProposalCount,
         sequence: activitySequence,
         terminal
       },
@@ -1427,7 +1781,8 @@ export function projectAtCursor(
       heldout,
       models,
       timing: { startedAt: runStartedAt, endedAt: runEndedAt, lastEventAt },
-      rolloutsCompleted
+      rolloutsCompleted,
+      runtime
     };
   } else if (run.algorithmId === "go-ex") {
     const evidence = goexDataEngine.rollout_evidence;

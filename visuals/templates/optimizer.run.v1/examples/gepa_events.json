@@ -38,7 +38,7 @@
       "optimizerRunId": "opt_gepa_fixture",
       "algorithmId": "gepa",
       "delta": { "status": "running" },
-      "usageDelta": { "cost_usd": 0, "rollouts": 0 }
+      "usageDelta": { "cost_usd": null, "rollouts": 0 }
     },
     {
       "schemaVersion": "optimizer_event.v1",
