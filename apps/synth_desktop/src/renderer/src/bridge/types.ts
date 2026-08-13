@@ -201,6 +201,12 @@ export type WorkspaceAccessSettings = {
 	allowedRoots: string[];
 };
 
+export type DesktopPermissionSettings = {
+	configPath: string;
+	approvalPolicy: "untrusted" | "on-request" | "never";
+	sandboxMode: "read-only" | "workspace-write" | "danger-full-access";
+};
+
 export type SynthConfigBridge = {
 	get(): Promise<SynthBackendSettings>;
 	update(request: {
@@ -223,6 +229,11 @@ export type SynthConfigBridge = {
 	}): Promise<ModelMultiAgentSetting[]>;
 	getWorkspaceAccess(): Promise<WorkspaceAccessSettings>;
 	updateWorkspaceAccess(request: { allowedRoots: string[] }): Promise<WorkspaceAccessSettings>;
+	getDesktopPermissions(): Promise<DesktopPermissionSettings>;
+	updateDesktopPermissions(request: {
+		approvalPolicy: DesktopPermissionSettings["approvalPolicy"];
+		sandboxMode: DesktopPermissionSettings["sandboxMode"];
+	}): Promise<DesktopPermissionSettings>;
 };
 
 export type CodexSessionStart = {

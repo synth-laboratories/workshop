@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
+import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 
@@ -357,7 +357,9 @@ window.synthConfig ??= isTauri
 			listModelMultiAgent: () => invokeCommand<ModelMultiAgentSetting[]>(COMMANDS.MODEL_MULTI_AGENT_LIST),
 			updateModelMultiAgent: (request) => invokeCommand<ModelMultiAgentSetting[]>(COMMANDS.MODEL_MULTI_AGENT_UPDATE, { request }),
 			getWorkspaceAccess: () => invokeCommand<WorkspaceAccessSettings>(COMMANDS.WORKSPACE_ACCESS_GET),
-			updateWorkspaceAccess: (request) => invokeCommand<WorkspaceAccessSettings>(COMMANDS.WORKSPACE_ACCESS_UPDATE, { request })
+			updateWorkspaceAccess: (request) => invokeCommand<WorkspaceAccessSettings>(COMMANDS.WORKSPACE_ACCESS_UPDATE, { request }),
+			getDesktopPermissions: () => invokeCommand<DesktopPermissionSettings>(COMMANDS.DESKTOP_PERMISSIONS_GET),
+			updateDesktopPermissions: (request) => invokeCommand<DesktopPermissionSettings>(COMMANDS.DESKTOP_PERMISSIONS_UPDATE, { request })
 		}
 		: {
 			get: async () => ({
@@ -381,7 +383,9 @@ window.synthConfig ??= isTauri
 			],
 			updateModelMultiAgent: async () => { throw new Error("Model settings require Synth Desktop"); },
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
-			updateWorkspaceAccess: async () => { throw new Error("Workspace access settings require Synth Desktop"); }
+			updateWorkspaceAccess: async () => { throw new Error("Workspace access settings require Synth Desktop"); },
+			getDesktopPermissions: async () => ({ configPath: "~/.synth-desktop/config.toml", approvalPolicy: "untrusted", sandboxMode: "workspace-write" }),
+			updateDesktopPermissions: async () => { throw new Error("Desktop permission settings require Synth Desktop"); }
 		};
 window.synthWorkspaceScope ??= isTauri
 	? {

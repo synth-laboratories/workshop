@@ -92,6 +92,8 @@ export type ComposerAccountNav = {
 
 type Props = {
 	state: LandingState;
+	/** User messages from the active chat, oldest first. */
+	sentMessages?: string[];
 	onSend: (text: string, images?: ComposerImageAttachment[]) => void | Promise<void>;
 	onSelectTarget: (id: string) => void;
 	permissions: ComposerPermissions;
@@ -642,6 +644,7 @@ function ModelMenu({
 
 export function Composer({
 	state,
+	sentMessages = [],
 	onSend,
 	onSelectTarget,
 	permissions,
@@ -715,6 +718,8 @@ export function Composer({
 	const [workspaceMenuSignal, setWorkspaceMenuSignal] = useState(0);
 	const dockRef = useRef<HTMLDivElement>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	const historyIndexRef = useRef<number | null>(null);
+	const historyDraftRef = useRef("");
 	const slashMenuRef = useRef<SlashCommandMenuHandle>(null);
 	const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 	const audioChunksRef = useRef<Blob[]>([]);
@@ -734,11 +739,18 @@ export function Composer({
 
 	useEffect(() => {
 		setValue("");
+		historyIndexRef.current = null;
+		historyDraftRef.current = "";
 		setSkillChip(null);
 		setSlashDismissed(false);
 		setImageAttachments([]);
 		setAttachmentError(null);
 	}, [state.id]);
+
+	useEffect(() => {
+		historyIndexRef.current = null;
+		historyDraftRef.current = "";
+	}, [workspaceSessionId]);
 
 	useEffect(() => {
 		const handleImageDrag = (rawEvent: Event) => {
@@ -1038,6 +1050,40 @@ export function Composer({
 		void perform(alternateAction);
 	};
 
+	const showHistoryValue = (next: string) => {
+		setValue(next);
+		setSlashDismissed(true);
+		window.requestAnimationFrame(() => {
+			const textarea = textareaRef.current;
+			if (textarea) textarea.setSelectionRange(next.length, next.length);
+		});
+	};
+
+	const navigateSentHistory = (direction: "older" | "newer") => {
+		const history = sentMessages.map((message) => message.trim()).filter(Boolean);
+		if (!history.length) return false;
+		const current = historyIndexRef.current;
+		if (direction === "older") {
+			if (current === null) {
+				historyDraftRef.current = value;
+				historyIndexRef.current = history.length - 1;
+			} else {
+				historyIndexRef.current = Math.max(0, current - 1);
+			}
+			showHistoryValue(history[historyIndexRef.current]);
+			return true;
+		}
+		if (current === null) return false;
+		if (current < history.length - 1) {
+			historyIndexRef.current = current + 1;
+			showHistoryValue(history[historyIndexRef.current]);
+		} else {
+			historyIndexRef.current = null;
+			showHistoryValue(historyDraftRef.current);
+		}
+		return true;
+	};
+
 	const handleQueuedPromptEnter = (id: string, text: string) => {
 		if (!agentWorking || !steerSupported || promotingQueuedPromptId || !text.trim()) return;
 		const now = Date.now();
@@ -1160,10 +1206,23 @@ export function Composer({
 					value={value}
 					onChange={(e) => {
 						setValue(e.target.value);
+						historyIndexRef.current = null;
+						historyDraftRef.current = e.target.value;
 						setSlashDismissed(false);
 					}}
 					onKeyDown={(e) => {
 						if (slashMenuVisible && slashMenuRef.current?.handleKeyDown(e)) return;
+						if (e.key === "ArrowUp") {
+							const atStart = e.currentTarget.selectionStart === 0 && e.currentTarget.selectionEnd === 0;
+							if ((historyIndexRef.current !== null || atStart || !value) && navigateSentHistory("older")) {
+								e.preventDefault();
+								return;
+							}
+						}
+						if (e.key === "ArrowDown" && historyIndexRef.current !== null && navigateSentHistory("newer")) {
+							e.preventDefault();
+							return;
+						}
 						if (e.key !== "Enter" || e.shiftKey) return;
 						e.preventDefault();
 						if (e.metaKey || e.ctrlKey) submitAlternate();

@@ -648,6 +648,22 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 	});
 	await expect.poll(() => page.evaluate(() => (window as typeof window & { __providerTurns: Array<{ prompt: string; effort?: string }> }).__providerTurns.at(-1))).toMatchObject({ prompt: "hello Laguna S", effort: "none" });
 	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.models.openrouter-laguna-s.reasoning"))).toBe("none");
+
+	const composerInput = page.getByTestId("composer-input");
+	await composerInput.press("ArrowUp");
+	await expect(composerInput).toHaveValue("hello Laguna S");
+	await composerInput.press("ArrowUp");
+	await expect(composerInput).toHaveValue("hello Luna");
+	await composerInput.press("ArrowDown");
+	await expect(composerInput).toHaveValue("hello Laguna S");
+	await composerInput.press("ArrowDown");
+	await expect(composerInput).toHaveValue("");
+	await composerInput.fill("unfinished draft");
+	await composerInput.press("Home");
+	await composerInput.press("ArrowUp");
+	await expect(composerInput).toHaveValue("hello Laguna S");
+	await composerInput.press("ArrowDown");
+	await expect(composerInput).toHaveValue("unfinished draft");
 });
 
 test("sidebar exposes the next local-model free time and countdown", async ({ page }) => {

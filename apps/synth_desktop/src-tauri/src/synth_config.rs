@@ -87,6 +87,21 @@ pub struct WorkspaceAccessUpdate {
     pub allowed_roots: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopPermissionSettings {
+    pub config_path: String,
+    pub approval_policy: String,
+    pub sandbox_mode: String,
+}
+
+#[derive(Clone, Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopPermissionUpdate {
+    pub approval_policy: String,
+    pub sandbox_mode: String,
+}
+
 const MODEL_MULTI_AGENT_PRESETS: &[(&str, &str, MultiAgentVersion)] = &[
     ("gpt-5.6-sol", "GPT-5.6 Sol", MultiAgentVersion::V2),
     ("gpt-5.6-terra", "GPT-5.6 Terra", MultiAgentVersion::V2),
@@ -306,6 +321,87 @@ pub fn update_workspace_access(request: WorkspaceAccessUpdate) -> Result<Workspa
     );
     write_toml(&path, &document)?;
     Ok(WorkspaceAccessSettings { allowed_roots })
+}
+
+pub fn desktop_permission_settings() -> Result<DesktopPermissionSettings> {
+    desktop_permission_settings_at(&config_path())
+}
+
+pub fn update_desktop_permissions(
+    request: DesktopPermissionUpdate,
+) -> Result<DesktopPermissionSettings> {
+    update_desktop_permissions_at(&config_path(), request)
+}
+
+fn desktop_permission_settings_at(path: &Path) -> Result<DesktopPermissionSettings> {
+    let document = read_toml(path)?;
+    let permissions = document
+        .get("desktop")
+        .and_then(|value| value.get("permissions"));
+    let approval_policy = permissions
+        .and_then(|value| value.get("approval_policy"))
+        .and_then(toml::Value::as_str)
+        .filter(|value| is_approval_policy(value))
+        .unwrap_or("untrusted")
+        .to_owned();
+    let sandbox_mode = permissions
+        .and_then(|value| value.get("sandbox_mode"))
+        .and_then(toml::Value::as_str)
+        .filter(|value| is_sandbox_mode(value))
+        .unwrap_or("workspace-write")
+        .to_owned();
+    Ok(DesktopPermissionSettings {
+        config_path: path.display().to_string(),
+        approval_policy,
+        sandbox_mode,
+    })
+}
+
+fn update_desktop_permissions_at(
+    path: &Path,
+    request: DesktopPermissionUpdate,
+) -> Result<DesktopPermissionSettings> {
+    if !is_approval_policy(&request.approval_policy) {
+        return Err(anyhow!("unsupported approval policy"));
+    }
+    if !is_sandbox_mode(&request.sandbox_mode) {
+        return Err(anyhow!("unsupported sandbox mode"));
+    }
+    let mut document = read_toml(path)?;
+    let root = document
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
+    let desktop = root
+        .entry("desktop")
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("[desktop] must be a TOML table"))?;
+    let permissions = desktop
+        .entry("permissions")
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("[desktop.permissions] must be a TOML table"))?;
+    permissions.insert(
+        "approval_policy".into(),
+        toml::Value::String(request.approval_policy),
+    );
+    permissions.insert(
+        "sandbox_mode".into(),
+        toml::Value::String(request.sandbox_mode),
+    );
+    write_toml(path, &document)?;
+    desktop_permission_settings_at(path)
+}
+
+fn is_approval_policy(value: &str) -> bool {
+    matches!(value, "untrusted" | "on-request" | "never")
+}
+
+fn is_sandbox_mode(value: &str) -> bool {
+    matches!(
+        value,
+        "read-only" | "workspace-write" | "danger-full-access"
+    )
 }
 
 pub fn model_multi_agent_settings() -> Result<Vec<ModelMultiAgentSetting>> {
@@ -881,6 +977,48 @@ mod tests {
             validate_workspace_roots(vec![root.join("missing").display().to_string()]).is_err()
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn desktop_permissions_are_machine_config_and_preserve_other_settings() {
+        let root = env::temp_dir().join(format!("synth-permissions-{}", uuid::Uuid::new_v4()));
+        let path = root.join("config.toml");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&path, "[intern]\nprofile = \"staging\"\n").unwrap();
+        let defaults = desktop_permission_settings_at(&path).unwrap();
+        assert_eq!(defaults.approval_policy, "untrusted");
+        assert_eq!(defaults.sandbox_mode, "workspace-write");
+        let stored = update_desktop_permissions_at(
+            &path,
+            DesktopPermissionUpdate {
+                approval_policy: "never".into(),
+                sandbox_mode: "danger-full-access".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(stored.approval_policy, "never");
+        assert_eq!(stored.sandbox_mode, "danger-full-access");
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("[desktop.permissions]"));
+        assert!(contents.contains("approval_policy = \"never\""));
+        assert!(contents.contains("sandbox_mode = \"danger-full-access\""));
+        assert!(contents.contains("profile = \"staging\""));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn desktop_permissions_reject_unknown_values() {
+        let root = env::temp_dir().join(format!("synth-permissions-{}", uuid::Uuid::new_v4()));
+        let path = root.join("config.toml");
+        let result = update_desktop_permissions_at(
+            &path,
+            DesktopPermissionUpdate {
+                approval_policy: "YOLO".into(),
+                sandbox_mode: "danger-full-access".into(),
+            },
+        );
+        assert!(result.is_err());
+        assert!(!path.exists());
     }
 
     #[test]

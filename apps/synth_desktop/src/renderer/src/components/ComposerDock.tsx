@@ -104,6 +104,9 @@ export function ComposerDock({
 	return (
 		<Composer
 			state={state}
+			sentMessages={activeChat?.messages
+				.filter((message) => message.role === "user")
+				.map((message) => message.body) ?? []}
 			onSend={(text) => void onComposerSend(text)}
 			onSelectTarget={onSelectTarget}
 			permissions={{

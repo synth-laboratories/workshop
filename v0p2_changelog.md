@@ -8,6 +8,8 @@
 
 ## Improved
 
+- Permission choices now persist as machine-level Synth defaults and restored chats no longer silently revert them.
+- Added per-chat sent-message history: Up and Down traverse sent prompts and restore the current draft.
 - Mermaid diagrams now fit the active pane by default and include compact zoom, fit, source, copy, retry, and SVG export controls.
 - Improved diagram typography, node spacing, edge labels, colors, and lifecycle layouts for compact desktop panes.
 - Updated the diagram-authoring skill to use the visual-management tools directly and create real Mermaid content before showing it.
@@ -19,4 +21,3 @@
 - Named development instances can use an explicit read-only Codex auth file without creating or opening a Keychain credential prompt.
 - Mermaid SVG registry validation now accepts XML declarations emitted by the renderer.
 - C4 diagrams now emit safe SVG links.
-
