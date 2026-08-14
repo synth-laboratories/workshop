@@ -28,7 +28,10 @@ const visualsLayout = extract((state: any) => {
 		shortCardUsesIntrinsicRowHeight: !shortCard || getComputedStyle(shortCard).alignSelf === "start",
 		shortCardActionsStayGrouped: !shortActionsRect || !shortMainRect || shortActionsRect.top - shortMainRect.bottom <= 1,
 		columnsUsable: !gridRect || !previewRect || (
-			gridRect.width >= 360 && previewRect.width >= 360 && gridRect.right <= previewRect.left - 12
+			gridRect.width >= 360 && previewRect.width >= 360 && (
+				gridRect.right <= previewRect.left - 12
+				|| gridRect.bottom <= previewRect.top - 12
+			)
 		),
 		contained: !pageRect || !gridRect || !previewRect || (
 			gridRect.left >= pageRect.left && previewRect.right <= pageRect.right + 1

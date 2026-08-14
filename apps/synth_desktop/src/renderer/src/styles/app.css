@@ -6108,7 +6108,7 @@ a,
 	}
 }
 
-@media (max-width: 720px) {
+@media (max-width: 1040px) {
 	.visuals-layout {
 		grid-template-columns: 1fr;
 	}
