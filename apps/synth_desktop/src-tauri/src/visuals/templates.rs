@@ -51,38 +51,43 @@ pub fn visuals_root() -> PathBuf {
 }
 
 pub fn list_templates(genre: Option<&str>) -> anyhow::Result<Vec<TemplateMeta>> {
-    let root = visuals_root().join("templates");
-    if !root.exists() {
-        return Ok(Vec::new());
-    }
     let mut out = Vec::new();
-    let mut entries: Vec<_> = fs::read_dir(&root)?
-        .filter_map(|entry| entry.ok())
-        .collect();
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        let path = entry.path();
-        if !path.is_dir() {
+    // Public templates are authoritative. An optional build-time internal
+    // overlay may add IDs, but can never shadow a distributed template.
+    for root in ["templates", "templates-internal"] {
+        let root = visuals_root().join(root);
+        if !root.exists() {
             continue;
         }
-        if !path.join("template.json").exists() {
-            continue;
-        }
-        let mut meta = load_template_meta(&path)?;
-        if let Some(filter) = genre {
-            let matches = meta
-                .genre
-                .as_deref()
-                .map(|value| value.eq_ignore_ascii_case(filter))
-                .unwrap_or(false)
-                || meta.id.to_lowercase().contains(&filter.to_lowercase());
-            if !matches {
+        let mut entries: Vec<_> = fs::read_dir(&root)?
+            .filter_map(|entry| entry.ok())
+            .collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            if !path.is_dir() || !path.join("template.json").exists() {
                 continue;
             }
+            let mut meta = load_template_meta(&path)?;
+            if out.iter().any(|existing: &TemplateMeta| existing.id == meta.id) {
+                continue;
+            }
+            if let Some(filter) = genre {
+                let matches = meta
+                    .genre
+                    .as_deref()
+                    .map(|value| value.eq_ignore_ascii_case(filter))
+                    .unwrap_or(false)
+                    || meta.id.to_lowercase().contains(&filter.to_lowercase());
+                if !matches {
+                    continue;
+                }
+            }
+            meta.path = Some(path.display().to_string());
+            out.push(meta);
         }
-        meta.path = Some(path.display().to_string());
-        out.push(meta);
     }
+    out.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(out)
 }
 
@@ -91,10 +96,12 @@ pub fn resolve_template(template_id: &str) -> anyhow::Result<TemplateMeta> {
     if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
         anyhow::bail!("invalid template id");
     }
-    let path = visuals_root().join("templates").join(id);
-    if !path.join("template.json").exists() {
-        anyhow::bail!("unknown visual template: {id}");
-    }
+    let root = visuals_root();
+    let path = ["templates", "templates-internal"]
+        .into_iter()
+        .map(|dir| root.join(dir).join(id))
+        .find(|candidate| candidate.join("template.json").exists())
+        .ok_or_else(|| anyhow::anyhow!("unknown visual template: {id}"))?;
     let mut meta = load_template_meta(&path)?;
     meta.path = Some(path.display().to_string());
     Ok(meta)
