@@ -26,7 +26,26 @@ const LOCAL_BANKING77_SLOT: &str = "http://127.0.0.1:8110";
 const BANKING77_PLAN_REF: &str = "banking77_eval.v1";
 const BANKING77_WORLD_REF: &str = "world:banking77@heldout";
 const BANKING77_CHECKPOINT_STEPS: [u32; 3] = [10, 20, 30];
+/// Length of training. `optimizers-beta` used to infer this as
+/// `max(checkpoint_steps)`, so the checkpoint list silently decided how long a
+/// run trained. It is now named separately and required.
+const BANKING77_TRAINING_STEPS: u32 = 30;
+const CRAFTAX_CHECKPOINT_STEPS: [u32; 3] = [16, 33, 66];
+/// One pass over the proven 131-row corpus at batch size 2. Tinker samples
+/// with replacement, so this is a named optimizer-step budget, not an epoch.
+const CRAFTAX_TRAINING_STEPS: u32 = 66;
 const BANKING77_CAMPAIGN_ROLLOUTS: u32 = 2;
+/// Rows longer than this lose their assistant tokens and are dropped, so the
+/// cap decides which of a dataset is trained on. Banking77 rows are single
+/// utterances; Craftax ReAct transcripts grow with the episode and need far more.
+const BANKING77_MAX_SEQ_LEN: u32 = 4096;
+const CRAFTAX_MAX_SEQ_LEN: u32 = 16384;
+/// Share of rows allowed to exceed the cap before the run refuses rather than
+/// training on whatever happened to be short enough.
+const MAX_DROPPED_FRACTION: &str = "0.05";
+/// Seconds one checkpoint rollout may take. A Craftax episode runs minutes; the
+/// evaluator's HTTP client would otherwise fall back to a 30s default.
+const CHECKPOINT_EVALUATION_TIMEOUT_S: u32 = 3600;
 /// Allowlisted dataset shards. A caller selects one; it cannot supply a path.
 const BANKING77_SHARDS: [&str; 2] = ["train_a", "train_b"];
 /// Torn-tail reads while the producer appends are transient. Give up only
@@ -79,7 +98,8 @@ fn craftax_nemotron_recipe() -> Value {
         "availability": availability,
         "limits": {
             "backend": "tinker",
-            "checkpointSteps": [10, 20],
+            "checkpointSteps": CRAFTAX_CHECKPOINT_STEPS,
+            "trainingSteps": CRAFTAX_TRAINING_STEPS,
             "campaignRolloutsPerCheckpoint": 2,
             "evalSeeds": [501, 502],
             "costCeilingUsd": null,
@@ -329,6 +349,9 @@ selection_file_id = "file_selection"
 heldout_file_id = "file_heldout"
 accelerator_slots = 1
 checkpoint_steps = [{steps}]
+training_steps = {BANKING77_TRAINING_STEPS}
+max_seq_len = {BANKING77_MAX_SEQ_LEN}
+max_dropped_fraction = {MAX_DROPPED_FRACTION}
 campaign_rollouts_per_checkpoint = {BANKING77_CAMPAIGN_ROLLOUTS}
 evaluator_version = "{BANKING77_PLAN_REF}"
 container_url = "{container_url}"
@@ -336,11 +359,18 @@ checkpoint_evaluation_seeds = [1, 2]
 checkpoint_evaluation_policy_harness = "classify"
 checkpoint_evaluation_plan_ref = "{BANKING77_PLAN_REF}"
 checkpoint_evaluation_world_ref = "{BANKING77_WORLD_REF}"
+checkpoint_evaluation_timeout_s = {CHECKPOINT_EVALUATION_TIMEOUT_S}
+
+# The classify harness resolves the checkpoint through evaluator-owned keys
+# (inference_target, sampler_path, …), which this recipe must not set. It still
+# has to declare a policy: an empty one is refused, because the policy under
+# test is never defaulted.
+[checkpoint_evaluation_policy]
+api_key_env = "TINKER_API_KEY"
 
 [hyperparameters]
 rank = 8
 batch_size = 2
-n_epochs = 1
 lr = 0.001
 "#
     )
@@ -475,6 +505,8 @@ async fn start_craftax_nemotron(
             "producer": "optimizers-beta",
             "baseModel": model_id,
             "localSlot": container_url,
+            "checkpointSteps": CRAFTAX_CHECKPOINT_STEPS,
+            "trainingSteps": CRAFTAX_TRAINING_STEPS,
         })),
         open_visual: request.open_visual.or(Some(true)),
         seed_fixture: None,
@@ -547,6 +579,8 @@ async fn run_hosted_worker(
     config_toml: String,
     mut cancel: watch::Receiver<bool>,
 ) -> Result<()> {
+    let contract = client.sft_config_contract().await?;
+    validate_config_against_producer_contract(&config_toml, &contract)?;
     client.submit_toml("sft", &run_id, &config_toml).await?;
     let mut upstream_cursor = 0u64;
     // The producer appends to its log while we page it. A read that lands on a
@@ -614,6 +648,61 @@ async fn run_hosted_worker(
     }
 }
 
+fn validate_config_against_producer_contract(config_toml: &str, contract: &Value) -> Result<()> {
+    const CONTRACT_SCHEMA: &str = "optimizers-beta.sft-config-contract.v1";
+    let schema = contract
+        .get("schema_version")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if schema != CONTRACT_SCHEMA {
+        bail!("unsupported optimizers-beta SFT config contract {schema:?}");
+    }
+    if contract.get("algorithm").and_then(Value::as_str) != Some("sft") {
+        bail!("optimizers-beta SFT config contract names the wrong algorithm");
+    }
+    let config: toml::Value =
+        toml::from_str(config_toml).context("parse generated hosted SFT TOML")?;
+    let table = config
+        .as_table()
+        .context("generated hosted SFT config must be a TOML table")?;
+    let backend = table
+        .get("backend")
+        .and_then(toml::Value::as_str)
+        .context("generated hosted SFT config must name backend")?;
+    let mut required = contract
+        .pointer(&format!("/required_by_backend/{backend}"))
+        .and_then(Value::as_array)
+        .with_context(|| format!("SFT config contract does not describe backend {backend}"))?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    let checkpoint_evaluation = table
+        .get("container_url")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    if checkpoint_evaluation {
+        required.extend(
+            contract
+                .get("required_when_checkpoint_evaluation")
+                .and_then(Value::as_array)
+                .context("SFT config contract omits checkpoint-evaluation requirements")?
+                .iter()
+                .filter_map(Value::as_str),
+        );
+    }
+    let missing = required
+        .into_iter()
+        .filter(|field| !table.contains_key(*field))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        bail!(
+            "generated hosted SFT config violates optimizers-beta contract; missing {}",
+            missing.join(", ")
+        );
+    }
+    Ok(())
+}
+
 fn fixture_config_toml(run_id: &str, training_file: &str) -> String {
     format!(
         r#"run_id = "{run_id}"
@@ -638,6 +727,11 @@ fn craftax_nemotron_config_toml(
     container_url: &str,
     training_jsonl: Option<&str>,
 ) -> String {
+    let checkpoint_steps = CRAFTAX_CHECKPOINT_STEPS
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
     let training_jsonl_line = training_jsonl
         .map(|path| format!("training_jsonl = \"{path}\"\n"))
         .unwrap_or_default();
@@ -650,7 +744,10 @@ training_file_id = "{training_file}"
 selection_file_id = "file_selection"
 heldout_file_id = "file_heldout"
 {training_jsonl_line}accelerator_slots = 1
-checkpoint_steps = [10, 20]
+checkpoint_steps = [{checkpoint_steps}]
+training_steps = {CRAFTAX_TRAINING_STEPS}
+max_seq_len = {CRAFTAX_MAX_SEQ_LEN}
+max_dropped_fraction = {MAX_DROPPED_FRACTION}
 campaign_rollouts_per_checkpoint = 2
 evaluator_version = "craftax_gamebench.v1"
 container_url = "{container_url}"
@@ -658,11 +755,28 @@ checkpoint_evaluation_seeds = [501, 502]
 checkpoint_evaluation_policy_harness = "react"
 checkpoint_evaluation_plan_ref = "craftax_eval.v1"
 checkpoint_evaluation_world_ref = "world:craftax"
+checkpoint_evaluation_timeout_s = {CHECKPOINT_EVALUATION_TIMEOUT_S}
+
+# Every field the ReAct harness needs, named. It refuses to default any of
+# them: they define the policy under test, and a wrong one is indistinguishable
+# from a failing checkpoint downstream.
+[checkpoint_evaluation_policy]
+provider = "tinker"
+api_key_env = "TINKER_API_KEY"
+effort = "medium"
+max_tokens = 1024
+parse_retries = 0
+context_token_budget = 16000
+compact_at = 0.7
+keep_recent_messages = 8
+keep_recent_frames = 2
+observation_mode = "text"
+sampler_ready_timeout_s = 300
+system_prompt = "You play Craftax. Reply with JSON only."
 
 [hyperparameters]
 rank = 8
 batch_size = 2
-n_epochs = 1
 lr = 0.001
 "#
     )
@@ -764,6 +878,103 @@ async fn persist_remote_terminal(
 mod tests {
     use super::*;
 
+    fn producer_contract() -> Value {
+        json!({
+            "schema_version": "optimizers-beta.sft-config-contract.v1",
+            "algorithm": "sft",
+            "required_by_backend": {
+                "fixture": [],
+                "openai": [],
+                "tinker": ["training_steps", "max_seq_len", "max_dropped_fraction"],
+            },
+            "required_when_checkpoint_evaluation": [
+                "checkpoint_evaluation_timeout_s",
+                "checkpoint_evaluation_policy_harness",
+                "checkpoint_evaluation_policy",
+            ],
+        })
+    }
+
+    #[test]
+    fn tinker_recipes_satisfy_the_producer_contract() {
+        for config in [
+            &banking77_config_toml(
+                "sft_banking77_train_a_ab12cd34",
+                "file_train_banking77_train_a_ab12cd34",
+                "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+                "http://127.0.0.1:8110",
+                "/tmp/train_a.jsonl",
+            ),
+            &craftax_nemotron_config_toml(
+                "sft_craftax_ab12cd34",
+                "file_train_ab12cd34",
+                "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+                "http://127.0.0.1:8098",
+                Some("/tmp/craftax.jsonl"),
+            ),
+        ] {
+            validate_config_against_producer_contract(config, &producer_contract()).unwrap();
+        }
+
+        let mut changed = producer_contract();
+        changed["required_by_backend"]["tinker"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("new_required_field"));
+        let error = validate_config_against_producer_contract(
+            &craftax_nemotron_config_toml(
+                "sft_craftax_ab12cd34",
+                "file_train_ab12cd34",
+                "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+                "http://127.0.0.1:8098",
+                Some("/tmp/craftax.jsonl"),
+            ),
+            &changed,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("new_required_field"), "{error}");
+    }
+
+    #[test]
+    fn training_length_is_never_left_to_the_checkpoint_list() {
+        // `steps = max(checkpoint_steps)` used to be the training length, so a
+        // checkpoint list decided how long a run trained.
+        for (label, toml) in [
+            (
+                "banking77",
+                banking77_config_toml(
+                    "sft_b",
+                    "file_b",
+                    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+                    "http://127.0.0.1:8110",
+                    "/tmp/train_a.jsonl",
+                ),
+            ),
+            (
+                "craftax",
+                craftax_nemotron_config_toml(
+                    "sft_c",
+                    "file_c",
+                    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+                    "http://127.0.0.1:8098",
+                    Some("/tmp/craftax.jsonl"),
+                ),
+            ),
+        ] {
+            assert!(
+                toml.contains("training_steps ="),
+                "{label} must name its training length"
+            );
+            // n_epochs is never read by the Tinker loop; batches are sampled
+            // with replacement. Carrying it implies a schedule that never runs.
+            assert!(
+                !toml.contains("n_epochs"),
+                "{label} still sets n_epochs, which the Tinker loop ignores"
+            );
+        }
+    }
+
     #[test]
     fn fixture_toml_is_algorithm_sft_not_goex_plugin() {
         let toml = fixture_config_toml("sft_hosted_ab12cd34", "file_train_ab12cd34");
@@ -829,6 +1040,8 @@ mod tests {
         assert!(toml.contains("base_model = \"nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16\""));
         assert!(toml.contains("evaluator_version = \"craftax_gamebench.v1\""));
         assert!(toml.contains("checkpoint_evaluation_seeds = [501, 502]"));
+        assert!(toml.contains("checkpoint_steps = [16, 33, 66]"));
+        assert!(toml.contains("training_steps = 66"));
         assert!(toml.contains("world:craftax"));
         assert!(!toml.contains("goex.sft"));
         assert!(!toml.contains("UNPINNED"));

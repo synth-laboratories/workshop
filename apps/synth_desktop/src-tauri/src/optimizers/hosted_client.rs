@@ -46,6 +46,10 @@ impl HostedOptimizerClient {
         .await
     }
 
+    pub(super) async fn sft_config_contract(&self) -> Result<Value> {
+        self.get_json("/v1/algorithms/sft/config-contract").await
+    }
+
     pub(super) async fn submit_json(
         &self,
         algorithm: &str,
