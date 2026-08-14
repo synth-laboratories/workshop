@@ -13,8 +13,11 @@ const boundary = extract((state: any) => {
 	const cardActions = card?.querySelector<HTMLElement>(".visuals-card-actions") ?? null;
 	const openVisual = cardActions?.querySelector<HTMLElement>("button") ?? null;
 	const splitter = document.querySelector<HTMLElement>('[aria-label="Resize visual pane"]');
+	const visualPane = splitter?.nextElementSibling as HTMLElement | null;
 	const cardMainRect = cardMain?.getBoundingClientRect();
 	const cardActionsRect = cardActions?.getBoundingClientRect();
+	const visualPaneRect = visualPane?.getBoundingClientRect();
+	const splitterValue = Number(splitter?.getAttribute("aria-valuenow") ?? 0);
 	return {
 		pageVisible: Boolean(page),
 		openLibraryPoint: point(openLibrary),
@@ -24,9 +27,10 @@ const boundary = extract((state: any) => {
 		cardContentGrouped: !cardMainRect || !cardActionsRect || cardActionsRect.top - cardMainRect.bottom <= 1,
 		splitterPoint: point(splitter),
 		splitterVisible: Boolean(splitter),
-		splitterValue: Number(splitter?.getAttribute("aria-valuenow") ?? 0),
+		splitterValue,
 		splitterVertical: splitter?.getAttribute("aria-orientation") === "vertical",
 		splitterFocusable: splitter?.getAttribute("tabindex") === "0",
+		splitterControlsPaneWidth: !visualPaneRect || splitterValue <= 420 || Math.abs(visualPaneRect.width - splitterValue) <= 2,
 		noHorizontalOverflow: document.documentElement.scrollWidth <= state.window.innerWidth + 1
 	};
 });
@@ -45,5 +49,9 @@ export const visual_card_keeps_metadata_and_actions_together = always(() =>
 );
 
 export const visual_boundary_is_an_accessible_resizable_separator = eventually(() =>
-	boundary.current.splitterVisible && boundary.current.splitterVertical && boundary.current.splitterFocusable && boundary.current.splitterValue > 420
+	boundary.current.splitterVisible
+	&& boundary.current.splitterVertical
+	&& boundary.current.splitterFocusable
+	&& boundary.current.splitterValue > 420
+	&& boundary.current.splitterControlsPaneWidth
 ).within(8, "seconds");
