@@ -25,9 +25,17 @@ record used during restart.
 Title provenance is stored as `metadata.titleOrigin` (`default`, `automatic`,
 or `manual`). An automatic title can replace only a default title. A rename
 received later through Codex app-server is recorded as manual and cannot be
-overwritten by a delayed automatic naming attempt. MCP servers can therefore
-discover and operate tools for a task, but they do not own task identity or
-sidebar presentation.
+overwritten by a delayed automatic naming attempt.
+
+The bundled `synth-session-mcp` tool `session_present` can set a **manual**
+title through that same CoreRuntime path (plus `thread/name/set` when the
+Codex attachment is live). It does not own a second identity store. The same
+tool may also set a mascot emotion overlay and a ≤7-word summary; those live
+on session metadata (`presentationEmotion`, `presentationSummary`) and are
+shown only when the optional chat mascot preference is on.
+
+MCP servers can therefore operate tools for a task, including a manual rename,
+but they do not replace host naming or invent a parallel title.
 
 The embedded terminal is Rust-owned (`portable-pty`) with an xterm view; use
 `⌘J` to toggle it and `⌘⇧T` to create another terminal.
@@ -274,8 +282,9 @@ Deep templates live in [`../../visuals`](../../visuals). Agents use MCP tools in
 `visuals/mcp/tools.json` (list / create / bind / save-tsx / open / live stream).
 
 Each embedded coding-agent home is provisioned with `synth-containers-mcp`,
-`synth-visuals-mcp`, and concise `use-synth-containers` / `use-synth-visuals`
-skill catalog entries. Skill bodies and references load only when their scoped
+`synth-visuals-mcp`, `synth-optimizers-mcp`, `synth-session-mcp`, and concise
+`use-synth-containers` / `use-synth-visuals` / `use-synth-optimizers` /
+`use-synth-session` skill catalog entries. Skill bodies and references load only when their scoped
 workflow is selected. Codex sees one compact `visual_manage` dispatcher rather
 than 13 visual schemas on every turn; its operation payloads live in the lazy
 visual skill, while legacy visual tool names remain available to other MCP
@@ -293,9 +302,9 @@ contract, name `policy_ref`, run real LLM policy rollouts, seal the result as
 Trace V5, and let Desktop derive its read-only inspector projection. Workshop
 embeds no Craftax policy.
 
-The two bundled loopback MCP servers are provisioned with
+The bundled loopback MCP servers are provisioned with
 `default_tools_approval_mode = "approve"`. This trust is deliberately limited to Desktop's
-packaged container and visual adapters; it lets an agent complete the local
+packaged container, visual, optimizer, and session adapters; it lets an agent complete the local
 workflow under “Always ask” without weakening shell or third-party MCP
 approvals.
 

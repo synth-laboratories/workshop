@@ -9,6 +9,7 @@ import {
 	setActiveEnterAction,
 	setAutoCompactTokenLimit,
 	setAppearanceFonts,
+	setShowMascot,
 	setTheme,
 	setToolActivityMode
 } from "../preferences";
@@ -185,6 +186,18 @@ export function GeneralPreferencesSettings({ preferences, onPreferencesChange }:
 						max={20}
 						testId="terminal-font-size"
 						onChange={(terminalFontSize) => onPreferencesChange(setAppearanceFonts({ terminalFontSize }))}
+					/>
+				</SettingsRow>
+				<SettingsRow
+					label="Mascot"
+					description="Show Larval Mander and the seven-word summary in the chat column. Off by default."
+				>
+					<SegmentedControl
+						ariaLabel="Chat mascot"
+						options={[{ id: "off", label: "Off" }, { id: "on", label: "On" }]}
+						value={preferences.appearance.showMascot ? "on" : "off"}
+						testIdPrefix="show-mascot"
+						onChange={(value) => onPreferencesChange(setShowMascot(value === "on"))}
 					/>
 				</SettingsRow>
 			</SettingsCard>

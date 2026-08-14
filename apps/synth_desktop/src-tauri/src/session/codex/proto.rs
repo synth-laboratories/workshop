@@ -209,6 +209,10 @@ pub struct CodexSessionRecord {
     pub title: Option<String>,
     #[serde(default)]
     pub title_origin: Option<String>,
+    #[serde(default)]
+    pub presentation_emotion: Option<String>,
+    #[serde(default)]
+    pub presentation_summary: Option<String>,
     #[serde(default = "default_approval_policy")]
     pub approval_policy: String,
     #[serde(default = "default_sandbox")]

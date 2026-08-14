@@ -7,6 +7,6 @@ mod session_run;
 pub use runtime_target::{InternBinding, InternMode, RuntimeTarget, LOCAL_LAGUNA_MODEL};
 pub use session_kind::SessionKind;
 pub use session_run::{
-    CommandReceiptInput, DomainMutation, RunCreate, RunService, RunStatus, SessionCreate,
-    SessionService, SessionStatus, SessionTitleOrigin,
+    CommandReceiptInput, DomainMutation, PresentationField, RunCreate, RunService, RunStatus,
+    SessionCreate, SessionService, SessionStatus, SessionTitleOrigin,
 };

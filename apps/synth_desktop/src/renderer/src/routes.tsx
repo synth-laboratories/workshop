@@ -347,6 +347,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 							setSidePanelTab("outputs");
 							setSidePanelOpen(next);
 						}}
+						showMascot={preferences.appearance.showMascot}
+						session={activeChatSession}
 					/>
 					{openArtifact ? (
 						<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />

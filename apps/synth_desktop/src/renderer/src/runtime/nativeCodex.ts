@@ -133,7 +133,9 @@ export function restoreCodexSession(value: PersistedCodexSession): Session {
 			baseUrl: value.baseUrl,
 			approvalPolicy: value.approvalPolicy,
 			sandbox: value.sandbox,
-			approvalMode: approvalModeFromConfig(value.approvalPolicy, value.sandbox)
+			approvalMode: approvalModeFromConfig(value.approvalPolicy, value.sandbox),
+			...(value.presentationEmotion ? { presentationEmotion: value.presentationEmotion } : {}),
+			...(value.presentationSummary ? { presentationSummary: value.presentationSummary } : {})
 		}
 	};
 }
@@ -192,7 +194,7 @@ export function codexEventToRuntime(event: CodexEvent, sequence: number): Runtim
 /** Projects a durable CoreRuntime journal row into the renderer protocol. */
 export function coreEventToRuntime(event: AppEvent): RuntimeEvent | null {
 	if (!event.sessionId || event.sessionSequence == null) return null;
-	if (event.kind.startsWith("message.") || event.kind.startsWith("run.")) {
+	if (event.kind.startsWith("message.") || event.kind.startsWith("run.") || event.kind.startsWith("session.")) {
 		return {
 			schemaVersion: "synth.desktop-runtime-event.v1",
 			sessionId: event.sessionId,

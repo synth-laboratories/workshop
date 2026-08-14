@@ -7,7 +7,8 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 
 use crate::credential_broker::{CredentialBroker, ReceiptStore};
 use crate::domain::{
-    RunCreate, RuntimeTarget, SessionCreate, SessionKind, SessionStatus, SessionTitleOrigin,
+    PresentationField, RunCreate, RuntimeTarget, SessionCreate, SessionKind, SessionStatus,
+    SessionTitleOrigin,
 };
 use crate::storage::{EventAppend, EventSource};
 
@@ -296,6 +297,12 @@ impl CodexManager {
                 status: SessionStatus::Ready.as_str().into(),
                 title: Some(title.clone()),
                 title_origin: Some(title_origin.clone()),
+                presentation_emotion: remembered
+                    .as_ref()
+                    .and_then(|record| record.presentation_emotion.clone()),
+                presentation_summary: remembered
+                    .as_ref()
+                    .and_then(|record| record.presentation_summary.clone()),
                 approval_policy: request
                     .approval_policy
                     .clone()
@@ -320,6 +327,8 @@ impl CodexManager {
                 "approvalPolicy": request.approval_policy.clone().unwrap_or_else(default_approval_policy),
                 "sandbox": request.sandbox.clone().unwrap_or_else(default_sandbox),
                 "titleOrigin": title_origin,
+                "presentationEmotion": remembered.as_ref().and_then(|record| record.presentation_emotion.clone()),
+                "presentationSummary": remembered.as_ref().and_then(|record| record.presentation_summary.clone()),
             }),
             source: EventSource::Codex,
         };
@@ -948,6 +957,119 @@ impl CodexManager {
                 let _ = self.persistence.publish_event(app, event).await;
             }
         }
+    }
+
+    /// Sets the Codex thread name and commits a manual CoreRuntime title.
+    /// Live attachments call `thread/name/set`; cold sessions still persist.
+    pub async fn set_thread_name<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: &str,
+        title: String,
+    ) -> Result<()> {
+        let title = title.trim().to_owned();
+        if title.is_empty() {
+            anyhow::bail!("session title must not be empty");
+        }
+        if let Some(session) = self.sessions.read().await.get(session_id).cloned() {
+            session
+                .server
+                .request(
+                    "thread/name/set",
+                    json!({"threadId": session.thread_id, "name": title}),
+                )
+                .await?;
+        }
+        {
+            let mut records = self.records.write().await;
+            if let Some(record) = records.get_mut(session_id) {
+                record.title = Some(title.clone());
+                record.title_origin = Some("manual".into());
+            }
+        }
+        let _ = self.persist_records().await;
+        if let Ok(Some(mutation)) = self
+            .persistence
+            .set_title(
+                session_id.to_owned(),
+                title,
+                SessionTitleOrigin::Manual,
+            )
+            .await
+        {
+            if let Some(event) = mutation.event {
+                let _ = self.persistence.publish_event(app, event).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Persists the mascot overlay on the Codex record and CoreRuntime session.
+    pub async fn set_presentation<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: &str,
+        emotion: PresentationField<String>,
+        summary: PresentationField<String>,
+    ) -> Result<serde_json::Value> {
+        let mutation = self
+            .persistence
+            .set_presentation(session_id.to_owned(), emotion.clone(), summary.clone())
+            .await?;
+        if let Some(event) = mutation.as_ref().and_then(|item| item.event.clone()) {
+            let _ = self.persistence.publish_event(app, event).await;
+        }
+        {
+            let mut records = self.records.write().await;
+            if let Some(record) = records.get_mut(session_id) {
+                if let Some(value) = mutation.as_ref() {
+                    record.presentation_emotion = value
+                        .value
+                        .metadata
+                        .get("presentationEmotion")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    record.presentation_summary = value
+                        .value
+                        .metadata
+                        .get("presentationSummary")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                } else {
+                    match &emotion {
+                        PresentationField::Unchanged => {}
+                        PresentationField::Clear => record.presentation_emotion = None,
+                        PresentationField::Set(value) => {
+                            record.presentation_emotion = Some(value.clone());
+                        }
+                    }
+                    match &summary {
+                        PresentationField::Unchanged => {}
+                        PresentationField::Clear => record.presentation_summary = None,
+                        PresentationField::Set(value) => {
+                            record.presentation_summary = Some(value.clone());
+                        }
+                    }
+                }
+            }
+        }
+        let _ = self.persist_records().await;
+        let record = mutation.map(|item| item.value);
+        let fallback = self
+            .records
+            .read()
+            .await
+            .get(session_id)
+            .cloned();
+        Ok(json!({
+            "sessionId": session_id,
+            "title": record.as_ref().map(|item| item.title.clone())
+                .or_else(|| fallback.as_ref().and_then(|item| item.title.clone())),
+            "emotion": record.as_ref().and_then(|item| item.metadata.get("presentationEmotion").cloned())
+                .or_else(|| fallback.as_ref().and_then(|item| item.presentation_emotion.clone().map(Value::String))),
+            "summary": record.as_ref().and_then(|item| item.metadata.get("presentationSummary").cloned())
+                .or_else(|| fallback.as_ref().and_then(|item| item.presentation_summary.clone().map(Value::String))),
+        }))
     }
 
     async fn persist_records(&self) -> Result<()> {

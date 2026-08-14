@@ -839,3 +839,100 @@
 	.ws-page-head { flex-wrap: wrap; }
 	.ws-page-head-actions { width: 100%; margin-left: 0; }
 }
+
+/* ── Mander ───────────────────────────────────────────────────────────────
+   Code-native larval axolotl. Color is identity; state is pose.            */
+
+.mander {
+	display: block;
+	flex: 0 0 auto;
+	overflow: visible;
+	color: var(--mander-fill);
+	shape-rendering: crispEdges;
+	image-rendering: pixelated;
+}
+
+.mander-fill { fill: var(--mander-fill); }
+.mander-fill-shade { fill: var(--mander-fill-shade); }
+.mander-fill-highlight { fill: var(--mander-fill-highlight); }
+.mander-eye { fill: var(--mander-eye); }
+.mander-mouth { fill: var(--mander-mouth); }
+.mander-shadow { fill: var(--mander-shadow); }
+
+.mander-presence {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: var(--sp-2);
+	padding: var(--sp-4) var(--sp-5) 0;
+	flex: 0 0 auto;
+}
+
+.mander-presence-summary {
+	margin: 0;
+	max-width: 16rem;
+	text-align: center;
+	font-size: var(--fs-meta);
+	line-height: var(--lh-body);
+	color: var(--color-text-muted);
+}
+
+.mander-lab {
+	position: fixed;
+	inset: 0;
+	z-index: 200;
+	display: grid;
+	align-content: start;
+	gap: var(--sp-5);
+	padding: var(--sp-6);
+	overflow: auto;
+	-webkit-app-region: no-drag;
+	background: var(--color-bg-subtle);
+	color: var(--color-text);
+}
+
+.mander-lab-dark {
+	background: var(--mander-lab-dark-bg);
+	color: var(--mander-lab-dark-fg);
+}
+
+.mander-lab-head {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: var(--sp-4);
+}
+
+.mander-lab-state {
+	margin: 0;
+	font-size: var(--fs-meta);
+	font-weight: var(--fw-semi);
+}
+
+.mander-lab-stage {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	min-height: 280px;
+	padding: var(--sp-6);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-md);
+	background: var(--surface-page);
+}
+
+.mander-lab-dark .mander-lab-stage {
+	border-color: color-mix(in srgb, var(--mander-lab-dark-fg) 14%, transparent);
+	background: color-mix(in srgb, var(--mander-lab-dark-bg) 86%, black);
+}
+
+.mander-lab-controls {
+	display: grid;
+	gap: var(--sp-3);
+}
+
+.mander-lab-matrix {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: var(--sp-2);
+	max-width: 920px;
+}

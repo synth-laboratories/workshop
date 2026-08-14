@@ -98,6 +98,16 @@
 	--measure-page: 1120px;
 	--measure-prose: 68ch;
 	--measure-lede: 52ch;
+
+	/* Larval Mander — identity orange, not status. Eyes stay dark on the body. */
+	--mander-fill: var(--color-accent);
+	--mander-fill-shade: var(--color-accent-hover);
+	--mander-fill-highlight: color-mix(in srgb, var(--color-accent) 58%, white);
+	--mander-eye: color-mix(in srgb, black 82%, var(--color-accent));
+	--mander-mouth: color-mix(in srgb, black 82%, var(--color-accent));
+	--mander-shadow: color-mix(in srgb, var(--color-text) 18%, transparent);
+	--mander-lab-dark-bg: #16181d;
+	--mander-lab-dark-fg: #f3f5f8;
 }
 
 :root[data-theme="dark"] {
