@@ -6,6 +6,7 @@ import type {
 	ReportBlock,
 	ReportComment,
 	ReportRecord,
+	ReportPromotion,
 	ReportRevision,
 	ReportSeal,
 	ReportSealBundle,
@@ -22,6 +23,15 @@ type Props = {
 };
 
 const MISSING = "—";
+
+function reportSlug(title: string): string {
+	return title
+		.toLowerCase()
+		.normalize("NFKD")
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-|-$/g, "")
+		.slice(0, 96) || "report";
+}
 
 function displayMissing(value: unknown): string {
 	if (value === null || value === undefined || value === "") return MISSING;
@@ -144,6 +154,8 @@ export function ReportsPage({ onBack }: Props) {
 	const [logTitle, setLogTitle] = useState("");
 	const [logBody, setLogBody] = useState("");
 	const [shareUpload, setShareUpload] = useState<ReportUpload | null>(null);
+	const [promotion, setPromotion] = useState<ReportPromotion | null>(null);
+	const [publicSlug, setPublicSlug] = useState("");
 	const [sharedUrl, setSharedUrl] = useState("");
 	const [comments, setComments] = useState<ReportComment[]>([]);
 	const [commentBody, setCommentBody] = useState("");
@@ -176,6 +188,8 @@ export function ReportsPage({ onBack }: Props) {
 				setExperiments(nextExperiments);
 				setLog(nextLog);
 				setDraftTitle(nextRevision.title);
+				setPublicSlug(reportSlug(nextRevision.title));
+				setPromotion(null);
 				setDraftSummary(nextRevision.summary ?? "");
 				const findings = nextRevision.blocks.find((block) => block.anchor === "findings");
 				const methods = nextRevision.blocks.find((block) => block.anchor === "methods");
@@ -306,6 +320,15 @@ export function ReportsPage({ onBack }: Props) {
 			const bundle = await bridges.reports!.openShared(sharedUrl.trim());
 			setSealedBundle(bundle);
 			setCompareBundle(null);
+		} catch (reason) {
+			setError(String(reason));
+		}
+	}
+
+	async function publishReport() {
+		if (shareUpload?.state !== "committed" || !shareUpload.publicationId || !publicSlug.trim()) return;
+		try {
+			setPromotion(await bridges.reports!.promote(shareUpload.publicationId, publicSlug.trim()));
 		} catch (reason) {
 			setError(String(reason));
 		}
@@ -488,6 +511,15 @@ export function ReportsPage({ onBack }: Props) {
 								>
 									{shareUpload?.state === "committed" ? "Shared privately" : "Share report"}
 								</button>
+								<button
+									type="button"
+									data-testid="reports-publish"
+									onClick={() => void publishReport()}
+									disabled={shareUpload?.state !== "committed" || !shareUpload.publicationId || !publicSlug.trim()}
+									title="Publish the committed private seal at a stable public Report URL"
+								>
+									{promotion?.status === "published" ? "Published" : "Publish report"}
+								</button>
 							</div>
 						</header>
 
@@ -516,6 +548,19 @@ export function ReportsPage({ onBack }: Props) {
 						</form>
 						{shareUpload?.committedUrl ? (
 							<p className="reports-provenance" data-testid="reports-shared-url">{shareUpload.committedUrl}</p>
+						) : null}
+						<div className="reports-inline-form">
+							<input
+								value={publicSlug}
+								onChange={(event) => { setPublicSlug(event.target.value); setPromotion(null); }}
+								placeholder="Public report slug"
+								aria-label="Public report slug"
+								disabled={shareUpload?.state !== "committed"}
+							/>
+							<span>/reports/{publicSlug || "report"}</span>
+						</div>
+						{promotion?.publicUrl ? (
+							<p className="reports-provenance" data-testid="reports-public-url">{promotion.publicUrl}</p>
 						) : null}
 						{shareUpload?.state === "failed" ? (
 							<p className="visuals-error">{shareUpload.error || "Share failed; no Report URL was created."}</p>

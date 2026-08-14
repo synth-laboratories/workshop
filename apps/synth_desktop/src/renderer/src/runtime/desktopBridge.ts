@@ -660,6 +660,7 @@ window.synthWorkspaceScope ??= isTauri
 			uploadStatus: (receiptDigest) =>
 				invokeCommand(COMMANDS.REPORTS_UPLOAD_STATUS, { receiptDigest }),
 			shareSeal: (receiptDigest) => invokeCommand(COMMANDS.REPORTS_SHARE, { receiptDigest }),
+			promote: (publicationId, slug) => invokeCommand(COMMANDS.REPORTS_PROMOTE, { publicationId, slug }),
 			openShared: (committedUrl) => invokeCommand(COMMANDS.REPORTS_OPEN_SHARED, { committedUrl }),
 			listComments: (reportId, revision) =>
 				invokeCommand(COMMANDS.REPORTS_COMMENTS_LIST, { reportId, revision: revision ?? null }),

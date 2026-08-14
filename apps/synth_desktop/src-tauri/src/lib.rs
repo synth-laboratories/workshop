@@ -1501,6 +1501,26 @@ async fn reports_share(
 
 #[tauri::command]
 #[specta::specta]
+async fn reports_promote(
+    state: State<'_, Arc<CoreRuntime>>,
+    publication_id: String,
+    slug: String,
+) -> Result<reports::ReportPromotion, AppError> {
+    let backend = synth_config::resolve().map_err(AppError::from)?;
+    let api_key = backend.api_key.ok_or_else(|| {
+        AppError::from(anyhow::anyhow!(
+            "Publishing a Report requires a signed-in Synth account"
+        ))
+    })?;
+    state
+        .reports()
+        .promote_publication(publication_id, slug, backend.backend_url, api_key)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn reports_open_shared(
     state: State<'_, Arc<CoreRuntime>>,
     committed_url: String,

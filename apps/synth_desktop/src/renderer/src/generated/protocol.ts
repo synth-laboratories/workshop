@@ -157,6 +157,7 @@ export const commands = {
 	updatedAt: string,
 } | null, AppError>(__TAURI_INVOKE("reports_upload_status", { receiptDigest })),
 	reportsShare: (receiptDigest: string) => typedError<ReportUpload, AppError>(__TAURI_INVOKE("reports_share", { receiptDigest })),
+	reportsPromote: (publicationId: string, slug: string) => typedError<ReportPromotion_Serialize, AppError>(__TAURI_INVOKE("reports_promote", { publicationId, slug })),
 	reportsOpenShared: (committedUrl: string) => typedError<ReportSealBundle, AppError>(__TAURI_INVOKE("reports_open_shared", { committedUrl })),
 	reportsCommentsList: (reportId: string, revision: unknown | null) => typedError<ReportComment_Serialize[], AppError>(__TAURI_INVOKE("reports_comments_list", { reportId, revision })),
 	reportsCommentCreate: (reportId: string, revision: unknown, request: ReportCommentCreate) => typedError<ReportComment_Serialize, AppError>(__TAURI_INVOKE("reports_comment_create", { reportId, revision, request })),
@@ -1537,6 +1538,28 @@ export type ReportCreateRequest_Serialize = {
 export type ReportLimitation = {
 	limitationId: string,
 	body: string,
+};
+
+export type ReportPromotion = ReportPromotion_Serialize | ReportPromotion_Deserialize;
+
+export type ReportPromotion_Deserialize = {
+	slug: string,
+	status: string,
+} & {
+	publicationId: string,
+} | {
+	publication_id: string,
+} & {
+	publicUrl: string,
+} | {
+	public_url: string,
+};
+
+export type ReportPromotion_Serialize = {
+	publicationId: string,
+	slug: string,
+	status: string,
+	publicUrl: string,
 };
 
 export type ReportQuery = {

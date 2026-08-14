@@ -167,6 +167,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::reports_log_append,
         crate::reports_upload_status,
         crate::reports_share,
+        crate::reports_promote,
         crate::reports_open_shared,
         crate::reports_comments_list,
         crate::reports_comment_create,
@@ -324,7 +325,7 @@ mod tests {
         let exported =
             body.matches("__TAURI_INVOKE(").count() + body.matches("__TAURI_INVOKE<").count();
         assert_eq!(
-            exported, 176,
+            exported, 177,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

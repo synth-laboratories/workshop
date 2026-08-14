@@ -723,6 +723,13 @@ export type ReportUpload = {
 	updatedAt: string;
 };
 
+export type ReportPromotion = {
+	publicationId: string;
+	slug: string;
+	status: "published" | "unpublished";
+	publicUrl: string;
+};
+
 export type ReportComment = {
 	commentId: string;
 	reportId: string;
@@ -763,6 +770,7 @@ export type ReportsBridge = {
 	compareSeals(leftDigest: string, rightDigest: string): Promise<ReportRevisionCompare>;
 	uploadStatus(receiptDigest: string): Promise<ReportUpload | null>;
 	shareSeal(receiptDigest: string): Promise<ReportUpload>;
+	promote(publicationId: string, slug: string): Promise<ReportPromotion>;
 	openShared(committedUrl: string): Promise<ReportSealBundle>;
 	listComments(reportId: string, revision?: number | null): Promise<ReportComment[]>;
 	createComment(reportId: string, revision: number, request: {

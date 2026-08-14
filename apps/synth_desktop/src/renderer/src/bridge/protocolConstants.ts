@@ -169,6 +169,7 @@ export const COMMANDS = {
 	REPORTS_LOG_APPEND: "reports_log_append",
 	REPORTS_UPLOAD_STATUS: "reports_upload_status",
 	REPORTS_SHARE: "reports_share",
+	REPORTS_PROMOTE: "reports_promote",
 	REPORTS_OPEN_SHARED: "reports_open_shared",
 	REPORTS_COMMENTS_LIST: "reports_comments_list",
 	REPORTS_COMMENT_CREATE: "reports_comment_create",

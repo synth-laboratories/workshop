@@ -1,6 +1,6 @@
 use super::models::{
-    ReportComment, ReportCommentCreate, ReportSeal, ReportSealBundle, ReportUpload,
-    REPORT_BUNDLE_SCHEMA,
+    ReportComment, ReportCommentCreate, ReportPromotion, ReportSeal, ReportSealBundle,
+    ReportUpload, REPORT_BUNDLE_SCHEMA,
 };
 use super::registry::ReportRegistry;
 use crate::storage::{EventAppend, EventSource};
@@ -31,6 +31,49 @@ impl ReportRegistry {
             .map_err(Into::into)
         })
         .await
+    }
+
+    pub async fn promote_publication(
+        &self,
+        publication_id: String,
+        slug: String,
+        backend_url: String,
+        api_key: String,
+    ) -> Result<ReportPromotion> {
+        let slug = slug.trim().to_owned();
+        if slug.is_empty() {
+            bail!("Publish report requires a public slug");
+        }
+        let url = format!(
+            "{}/artifacts/v1/workshop/reports/{}/promote",
+            backend_url.trim_end_matches('/'),
+            publication_id
+        );
+        let response = reqwest::Client::new()
+            .post(url)
+            .bearer_auth(api_key)
+            .json(&json!({
+                "schema_version": "synth.workshop-report-promotion.v1",
+                "slug": slug,
+            }))
+            .send()
+            .await
+            .context("promote Report publication")?;
+        let status = response.status();
+        if !status.is_success() {
+            bail!(
+                "promote Report publication failed ({status}): {}",
+                response.text().await.unwrap_or_default()
+            );
+        }
+        let promoted: ReportPromotion = response.json().await.context("decode Report promotion")?;
+        if promoted.publication_id != publication_id
+            || promoted.slug != slug
+            || promoted.status != "published"
+        {
+            bail!("Report promotion response changed public identity");
+        }
+        Ok(promoted)
     }
 
     pub async fn share_seal(
@@ -784,6 +827,23 @@ mod tests {
                 }),
             );
         }
+        if method == Method::POST
+            && path == format!("/artifacts/v1/workshop/reports/{PUBLICATION_ID}/promote")
+        {
+            let slot = state.lock().unwrap();
+            if !slot.committed {
+                return json_response(StatusCode::CONFLICT, json!({"error":"not committed"}));
+            }
+            return json_response(
+                StatusCode::OK,
+                json!({
+                    "publication_id": PUBLICATION_ID,
+                    "slug": "craftax-oss-contrast",
+                    "status": "published",
+                    "public_url": "/reports/craftax-oss-contrast",
+                }),
+            );
+        }
         if method == Method::GET && path == format!("/reports/v1/publications/{PUBLICATION_ID}") {
             let slot = state.lock().unwrap();
             if !slot.committed {
@@ -870,6 +930,30 @@ mod tests {
             .unwrap();
         assert_eq!(opened.seal.receipt_digest, seal.receipt_digest);
         assert_eq!(opened.seal.report_id, "rep_local_slot");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn committed_private_report_can_be_promoted_to_a_public_report_url() {
+        let dir = tempdir().unwrap();
+        let reports = registry(dir.path());
+        let seal = seed_sealed(&reports, "rep_public_slot").await;
+        let (origin, task, _) = spawn_slot(false).await;
+        let (upload, _) = reports
+            .share_seal(seal.receipt_digest, origin.clone(), SLOT_KEY.into())
+            .await
+            .unwrap();
+        let promoted = reports
+            .promote_publication(
+                upload.publication_id.expect("committed publication id"),
+                "craftax-oss-contrast".into(),
+                origin,
+                SLOT_KEY.into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(promoted.public_url, "/reports/craftax-oss-contrast");
+        assert_eq!(promoted.status, "published");
         task.abort();
     }
 

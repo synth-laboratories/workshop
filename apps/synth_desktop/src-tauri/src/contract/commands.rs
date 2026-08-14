@@ -140,6 +140,7 @@ impl Commands {
     pub const REPORTS_LOG_APPEND: &'static str = "reports_log_append";
     pub const REPORTS_UPLOAD_STATUS: &'static str = "reports_upload_status";
     pub const REPORTS_SHARE: &'static str = "reports_share";
+    pub const REPORTS_PROMOTE: &'static str = "reports_promote";
     pub const REPORTS_OPEN_SHARED: &'static str = "reports_open_shared";
     pub const REPORTS_COMMENTS_LIST: &'static str = "reports_comments_list";
     pub const REPORTS_COMMENT_CREATE: &'static str = "reports_comment_create";

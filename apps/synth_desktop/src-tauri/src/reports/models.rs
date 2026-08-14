@@ -308,6 +308,17 @@ pub struct ReportUpload {
     pub updated_at: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportPromotion {
+    #[serde(alias = "publication_id")]
+    pub publication_id: String,
+    pub slug: String,
+    pub status: String,
+    #[serde(alias = "public_url")]
+    pub public_url: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportComment {
