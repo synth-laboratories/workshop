@@ -13,7 +13,7 @@ release acceptance and promotion remain separate.
 | Optimizers Beta | `b13ec3b47082` | OHCO, hosted SFT, sampling replay, and Workshop config-contract route consolidated |
 | Backend | `1b3a469e7c3c` | Main/dev plus the six live catalog, Responses, network, runtime, Buck2, and docs lanes consolidated |
 | Frontend | `b06b2f1d3a00` | PR 247, main release state, dependency lock, and published Craftax asset resolution consolidated |
-| Workshop | `6126c73365c9` | Main/dev, visuals, modern stack, account/API-key, OAuth, SFT contract, and visual layout fixes consolidated |
+| Workshop | `e73dfed` | Main/dev, visuals, modern stack, account/API-key, OAuth, SFT contract, and visual layout fixes consolidated |
 
 All six integration worktrees were clean at the tips above. The integration
 branch in each repository is `agent/v02-dev-consolidation-20260813`; the target
@@ -34,8 +34,10 @@ trunk is `dev`.
 - Frontend: content build, TypeScript check, and 14 desktop-release tests passed.
 - Workshop: focused hosted-SFT, OAuth, and settings Rust tests passed; protocol
   regeneration was zero-diff; production Vite build passed. Bombadil exercised
-  960, 1172, and 1280 px widths with no violations after proving both intrinsic
-  card height and responsive stacked/split-pane containment.
+  960, 1172, and 1280 px widths with no violations after proving intrinsic card
+  height, responsive stacked/split-pane containment, and that the accessible
+  outer visual-pane separator changes the pane's rendered width rather than
+  only its ARIA value.
 
 ## Visual proof carried forward
 
@@ -51,10 +53,12 @@ terminal receipt.
 
 ## Preserved, deliberately not landed
 
-- Workshop's seven captured stash states remain reachable as
+- Workshop's seven captured stash states are backed up on `origin` as
   `preserve/aug12-stash-0` through `preserve/aug12-stash-6`. Their v0.2 content
   was either landed or superseded. The v0.3-only visual-library primary-list
-  resize remains in `preserve/aug12-stash-4`.
+  resize remains in `preserve/aug12-stash-4`; it is intentionally not on dev
+  because its inline fixed-width grid would need reconciliation with the new
+  1040 px responsive stack before use.
 - The formerly live Containers Harbor worktree had no remaining process. Its
   dirty state was committed as `b716253` on `agent/aug12-harbor-dock-modern`,
   then landed on dev as `f0182ed`. The older Trace V5 worktree's 10-file state
