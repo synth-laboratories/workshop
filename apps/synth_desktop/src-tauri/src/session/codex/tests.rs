@@ -1174,6 +1174,7 @@ fn synth_cloud_provider_writes_expected_config() {
     assert!(optimizer_skill.contains("If the first `await_ready` reports"));
     assert!(optimizer_skill.contains("Do not inspect processes"));
     assert!(optimizer_skill.contains("on the first `start` call"));
+    assert!(optimizer_skill.contains("Never run a shell or terminal command, including `sleep`"));
     let visuals_skill = fs::read_to_string(home.join("skills/use-synth-visuals/SKILL.md")).unwrap();
     assert!(visuals_skill.contains("Optimizer visuals are a strict exception"));
 }

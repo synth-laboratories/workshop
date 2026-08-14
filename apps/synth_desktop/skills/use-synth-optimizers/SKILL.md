@@ -27,6 +27,7 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 2. For an existing or historical run, call `open_visual` with its `optimizer_run_id`. This reuses its primary visual and presents it in the current conversation without changing the run's original ownership.
 3. Record `run.id`, the primary visual ID in `run.visualRefs`, and `run.cursorSeq`. Keep the pane open while following the run; the visual reads the same durable event cursor and continues updating independently of tool polling.
 4. Call `watch_run` with `optimizer_run_id` and `after_seq` equal to the last processed sequence. Advance to the greatest returned sequence. Empty batches are normal.
+   - Wait for progress only by calling `watch_run` again (or `get_run` when a status snapshot is useful). Never run a shell or terminal command, including `sleep`, just to delay or poll an optimizer run; repeated optimizer MCP calls are the supported waiting mechanism.
 5. Use `get_run` for status and summary, and `get_state` for the algorithm-specific slices in its reference.
 6. Stop only at `completed`, `failed`, or `cancelled`. Use `cancel_run` only when the user requests it.
 7. After a Desktop restart, recover with `list_runs`/`get_run`, call `open_visual`, and continue from the persisted cursor. Reconcile cloud runs before watching them. Local process records and events survive restart, but a process owned by the previous Desktop session is not reattached.
