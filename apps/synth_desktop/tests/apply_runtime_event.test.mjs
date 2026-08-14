@@ -168,3 +168,31 @@ test("selectSessionRunning clears Stop on a terminal run without a newer user tu
 	assert.equal(selectSessionRunning(session({ status: "running" }), events), false);
 	assert.equal(selectSessionRunning(session({ status: "failed" }), events), false);
 });
+
+test("session.presented patches mascot overlay metadata without changing status", () => {
+	const next = applyRuntimeEvent(
+		emptyState(),
+		event({
+			sequence: 4,
+			eventKind: "session.presented",
+			payload: { emotion: "success", summary: "Reward curve flattened", title: "Craftax investigation" }
+		})
+	);
+	assert.equal(next.sessions[0].status, "ready");
+	assert.equal(next.sessions[0].title, "Craftax investigation");
+	assert.equal(next.sessions[0].metadata.presentationEmotion, "success");
+	assert.equal(next.sessions[0].metadata.presentationSummary, "Reward curve flattened");
+});
+
+test("session.title_changed patches the live title from payload.to", () => {
+	const next = applyRuntimeEvent(
+		emptyState(),
+		event({
+			sequence: 5,
+			eventKind: "session.title_changed",
+			payload: { from: "Chat", to: "Inspect Craftax rollouts", origin: "manual" }
+		})
+	);
+	assert.equal(next.sessions[0].title, "Inspect Craftax rollouts");
+	assert.equal(next.sessions[0].status, "ready");
+});

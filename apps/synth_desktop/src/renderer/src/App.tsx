@@ -2,6 +2,7 @@ import { formatTps } from "./components/InferencePanel";
 import { AppTitlebar } from "./components/AppTitlebar";
 import { AppOverlays } from "./components/AppOverlays";
 import { ComposerDock } from "./components/ComposerDock";
+import { ManderLabGate } from "./components/mander";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { useAppController } from "./hooks/useAppController";
@@ -21,6 +22,7 @@ export default function App() {
 
 	return (
 		<div className="app-shell">
+			<ManderLabGate />
 			<div className="body-row">
 				{c.view.kind !== "settings" ? (
 					<Sidebar

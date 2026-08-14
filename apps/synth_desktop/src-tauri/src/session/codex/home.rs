@@ -224,6 +224,12 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         optimizers_skill.join("SKILL.md"),
         include_str!("../../../../skills/use-synth-optimizers/SKILL.md"),
     )?;
+    let session_skill = home.join("skills/use-synth-session");
+    fs::create_dir_all(&session_skill)?;
+    fs::write(
+        session_skill.join("SKILL.md"),
+        include_str!("../../../../skills/use-synth-session/SKILL.md"),
+    )?;
     let provider = request.provider_name.as_deref().unwrap_or("custom");
     let title = request
         .provider_title
@@ -326,6 +332,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
             ("synth_containers", "synth-containers-mcp"),
             ("synth_visuals", "synth-visuals-mcp"),
             ("synth_optimizers", "synth-optimizers-mcp"),
+            ("synth_session", "synth-session-mcp"),
         ] {
             let bin = exe
                 .parent()
@@ -638,6 +645,7 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         // same operations after the visual skill is loaded.
         "synth_visuals" => "enabled_tools = [\"visual_manage\"]\n",
         "synth_optimizers" => "enabled_tools = [\"optimizer_manage\"]\n",
+        "synth_session" => "enabled_tools = [\"session_present\"]\n",
         _ => "",
     }
 }

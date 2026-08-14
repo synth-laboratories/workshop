@@ -45,6 +45,51 @@ impl SessionTitleOrigin {
     }
 }
 
+const PRESENTATION_EMOTIONS: &[&str] = &["idle", "thinking", "working", "success"];
+const MAX_PRESENTATION_SUMMARY_WORDS: usize = 7;
+
+/// Partial update for the optional chat-mascot overlay. `Unchanged` leaves the
+/// stored field alone; `Clear` removes it; `Set` validates then writes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum PresentationField<T> {
+    #[default]
+    Unchanged,
+    Clear,
+    Set(T),
+}
+
+impl PresentationField<String> {
+    pub fn from_json(value: Option<&Value>) -> Result<Self> {
+        match value {
+            None => Ok(Self::Unchanged),
+            Some(Value::Null) => Ok(Self::Clear),
+            Some(Value::String(text)) => Ok(Self::Set(text.clone())),
+            Some(_) => bail!("presentation field must be a string or null"),
+        }
+    }
+}
+
+fn parse_presentation_emotion(value: &str) -> Result<String> {
+    let trimmed = value.trim();
+    if PRESENTATION_EMOTIONS.contains(&trimmed) {
+        Ok(trimmed.to_owned())
+    } else {
+        bail!("emotion must be idle, thinking, working, or success");
+    }
+}
+
+fn validate_presentation_summary(value: &str) -> Result<String> {
+    let trimmed = value.trim().to_owned();
+    if trimmed.is_empty() {
+        bail!("summary must not be empty");
+    }
+    let words = trimmed.split_whitespace().count();
+    if words > MAX_PRESENTATION_SUMMARY_WORDS {
+        bail!("summary must be at most {MAX_PRESENTATION_SUMMARY_WORDS} words");
+    }
+    Ok(trimmed)
+}
+
 impl SessionStatus {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -278,6 +323,101 @@ impl SessionService {
                         "from": previous_title,
                         "to": title,
                         "origin": origin.as_str(),
+                    }),
+                    remote_sequence: None,
+                    command_id: None,
+                    created_at: Some(now),
+                },
+            )?;
+            Ok(DomainMutation {
+                value: load_session(conn, &id)?,
+                event: Some(event),
+            })
+        })
+        .await
+    }
+
+    /// Stores the optional mascot overlay (emotion + ≤7-word summary). Title
+    /// changes go through [`Self::set_title`] with `Manual` origin so MCP cannot
+    /// invent a second identity store.
+    pub async fn set_presentation(
+        &self,
+        id: String,
+        emotion: PresentationField<String>,
+        summary: PresentationField<String>,
+    ) -> Result<DomainMutation<SessionRecord>> {
+        if matches!(emotion, PresentationField::Unchanged)
+            && matches!(summary, PresentationField::Unchanged)
+        {
+            let current = self
+                .get(id.clone())
+                .await?
+                .ok_or_else(|| anyhow!("session not found"))?;
+            return Ok(DomainMutation {
+                value: current,
+                event: None,
+            });
+        }
+        let next_emotion = match &emotion {
+            PresentationField::Unchanged => None,
+            PresentationField::Clear => Some(None),
+            PresentationField::Set(value) => Some(Some(parse_presentation_emotion(value)?)),
+        };
+        let next_summary = match &summary {
+            PresentationField::Unchanged => None,
+            PresentationField::Clear => Some(None),
+            PresentationField::Set(value) => Some(Some(validate_presentation_summary(value)?)),
+        };
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            let current = load_session(conn, &id).context("session not found")?;
+            let mut metadata = current.metadata.clone();
+            let object = metadata
+                .as_object_mut()
+                .ok_or_else(|| anyhow!("session metadata must be an object"))?;
+            if let Some(emotion) = next_emotion {
+                match emotion {
+                    Some(value) => {
+                        object.insert("presentationEmotion".into(), json!(value));
+                    }
+                    None => {
+                        object.remove("presentationEmotion");
+                    }
+                }
+            }
+            if let Some(summary) = next_summary {
+                match summary {
+                    Some(value) => {
+                        object.insert("presentationSummary".into(), json!(value));
+                    }
+                    None => {
+                        object.remove("presentationSummary");
+                    }
+                }
+            }
+            if metadata == current.metadata {
+                return Ok(DomainMutation {
+                    value: current,
+                    event: None,
+                });
+            }
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                "UPDATE sessions SET metadata_json = ?1, updated_at = ?2 WHERE id = ?3",
+                params![metadata.to_string(), now, id],
+            )?;
+            let event = append_event(
+                conn,
+                EventAppend {
+                    event_id: None,
+                    session_id: Some(id.clone()),
+                    run_id: current.active_run_id,
+                    source: EventSource::Codex,
+                    kind: "session.presented".into(),
+                    payload: json!({
+                        "emotion": metadata.get("presentationEmotion"),
+                        "summary": metadata.get("presentationSummary"),
+                        "title": current.title,
                     }),
                     remote_sequence: None,
                     command_id: None,
@@ -1000,6 +1140,54 @@ mod tests {
             .unwrap();
         assert_eq!(ignored.value.title, "My Craftax investigation");
         assert_eq!(ignored.value.metadata["titleOrigin"], "manual");
+    }
+
+    #[tokio::test]
+    async fn presentation_stores_emotion_and_rejects_overlong_summaries() {
+        let (_dir, sessions, _runs) = services();
+        create_session(&sessions).await;
+        let stored = sessions
+            .set_presentation(
+                "session-1".into(),
+                PresentationField::Set("success".into()),
+                PresentationField::Set("Craftax reward curve flattened".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stored.value.metadata["presentationEmotion"], "success");
+        assert_eq!(
+            stored.value.metadata["presentationSummary"],
+            "Craftax reward curve flattened"
+        );
+        assert_eq!(stored.event.as_ref().unwrap().kind, "session.presented");
+
+        let rejected = sessions
+            .set_presentation(
+                "session-1".into(),
+                PresentationField::Unchanged,
+                PresentationField::Set("one two three four five six seven eight".into()),
+            )
+            .await;
+        assert!(rejected.is_err());
+        assert!(sessions
+            .set_presentation(
+                "session-1".into(),
+                PresentationField::Set("confused".into()),
+                PresentationField::Unchanged,
+            )
+            .await
+            .is_err());
+
+        let cleared = sessions
+            .set_presentation(
+                "session-1".into(),
+                PresentationField::Clear,
+                PresentationField::Clear,
+            )
+            .await
+            .unwrap();
+        assert!(cleared.value.metadata.get("presentationEmotion").is_none());
+        assert!(cleared.value.metadata.get("presentationSummary").is_none());
     }
 
     #[tokio::test]

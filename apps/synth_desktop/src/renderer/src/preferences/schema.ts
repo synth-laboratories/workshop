@@ -6,7 +6,7 @@
  */
 
 export const PREFERENCES_STORAGE_KEY = "synth.preferences.v1";
-export const PREFERENCES_SCHEMA_VERSION = 4 as const;
+export const PREFERENCES_SCHEMA_VERSION = 5 as const;
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ToolActivityMode = "detailed" | "grouped" | "compact";
@@ -57,6 +57,8 @@ export type DesktopPreferences = {
 		codeFontSize: number;
 		terminalFontFamily: string;
 		terminalFontSize: number;
+		/** Optional larval-mander header in the chat column. Default off. */
+		showMascot: boolean;
 	};
 	submission: {
 		/** Enter while an agent is working. Cmd+Enter performs the alternate. */
@@ -102,7 +104,8 @@ export const DEFAULT_PREFERENCES: DesktopPreferences = {
 		codeFontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
 		codeFontSize: 12,
 		terminalFontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-		terminalFontSize: 12
+		terminalFontSize: 12,
+		showMascot: false
 	},
 	submission: {
 		activeEnterAction: "enqueue"
@@ -293,7 +296,8 @@ export function normalizePreferences(raw: unknown): DesktopPreferences {
 			terminalFontFamily: typeof appearance.terminalFontFamily === "string" && appearance.terminalFontFamily.trim()
 				? appearance.terminalFontFamily.trim()
 				: DEFAULT_PREFERENCES.appearance.terminalFontFamily,
-			terminalFontSize: clampNumber(appearance.terminalFontSize, 10, 20, DEFAULT_PREFERENCES.appearance.terminalFontSize)
+			terminalFontSize: clampNumber(appearance.terminalFontSize, 10, 20, DEFAULT_PREFERENCES.appearance.terminalFontSize),
+			showMascot: appearance.showMascot === true
 		},
 		submission: { activeEnterAction: enter },
 		toolActivity: { mode },

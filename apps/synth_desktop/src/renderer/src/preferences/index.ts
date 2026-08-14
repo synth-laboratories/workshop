@@ -32,6 +32,7 @@ export {
 	setAutoCompactTokenLimit,
 	setActiveEnterAction,
 	setAppearanceFonts,
+	setShowMascot,
 	saveLayout,
 	saveLayoutAsDefault,
 	resetLayoutToDefault,

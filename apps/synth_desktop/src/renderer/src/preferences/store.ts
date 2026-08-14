@@ -116,6 +116,13 @@ export function setAppearanceFonts(patch: Partial<DesktopPreferences["appearance
 	}));
 }
 
+export function setShowMascot(showMascot: boolean): DesktopPreferences {
+	return updatePreferences((current) => ({
+		...current,
+		appearance: { ...current.appearance, showMascot }
+	}));
+}
+
 export function saveLayout(last: LayoutSnapshot): DesktopPreferences {
 	return updatePreferences((current) => ({
 		...current,

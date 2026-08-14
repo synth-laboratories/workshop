@@ -5,8 +5,10 @@ use crate::container_stream::{
     refuse_auto_transport, require_caller_policy_ref, require_task_instance, resolve_declared_url,
     wait_for_stream_subscribed, SUBSCRIBE_READY_TIMEOUT,
 };
+use crate::codex::CodexManager;
 use crate::core_runtime::CoreRuntime;
 use crate::data::ContainerRegisterRequest;
+use crate::domain::{PresentationField, SessionTitleOrigin};
 use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
 use crate::limits;
 use crate::visuals::{
@@ -139,6 +141,9 @@ async fn dispatch_request(
     if method == "POST" && path == "/v1/review-window/resize" {
         return resize_review_window(app, &json_body);
     }
+    if method == "POST" && path == "/v1/sessions/present" {
+        return present_session(app, core, json_body).await;
+    }
     if path.starts_with("/v1/optimizers") {
         return dispatch_optimizer(method, path, json_body, core).await;
     }
@@ -183,6 +188,74 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
     Ok(json!({
         "previous": {"width": previous.width.round(), "height": previous.height.round()},
         "current": {"width": current.width.round(), "height": current.height.round()}
+    }))
+}
+
+fn json_field<'a>(body: &'a Value, camel: &str, snake: &str) -> Option<&'a Value> {
+    body.get(camel).or_else(|| body.get(snake))
+}
+
+async fn present_session(app: &AppHandle, core: &CoreRuntime, body: Value) -> Result<Value> {
+    let session_id = json_field(&body, "sessionId", "session_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("sessionId is required")?
+        .to_owned();
+    let title = json_field(&body, "title", "title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let emotion = PresentationField::from_json(json_field(&body, "emotion", "emotion"))?;
+    let summary = PresentationField::from_json(json_field(&body, "summary", "summary"))?;
+    if title.is_none()
+        && matches!(emotion, PresentationField::Unchanged)
+        && matches!(summary, PresentationField::Unchanged)
+    {
+        anyhow::bail!("session_present requires title, emotion, or summary");
+    }
+    if let Some(title) = title {
+        if let Some(manager) = app.try_state::<Arc<CodexManager>>() {
+            manager.set_thread_name(app, &session_id, title).await?;
+        } else {
+            let mutation = core
+                .sessions()
+                .set_title(session_id.clone(), title, SessionTitleOrigin::Manual)
+                .await?;
+            core.broadcast_committed(mutation.event);
+        }
+    }
+    if !matches!(emotion, PresentationField::Unchanged)
+        || !matches!(summary, PresentationField::Unchanged)
+    {
+        if let Some(manager) = app.try_state::<Arc<CodexManager>>() {
+            return manager
+                .set_presentation(app, &session_id, emotion, summary)
+                .await;
+        }
+        let mutation = core
+            .sessions()
+            .set_presentation(session_id.clone(), emotion, summary)
+            .await?;
+        core.broadcast_committed(mutation.event.clone());
+        return Ok(json!({
+            "sessionId": session_id,
+            "title": mutation.value.title,
+            "emotion": mutation.value.metadata.get("presentationEmotion"),
+            "summary": mutation.value.metadata.get("presentationSummary"),
+        }));
+    }
+    let session = core
+        .sessions()
+        .get(session_id.clone())
+        .await?
+        .context("session not found")?;
+    Ok(json!({
+        "sessionId": session.id,
+        "title": session.title,
+        "emotion": session.metadata.get("presentationEmotion"),
+        "summary": session.metadata.get("presentationSummary"),
     }))
 }
 

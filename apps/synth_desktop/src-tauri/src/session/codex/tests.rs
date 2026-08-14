@@ -596,6 +596,8 @@ async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() 
         status: SessionStatus::Running.as_str().into(),
         title: Some("Restored local turn".into()),
         title_origin: Some("automatic".into()),
+        presentation_emotion: None,
+        presentation_summary: None,
         approval_policy: "never".into(),
         sandbox: "workspace-write".into(),
     };
@@ -1006,6 +1008,10 @@ fn advertises_only_the_compact_visual_tool_to_codex() {
         mcp_enabled_tools("synth_optimizers"),
         "enabled_tools = [\"optimizer_manage\"]\n"
     );
+    assert_eq!(
+        mcp_enabled_tools("synth_session"),
+        "enabled_tools = [\"session_present\"]\n"
+    );
 }
 
 #[test]
@@ -1062,6 +1068,11 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
     assert!(visual_skill.contains("There is\n**no** top-level `method` field"));
     assert!(!visual_skill.contains("`method: \"visual_manage\"`"));
     assert!(!visual_skill.contains("{\"method\":\"visual_manage\""));
+
+    let session_skill = fs::read_to_string(home.join("skills/use-synth-session/SKILL.md")).unwrap();
+    assert!(session_skill.contains("tools.mcp__synth_session__session_present"));
+    assert!(session_skill.contains("seven"));
+    assert!(session_skill.contains("Manual"));
 }
 #[test]
 fn generated_mcp_configs_use_each_adapter_owned_ipc_variable() {
@@ -1072,6 +1083,10 @@ fn generated_mcp_configs_use_each_adapter_owned_ipc_variable() {
     );
     assert_eq!(
         mcp_ipc_env_key("synth_optimizers"),
+        "SYNTH_DESKTOP_IPC_FILE"
+    );
+    assert_eq!(
+        mcp_ipc_env_key("synth_session"),
         "SYNTH_DESKTOP_IPC_FILE"
     );
 }

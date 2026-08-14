@@ -268,6 +268,8 @@ export type PersistedCodexSession = {
 	titleOrigin?: "default" | "automatic" | "manual" | null;
 	approvalPolicy: string;
 	sandbox: string;
+	presentationEmotion?: string | null;
+	presentationSummary?: string | null;
 };
 export type CodexEvent = { sessionId: string; method: string; params: Record<string, unknown> };
 /** Typed rejection payload of `codex_turn_send`. */
