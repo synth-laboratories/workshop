@@ -1,5 +1,6 @@
 //! Local Visual Registry: durable visual instances, revisions, and template catalog.
 
+mod artifacts;
 mod live_eval;
 pub mod mermaid;
 mod models;
@@ -19,9 +20,9 @@ pub use live_eval::{
     LIVE_HARBOR_TEMPLATE,
 };
 pub use models::{
-    validate_bindings, RendererKind, VisualCreateRequest, VisualQuery, VisualRecord,
-    VisualRevision, VisualStatus, VisualUpdateRequest, VISUAL_BINDINGS_SCHEMA_VERSION,
-    VISUAL_SCHEMA_VERSION,
+    validate_bindings, RendererKind, VisualAnnotation, VisualAnnotationCreate, VisualCreateRequest,
+    VisualQuery, VisualRecord, VisualRevision, VisualSeal, VisualSealBundle, VisualStatus,
+    VisualUpdateRequest, VisualUpload, VISUAL_BINDINGS_SCHEMA_VERSION, VISUAL_SCHEMA_VERSION,
 };
 pub use registry::VisualRegistry;
 pub use renditions::{VisualAsset, VisualRendition};

@@ -8,6 +8,7 @@ use crate::data::{ContainerDeployment, ContainerRegisterRequest, DataStore};
 use crate::domain::{RunService, RunStatus, SessionKind, SessionService, SessionStatus};
 use crate::optimizers::OptimizerService;
 use crate::plugins::PluginService;
+use crate::reports::ReportRegistry;
 use crate::storage::{
     AppEvent, ContentStore, CoreDiagnostics, EventAppend, EventJournal, EventSource, SessionRecord,
     Storage,
@@ -28,6 +29,7 @@ pub struct CoreRuntime {
     journal: EventJournal,
     content: ContentStore,
     visuals: VisualRegistry,
+    reports: ReportRegistry,
     data: DataStore,
     optimizers: OptimizerService,
     plugins: PluginService,
@@ -59,6 +61,12 @@ impl CoreRuntime {
         let content = ContentStore::new(storage.content_root());
         let visuals =
             VisualRegistry::new(storage.database().clone(), journal.clone(), content.clone());
+        let reports = ReportRegistry::new(
+            storage.database().clone(),
+            journal.clone(),
+            content.clone(),
+            visuals.clone(),
+        );
         let data = DataStore::new(storage.database().clone(), content.clone());
         let intern_provider = Arc::new(InternProviderManager::new(
             intern.clone(),
@@ -86,6 +94,7 @@ impl CoreRuntime {
             journal,
             content,
             visuals,
+            reports,
             data,
             optimizers,
             plugins,
@@ -123,6 +132,10 @@ impl CoreRuntime {
 
     pub fn visuals(&self) -> &VisualRegistry {
         &self.visuals
+    }
+
+    pub fn reports(&self) -> &ReportRegistry {
+        &self.reports
     }
 
     pub fn data(&self) -> &DataStore {

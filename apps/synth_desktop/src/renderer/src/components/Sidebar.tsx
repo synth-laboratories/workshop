@@ -22,6 +22,7 @@ type Props = {
 	activeChatId?: string | null;
 	inventoryActive?: boolean;
 	visualsActive?: boolean;
+	reportsActive?: boolean;
 	optimizersActive?: boolean;
 	workingChatIds?: ReadonlySet<string>;
 	activeLocalDecodeTps?: string | null;
@@ -32,6 +33,7 @@ type Props = {
 	onOpenChat: (id: string) => void;
 	onOpenInventory: () => void;
 	onOpenVisuals: () => void;
+	onOpenReports: () => void;
 	onOpenOptimizers: () => void;
 	onSearch: () => void;
 	onSettings: () => void;
@@ -145,6 +147,7 @@ export function Sidebar({
 	activeChatId = null,
 	inventoryActive = false,
 	visualsActive = false,
+	reportsActive = false,
 	optimizersActive = false,
 	workingChatIds = new Set<string>(),
 	activeLocalDecodeTps = null,
@@ -155,6 +158,7 @@ export function Sidebar({
 	onOpenChat,
 	onOpenInventory,
 	onOpenVisuals,
+	onOpenReports,
 	onOpenOptimizers,
 	onSearch,
 	onSettings,
@@ -485,6 +489,15 @@ export function Sidebar({
 							>
 								<IconSearch />
 								<span className="item-label">Visuals</span>
+							</button>
+							<button
+								type="button"
+								className={`chat-item${reportsActive ? " active" : ""}`}
+								onClick={onOpenReports}
+								data-testid="open-reports"
+							>
+								<IconInventory />
+								<span className="item-label">Reports</span>
 							</button>
 							{optimizersEnabled ? (
 								<button

@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import { artifactFromVisualRecord, VisualHost } from "./VisualHost";
 import { bridges } from "../runtime/desktopBridge";
+import type { VisualSeal, VisualSealBundle } from "../bridge";
 
-type Tab = "all" | "recent" | "live" | "templates";
+type Tab = "all" | "recent" | "live" | "sealed" | "templates";
 
 type Props = {
 	onOpenVisual: (visual: VisualRecord) => void;
@@ -24,6 +25,9 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [focusVisualId, setFocusVisualId] = useState<string | null>(null);
+	const [seals, setSeals] = useState<VisualSeal[]>([]);
+	const [sealedBundle, setSealedBundle] = useState<VisualSealBundle | null>(null);
+	const [compareBundle, setCompareBundle] = useState<VisualSealBundle | null>(null);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -36,9 +40,13 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 					setVisuals([]);
 					return;
 				}
-				const rows = await bridge.list({ search: search.trim() || undefined });
+				const [rows, sealedRows] = await Promise.all([
+					bridge.list({ search: search.trim() || undefined }),
+					bridge.listSeals()
+				]);
 				if (!cancelled) {
 					setVisuals(rows);
+					setSeals(sealedRows);
 					setError(null);
 				}
 			} catch (reason) {
@@ -59,20 +67,45 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 
 	const filtered = useMemo(() => {
 		const now = Date.now();
+		const sealedIds = new Set(seals.map((seal) => seal.visualId));
 		return visuals.filter((visual) => {
 			if (tab === "live") return visual.status === "live";
+			if (tab === "sealed") return sealedIds.has(visual.id);
 			if (tab === "templates") return visual.rendererKind === "template";
 			if (tab === "recent") {
 				return now - Date.parse(visual.updatedAt) < 1000 * 60 * 60 * 24;
 			}
 			return visual.status !== "archived";
 		});
-	}, [tab, visuals]);
+	}, [tab, visuals, seals]);
 
 	const selected = filtered.find((visual) => visual.id === selectedId) ?? filtered[0] ?? null;
 	useEffect(() => {
 		if (selected?.metadata?.presentation === "canvas") setFocusVisualId(selected.id);
+		setSealedBundle(null);
+		setCompareBundle(null);
 	}, [selected?.id, selected?.metadata?.presentation]);
+
+	async function reopenSeal(receiptDigest: string) {
+		try {
+			setSealedBundle(await bridges.visuals!.getSeal(receiptDigest));
+			setCompareBundle(null);
+			setError(null);
+		} catch (reason) {
+			setError(String(reason));
+		}
+	}
+
+	async function compareSeal(receiptDigest: string) {
+		try {
+			const bundle = await bridges.visuals!.getSeal(receiptDigest);
+			if (!sealedBundle) setSealedBundle(bundle);
+			else setCompareBundle(bundle);
+			setError(null);
+		} catch (reason) {
+			setError(String(reason));
+		}
+	}
 
 	return (
 		<section className={`visuals-page${focusVisualId ? " visuals-page-focus" : ""}`} data-testid="visuals-page">
@@ -101,6 +134,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 					["all", "All"],
 					["recent", "Recent"],
 					["live", "Live"],
+					["sealed", "Sealed"],
 					["templates", "Templates"]
 				] as const).map(([id, label]) => (
 					<button
@@ -159,7 +193,28 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 								{focusVisualId ? "Exit canvas" : "Open canvas"}
 							</button>
 						</header>
-						<VisualHost artifact={artifactFromVisualRecord(selected)} />
+						{seals.some((seal) => seal.visualId === selected.id) ? (
+							<div className="visual-seal-strip" aria-label="Offline revisions">
+								<button type="button" onClick={() => { setSealedBundle(null); setCompareBundle(null); }}>Live</button>
+								{seals.filter((seal) => seal.visualId === selected.id).map((seal) => (
+									<span key={seal.receiptDigest} className="visual-seal-choice">
+										<button type="button" onClick={() => void reopenSeal(seal.receiptDigest)}>
+											Offline rev {seal.visualRevision} · {seal.receiptDigest.slice(0, 8)}
+										</button>
+										{sealedBundle?.seal.receiptDigest !== seal.receiptDigest ? (
+											<button type="button" onClick={() => void compareSeal(seal.receiptDigest)}>Compare</button>
+										) : null}
+									</span>
+								))}
+								{compareBundle ? <button type="button" onClick={() => setCompareBundle(null)}>Close comparison</button> : null}
+							</div>
+						) : null}
+						{sealedBundle ? (
+							<div className={compareBundle ? "visual-sealed-compare" : "visual-sealed-single"}>
+								<iframe className="visual-sealed-frame" title={`Sealed ${selected.title} revision ${sealedBundle.seal.visualRevision}`} sandbox="" srcDoc={sealedBundle.indexHtml} />
+								{compareBundle ? <iframe className="visual-sealed-frame" title={`Sealed ${selected.title} revision ${compareBundle.seal.visualRevision}`} sandbox="" srcDoc={compareBundle.indexHtml} /> : null}
+							</div>
+						) : <VisualHost artifact={artifactFromVisualRecord(selected)} />}
 					</div>
 				) : null}
 			</div>

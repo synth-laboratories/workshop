@@ -133,6 +133,89 @@ pub struct VisualRevision {
     pub created_at: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualAnnotation {
+    pub id: String,
+    pub visual_id: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub visual_revision: i64,
+    pub source_digest: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub selector: Value,
+    pub kind: String,
+    pub body: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub metadata: Value,
+    pub author_id: String,
+    pub supersedes_id: Option<String>,
+    pub tombstoned: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualAnnotationCreate {
+    #[specta(type = specta_typescript::Unknown)]
+    pub visual_revision: i64,
+    pub source_digest: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub selector: Value,
+    pub kind: String,
+    pub body: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub metadata: Option<Value>,
+    pub author_id: Option<String>,
+    pub supersedes_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualSeal {
+    pub receipt_digest: String,
+    pub visual_id: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub visual_revision: i64,
+    pub artifact_id: String,
+    pub schema_version: String,
+    pub compiler_name: String,
+    pub compiler_version: String,
+    pub runtime_digest: String,
+    pub index_digest: String,
+    pub data_digest: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub receipt_size_bytes: i64,
+    #[specta(type = specta_typescript::Unknown)]
+    pub total_size_bytes: i64,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualSealBundle {
+    pub seal: VisualSeal,
+    pub index_html: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub data: Value,
+    #[specta(type = specta_typescript::Unknown)]
+    pub receipt: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualUpload {
+    pub receipt_digest: String,
+    pub collection_id: Option<String>,
+    pub publication_id: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub publication_revision: Option<i64>,
+    pub state: String,
+    pub committed_url: Option<String>,
+    pub error: Option<String>,
+    pub updated_at: String,
+}
+
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct VisualCreateRequest {
