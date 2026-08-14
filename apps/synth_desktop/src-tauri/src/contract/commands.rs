@@ -130,6 +130,11 @@ impl Commands {
     pub const REPORTS_REVISION_GET: &'static str = "reports_revision_get";
     pub const REPORTS_CREATE: &'static str = "reports_create";
     pub const REPORTS_UPDATE: &'static str = "reports_update";
+    pub const REPORTS_ARCHIVE: &'static str = "reports_archive";
+    pub const REPORTS_RESTORE: &'static str = "reports_restore";
+    pub const REPORTS_VISIBILITY_REQUESTS: &'static str = "reports_visibility_requests";
+    pub const REPORTS_VISIBILITY_REQUEST: &'static str = "reports_visibility_request";
+    pub const REPORTS_VISIBILITY_DECIDE: &'static str = "reports_visibility_decide";
     pub const REPORTS_SEAL: &'static str = "reports_seal";
     pub const REPORTS_SEALS_LIST: &'static str = "reports_seals_list";
     pub const REPORTS_SEAL_GET: &'static str = "reports_seal_get";

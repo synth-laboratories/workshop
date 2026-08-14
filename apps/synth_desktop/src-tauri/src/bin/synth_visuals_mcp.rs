@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Stdio MCP adapter for Synth visuals. Forwards tools to CoreRuntime visuals IPC.
 //!
 //! Usage (Codex home config):
@@ -326,13 +328,20 @@ fn tools() -> Value {
             {"name":"report_get","description":"Get a Report identity and current revision","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"}},"required":["report_id"],"additionalProperties":false}},
             {"name":"report_get_revision","description":"Get one exact Report revision, including ordered blocks","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"revision":{"type":"integer"}},"required":["report_id"],"additionalProperties":false}},
             {"name":"report_create","description":"Create a local Report draft with narrative and appendix blocks","inputSchema":{"type":"object","properties":{"title":{"type":"string"},"summary":{"type":"string"},"authors":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}},
-            {"name":"report_update","description":"Update a local Report draft. Sealed revisions stay immutable.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"title":{"type":"string"},"summary":{"type":"string"},"blocks":{"type":"array"},"claims":{"type":"array"},"limitations":{"type":"array"}},"required":["report_id"],"additionalProperties":false}},
+            {"name":"report_update","description":"Update a local Report draft using optimistic revision control. Sealed revisions stay immutable.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"expected_revision":{"type":"integer"},"title":{"type":"string"},"summary":{"type":"string"},"blocks":{"type":"array"},"claims":{"type":"array"},"limitations":{"type":"array"}},"required":["report_id","expected_revision"],"additionalProperties":false}},
+            {"name":"report_block_add","description":"Add a block to a Report draft using optimistic revision control.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"expected_revision":{"type":"integer"},"block":{"type":"object"}},"required":["report_id","expected_revision","block"],"additionalProperties":false}},
+            {"name":"report_block_update","description":"Replace one block in a Report draft using its block_id and optimistic revision control.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"expected_revision":{"type":"integer"},"block":{"type":"object"}},"required":["report_id","expected_revision","block"],"additionalProperties":false}},
+            {"name":"report_block_remove","description":"Remove one block from a Report draft using optimistic revision control.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"expected_revision":{"type":"integer"},"block_id":{"type":"string"}},"required":["report_id","expected_revision","block_id"],"additionalProperties":false}},
             {"name":"report_attach_trace","description":"Attach a Trace V5 digest to a Report. Desktop resolves the local rollout-inspector projection when omitted. The frozen Report reader renders the canonical inspector; missing projections stay —.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"trace_digest":{"type":"string"},"trace_id":{"type":"string"},"label":{"type":"string"},"collection_id":{"type":"string"},"projection":{"type":"object","description":"Optional synth.trace-projection.rollout-inspector.v1 packet. Omit to resolve from local inventory."}},"required":["report_id","trace_digest"],"additionalProperties":false}},
             {"name":"report_seal","description":"Seal one exact Report revision for offline reopen. Does not upload or promote.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"revision":{"type":"integer"}},"required":["report_id","revision"],"additionalProperties":false}},
             {"name":"report_list_seals","description":"List local sealed Report revisions","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"report_get_seal","description":"Reopen one local sealed Report by receipt digest","inputSchema":{"type":"object","properties":{"receipt_digest":{"type":"string"}},"required":["receipt_digest"],"additionalProperties":false}},
             {"name":"report_upsert_experiment","description":"Create or update an Experiment Record on a Report","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"experiment_id":{"type":"string"},"title":{"type":"string"},"hypothesis":{"type":"string"},"status":{"type":"string"},"protocol_digest":{"type":"string"},"arms":{"type":"array"},"runs":{"type":"array"},"results":{"type":"array"}},"required":["report_id","title"],"additionalProperties":false}},
-            {"name":"report_append_log","description":"Append a Research Log entry. Corrections link earlier entries and never rewrite them.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"entry_kind":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"author":{"type":"string"},"actor_kind":{"type":"string","enum":["human","agent"]},"claim_effect":{"type":"string"},"supersedes_entry_id":{"type":"string"},"links":{"type":"array"}},"required":["report_id","entry_kind","title","body"],"additionalProperties":false}}
+            {"name":"report_append_log","description":"Append a Research Log entry. Corrections link earlier entries and never rewrite them.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"entry_kind":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"author":{"type":"string"},"actor_kind":{"type":"string","enum":["human","agent"]},"claim_effect":{"type":"string"},"supersedes_entry_id":{"type":"string"},"links":{"type":"array"}},"required":["report_id","entry_kind","title","body"],"additionalProperties":false}},
+            {"name":"report_archive","description":"Archive a local Report. This is reversible and never deletes sealed bytes.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"}},"required":["report_id"],"additionalProperties":false}},
+            {"name":"report_restore","description":"Restore an archived local Report.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"}},"required":["report_id"],"additionalProperties":false}},
+            {"name":"report_request_visibility","description":"Request a human-approved visibility change for one exact sealed Report receipt. This does not share, publish, or unpublish by itself.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"receipt_digest":{"type":"string"},"target":{"type":"string","enum":["private","public","unpublished"]},"slug":{"type":"string"},"reason":{"type":"string"}},"required":["report_id","receipt_digest","target"],"additionalProperties":false}},
+            {"name":"report_list_visibility_requests","description":"List visibility requests and their human decision status.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"}},"additionalProperties":false}}
         ]
     });
     if let Some(items) = result.get_mut("tools").and_then(Value::as_array_mut) {
@@ -367,13 +376,14 @@ fn tools() -> Value {
                     | "report_get_revision"
                     | "report_list_seals"
                     | "report_get_seal"
+                    | "report_list_visibility_requests"
             );
             if let Some(object) = tool.as_object_mut() {
                 object.insert(
                     "annotations".into(),
                     json!({
                         "readOnlyHint": read_only,
-                        "destructiveHint": name == "visual_archive",
+                        "destructiveHint": matches!(name.as_str(), "visual_archive" | "report_archive" | "report_block_remove"),
                         "idempotentHint": read_only,
                         "openWorldHint": false
                     }),
@@ -660,6 +670,9 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .ok_or("report_id required")?;
             request("POST", &format!("/v1/reports/{id}"), Some(args.clone()))
         }
+        "report_block_add" => report_block_change(args, "add"),
+        "report_block_update" => report_block_change(args, "update"),
+        "report_block_remove" => report_block_change(args, "remove"),
         "report_seal" => {
             let id = args
                 .get("report_id")
@@ -697,8 +710,123 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .ok_or("report_id required")?;
             request("POST", &format!("/v1/reports/{id}/log"), Some(args.clone()))
         }
+        "report_archive" | "report_restore" => {
+            let id = args
+                .get("report_id")
+                .and_then(Value::as_str)
+                .ok_or("report_id required")?;
+            let operation = if name == "report_archive" {
+                "archive"
+            } else {
+                "restore"
+            };
+            request(
+                "POST",
+                &format!("/v1/reports/{id}/{operation}"),
+                Some(json!({})),
+            )
+        }
+        "report_request_visibility" => {
+            let id = args
+                .get("report_id")
+                .and_then(Value::as_str)
+                .ok_or("report_id required")?;
+            let mut body = args.clone();
+            body["requested_by"] = json!("mcp");
+            request(
+                "POST",
+                &format!("/v1/reports/{id}/visibility-requests"),
+                Some(body),
+            )
+        }
+        "report_list_visibility_requests" => {
+            request("GET", "/v1/report-visibility-requests", Some(args.clone()))
+        }
         other => Err(format!("unknown tool {other}")),
     }
+}
+
+fn report_block_change(args: &Value, operation: &str) -> Result<Value, String> {
+    let id = args
+        .get("report_id")
+        .and_then(Value::as_str)
+        .ok_or("report_id required")?;
+    let expected_revision = args
+        .get("expected_revision")
+        .and_then(Value::as_i64)
+        .ok_or("expected_revision required")?;
+    let current = request(
+        "GET",
+        &format!("/v1/reports/{id}/revision"),
+        Some(json!({"revision": expected_revision})),
+    )?;
+    let mut blocks = current
+        .pointer("/revision/blocks")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or("Report revision response missing blocks")?;
+    match operation {
+        "add" => {
+            let block = args.get("block").cloned().ok_or("block required")?;
+            let block_id = block
+                .get("block_id")
+                .or_else(|| block.get("blockId"))
+                .and_then(Value::as_str)
+                .ok_or("block.block_id required")?;
+            if blocks.iter().any(|row| {
+                row.get("blockId")
+                    .or_else(|| row.get("block_id"))
+                    .and_then(Value::as_str)
+                    == Some(block_id)
+            }) {
+                return Err("block_id already exists".into());
+            }
+            blocks.push(block);
+        }
+        "update" => {
+            let block = args.get("block").cloned().ok_or("block required")?;
+            let block_id = block
+                .get("block_id")
+                .or_else(|| block.get("blockId"))
+                .and_then(Value::as_str)
+                .ok_or("block.block_id required")?;
+            let existing = blocks
+                .iter_mut()
+                .find(|row| {
+                    row.get("blockId")
+                        .or_else(|| row.get("block_id"))
+                        .and_then(Value::as_str)
+                        == Some(block_id)
+                })
+                .ok_or("block does not exist")?;
+            *existing = block;
+        }
+        "remove" => {
+            let block_id = args
+                .get("block_id")
+                .and_then(Value::as_str)
+                .ok_or("block_id required")?;
+            let before = blocks.len();
+            blocks.retain(|row| {
+                row.get("blockId")
+                    .or_else(|| row.get("block_id"))
+                    .and_then(Value::as_str)
+                    != Some(block_id)
+            });
+            if blocks.len() == before {
+                return Err("block does not exist".into());
+            }
+        }
+        _ => return Err("unsupported block operation".into()),
+    }
+    request(
+        "POST",
+        &format!("/v1/reports/{id}"),
+        Some(json!({
+            "expected_revision": expected_revision,
+            "blocks": blocks,
+        })),
+    )
 }
 
 fn capture_review(args: &Value) -> Result<Value, String> {

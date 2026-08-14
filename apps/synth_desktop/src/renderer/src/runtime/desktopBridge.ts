@@ -652,6 +652,14 @@ window.synthWorkspaceScope ??= isTauri
 				invokeCommand(COMMANDS.REPORTS_REVISION_GET, { reportId, revision: revision ?? null }),
 			create: (request) => invokeCommand(COMMANDS.REPORTS_CREATE, { request }),
 			update: (reportId, request) => invokeCommand(COMMANDS.REPORTS_UPDATE, { reportId, request }),
+			archive: (reportId) => invokeCommand(COMMANDS.REPORTS_ARCHIVE, { reportId }),
+			restore: (reportId) => invokeCommand(COMMANDS.REPORTS_RESTORE, { reportId }),
+			listVisibilityRequests: (reportId) =>
+				invokeCommand(COMMANDS.REPORTS_VISIBILITY_REQUESTS, { reportId: reportId ?? null }),
+			requestVisibility: (reportId, request) =>
+				invokeCommand(COMMANDS.REPORTS_VISIBILITY_REQUEST, { reportId, request }),
+			decideVisibility: (requestId, approved) =>
+				invokeCommand(COMMANDS.REPORTS_VISIBILITY_DECIDE, { requestId, approved }),
 			seal: (reportId, revision) => invokeCommand(COMMANDS.REPORTS_SEAL, { reportId, revision }),
 			listSeals: (reportId) => invokeCommand(COMMANDS.REPORTS_SEALS_LIST, { reportId: reportId ?? null }),
 			getSeal: (receiptDigest) => invokeCommand(COMMANDS.REPORTS_SEAL_GET, { receiptDigest }),

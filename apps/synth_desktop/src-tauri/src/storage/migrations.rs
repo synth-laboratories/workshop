@@ -19,6 +19,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_14,
     MIGRATION_15,
     MIGRATION_16,
+    MIGRATION_17,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1045,6 +1046,33 @@ CREATE INDEX IF NOT EXISTS report_review_comments_revision
 ON report_review_comments(report_id, report_revision, created_at);
 "#;
 
+const MIGRATION_17: &str = r#"
+ALTER TABLE reports ADD COLUMN archived_at TEXT;
+
+CREATE TABLE IF NOT EXISTS report_visibility_requests (
+    request_id TEXT PRIMARY KEY,
+    report_id TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+    report_revision INTEGER NOT NULL,
+    receipt_digest TEXT NOT NULL REFERENCES report_seals(receipt_digest) ON DELETE RESTRICT,
+    target TEXT NOT NULL CHECK(target IN ('private','public','unpublished')),
+    slug TEXT,
+    reason TEXT,
+    requested_by TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','approved','denied','executed','failed','expired')),
+    decision_by TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    CHECK ((target = 'public' AND slug IS NOT NULL) OR target != 'public'),
+    FOREIGN KEY (report_id, report_revision)
+        REFERENCES report_revisions(report_id, revision)
+);
+
+CREATE INDEX IF NOT EXISTS report_visibility_requests_report
+ON report_visibility_requests(report_id, created_at DESC);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1094,7 +1122,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 16);
+        assert_eq!(apply_migrations(&conn).unwrap(), 17);
         let updated_at: String = conn
             .query_row(
                 "SELECT updated_at FROM runs WHERE id = 'run-1'",
@@ -1167,7 +1195,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 16);
+        assert_eq!(apply_migrations(&conn).unwrap(), 17);
 
         let ledger_tables: i64 = conn
             .query_row(
@@ -1226,7 +1254,7 @@ mod tests {
         .unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 11);
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 16);
+        assert_eq!(apply_migrations(&conn).unwrap(), 17);
         let old_binary_sum = |conn: &Connection| -> f64 {
             conn.query_row(
                 "SELECT
@@ -1265,7 +1293,7 @@ mod tests {
 
         // Relaunching v12 folds and clears staging. The union remains exactly
         // the same, proving neither data loss nor a transient double charge.
-        assert_eq!(apply_migrations(&conn).unwrap(), 16);
+        assert_eq!(apply_migrations(&conn).unwrap(), 17);
         assert!((old_binary_sum(&conn) - 0.75).abs() < 1e-9);
         assert_eq!(old_inventory_count(&conn), 2);
         let old_inventory_ids: Vec<String> = {
@@ -1329,7 +1357,7 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 16);
+        assert_eq!(apply_migrations(&conn).unwrap(), 17);
 
         let imported: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
@@ -1391,7 +1419,7 @@ mod tests {
         conn.execute_batch(partial).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 7);
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 16);
+        assert_eq!(apply_migrations(&conn).unwrap(), 17);
         let (copies, leftovers): (i64, i64) = conn
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM usage_records WHERE request_id='req-1'),
@@ -1418,7 +1446,7 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(apply_migrations(&conn).unwrap(), 16);
+        assert_eq!(apply_migrations(&conn).unwrap(), 17);
         let kinds: Vec<(String, String)> = {
             let mut stmt = conn
                 .prepare("SELECT id, kind FROM sessions ORDER BY id")
@@ -1455,7 +1483,7 @@ mod tests {
         assert_eq!(probe, 0, "the failed migration's table must roll back");
         assert_eq!(version, 7);
         // The connection stays usable and the real migration still applies.
-        assert_eq!(apply_migrations(&conn).unwrap(), 16);
+        assert_eq!(apply_migrations(&conn).unwrap(), 17);
     }
 
     #[test]
@@ -1467,7 +1495,7 @@ mod tests {
             [r#"{"kind":"remote","provider":"synth-cloud","model":"openrouter/poolside/laguna-s-2.1","adapter":null}"#],
         )
         .unwrap();
-        assert_eq!(apply_migrations(&conn).unwrap(), 16);
+        assert_eq!(apply_migrations(&conn).unwrap(), 17);
         let (kind, target): (String, String) = conn
             .query_row(
                 "SELECT runtime_target_kind, target_json FROM sessions WHERE id='cloud-1'",
@@ -1490,7 +1518,7 @@ mod tests {
     #[test]
     fn migration_14_never_allows_a_partial_upload_permalink() {
         let conn = seed_at_version(13);
-        assert_eq!(apply_migrations(&conn).unwrap(), 16);
+        assert_eq!(apply_migrations(&conn).unwrap(), 17);
         conn.execute(
             "INSERT INTO visuals(id,current_revision,title,template_id,status,renderer_kind,bindings_json,metadata_json,created_at,updated_at)
              VALUES ('vis-1',1,'Visual','template.v1','saved','template','{}','{}','now','now')",

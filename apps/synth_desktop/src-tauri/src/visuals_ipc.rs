@@ -11,7 +11,7 @@ use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
 use crate::limits;
 use crate::reports::{
     ExperimentRecordUpsert, ReportAttachTrace, ReportCreateRequest, ReportQuery,
-    ReportUpdateRequest, ResearchLogAppend,
+    ReportUpdateRequest, ReportVisibilityRequestCreate, ResearchLogAppend,
 };
 use crate::visuals::{
     assert_live_eval_slot, classify_live_eval_family, live_eval_bind_metadata,
@@ -593,6 +593,35 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .and_then(Value::as_str)
                 .map(str::to_string);
             Ok(json!({"seals": reports.list_seals(report_id).await?}))
+        }
+        ("GET", "/v1/report-visibility-requests") => {
+            let report_id = body
+                .get("report_id")
+                .or_else(|| body.get("reportId"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Ok(json!({"requests": reports.list_visibility_requests(report_id).await?}))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/reports/") && path.ends_with("/visibility-requests") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/visibility-requests");
+            let request: ReportVisibilityRequestCreate = serde_json::from_value(body)?;
+            Ok(json!({"request": reports.request_visibility(id.to_string(), request).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/reports/") && path.ends_with("/archive") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/archive");
+            Ok(json!({"report": reports.set_archived(id.to_string(), true).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/reports/") && path.ends_with("/restore") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/restore");
+            Ok(json!({"report": reports.set_archived(id.to_string(), false).await?}))
         }
         ("GET", path) if path.starts_with("/v1/reports/") && path.ends_with("/experiments") => {
             let id = path

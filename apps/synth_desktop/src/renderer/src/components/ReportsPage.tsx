@@ -11,10 +11,11 @@ import type {
 	ReportSeal,
 	ReportSealBundle,
 	ReportUpload,
+	ReportVisibilityRequest,
 	ResearchLogEntry
 } from "../bridge";
 
-type Tab = "all" | "draft" | "sealed";
+type Tab = "all" | "draft" | "sealed" | "archived";
 type AppendixView = "ledger" | "lineage" | "inspector";
 type LogView = "timeline" | "decisions" | "inspector";
 
@@ -162,6 +163,7 @@ export function ReportsPage({ onBack }: Props) {
 	const [traceDigest, setTraceDigest] = useState("");
 	const [traceLabel, setTraceLabel] = useState("");
 	const [selectedTraceIndex, setSelectedTraceIndex] = useState(0);
+	const [visibilityRequests, setVisibilityRequests] = useState<ReportVisibilityRequest[]>([]);
 
 	async function load(reportId?: string | null) {
 		const bridge = bridges.reports;
@@ -172,21 +174,23 @@ export function ReportsPage({ onBack }: Props) {
 		}
 		setLoading(true);
 		try {
-			const rows = await bridge.list({ search: search.trim() || undefined });
+			const rows = await bridge.list({ search: search.trim() || undefined, includeArchived: true });
 			const sealedRows = await bridge.listSeals();
 			setReports(rows);
 			setSeals(sealedRows);
 			const nextId = reportId ?? selectedId ?? rows[0]?.id ?? null;
 			setSelectedId(nextId);
 			if (nextId) {
-				const [nextRevision, nextExperiments, nextLog] = await Promise.all([
+				const [nextRevision, nextExperiments, nextLog, nextVisibilityRequests] = await Promise.all([
 					bridge.getRevision(nextId),
 					bridge.listExperiments(nextId),
-					bridge.listLog(nextId)
+					bridge.listLog(nextId),
+					bridge.listVisibilityRequests(nextId)
 				]);
 				setRevision(nextRevision);
 				setExperiments(nextExperiments);
 				setLog(nextLog);
+				setVisibilityRequests(nextVisibilityRequests);
 				setDraftTitle(nextRevision.title);
 				setPublicSlug(reportSlug(nextRevision.title));
 				setPromotion(null);
@@ -204,6 +208,7 @@ export function ReportsPage({ onBack }: Props) {
 				}
 			} else {
 				setRevision(null);
+				setVisibilityRequests([]);
 			}
 			setError(null);
 		} catch (reason) {
@@ -223,6 +228,8 @@ export function ReportsPage({ onBack }: Props) {
 
 	const filtered = useMemo(() => {
 		return reports.filter((report) => {
+			if (tab === "archived") return Boolean(report.archivedAt);
+			if (report.archivedAt) return false;
 			if (tab === "draft") return report.status === "draft";
 			if (tab === "sealed") return report.status === "sealed";
 			return true;
@@ -259,6 +266,7 @@ export function ReportsPage({ onBack }: Props) {
 		});
 		try {
 			await bridges.reports!.update(selected.id, {
+				expectedRevision: revision.revision,
 				title: draftTitle,
 				summary: draftSummary,
 				blocks
@@ -301,13 +309,17 @@ export function ReportsPage({ onBack }: Props) {
 		}
 	}
 
-	async function shareCurrentSeal() {
+	async function requestVisibility(target: "private" | "public" | "unpublished") {
 		const seal = seals.find((row) => row.reportId === selected?.id);
 		if (!seal) return;
 		try {
-			const upload = await bridges.reports!.shareSeal(seal.receiptDigest);
-			setShareUpload(upload);
-			if (upload.committedUrl) setSharedUrl(upload.committedUrl);
+			await bridges.reports!.requestVisibility(selected!.id, {
+				receiptDigest: seal.receiptDigest,
+				target,
+				slug: target === "public" ? publicSlug.trim() : undefined,
+				reason: `Requested from Workshop Reports UI`,
+				requestedBy: "human"
+			});
 			await load(selected?.id);
 		} catch (reason) {
 			setError(String(reason));
@@ -325,10 +337,24 @@ export function ReportsPage({ onBack }: Props) {
 		}
 	}
 
-	async function publishReport() {
-		if (shareUpload?.state !== "committed" || !shareUpload.publicationId || !publicSlug.trim()) return;
+	async function decideVisibility(requestId: string, approved: boolean) {
 		try {
-			setPromotion(await bridges.reports!.promote(shareUpload.publicationId, publicSlug.trim()));
+			const decided = await bridges.reports!.decideVisibility(requestId, approved);
+			if (decided.status === "executed" && decided.target === "public" && decided.slug) {
+				setPromotion({ publicationId: "approved", slug: decided.slug, status: "published", publicUrl: `/reports/${decided.slug}` });
+			}
+			await load(selected?.id);
+		} catch (reason) {
+			setError(String(reason));
+		}
+	}
+
+	async function toggleArchived() {
+		if (!selected) return;
+		try {
+			if (selected.archivedAt) await bridges.reports!.restore(selected.id);
+			else await bridges.reports!.archive(selected.id);
+			await load(selected.id);
 		} catch (reason) {
 			setError(String(reason));
 		}
@@ -363,7 +389,7 @@ export function ReportsPage({ onBack }: Props) {
 			const blocks = existing
 				? revision.blocks.map((block) => (block.kind === "report.trace-v5.v1" ? traceBlock : block))
 				: [...revision.blocks, traceBlock];
-			await bridges.reports!.update(selected.id, { blocks });
+			await bridges.reports!.update(selected.id, { expectedRevision: revision.revision, blocks });
 			setTraceDigest("");
 			setTraceLabel("");
 			setSelectedTraceIndex(Math.max(nextTraces.length - 1, 0));
@@ -450,6 +476,7 @@ export function ReportsPage({ onBack }: Props) {
 					["all", "All"],
 					["draft", "Drafts"],
 					["sealed", "Sealed"]
+					,["archived", "Archived"]
 				] as const).map(([id, label]) => (
 					<button
 						key={id}
@@ -505,20 +532,23 @@ export function ReportsPage({ onBack }: Props) {
 								<button
 									type="button"
 									data-testid="reports-share"
-									onClick={() => void shareCurrentSeal()}
+									onClick={() => void requestVisibility("private")}
 									disabled={!seals.some((seal) => seal.reportId === selected.id)}
 									title="Human Share uploads this sealed digest privately"
 								>
-									{shareUpload?.state === "committed" ? "Shared privately" : "Share report"}
+									Request private share
 								</button>
 								<button
 									type="button"
 									data-testid="reports-publish"
-									onClick={() => void publishReport()}
-									disabled={shareUpload?.state !== "committed" || !shareUpload.publicationId || !publicSlug.trim()}
+									onClick={() => void requestVisibility("public")}
+									disabled={!seals.some((seal) => seal.reportId === selected.id) || !publicSlug.trim()}
 									title="Publish the committed private seal at a stable public Report URL"
 								>
-									{promotion?.status === "published" ? "Published" : "Publish report"}
+									Request publication
+								</button>
+								<button type="button" onClick={() => void toggleArchived()}>
+									{selected.archivedAt ? "Restore report" : "Archive report"}
 								</button>
 							</div>
 						</header>
@@ -555,7 +585,6 @@ export function ReportsPage({ onBack }: Props) {
 								onChange={(event) => { setPublicSlug(event.target.value); setPromotion(null); }}
 								placeholder="Public report slug"
 								aria-label="Public report slug"
-								disabled={shareUpload?.state !== "committed"}
 							/>
 							<span>/reports/{publicSlug || "report"}</span>
 						</div>
@@ -564,6 +593,27 @@ export function ReportsPage({ onBack }: Props) {
 						) : null}
 						{shareUpload?.state === "failed" ? (
 							<p className="visuals-error">{shareUpload.error || "Share failed; no Report URL was created."}</p>
+						) : null}
+
+						{visibilityRequests.length ? (
+							<section className="reports-section" data-testid="reports-visibility-requests">
+								<h2>Visibility approvals</h2>
+								<ol className="reports-log">
+									{visibilityRequests.map((request) => (
+										<li key={request.requestId}>
+											<strong>{request.target}{request.slug ? ` · /reports/${request.slug}` : ""}</strong>
+											<span>{request.status} · sealed rev {request.reportRevision} · requested by {request.requestedBy}</span>
+											{request.reason ? <p>{request.reason}</p> : null}
+											{request.error ? <p className="visuals-error">{request.error}</p> : null}
+											{request.status === "pending" ? <div className="reports-actions">
+												<button type="button" onClick={() => void decideVisibility(request.requestId, true)}>Approve and execute</button>
+												<button type="button" className="ghost-button" onClick={() => void decideVisibility(request.requestId, false)}>Deny</button>
+											</div> : null}
+										</li>
+									))}
+								</ol>
+								{shareUpload?.state === "committed" ? <button type="button" onClick={() => void requestVisibility("unpublished")}>Request unpublish</button> : null}
+							</section>
 						) : null}
 
 						<nav className="reports-outline" aria-label="Generated outline">

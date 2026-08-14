@@ -2,14 +2,14 @@ use super::models::{
     default_blocks, generated_outline, is_evidence_kind, validate_block, ExperimentRecord,
     ExperimentRecordUpsert, ExperimentStatus, ReportAttachTrace, ReportBlock, ReportClaim,
     ReportCreateRequest, ReportLimitation, ReportQuery, ReportRecord, ReportRevision, ReportSeal,
-    ReportSealBundle, ReportSource, ReportStatus, ReportUpdateRequest, ResearchLogAppend,
-    ResearchLogEntry, BLOCK_EXPERIMENT_RECORDS, BLOCK_OUTLINE, BLOCK_RESEARCH_LOG, BLOCK_TRACE,
-    REPORT_REVISION_SCHEMA, REPORT_SCHEMA_VERSION,
+    ReportSealBundle, ReportSource, ReportStatus, ReportUpdateRequest, ReportVisibilityRequest,
+    ReportVisibilityRequestCreate, ResearchLogAppend, ResearchLogEntry, BLOCK_EXPERIMENT_RECORDS,
+    BLOCK_OUTLINE, BLOCK_RESEARCH_LOG, BLOCK_TRACE, REPORT_REVISION_SCHEMA, REPORT_SCHEMA_VERSION,
 };
 use crate::storage::{ContentStore, Database, EventAppend, EventJournal, EventSource};
 use crate::visuals::VisualRegistry;
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -107,6 +107,7 @@ impl ReportRegistry {
             created_by: request.created_by.unwrap_or_else(|| "user".into()),
             created_at: now.clone(),
             updated_at: now.clone(),
+            archived_at: None,
         };
         let revision = ReportRevision {
             schema_version: REPORT_REVISION_SCHEMA.into(),
@@ -160,7 +161,21 @@ impl ReportRegistry {
         report_id: String,
         request: ReportUpdateRequest,
     ) -> Result<(ReportRecord, Value)> {
-        let current = self.get_revision(report_id.clone(), None).await?;
+        let current_record = self.get(report_id.clone()).await?;
+        if current_record.archived_at.is_some() {
+            bail!("archived reports must be restored before editing");
+        }
+        if let Some(expected) = request.expected_revision {
+            if expected != current_record.current_revision {
+                bail!(
+                    "report revision conflict: expected {expected}, current {}",
+                    current_record.current_revision
+                );
+            }
+        }
+        let current = self
+            .get_revision(report_id.clone(), Some(current_record.current_revision))
+            .await?;
         let now = Utc::now().to_rfc3339();
         let start_from = if current.status == ReportStatus::Sealed {
             let mut next = current.clone();
@@ -250,6 +265,191 @@ impl ReportRegistry {
             })
             .await?;
         Ok((stored, event))
+    }
+
+    pub async fn set_archived(&self, report_id: String, archived: bool) -> Result<ReportRecord> {
+        let db = self.db.clone();
+        let now = Utc::now().to_rfc3339();
+        db.run_transaction(move |conn| {
+            load_report(conn, &report_id)?;
+            conn.execute(
+                "UPDATE reports SET archived_at = ?1, updated_at = ?2 WHERE id = ?3",
+                params![archived.then_some(now.clone()), now, report_id],
+            )?;
+            crate::storage::append_event(
+                conn,
+                EventAppend {
+                    event_id: None,
+                    session_id: None,
+                    run_id: None,
+                    source: EventSource::Report,
+                    kind: if archived {
+                        "report.archived".into()
+                    } else {
+                        "report.restored".into()
+                    },
+                    payload: json!({"reportId": report_id}),
+                    remote_sequence: None,
+                    command_id: None,
+                    created_at: None,
+                },
+            )?;
+            load_report(conn, &report_id)
+        })
+        .await
+    }
+
+    pub async fn request_visibility(
+        &self,
+        report_id: String,
+        request: ReportVisibilityRequestCreate,
+    ) -> Result<ReportVisibilityRequest> {
+        let seal = self.get_seal(request.receipt_digest.clone()).await?.seal;
+        let report = self.get(report_id.clone()).await?;
+        if seal.report_id != report_id || seal.report_revision != report.current_revision {
+            bail!("visibility approval requires the current sealed Report revision");
+        }
+        if report.archived_at.is_some() {
+            bail!("archived reports cannot change visibility");
+        }
+        if !matches!(
+            request.target.as_str(),
+            "private" | "public" | "unpublished"
+        ) {
+            bail!("visibility target must be private, public, or unpublished");
+        }
+        let slug = request.slug.map(|value| value.trim().to_owned());
+        if request.target == "public"
+            && !slug
+                .as_deref()
+                .is_some_and(|value| valid_report_slug(value))
+        {
+            bail!("public visibility requires a lowercase kebab-case slug");
+        }
+        let now = Utc::now();
+        let record = ReportVisibilityRequest {
+            request_id: format!("rvr_{}", Uuid::new_v4().simple()),
+            report_id,
+            report_revision: seal.report_revision,
+            receipt_digest: seal.receipt_digest,
+            target: request.target,
+            slug,
+            reason: request.reason,
+            requested_by: request.requested_by.unwrap_or_else(|| "agent".into()),
+            status: "pending".into(),
+            decision_by: None,
+            error: None,
+            created_at: now.to_rfc3339(),
+            updated_at: now.to_rfc3339(),
+            expires_at: (now + Duration::hours(24)).to_rfc3339(),
+        };
+        let db = self.db.clone();
+        let stored = record.clone();
+        db.run_transaction(move |conn| {
+            conn.execute(
+                "INSERT INTO report_visibility_requests(
+                    request_id, report_id, report_revision, receipt_digest, target, slug, reason,
+                    requested_by, status, decision_by, error, created_at, updated_at, expires_at
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                params![
+                    stored.request_id,
+                    stored.report_id,
+                    stored.report_revision,
+                    stored.receipt_digest,
+                    stored.target,
+                    stored.slug,
+                    stored.reason,
+                    stored.requested_by,
+                    stored.status,
+                    stored.decision_by,
+                    stored.error,
+                    stored.created_at,
+                    stored.updated_at,
+                    stored.expires_at,
+                ],
+            )?;
+            Ok(stored)
+        })
+        .await
+    }
+
+    pub async fn list_visibility_requests(
+        &self,
+        report_id: Option<String>,
+    ) -> Result<Vec<ReportVisibilityRequest>> {
+        let db = self.db.clone();
+        db.run(move |conn| {
+            let sql = if report_id.is_some() {
+                "SELECT request_id, report_id, report_revision, receipt_digest, target, slug, reason, requested_by, status, decision_by, error, created_at, updated_at, expires_at FROM report_visibility_requests WHERE report_id = ?1 ORDER BY created_at DESC"
+            } else {
+                "SELECT request_id, report_id, report_revision, receipt_digest, target, slug, reason, requested_by, status, decision_by, error, created_at, updated_at, expires_at FROM report_visibility_requests ORDER BY created_at DESC"
+            };
+            let mut statement = conn.prepare(sql)?;
+            let rows = if let Some(id) = report_id {
+                statement
+                    .query_map([id], visibility_request_from_row)?
+                    .collect::<std::result::Result<Vec<_>, _>>()?
+            } else {
+                statement
+                    .query_map([], visibility_request_from_row)?
+                    .collect::<std::result::Result<Vec<_>, _>>()?
+            };
+            Ok(rows)
+        })
+        .await
+    }
+
+    pub async fn decide_visibility(
+        &self,
+        request_id: String,
+        approved: bool,
+        decision_by: String,
+    ) -> Result<ReportVisibilityRequest> {
+        let db = self.db.clone();
+        let now = Utc::now();
+        db.run_transaction(move |conn| {
+            let current = load_visibility_request(conn, &request_id)?;
+            if current.status != "pending" {
+                bail!("visibility request is no longer pending");
+            }
+            if current.expires_at < now.to_rfc3339() {
+                conn.execute(
+                    "UPDATE report_visibility_requests SET status='expired', updated_at=?1 WHERE request_id=?2",
+                    params![now.to_rfc3339(), request_id],
+                )?;
+                bail!("visibility request expired");
+            }
+            let report = load_report(conn, &current.report_id)?;
+            if report.current_revision != current.report_revision || report.archived_at.is_some() {
+                bail!("visibility request no longer matches the current Report revision");
+            }
+            conn.execute(
+                "UPDATE report_visibility_requests SET status=?1, decision_by=?2, updated_at=?3 WHERE request_id=?4",
+                params![if approved { "approved" } else { "denied" }, decision_by, now.to_rfc3339(), request_id],
+            )?;
+            load_visibility_request(conn, &request_id)
+        })
+        .await
+    }
+
+    pub async fn finish_visibility(
+        &self,
+        request_id: String,
+        error: Option<String>,
+    ) -> Result<ReportVisibilityRequest> {
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            let current = load_visibility_request(conn, &request_id)?;
+            if current.status != "approved" {
+                bail!("only an approved visibility request can execute");
+            }
+            conn.execute(
+                "UPDATE report_visibility_requests SET status=?1, error=?2, updated_at=?3 WHERE request_id=?4",
+                params![if error.is_some() { "failed" } else { "executed" }, error, Utc::now().to_rfc3339(), request_id],
+            )?;
+            load_visibility_request(conn, &request_id)
+        })
+        .await
     }
 
     pub async fn list_experiments(&self, report_id: String) -> Result<Vec<ExperimentRecord>> {
@@ -502,6 +702,7 @@ impl ReportRegistry {
         self.update(
             report_id,
             ReportUpdateRequest {
+                expected_revision: Some(revision.revision),
                 title: None,
                 summary: None,
                 authors: None,
@@ -945,12 +1146,19 @@ fn canonical_revision(revision: &ReportRevision) -> Result<Value> {
 
 fn list_reports(conn: &Connection, query: &ReportQuery) -> Result<Vec<ReportRecord>> {
     let mut statement = conn.prepare(
-        "SELECT id, project_ref, current_revision, title, summary, authors_json, status, created_by, created_at, updated_at FROM reports ORDER BY updated_at DESC",
+        "SELECT id, project_ref, current_revision, title, summary, authors_json, status, created_by, created_at, updated_at, archived_at FROM reports ORDER BY updated_at DESC",
     )?;
     let rows = statement.query_map([], report_from_row)?;
     let mut reports = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    if !query.include_archived {
+        reports.retain(|row| row.archived_at.is_none());
+    }
     if let Some(status) = query.status.as_deref() {
-        reports.retain(|row| row.status.as_str() == status);
+        if status == "archived" {
+            reports.retain(|row| row.archived_at.is_some());
+        } else {
+            reports.retain(|row| row.status.as_str() == status);
+        }
     }
     if let Some(search) = query
         .search
@@ -977,7 +1185,7 @@ fn list_reports(conn: &Connection, query: &ReportQuery) -> Result<Vec<ReportReco
 
 fn load_report(conn: &Connection, report_id: &str) -> Result<ReportRecord> {
     conn.query_row(
-        "SELECT id, project_ref, current_revision, title, summary, authors_json, status, created_by, created_at, updated_at FROM reports WHERE id = ?1",
+        "SELECT id, project_ref, current_revision, title, summary, authors_json, status, created_by, created_at, updated_at, archived_at FROM reports WHERE id = ?1",
         [report_id],
         report_from_row,
     )
@@ -1322,7 +1530,50 @@ fn report_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReportRecord> {
         created_by: row.get(7)?,
         created_at: row.get(8)?,
         updated_at: row.get(9)?,
+        archived_at: row.get(10)?,
     })
+}
+
+fn visibility_request_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ReportVisibilityRequest> {
+    Ok(ReportVisibilityRequest {
+        request_id: row.get(0)?,
+        report_id: row.get(1)?,
+        report_revision: row.get(2)?,
+        receipt_digest: row.get(3)?,
+        target: row.get(4)?,
+        slug: row.get(5)?,
+        reason: row.get(6)?,
+        requested_by: row.get(7)?,
+        status: row.get(8)?,
+        decision_by: row.get(9)?,
+        error: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        expires_at: row.get(13)?,
+    })
+}
+
+fn load_visibility_request(conn: &Connection, request_id: &str) -> Result<ReportVisibilityRequest> {
+    conn.query_row(
+        "SELECT request_id, report_id, report_revision, receipt_digest, target, slug, reason, requested_by, status, decision_by, error, created_at, updated_at, expires_at FROM report_visibility_requests WHERE request_id = ?1",
+        [request_id],
+        visibility_request_from_row,
+    )
+    .optional()?
+    .ok_or_else(|| anyhow!("visibility request does not exist"))
+}
+
+fn valid_report_slug(value: &str) -> bool {
+    value.len() <= 96
+        && !value.is_empty()
+        && !value.starts_with('-')
+        && !value.ends_with('-')
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !value.contains("--")
 }
 
 fn seal_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReportSeal> {
@@ -1631,6 +1882,7 @@ mod tests {
             .update(
                 created.id.clone(),
                 ReportUpdateRequest {
+                    expected_revision: Some(created.current_revision),
                     title: None,
                     summary: None,
                     authors: None,
@@ -1732,6 +1984,7 @@ mod tests {
             .update(
                 created.id.clone(),
                 ReportUpdateRequest {
+                    expected_revision: Some(1),
                     title: Some("Edited after seal".into()),
                     summary: None,
                     authors: None,
@@ -1961,6 +2214,7 @@ mod tests {
             .update(
                 created.id.clone(),
                 ReportUpdateRequest {
+                    expected_revision: Some(created.current_revision),
                     title: None,
                     summary: None,
                     authors: None,
@@ -2029,6 +2283,94 @@ mod tests {
         let comments = reports.list_comments(created.id, Some(1)).await.unwrap();
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].body, "Keep this sealed digest.");
+    }
+
+    #[tokio::test]
+    async fn report_edits_are_optimistic_and_archive_is_reversible() {
+        let dir = tempdir().unwrap();
+        let reports = registry(dir.path());
+        let (created, _) = reports
+            .create(ReportCreateRequest {
+                title: Some("Controlled draft".into()),
+                summary: None,
+                authors: None,
+                project_ref: None,
+                id: Some("rep_controlled_draft".into()),
+                created_by: Some("agent".into()),
+                blocks: None,
+            })
+            .await
+            .unwrap();
+        let conflict = reports
+            .update(
+                created.id.clone(),
+                ReportUpdateRequest {
+                    expected_revision: Some(7),
+                    title: Some("Stale edit".into()),
+                    summary: None,
+                    authors: None,
+                    project_ref: None,
+                    blocks: None,
+                    sources: None,
+                    claims: None,
+                    limitations: None,
+                },
+            )
+            .await
+            .expect_err("stale edits must fail");
+        assert!(conflict.to_string().contains("revision conflict"));
+
+        let archived = reports
+            .set_archived(created.id.clone(), true)
+            .await
+            .unwrap();
+        assert!(archived.archived_at.is_some());
+        assert!(reports
+            .list(ReportQuery::default())
+            .await
+            .unwrap()
+            .is_empty());
+        let restored = reports.set_archived(created.id, false).await.unwrap();
+        assert!(restored.archived_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn visibility_requests_bind_human_approval_to_one_sealed_revision() {
+        let dir = tempdir().unwrap();
+        let reports = registry(dir.path());
+        let (created, _) = reports
+            .create(ReportCreateRequest {
+                title: Some("Approval receipt".into()),
+                summary: None,
+                authors: None,
+                project_ref: None,
+                id: Some("rep_visibility_receipt".into()),
+                created_by: Some("agent".into()),
+                blocks: None,
+            })
+            .await
+            .unwrap();
+        let (seal, _) = reports.seal(created.id.clone(), 1).await.unwrap();
+        let request = reports
+            .request_visibility(
+                created.id.clone(),
+                ReportVisibilityRequestCreate {
+                    receipt_digest: seal.receipt_digest,
+                    target: "public".into(),
+                    slug: Some("approval-receipt".into()),
+                    reason: Some("Publish the reviewed result".into()),
+                    requested_by: Some("mcp".into()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(request.status, "pending");
+        let denied = reports
+            .decide_visibility(request.request_id, false, "human".into())
+            .await
+            .unwrap();
+        assert_eq!(denied.status, "denied");
+        assert_eq!(denied.decision_by.as_deref(), Some("human"));
     }
 
     #[test]

@@ -39,6 +39,8 @@ impl ReportRegistry {
         slug: String,
         backend_url: String,
         api_key: String,
+        approval_request_id: Option<String>,
+        reason: Option<String>,
     ) -> Result<ReportPromotion> {
         let slug = slug.trim().to_owned();
         if slug.is_empty() {
@@ -55,6 +57,8 @@ impl ReportRegistry {
             .json(&json!({
                 "schema_version": "synth.workshop-report-promotion.v1",
                 "slug": slug,
+                "approval_request_id": approval_request_id,
+                "reason": reason,
             }))
             .send()
             .await
@@ -74,6 +78,41 @@ impl ReportRegistry {
             bail!("Report promotion response changed public identity");
         }
         Ok(promoted)
+    }
+
+    pub async fn unpublish_publication(
+        &self,
+        publication_id: String,
+        backend_url: String,
+        api_key: String,
+        reason: Option<String>,
+    ) -> Result<ReportPromotion> {
+        let mut request = reqwest::Client::new()
+            .delete(format!(
+                "{}/artifacts/v1/workshop/reports/{}/promote",
+                backend_url.trim_end_matches('/'),
+                publication_id
+            ))
+            .bearer_auth(api_key);
+        if let Some(reason) = reason.as_deref() {
+            request = request.query(&[("reason", reason)]);
+        }
+        let response = request
+            .send()
+            .await
+            .context("unpublish Report publication")?;
+        let status = response.status();
+        if !status.is_success() {
+            bail!(
+                "unpublish Report publication failed ({status}): {}",
+                response.text().await.unwrap_or_default()
+            );
+        }
+        let result: ReportPromotion = response.json().await.context("decode Report unpublish")?;
+        if result.publication_id != publication_id || result.status != "unpublished" {
+            bail!("Report unpublish response changed public identity");
+        }
+        Ok(result)
     }
 
     pub async fn share_seal(
@@ -949,6 +988,8 @@ mod tests {
                 "craftax-oss-contrast".into(),
                 origin,
                 SLOT_KEY.into(),
+                None,
+                None,
             )
             .await
             .unwrap();

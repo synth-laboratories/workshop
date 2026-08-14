@@ -625,6 +625,7 @@ export type ReportRecord = {
 	createdBy: string;
 	createdAt: string;
 	updatedAt: string;
+	archivedAt?: string | null;
 };
 
 export type ReportRevision = {
@@ -730,6 +731,23 @@ export type ReportPromotion = {
 	publicUrl: string;
 };
 
+export type ReportVisibilityRequest = {
+	requestId: string;
+	reportId: string;
+	reportRevision: number;
+	receiptDigest: string;
+	target: "private" | "public" | "unpublished";
+	slug?: string | null;
+	reason?: string | null;
+	requestedBy: string;
+	status: "pending" | "approved" | "denied" | "executed" | "failed" | "expired";
+	decisionBy?: string | null;
+	error?: string | null;
+	createdAt: string;
+	updatedAt: string;
+	expiresAt: string;
+};
+
 export type ReportComment = {
 	commentId: string;
 	reportId: string;
@@ -743,7 +761,7 @@ export type ReportComment = {
 };
 
 export type ReportsBridge = {
-	list(query?: { status?: string; search?: string; limit?: number }): Promise<ReportRecord[]>;
+	list(query?: { status?: string; search?: string; limit?: number; includeArchived?: boolean }): Promise<ReportRecord[]>;
 	get(reportId: string): Promise<ReportRecord>;
 	getRevision(reportId: string, revision?: number | null): Promise<ReportRevision>;
 	create(request: {
@@ -755,6 +773,7 @@ export type ReportsBridge = {
 		blocks?: ReportBlock[];
 	}): Promise<ReportRecord>;
 	update(reportId: string, request: {
+		expectedRevision?: number;
 		title?: string;
 		summary?: string | null;
 		authors?: string[];
@@ -764,6 +783,17 @@ export type ReportsBridge = {
 		claims?: ReportClaim[];
 		limitations?: ReportLimitation[];
 	}): Promise<ReportRecord>;
+	archive(reportId: string): Promise<ReportRecord>;
+	restore(reportId: string): Promise<ReportRecord>;
+	listVisibilityRequests(reportId?: string | null): Promise<ReportVisibilityRequest[]>;
+	requestVisibility(reportId: string, request: {
+		receiptDigest: string;
+		target: "private" | "public" | "unpublished";
+		slug?: string;
+		reason?: string;
+		requestedBy?: string;
+	}): Promise<ReportVisibilityRequest>;
+	decideVisibility(requestId: string, approved: boolean): Promise<ReportVisibilityRequest>;
 	seal(reportId: string, revision: number): Promise<ReportSeal>;
 	listSeals(reportId?: string | null): Promise<ReportSeal[]>;
 	getSeal(receiptDigest: string): Promise<ReportSealBundle>;

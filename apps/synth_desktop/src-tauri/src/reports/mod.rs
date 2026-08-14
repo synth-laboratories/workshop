@@ -6,6 +6,7 @@ pub use models::{
     ExperimentRecord, ExperimentRecordUpsert, ReportAttachTrace, ReportComment,
     ReportCommentCreate, ReportCreateRequest, ReportPromotion, ReportQuery, ReportRecord,
     ReportRevision, ReportRevisionCompare, ReportSeal, ReportSealBundle, ReportUpdateRequest,
-    ReportUpload, ResearchLogAppend, ResearchLogEntry,
+    ReportUpload, ReportVisibilityRequest, ReportVisibilityRequestCreate, ResearchLogAppend,
+    ResearchLogEntry,
 };
 pub use registry::ReportRegistry;

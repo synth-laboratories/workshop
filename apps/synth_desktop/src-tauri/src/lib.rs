@@ -63,8 +63,8 @@ use plugins::PluginStatus;
 use reports::{
     ExperimentRecord, ExperimentRecordUpsert, ReportComment, ReportCommentCreate,
     ReportCreateRequest, ReportQuery, ReportRecord, ReportRevision, ReportRevisionCompare,
-    ReportSeal, ReportSealBundle, ReportUpdateRequest, ReportUpload, ResearchLogAppend,
-    ResearchLogEntry,
+    ReportSeal, ReportSealBundle, ReportUpdateRequest, ReportUpload, ReportVisibilityRequest,
+    ReportVisibilityRequestCreate, ResearchLogAppend, ResearchLogEntry,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -1353,6 +1353,156 @@ async fn reports_update(
 
 #[tauri::command]
 #[specta::specta]
+async fn reports_archive(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+) -> Result<ReportRecord, AppError> {
+    state
+        .reports()
+        .set_archived(report_id, true)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_restore(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+) -> Result<ReportRecord, AppError> {
+    state
+        .reports()
+        .set_archived(report_id, false)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_visibility_requests(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: Option<String>,
+) -> Result<Vec<ReportVisibilityRequest>, AppError> {
+    state
+        .reports()
+        .list_visibility_requests(report_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_visibility_request(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+    request: ReportVisibilityRequestCreate,
+) -> Result<ReportVisibilityRequest, AppError> {
+    state
+        .reports()
+        .request_visibility(report_id, request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_visibility_decide(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    request_id: String,
+    approved: bool,
+) -> Result<ReportVisibilityRequest, AppError> {
+    let decision = state
+        .reports()
+        .decide_visibility(request_id.clone(), approved, "human".into())
+        .await
+        .map_err(AppError::from)?;
+    if !approved {
+        return Ok(decision);
+    }
+    let execution: anyhow::Result<()> = async {
+        let backend = synth_config::resolve()?;
+        let api_key = backend.api_key.ok_or_else(|| {
+            anyhow::anyhow!("Approving Report visibility requires a signed-in Synth account")
+        })?;
+        match decision.target.as_str() {
+            "private" => {
+                let (_, event) = state
+                    .reports()
+                    .share_seal(
+                        decision.receipt_digest.clone(),
+                        backend.backend_url.clone(),
+                        api_key.clone(),
+                    )
+                    .await?;
+                if event.get("schemaVersion").is_some() {
+                    publish_visual_event(&app, &state, event).await?;
+                }
+            }
+            "public" => {
+                let (upload, event) = state
+                    .reports()
+                    .share_seal(
+                        decision.receipt_digest.clone(),
+                        backend.backend_url.clone(),
+                        api_key.clone(),
+                    )
+                    .await?;
+                if event.get("schemaVersion").is_some() {
+                    publish_visual_event(&app, &state, event).await?;
+                }
+                state
+                    .reports()
+                    .promote_publication(
+                        upload.publication_id.ok_or_else(|| {
+                            anyhow::anyhow!("committed upload has no publication")
+                        })?,
+                        decision
+                            .slug
+                            .clone()
+                            .ok_or_else(|| anyhow::anyhow!("public request has no slug"))?,
+                        backend.backend_url.clone(),
+                        api_key.clone(),
+                        Some(decision.request_id.clone()),
+                        decision.reason.clone(),
+                    )
+                    .await?;
+            }
+            "unpublished" => {
+                let upload = state
+                    .reports()
+                    .upload_status(decision.receipt_digest.clone())
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("sealed Report has not been shared"))?;
+                state
+                    .reports()
+                    .unpublish_publication(
+                        upload
+                            .publication_id
+                            .ok_or_else(|| anyhow::anyhow!("shared Report has no publication"))?,
+                        backend.backend_url.clone(),
+                        api_key.clone(),
+                        decision.reason.clone(),
+                    )
+                    .await?;
+            }
+            _ => anyhow::bail!("unsupported visibility target"),
+        }
+        Ok(())
+    }
+    .await;
+    let error = execution.as_ref().err().map(ToString::to_string);
+    let finished = state
+        .reports()
+        .finish_visibility(request_id, error)
+        .await
+        .map_err(AppError::from)?;
+    execution.map_err(AppError::from)?;
+    Ok(finished)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn reports_seal(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -1514,7 +1664,14 @@ async fn reports_promote(
     })?;
     state
         .reports()
-        .promote_publication(publication_id, slug, backend.backend_url, api_key)
+        .promote_publication(
+            publication_id,
+            slug,
+            backend.backend_url,
+            api_key,
+            None,
+            None,
+        )
         .await
         .map_err(AppError::from)
 }

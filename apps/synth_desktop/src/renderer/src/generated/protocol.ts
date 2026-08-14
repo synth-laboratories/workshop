@@ -133,11 +133,17 @@ export const commands = {
 	status: string | null,
 	search: string | null,
 	limit: unknown,
+	includeArchived?: boolean,
 } | null) => typedError<ReportRecord_Serialize[], AppError>(__TAURI_INVOKE("reports_list", { query })),
 	reportsGet: (reportId: string) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_get", { reportId })),
 	reportsRevisionGet: (reportId: string, revision: unknown | null) => typedError<ReportRevision_Serialize, AppError>(__TAURI_INVOKE("reports_revision_get", { reportId, revision })),
 	reportsCreate: (request: ReportCreateRequest_Deserialize) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_create", { request })),
 	reportsUpdate: (reportId: string, request: ReportUpdateRequest_Deserialize) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_update", { reportId, request })),
+	reportsArchive: (reportId: string) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_archive", { reportId })),
+	reportsRestore: (reportId: string) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_restore", { reportId })),
+	reportsVisibilityRequests: (reportId: string | null) => typedError<ReportVisibilityRequest_Serialize[], AppError>(__TAURI_INVOKE("reports_visibility_requests", { reportId })),
+	reportsVisibilityRequest: (reportId: string, request: ReportVisibilityRequestCreate_Deserialize) => typedError<ReportVisibilityRequest_Serialize, AppError>(__TAURI_INVOKE("reports_visibility_request", { reportId, request })),
+	reportsVisibilityDecide: (requestId: string, approved: boolean) => typedError<ReportVisibilityRequest_Serialize, AppError>(__TAURI_INVOKE("reports_visibility_decide", { requestId, approved })),
 	reportsSeal: (reportId: string, revision: unknown) => typedError<ReportSeal, AppError>(__TAURI_INVOKE("reports_seal", { reportId, revision })),
 	reportsSealsList: (reportId: string | null) => typedError<ReportSeal[], AppError>(__TAURI_INVOKE("reports_seals_list", { reportId })),
 	reportsSealGet: (receiptDigest: string) => typedError<ReportSealBundle, AppError>(__TAURI_INVOKE("reports_seal_get", { receiptDigest })),
@@ -1566,6 +1572,7 @@ export type ReportQuery = {
 	status: string | null,
 	search: string | null,
 	limit: unknown,
+	includeArchived?: boolean,
 };
 
 export type ReportRecord = ReportRecord_Serialize | ReportRecord_Deserialize;
@@ -1582,6 +1589,7 @@ export type ReportRecord_Deserialize = {
 	createdBy: string,
 	createdAt: string,
 	updatedAt: string,
+	archivedAt?: string | null,
 };
 
 export type ReportRecord_Serialize = {
@@ -1596,6 +1604,7 @@ export type ReportRecord_Serialize = {
 	createdBy: string,
 	createdAt: string,
 	updatedAt: string,
+	archivedAt?: string | null,
 };
 
 export type ReportRevision = ReportRevision_Serialize | ReportRevision_Deserialize;
@@ -1703,9 +1712,14 @@ export type ReportUpdateRequest_Deserialize = {
 	sources: ReportSource_Deserialize[] | null,
 	claims: ReportClaim[] | null,
 	limitations: ReportLimitation[] | null,
+} & {
+	expectedRevision?: unknown,
+} | {
+	expected_revision?: unknown,
 };
 
 export type ReportUpdateRequest_Serialize = {
+	expectedRevision: unknown,
 	title: string | null,
 	summary: string | null,
 	authors: string[] | null,
@@ -1725,6 +1739,63 @@ export type ReportUpload = {
 	committedUrl: string | null,
 	error: string | null,
 	updatedAt: string,
+};
+
+export type ReportVisibilityRequest = ReportVisibilityRequest_Serialize | ReportVisibilityRequest_Deserialize;
+
+export type ReportVisibilityRequestCreate = ReportVisibilityRequestCreate_Serialize | ReportVisibilityRequestCreate_Deserialize;
+
+export type ReportVisibilityRequestCreate_Deserialize = {
+	target: string,
+	slug: string | null,
+	reason: string | null,
+	requestedBy: string | null,
+} & {
+	receiptDigest: string,
+} | {
+	receipt_digest: string,
+};
+
+export type ReportVisibilityRequestCreate_Serialize = {
+	receiptDigest: string,
+	target: string,
+	slug: string | null,
+	reason: string | null,
+	requestedBy: string | null,
+};
+
+export type ReportVisibilityRequest_Deserialize = {
+	requestId: string,
+	reportId: string,
+	reportRevision: unknown,
+	receiptDigest: string,
+	target: string,
+	slug?: string | null,
+	reason?: string | null,
+	requestedBy: string,
+	status: string,
+	decisionBy?: string | null,
+	error?: string | null,
+	createdAt: string,
+	updatedAt: string,
+	expiresAt: string,
+};
+
+export type ReportVisibilityRequest_Serialize = {
+	requestId: string,
+	reportId: string,
+	reportRevision: unknown,
+	receiptDigest: string,
+	target: string,
+	slug?: string | null,
+	reason?: string | null,
+	requestedBy: string,
+	status: string,
+	decisionBy?: string | null,
+	error?: string | null,
+	createdAt: string,
+	updatedAt: string,
+	expiresAt: string,
 };
 
 export type ResearchLogAppend = {

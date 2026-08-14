@@ -117,6 +117,8 @@ pub struct ReportRecord {
     pub created_by: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
@@ -382,6 +384,9 @@ pub struct ReportCreateRequest {
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportUpdateRequest {
+    #[specta(type = specta_typescript::Unknown)]
+    #[serde(default, alias = "expected_revision")]
+    pub expected_revision: Option<i64>,
     pub title: Option<String>,
     pub summary: Option<String>,
     pub authors: Option<Vec<String>>,
@@ -399,6 +404,43 @@ pub struct ReportQuery {
     pub search: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
     pub limit: Option<i64>,
+    #[serde(default)]
+    pub include_archived: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportVisibilityRequest {
+    pub request_id: String,
+    pub report_id: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub report_revision: i64,
+    pub receipt_digest: String,
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub requested_by: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportVisibilityRequestCreate {
+    #[serde(alias = "receipt_digest")]
+    pub receipt_digest: String,
+    pub target: String,
+    pub slug: Option<String>,
+    pub reason: Option<String>,
+    pub requested_by: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, specta::Type)]
