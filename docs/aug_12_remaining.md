@@ -425,3 +425,16 @@ I would prioritize the additions like this:
 10. **O4 secrets and workspace isolation**
 
 Those tests cover the most important gap in the current note: not merely proving that events exist, but proving that Workshop can reliably turn them into a truthful, usable, recoverable product experience.
+
+## Native live acceptance receipt — 2026-08-12
+
+The signed `livecraftax` Workshop instance passed a real visual-before-execution run against the registered normalized Craftax Rust container.
+
+- Workshop opened visual `vis_b2665c9ec8f94b0f845b0a08ed9351de` before environment mutation and marked revision 7 ready.
+- The binding preserved both declared transports: SSE for live delivery and poll for cursor-based recovery. No URL was guessed.
+- Rollout `roll_workshop_live_craftax_20260812_2102` ran seed 8 with `react` / `muse_spark_medium` and completed for $0.0188208.
+- The native canvas reconciled 148 durable envelopes into 22 semantic events and rendered 13 real Containers PNG frames, reward -0.20, achievements 0, policy usage, synchronized replay, plots, and the full Trace V5 viewer.
+- The selected `policy.call` showed the real Craftax observation as input and the model's action JSON as output. The provider emitted neither hidden reasoning nor tool calls, and the viewer truthfully displayed `Not emitted` for both.
+- Rebuilding and relaunching reused the stable signing identity and produced no repeat Keychain authorization prompt.
+
+Machine-readable evidence is in [`docs/receipts/aug_12_live_visual/in_app_live_receipt.json`](receipts/aug_12_live_visual/in_app_live_receipt.json).

@@ -22,6 +22,8 @@ export function AccountSignIn() {
 	const [settings, setSettings] = useState<SynthBackendSettings | null>(null);
 	const [status, setStatus] = useState<string | null>(null);
 	const [saving, setSaving] = useState(false);
+	const [apiKeyOpen, setApiKeyOpen] = useState(false);
+	const [apiKey, setApiKey] = useState("");
 	const [pair, setPair] = useState<PairState>({ kind: "idle" });
 	const pollTimer = useRef<number | null>(null);
 
@@ -91,6 +93,30 @@ export function AccountSignIn() {
 			setSaving(false);
 		}
 	};
+	const saveApiKey = async (event: React.FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
+		if (!settings || !bridges.config || !apiKey.trim()) return;
+		setSaving(true);
+		setStatus(null);
+		try {
+			const next = await bridges.config.update({
+				profile: settings.profile,
+				backendUrl: settings.backendUrl,
+				envFile: settings.envFile,
+				apiKeyEnv: settings.apiKeyEnv,
+				apiKey: apiKey.trim()
+			});
+			setApiKey("");
+			setApiKeyOpen(false);
+			setSettings(next);
+			announceAccountChange(next);
+			setStatus("API key connected · runtime reconnected");
+		} catch (error) {
+			setStatus(error instanceof Error ? error.message : String(error));
+		} finally {
+			setSaving(false);
+		}
+	};
 
 	return (
 		<div className="backend-signin" data-testid="account-sign-in">
@@ -99,8 +125,10 @@ export function AccountSignIn() {
 					<span role="status" className="finetune-meta" data-testid="sign-in-status">
 						Finish sign-in in your browser — this page updates automatically.
 					</span>
-					<button type="button" className="settings-secondary-btn" onClick={() => void beginSignIn()}>Reopen browser</button>
-					<button type="button" className="settings-secondary-btn" data-testid="sign-in-cancel" onClick={cancelSignIn}>Cancel</button>
+					<div className="backend-signin-actions">
+						<button type="button" className="settings-secondary-btn" onClick={() => void beginSignIn()}>Reopen browser</button>
+						<button type="button" className="settings-secondary-btn" data-testid="sign-in-cancel" onClick={cancelSignIn}>Cancel</button>
+					</div>
 				</>
 			) : (
 				<>
@@ -113,15 +141,47 @@ export function AccountSignIn() {
 								? "Connected to Synth. Sign in again to switch accounts."
 								: "New here? Browser sign-in creates your Synth account and connects this device."}
 					</span>
-					{status ? <span className="finetune-meta" data-testid="account-sign-in-note">{status}</span> : null}
-					<button type="button" className="settings-secondary-btn" data-testid="sign-in-begin" onClick={() => void beginSignIn()}>
-						{settings?.apiKeyConfigured ? "Sign in again" : "Sign in with browser"}
-					</button>
-					{settings?.apiKeyConfigured ? (
-						<button type="button" className="settings-secondary-btn" data-testid="account-sign-out" disabled={saving} onClick={() => void signOut()}>
-							Sign out
+					<div className="backend-signin-actions">
+						<button type="button" className="settings-secondary-btn" data-testid="sign-in-begin" onClick={() => void beginSignIn()}>
+							Sign in with browser
 						</button>
+						<button
+							type="button"
+							className="settings-secondary-btn"
+							data-testid="api-key-toggle"
+							aria-expanded={apiKeyOpen}
+							onClick={() => setApiKeyOpen((open) => !open)}
+						>
+							Use API key
+						</button>
+						{settings?.apiKeyConfigured ? (
+							<button type="button" className="settings-secondary-btn" data-testid="account-sign-out" disabled={saving} onClick={() => void signOut()}>
+								Sign out
+							</button>
+						) : null}
+					</div>
+					{apiKeyOpen ? (
+						<form className="backend-api-key-form" data-testid="api-key-form" onSubmit={saveApiKey}>
+							<label htmlFor="synth-api-key">Synth API key</label>
+							<div>
+								<input
+									id="synth-api-key"
+									type="password"
+									value={apiKey}
+									onChange={(event) => setApiKey(event.target.value)}
+									placeholder="sk_…"
+									autoComplete="off"
+									spellCheck={false}
+									autoFocus
+								/>
+								<button type="submit" className="settings-secondary-btn" disabled={saving || !apiKey.trim()}>
+									{saving ? "Connecting…" : "Connect"}
+								</button>
+							</div>
+							<small>Stored only in Workshop's private native-host secrets file.</small>
+						</form>
 					) : null}
+					{status ? <span className="finetune-meta backend-signin-note" data-testid="account-sign-in-note">{status}</span> : null}
 				</>
 			)}
 		</div>

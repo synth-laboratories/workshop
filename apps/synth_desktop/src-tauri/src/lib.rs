@@ -1223,10 +1223,16 @@ async fn model_performance_get(
 #[specta::specta]
 async fn synth_config_update(
     core: State<'_, Arc<CoreRuntime>>,
+    cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
     request: BackendSettingsUpdate,
 ) -> Result<BackendSettings, AppError> {
+    let api_key_updated = request.api_key.is_some();
     let settings = synth_config::update(request).map_err(AppError::from)?;
     core.reload_intern_config().await.map_err(AppError::from)?;
+    if api_key_updated {
+        cloud.clear_cache();
+        let _ = account::mark_paired(core.storage(), chrono::Utc::now());
+    }
     Ok(settings)
 }
 

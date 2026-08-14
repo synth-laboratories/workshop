@@ -125,6 +125,12 @@ test("normalized live bindings retain the declared poll endpoint for recovery", 
   assert.equal(result.slots.stream.data.poll_url, binding.poll_url);
 });
 
+test("live stream recovery also runs after EventSource reaches CLOSED", () => {
+  const hook = readFileSync(join(root, "chrome/useLiveEvalStream.ts"), "utf8");
+  assert.match(hook, /es\.onerror = \(\) => \{\s*if \(!abort\.signal\.aborted\)/);
+  assert.doesNotMatch(hook, /readyState !== EventSource\.CLOSED/);
+});
+
 test("ingest de-dupes, ignores heartbeats, and treats stream.subscribed as ready", () => {
   const state = ingestLiveEnvelopes([
     { kind: "stream.subscribed", event_id: "sub", run_id: "run", payload: { ready: true } },

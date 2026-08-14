@@ -434,6 +434,11 @@ export type BackendSettingsUpdate = {
 	backendUrl: string,
 	envFile: string,
 	apiKeyEnv: string,
+	/**
+	 *  Write-only. It may arrive from the renderer for manual API-key setup,
+	 *  but is never returned by any settings command.
+	 */
+	apiKey: string | null,
 };
 
 export type BeginResult = {

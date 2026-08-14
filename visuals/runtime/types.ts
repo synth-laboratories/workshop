@@ -58,9 +58,17 @@ export type VisualTemplateMeta = {
   tags?: string[];
 };
 
+/**
+ * Where a template came from. `internal` templates are staged from ~/.synth
+ * into templates-internal/ at build time and never ship in a public release.
+ */
+export type VisualTemplateDistribution = "public" | "internal";
+
 export type VisualTemplate = VisualTemplateMeta & {
   /** Absolute or package-relative directory containing template.json. */
   root: string;
+  /** Derived from the template root, not self-declared. */
+  distribution?: VisualTemplateDistribution;
 };
 
 export type VisualInstanceStatus = "draft" | "bound" | "saved" | "open";
