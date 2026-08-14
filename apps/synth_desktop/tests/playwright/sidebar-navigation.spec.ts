@@ -193,6 +193,18 @@ test("sidebar starts compact while retaining a working conversation and a revers
 	expect(markerGeometry).toEqual({ width: "15px", height: "15px", contained: true });
 	await expect(page.locator('[data-testid^="local-chat-sidebar-chat-"]')).toHaveCount(10);
 	await expect(page.getByTestId("sidebar-show-all-chats")).toContainText("Show 4 more");
+	const rowLayout = await page.getByTestId("local-chat-sidebar-chat-13").evaluate((item) => {
+		const row = item.closest<HTMLElement>(".chat-row")!;
+		const actions = row.querySelector<HTMLElement>(".chat-row-actions")!;
+		return {
+			rowHeight: row.getBoundingClientRect().height,
+			itemHeight: item.getBoundingClientRect().height,
+			actionsPosition: getComputedStyle(actions).position
+		};
+	});
+	expect(rowLayout.rowHeight).toBeLessThanOrEqual(32);
+	expect(rowLayout.rowHeight).toBeCloseTo(rowLayout.itemHeight, 0);
+	expect(rowLayout.actionsPosition).toBe("absolute");
 
 	await page.getByTestId("sidebar-show-all-chats").click();
 	await expect(page.locator('[data-testid^="local-chat-sidebar-chat-"]')).toHaveCount(14);

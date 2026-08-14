@@ -80,6 +80,10 @@ Then call `visual_manage` again with `{"operation":"show","arguments":{"visual_i
 - **Mermaid/UML** (`diagram.mermaid.v1`): exact call order or concurrency → sequence; lifecycle → state; types/interfaces/inheritance → class; entities/cardinality → ER. Use Mermaid flowchart/C4 when the user wants a conventional, automatically laid-out topology or context view.
 - **Static 2D systems map** (`diagram.systems.v1`): broad topology, whole-repository maps, ownership/deployment/trust boundaries, before/after, placement, containment, missing edges, dormant/unproven/planned paths, or Monodraw/Excalidraw-style composition.
 - **Benjamin Dicken Style dynamic explanation** (`diagram.systems.dynamic.v1`): data/work/failure/load/control moving through time; intermediate states; queues, shards, retries, replication, optimizer steps, animated graphs; or explicit Benjamin Dicken Style/dynamic/animated/interactive/4D wording.
+
+For this family, load `author-time-dynamic-explainers` before authoring. It is
+the composition, motion, and screenshot-review authority; this skill remains the
+template-selection and source-contract authority.
 - **Both (or a focused set):** use a 2D overview plus Mermaid sequence/state detail when spatial context and exact behavior are both material. Add 4D only for the mechanism whose evolution is the lesson. Do not create all three by reflex.
 - Explicit wording wins. “UML,” “sequence,” and “state machine” stay Mermaid; “systems map,” “2D,” “before/after architecture,” and “Monodraw/Excalidraw style” prefer static 2D.
 

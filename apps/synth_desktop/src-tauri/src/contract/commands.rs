@@ -94,6 +94,14 @@ impl Commands {
     pub const UPDATE_STATUS: &'static str = "update_status";
     pub const UPDATE_OPEN_DOWNLOAD: &'static str = "update_open_download";
     pub const SKILLS_LIST: &'static str = "skills_list";
+    pub const CONTEXT_SNAPSHOT: &'static str = "context_snapshot";
+    pub const CONTEXT_WORKSPACE_AGENTS_UPDATE: &'static str = "context_workspace_agents_update";
+    pub const CONTEXT_SKILL_UPDATE: &'static str = "context_skill_update";
+    pub const CONTEXT_MCP_GROUP_UPDATE: &'static str = "context_mcp_group_update";
+    pub const CONTEXT_COOKBOOKS_INSTALL: &'static str = "context_cookbooks_install";
+    pub const CONTEXT_COOKBOOKS_CANCEL: &'static str = "context_cookbooks_cancel";
+    pub const CONTEXT_COOKBOOKS_SET_ENABLED: &'static str = "context_cookbooks_set_enabled";
+    pub const CONTEXT_COOKBOOKS_UNINSTALL: &'static str = "context_cookbooks_uninstall";
     pub const VISUALS_TEMPLATES_LIST: &'static str = "visuals_templates_list";
     pub const VISUALS_TEMPLATES_GET: &'static str = "visuals_templates_get";
     pub const VISUALS_LIST: &'static str = "visuals_list";

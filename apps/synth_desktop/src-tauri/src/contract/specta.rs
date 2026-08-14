@@ -197,6 +197,14 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::whisper::whisper_transcribe,
         crate::whisper::whisper_transcribe_base64,
         crate::skills::skills_list,
+        crate::context::context_snapshot,
+        crate::context::context_workspace_agents_update,
+        crate::context::context_skill_update,
+        crate::context::context_mcp_group_update,
+        crate::context::context_cookbooks_install,
+        crate::context::context_cookbooks_cancel,
+        crate::context::context_cookbooks_set_enabled,
+        crate::context::context_cookbooks_uninstall,
         crate::workspace_choose_directory,
         crate::codex_session_start,
         crate::codex_turn_start,
@@ -286,7 +294,7 @@ mod tests {
         let exported =
             body.matches("__TAURI_INVOKE(").count() + body.matches("__TAURI_INVOKE<").count();
         assert_eq!(
-            exported, 138,
+            exported, 146,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

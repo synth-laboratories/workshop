@@ -672,6 +672,15 @@ export function useAppController() {
 	const activeChatSession = activeChat
 		? sessions.find((candidate) => candidate.id === activeChat.id)
 		: undefined;
+	const activeChatTargetId = activeChatSession
+		? executionTargetToUiId(activeChatSession.target)
+		: undefined;
+	// Restored layout state opens a chat without going through openChat(). Keep
+	// the composer bound to the conversation's persisted execution target so a
+	// Gemini thread never silently presents (or submits through) Laguna.
+	useEffect(() => {
+		if (activeChatTargetId) setSelectedTargetId(activeChatTargetId);
+	}, [activeChat?.id, activeChatTargetId]);
 	// Session status + event arbitration — single selector, not an App.tsx IIFE.
 	const activeChatRunning = activeChat
 		? selectSessionRunning(activeChatSession, eventsBySession[activeChat.id] ?? [])
@@ -684,6 +693,7 @@ export function useAppController() {
 	const activeLocalModel = activeChatSession?.target.kind === "local";
 	const workbenchWidth = viewportWidth - (sidebarVisible ? sidebarWidth : 0);
 	const sidePanelFits = workbenchWidth >= 368 + 300;
+	const sidePanelCanSharePane = workbenchWidth >= 380 + 7 + 260 + 300;
 	const showSidePanel = sidePanelOpen && sidePanelFits && (sidePanelTab === "outputs" || activeLocalModel);
 	const activeSync =
 		view.kind === "sync"
@@ -1389,6 +1399,7 @@ export function useAppController() {
 		activeLocalModel,
 		activeSync,
 		showSidePanel,
+		sidePanelCanSharePane,
 		showComposer,
 		tabLabel,
 		terminalWorkspaceRoot,

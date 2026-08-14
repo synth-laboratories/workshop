@@ -393,9 +393,15 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 					: event.eventKind === "run.cancelled"
 						? "The response was stopped before the provider returned an answer."
 						: "The provider ended the turn without a response. Please try again.";
-				const id = `terminal-${event.sequence}`;
-				order.push(id);
-				byId.set(id, { id, role: "system", body: message, at: event.createdAt });
+				const previous = order.length ? byId.get(order[order.length - 1]) : undefined;
+				// Some provider bridges publish the same terminal envelope more than
+				// once. A transport retry is one user-visible failure, not a wall of
+				// identical system messages.
+				if (previous?.role !== "system" || previous.body !== message) {
+					const id = `terminal-${event.sequence}`;
+					order.push(id);
+					byId.set(id, { id, role: "system", body: message, at: event.createdAt });
+				}
 			}
 			activeAssistantId = null;
 			producedAssistantForTurn = false;
@@ -413,8 +419,22 @@ function terminalTurnDetail(payload: Record<string, unknown>): string | undefine
 	const error = turn.error && typeof turn.error === "object"
 		? turn.error as Record<string, unknown>
 		: payload.error && typeof payload.error === "object" ? payload.error as Record<string, unknown> : undefined;
-	const message = typeof error?.message === "string" ? error.message : undefined;
-	return message?.trim() || undefined;
+	const message = typeof error?.message === "string" ? error.message.trim() : "";
+	if (!message) return undefined;
+
+	// Provider adapters can put a full nested HTTP response in `message`. Never
+	// expose that implementation payload in the transcript; preserve the useful
+	// reason when it is recognizable and otherwise keep the failure concise.
+	if (message.includes("Requests ending with a model turn are not supported")) {
+		return "The provider rejected a request ending with a model turn";
+	}
+	if (message.toLowerCase().includes("temporarily rate-limited")) {
+		return "Gemini is temporarily rate-limited";
+	}
+	if (message.startsWith("{") || message.length > 240) {
+		return "The provider rejected the request";
+	}
+	return message.replace(/\s+/g, " ");
 }
 
 export function eventsToActivity(
@@ -489,7 +509,7 @@ function activityKind(eventKind: string): LocalActivityLine["kind"] {
 	return "working";
 }
 
-type SafeToolActivity = Pick<LocalActivityLine, "label" | "detail" | "path" | "kind" | "toolStatus" | "artifactId" | "containerId"> & { key: string };
+type SafeToolActivity = Pick<LocalActivityLine, "label" | "detail" | "path" | "kind" | "toolStatus" | "visualStage" | "artifactId" | "containerId"> & { key: string };
 
 const VISUAL_MUTATION_TOOLS = new Set([
 	"visual_manage",
@@ -667,14 +687,37 @@ function mcpToolActivity(
 		.join(" · ") || undefined;
 	const artifactId = server === "synth_visuals" ? visualIdForTool(item, args, tool) : undefined;
 	const containerId = server === "synth_containers" ? containerIdForTool(item, args, tool) : undefined;
+	const visualOperation = server === "synth_visuals"
+		? (tool === "visual_manage" ? stringField(args, "operation") : tool.replace(/^visual_/, ""))
+		: undefined;
+	const toolStatus = safeToolStatus(item);
+	const visualStage: LocalActivityLine["visualStage"] = toolStatus === "failed" && visualOperation
+		? "failed"
+		: visualOperation === "create"
+			? "draft"
+			: visualOperation === "capture_review" || visualOperation === "review"
+				? "review"
+				: visualOperation === "mark_ready"
+					? "ready"
+					: undefined;
+	const lifecycleLabel = visualStage === "draft"
+		? "Visual draft created"
+		: visualStage === "review"
+			? "Visual review"
+			: visualStage === "ready"
+				? "Visual ready"
+				: visualStage === "failed"
+					? "Visual update failed"
+					: undefined;
 	return {
 		key: `mcp:${id}`,
-		label: [server, tool].filter(Boolean).join(".") || "Tool call",
+		label: lifecycleLabel ?? ([server, tool].filter(Boolean).join(".") || "Tool call"),
 		detail: [argsLabel, duration].filter(Boolean).join(" · ") || undefined,
-		kind: artifactId ? "visual" : "working",
+		kind: visualStage ? "visual_lifecycle" : artifactId ? "visual" : "working",
 		artifactId,
 		containerId,
-		toolStatus: safeToolStatus(item)
+		toolStatus,
+		visualStage
 	};
 }
 
@@ -726,6 +769,22 @@ function compactDuration(start: string | undefined, end: string): string {
 	const minutes = Math.floor(seconds / 60);
 	const remainder = seconds % 60;
 	return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
+}
+
+function runDuration(payload: Record<string, unknown>, start: string | undefined, end: string): string {
+	const outcome = objectValue(payload.outcome);
+	const turn = objectValue(payload.turn) ?? (outcome && objectValue(outcome.turn));
+	const explicit = turn?.durationMs ?? payload.durationMs;
+	if (typeof explicit !== "number" || !Number.isFinite(explicit)) return compactDuration(start, end);
+	const syntheticEnd = new Date(Math.max(0, explicit)).toISOString();
+	return compactDuration(new Date(0).toISOString(), syntheticEnd);
+}
+
+function runIdentity(payload: Record<string, unknown>): string | undefined {
+	const outcome = objectValue(payload.outcome);
+	const turn = objectValue(payload.turn) ?? (outcome && objectValue(outcome.turn));
+	return stringField(payload, "runId", "run_id", "turnId", "turn_id")
+		?? (turn && stringField(turn, "id", "runId", "run_id", "turnId", "turn_id"));
 }
 
 function actionCountLabel(counts: { commands: number; reads: number; writes: number; searches: number; tools: number }): string {
@@ -1039,6 +1098,8 @@ export function eventsToLocalActivity(
 	const shownSubagentStarts = new Set<string>();
 	const shownSubagentEnds = new Set<string>();
 	let runStartedAt: string | undefined;
+	let activeRunKey: string | undefined;
+	const completedRunKeys = new Set<string>();
 	let runActions = { commands: 0, reads: 0, writes: 0, searches: 0, tools: 0 };
 	let compactionMarkerAddedForRun = false;
 	let lastTokenTotal: number | undefined;
@@ -1196,6 +1257,12 @@ export function eventsToLocalActivity(
 			continue;
 		}
 		if (event.eventKind === "run.started") {
+			const key = runIdentity(payload);
+			// Some provider bridges replay their terminal envelopes while restoring
+			// a thread. A repeated start for an already-finished run must not reset
+			// its clock and make the historical duration grow on every app launch.
+			if (key && completedRunKeys.has(key)) continue;
+			activeRunKey = key;
 			runStartedAt = event.createdAt;
 			runActions = { commands: 0, reads: 0, writes: 0, searches: 0, tools: 0 };
 			compactionMarkerAddedForRun = false;
@@ -1205,14 +1272,18 @@ export function eventsToLocalActivity(
 			continue;
 		}
 		if (event.eventKind === "run.completed" || event.eventKind === "run.failed" || event.eventKind === "run.cancelled") {
+			const key = runIdentity(payload) ?? activeRunKey;
+			if (key && completedRunKeys.has(key)) continue;
 			const actions = actionCountLabel(runActions);
 			const outcome = event.eventKind === "run.completed" ? "Worked" : event.eventKind === "run.failed" ? "Stopped with an error after" : "Stopped after";
 			(byMessage[current] ??= []).unshift({
 				id: `run-summary-${event.sequence}`,
-				label: `${outcome} ${compactDuration(runStartedAt, event.createdAt)}${actions ? ` · ${actions}` : ""}`,
+				label: `${outcome} ${runDuration(payload, runStartedAt, event.createdAt)}${actions ? ` · ${actions}` : ""}`,
 				kind: "run_summary"
 			});
 			runStartedAt = undefined;
+			activeRunKey = undefined;
+			if (key) completedRunKeys.add(key);
 			continue;
 		}
 		if (event.eventKind === "session/unhealthy") {
@@ -1279,6 +1350,7 @@ export function eventsToLocalActivity(
 				existing.detail = safeTool.detail;
 				existing.path = safeTool.path;
 				existing.kind = safeTool.kind;
+				existing.visualStage = safeTool.visualStage;
 				existing.toolStatus = safeTool.toolStatus;
 				existing.artifactId = safeTool.artifactId;
 				existing.containerId = safeTool.containerId;
@@ -1296,6 +1368,7 @@ export function eventsToLocalActivity(
 					placement: current === "__active__" ? undefined : "after",
 					sequence: event.sequence,
 					kind: safeTool.kind,
+					visualStage: safeTool.visualStage,
 					artifactId: safeTool.artifactId,
 					containerId: safeTool.containerId,
 					toolStatus: safeTool.toolStatus
@@ -1362,6 +1435,15 @@ function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 	if (!id || !templateId) return undefined;
 	const title = stringField(visual, "title") ?? "Visual";
 	const metadata = objectValue(visual.metadata);
+	const durableStatus = stringField(visual, "status");
+	const reviewReceipts = metadata && Array.isArray(metadata.reviews) ? metadata.reviews.length : 0;
+	const status: ArtifactRef["status"] = durableStatus === "failed"
+		? "failed"
+		: durableStatus === "live" || durableStatus === "saved"
+			? "ready"
+			: reviewReceipts > 0
+				? "review"
+				: "draft";
 	return {
 		id,
 		kind: "report",
@@ -1372,6 +1454,8 @@ function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 		templateId,
 		visualId: id,
 		bindings: objectValue(visual.bindings),
+		metadata,
+		status,
 		preview: {
 			variant: templateId.includes("scrub") || templateId.includes("rollout")
 				? "craftax_frame"

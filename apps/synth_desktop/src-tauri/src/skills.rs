@@ -45,6 +45,13 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
     },
 ];
 
+pub(crate) fn bundled_skill_content(id: &str) -> Option<&'static str> {
+    BUNDLED_SKILLS
+        .iter()
+        .find(|skill| skill.id == id)
+        .map(|skill| skill.content)
+}
+
 /// Reads a single `key: value` field out of a SKILL.md's leading `---`
 /// YAML frontmatter block. Deliberately minimal: these files only ever use
 /// flat scalar fields (`name`, `description`), never nested YAML.

@@ -13,9 +13,10 @@ pub use live_eval::{
     assert_no_live_secrets, assert_template_matches_family, classify_live_eval_family,
     craftax_ten_lane_pins, is_guessed_stream_url, is_never_declared_stream_url,
     live_eval_bind_metadata, live_sse_bindings, pending_stream_bindings,
-    require_digbench_policy_pins, require_harbor_policy_pins, resolve_live_eval_template,
-    reward_from_env_status, LiveEvalFamily, CRAFTAX_TEN_LANE_SEEDS, LIVE_CRAFTAX_TEMPLATE,
-    LIVE_DIGBENCH_TEMPLATE, LIVE_EVAL_SLOT, LIVE_HARBOR_TEMPLATE,
+    require_digbench_policy_pins, require_harbor_policy_pins, require_visualsbench_start_policy,
+    resolve_live_eval_template, reward_from_env_status, visualsbench_policy_pins, LiveEvalFamily,
+    CRAFTAX_TEN_LANE_SEEDS, LIVE_CRAFTAX_TEMPLATE, LIVE_DIGBENCH_TEMPLATE, LIVE_EVAL_SLOT,
+    LIVE_HARBOR_TEMPLATE,
 };
 pub use models::{
     validate_bindings, RendererKind, VisualCreateRequest, VisualQuery, VisualRecord,

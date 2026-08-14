@@ -8,6 +8,7 @@
 import type {
 	CodexBridge,
 	CodexOauthBridge,
+	ContextBridge,
 	CoreBridge,
 	DesktopInstanceDiagnostics,
 	InternBridge,
@@ -45,6 +46,7 @@ declare global {
 		synthLaguna?: LagunaBridge;
 		synthWhisper?: WhisperBridge;
 		synthSkills?: SkillsBridge;
+		synthContext?: ContextBridge;
 		synthConfig?: SynthConfigBridge;
 		synthWorkspaceScope?: WorkspaceScopeBridge;
 		synthAccount?: SynthAccountBridge;

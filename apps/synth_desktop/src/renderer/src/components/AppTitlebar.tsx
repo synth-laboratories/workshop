@@ -33,6 +33,7 @@ export type AppTitlebarProps = {
 	terminalOpen: boolean;
 	sidePanelOpen: boolean;
 	sidePanelTab: "outputs" | "inference";
+	reserveNativeControls?: boolean;
 	brand?: "synth" | "openai";
 	onCloseTab: () => void;
 	onNewConversation: () => void;
@@ -47,6 +48,7 @@ export function AppTitlebar({
 	terminalOpen,
 	sidePanelOpen,
 	sidePanelTab,
+	reserveNativeControls = false,
 	brand = "synth",
 	onCloseTab,
 	onNewConversation,
@@ -54,7 +56,7 @@ export function AppTitlebar({
 	onToggleInference
 }: AppTitlebarProps) {
 	return (
-		<header className="titlebar" data-testid="titlebar" data-tauri-drag-region="">
+		<header className={`titlebar${reserveNativeControls ? " titlebar-native-inset" : ""}`} data-testid="titlebar" data-tauri-drag-region="">
 			<div className="titlebar-tabs" data-tauri-drag-region="">
 				<div className="tab tab-active" role="tab" aria-selected data-tauri-drag-region="">
 					{brand === "openai" ? (

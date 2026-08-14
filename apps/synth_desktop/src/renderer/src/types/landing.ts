@@ -87,6 +87,8 @@ export type ArtifactRef = {
 	bindings?: import("@synth/runtime-protocol").VisualBindings | Record<string, unknown>;
 	/** Durable visual metadata, including presentation and authoring review receipts. */
 	metadata?: Record<string, unknown>;
+	/** Durable authoring state projected for transcript and pane chrome. */
+	status?: "draft" | "review" | "ready" | "failed";
 };
 
 /** Inline activity line in a local Laguna transcript (Poolside-style). */
@@ -111,6 +113,8 @@ export type LocalActivityLine = {
 	path?: string;
 	/** Sanitized lifecycle status for an allowlisted tool call. */
 	toolStatus?: "running" | "completed" | "failed";
+	/** User-facing visual authoring milestone; never a raw tool operation. */
+	visualStage?: "draft" | "review" | "ready" | "failed";
 	/** Transcript placement relative to the assistant response owning this activity. */
 	placement?: "before" | "after";
 	/** Source event sequence — used by the placement chronology invariant. */
@@ -120,7 +124,7 @@ export type LocalActivityLine = {
 	tokensAfter?: number;
 	/** Latest observed total for the active turn's compact activity tail. */
 	tokenTotal?: number;
-	kind?: "thought" | "search" | "command" | "file_read" | "file_write" | "visual" | "subagent" | "run_summary" | "context_compaction" | "approval" | "working";
+	kind?: "thought" | "search" | "command" | "file_read" | "file_write" | "visual" | "visual_lifecycle" | "subagent" | "run_summary" | "context_compaction" | "approval" | "working";
 };
 
 export type LocalChat = {
