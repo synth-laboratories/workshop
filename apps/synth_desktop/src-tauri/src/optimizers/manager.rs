@@ -1619,6 +1619,12 @@ fn materialize_uv_runtime(
     let python = runtime.join("bin/python");
     let download = std::process::Command::new(&uv)
         .args([
+            "run",
+            "--no-project",
+            "--with",
+            "pip",
+            "python",
+            "-m",
             "pip",
             "download",
             "--no-deps",
