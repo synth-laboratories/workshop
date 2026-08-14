@@ -484,6 +484,8 @@ export type PluginStatus = {
 	phase: string;
 	installedVersion?: string | null;
 	selectedVersion?: string | null;
+	releaseChannel: "official" | "dev";
+	catalogVersion: string;
 	digest?: string | null;
 	service: { phase: string; startedAt?: string | null; activeRuns: number };
 	capabilitiesDigest?: string | null;
@@ -496,6 +498,7 @@ export type PluginStatus = {
 export type PluginsBridge = {
 	status(pluginId?: string | null): Promise<PluginStatus>;
 	list(): Promise<PluginStatus[]>;
+	setReleaseChannel(pluginId: "optimizers", channel: "official" | "dev"): Promise<PluginStatus>;
 };
 
 export type OptimizersBridge = {

@@ -3,19 +3,28 @@ import { expect, test } from "./browser.fixture";
 test("plugin phases remain visible and Optimizers nav hides when disabled", async ({ page }) => {
 	await page.addInitScript(() => {
 		let phase = "downloading";
+		let releaseChannel = "official";
+		const pluginStatus = () => ({
+			schemaVersion: "synth.plugin-status.v1",
+			pluginId: "optimizers",
+			enabled: true,
+			phase,
+			installedVersion: phase === "not_installed" ? null : "0.2.5",
+			selectedVersion: releaseChannel === "dev" ? "0.2.7.dev20260814" : "0.2.5",
+			releaseChannel,
+			catalogVersion: releaseChannel === "dev" ? "0.2.7.dev20260814" : "0.2.5",
+			digest: phase === "installed" || phase === "ready" ? "sha256:abc" : null,
+			service: { phase, activeRuns: 0 },
+			algorithms: ["gepa"],
+			templates: ["optimizer.gepa.live.v1"]
+		});
 		(window as any).synthPlugins = {
-			status: async () => ({
-				schemaVersion: "synth.plugin-status.v1",
-				pluginId: "optimizers",
-				enabled: true,
-				phase,
-				installedVersion: phase === "not_installed" ? null : "0.2.0",
-				digest: phase === "installed" || phase === "ready" ? "sha256:abc" : null,
-				service: { phase, activeRuns: 0 },
-				algorithms: ["gepa"],
-				templates: ["optimizer.gepa.live.v1"]
-			}),
-			list: async () => []
+			status: async () => pluginStatus(),
+			list: async () => [],
+			setReleaseChannel: async (_pluginId: string, next: string) => {
+				releaseChannel = next;
+				return pluginStatus();
+			}
 		};
 		(window as any).__setPluginPhase = (next: string) => { phase = next; };
 		(window as any).synthOptimizers = {
@@ -48,6 +57,9 @@ test("plugin phases remain visible and Optimizers nav hides when disabled", asyn
 	await page.evaluate(() => (window as any).__setPluginPhase("installed"));
 	await expect(page.getByTestId("optimizer-plugin-phase")).toHaveText("Installed");
 	await expect(page.getByTestId("optimizer-plugin-status")).toContainText("sha256:abc");
+	await page.getByTestId("optimizer-release-channel").selectOption("dev");
+	await expect(page.getByTestId("optimizer-release-warning")).toBeVisible();
+	await expect(page.getByTestId("optimizer-plugin-status")).toContainText("0.2.7.dev20260814");
 });
 
 test("disabled Optimizers plugin removes navigation", async ({ page }) => {
@@ -58,11 +70,14 @@ test("disabled Optimizers plugin removes navigation", async ({ page }) => {
 				pluginId: "optimizers",
 				enabled: false,
 				phase: "disabled",
+				releaseChannel: "official",
+				catalogVersion: "0.2.5",
 				service: { phase: "stopped", activeRuns: 0 },
 				algorithms: [],
 				templates: []
 			}),
-			list: async () => []
+			list: async () => [],
+			setReleaseChannel: async () => { throw new Error("unused"); }
 		};
 	});
 	await page.reload();

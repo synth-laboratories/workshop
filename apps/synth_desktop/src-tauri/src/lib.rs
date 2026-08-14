@@ -48,7 +48,6 @@ use data::{
     TraceRecord, UsageEntry,
 };
 use error::AppError;
-use plugins::{PluginStatus};
 use intern_api::{
     InternControlResult, InternSendResult, InternSessionControlRequest, InternSessionCreateRequest,
     InternSessionSendRequest, InternSessionWire,
@@ -59,6 +58,7 @@ use optimizers::{
     OptimizerRecipeRunRequest, OptimizerReconcileRequest, OptimizerRelationship,
     OptimizerRunRecord, OptimizerStateSlice,
 };
+use plugins::PluginStatus;
 use serde_json::Value;
 use std::sync::Arc;
 use storage::{AppEvent, CoreDiagnostics, ModelPerformanceRepository, ModelPerformanceSummary};
@@ -865,6 +865,26 @@ async fn plugins_status(
 #[specta::specta]
 async fn plugins_list(state: State<'_, Arc<CoreRuntime>>) -> Result<Vec<PluginStatus>, AppError> {
     Ok(vec![state.plugins().status(&state).await])
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn plugins_set_release_channel(
+    state: State<'_, Arc<CoreRuntime>>,
+    plugin_id: String,
+    channel: String,
+) -> Result<PluginStatus, AppError> {
+    if plugin_id != plugins::OPTIMIZERS_PLUGIN_ID {
+        return Err(AppError::from(anyhow::anyhow!(
+            "unknown plugin_id `{plugin_id}`"
+        )));
+    }
+    state
+        .plugins()
+        .registry()
+        .set_release_channel(&channel)
+        .map_err(AppError::from)?;
+    Ok(state.plugins().status(&state).await)
 }
 
 #[derive(Clone, Debug, serde::Deserialize, specta::Type)]
@@ -2068,7 +2088,7 @@ pub fn run() {
     }
     let specta = contract::specta::builder();
 
-	tauri::Builder::default()
+    tauri::Builder::default()
         // This must be the first plugin registered. All app state, IPC, and
         // SQLite ownership belongs to the original process.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -2077,22 +2097,22 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-		.plugin(tauri_plugin_dialog::init())
-		.plugin(tauri_plugin_opener::init())
-		// The main window starts hidden. Showing it from setup races the overlay
-		// webview's first paint on macOS and exposes a dark strip from the window
-		// behind through the transparent native titlebar. Wait until CSS and the
-		// document have loaded so the custom titlebar is present on first reveal.
-		.on_page_load(|webview, payload| {
-			if webview.label() == "main"
-				&& matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
-			{
-				let window = webview.window();
-				let _ = window.maximize();
-				let _ = window.show();
-			}
-		})
-		.setup(|app| {
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        // The main window starts hidden. Showing it from setup races the overlay
+        // webview's first paint on macOS and exposes a dark strip from the window
+        // behind through the transparent native titlebar. Wait until CSS and the
+        // document have loaded so the custom titlebar is present on first reveal.
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main"
+                && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
+            {
+                let window = webview.window();
+                let _ = window.maximize();
+                let _ = window.show();
+            }
+        })
+        .setup(|app| {
             instance::mark_manifest_running();
             // Builds before the credential broker exported provider keys into
             // Codex, which recorded them in its shell snapshots. Scrub what
@@ -2237,7 +2257,7 @@ pub fn run() {
                 });
             }
 
-			Ok(())
+            Ok(())
         })
         .invoke_handler(specta.invoke_handler())
         .build(tauri::generate_context!())

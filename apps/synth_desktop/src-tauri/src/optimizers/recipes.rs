@@ -14,6 +14,7 @@ use std::{
 use tokio::{sync::watch, time::sleep};
 
 use super::{
+    manager::DEFAULT_ALGORITHM_VERSION,
     models::{
         OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerExecutionBinding,
         OptimizerRecipeRunRequest, OptimizerResourceRef, OPTIMIZER_EVENT_SCHEMA_VERSION,
@@ -115,7 +116,7 @@ pub(super) async fn start(
 
     let create = OptimizerCreateRequest {
         algorithm_id: "gepa".into(),
-        algorithm_version: Some("synth-optimizers-0.2.0".into()),
+        algorithm_version: Some(DEFAULT_ALGORITHM_VERSION.into()),
         objective: Some(format!(
             "Banking77 intent prompt · bounded GEPA · {}",
             proposer.title()
@@ -241,11 +242,7 @@ pub(super) async fn prepare(
     let mut summary = run.summary.as_object().cloned().unwrap_or_default();
     summary.insert("preparationDigest".into(), json!(digest));
     summary.insert("waitingForViewer".into(), json!(true));
-    if let Some(digest) = manager
-        .advertised_capabilities()
-        .get("digest")
-        .cloned()
-    {
+    if let Some(digest) = manager.advertised_capabilities().get("digest").cloned() {
         summary.insert("capabilitiesDigest".into(), digest);
     }
     run.summary = serde_json::Value::Object(summary);
@@ -264,7 +261,10 @@ pub(super) async fn start_prepared(
     require_plugin_ready(service.manager()).await?;
     let run = service.get(run_id.to_string()).await?;
     if run.status != "waiting_for_viewer" && run.status != "queued" {
-        bail!("optimizer run `{run_id}` is not prepared for start (status {})", run.status);
+        bail!(
+            "optimizer run `{run_id}` is not prepared for start (status {})",
+            run.status
+        );
     }
     let recipe_id = run
         .summary
@@ -382,7 +382,7 @@ async fn materialize_prepared_run(
     )?;
     let create = OptimizerCreateRequest {
         algorithm_id: "gepa".into(),
-        algorithm_version: Some("synth-optimizers-0.2.0".into()),
+        algorithm_version: Some(DEFAULT_ALGORITHM_VERSION.into()),
         objective: Some(format!(
             "Banking77 intent prompt · bounded GEPA · {}",
             proposer.title()
@@ -1757,7 +1757,7 @@ namespace = "base"
         assert!(catalog
             .iter()
             .all(|recipe| recipe["limits"]["maxCostUsd"] == json!(2.45)));
-        assert_ne!(catalog[0]["policyRef"], catalog[1]["policyRef"]);
+        assert_ne!(catalog[1]["policyRef"], catalog[2]["policyRef"]);
     }
 
     #[test]
@@ -1828,7 +1828,7 @@ namespace = "base"
             let (run, _) = service
                 .create(OptimizerCreateRequest {
                     algorithm_id: "gepa".into(),
-                    algorithm_version: Some("synth-optimizers-0.2.0".into()),
+                    algorithm_version: Some(DEFAULT_ALGORITHM_VERSION.into()),
                     objective: Some(format!("Banking77 GEPA · {}", proposer.title())),
                     source: Some("local".into()),
                     project_ref: None,

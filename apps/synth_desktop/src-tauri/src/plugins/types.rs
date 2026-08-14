@@ -8,6 +8,8 @@ pub const PLUGIN_ACTION_RECEIPT_SCHEMA: &str = "synth.plugin-action-receipt.v1";
 pub const PLUGIN_NOT_READY_CODE: &str = "plugin_not_ready";
 pub const OPTIMIZERS_PLUGIN_ID: &str = "optimizers";
 pub const PLUGIN_PUBLISHER: &str = "Synth Laboratories";
+pub const OFFICIAL_RELEASE_CHANNEL: &str = "official";
+pub const DEV_RELEASE_CHANNEL: &str = "dev";
 
 pub const PLUGIN_PHASES: [&str; 13] = [
     "not_installed",
@@ -46,6 +48,8 @@ pub struct PluginStatus {
     pub installed_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_version: Option<String>,
+    pub release_channel: String,
+    pub catalog_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
     pub service: PluginServiceStatus,
@@ -129,6 +133,7 @@ impl std::error::Error for PluginNotReady {}
 #[serde(rename_all = "camelCase")]
 pub struct CatalogEntry {
     pub plugin_id: String,
+    pub release_channel: String,
     pub version: String,
     pub publisher: String,
     pub package: String,

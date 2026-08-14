@@ -129,6 +129,7 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [startingAgent, setStartingAgent] = useState<OptimizerGuide["id"] | null>(null);
 	const [plugin, setPlugin] = useState<PluginStatus | null>(null);
+	const [changingReleaseChannel, setChangingReleaseChannel] = useState(false);
 
 	const refreshPlugin = useCallback(async () => {
 		if (!bridges.plugins) return;
@@ -176,6 +177,18 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 		() => runs.find((run) => run.id === selectedId) ?? null,
 		[runs, selectedId]
 	);
+	const setReleaseChannel = async (channel: "official" | "dev") => {
+		if (!bridges.plugins) return;
+		setChangingReleaseChannel(true);
+		setError(null);
+		try {
+			setPlugin(await bridges.plugins.setReleaseChannel("optimizers", channel));
+		} catch (reason) {
+			setError(reason instanceof Error ? reason.message : String(reason));
+		} finally {
+			setChangingReleaseChannel(false);
+		}
+	};
 	const pluginPhaseLabel = plugin
 		? ({
 			not_installed: "Not installed",
@@ -342,10 +355,31 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 			{error ? <p className="inventory-error" role="alert" data-testid="optimizer-error">{error}</p> : null}
 			{plugin ? (
 				<section className="optimizer-plugin-status" data-testid="optimizer-plugin-status" data-phase={plugin.phase}>
-					<span className="optimizer-eyebrow">Plugin</span>
-					<strong data-testid="optimizer-plugin-phase">{pluginPhaseLabel}</strong>
-					{plugin.installedVersion ? <span>v{plugin.installedVersion}</span> : null}
-					{plugin.digest ? <code>{plugin.digest}</code> : null}
+					<div className="optimizer-plugin-summary">
+						<span className="optimizer-eyebrow">Plugin</span>
+						<strong data-testid="optimizer-plugin-phase">{pluginPhaseLabel}</strong>
+						{plugin.installedVersion ? <span>Installed v{plugin.installedVersion}</span> : null}
+						<span>Selected v{plugin.catalogVersion}</span>
+						{plugin.digest ? <code>{plugin.digest}</code> : null}
+					</div>
+					<label className="optimizer-release-channel" htmlFor="optimizer-release-channel">
+						<span>Release channel</span>
+						<select
+							id="optimizer-release-channel"
+							data-testid="optimizer-release-channel"
+							value={plugin.releaseChannel}
+							disabled={changingReleaseChannel}
+							onChange={(event) => void setReleaseChannel(event.target.value as "official" | "dev")}
+						>
+							<option value="official">Official releases (Recommended)</option>
+							<option value="dev">Dev nightlies</option>
+						</select>
+					</label>
+					{plugin.releaseChannel === "dev" ? (
+						<p className="optimizer-release-warning" data-testid="optimizer-release-warning">
+							Nightlies may change between Workshop releases. Installs remain pinned and verified.
+						</p>
+					) : null}
 					{plugin.detail ? <p>{plugin.detail}</p> : null}
 				</section>
 			) : null}

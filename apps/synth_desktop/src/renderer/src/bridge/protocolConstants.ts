@@ -165,6 +165,7 @@ export const COMMANDS = {
 	OPTIMIZERS_LIST_CLOUD: "optimizers_list_cloud",
 	PLUGINS_STATUS: "plugins_status",
 	PLUGINS_LIST: "plugins_list",
+	PLUGINS_SET_RELEASE_CHANNEL: "plugins_set_release_channel",
 	VISUAL_SUBSCRIPTION_READY: "visual_subscription_ready",
 	OPTIMIZER_SIDECAR_STATUS: "optimizer_sidecar_status",
 	OPTIMIZER_SIDECAR_INSTALL: "optimizer_sidecar_install",

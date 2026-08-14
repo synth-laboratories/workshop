@@ -58,6 +58,11 @@ impl PluginService {
             .await
             .len() as u32;
         let enabled = self.registry.is_enabled();
+        let release_channel = self.registry.release_channel();
+        let catalog = self
+            .registry
+            .selected_catalog_entry(None)
+            .expect("persisted release channel must map to the built-in catalog");
         let phase = map_phase(enabled, &sidecar.phase, sidecar.version.is_some());
         let status = PluginStatus {
             schema_version: PLUGIN_STATUS_SCHEMA.into(),
@@ -65,7 +70,9 @@ impl PluginService {
             enabled,
             phase,
             installed_version: sidecar.version.clone(),
-            selected_version: sidecar.version.clone(),
+            selected_version: Some(catalog.version.clone()),
+            release_channel,
+            catalog_version: catalog.version,
             digest: sidecar.digest.as_deref().map(digest_ref),
             service: PluginServiceStatus {
                 phase: sidecar.phase.clone(),
@@ -147,10 +154,8 @@ impl PluginService {
             "status" => Ok(serde_json::to_value(self.status(core).await)?),
             "capabilities" => self.capabilities(core).await,
             "enable" | "disable" | "install" | "start" | "stop" | "update" | "remove" => {
-                self.mutate(
-                    core, broker, app, session_id, operation, version.as_deref(),
-                )
-                .await
+                self.mutate(core, broker, app, session_id, operation, version.as_deref())
+                    .await
             }
             other => bail!("unknown plugin operation `{other}`"),
         }
@@ -166,7 +171,7 @@ impl PluginService {
         version: Option<&str>,
     ) -> Result<Value> {
         let started_at = Utc::now().to_rfc3339();
-        let catalog = PluginRegistry::catalog_entry(version)?;
+        let catalog = self.registry.selected_catalog_entry(version)?;
         let before = self.status(core).await;
         let active_runs = before.service.active_runs;
         if action == "stop" && active_runs > 0 {
@@ -212,7 +217,10 @@ impl PluginService {
             receipt_id: format!("plugin_action_{}", Uuid::new_v4().simple()),
             plugin_id: OPTIMIZERS_PLUGIN_ID.into(),
             action: action.into(),
-            version: status.installed_version.clone().or(Some(catalog.version.clone())),
+            version: status
+                .installed_version
+                .clone()
+                .or(Some(catalog.version.clone())),
             digest: status.digest.clone(),
             approval_receipt_id: Some(approval.approval_id),
             started_at,

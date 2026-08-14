@@ -1,9 +1,12 @@
 //! Built-in product-plugin registry. Only `optimizers` is registered in this cut.
 
 use super::types::{
-    CatalogEntry, PluginActionReceipt, PluginStatus, OPTIMIZERS_PLUGIN_ID, PLUGIN_PUBLISHER,
+    CatalogEntry, PluginActionReceipt, PluginStatus, DEV_RELEASE_CHANNEL, OFFICIAL_RELEASE_CHANNEL,
+    OPTIMIZERS_PLUGIN_ID, PLUGIN_PUBLISHER,
 };
-use crate::optimizers::manager::DEFAULT_SIDECAR_VERSION;
+use crate::optimizers::manager::{
+    DEFAULT_SIDECAR_VERSION, DEV_SIDECAR_VERSION, OFFICIAL_SIDECAR_VERSION,
+};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
@@ -13,6 +16,8 @@ use std::{fs, path::PathBuf};
 struct RegistryState {
     plugin_id: String,
     enabled: bool,
+    #[serde(default = "default_release_channel")]
+    release_channel: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_action_receipt_id: Option<String>,
     #[serde(default)]
@@ -24,6 +29,7 @@ impl Default for RegistryState {
         Self {
             plugin_id: OPTIMIZERS_PLUGIN_ID.into(),
             enabled: true,
+            release_channel: default_release_channel(),
             last_action_receipt_id: None,
             receipts: Vec::new(),
         }
@@ -47,11 +53,16 @@ impl PluginRegistry {
 
     pub fn catalog_entry(version: Option<&str>) -> Result<CatalogEntry> {
         let version = version.unwrap_or(DEFAULT_SIDECAR_VERSION);
-        if version != DEFAULT_SIDECAR_VERSION {
-            bail!("unknown optimizer catalog version `{version}`");
-        }
+        let release_channel = match version {
+            OFFICIAL_SIDECAR_VERSION => OFFICIAL_RELEASE_CHANNEL,
+            DEV_SIDECAR_VERSION => DEV_RELEASE_CHANNEL,
+            _ => {
+                bail!("unknown optimizer catalog version `{version}`");
+            }
+        };
         Ok(CatalogEntry {
             plugin_id: OPTIMIZERS_PLUGIN_ID.into(),
+            release_channel: release_channel.into(),
             version: version.into(),
             publisher: PLUGIN_PUBLISHER.into(),
             package: "synth-optimizers".into(),
@@ -69,6 +80,19 @@ impl PluginRegistry {
         })
     }
 
+    pub fn selected_catalog_entry(&self, version: Option<&str>) -> Result<CatalogEntry> {
+        let selected = self.release_channel();
+        let version = version.unwrap_or_else(|| match selected.as_str() {
+            DEV_RELEASE_CHANNEL => DEV_SIDECAR_VERSION,
+            _ => OFFICIAL_SIDECAR_VERSION,
+        });
+        let entry = Self::catalog_entry(Some(version))?;
+        if version != entry.version {
+            bail!("optimizer catalog selection is inconsistent");
+        }
+        Ok(entry)
+    }
+
     pub fn algorithm_version() -> &'static str {
         crate::optimizers::manager::DEFAULT_ALGORITHM_VERSION
     }
@@ -82,6 +106,18 @@ impl PluginRegistry {
         state.enabled = enabled;
         self.store(&state)?;
         Ok(enabled)
+    }
+
+    pub fn release_channel(&self) -> String {
+        normalize_release_channel(&self.load().release_channel).to_owned()
+    }
+
+    pub fn set_release_channel(&self, channel: &str) -> Result<String> {
+        let channel = normalize_release_channel_strict(channel)?;
+        let mut state = self.load();
+        state.release_channel = channel.to_owned();
+        self.store(&state)?;
+        Ok(channel.to_owned())
     }
 
     pub fn last_action_receipt_id(&self) -> Option<String> {
@@ -130,6 +166,26 @@ impl PluginRegistry {
             serde_json::to_vec_pretty(state).context("encode plugin registry")?,
         )
         .context("write plugin registry")
+    }
+}
+
+fn default_release_channel() -> String {
+    OFFICIAL_RELEASE_CHANNEL.into()
+}
+
+fn normalize_release_channel(channel: &str) -> &'static str {
+    if channel == DEV_RELEASE_CHANNEL {
+        DEV_RELEASE_CHANNEL
+    } else {
+        OFFICIAL_RELEASE_CHANNEL
+    }
+}
+
+fn normalize_release_channel_strict(channel: &str) -> Result<&'static str> {
+    match channel {
+        OFFICIAL_RELEASE_CHANNEL => Ok(OFFICIAL_RELEASE_CHANNEL),
+        DEV_RELEASE_CHANNEL => Ok(DEV_RELEASE_CHANNEL),
+        _ => bail!("unknown optimizer release channel `{channel}`"),
     }
 }
 

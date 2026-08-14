@@ -633,7 +633,9 @@ window.synthWorkspaceScope ??= isTauri
 		};
 		window.synthPlugins ??= {
 			status: (pluginId) => invokeCommand(COMMANDS.PLUGINS_STATUS, { pluginId: pluginId ?? null }),
-			list: () => invokeCommand(COMMANDS.PLUGINS_LIST)
+			list: () => invokeCommand(COMMANDS.PLUGINS_LIST),
+			setReleaseChannel: (pluginId, channel) =>
+				invokeCommand(COMMANDS.PLUGINS_SET_RELEASE_CHANNEL, { pluginId, channel })
 		};
 		window.synthOptimizers ??= {
 			listAlgorithms: () => invokeCommand(COMMANDS.OPTIMIZERS_ALGORITHMS_LIST),

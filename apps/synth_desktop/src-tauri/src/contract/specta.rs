@@ -121,6 +121,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::optimizers_list_cloud,
         crate::plugins_status,
         crate::plugins_list,
+        crate::plugins_set_release_channel,
         crate::visual_subscription_ready,
         crate::optimizers::manager::optimizer_sidecar_status,
         crate::optimizers::manager::optimizer_sidecar_install,
@@ -271,10 +272,10 @@ mod tests {
         // The thread name under `cargo test` is the full test path, which
         // contains `::` — an illegal filename character on Windows. Keep only
         // characters that are portable across the platforms we build on.
-        let thread = std::thread::current()
-            .name()
-            .unwrap_or("test")
-            .replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "_");
+        let thread = std::thread::current().name().unwrap_or("test").replace(
+            |c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_',
+            "_",
+        );
         let path = std::env::temp_dir().join(format!(
             "synth-desktop-protocol-{}-{thread}.ts",
             std::process::id()
@@ -297,7 +298,7 @@ mod tests {
         let exported =
             body.matches("__TAURI_INVOKE(").count() + body.matches("__TAURI_INVOKE<").count();
         assert_eq!(
-            exported, 149,
+            exported, 150,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(
