@@ -35,7 +35,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
 pub const OFFICIAL_SIDECAR_VERSION: &str = "0.2.5";
-pub const DEV_SIDECAR_VERSION: &str = "0.2.8.dev20260814";
+pub const DEV_SIDECAR_VERSION: &str = "0.2.9.dev20260814";
 pub const DEFAULT_SIDECAR_VERSION: &str = OFFICIAL_SIDECAR_VERSION;
 pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.5";
 pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = "gepa.recipe.v1";
@@ -2116,7 +2116,7 @@ mod tests {
         fs::set_permissions(&python, fs::Permissions::from_mode(0o755)).unwrap();
 
         write_relocatable_optimizer_launcher(&runtime).unwrap();
-        let activated = dir.path().join("0.2.8.dev20260814");
+        let activated = dir.path().join("0.2.9.dev20260814");
         fs::rename(&staging, &activated).unwrap();
         let output = std::process::Command::new(activated.join("runtime/bin/synth-optimizers"))
             .arg("--help")
