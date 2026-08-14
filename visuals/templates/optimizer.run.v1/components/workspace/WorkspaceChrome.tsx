@@ -10,6 +10,7 @@ export type WorkspaceMetric = {
   label: string;
   value: string;
   title?: string;
+  testId?: string;
 };
 
 export type WorkspaceLane = {
@@ -62,7 +63,7 @@ export function WorkspaceHeader({
       </div>
       <div className="sv-workspace-metrics" role="group" aria-label="Run metrics">
         {metrics.map((metric) => (
-          <div key={metric.label} className="sv-workspace-metric" title={metric.title}>
+          <div key={metric.label} className="sv-workspace-metric" title={metric.title} data-testid={metric.testId}>
             <span>{metric.label}</span>
             <strong>{metric.value}</strong>
           </div>

@@ -133,19 +133,13 @@ impl OptimizerService {
         approval_receipt_id: Option<String>,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let run = self.get(optimizer_run_id.clone()).await?;
-        let expected = run
-            .summary
-            .get("preparationDigest")
-            .and_then(Value::as_str);
+        let expected = run.summary.get("preparationDigest").and_then(Value::as_str);
         if let Some(expected) = expected {
             if preparation_digest.as_deref() != Some(expected) {
                 bail!("preparation digest mismatch; refusing to start paid compute");
             }
         }
-        let ready = run
-            .summary
-            .get("visualReadyReceipt")
-            .cloned();
+        let ready = run.summary.get("visualReadyReceipt").cloned();
         if ready.is_none() {
             bail!("visual readiness receipt is required before starting paid compute");
         }
@@ -158,7 +152,10 @@ impl OptimizerService {
             bail!("compute approval receipt is required before starting paid compute");
         }
         let current_caps = self.manager.advertised_capabilities();
-        if let Some(prepared_caps) = run.summary.get("capabilitiesDigest").and_then(Value::as_str)
+        if let Some(prepared_caps) = run
+            .summary
+            .get("capabilitiesDigest")
+            .and_then(Value::as_str)
         {
             if current_caps.get("digest").and_then(Value::as_str) != Some(prepared_caps) {
                 bail!("optimizer capability digest changed since prepare; refusing to start");
@@ -185,7 +182,8 @@ impl OptimizerService {
         optimizer_run_id: String,
         timeout_ms: u64,
     ) -> Result<Value> {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(50));
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(50));
         loop {
             let run = self.get(optimizer_run_id.clone()).await?;
             if let Some(receipt) = run.summary.get("visualReadyReceipt").cloned() {
@@ -1074,6 +1072,7 @@ fn algorithm_label(algorithm_id: &str) -> &'static str {
         "gepa" => "GEPA",
         "go-ex" => "GELO",
         "sft" => "SFT",
+        id if id == "dag" || id.starts_with("dag.") => "DAG",
         _ => "Optimizer",
     }
 }
@@ -1082,15 +1081,19 @@ fn primary_visual_template(algorithm_id: &str) -> &'static str {
     match algorithm_id {
         "sft" => "optimizer.sft.live.v1",
         "gepa" => "optimizer.gepa.live.v1",
+        id if id == "dag" || id.starts_with("dag.") => "optimizer.dag.live.v1",
         _ => "optimizer.run.v1",
     }
 }
 
 fn negotiate_visual_template(algorithm_id: &str, advertised: &Value) -> String {
-    let preferred = match algorithm_id {
-        "sft" => ["optimizer.sft.live.v1", "optimizer.run.v1"],
-        "gepa" => ["optimizer.gepa.live.v1", "optimizer.run.v1"],
-        _ => ["optimizer.run.v1", "optimizer.run.v1"],
+    let preferred: &[&str] = match algorithm_id {
+        "sft" => &["optimizer.sft.live.v1", "optimizer.run.v1"],
+        "gepa" => &["optimizer.gepa.live.v1", "optimizer.run.v1"],
+        id if id == "dag" || id.starts_with("dag.") => {
+            &["optimizer.dag.live.v1", "optimizer.run.v1"]
+        }
+        _ => &["optimizer.run.v1", "optimizer.run.v1"],
     };
     let installed = advertised
         .get("compatibleTemplateIds")
@@ -1098,11 +1101,14 @@ fn negotiate_visual_template(algorithm_id: &str, advertised: &Value) -> String {
         .cloned()
         .unwrap_or_default();
     for candidate in preferred {
-        if installed.iter().any(|value| value.as_str() == Some(candidate)) {
-            return candidate.to_owned();
+        if installed
+            .iter()
+            .any(|value| value.as_str() == Some(candidate))
+        {
+            return (*candidate).to_owned();
         }
     }
-    "optimizer.run.v1".into()
+    primary_visual_template(algorithm_id).into()
 }
 
 async fn materialize_optimizer_result(
@@ -3373,7 +3379,11 @@ mod tests {
         let (svc, dir, _) = service().await;
         let run_dir = dir.path().join("banking77_empty");
         std::fs::create_dir_all(&run_dir).unwrap();
-        std::fs::write(run_dir.join("best_candidate.json"), r#"{"id":"candidate_empty"}"#).unwrap();
+        std::fs::write(
+            run_dir.join("best_candidate.json"),
+            r#"{"id":"candidate_empty"}"#,
+        )
+        .unwrap();
         let (run, _) = svc
             .create(
                 serde_json::from_value(json!({
