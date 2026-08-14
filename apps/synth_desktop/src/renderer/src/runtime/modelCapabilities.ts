@@ -1,5 +1,5 @@
 import type { ExecutionTarget } from "@synth/runtime-protocol";
-import { OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL, OPENROUTER_MUSE_SPARK_MODEL, SYNTH_CLOUD_LAGUNA_S_MODEL, SYNTH_CLOUD_MUSE_SPARK_MODEL } from "../types/landing";
+import { OPENROUTER_GEMINI_FLASH_MODEL, OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL, OPENROUTER_MUSE_SPARK_MODEL, SYNTH_CLOUD_LAGUNA_S_MODEL, SYNTH_CLOUD_MUSE_SPARK_MODEL } from "../types/landing";
 
 /**
  * Declarative registry for model-specific composer controls.
@@ -168,6 +168,22 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 			storageKey: "synth.models.openrouter-muse-spark.reasoning",
 			defaultValue: "medium",
 			options: SPARK_EFFORT_OPTIONS,
+			turnStartField: "effort"
+		}],
+		reasoningDisplay: "summary",
+		inputModalities: ["text", "image"],
+		maxContextTokens: 1_048_576
+	},
+	{
+		targetId: "openrouter-gemini-flash",
+		target: { kind: "remote", models: [OPENROUTER_GEMINI_FLASH_MODEL] },
+		knobs: [{
+			id: "reasoning",
+			label: "Reasoning effort",
+			testId: "reasoning-effort",
+			storageKey: "synth.models.openrouter-gemini-flash.reasoning",
+			defaultValue: "medium",
+			options: LUNA_EFFORT_OPTIONS,
 			turnStartField: "effort"
 		}],
 		reasoningDisplay: "summary",

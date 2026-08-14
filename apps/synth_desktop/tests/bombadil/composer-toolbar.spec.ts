@@ -22,6 +22,7 @@ const MODELS: MatrixModel[] = [
 	{ targetId: "openrouter-luna", reasoning: ["Low", "Medium", "High", "XHigh", "Max"], speed: [""] },
 	{ targetId: "openrouter-laguna-s", reasoning: ["None", "Max"], speed: [""] },
 	{ targetId: "openrouter-muse-spark", reasoning: ["Low", "Medium", "High", "XHigh"], speed: [""] },
+	{ targetId: "openrouter-gemini-flash", reasoning: ["Low", "Medium", "High", "XHigh", "Max"], speed: [""] },
 	{ targetId: "chatgpt-luna", reasoning: ["Low", "Medium", "High", "XHigh", "Max"], speed: ["Standard", "Fast"] },
 	{ targetId: "chatgpt-sol", reasoning: ["Low", "Medium", "High", "XHigh", "Max"], speed: ["Standard", "Fast"] },
 	{ targetId: "chatgpt-terra", reasoning: ["Low", "Medium", "High", "XHigh", "Max"], speed: ["Standard", "Fast"] },
@@ -197,9 +198,9 @@ export const visit_every_model_speed_and_thinking_combination = actions<any>(() 
 	return ["Wait"];
 });
 
-export const all_49_model_speed_and_thinking_combinations_are_exercised = eventually(() =>
+export const all_54_model_speed_and_thinking_combinations_are_exercised = eventually(() =>
 	toolbar.current.visitedCount === toolbar.current.totalCount
-).within(40, "seconds");
+).within(50, "seconds");
 
 export const composer_controls_never_overlap_for_any_combination = always(() =>
 	toolbar.current.overlapPairs.length === 0

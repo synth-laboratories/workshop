@@ -203,7 +203,7 @@ type AuthorizedModel = {
 	id: string;
 	name: string;
 	provider: string;
-	providerMark: "openai" | "laguna" | "meta" | "synth";
+	providerMark: "openai" | "laguna" | "meta" | "google" | "synth";
 	modelId: string;
 	tariffProvider?: string;
 	planMetered?: boolean;
@@ -228,7 +228,8 @@ function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSett
 		models.push(
 			{ id: "openrouter-luna", name: "GPT 5.6 Luna", provider: "OpenRouter · OpenAI", providerMark: "openai", modelId: "openai/gpt-5.6-luna", tariffProvider: "openrouter" },
 			{ id: "openrouter-laguna-s", name: "Laguna S 2.1", provider: "OpenRouter · Poolside", providerMark: "laguna", modelId: "poolside/laguna-s-2.1", tariffProvider: "openrouter" },
-			{ id: "openrouter-muse-spark", name: "Muse Spark 1.2", provider: "OpenRouter · Meta", providerMark: "meta", modelId: "meta/muse-spark-1.2", tariffProvider: "openrouter" }
+			{ id: "openrouter-muse-spark", name: "Muse Spark 1.2", provider: "OpenRouter · Meta", providerMark: "meta", modelId: "meta/muse-spark-1.2", tariffProvider: "openrouter" },
+			{ id: "openrouter-gemini-flash", name: "Gemini 3.7 Flash", provider: "OpenRouter · Google", providerMark: "google", modelId: "google/gemini-3.7-flash", tariffProvider: "openrouter" }
 		);
 	}
 	if (connection?.apiKeyConfigured) {

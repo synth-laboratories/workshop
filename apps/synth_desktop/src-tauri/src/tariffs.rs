@@ -33,6 +33,8 @@ pub struct Tariff {
 /// 2026-08-01T00:00:00Z — the day the current OpenRouter cards were entered.
 const AUG_2026_MS: i64 = 1_785_542_400_000;
 const SPARK_12_2026_MS: i64 = 1_786_320_000_000;
+/// 2026-08-13T00:00:00Z — Gemini 3.7 Flash launch / OpenRouter listing.
+const GEMINI_37_FLASH_2026_MS: i64 = 1_786_579_200_000;
 
 const CATALOG: &[Tariff] = &[
     Tariff {
@@ -61,6 +63,15 @@ const CATALOG: &[Tariff] = &[
         output_usd_per_m: 4.25,
         cached_input_usd_per_m: Some(0.15),
         cache_write_usd_per_m: None,
+    },
+    Tariff {
+        provider: "openrouter",
+        model_id: "google/gemini-3.7-flash",
+        effective_from_ms: GEMINI_37_FLASH_2026_MS,
+        input_usd_per_m: 0.375,
+        output_usd_per_m: 1.875,
+        cached_input_usd_per_m: Some(0.0375),
+        cache_write_usd_per_m: Some(0.02085),
     },
 ];
 
@@ -259,5 +270,31 @@ mod tests {
     fn requests_before_a_tariffs_effective_date_are_not_priced_by_it() {
         assert!(tariff_for("openrouter", "openai/gpt-5.6-luna", AUG_2026_MS - 1).is_none());
         assert!(tariff_for("openrouter", "openai/gpt-5.6-luna", AUG_2026_MS).is_some());
+    }
+
+    #[test]
+    fn gemini_flash_is_priced_from_its_openrouter_listing_day() {
+        assert!(tariff_for("openrouter", "google/gemini-3.7-flash", GEMINI_37_FLASH_2026_MS - 1).is_none());
+        let gemini = tariff_for("openrouter", "google/gemini-3.7-flash", GEMINI_37_FLASH_2026_MS).unwrap();
+        assert_eq!(gemini.input_usd_per_m, 0.375);
+        assert_eq!(gemini.output_usd_per_m, 1.875);
+        assert_eq!(gemini.cached_input_usd_per_m, Some(0.0375));
+        assert_eq!(gemini.cache_write_usd_per_m, Some(0.02085));
+    }
+
+    #[test]
+    fn gemini_flash_estimate_matches_live_openrouter_usage() {
+        let cost = estimate_cost_usd(
+            "openrouter",
+            "google/gemini-3.7-flash",
+            GEMINI_37_FLASH_2026_MS,
+            BillableTokens {
+                input_tokens: Some(9_229),
+                output_tokens: Some(23),
+                ..Default::default()
+            },
+        )
+        .expect("Gemini Flash is in the catalog");
+        assert!((cost - 0.003504).abs() < 1e-12, "{cost}");
     }
 }

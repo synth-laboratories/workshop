@@ -194,6 +194,7 @@ export type LandingState = {
 export const OPENROUTER_LUNA_MODEL = "openai/gpt-5.6-luna";
 export const OPENROUTER_LAGUNA_S_MODEL = "poolside/laguna-s-2.1";
 export const OPENROUTER_MUSE_SPARK_MODEL = "meta/muse-spark-1.2";
+export const OPENROUTER_GEMINI_FLASH_MODEL = "google/gemini-3.7-flash";
 /** Fully qualified — bare `laguna-s-2.1` resolves to a different catalog entry server-side. */
 export const SYNTH_CLOUD_LAGUNA_S_MODEL = "openrouter/poolside/laguna-s-2.1";
 export const SYNTH_CLOUD_MUSE_SPARK_MODEL = "meta/muse-spark-1.2";
@@ -224,6 +225,12 @@ export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 		id: "openrouter-muse-spark",
 		label: "Muse Spark 1.2",
 		description: `OpenRouter · ${OPENROUTER_MUSE_SPARK_MODEL} · usage tracked`,
+		group: "remote"
+	},
+	{
+		id: "openrouter-gemini-flash",
+		label: "Gemini 3.7 Flash",
+		description: `OpenRouter · ${OPENROUTER_GEMINI_FLASH_MODEL} · usage tracked`,
 		group: "remote"
 	},
 	{

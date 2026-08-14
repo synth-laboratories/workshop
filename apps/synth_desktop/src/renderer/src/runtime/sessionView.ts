@@ -10,6 +10,7 @@ import {
 	OPENROUTER_LAGUNA_S_MODEL,
 	OPENROUTER_LUNA_MODEL,
 	OPENROUTER_MUSE_SPARK_MODEL,
+	OPENROUTER_GEMINI_FLASH_MODEL,
 	CHATGPT_LUNA_MODEL,
 	CHATGPT_SOL_MODEL,
 	CHATGPT_TERRA_MODEL,
@@ -106,6 +107,13 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 				model: OPENROUTER_MUSE_SPARK_MODEL,
 				adapter
 			};
+		case "openrouter-gemini-flash":
+			return {
+				kind: "remote",
+				provider: "openrouter",
+				model: OPENROUTER_GEMINI_FLASH_MODEL,
+				adapter
+			};
 		case "synth-cloud-laguna-s":
 			return {
 				kind: "cloud",
@@ -149,6 +157,7 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 		return "openrouter-luna";
 	}
 	if (target.model === OPENROUTER_MUSE_SPARK_MODEL) return "openrouter-muse-spark";
+	if (target.model === OPENROUTER_GEMINI_FLASH_MODEL) return "openrouter-gemini-flash";
 	return "openrouter-laguna-s";
 }
 
