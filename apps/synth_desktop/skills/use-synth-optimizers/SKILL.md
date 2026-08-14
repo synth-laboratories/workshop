@@ -18,6 +18,7 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 4. Enforced connect-before-start: `prepare` → `open_visual` → `await_ready` → `start`. `start` requires a visual readiness receipt and a separate compute approval bound to the prepared run. Listing, importing, reconciling, inspecting, and visualizing do not require compute approval.
    - `open_visual` owns and configures the product visual. Do not call `authoring_context`, `capture_review`, `review`, `update`, or `mark_ready` for it.
    - If the first `await_ready` reports that no receipt was posted, call `mcp__synth_visuals__visual_manage` once with `operation: "show"` and the run's primary visual ID, then retry `await_ready`. Do not inspect processes, environment variables, source files, databases, or IPC files to manufacture readiness.
+   - Preserve the exact `preparationDigest` returned by `prepare` and pass it as `preparation_digest` with `optimizer_run_id` on the first `start` call. Never request approval with a missing or reconstructed digest.
 5. Pass only `recipe_id` to `prepare`. The Rust host owns commands, paths, hyperparameters, and credential resolution. Retrieve the winner with `get_result` — never read `best_candidate.json` by filesystem path.
 
 ## Follow every run
