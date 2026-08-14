@@ -17,6 +17,8 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_12,
     MIGRATION_13,
     MIGRATION_14,
+    MIGRATION_15,
+    MIGRATION_16,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -862,6 +864,187 @@ CREATE TABLE IF NOT EXISTS visual_uploads (
 );
 "#;
 
+const MIGRATION_15: &str = r#"
+CREATE TABLE IF NOT EXISTS reports (
+    id TEXT PRIMARY KEY,
+    project_ref TEXT,
+    current_revision INTEGER NOT NULL DEFAULT 1,
+    title TEXT NOT NULL,
+    summary TEXT,
+    authors_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL CHECK(status IN ('draft','sealed')),
+    created_by TEXT NOT NULL DEFAULT 'user',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS report_revisions (
+    report_id TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT,
+    authors_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('draft','sealed')),
+    content_digest TEXT,
+    compiler_name TEXT,
+    compiler_version TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (report_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS report_revision_blocks (
+    report_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    block_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    anchor TEXT NOT NULL,
+    title TEXT,
+    payload_json TEXT NOT NULL,
+    source_revision TEXT,
+    source_digest TEXT,
+    access_state TEXT NOT NULL DEFAULT 'accessible',
+    integrity_state TEXT NOT NULL DEFAULT 'unknown',
+    PRIMARY KEY (report_id, revision, position),
+    UNIQUE (report_id, revision, block_id),
+    UNIQUE (report_id, revision, anchor),
+    FOREIGN KEY (report_id, revision) REFERENCES report_revisions(report_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS report_sources (
+    report_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    source_id TEXT NOT NULL,
+    resource_kind TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    resource_revision TEXT,
+    resource_digest TEXT,
+    relation TEXT NOT NULL,
+    access_state TEXT NOT NULL,
+    integrity_state TEXT NOT NULL,
+    PRIMARY KEY (report_id, revision, source_id),
+    FOREIGN KEY (report_id, revision) REFERENCES report_revisions(report_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS report_claims (
+    report_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    claim_id TEXT NOT NULL,
+    statement TEXT NOT NULL,
+    status TEXT NOT NULL,
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (report_id, revision, claim_id),
+    FOREIGN KEY (report_id, revision) REFERENCES report_revisions(report_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS report_limitations (
+    report_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    limitation_id TEXT NOT NULL,
+    body TEXT NOT NULL,
+    PRIMARY KEY (report_id, revision, limitation_id),
+    FOREIGN KEY (report_id, revision) REFERENCES report_revisions(report_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS experiment_records (
+    experiment_id TEXT PRIMARY KEY,
+    report_id TEXT REFERENCES reports(id) ON DELETE CASCADE,
+    revision INTEGER,
+    title TEXT NOT NULL,
+    hypothesis TEXT,
+    status TEXT NOT NULL,
+    protocol_digest TEXT,
+    arms_json TEXT NOT NULL DEFAULT '[]',
+    runs_json TEXT NOT NULL DEFAULT '[]',
+    results_json TEXT NOT NULL DEFAULT '[]',
+    evaluator_refs_json TEXT NOT NULL DEFAULT '[]',
+    trace_collection_refs_json TEXT NOT NULL DEFAULT '[]',
+    claim_refs_json TEXT NOT NULL DEFAULT '[]',
+    research_log_refs_json TEXT NOT NULL DEFAULT '[]',
+    limitations_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS experiment_records_report
+ON experiment_records(report_id, created_at);
+
+CREATE TABLE IF NOT EXISTS research_log_entries (
+    entry_id TEXT PRIMARY KEY,
+    report_id TEXT REFERENCES reports(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    occurred_at TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    author TEXT NOT NULL,
+    actor_kind TEXT NOT NULL CHECK(actor_kind IN ('human','agent')),
+    entry_kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    links_json TEXT NOT NULL DEFAULT '[]',
+    claim_effect TEXT,
+    supersedes_entry_id TEXT REFERENCES research_log_entries(entry_id),
+    source_digest TEXT,
+    UNIQUE (report_id, sequence)
+);
+
+CREATE INDEX IF NOT EXISTS research_log_entries_report
+ON research_log_entries(report_id, sequence);
+
+CREATE TABLE IF NOT EXISTS report_seals (
+    receipt_digest TEXT PRIMARY KEY,
+    report_id TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+    report_revision INTEGER NOT NULL,
+    schema_version TEXT NOT NULL,
+    compiler_name TEXT NOT NULL,
+    compiler_version TEXT NOT NULL,
+    runtime_digest TEXT NOT NULL,
+    index_digest TEXT NOT NULL,
+    data_digest TEXT NOT NULL,
+    receipt_size_bytes INTEGER NOT NULL,
+    total_size_bytes INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (report_id, report_revision)
+        REFERENCES report_revisions(report_id, revision)
+);
+
+CREATE INDEX IF NOT EXISTS report_seals_report_revision
+ON report_seals(report_id, report_revision, created_at);
+"#;
+
+const MIGRATION_16: &str = r#"
+CREATE TABLE IF NOT EXISTS report_uploads (
+    receipt_digest TEXT PRIMARY KEY REFERENCES report_seals(receipt_digest) ON DELETE CASCADE,
+    collection_id TEXT,
+    publication_id TEXT,
+    publication_revision INTEGER,
+    state TEXT NOT NULL,
+    committed_url TEXT,
+    error TEXT,
+    updated_at TEXT NOT NULL,
+    CHECK (state IN ('prepared','uploading','finalizing','committed','failed')),
+    CHECK ((state = 'committed' AND committed_url IS NOT NULL) OR (state != 'committed' AND committed_url IS NULL))
+);
+
+CREATE TABLE IF NOT EXISTS report_review_comments (
+    comment_id TEXT PRIMARY KEY,
+    report_id TEXT NOT NULL,
+    report_revision INTEGER NOT NULL,
+    receipt_digest TEXT,
+    publication_id TEXT,
+    anchor TEXT,
+    body TEXT NOT NULL,
+    author_id TEXT NOT NULL DEFAULT 'user',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (report_id, report_revision)
+        REFERENCES report_revisions(report_id, revision)
+);
+
+CREATE INDEX IF NOT EXISTS report_review_comments_revision
+ON report_review_comments(report_id, report_revision, created_at);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -911,7 +1094,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 14);
+        assert_eq!(apply_migrations(&conn).unwrap(), 16);
         let updated_at: String = conn
             .query_row(
                 "SELECT updated_at FROM runs WHERE id = 'run-1'",
@@ -984,7 +1167,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 14);
+        assert_eq!(apply_migrations(&conn).unwrap(), 16);
 
         let ledger_tables: i64 = conn
             .query_row(
@@ -1043,7 +1226,7 @@ mod tests {
         .unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 11);
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 14);
+        assert_eq!(apply_migrations(&conn).unwrap(), 16);
         let old_binary_sum = |conn: &Connection| -> f64 {
             conn.query_row(
                 "SELECT
@@ -1082,7 +1265,7 @@ mod tests {
 
         // Relaunching v12 folds and clears staging. The union remains exactly
         // the same, proving neither data loss nor a transient double charge.
-        assert_eq!(apply_migrations(&conn).unwrap(), 14);
+        assert_eq!(apply_migrations(&conn).unwrap(), 16);
         assert!((old_binary_sum(&conn) - 0.75).abs() < 1e-9);
         assert_eq!(old_inventory_count(&conn), 2);
         let old_inventory_ids: Vec<String> = {
@@ -1146,7 +1329,7 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 14);
+        assert_eq!(apply_migrations(&conn).unwrap(), 16);
 
         let imported: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
@@ -1208,7 +1391,7 @@ mod tests {
         conn.execute_batch(partial).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 7);
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 14);
+        assert_eq!(apply_migrations(&conn).unwrap(), 16);
         let (copies, leftovers): (i64, i64) = conn
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM usage_records WHERE request_id='req-1'),
@@ -1235,7 +1418,7 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(apply_migrations(&conn).unwrap(), 14);
+        assert_eq!(apply_migrations(&conn).unwrap(), 16);
         let kinds: Vec<(String, String)> = {
             let mut stmt = conn
                 .prepare("SELECT id, kind FROM sessions ORDER BY id")
@@ -1272,7 +1455,7 @@ mod tests {
         assert_eq!(probe, 0, "the failed migration's table must roll back");
         assert_eq!(version, 7);
         // The connection stays usable and the real migration still applies.
-        assert_eq!(apply_migrations(&conn).unwrap(), 14);
+        assert_eq!(apply_migrations(&conn).unwrap(), 16);
     }
 
     #[test]
@@ -1284,7 +1467,7 @@ mod tests {
             [r#"{"kind":"remote","provider":"synth-cloud","model":"openrouter/poolside/laguna-s-2.1","adapter":null}"#],
         )
         .unwrap();
-        assert_eq!(apply_migrations(&conn).unwrap(), 14);
+        assert_eq!(apply_migrations(&conn).unwrap(), 16);
         let (kind, target): (String, String) = conn
             .query_row(
                 "SELECT runtime_target_kind, target_json FROM sessions WHERE id='cloud-1'",
@@ -1307,7 +1490,7 @@ mod tests {
     #[test]
     fn migration_14_never_allows_a_partial_upload_permalink() {
         let conn = seed_at_version(13);
-        assert_eq!(apply_migrations(&conn).unwrap(), 14);
+        assert_eq!(apply_migrations(&conn).unwrap(), 16);
         conn.execute(
             "INSERT INTO visuals(id,current_revision,title,template_id,status,renderer_kind,bindings_json,metadata_json,created_at,updated_at)
              VALUES ('vis-1',1,'Visual','template.v1','saved','template','{}','{}','now','now')",

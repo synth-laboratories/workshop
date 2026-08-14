@@ -645,6 +645,37 @@ window.synthWorkspaceScope ??= isTauri
 			setReleaseChannel: (pluginId, channel) =>
 				invokeCommand(COMMANDS.PLUGINS_SET_RELEASE_CHANNEL, { pluginId, channel })
 		};
+		window.synthReports ??= {
+			list: (query) => invokeCommand(COMMANDS.REPORTS_LIST, { query: query ?? null }),
+			get: (reportId) => invokeCommand(COMMANDS.REPORTS_GET, { reportId }),
+			getRevision: (reportId, revision) =>
+				invokeCommand(COMMANDS.REPORTS_REVISION_GET, { reportId, revision: revision ?? null }),
+			create: (request) => invokeCommand(COMMANDS.REPORTS_CREATE, { request }),
+			update: (reportId, request) => invokeCommand(COMMANDS.REPORTS_UPDATE, { reportId, request }),
+			seal: (reportId, revision) => invokeCommand(COMMANDS.REPORTS_SEAL, { reportId, revision }),
+			listSeals: (reportId) => invokeCommand(COMMANDS.REPORTS_SEALS_LIST, { reportId: reportId ?? null }),
+			getSeal: (receiptDigest) => invokeCommand(COMMANDS.REPORTS_SEAL_GET, { receiptDigest }),
+			compareSeals: (leftDigest, rightDigest) =>
+				invokeCommand(COMMANDS.REPORTS_SEALS_COMPARE, { leftDigest, rightDigest }),
+			uploadStatus: (receiptDigest) =>
+				invokeCommand(COMMANDS.REPORTS_UPLOAD_STATUS, { receiptDigest }),
+			shareSeal: (receiptDigest) => invokeCommand(COMMANDS.REPORTS_SHARE, { receiptDigest }),
+			openShared: (committedUrl) => invokeCommand(COMMANDS.REPORTS_OPEN_SHARED, { committedUrl }),
+			listComments: (reportId, revision) =>
+				invokeCommand(COMMANDS.REPORTS_COMMENTS_LIST, { reportId, revision: revision ?? null }),
+			createComment: (reportId, revision, request) =>
+				invokeCommand(COMMANDS.REPORTS_COMMENT_CREATE, { reportId, revision, request }),
+			listExperiments: (reportId) => invokeCommand(COMMANDS.REPORTS_EXPERIMENTS_LIST, { reportId }),
+			upsertExperiment: (reportId, request) =>
+				invokeCommand(COMMANDS.REPORTS_EXPERIMENT_UPSERT, { reportId, request }),
+			listLog: (reportId) => invokeCommand(COMMANDS.REPORTS_LOG_LIST, { reportId }),
+			appendLog: (reportId, request) => invokeCommand(COMMANDS.REPORTS_LOG_APPEND, { reportId, request }),
+			onEvent(listener) {
+				return listenRuntimeAppEvents((payload) => {
+					if (payload.kind.startsWith("report.")) listener(payload);
+				});
+			}
+		};
 		window.synthOptimizers ??= {
 			listAlgorithms: () => invokeCommand(COMMANDS.OPTIMIZERS_ALGORITHMS_LIST),
 			listRecipes: () => invokeCommand(COMMANDS.OPTIMIZERS_RECIPES_LIST),
@@ -743,6 +774,9 @@ export const bridges = {
 	},
 	get visuals() {
 		return window.synthVisuals;
+	},
+	get reports() {
+		return window.synthReports;
 	},
 	get optimizers() {
 		return window.synthOptimizers;

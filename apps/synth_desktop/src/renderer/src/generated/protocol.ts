@@ -129,6 +129,37 @@ export const commands = {
 	visualsRenditions: (visualId: string) => typedError<VisualRendition_Serialize[], AppError>(__TAURI_INVOKE("visuals_renditions", { visualId })),
 	visualsRendition: (visualId: string, format: string | null, theme: string | null, sizeClass: string | null) => typedError<VisualAsset_Serialize, AppError>(__TAURI_INVOKE("visuals_rendition", { visualId, format, theme, sizeClass })),
 	visualsRender: (visualId: string) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_render", { visualId })),
+	reportsList: (query: {
+	status: string | null,
+	search: string | null,
+	limit: unknown,
+} | null) => typedError<ReportRecord_Serialize[], AppError>(__TAURI_INVOKE("reports_list", { query })),
+	reportsGet: (reportId: string) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_get", { reportId })),
+	reportsRevisionGet: (reportId: string, revision: unknown | null) => typedError<ReportRevision_Serialize, AppError>(__TAURI_INVOKE("reports_revision_get", { reportId, revision })),
+	reportsCreate: (request: ReportCreateRequest_Deserialize) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_create", { request })),
+	reportsUpdate: (reportId: string, request: ReportUpdateRequest_Deserialize) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_update", { reportId, request })),
+	reportsSeal: (reportId: string, revision: unknown) => typedError<ReportSeal, AppError>(__TAURI_INVOKE("reports_seal", { reportId, revision })),
+	reportsSealsList: (reportId: string | null) => typedError<ReportSeal[], AppError>(__TAURI_INVOKE("reports_seals_list", { reportId })),
+	reportsSealGet: (receiptDigest: string) => typedError<ReportSealBundle, AppError>(__TAURI_INVOKE("reports_seal_get", { receiptDigest })),
+	reportsSealsCompare: (leftDigest: string, rightDigest: string) => typedError<ReportRevisionCompare, AppError>(__TAURI_INVOKE("reports_seals_compare", { leftDigest, rightDigest })),
+	reportsExperimentsList: (reportId: string) => typedError<ExperimentRecord_Serialize[], AppError>(__TAURI_INVOKE("reports_experiments_list", { reportId })),
+	reportsExperimentUpsert: (reportId: string, request: ExperimentRecordUpsert) => typedError<ExperimentRecord_Serialize, AppError>(__TAURI_INVOKE("reports_experiment_upsert", { reportId, request })),
+	reportsLogList: (reportId: string) => typedError<ResearchLogEntry_Serialize[], AppError>(__TAURI_INVOKE("reports_log_list", { reportId })),
+	reportsLogAppend: (reportId: string, request: ResearchLogAppend) => typedError<ResearchLogEntry_Serialize, AppError>(__TAURI_INVOKE("reports_log_append", { reportId, request })),
+	reportsUploadStatus: (receiptDigest: string) => typedError<{
+	receiptDigest: string,
+	collectionId: string | null,
+	publicationId: string | null,
+	publicationRevision: unknown,
+	state: string,
+	committedUrl: string | null,
+	error: string | null,
+	updatedAt: string,
+} | null, AppError>(__TAURI_INVOKE("reports_upload_status", { receiptDigest })),
+	reportsShare: (receiptDigest: string) => typedError<ReportUpload, AppError>(__TAURI_INVOKE("reports_share", { receiptDigest })),
+	reportsOpenShared: (committedUrl: string) => typedError<ReportSealBundle, AppError>(__TAURI_INVOKE("reports_open_shared", { committedUrl })),
+	reportsCommentsList: (reportId: string, revision: unknown | null) => typedError<ReportComment_Serialize[], AppError>(__TAURI_INVOKE("reports_comments_list", { reportId, revision })),
+	reportsCommentCreate: (reportId: string, revision: unknown, request: ReportCommentCreate) => typedError<ReportComment_Serialize, AppError>(__TAURI_INVOKE("reports_comment_create", { reportId, revision, request })),
 	synthConfigGet: () => typedError<BackendSettings, AppError>(__TAURI_INVOKE("synth_config_get")),
 	synthConfigUpdate: (request: BackendSettingsUpdate) => typedError<BackendSettings, AppError>(__TAURI_INVOKE("synth_config_update", { request })),
 	modelPerformanceGet: (windowMinutes: number | null) => typedError<ModelPerformanceSnapshot_Serialize, AppError>(__TAURI_INVOKE("model_performance_get", { windowMinutes })),
@@ -695,7 +726,68 @@ export type EntityCount = {
 	skipped: unknown,
 };
 
-export type EventSource = "local" | "remote" | "intern" | "codex" | "system" | "mlx" | "visual";
+export type EventSource = "local" | "remote" | "intern" | "codex" | "system" | "mlx" | "visual" | "report";
+
+export type ExperimentRecord = ExperimentRecord_Serialize | ExperimentRecord_Deserialize;
+
+export type ExperimentRecordUpsert = {
+	experimentId: string | null,
+	title: string,
+	hypothesis: string | null,
+	status: string | null,
+	protocolDigest: string | null,
+	arms: unknown,
+	runs: unknown,
+	results: unknown,
+	evaluatorRefs: unknown,
+	traceCollectionRefs: unknown,
+	claimRefs: unknown,
+	researchLogRefs: unknown,
+	limitations: unknown,
+	createdBy: string | null,
+};
+
+export type ExperimentRecord_Deserialize = {
+	experimentId: string,
+	reportId?: string | null,
+	revision?: unknown,
+	title: string,
+	hypothesis?: string | null,
+	status: ExperimentStatus,
+	protocolDigest?: string | null,
+	arms: unknown,
+	runs: unknown,
+	results: unknown,
+	evaluatorRefs: unknown,
+	traceCollectionRefs: unknown,
+	claimRefs: unknown,
+	researchLogRefs: unknown,
+	limitations: unknown,
+	createdAt: string,
+	createdBy: string,
+};
+
+export type ExperimentRecord_Serialize = {
+	experimentId: string,
+	reportId?: string | null,
+	revision?: unknown,
+	title: string,
+	hypothesis?: string | null,
+	status: ExperimentStatus,
+	protocolDigest?: string | null,
+	arms: unknown,
+	runs: unknown,
+	results: unknown,
+	evaluatorRefs: unknown,
+	traceCollectionRefs: unknown,
+	claimRefs: unknown,
+	researchLogRefs: unknown,
+	limitations: unknown,
+	createdAt: string,
+	createdBy: string,
+};
+
+export type ExperimentStatus = "planned" | "running" | "completed" | "failed" | "aborted" | "superseded" | "excluded";
 
 export type InstanceDiagnostics = {
 	mode: string,
@@ -1352,6 +1444,316 @@ export type PluginStatus_Serialize = {
 };
 
 export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic";
+
+export type ReportBlock = ReportBlock_Serialize | ReportBlock_Deserialize;
+
+export type ReportBlock_Deserialize = {
+	blockId: string,
+	kind: string,
+	anchor: string,
+	title?: string | null,
+	payload: unknown,
+	sourceRevision?: string | null,
+	sourceDigest?: string | null,
+	accessState: string,
+	integrityState: string,
+};
+
+export type ReportBlock_Serialize = {
+	blockId: string,
+	kind: string,
+	anchor: string,
+	title?: string | null,
+	payload: unknown,
+	sourceRevision?: string | null,
+	sourceDigest?: string | null,
+	accessState: string,
+	integrityState: string,
+};
+
+export type ReportClaim = {
+	claimId: string,
+	statement: string,
+	status: string,
+	evidenceRefs: string[],
+};
+
+export type ReportComment = ReportComment_Serialize | ReportComment_Deserialize;
+
+export type ReportCommentCreate = {
+	body: string,
+	anchor: string | null,
+	authorId: string | null,
+	receiptDigest: string | null,
+	publicationId: string | null,
+};
+
+export type ReportComment_Deserialize = {
+	commentId: string,
+	reportId: string,
+	reportRevision: unknown,
+	receiptDigest?: string | null,
+	publicationId?: string | null,
+	anchor?: string | null,
+	body: string,
+	authorId: string,
+	createdAt: string,
+};
+
+export type ReportComment_Serialize = {
+	commentId: string,
+	reportId: string,
+	reportRevision: unknown,
+	receiptDigest?: string | null,
+	publicationId?: string | null,
+	anchor?: string | null,
+	body: string,
+	authorId: string,
+	createdAt: string,
+};
+
+export type ReportCreateRequest = ReportCreateRequest_Serialize | ReportCreateRequest_Deserialize;
+
+export type ReportCreateRequest_Deserialize = {
+	title: string | null,
+	summary: string | null,
+	authors: string[] | null,
+	projectRef: string | null,
+	id: string | null,
+	createdBy: string | null,
+	blocks: ReportBlock_Deserialize[] | null,
+};
+
+export type ReportCreateRequest_Serialize = {
+	title: string | null,
+	summary: string | null,
+	authors: string[] | null,
+	projectRef: string | null,
+	id: string | null,
+	createdBy: string | null,
+	blocks: ReportBlock_Serialize[] | null,
+};
+
+export type ReportLimitation = {
+	limitationId: string,
+	body: string,
+};
+
+export type ReportQuery = {
+	status: string | null,
+	search: string | null,
+	limit: unknown,
+};
+
+export type ReportRecord = ReportRecord_Serialize | ReportRecord_Deserialize;
+
+export type ReportRecord_Deserialize = {
+	schemaVersion: string,
+	id: string,
+	projectRef?: string | null,
+	currentRevision: unknown,
+	title: string,
+	summary?: string | null,
+	authors: string[],
+	status: ReportStatus,
+	createdBy: string,
+	createdAt: string,
+	updatedAt: string,
+};
+
+export type ReportRecord_Serialize = {
+	schemaVersion: string,
+	id: string,
+	projectRef?: string | null,
+	currentRevision: unknown,
+	title: string,
+	summary?: string | null,
+	authors: string[],
+	status: ReportStatus,
+	createdBy: string,
+	createdAt: string,
+	updatedAt: string,
+};
+
+export type ReportRevision = ReportRevision_Serialize | ReportRevision_Deserialize;
+
+export type ReportRevisionCompare = {
+	left: ReportSealBundle,
+	right: ReportSealBundle,
+	sameDigest: boolean,
+};
+
+export type ReportRevision_Deserialize = {
+	schemaVersion: string,
+	reportId: string,
+	revision: unknown,
+	title: string,
+	summary?: string | null,
+	authors: string[],
+	status: ReportStatus,
+	blocks: ReportBlock_Deserialize[],
+	sources: ReportSource_Deserialize[],
+	claims: ReportClaim[],
+	limitations: ReportLimitation[],
+	contentDigest?: string | null,
+	compilerName?: string | null,
+	compilerVersion?: string | null,
+	createdBy: string,
+	createdAt: string,
+};
+
+export type ReportRevision_Serialize = {
+	schemaVersion: string,
+	reportId: string,
+	revision: unknown,
+	title: string,
+	summary?: string | null,
+	authors: string[],
+	status: ReportStatus,
+	blocks: ReportBlock_Serialize[],
+	sources: ReportSource_Serialize[],
+	claims: ReportClaim[],
+	limitations: ReportLimitation[],
+	contentDigest?: string | null,
+	compilerName?: string | null,
+	compilerVersion?: string | null,
+	createdBy: string,
+	createdAt: string,
+};
+
+export type ReportSeal = {
+	receiptDigest: string,
+	reportId: string,
+	reportRevision: unknown,
+	schemaVersion: string,
+	compilerName: string,
+	compilerVersion: string,
+	runtimeDigest: string,
+	indexDigest: string,
+	dataDigest: string,
+	receiptSizeBytes: unknown,
+	totalSizeBytes: unknown,
+	createdAt: string,
+};
+
+export type ReportSealBundle = {
+	seal: ReportSeal,
+	indexHtml: string,
+	data: unknown,
+	receipt: unknown,
+};
+
+export type ReportSource = ReportSource_Serialize | ReportSource_Deserialize;
+
+export type ReportSource_Deserialize = {
+	sourceId: string,
+	resourceKind: string,
+	resourceId: string,
+	resourceRevision?: string | null,
+	resourceDigest?: string | null,
+	relation: string,
+	accessState: string,
+	integrityState: string,
+};
+
+export type ReportSource_Serialize = {
+	sourceId: string,
+	resourceKind: string,
+	resourceId: string,
+	resourceRevision?: string | null,
+	resourceDigest?: string | null,
+	relation: string,
+	accessState: string,
+	integrityState: string,
+};
+
+export type ReportStatus = "draft" | "sealed";
+
+export type ReportUpdateRequest = ReportUpdateRequest_Serialize | ReportUpdateRequest_Deserialize;
+
+export type ReportUpdateRequest_Deserialize = {
+	title: string | null,
+	summary: string | null,
+	authors: string[] | null,
+	projectRef: string | null,
+	blocks: ReportBlock_Deserialize[] | null,
+	sources: ReportSource_Deserialize[] | null,
+	claims: ReportClaim[] | null,
+	limitations: ReportLimitation[] | null,
+};
+
+export type ReportUpdateRequest_Serialize = {
+	title: string | null,
+	summary: string | null,
+	authors: string[] | null,
+	projectRef: string | null,
+	blocks: ReportBlock_Serialize[] | null,
+	sources: ReportSource_Serialize[] | null,
+	claims: ReportClaim[] | null,
+	limitations: ReportLimitation[] | null,
+};
+
+export type ReportUpload = {
+	receiptDigest: string,
+	collectionId: string | null,
+	publicationId: string | null,
+	publicationRevision: unknown,
+	state: string,
+	committedUrl: string | null,
+	error: string | null,
+	updatedAt: string,
+};
+
+export type ResearchLogAppend = {
+	occurredAt: string | null,
+	author: string | null,
+	actorKind: string | null,
+	entryKind: string,
+	title: string,
+	body: string,
+	tags: string[] | null,
+	links: unknown,
+	claimEffect: string | null,
+	supersedesEntryId: string | null,
+};
+
+export type ResearchLogEntry = ResearchLogEntry_Serialize | ResearchLogEntry_Deserialize;
+
+export type ResearchLogEntry_Deserialize = {
+	entryId: string,
+	reportId?: string | null,
+	sequence: unknown,
+	occurredAt: string,
+	recordedAt: string,
+	author: string,
+	actorKind: string,
+	entryKind: string,
+	title: string,
+	body: string,
+	tags: string[],
+	links: unknown,
+	claimEffect?: string | null,
+	supersedesEntryId?: string | null,
+	sourceDigest?: string | null,
+};
+
+export type ResearchLogEntry_Serialize = {
+	entryId: string,
+	reportId?: string | null,
+	sequence: unknown,
+	occurredAt: string,
+	recordedAt: string,
+	author: string,
+	actorKind: string,
+	entryKind: string,
+	title: string,
+	body: string,
+	tags: string[],
+	links: unknown,
+	claimEffect?: string | null,
+	supersedesEntryId?: string | null,
+	sourceDigest?: string | null,
+};
 
 export type ResolvedTraceProjection = {
 	traceDigest: string,

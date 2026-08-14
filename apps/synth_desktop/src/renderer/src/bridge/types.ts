@@ -568,6 +568,242 @@ export type PluginsBridge = {
 	setReleaseChannel(pluginId: "optimizers", channel: "official" | "dev"): Promise<PluginStatus>;
 };
 
+export type ReportStatus = "draft" | "sealed";
+export type ExperimentStatus =
+	| "planned"
+	| "running"
+	| "completed"
+	| "failed"
+	| "aborted"
+	| "superseded"
+	| "excluded";
+
+export type ReportBlock = {
+	blockId: string;
+	kind: string;
+	anchor: string;
+	title?: string | null;
+	payload: Record<string, unknown>;
+	sourceRevision?: string | null;
+	sourceDigest?: string | null;
+	accessState: string;
+	integrityState: string;
+};
+
+export type ReportSource = {
+	sourceId: string;
+	resourceKind: string;
+	resourceId: string;
+	resourceRevision?: string | null;
+	resourceDigest?: string | null;
+	relation: string;
+	accessState: string;
+	integrityState: string;
+};
+
+export type ReportClaim = {
+	claimId: string;
+	statement: string;
+	status: string;
+	evidenceRefs: string[];
+};
+
+export type ReportLimitation = {
+	limitationId: string;
+	body: string;
+};
+
+export type ReportRecord = {
+	schemaVersion: string;
+	id: string;
+	projectRef?: string | null;
+	currentRevision: number;
+	title: string;
+	summary?: string | null;
+	authors: string[];
+	status: ReportStatus;
+	createdBy: string;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type ReportRevision = {
+	schemaVersion: string;
+	reportId: string;
+	revision: number;
+	title: string;
+	summary?: string | null;
+	authors: string[];
+	status: ReportStatus;
+	blocks: ReportBlock[];
+	sources: ReportSource[];
+	claims: ReportClaim[];
+	limitations: ReportLimitation[];
+	contentDigest?: string | null;
+	compilerName?: string | null;
+	compilerVersion?: string | null;
+	createdBy: string;
+	createdAt: string;
+};
+
+export type ExperimentRecord = {
+	experimentId: string;
+	reportId?: string | null;
+	revision?: number | null;
+	title: string;
+	hypothesis?: string | null;
+	status: ExperimentStatus;
+	protocolDigest?: string | null;
+	arms: unknown;
+	runs: unknown;
+	results: unknown;
+	evaluatorRefs: unknown;
+	traceCollectionRefs: unknown;
+	claimRefs: unknown;
+	researchLogRefs: unknown;
+	limitations: unknown;
+	createdAt: string;
+	createdBy: string;
+};
+
+export type ResearchLogEntry = {
+	entryId: string;
+	reportId?: string | null;
+	sequence: number;
+	occurredAt: string;
+	recordedAt: string;
+	author: string;
+	actorKind: "human" | "agent" | string;
+	entryKind: string;
+	title: string;
+	body: string;
+	tags: string[];
+	links: unknown;
+	claimEffect?: string | null;
+	supersedesEntryId?: string | null;
+	sourceDigest?: string | null;
+};
+
+export type ReportSeal = {
+	receiptDigest: string;
+	reportId: string;
+	reportRevision: number;
+	schemaVersion: string;
+	compilerName: string;
+	compilerVersion: string;
+	runtimeDigest: string;
+	indexDigest: string;
+	dataDigest: string;
+	receiptSizeBytes: number;
+	totalSizeBytes: number;
+	createdAt: string;
+};
+
+export type ReportSealBundle = {
+	seal: ReportSeal;
+	indexHtml: string;
+	data: Record<string, unknown>;
+	receipt: Record<string, unknown>;
+};
+
+export type ReportRevisionCompare = {
+	left: ReportSealBundle;
+	right: ReportSealBundle;
+	sameDigest: boolean;
+};
+
+export type ReportUpload = {
+	receiptDigest: string;
+	collectionId?: string | null;
+	publicationId?: string | null;
+	publicationRevision?: number | null;
+	state: "prepared" | "uploading" | "finalizing" | "committed" | "failed";
+	committedUrl?: string | null;
+	error?: string | null;
+	updatedAt: string;
+};
+
+export type ReportComment = {
+	commentId: string;
+	reportId: string;
+	reportRevision: number;
+	receiptDigest?: string | null;
+	publicationId?: string | null;
+	anchor?: string | null;
+	body: string;
+	authorId: string;
+	createdAt: string;
+};
+
+export type ReportsBridge = {
+	list(query?: { status?: string; search?: string; limit?: number }): Promise<ReportRecord[]>;
+	get(reportId: string): Promise<ReportRecord>;
+	getRevision(reportId: string, revision?: number | null): Promise<ReportRevision>;
+	create(request: {
+		title?: string;
+		summary?: string;
+		authors?: string[];
+		projectRef?: string;
+		id?: string;
+		blocks?: ReportBlock[];
+	}): Promise<ReportRecord>;
+	update(reportId: string, request: {
+		title?: string;
+		summary?: string | null;
+		authors?: string[];
+		projectRef?: string;
+		blocks?: ReportBlock[];
+		sources?: ReportSource[];
+		claims?: ReportClaim[];
+		limitations?: ReportLimitation[];
+	}): Promise<ReportRecord>;
+	seal(reportId: string, revision: number): Promise<ReportSeal>;
+	listSeals(reportId?: string | null): Promise<ReportSeal[]>;
+	getSeal(receiptDigest: string): Promise<ReportSealBundle>;
+	compareSeals(leftDigest: string, rightDigest: string): Promise<ReportRevisionCompare>;
+	uploadStatus(receiptDigest: string): Promise<ReportUpload | null>;
+	shareSeal(receiptDigest: string): Promise<ReportUpload>;
+	openShared(committedUrl: string): Promise<ReportSealBundle>;
+	listComments(reportId: string, revision?: number | null): Promise<ReportComment[]>;
+	createComment(reportId: string, revision: number, request: {
+		body: string;
+		anchor?: string;
+		authorId?: string;
+		receiptDigest?: string;
+		publicationId?: string;
+	}): Promise<ReportComment>;
+	listExperiments(reportId: string): Promise<ExperimentRecord[]>;
+	upsertExperiment(reportId: string, request: {
+		experimentId?: string;
+		title: string;
+		hypothesis?: string;
+		status?: string;
+		protocolDigest?: string;
+		arms?: unknown;
+		runs?: unknown;
+		results?: unknown;
+		evaluatorRefs?: unknown;
+		traceCollectionRefs?: unknown;
+		claimRefs?: unknown;
+		researchLogRefs?: unknown;
+		limitations?: unknown;
+	}): Promise<ExperimentRecord>;
+	listLog(reportId: string): Promise<ResearchLogEntry[]>;
+	appendLog(reportId: string, request: {
+		occurredAt?: string;
+		author?: string;
+		actorKind?: string;
+		entryKind: string;
+		title: string;
+		body: string;
+		tags?: string[];
+		links?: unknown;
+		claimEffect?: string;
+		supersedesEntryId?: string;
+	}): Promise<ResearchLogEntry>;
+	onEvent?(listener: (event: AppEvent) => void): () => void;
+};
+
 export type OptimizersBridge = {
 	listAlgorithms(): Promise<OptimizerAlgorithmInfo[]>;
 	listRecipes(): Promise<Array<{

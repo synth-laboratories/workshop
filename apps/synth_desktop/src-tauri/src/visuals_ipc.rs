@@ -9,6 +9,10 @@ use crate::core_runtime::CoreRuntime;
 use crate::data::ContainerRegisterRequest;
 use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
 use crate::limits;
+use crate::reports::{
+    ExperimentRecordUpsert, ReportAttachTrace, ReportCreateRequest, ReportQuery,
+    ReportUpdateRequest, ResearchLogAppend,
+};
 use crate::visuals::{
     assert_live_eval_slot, classify_live_eval_family, live_eval_bind_metadata,
     require_visualsbench_start_policy, VisualAnnotationCreate, VisualCreateRequest, VisualQuery,
@@ -566,8 +570,107 @@ async fn register_hydrated_container(
 
 pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime) -> Result<Value> {
     let registry = core.visuals();
+    let reports = core.reports();
     match (method, path) {
         ("GET", "/health") => Ok(json!({"ok": true, "service": "synth-visuals-ipc"})),
+        ("GET", "/v1/reports") => {
+            let query: ReportQuery = serde_json::from_value(body.clone()).unwrap_or_default();
+            Ok(json!({"reports": reports.list(query).await?}))
+        }
+        ("POST", "/v1/reports") => {
+            let request: ReportCreateRequest = serde_json::from_value(body)?;
+            let (report, event) = reports.create(request).await?;
+            Ok(json!({"report": report, "event": event}))
+        }
+        ("GET", path) if path.starts_with("/v1/report-seals/") => {
+            let digest = path.trim_start_matches("/v1/report-seals/");
+            Ok(json!({"bundle": reports.get_seal(digest.to_string()).await?}))
+        }
+        ("GET", "/v1/report-seals") => {
+            let report_id = body
+                .get("report_id")
+                .or_else(|| body.get("reportId"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Ok(json!({"seals": reports.list_seals(report_id).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/reports/") && path.ends_with("/experiments") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/experiments");
+            Ok(json!({"experiments": reports.list_experiments(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/reports/") && path.ends_with("/experiments") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/experiments");
+            let request: ExperimentRecordUpsert = serde_json::from_value(body)?;
+            Ok(json!({"experiment": reports.upsert_experiment(id.to_string(), request).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/reports/") && path.ends_with("/log") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/log");
+            Ok(json!({"entries": reports.list_research_log(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/reports/") && path.ends_with("/log") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/log");
+            let request: ResearchLogAppend = serde_json::from_value(body)?;
+            Ok(json!({"entry": reports.append_research_log(id.to_string(), request).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/reports/") && path.ends_with("/revision") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/revision");
+            let revision = body.get("revision").and_then(Value::as_i64);
+            Ok(json!({"revision": reports.get_revision(id.to_string(), revision).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/reports/") && path.ends_with("/traces") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/traces");
+            let mut request: ReportAttachTrace = serde_json::from_value(body)?;
+            if request.projection.is_none() {
+                if let Ok(resolved) = core
+                    .data()
+                    .resolve_trace_projection(
+                        request.trace_digest.clone(),
+                        "rollout-inspector".into(),
+                    )
+                    .await
+                {
+                    request.projection = Some(resolved.payload);
+                    if request.trace_id.is_none() {
+                        request.trace_id = Some(resolved.trace_digest);
+                    }
+                }
+            }
+            let (report, event) = reports.attach_trace(id.to_string(), request).await?;
+            Ok(json!({"report": report, "event": event}))
+        }
+        ("POST", path) if path.starts_with("/v1/reports/") && path.ends_with("/seal") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/seal");
+            let revision = body
+                .get("revision")
+                .and_then(Value::as_i64)
+                .context("seal requires exact revision")?;
+            let (seal, event) = reports.seal(id.to_string(), revision).await?;
+            Ok(json!({"seal": seal, "event": event}))
+        }
+        ("GET", path) if path.starts_with("/v1/reports/") => {
+            let id = path.trim_start_matches("/v1/reports/");
+            Ok(json!({"report": reports.get(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/reports/") => {
+            let id = path.trim_start_matches("/v1/reports/");
+            let request: ReportUpdateRequest = serde_json::from_value(body)?;
+            let (report, event) = reports.update(id.to_string(), request).await?;
+            Ok(json!({"report": report, "event": event}))
+        }
         ("GET", "/v1/containers") => {
             Ok(json!({"containers": core.data().list_containers().await?}))
         }

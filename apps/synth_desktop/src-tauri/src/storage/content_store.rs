@@ -72,9 +72,8 @@ fn hex_sha256(bytes: &[u8]) -> String {
 
 fn validate_kind(kind: &str) -> Result<()> {
     match kind {
-        "blobs" | "previews" | "traces" | "trace_imports" | "exports" | "artifact_bundles" => {
-            Ok(())
-        }
+        "blobs" | "previews" | "traces" | "trace_imports" | "exports" | "artifact_bundles"
+        | "report_bundles" => Ok(()),
         _ => bail!("unsupported content store kind: {kind}"),
     }
 }

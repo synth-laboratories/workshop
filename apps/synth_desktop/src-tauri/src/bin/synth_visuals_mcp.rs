@@ -212,6 +212,16 @@ mod tests {
         assert!(names.contains(&"visual_manage"));
         assert!(names.contains(&"visual_create"));
         assert!(names.contains(&"visual_open_in_pane"));
+        assert!(names.contains(&"report_create"));
+        assert!(names.contains(&"report_attach_trace"));
+        assert!(names.contains(&"report_seal"));
+        assert!(names.contains(&"report_get_seal"));
+        assert!(
+            !names.iter().any(|name| name.contains("share")
+                || name.contains("upload")
+                || name.contains("promote")),
+            "agent MCP must not advertise Report share, upload, or promote: {names:?}"
+        );
         let bind = listed["tools"]
             .as_array()
             .unwrap()
@@ -291,7 +301,7 @@ fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
 fn tools() -> Value {
     let mut result = json!({
         "tools": [
-            {"name":"visual_manage","description":"Direct tool for Synth visuals; do not call MCP resources or search the filesystem. Required lifecycle: create, show, authoring_context, capture_review at a wide viewport, inspect the returned PNG, record a passing review, repeat capture and review at a compact viewport, then mark_ready with the current revision. Revise and recapture whenever a review finds a visual defect.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual operation to run."},"arguments":{"type":"object","description":"capture_review requires visual_id and viewport {width,height}; it returns a PNG image and absolute screenshot_path. review must use that path and current revision; mark_ready requires two passing screenshot-backed reviews of that revision.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+            {"name":"visual_manage","description":"Synth visuals. Use author-synth-diagrams; do not call MCP resources. Create/show, review PNGs wide and compact, revise defects, then mark_ready. Mermaid source goes in arguments.content.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual operation."},"arguments":{"type":"object","description":"Operation arguments. capture_review returns a PNG and screenshot_path; review and mark_ready use the current revision.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
             {"name":"visual_list_templates","description":"List Synth visual templates","inputSchema":{"type":"object","properties":{"genre":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_get","description":"Get a visual by id","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
@@ -311,7 +321,18 @@ fn tools() -> Value {
             {"name":"visual_seal","description":"Compile an E1-ready exact revision into a local immutable ArtifactBundle v1","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"revision":{"type":"integer"}},"required":["visual_id","revision"],"additionalProperties":false}},
             {"name":"visual_list_seals","description":"List local immutable visual seals","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_get_seal","description":"Get one local ArtifactBundle v1 by receipt digest","inputSchema":{"type":"object","properties":{"receipt_digest":{"type":"string"}},"required":["receipt_digest"],"additionalProperties":false}},
-            {"name":"visual_archive","description":"Archive a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}}
+            {"name":"visual_archive","description":"Archive a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
+            {"name":"report_list","description":"List local Reports","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"}},"additionalProperties":false}},
+            {"name":"report_get","description":"Get a Report identity and current revision","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"}},"required":["report_id"],"additionalProperties":false}},
+            {"name":"report_get_revision","description":"Get one exact Report revision, including ordered blocks","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"revision":{"type":"integer"}},"required":["report_id"],"additionalProperties":false}},
+            {"name":"report_create","description":"Create a local Report draft with narrative and appendix blocks","inputSchema":{"type":"object","properties":{"title":{"type":"string"},"summary":{"type":"string"},"authors":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}},
+            {"name":"report_update","description":"Update a local Report draft. Sealed revisions stay immutable.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"title":{"type":"string"},"summary":{"type":"string"},"blocks":{"type":"array"},"claims":{"type":"array"},"limitations":{"type":"array"}},"required":["report_id"],"additionalProperties":false}},
+            {"name":"report_attach_trace","description":"Attach a Trace V5 digest to a Report. Desktop resolves the local rollout-inspector projection when omitted. The frozen Report reader renders the canonical inspector; missing projections stay —.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"trace_digest":{"type":"string"},"trace_id":{"type":"string"},"label":{"type":"string"},"collection_id":{"type":"string"},"projection":{"type":"object","description":"Optional synth.trace-projection.rollout-inspector.v1 packet. Omit to resolve from local inventory."}},"required":["report_id","trace_digest"],"additionalProperties":false}},
+            {"name":"report_seal","description":"Seal one exact Report revision for offline reopen. Does not upload or promote.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"revision":{"type":"integer"}},"required":["report_id","revision"],"additionalProperties":false}},
+            {"name":"report_list_seals","description":"List local sealed Report revisions","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"}},"additionalProperties":false}},
+            {"name":"report_get_seal","description":"Reopen one local sealed Report by receipt digest","inputSchema":{"type":"object","properties":{"receipt_digest":{"type":"string"}},"required":["receipt_digest"],"additionalProperties":false}},
+            {"name":"report_upsert_experiment","description":"Create or update an Experiment Record on a Report","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"experiment_id":{"type":"string"},"title":{"type":"string"},"hypothesis":{"type":"string"},"status":{"type":"string"},"protocol_digest":{"type":"string"},"arms":{"type":"array"},"runs":{"type":"array"},"results":{"type":"array"}},"required":["report_id","title"],"additionalProperties":false}},
+            {"name":"report_append_log","description":"Append a Research Log entry. Corrections link earlier entries and never rewrite them.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"entry_kind":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"author":{"type":"string"},"actor_kind":{"type":"string","enum":["human","agent"]},"claim_effect":{"type":"string"},"supersedes_entry_id":{"type":"string"},"links":{"type":"array"}},"required":["report_id","entry_kind","title","body"],"additionalProperties":false}}
         ]
     });
     if let Some(items) = result.get_mut("tools").and_then(Value::as_array_mut) {
@@ -341,6 +362,11 @@ fn tools() -> Value {
                     | "visual_list_annotations"
                     | "visual_list_seals"
                     | "visual_get_seal"
+                    | "report_list"
+                    | "report_get"
+                    | "report_get_revision"
+                    | "report_list_seals"
+                    | "report_get_seal"
             );
             if let Some(object) = tool.as_object_mut() {
                 object.insert(
@@ -595,6 +621,81 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 &format!("/v1/visuals/{id}/archive"),
                 Some(json!({})),
             )
+        }
+        "report_list" => request("GET", "/v1/reports", Some(args.clone())),
+        "report_get" => {
+            let id = args
+                .get("report_id")
+                .and_then(Value::as_str)
+                .ok_or("report_id required")?;
+            request("GET", &format!("/v1/reports/{id}"), None)
+        }
+        "report_get_revision" => {
+            let id = args
+                .get("report_id")
+                .and_then(Value::as_str)
+                .ok_or("report_id required")?;
+            request(
+                "GET",
+                &format!("/v1/reports/{id}/revision"),
+                Some(args.clone()),
+            )
+        }
+        "report_create" => request("POST", "/v1/reports", Some(args.clone())),
+        "report_attach_trace" => {
+            let id = args
+                .get("report_id")
+                .and_then(Value::as_str)
+                .ok_or("report_id required")?;
+            request(
+                "POST",
+                &format!("/v1/reports/{id}/traces"),
+                Some(args.clone()),
+            )
+        }
+        "report_update" => {
+            let id = args
+                .get("report_id")
+                .and_then(Value::as_str)
+                .ok_or("report_id required")?;
+            request("POST", &format!("/v1/reports/{id}"), Some(args.clone()))
+        }
+        "report_seal" => {
+            let id = args
+                .get("report_id")
+                .and_then(Value::as_str)
+                .ok_or("report_id required")?;
+            request(
+                "POST",
+                &format!("/v1/reports/{id}/seal"),
+                Some(args.clone()),
+            )
+        }
+        "report_list_seals" => request("GET", "/v1/report-seals", Some(args.clone())),
+        "report_get_seal" => {
+            let digest = args
+                .get("receipt_digest")
+                .and_then(Value::as_str)
+                .ok_or("receipt_digest required")?;
+            request("GET", &format!("/v1/report-seals/{digest}"), None)
+        }
+        "report_upsert_experiment" => {
+            let id = args
+                .get("report_id")
+                .and_then(Value::as_str)
+                .ok_or("report_id required")?;
+            request(
+                "POST",
+                &format!("/v1/reports/{id}/experiments"),
+                Some(args.clone()),
+            )
+        }
+        "report_append_log" => {
+            let id = args
+                .get("report_id")
+                .and_then(Value::as_str)
+                .ok_or("report_id required")?;
+            request("POST", &format!("/v1/reports/{id}/log"), Some(args.clone()))
         }
         other => Err(format!("unknown tool {other}")),
     }

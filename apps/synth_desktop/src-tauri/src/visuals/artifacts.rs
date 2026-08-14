@@ -14,7 +14,12 @@ use uuid::Uuid;
 const BUNDLE_SCHEMA: &str = "synth.artifact-bundle.v1";
 const COMPILER_NAME: &str = "workshop";
 const WORKSHOP_UPLOAD_SCHEMA: &str = "synth.workshop-artifact-upload.v1";
-const FROZEN_RUNTIME: &str = r#"(()=>{const d=JSON.parse(document.getElementById('synth-artifact-data').textContent);const root=document.getElementById('app');root.innerHTML='';const h=document.createElement('header');const k=document.createElement('p');k.className='kicker';k.textContent=d.template_id;const t=document.createElement('h1');t.textContent=d.title;h.append(k,t);const s=document.createElement('section');s.className='visual';const pre=document.createElement('pre');pre.textContent=JSON.stringify(d.bindings,null,2);s.append(pre);root.append(h,s);})();"#;
+const FROZEN_RUNTIME: &str = concat!(
+    include_str!("../reports/rollout_inspector.js"),
+    "\n",
+    include_str!("frozen_runtime.js")
+);
+const INSPECTOR_CSS: &str = include_str!("../reports/rollout_inspector.css");
 
 impl VisualRegistry {
     pub async fn annotations(&self, visual_id: String) -> Result<Vec<VisualAnnotation>> {
@@ -887,8 +892,9 @@ fn scan_forbidden(value: &Value, path: &str) -> Result<()> {
 
 fn build_index_html(data: &Value, runtime_digest: &str) -> Result<String> {
     let inline = serde_json::to_string(data)?.replace("</script", "<\\/script");
+    let css = INSPECTOR_CSS.replace("</style", "<\\/style");
     Ok(format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; frame-src 'none';"><title>Sealed Workshop visual</title><style>html{{font:14px system-ui;color:#20232a;background:#f7f7f5}}body{{margin:0}}#app{{max-width:1100px;margin:auto;padding:32px}}.kicker{{color:#6b7280}}h1{{font-size:30px}}.visual{{background:white;border:1px solid #ddd;border-radius:14px;padding:20px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}</style></head><body><main id="app"></main><script id="synth-artifact-data" type="application/json">{inline}</script><script data-runtime-digest="{runtime_digest}">{FROZEN_RUNTIME}</script></body></html>"#
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; frame-src 'none';"><title>Sealed Workshop visual</title><style>html{{font:14px system-ui;color:#20232a;background:#f7f7f5}}body{{margin:0}}#app{{max-width:1100px;margin:auto;padding:32px}}.kicker{{color:#6b7280}}h1{{font-size:30px}}.visual{{background:white;border:1px solid #ddd;border-radius:14px;padding:20px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}{css}</style></head><body><main id="app"></main><script id="synth-artifact-data" type="application/json">{inline}</script><script data-runtime-digest="{runtime_digest}">{FROZEN_RUNTIME}</script></body></html>"#
     ))
 }
 

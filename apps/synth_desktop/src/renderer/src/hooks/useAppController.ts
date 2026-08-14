@@ -1255,6 +1255,8 @@ export function useAppController() {
 				? "Connectors"
 			: view.kind === "visuals"
 				? "Visuals"
+			: view.kind === "reports"
+				? "Reports"
 			: view.kind === "optimizers"
 				? "Optimizers"
 			: view.kind === "inventory"
