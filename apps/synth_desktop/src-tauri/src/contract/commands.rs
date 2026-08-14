@@ -107,6 +107,13 @@ impl Commands {
     pub const VISUALS_LIST: &'static str = "visuals_list";
     pub const VISUALS_GET: &'static str = "visuals_get";
     pub const VISUALS_REVISIONS: &'static str = "visuals_revisions";
+    pub const VISUALS_ANNOTATIONS_LIST: &'static str = "visuals_annotations_list";
+    pub const VISUALS_ANNOTATION_CREATE: &'static str = "visuals_annotation_create";
+    pub const VISUALS_SEALS_LIST: &'static str = "visuals_seals_list";
+    pub const VISUALS_SEAL: &'static str = "visuals_seal";
+    pub const VISUALS_SEAL_GET: &'static str = "visuals_seal_get";
+    pub const VISUALS_UPLOAD_STATUS: &'static str = "visuals_upload_status";
+    pub const VISUALS_SHARE_SEAL: &'static str = "visuals_share_seal";
     pub const VISUALS_CREATE: &'static str = "visuals_create";
     pub const VISUALS_UPDATE: &'static str = "visuals_update";
     pub const VISUALS_SAVE: &'static str = "visuals_save";

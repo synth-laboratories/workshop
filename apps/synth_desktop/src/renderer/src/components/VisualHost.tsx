@@ -1,6 +1,7 @@
 import { Component, useEffect, useMemo, useState, type ComponentType, type ErrorInfo, type ReactNode } from "react";
 import type { ArtifactRef } from "../types/landing";
 import type { VisualRecord } from "@synth/runtime-protocol";
+import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } from "../bridge";
 import { propsFromBindings } from "@synth/visuals";
 import { loadVisualShell } from "../runtime/visualsLoader";
 import { bridges } from "../runtime/desktopBridge";
@@ -24,6 +25,7 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 		title: visual.title,
 		templateId: visual.templateId,
 		visualId: visual.id,
+		revision: visual.currentRevision,
 		rendererKind: visual.rendererKind,
 		bindings: visual.bindings,
 		metadata: visual.metadata,
@@ -434,6 +436,104 @@ export function VisualHost({ artifact }: { artifact: ArtifactRef }) {
 
 export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClose: () => void }) {
 	const [expanded, setExpanded] = useState(false);
+	const [annotations, setAnnotations] = useState<VisualAnnotation[]>([]);
+	const [seals, setSeals] = useState<VisualSeal[]>([]);
+	const [sealedBundle, setSealedBundle] = useState<VisualSealBundle | null>(null);
+	const [shareUpload, setShareUpload] = useState<VisualUpload | null>(null);
+	const [labeling, setLabeling] = useState(false);
+	const [labelPoint, setLabelPoint] = useState<{ x: number; y: number } | null>(null);
+	const [labelBody, setLabelBody] = useState("");
+	const [artifactError, setArtifactError] = useState<string | null>(null);
+	const [busy, setBusy] = useState(false);
+	const visualId = artifact.visualId;
+	const revision = artifact.revision;
+	const qualityGate = artifact.metadata?.qualityGate as { ready?: boolean; revision?: number } | undefined;
+	const sealEligible = Boolean(visualId && revision && qualityGate?.ready && qualityGate.revision === revision);
+
+	useEffect(() => {
+		let cancelled = false;
+		if (!visualId || !bridges.visuals) return;
+		void Promise.all([bridges.visuals.annotations(visualId), bridges.visuals.listSeals(visualId)])
+			.then(([nextAnnotations, nextSeals]) => {
+				if (!cancelled) {
+					setAnnotations(nextAnnotations.filter((row) => !row.tombstoned));
+					setSeals(nextSeals);
+				}
+			})
+			.catch((reason) => { if (!cancelled) setArtifactError(String(reason)); });
+		return () => { cancelled = true; };
+	}, [visualId, revision]);
+
+	async function createLabel() {
+		if (!visualId || !revision || !labelPoint || !bridges.visuals) return;
+		setBusy(true);
+		setArtifactError(null);
+		try {
+			const annotation = await bridges.visuals.createAnnotation(visualId, {
+				visualRevision: revision,
+				selector: { type: "chart_mark", markId: "visual-pane", x: labelPoint.x, y: labelPoint.y },
+				kind: "note",
+				body: labelBody.trim() || null,
+				metadata: { coordinateSpace: "normalized", createdFrom: "visual-pane" }
+			});
+			setAnnotations((current) => [...current, annotation]);
+			setLabeling(false);
+			setLabelPoint(null);
+			setLabelBody("");
+		} catch (reason) {
+			setArtifactError(String(reason));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function sealCurrentRevision() {
+		if (!visualId || !revision || !bridges.visuals) return;
+		setBusy(true);
+		setArtifactError(null);
+		try {
+			const nextSeal = await bridges.visuals.seal(visualId, revision);
+			setSeals((current) => [nextSeal, ...current.filter((row) => row.receiptDigest !== nextSeal.receiptDigest)]);
+			setSealedBundle(await bridges.visuals.getSeal(nextSeal.receiptDigest));
+		} catch (reason) {
+			setArtifactError(String(reason));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function reopenSeal(receiptDigest: string) {
+		if (!bridges.visuals) return;
+		setBusy(true);
+		setArtifactError(null);
+		try {
+			const [bundle, upload] = await Promise.all([
+				bridges.visuals.getSeal(receiptDigest),
+				bridges.visuals.uploadStatus(receiptDigest)
+			]);
+			setSealedBundle(bundle);
+			setShareUpload(upload);
+		} catch (reason) {
+			setArtifactError(String(reason));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function shareCurrentSeal() {
+		if (!sealedBundle || !bridges.visuals) return;
+		setBusy(true);
+		setArtifactError(null);
+		try {
+			const upload = await bridges.visuals.shareSeal(sealedBundle.seal.receiptDigest);
+			setShareUpload(upload);
+			if (upload.committedUrl) await navigator.clipboard?.writeText(upload.committedUrl).catch(() => undefined);
+		} catch (reason) {
+			setArtifactError(String(reason));
+		} finally {
+			setBusy(false);
+		}
+	}
 	const isSubagents = artifact.templateId === "synth.subagents.v1";
 	const isMermaid = artifact.templateId === "diagram.mermaid.v1" || artifact.rendererKind === "mermaid";
 	const isSystemsDynamic = artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
@@ -451,6 +551,32 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					<span className="visual-pane-title">{artifact.title}</span>
 				</div>
 				<div className="visual-pane-head-actions">
+					{sealedBundle ? (
+						<>
+							<button type="button" className="visual-expand" onClick={() => { setSealedBundle(null); setShareUpload(null); }}>Live revision</button>
+							<button type="button" className="visual-expand" onClick={() => void shareCurrentSeal()} disabled={busy} title="Human Share uploads this sealed digest privately">
+								{shareUpload?.state === "committed" ? "Shared privately" : "Share privately"}
+							</button>
+						</>
+					) : null}
+					<button
+						type="button"
+						className="visual-expand"
+						onClick={() => { setLabeling(true); setLabelPoint(null); }}
+						disabled={!visualId || !revision || busy}
+						title="Place a durable label on this exact revision"
+					>
+						Label{annotations.length ? ` · ${annotations.length}` : ""}
+					</button>
+					<button
+						type="button"
+						className="visual-expand"
+						onClick={() => void sealCurrentRevision()}
+						disabled={!sealEligible || busy}
+						title={sealEligible ? "Seal this exact revision for offline use" : "Pass the E1 visual quality gate before sealing"}
+					>
+						{busy ? "Working…" : "Seal"}
+					</button>
 					<button
 						type="button"
 						className="visual-expand"
@@ -464,8 +590,51 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					<button type="button" className="visual-close" onClick={onClose} aria-label="Close visual">×</button>
 				</div>
 			</header>
-			<div className="visual-pane-body">
-				<VisualHost artifact={artifact} />
+			{artifactError ? <div className="visual-artifact-error" role="alert">{artifactError}</div> : null}
+			{seals.length ? (
+				<div className="visual-seal-strip" aria-label="Sealed revisions">
+					<span>Offline:</span>
+					{seals.map((seal) => (
+						<button key={seal.receiptDigest} type="button" onClick={() => void reopenSeal(seal.receiptDigest)}>
+							rev {seal.visualRevision} · {seal.receiptDigest.slice(0, 8)}
+						</button>
+					))}
+				</div>
+			) : null}
+			{shareUpload?.committedUrl ? (
+				<div className="visual-share-url">
+					<span>Private permalink</span>
+					<a href={shareUpload.committedUrl} target="_blank" rel="noreferrer">{shareUpload.committedUrl}</a>
+					<button type="button" onClick={() => void navigator.clipboard?.writeText(shareUpload.committedUrl!)}>Copy</button>
+				</div>
+			) : null}
+			{labeling ? (
+				<form className="visual-label-form" onSubmit={(event) => { event.preventDefault(); void createLabel(); }}>
+					<span>{labelPoint ? `Placed at ${Math.round(labelPoint.x * 100)}%, ${Math.round(labelPoint.y * 100)}%` : "Click the visual to place the label."}</span>
+					<input value={labelBody} onChange={(event) => setLabelBody(event.target.value)} placeholder="Label note (optional)" aria-label="Label note" />
+					<button type="submit" disabled={!labelPoint || busy}>Save label</button>
+					<button type="button" onClick={() => { setLabeling(false); setLabelPoint(null); }}>Cancel</button>
+				</form>
+			) : null}
+			<div
+				className={`visual-pane-body${labeling ? " visual-label-target" : ""}`}
+				onClick={labeling ? (event) => {
+					const bounds = event.currentTarget.getBoundingClientRect();
+					setLabelPoint({
+						x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
+						y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height))
+					});
+				} : undefined}
+			>
+				{sealedBundle ? (
+					<iframe
+						className="visual-sealed-frame"
+						title={`Sealed ${artifact.title}`}
+						sandbox=""
+						srcDoc={sealedBundle.indexHtml}
+						data-receipt-digest={sealedBundle.seal.receiptDigest}
+					/>
+				) : <VisualHost artifact={artifact} />}
 			</div>
 		</aside>
 	);

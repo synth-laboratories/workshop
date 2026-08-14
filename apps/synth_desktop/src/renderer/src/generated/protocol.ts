@@ -102,6 +102,22 @@ export const commands = {
 } | null) => typedError<VisualRecord_Serialize[], AppError>(__TAURI_INVOKE("visuals_list", { query })),
 	visualsGet: (visualId: string) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_get", { visualId })),
 	visualsRevisions: (visualId: string) => typedError<VisualRevision_Serialize[], AppError>(__TAURI_INVOKE("visuals_revisions", { visualId })),
+	visualsAnnotationsList: (visualId: string) => typedError<VisualAnnotation[], AppError>(__TAURI_INVOKE("visuals_annotations_list", { visualId })),
+	visualsAnnotationCreate: (visualId: string, request: VisualAnnotationCreate) => typedError<VisualAnnotation, AppError>(__TAURI_INVOKE("visuals_annotation_create", { visualId, request })),
+	visualsSealsList: (visualId: string | null) => typedError<VisualSeal[], AppError>(__TAURI_INVOKE("visuals_seals_list", { visualId })),
+	visualsSeal: (visualId: string, revision: unknown) => typedError<VisualSeal, AppError>(__TAURI_INVOKE("visuals_seal", { visualId, revision })),
+	visualsSealGet: (receiptDigest: string) => typedError<VisualSealBundle, AppError>(__TAURI_INVOKE("visuals_seal_get", { receiptDigest })),
+	visualsUploadStatus: (receiptDigest: string) => typedError<{
+	receiptDigest: string,
+	collectionId: string | null,
+	publicationId: string | null,
+	publicationRevision: unknown,
+	state: string,
+	committedUrl: string | null,
+	error: string | null,
+	updatedAt: string,
+} | null, AppError>(__TAURI_INVOKE("visuals_upload_status", { receiptDigest })),
+	visualsShareSeal: (receiptDigest: string) => typedError<VisualUpload, AppError>(__TAURI_INVOKE("visuals_share_seal", { receiptDigest })),
 	visualsCreate: (request: VisualCreateRequest) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_create", { request })),
 	visualsUpdate: (visualId: string, request: VisualUpdateRequest) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_update", { visualId, request })),
 	visualsSave: (visualId: string, tsx: string | null) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_save", { visualId, tsx })),
@@ -1534,6 +1550,33 @@ export type UsageSummary = {
 	generatedAt: string,
 };
 
+export type VisualAnnotation = {
+	id: string,
+	visualId: string,
+	visualRevision: unknown,
+	sourceDigest: string | null,
+	selector: unknown,
+	kind: string,
+	body: string | null,
+	metadata: unknown,
+	authorId: string,
+	supersedesId: string | null,
+	tombstoned: boolean,
+	createdAt: string,
+	updatedAt: string,
+};
+
+export type VisualAnnotationCreate = {
+	visualRevision: unknown,
+	sourceDigest: string | null,
+	selector: unknown,
+	kind: string,
+	body: string | null,
+	metadata: unknown,
+	authorId: string | null,
+	supersedesId: string | null,
+};
+
 export type VisualAsset = VisualAsset_Serialize | VisualAsset_Deserialize;
 
 export type VisualAsset_Deserialize = {
@@ -1706,6 +1749,29 @@ export type VisualRevision_Serialize = {
 	createdAt: string,
 };
 
+export type VisualSeal = {
+	receiptDigest: string,
+	visualId: string,
+	visualRevision: unknown,
+	artifactId: string,
+	schemaVersion: string,
+	compilerName: string,
+	compilerVersion: string,
+	runtimeDigest: string,
+	indexDigest: string,
+	dataDigest: string,
+	receiptSizeBytes: unknown,
+	totalSizeBytes: unknown,
+	createdAt: string,
+};
+
+export type VisualSealBundle = {
+	seal: VisualSeal,
+	indexHtml: string,
+	data: unknown,
+	receipt: unknown,
+};
+
 export type VisualStatus = "draft" | "live" | "saved" | "failed" | "archived";
 
 export type VisualUpdateRequest = {
@@ -1720,6 +1786,17 @@ export type VisualUpdateRequest = {
 	metadata: unknown,
 	/**  When true, content/bindings changes create a new revision. */
 	bumpRevision: boolean | null,
+};
+
+export type VisualUpload = {
+	receiptDigest: string,
+	collectionId: string | null,
+	publicationId: string | null,
+	publicationRevision: unknown,
+	state: string,
+	committedUrl: string | null,
+	error: string | null,
+	updatedAt: string,
 };
 
 export type WhisperModelHit = {

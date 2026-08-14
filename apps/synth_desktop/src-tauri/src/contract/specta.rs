@@ -134,6 +134,13 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::visuals_list,
         crate::visuals_get,
         crate::visuals_revisions,
+        crate::visuals_annotations_list,
+        crate::visuals_annotation_create,
+        crate::visuals_seals_list,
+        crate::visuals_seal,
+        crate::visuals_seal_get,
+        crate::visuals_upload_status,
+        crate::visuals_share_seal,
         crate::visuals_create,
         crate::visuals_update,
         crate::visuals_save,
@@ -298,7 +305,7 @@ mod tests {
         let exported =
             body.matches("__TAURI_INVOKE(").count() + body.matches("__TAURI_INVOKE<").count();
         assert_eq!(
-            exported, 150,
+            exported, 157,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

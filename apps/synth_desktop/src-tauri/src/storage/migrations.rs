@@ -16,6 +16,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_11,
     MIGRATION_12,
     MIGRATION_13,
+    MIGRATION_14,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -802,6 +803,65 @@ CREATE TABLE IF NOT EXISTS visual_renditions (
 );
 "#;
 
+const MIGRATION_14: &str = r#"
+CREATE TABLE IF NOT EXISTS visual_annotations (
+    id TEXT PRIMARY KEY,
+    visual_id TEXT NOT NULL REFERENCES visuals(id) ON DELETE CASCADE,
+    visual_revision INTEGER NOT NULL,
+    source_digest TEXT,
+    selector_json TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    body TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    author_id TEXT NOT NULL,
+    supersedes_id TEXT REFERENCES visual_annotations(id),
+    tombstoned INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (visual_id, visual_revision)
+        REFERENCES visual_revisions(visual_id, revision)
+);
+
+CREATE INDEX IF NOT EXISTS visual_annotations_visual_revision
+ON visual_annotations(visual_id, visual_revision, created_at);
+
+CREATE TABLE IF NOT EXISTS visual_seals (
+    receipt_digest TEXT PRIMARY KEY,
+    visual_id TEXT NOT NULL REFERENCES visuals(id) ON DELETE CASCADE,
+    visual_revision INTEGER NOT NULL,
+    artifact_id TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    compiler_name TEXT NOT NULL,
+    compiler_version TEXT NOT NULL,
+    runtime_digest TEXT NOT NULL,
+    index_digest TEXT NOT NULL,
+    data_digest TEXT NOT NULL,
+    receipt_size_bytes INTEGER NOT NULL,
+    total_size_bytes INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (visual_id, visual_revision)
+        REFERENCES visual_revisions(visual_id, revision)
+);
+
+CREATE INDEX IF NOT EXISTS visual_seals_visual_revision
+ON visual_seals(visual_id, visual_revision, created_at);
+
+CREATE TABLE IF NOT EXISTS visual_uploads (
+    receipt_digest TEXT PRIMARY KEY REFERENCES visual_seals(receipt_digest) ON DELETE CASCADE,
+    collection_id TEXT,
+    publication_id TEXT,
+    publication_revision INTEGER,
+    prepare_expires_at TEXT,
+    completed_members_json TEXT NOT NULL DEFAULT '[]',
+    state TEXT NOT NULL,
+    committed_url TEXT,
+    error TEXT,
+    updated_at TEXT NOT NULL,
+    CHECK (state IN ('prepared','uploading','finalizing','committed','failed')),
+    CHECK ((state = 'committed' AND committed_url IS NOT NULL) OR (state != 'committed' AND committed_url IS NULL))
+);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -851,7 +911,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 13);
+        assert_eq!(apply_migrations(&conn).unwrap(), 14);
         let updated_at: String = conn
             .query_row(
                 "SELECT updated_at FROM runs WHERE id = 'run-1'",
@@ -924,7 +984,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 13);
+        assert_eq!(apply_migrations(&conn).unwrap(), 14);
 
         let ledger_tables: i64 = conn
             .query_row(
@@ -983,7 +1043,7 @@ mod tests {
         .unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 11);
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 13);
+        assert_eq!(apply_migrations(&conn).unwrap(), 14);
         let old_binary_sum = |conn: &Connection| -> f64 {
             conn.query_row(
                 "SELECT
@@ -1022,7 +1082,7 @@ mod tests {
 
         // Relaunching v12 folds and clears staging. The union remains exactly
         // the same, proving neither data loss nor a transient double charge.
-        assert_eq!(apply_migrations(&conn).unwrap(), 13);
+        assert_eq!(apply_migrations(&conn).unwrap(), 14);
         assert!((old_binary_sum(&conn) - 0.75).abs() < 1e-9);
         assert_eq!(old_inventory_count(&conn), 2);
         let old_inventory_ids: Vec<String> = {
@@ -1086,7 +1146,7 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 13);
+        assert_eq!(apply_migrations(&conn).unwrap(), 14);
 
         let imported: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
@@ -1148,7 +1208,7 @@ mod tests {
         conn.execute_batch(partial).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 7);
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 13);
+        assert_eq!(apply_migrations(&conn).unwrap(), 14);
         let (copies, leftovers): (i64, i64) = conn
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM usage_records WHERE request_id='req-1'),
@@ -1175,7 +1235,7 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(apply_migrations(&conn).unwrap(), 13);
+        assert_eq!(apply_migrations(&conn).unwrap(), 14);
         let kinds: Vec<(String, String)> = {
             let mut stmt = conn
                 .prepare("SELECT id, kind FROM sessions ORDER BY id")
@@ -1212,7 +1272,7 @@ mod tests {
         assert_eq!(probe, 0, "the failed migration's table must roll back");
         assert_eq!(version, 7);
         // The connection stays usable and the real migration still applies.
-        assert_eq!(apply_migrations(&conn).unwrap(), 13);
+        assert_eq!(apply_migrations(&conn).unwrap(), 14);
     }
 
     #[test]
@@ -1224,7 +1284,7 @@ mod tests {
             [r#"{"kind":"remote","provider":"synth-cloud","model":"openrouter/poolside/laguna-s-2.1","adapter":null}"#],
         )
         .unwrap();
-        assert_eq!(apply_migrations(&conn).unwrap(), 13);
+        assert_eq!(apply_migrations(&conn).unwrap(), 14);
         let (kind, target): (String, String) = conn
             .query_row(
                 "SELECT runtime_target_kind, target_json FROM sessions WHERE id='cloud-1'",
@@ -1242,5 +1302,47 @@ mod tests {
             )
             .unwrap();
         assert_eq!(indexed, 1);
+    }
+
+    #[test]
+    fn migration_14_never_allows_a_partial_upload_permalink() {
+        let conn = seed_at_version(13);
+        assert_eq!(apply_migrations(&conn).unwrap(), 14);
+        conn.execute(
+            "INSERT INTO visuals(id,current_revision,title,template_id,status,renderer_kind,bindings_json,metadata_json,created_at,updated_at)
+             VALUES ('vis-1',1,'Visual','template.v1','saved','template','{}','{}','now','now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO visual_revisions(visual_id,revision,template_id,renderer_kind,bindings_json,created_at)
+             VALUES ('vis-1',1,'template.v1','template','{}','now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO visual_seals(receipt_digest,visual_id,visual_revision,artifact_id,schema_version,compiler_name,compiler_version,runtime_digest,index_digest,data_digest,receipt_size_bytes,total_size_bytes,created_at)
+             VALUES (?1,'vis-1',1,'visual:vis-1','synth.artifact-bundle.v1','workshop','0.3',?2,?3,?4,10,30,'now')",
+            ["a".repeat(64), "b".repeat(64), "c".repeat(64), "d".repeat(64)],
+        )
+        .unwrap();
+        let partial_with_url = conn.execute(
+            "INSERT INTO visual_uploads(receipt_digest,state,committed_url,updated_at)
+             VALUES (?1,'uploading','https://should-not-exist','now')",
+            ["a".repeat(64)],
+        );
+        assert!(partial_with_url.is_err());
+        let committed_without_url = conn.execute(
+            "INSERT INTO visual_uploads(receipt_digest,state,updated_at)
+             VALUES (?1,'committed','now')",
+            ["a".repeat(64)],
+        );
+        assert!(committed_without_url.is_err());
+        conn.execute(
+            "INSERT INTO visual_uploads(receipt_digest,state,committed_url,updated_at)
+             VALUES (?1,'committed','https://private.example/p','now')",
+            ["a".repeat(64)],
+        )
+        .unwrap();
     }
 }

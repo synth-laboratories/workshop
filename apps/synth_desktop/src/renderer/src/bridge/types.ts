@@ -421,6 +421,56 @@ export type VisualTemplateMeta = {
 	exampleBinding?: Record<string, unknown> | null;
 };
 
+export type VisualAnnotation = {
+	id: string;
+	visualId: string;
+	visualRevision: number;
+	sourceDigest?: string | null;
+	selector: Record<string, unknown>;
+	kind: "note" | "bug" | "highlight" | "reward" | "acceptance";
+	body?: string | null;
+	metadata: Record<string, unknown>;
+	authorId: string;
+	supersedesId?: string | null;
+	tombstoned: boolean;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type VisualSeal = {
+	receiptDigest: string;
+	visualId: string;
+	visualRevision: number;
+	artifactId: string;
+	schemaVersion: "synth.artifact-bundle.v1";
+	compilerName: string;
+	compilerVersion: string;
+	runtimeDigest: string;
+	indexDigest: string;
+	dataDigest: string;
+	receiptSizeBytes: number;
+	totalSizeBytes: number;
+	createdAt: string;
+};
+
+export type VisualSealBundle = {
+	seal: VisualSeal;
+	indexHtml: string;
+	data: Record<string, unknown>;
+	receipt: Record<string, unknown>;
+};
+
+export type VisualUpload = {
+	receiptDigest: string;
+	collectionId?: string | null;
+	publicationId?: string | null;
+	publicationRevision?: number | null;
+	state: "prepared" | "uploading" | "finalizing" | "committed" | "failed";
+	committedUrl?: string | null;
+	error?: string | null;
+	updatedAt: string;
+};
+
 export type VisualsBridge = {
 	listTemplates(genre?: string | null): Promise<VisualTemplateMeta[]>;
 	getTemplate(templateId: string): Promise<VisualTemplateMeta>;
@@ -434,6 +484,22 @@ export type VisualsBridge = {
 	}): Promise<VisualRecord[]>;
 	get(visualId: string): Promise<VisualRecord>;
 	revisions(visualId: string): Promise<VisualRevision[]>;
+	annotations(visualId: string): Promise<VisualAnnotation[]>;
+	createAnnotation(visualId: string, request: {
+		visualRevision: number;
+		sourceDigest?: string | null;
+		selector: Record<string, unknown>;
+		kind: VisualAnnotation["kind"];
+		body?: string | null;
+		metadata?: Record<string, unknown>;
+		authorId?: string;
+		supersedesId?: string | null;
+	}): Promise<VisualAnnotation>;
+	listSeals(visualId?: string | null): Promise<VisualSeal[]>;
+	seal(visualId: string, revision: number): Promise<VisualSeal>;
+	getSeal(receiptDigest: string): Promise<VisualSealBundle>;
+	uploadStatus(receiptDigest: string): Promise<VisualUpload | null>;
+	shareSeal(receiptDigest: string): Promise<VisualUpload>;
 	create(request: {
 		templateId: string;
 		title?: string;

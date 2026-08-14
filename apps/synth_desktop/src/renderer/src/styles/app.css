@@ -27,6 +27,8 @@
 	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
 	--shadow-md: 0 6px 20px rgba(0, 0, 0, 0.08);
 	--font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+	--font-size-xs: 11px;
+	--font-size-sm: 12px;
 	--sidebar-width: 260px;
 	--output-pane-width: 420px;
 	--bottom-panel-height: 220px;
@@ -3978,6 +3980,76 @@ html.sidebar-hidden .titlebar {
 .visual-expand[aria-pressed="true"] {
 	border-color: var(--color-text-muted);
 	color: var(--color-text);
+}
+
+.visual-expand:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.visual-artifact-error {
+	padding: 8px 14px;
+	border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 35%, var(--color-border));
+	background: var(--color-accent-subtle);
+	color: var(--color-accent-hover);
+	font-size:var(--font-size-sm);
+}
+
+.visual-seal-strip,
+.visual-label-form,
+.visual-share-url {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 14px;
+	border-bottom: 1px solid var(--color-border);
+	background: color-mix(in srgb, var(--color-card) 92%, var(--color-bg-subtle));
+	font-size:var(--font-size-xs);
+	overflow-x: auto;
+}
+
+.visual-share-url a {
+	min-width: 0;
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.visual-share-url button {
+	border: 1px solid var(--color-border);
+	border-radius:var(--radius-sm);
+	background: var(--color-card);
+	padding: 5px 8px;
+}
+
+.visual-seal-strip button,
+.visual-label-form button,
+.visual-label-form input {
+	border: 1px solid var(--color-border);
+	border-radius:var(--radius-sm);
+	background: var(--color-card);
+	padding: 5px 8px;
+	white-space: nowrap;
+}
+
+.visual-label-form input {
+	min-width: 180px;
+	flex: 1;
+}
+
+.visual-label-target {
+	cursor: crosshair;
+	outline: 2px dashed color-mix(in srgb, var(--color-accent) 70%, transparent);
+	outline-offset: -4px;
+}
+
+.visual-sealed-frame {
+	display: block;
+	width: 100%;
+	min-height: 100%;
+	border: 0;
+	background: var(--color-bg-subtle);
 }
 
 .visual-pane-body {

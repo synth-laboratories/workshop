@@ -263,8 +263,13 @@ const VISUAL_OPERATIONS: &[(&str, &str)] = &[
     ("render", "visual_render"),
     ("capture_review", "visual_capture_review"),
     ("authoring_context", "visual_authoring_context"),
+    ("list_annotations", "visual_list_annotations"),
+    ("annotate", "visual_annotate"),
     ("review", "visual_review"),
     ("mark_ready", "visual_mark_ready"),
+    ("seal", "visual_seal"),
+    ("list_seals", "visual_list_seals"),
+    ("get_seal", "visual_get_seal"),
     ("fork", "visual_fork"),
     ("archive", "visual_archive"),
 ];
@@ -298,9 +303,14 @@ fn tools() -> Value {
             {"name":"visual_open_in_pane","description":"Alias of visual_show","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"}},"required":["instance_id"],"additionalProperties":false}},
             {"name":"visual_fork","description":"Fork a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_authoring_context","description":"Get the template contract, example evidence, revision, presentation, and outstanding quality gate for one visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
+            {"name":"visual_list_annotations","description":"List durable labels for a visual and its current overlay digest","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
+            {"name":"visual_annotate","description":"Write a durable label anchored to one exact visual revision","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"revision":{"type":"integer"},"selector":{"type":"object"},"kind":{"type":"string","enum":["note","bug","highlight","reward","acceptance"]},"body":{"type":"string"},"source_digest":{"type":"string"},"supersedes_id":{"type":"string"}},"required":["visual_id","revision","selector","kind"],"additionalProperties":false}},
             {"name":"visual_review","description":"Record one rendered-view critique for the current revision. Include viewport and explicit landmark checks.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"revision":{"type":"integer"},"viewport":{"type":"object"},"checks":{"type":"object"},"findings":{"type":"array","items":{"type":"string"}},"screenshot_path":{"type":"string"}},"required":["visual_id","revision","viewport","checks","findings"],"additionalProperties":false}},
             {"name":"visual_capture_review","description":"Render the current visual revision to a real PNG review image at the requested viewport. Returns the PNG as tool image content and an absolute screenshot_path for visual_review.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"viewport":{"type":"object","properties":{"width":{"type":"integer","minimum":320,"maximum":2400},"height":{"type":"integer","minimum":400,"maximum":1800}},"required":["width","height"],"additionalProperties":false}},"required":["visual_id","viewport"],"additionalProperties":false}},
             {"name":"visual_mark_ready","description":"Mark the current revision ready after at least two passing rendered-view reviews","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"revision":{"type":"integer"}},"required":["visual_id","revision"],"additionalProperties":false}},
+            {"name":"visual_seal","description":"Compile an E1-ready exact revision into a local immutable ArtifactBundle v1","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"revision":{"type":"integer"}},"required":["visual_id","revision"],"additionalProperties":false}},
+            {"name":"visual_list_seals","description":"List local immutable visual seals","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"additionalProperties":false}},
+            {"name":"visual_get_seal","description":"Get one local ArtifactBundle v1 by receipt digest","inputSchema":{"type":"object","properties":{"receipt_digest":{"type":"string"}},"required":["receipt_digest"],"additionalProperties":false}},
             {"name":"visual_archive","description":"Archive a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}}
         ]
     });
@@ -324,7 +334,13 @@ fn tools() -> Value {
                 .to_string();
             let read_only = matches!(
                 name.as_str(),
-                "visual_list_templates" | "visual_list" | "visual_get" | "visual_authoring_context"
+                "visual_list_templates"
+                    | "visual_list"
+                    | "visual_get"
+                    | "visual_authoring_context"
+                    | "visual_list_annotations"
+                    | "visual_list_seals"
+                    | "visual_get_seal"
             );
             if let Some(object) = tool.as_object_mut() {
                 object.insert(
@@ -485,6 +501,38 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .ok_or("visual_id required")?;
             request("GET", &format!("/v1/visuals/{id}/authoring"), None)
         }
+        "visual_list_annotations" => {
+            let id = args
+                .get("visual_id")
+                .and_then(Value::as_str)
+                .ok_or("visual_id required")?;
+            request("GET", &format!("/v1/visuals/{id}/annotations"), None)
+        }
+        "visual_annotate" => {
+            let id = args
+                .get("visual_id")
+                .and_then(Value::as_str)
+                .ok_or("visual_id required")?;
+            let revision = args
+                .get("revision")
+                .and_then(Value::as_i64)
+                .ok_or("revision required")?;
+            let selector = args.get("selector").cloned().ok_or("selector required")?;
+            let kind = args.get("kind").cloned().ok_or("kind required")?;
+            request(
+                "POST",
+                &format!("/v1/visuals/{id}/annotations"),
+                Some(json!({
+                    "visualRevision": revision,
+                    "sourceDigest": args.get("source_digest"),
+                    "selector": selector,
+                    "kind": kind,
+                    "body": args.get("body"),
+                    "authorId": "mcp",
+                    "supersedesId": args.get("supersedes_id")
+                })),
+            )
+        }
         "visual_review" => {
             let id = args
                 .get("visual_id")
@@ -506,6 +554,25 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 &format!("/v1/visuals/{id}/ready"),
                 Some(args.clone()),
             )
+        }
+        "visual_seal" => {
+            let id = args
+                .get("visual_id")
+                .and_then(Value::as_str)
+                .ok_or("visual_id required")?;
+            request(
+                "POST",
+                &format!("/v1/visuals/{id}/seal"),
+                Some(args.clone()),
+            )
+        }
+        "visual_list_seals" => request("GET", "/v1/seals", Some(args.clone())),
+        "visual_get_seal" => {
+            let digest = args
+                .get("receipt_digest")
+                .and_then(Value::as_str)
+                .ok_or("receipt_digest required")?;
+            request("GET", &format!("/v1/seals/{digest}"), None)
         }
         "visual_fork" => {
             let id = args

@@ -18,9 +18,9 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct VisualRegistry {
-    db: Arc<Database>,
-    journal: EventJournal,
-    content: ContentStore,
+    pub(super) db: Arc<Database>,
+    pub(super) journal: EventJournal,
+    pub(super) content: ContentStore,
 }
 
 impl VisualRegistry {

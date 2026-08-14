@@ -72,8 +72,9 @@ use tauri_plugin_opener::OpenerExt;
 use terminal::{TerminalCreateRequest, TerminalEvent, TerminalInfo, TerminalManager};
 use trace_ingest::{TraceBundleIngestRequest, TraceBundleIngestResult};
 use visuals::{
-    TemplateMeta, VisualAsset, VisualCreateRequest, VisualQuery, VisualRecord, VisualRendition,
-    VisualRevision, VisualUpdateRequest,
+    TemplateMeta, VisualAnnotation, VisualAnnotationCreate, VisualAsset, VisualCreateRequest,
+    VisualQuery, VisualRecord, VisualRendition, VisualRevision, VisualSeal, VisualSealBundle,
+    VisualUpdateRequest, VisualUpload,
 };
 use workspace_scope::WorkspaceGrantRequest;
 use workspace_scope::{ConversationWorkspaceScope, WorkspaceAccessMode};
@@ -989,6 +990,114 @@ async fn visuals_revisions(
         .revisions(visual_id)
         .await
         .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_annotations_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+) -> Result<Vec<VisualAnnotation>, AppError> {
+    state
+        .visuals()
+        .annotations(visual_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_annotation_create(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+    request: VisualAnnotationCreate,
+) -> Result<VisualAnnotation, AppError> {
+    let (annotation, event) = state
+        .visuals()
+        .create_annotation(visual_id, request)
+        .await
+        .map_err(AppError::from)?;
+    publish_visual_event(&app, &state, event).await?;
+    Ok(annotation)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_seals_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: Option<String>,
+) -> Result<Vec<VisualSeal>, AppError> {
+    state
+        .visuals()
+        .list_seals(visual_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_seal(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+    revision: contract::specta::OpaqueInteger<i64>,
+) -> Result<VisualSeal, AppError> {
+    let (seal, event) = state
+        .visuals()
+        .seal(visual_id, revision.0)
+        .await
+        .map_err(AppError::from)?;
+    publish_visual_event(&app, &state, event).await?;
+    Ok(seal)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_seal_get(
+    state: State<'_, Arc<CoreRuntime>>,
+    receipt_digest: String,
+) -> Result<VisualSealBundle, AppError> {
+    state
+        .visuals()
+        .get_seal(receipt_digest)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_upload_status(
+    state: State<'_, Arc<CoreRuntime>>,
+    receipt_digest: String,
+) -> Result<Option<VisualUpload>, AppError> {
+    state
+        .visuals()
+        .upload_status(receipt_digest)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_share_seal(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    receipt_digest: String,
+) -> Result<VisualUpload, AppError> {
+    let backend = synth_config::resolve().map_err(AppError::from)?;
+    let api_key = backend.api_key.ok_or_else(|| {
+        AppError::from(anyhow::anyhow!("Share requires a signed-in Synth account"))
+    })?;
+    let (upload, event) = state
+        .visuals()
+        .share_seal(receipt_digest, backend.backend_url, api_key)
+        .await
+        .map_err(AppError::from)?;
+    if event.get("schemaVersion").is_some() {
+        publish_visual_event(&app, &state, event).await?;
+    }
+    Ok(upload)
 }
 
 #[tauri::command]

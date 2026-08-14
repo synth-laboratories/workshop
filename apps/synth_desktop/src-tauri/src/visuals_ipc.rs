@@ -11,8 +11,8 @@ use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
 use crate::limits;
 use crate::visuals::{
     assert_live_eval_slot, classify_live_eval_family, live_eval_bind_metadata,
-    require_visualsbench_start_policy, VisualCreateRequest, VisualQuery, VisualStatus,
-    VisualUpdateRequest, LIVE_EVAL_SLOT,
+    require_visualsbench_start_policy, VisualAnnotationCreate, VisualCreateRequest, VisualQuery,
+    VisualStatus, VisualUpdateRequest, LIVE_EVAL_SLOT,
 };
 use base64::Engine;
 
@@ -1020,6 +1020,33 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let query: VisualQuery = serde_json::from_value(body.clone()).unwrap_or_default();
             Ok(json!({"visuals": registry.list(query).await?}))
         }
+        ("GET", "/v1/seals") => {
+            let visual_id = body
+                .get("visual_id")
+                .or_else(|| body.get("visualId"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Ok(json!({"seals": registry.list_seals(visual_id).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/seals/") => {
+            let digest = path.trim_start_matches("/v1/seals/");
+            if digest.is_empty() || digest.contains('/') {
+                anyhow::bail!("invalid seal receipt digest");
+            }
+            Ok(json!({"bundle": registry.get_seal(digest.to_string()).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/annotations") => {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/annotations")
+                .trim_end_matches('/');
+            let annotations = registry.annotations(id.to_string()).await?;
+            let revision = registry.get(id.to_string()).await?.current_revision;
+            let overlay_digest = registry.overlay_digest(id.to_string(), revision).await?;
+            Ok(
+                json!({"annotations": annotations, "overlayDigest": overlay_digest, "revision": revision}),
+            )
+        }
         ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/authoring") => {
             let id = path
                 .trim_start_matches("/v1/visuals/")
@@ -1046,9 +1073,15 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 } else {
                     Vec::new()
                 };
+            let annotations = registry.annotations(id.to_string()).await?;
+            let overlay_digest = registry
+                .overlay_digest(id.to_string(), visual.current_revision)
+                .await?;
             Ok(json!({
                 "visual": visual,
                 "template": template,
+                "annotations": annotations,
+                "overlayDigest": overlay_digest,
                 "authoring": {
                     "rendererContract": "trusted_template_configuration",
                     "arbitraryTsxExecuted": false,
@@ -1059,6 +1092,27 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     "instruction": "Render and show in Desktop, capture and inspect screenshots at wide and compact viewports, revise until automated findings and visible collisions are resolved, then record two screenshot-backed passing reviews before mark_ready."
                 }
             }))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/annotations") => {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/annotations")
+                .trim_end_matches('/');
+            let request: VisualAnnotationCreate = serde_json::from_value(body)?;
+            let (annotation, event) = registry.create_annotation(id.to_string(), request).await?;
+            Ok(json!({"annotation": annotation, "event": event}))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/seal") => {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/seal")
+                .trim_end_matches('/');
+            let revision = body
+                .get("revision")
+                .and_then(Value::as_i64)
+                .context("seal requires exact revision")?;
+            let (seal, event) = registry.seal(id.to_string(), revision).await?;
+            Ok(json!({"seal": seal, "event": event}))
         }
         ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/content") => {
             let id = path
