@@ -26,7 +26,22 @@ const LOCAL_BANKING77_SLOT: &str = "http://127.0.0.1:8110";
 const BANKING77_PLAN_REF: &str = "banking77_eval.v1";
 const BANKING77_WORLD_REF: &str = "world:banking77@heldout";
 const BANKING77_CHECKPOINT_STEPS: [u32; 3] = [10, 20, 30];
+/// Length of training. `optimizers-beta` used to infer this as
+/// `max(checkpoint_steps)`, so the checkpoint list silently decided how long a
+/// run trained. It is now named separately and required.
+const BANKING77_TRAINING_STEPS: u32 = 30;
 const BANKING77_CAMPAIGN_ROLLOUTS: u32 = 2;
+/// Rows longer than this lose their assistant tokens and are dropped, so the
+/// cap decides which of a dataset is trained on. Banking77 rows are single
+/// utterances; Craftax ReAct transcripts grow with the episode and need far more.
+const BANKING77_MAX_SEQ_LEN: u32 = 4096;
+const CRAFTAX_MAX_SEQ_LEN: u32 = 16384;
+/// Share of rows allowed to exceed the cap before the run refuses rather than
+/// training on whatever happened to be short enough.
+const MAX_DROPPED_FRACTION: &str = "0.05";
+/// Seconds one checkpoint rollout may take. A Craftax episode runs minutes; the
+/// evaluator's HTTP client would otherwise fall back to a 30s default.
+const CHECKPOINT_EVALUATION_TIMEOUT_S: u32 = 3600;
 /// Allowlisted dataset shards. A caller selects one; it cannot supply a path.
 const BANKING77_SHARDS: [&str; 2] = ["train_a", "train_b"];
 /// Torn-tail reads while the producer appends are transient. Give up only
@@ -329,6 +344,9 @@ selection_file_id = "file_selection"
 heldout_file_id = "file_heldout"
 accelerator_slots = 1
 checkpoint_steps = [{steps}]
+training_steps = {BANKING77_TRAINING_STEPS}
+max_seq_len = {BANKING77_MAX_SEQ_LEN}
+max_dropped_fraction = {MAX_DROPPED_FRACTION}
 campaign_rollouts_per_checkpoint = {BANKING77_CAMPAIGN_ROLLOUTS}
 evaluator_version = "{BANKING77_PLAN_REF}"
 container_url = "{container_url}"
@@ -336,11 +354,18 @@ checkpoint_evaluation_seeds = [1, 2]
 checkpoint_evaluation_policy_harness = "classify"
 checkpoint_evaluation_plan_ref = "{BANKING77_PLAN_REF}"
 checkpoint_evaluation_world_ref = "{BANKING77_WORLD_REF}"
+checkpoint_evaluation_timeout_s = {CHECKPOINT_EVALUATION_TIMEOUT_S}
+
+# The classify harness resolves the checkpoint through evaluator-owned keys
+# (inference_target, sampler_path, …), which this recipe must not set. It still
+# has to declare a policy: an empty one is refused, because the policy under
+# test is never defaulted.
+[checkpoint_evaluation_policy]
+api_key_env = "TINKER_API_KEY"
 
 [hyperparameters]
 rank = 8
 batch_size = 2
-n_epochs = 1
 lr = 0.001
 "#
     )
@@ -651,6 +676,9 @@ selection_file_id = "file_selection"
 heldout_file_id = "file_heldout"
 {training_jsonl_line}accelerator_slots = 1
 checkpoint_steps = [10, 20]
+training_steps = 20
+max_seq_len = {CRAFTAX_MAX_SEQ_LEN}
+max_dropped_fraction = {MAX_DROPPED_FRACTION}
 campaign_rollouts_per_checkpoint = 2
 evaluator_version = "craftax_gamebench.v1"
 container_url = "{container_url}"
@@ -658,11 +686,28 @@ checkpoint_evaluation_seeds = [501, 502]
 checkpoint_evaluation_policy_harness = "react"
 checkpoint_evaluation_plan_ref = "craftax_eval.v1"
 checkpoint_evaluation_world_ref = "world:craftax"
+checkpoint_evaluation_timeout_s = {CHECKPOINT_EVALUATION_TIMEOUT_S}
+
+# Every field the ReAct harness needs, named. It refuses to default any of
+# them: they define the policy under test, and a wrong one is indistinguishable
+# from a failing checkpoint downstream.
+[checkpoint_evaluation_policy]
+provider = "tinker"
+api_key_env = "TINKER_API_KEY"
+effort = "medium"
+max_tokens = 1024
+parse_retries = 0
+context_token_budget = 16000
+compact_at = 0.7
+keep_recent_messages = 8
+keep_recent_frames = 2
+observation_mode = "text"
+sampler_ready_timeout_s = 300
+system_prompt = "You play Craftax. Reply with JSON only."
 
 [hyperparameters]
 rank = 8
 batch_size = 2
-n_epochs = 1
 lr = 0.001
 "#
     )
@@ -764,6 +809,99 @@ async fn persist_remote_terminal(
 mod tests {
     use super::*;
 
+    /// Fields `optimizers-beta` refuses to default for a `backend = "tinker"`
+    /// run that also configures checkpoint evaluation.
+    ///
+    /// This recipe hands `optimizers-beta` a TOML *string* over HTTP, so
+    /// nothing in the type system ties the two together. On 2026-08-13 five
+    /// fields became required there and every hosted recipe here silently went
+    /// stale — the configs still built, still submitted, and were refused on
+    /// arrival. Adding a name to this list is the cheap half of that coupling;
+    /// the expensive half is remembering it exists.
+    const REQUIRED_BY_OPTIMIZERS_BETA: [&str; 6] = [
+        "training_steps",
+        "max_seq_len",
+        "max_dropped_fraction",
+        "checkpoint_evaluation_timeout_s",
+        "checkpoint_evaluation_policy_harness",
+        "[checkpoint_evaluation_policy]",
+    ];
+
+    fn assert_names_every_required_field(label: &str, toml: &str) {
+        let missing: Vec<&str> = REQUIRED_BY_OPTIMIZERS_BETA
+            .iter()
+            .copied()
+            .filter(|key| !toml.contains(key))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{label} config omits {missing:?}; optimizers-beta will refuse it on submit"
+        );
+    }
+
+    #[test]
+    fn tinker_recipes_name_every_field_optimizers_beta_requires() {
+        assert_names_every_required_field(
+            "banking77",
+            &banking77_config_toml(
+                "sft_banking77_train_a_ab12cd34",
+                "file_train_banking77_train_a_ab12cd34",
+                "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+                "http://127.0.0.1:8110",
+                "/tmp/train_a.jsonl",
+            ),
+        );
+        assert_names_every_required_field(
+            "craftax",
+            &craftax_nemotron_config_toml(
+                "sft_craftax_ab12cd34",
+                "file_train_ab12cd34",
+                "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+                "http://127.0.0.1:8098",
+                Some("/tmp/craftax.jsonl"),
+            ),
+        );
+    }
+
+    #[test]
+    fn training_length_is_never_left_to_the_checkpoint_list() {
+        // `steps = max(checkpoint_steps)` used to be the training length, so a
+        // checkpoint list decided how long a run trained.
+        for (label, toml) in [
+            (
+                "banking77",
+                banking77_config_toml(
+                    "sft_b",
+                    "file_b",
+                    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+                    "http://127.0.0.1:8110",
+                    "/tmp/train_a.jsonl",
+                ),
+            ),
+            (
+                "craftax",
+                craftax_nemotron_config_toml(
+                    "sft_c",
+                    "file_c",
+                    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+                    "http://127.0.0.1:8098",
+                    Some("/tmp/craftax.jsonl"),
+                ),
+            ),
+        ] {
+            assert!(
+                toml.contains("training_steps ="),
+                "{label} must name its training length"
+            );
+            // n_epochs is never read by the Tinker loop; batches are sampled
+            // with replacement. Carrying it implies a schedule that never runs.
+            assert!(
+                !toml.contains("n_epochs"),
+                "{label} still sets n_epochs, which the Tinker loop ignores"
+            );
+        }
+    }
+
     #[test]
     fn fixture_toml_is_algorithm_sft_not_goex_plugin() {
         let toml = fixture_config_toml("sft_hosted_ab12cd34", "file_train_ab12cd34");
@@ -835,3 +973,4 @@ mod tests {
         assert!(!toml.contains("nvidia/nemotron-3-nano-30b-a3b"));
     }
 }
+
