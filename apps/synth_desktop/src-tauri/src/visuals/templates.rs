@@ -69,7 +69,10 @@ pub fn list_templates(genre: Option<&str>) -> anyhow::Result<Vec<TemplateMeta>> 
                 continue;
             }
             let mut meta = load_template_meta(&path)?;
-            if out.iter().any(|existing: &TemplateMeta| existing.id == meta.id) {
+            if out
+                .iter()
+                .any(|existing: &TemplateMeta| existing.id == meta.id)
+            {
                 continue;
             }
             if let Some(filter) = genre {

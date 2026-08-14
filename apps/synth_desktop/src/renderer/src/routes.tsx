@@ -33,7 +33,7 @@ export type MainView =
 	| { kind: "chat"; chatId: string }
 	| { kind: "sync"; sessionId: string }
 	| { kind: "async"; sessionId: string }
-	| { kind: "settings"; section?: "general" | "models" | "inference" | "voice" | "account" | "about" }
+	| { kind: "settings"; section?: "general" | "context" | "models" | "inference" | "voice" | "account" | "about" }
 	| { kind: "connectors" }
 	| { kind: "inventory" }
 	| { kind: "visuals" }
@@ -61,6 +61,7 @@ export type MainRoutesProps = {
 	setInventoryContainerWidth: (width: number) => void;
 	persistLayoutSnapshot: (patch: Partial<DesktopPreferences["layout"]["last"]>) => void;
 	showSidePanel: boolean;
+	sidePanelCanSharePane: boolean;
 	sidePanelTab: "outputs" | "inference";
 	setSidePanelTab: (tab: "outputs" | "inference") => void;
 	setSidePanelOpen: (open: boolean) => void;
@@ -122,6 +123,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		setInventoryContainerWidth,
 		persistLayoutSnapshot,
 		showSidePanel,
+		sidePanelCanSharePane,
 		sidePanelTab,
 		setSidePanelTab,
 		setSidePanelOpen,
@@ -318,14 +320,25 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 				/>
 			) : null}
 
-			{view.kind === "chat" && activeChat ? (
+	{view.kind === "chat" && activeChat ? (
+				(() => {
+				const visualPaneVisible = Boolean(openArtifact && (!showSidePanel || sidePanelCanSharePane));
+				const containerPaneVisible = Boolean(openContainer && (!showSidePanel || sidePanelCanSharePane));
+				return (
 				<div
-					className={`workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}${showSidePanel ? " with-side-panel" : ""}`}
+					className={`workbench${visualPaneVisible ? " with-visual" : ""}${containerPaneVisible ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}${showSidePanel ? " with-side-panel" : ""}`}
+					style={{ "--visual-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}
 				>
 					<ChatTranscript
 						chat={activeChat}
 						openArtifactId={openArtifactId}
-						onOpenArtifact={toggleArtifact}
+						onOpenArtifact={(id) => {
+							if (showSidePanel && !sidePanelCanSharePane) {
+								setSidePanelOpen(false);
+								if (openArtifactId === id) return;
+							}
+							toggleArtifact(id);
+						}}
 						openContainerId={openContainer?.id ?? null}
 						onOpenContainer={(id) => void toggleContainer(id)}
 						onApprove={(approvalId) => void controlActive("approve", { approvalId })}
@@ -348,10 +361,22 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 							setSidePanelOpen(next);
 						}}
 					/>
-					{openArtifact ? (
-						<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
+					{visualPaneVisible && openArtifact ? (
+						<>
+							<PaneResizeHandle
+								value={inventoryContainerWidth}
+								minPrimary={showSidePanel ? 680 : 380}
+								minSecondary={260}
+								onChange={(width) => {
+									setInventoryContainerWidth(width);
+									persistLayoutSnapshot({ outputPaneWidth: width });
+								}}
+								ariaLabel="Resize visual pane"
+							/>
+							<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />
+						</>
 					) : null}
-					{openContainer ? (
+					{containerPaneVisible && openContainer ? (
 						<ContainerPane
 							container={openContainer}
 							expanded={containerPaneExpanded}
@@ -375,7 +400,13 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 										<OutputsPanel
 											chat={activeChat}
 											openArtifactId={openArtifactId}
-											onOpenArtifact={toggleArtifact}
+											onOpenArtifact={(id) => {
+												if (showSidePanel && !sidePanelCanSharePane) {
+													setSidePanelOpen(false);
+													if (openArtifactId === id) return;
+												}
+												toggleArtifact(id);
+											}}
 											openContainerId={openContainer?.id ?? null}
 											onOpenContainer={(id) => void toggleContainer(id)}
 										/>
@@ -409,6 +440,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						/>
 					) : null}
 				</div>
+				);
+				})()
 			) : null}
 
 			{/*

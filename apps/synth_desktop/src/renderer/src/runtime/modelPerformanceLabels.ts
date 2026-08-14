@@ -2,6 +2,7 @@ import {
 	OPENROUTER_LAGUNA_S_MODEL,
 	OPENROUTER_LUNA_MODEL,
 	OPENROUTER_MUSE_SPARK_MODEL,
+	OPENROUTER_GEMINI_FLASH_MODEL,
 	SYNTH_CLOUD_LAGUNA_S_MODEL,
 	SYNTH_CLOUD_MUSE_SPARK_MODEL
 } from "../types/landing";
@@ -19,6 +20,7 @@ export function performanceTargetId(summary: ModelPerformanceSummary): string | 
 	if (summary.modelId === OPENROUTER_LUNA_MODEL) return "openrouter-luna";
 	if (summary.modelId === OPENROUTER_LAGUNA_S_MODEL) return "openrouter-laguna-s";
 	if (summary.modelId === OPENROUTER_MUSE_SPARK_MODEL) return "openrouter-muse-spark";
+	if (summary.modelId === OPENROUTER_GEMINI_FLASH_MODEL) return "openrouter-gemini-flash";
 	return null;
 }
 

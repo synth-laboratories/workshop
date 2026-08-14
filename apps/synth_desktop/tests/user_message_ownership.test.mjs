@@ -25,7 +25,7 @@ buildSync({
 	outfile: compiled
 });
 
-const { eventsToMessages } = await import(pathToFileURL(compiled).href);
+const { eventsToLocalActivity, eventsToMessages } = await import(pathToFileURL(compiled).href);
 
 function event(overrides = {}) {
 	return {
@@ -77,4 +77,70 @@ test("divergent messageIds for the same prompt still yield two bubbles (ownershi
 	]);
 	const user = messages.filter((message) => message.role === "user");
 	assert.equal(user.length, 2);
+});
+
+test("duplicate provider failures render once and hide raw provider payloads", () => {
+	const rawFailure = JSON.stringify({
+		error: {
+			message: "Provider returned error",
+			metadata: { raw: "Requests ending with a model turn are not supported" }
+		}
+	});
+	const messages = eventsToMessages([
+		event({ sequence: 1, eventKind: "run.started" }),
+		event({ sequence: 2, eventKind: "run.failed", payload: { error: { message: rawFailure } } }),
+		event({ sequence: 3, eventKind: "run.failed", payload: { error: { message: rawFailure } } })
+	]);
+	const system = messages.filter((message) => message.role === "system");
+	assert.equal(system.length, 1);
+	assert.equal(
+		system[0].body,
+		"The provider could not produce a response: The provider rejected a request ending with a model turn. Try again."
+	);
+	assert.equal(system[0].body.includes("metadata"), false);
+});
+
+test("replayed terminal envelopes do not duplicate or age a run summary", () => {
+	const activity = eventsToLocalActivity([
+		event({ sequence: 1, eventKind: "run.started", payload: { runId: "turn-1" }, createdAt: "2026-08-12T00:00:00.000Z" }),
+		event({ sequence: 2, eventKind: "run.failed", payload: { runId: "turn-1" }, createdAt: "2026-08-12T00:00:20.000Z" }),
+		event({ sequence: 3, eventKind: "run.started", payload: { runId: "turn-1" }, createdAt: "2026-08-12T00:10:00.000Z" }),
+		event({ sequence: 4, eventKind: "run.failed", payload: { runId: "turn-1" }, createdAt: "2026-08-12T00:15:00.000Z" })
+	], []);
+	const summaries = Object.values(activity).flat().filter((line) => line.kind === "run_summary");
+	assert.equal(summaries.length, 1);
+	assert.match(summaries[0].label, /20s/);
+});
+
+test("provider duration wins over a synthesized terminal timestamp", () => {
+	const activity = eventsToLocalActivity([
+		event({ sequence: 1, eventKind: "run.started", payload: { runId: "turn-2" }, createdAt: "2026-08-12T00:00:00.000Z" }),
+		event({
+			sequence: 2,
+			eventKind: "run.failed",
+			payload: { turn: { id: "turn-2", durationMs: 19_979 } },
+			createdAt: "2026-08-12T00:19:10.000Z"
+		})
+	], []);
+	const summary = Object.values(activity).flat().find((line) => line.kind === "run_summary");
+	assert.match(summary.label, /20s/);
+	assert.doesNotMatch(summary.label, /19m/);
+});
+
+test("visual tool operations project as lifecycle milestones", () => {
+	const activity = eventsToLocalActivity([
+		event({
+			sequence: 1,
+			eventKind: "item/completed",
+			payload: { item: {
+				type: "mcpToolCall", id: "visual-create", server: "synth_visuals", tool: "visual_manage",
+				status: "completed", arguments: { operation: "create", arguments: { title: "Flow" } },
+				result: { structuredContent: { visual: { id: "vis-1", templateId: "diagram.mermaid.v1", title: "Flow" } } }
+			} }
+		})
+	], []);
+	const line = Object.values(activity).flat()[0];
+	assert.equal(line.kind, "visual_lifecycle");
+	assert.equal(line.visualStage, "draft");
+	assert.equal(line.label, "Visual draft created");
 });

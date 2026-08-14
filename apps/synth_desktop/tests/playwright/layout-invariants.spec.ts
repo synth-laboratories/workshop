@@ -169,6 +169,23 @@ test("the window has generous drag surfaces without swallowing titlebar controls
 	expect(regions.tab).toBe("drag");
 	expect(regions.close).toBe("no-drag");
 	expect(regions.terminal).toBe("no-drag");
+
+	const visibleSidebarInset = await page.evaluate(() => {
+		const titlebar = document.querySelector<HTMLElement>('[data-testid="titlebar"]')!.getBoundingClientRect();
+		const tab = document.querySelector<HTMLElement>('[role="tab"]')!.getBoundingClientRect();
+		return tab.left - titlebar.left;
+	});
+	expect(visibleSidebarInset).toBeLessThanOrEqual(12);
+
+	const hiddenSidebarInset = await page.evaluate(() => {
+		document.documentElement.classList.add("sidebar-hidden");
+		const titlebar = document.querySelector<HTMLElement>('[data-testid="titlebar"]')!.getBoundingClientRect();
+		const tab = document.querySelector<HTMLElement>('[role="tab"]')!.getBoundingClientRect();
+		const inset = tab.left - titlebar.left;
+		document.documentElement.classList.remove("sidebar-hidden");
+		return inset;
+	});
+	expect(hiddenSidebarInset).toBeGreaterThanOrEqual(78);
 });
 
 test("terminal panel is discoverable and toggles without changing the active surface", async ({ page }) => {
@@ -177,6 +194,16 @@ test("terminal panel is discoverable and toggles without changing the active sur
 	await expect(page.getByTestId("terminal-panel")).toBeVisible();
 	await expect(page.getByText("Terminal is available in the desktop app.")).toBeVisible();
 	await expect(page.getByTestId("landing-page")).toBeVisible();
+	const placement = await page.evaluate(() => {
+		const main = document.querySelector<HTMLElement>(".main-pane")!.getBoundingClientRect();
+		const terminal = document.querySelector<HTMLElement>("[data-testid=terminal-panel]")!.getBoundingClientRect();
+		const composer = document.querySelector<HTMLElement>("[data-testid=composer]")!.getBoundingClientRect();
+		return {
+			terminalFlushWithBottom: Math.abs(terminal.bottom - main.bottom) <= 1,
+			composerClearsTerminal: composer.bottom <= terminal.top - 16
+		};
+	});
+	expect(placement).toEqual({ terminalFlushWithBottom: true, composerClearsTerminal: true });
 	await page.keyboard.press("Meta+j");
 	await expect(page.getByTestId("terminal-panel")).toBeHidden();
 });

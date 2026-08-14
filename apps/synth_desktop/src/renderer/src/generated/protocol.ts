@@ -71,6 +71,10 @@ export const commands = {
 	optimizersImportLocal: (request: OptimizerImportLocalRequest) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_import_local", { request })),
 	optimizersReconcileCloud: (request: OptimizerReconcileRequest) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_reconcile_cloud", { request })),
 	optimizersListCloud: (algorithm: string | null, status: string | null, limit: unknown | null) => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_list_cloud", { algorithm, status, limit })),
+	pluginsStatus: (pluginId: string | null) => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("plugins_status", { pluginId })),
+	pluginsList: () => typedError<PluginStatus_Serialize[], AppError>(__TAURI_INVOKE("plugins_list")),
+	pluginsSetReleaseChannel: (pluginId: string, channel: string) => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("plugins_set_release_channel", { pluginId, channel })),
+	visualSubscriptionReady: (request: VisualReadyRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_subscription_ready", { request })),
 	optimizerSidecarStatus: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_status")),
 	optimizerSidecarInstall: (version: string | null) => typedError<OptimizerSidecarVersion, AppError>(__TAURI_INVOKE("optimizer_sidecar_install", { version })),
 	optimizerSidecarStart: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_start")),
@@ -206,6 +210,14 @@ export const commands = {
 	whisperTranscribe: (audioPath: string) => typedError<WhisperTranscription, string>(__TAURI_INVOKE("whisper_transcribe", { audioPath })),
 	whisperTranscribeBase64: (audioBase64: string, mimeType: string) => typedError<WhisperTranscription, string>(__TAURI_INVOKE("whisper_transcribe_base64", { audioBase64, mimeType })),
 	skillsList: () => __TAURI_INVOKE<SkillHit[]>("skills_list"),
+	contextSnapshot: (workspace: string) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_snapshot", { workspace })),
+	contextWorkspaceAgentsUpdate: (workspace: string, content: string) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_workspace_agents_update", { workspace, content })),
+	contextSkillUpdate: (workspace: string, skillId: string, enabled: boolean, content: string | null) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_skill_update", { workspace, skillId, enabled, content })),
+	contextMcpGroupUpdate: (workspace: string, groupId: string, enabled: boolean) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_mcp_group_update", { workspace, groupId, enabled })),
+	contextCookbooksInstall: (workspace: string) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_cookbooks_install", { workspace })),
+	contextCookbooksCancel: (workspace: string) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_cookbooks_cancel", { workspace })),
+	contextCookbooksSetEnabled: (workspace: string, enabled: boolean) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_cookbooks_set_enabled", { workspace, enabled })),
+	contextCookbooksUninstall: (workspace: string) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_cookbooks_uninstall", { workspace })),
 	workspaceChooseDirectory: () => typedError<string | null, AppError>(__TAURI_INVOKE("workspace_choose_directory")),
 	codexSessionStart: (request: CodexSessionStartRequest) => typedError<CodexSessionInfo, AppError>(__TAURI_INVOKE("codex_session_start", { request })),
 	codexTurnStart: (request: CodexTurnStartRequest) => typedError<CodexSessionInfo, AppError>(__TAURI_INVOKE("codex_turn_start", { request })),
@@ -576,6 +588,33 @@ export type ContainerRegisterRequest = {
 	metadata: unknown,
 };
 
+export type ContextFile = {
+	path: string,
+	content: string,
+	state: string,
+	editable: boolean,
+	version: string | null,
+};
+
+export type ContextSkill = {
+	id: string,
+	name: string,
+	description: string,
+	source: string,
+	enabled: boolean,
+	editable: boolean,
+	content: string,
+	path: string | null,
+};
+
+export type ContextSnapshot = {
+	workshopAgents: ContextFile,
+	workspaceAgents: ContextFile,
+	cookbooks: CookbookContext,
+	skills: ContextSkill[],
+	mcpGroups: McpContextGroup[],
+};
+
 export type ConversationWorkspaceScope = {
 	sessionId: string,
 	workspace: string,
@@ -584,6 +623,17 @@ export type ConversationWorkspaceScope = {
 	boundRevision: unknown,
 	bindingStatus: string,
 	bindingError: string | null,
+};
+
+export type CookbookContext = {
+	enabled: boolean,
+	installed: boolean,
+	phase: string,
+	pin: string | null,
+	digest: string | null,
+	path: string | null,
+	lastFetch: string | null,
+	detail: string | null,
 };
 
 export type CoreDiagnostics = {
@@ -830,6 +880,14 @@ export type LegacyDetection = {
 	isLegacyRuntime: boolean,
 	tables: string[],
 	warnings: string[],
+};
+
+export type McpContextGroup = {
+	id: string,
+	label: string,
+	enabled: boolean,
+	servers: string[],
+	enabledTools: { [key in string]: string[] },
 };
 
 export type MeasurementKind = "decode" | "observed_stream" | "end_to_end" | "provider_reported";
@@ -1224,6 +1282,58 @@ export type OptimizerUsageSummary = {
 	extra?: unknown,
 };
 
+export type PluginServiceStatus = PluginServiceStatus_Serialize | PluginServiceStatus_Deserialize;
+
+export type PluginServiceStatus_Deserialize = {
+	phase: string,
+	startedAt?: string | null,
+	activeRuns?: number,
+};
+
+export type PluginServiceStatus_Serialize = {
+	phase: string,
+	startedAt?: string | null,
+	activeRuns: number,
+};
+
+export type PluginStatus = PluginStatus_Serialize | PluginStatus_Deserialize;
+
+export type PluginStatus_Deserialize = {
+	schemaVersion: string,
+	pluginId: string,
+	enabled: boolean,
+	phase: string,
+	installedVersion?: string | null,
+	selectedVersion?: string | null,
+	releaseChannel: string,
+	catalogVersion: string,
+	digest?: string | null,
+	service: PluginServiceStatus_Deserialize,
+	capabilitiesDigest?: string | null,
+	algorithms?: string[],
+	templates?: string[],
+	lastActionReceiptId?: string | null,
+	detail?: string | null,
+};
+
+export type PluginStatus_Serialize = {
+	schemaVersion: string,
+	pluginId: string,
+	enabled: boolean,
+	phase: string,
+	installedVersion?: string | null,
+	selectedVersion?: string | null,
+	releaseChannel: string,
+	catalogVersion: string,
+	digest?: string | null,
+	service: PluginServiceStatus_Serialize,
+	capabilitiesDigest?: string | null,
+	algorithms: string[],
+	templates: string[],
+	lastActionReceiptId?: string | null,
+	detail?: string | null,
+};
+
 export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic";
 
 export type ResolvedTraceProjection = {
@@ -1477,6 +1587,15 @@ export type VisualQuery = {
 	search: string | null,
 	limit: unknown,
 	offset: unknown,
+};
+
+export type VisualReadyRequest = {
+	visualId: string,
+	optimizerRunId: string,
+	templateId: string,
+	replayedThrough: number,
+	subscribedFrom: number,
+	templateDigest: string | null,
 };
 
 export type VisualRecord = VisualRecord_Serialize | VisualRecord_Deserialize;

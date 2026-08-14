@@ -22,6 +22,7 @@ import type { DesktopPreferences } from "../preferences";
 import { ProviderMark } from "./ProviderMark";
 import { bridges } from "../runtime/desktopBridge";
 import { ChatgptCodexSubscriptionCard } from "./ChatgptCodexSubscriptionCard";
+import { ContextSettings } from "./ContextSettings";
 
 type Props = {
 	onBack: () => void;
@@ -52,6 +53,10 @@ function IconChip() {
 			<path d="M6 1.5v2M10 1.5v2M6 12.5v2M10 12.5v2M1.5 6h2M1.5 10h2M12.5 6h2M12.5 10h2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
 		</svg>
 	);
+}
+
+function IconContext() {
+	return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden><path d="M3 3.5h10v9H3zM5.2 6h5.6M5.2 8h5.6M5.2 10h3.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }
 
 function IconGauge() {
@@ -103,6 +108,7 @@ function IconChevronLeft() {
 /** Adapter UI is intentionally absent until its full runtime path exists. */
 const SECTIONS = [
 	{ id: "general", label: "General", icon: IconSliders },
+	{ id: "context", label: "Context", icon: IconContext },
 	{ id: "models", label: "Models", icon: IconChip },
 	{ id: "inference", label: "Inference", icon: IconGauge },
 	{ id: "voice", label: "Voice", icon: IconMic },
@@ -203,7 +209,7 @@ type AuthorizedModel = {
 	id: string;
 	name: string;
 	provider: string;
-	providerMark: "openai" | "laguna" | "meta" | "synth";
+	providerMark: "openai" | "laguna" | "meta" | "google" | "synth";
 	modelId: string;
 	tariffProvider?: string;
 	planMetered?: boolean;
@@ -228,7 +234,8 @@ function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSett
 		models.push(
 			{ id: "openrouter-luna", name: "GPT 5.6 Luna", provider: "OpenRouter · OpenAI", providerMark: "openai", modelId: "openai/gpt-5.6-luna", tariffProvider: "openrouter" },
 			{ id: "openrouter-laguna-s", name: "Laguna S 2.1", provider: "OpenRouter · Poolside", providerMark: "laguna", modelId: "poolside/laguna-s-2.1", tariffProvider: "openrouter" },
-			{ id: "openrouter-muse-spark", name: "Muse Spark 1.2", provider: "OpenRouter · Meta", providerMark: "meta", modelId: "meta/muse-spark-1.2", tariffProvider: "openrouter" }
+			{ id: "openrouter-muse-spark", name: "Muse Spark 1.2", provider: "OpenRouter · Meta", providerMark: "meta", modelId: "meta/muse-spark-1.2", tariffProvider: "openrouter" },
+			{ id: "openrouter-gemini-flash", name: "Gemini 3.7 Flash", provider: "OpenRouter · Google", providerMark: "google", modelId: "google/gemini-3.7-flash", tariffProvider: "openrouter" }
 		);
 	}
 	if (connection?.apiKeyConfigured) {
@@ -271,7 +278,7 @@ function multiAgentOverrideWarning(model: ModelMultiAgentSetting): string | null
 	return "Override exposes V2 direct collaboration tools, agent-message routing, and encrypted message/tool payloads. Models or Responses-compatible providers without V2 support may reject the request or fail to read delegated tasks.";
 }
 
-function MultiAgentModelSettings() {
+export function MultiAgentModelSettings() {
 	const [models, setModels] = useState<ModelMultiAgentSetting[]>([]);
 	const [busyModel, setBusyModel] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -423,10 +430,10 @@ export function SettingsPage({
 							<ChatgptCodexSubscriptionCard />
 							<SettingsCard testId="models-all" className="settings-card-embed">
 								<ModelObservabilitySettings />
-								<MultiAgentModelSettings />
 							</SettingsCard>
 						</div>
 					) : null}
+					{section === "context" ? <ContextSettings subagents={<MultiAgentModelSettings />} /> : null}
 					{section === "inference" ? (
 						<div className="settings-sections" data-testid="settings-inference">
 							<InferenceSettings />

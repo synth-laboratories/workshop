@@ -173,6 +173,22 @@ export type SkillsBridge = {
 	list(): Promise<SkillHit[]>;
 };
 
+export type ContextFile = { path: string; content: string; state: "bundled" | "absent" | "empty" | "overriding"; editable: boolean; version?: string | null };
+export type ContextSkill = { id: string; name: string; description: string; source: "bundled" | "cookbook" | "yours"; enabled: boolean; editable: boolean; content: string; path?: string | null };
+export type McpContextGroup = { id: string; label: string; enabled: boolean; servers: string[]; enabledTools: Record<string, string[]> };
+export type CookbookContext = { enabled: boolean; installed: boolean; phase: string; pin?: string | null; digest?: string | null; path?: string | null; lastFetch?: string | null; detail?: string | null };
+export type ContextSnapshot = { workshopAgents: ContextFile; workspaceAgents: ContextFile; cookbooks: CookbookContext; skills: ContextSkill[]; mcpGroups: McpContextGroup[] };
+export type ContextBridge = {
+	snapshot(workspace: string): Promise<ContextSnapshot>;
+	updateWorkspaceAgents(workspace: string, content: string): Promise<ContextSnapshot>;
+	updateSkill(workspace: string, skillId: string, enabled: boolean, content?: string | null): Promise<ContextSnapshot>;
+	updateMcpGroup(workspace: string, groupId: string, enabled: boolean): Promise<ContextSnapshot>;
+	installCookbooks(workspace: string): Promise<ContextSnapshot>;
+	cancelCookbooks(workspace: string): Promise<ContextSnapshot>;
+	setCookbooksEnabled(workspace: string, enabled: boolean): Promise<ContextSnapshot>;
+	uninstallCookbooks(workspace: string): Promise<ContextSnapshot>;
+};
+
 export type SynthBackendSettings = {
 	configPath: string;
 	envFile: string;
@@ -461,6 +477,30 @@ export type VisualsBridge = {
 	onShow(listener: (event: AppEvent) => void): () => void;
 };
 
+export type PluginStatus = {
+	schemaVersion: string;
+	pluginId: string;
+	enabled: boolean;
+	phase: string;
+	installedVersion?: string | null;
+	selectedVersion?: string | null;
+	releaseChannel: "official" | "dev";
+	catalogVersion: string;
+	digest?: string | null;
+	service: { phase: string; startedAt?: string | null; activeRuns: number };
+	capabilitiesDigest?: string | null;
+	algorithms: string[];
+	templates: string[];
+	lastActionReceiptId?: string | null;
+	detail?: string | null;
+};
+
+export type PluginsBridge = {
+	status(pluginId?: string | null): Promise<PluginStatus>;
+	list(): Promise<PluginStatus[]>;
+	setReleaseChannel(pluginId: "optimizers", channel: "official" | "dev"): Promise<PluginStatus>;
+};
+
 export type OptimizersBridge = {
 	listAlgorithms(): Promise<OptimizerAlgorithmInfo[]>;
 	listRecipes(): Promise<Array<{
@@ -506,6 +546,14 @@ export type OptimizersBridge = {
 	importLocal(request: { path: string; sessionRef?: string; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	reconcileCloud(request: { optimizerRunId: string; afterSeq?: number; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	listCloud(query?: { algorithm?: string; status?: string; limit?: number }): Promise<unknown[]>;
+	recordVisualReady?(request: {
+		visualId: string;
+		optimizerRunId: string;
+		templateId: string;
+		replayedThrough: number;
+		subscribedFrom: number;
+		templateDigest?: string;
+	}): Promise<unknown>;
 	onEvent(listener: (event: AppEvent) => void): () => void;
 };
 

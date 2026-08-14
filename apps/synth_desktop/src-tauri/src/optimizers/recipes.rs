@@ -14,6 +14,7 @@ use std::{
 use tokio::{sync::watch, time::sleep};
 
 use super::{
+    manager::DEFAULT_ALGORITHM_VERSION,
     models::{
         OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerExecutionBinding,
         OptimizerRecipeRunRequest, OptimizerResourceRef, OPTIMIZER_EVENT_SCHEMA_VERSION,
@@ -89,7 +90,7 @@ pub(super) async fn start(
     let recipe_id = request.recipe_id.clone();
     let proposer = ProposerProfile::for_recipe(&recipe_id)?;
     let manager = service.manager().clone();
-    manager.ensure_ready().await?;
+    require_plugin_ready(&manager).await?;
     let cookbook = banking77_cookbook_root()?;
     let run_id = recipe_run_id(proposer);
     let runs_root = cookbook
@@ -115,7 +116,7 @@ pub(super) async fn start(
 
     let create = OptimizerCreateRequest {
         algorithm_id: "gepa".into(),
-        algorithm_version: Some("synth-optimizers-0.2.0".into()),
+        algorithm_version: Some(DEFAULT_ALGORITHM_VERSION.into()),
         objective: Some(format!(
             "Banking77 intent prompt · bounded GEPA · {}",
             proposer.title()
@@ -224,6 +225,251 @@ pub(super) async fn start(
     Ok((run, event))
 }
 
+pub(super) async fn prepare(
+    service: &OptimizerService,
+    request: OptimizerRecipeRunRequest,
+) -> Result<(
+    super::models::OptimizerRunRecord,
+    Option<crate::storage::AppEvent>,
+)> {
+    let recipe_id = request.recipe_id.clone();
+    let _proposer = ProposerProfile::for_recipe(&recipe_id)?;
+    let manager = service.manager().clone();
+    require_plugin_ready(&manager).await?;
+    let (mut run, event, _cookbook, _config_path, _run_dir) =
+        materialize_prepared_run(service, request, "waiting_for_viewer").await?;
+    let digest = preparation_digest(&run);
+    let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+    summary.insert("preparationDigest".into(), json!(digest));
+    summary.insert("waitingForViewer".into(), json!(true));
+    if let Some(digest) = manager.advertised_capabilities().get("digest").cloned() {
+        summary.insert("capabilitiesDigest".into(), digest);
+    }
+    run.summary = serde_json::Value::Object(summary);
+    run.status = "waiting_for_viewer".into();
+    let run = service.persist_run(run).await?;
+    Ok((run, event))
+}
+
+pub(super) async fn start_prepared(
+    service: &OptimizerService,
+    run_id: &str,
+) -> Result<(
+    super::models::OptimizerRunRecord,
+    Option<crate::storage::AppEvent>,
+)> {
+    require_plugin_ready(service.manager()).await?;
+    let run = service.get(run_id.to_string()).await?;
+    if run.status != "waiting_for_viewer" && run.status != "queued" {
+        bail!(
+            "optimizer run `{run_id}` is not prepared for start (status {})",
+            run.status
+        );
+    }
+    let recipe_id = run
+        .summary
+        .get("recipeId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("prepared run omitted recipeId"))?
+        .to_owned();
+    let _ = ProposerProfile::for_recipe(&recipe_id)?;
+    let cookbook = banking77_cookbook_root()?;
+    let run_dir = run
+        .summary
+        .get("runDirectory")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("prepared run omitted runDirectory"))?;
+    let config_path = run_dir.join("workshop.recipe.toml");
+    if !config_path.is_file() {
+        bail!("prepared run is missing its recipe config");
+    }
+    let manager = service.manager().clone();
+    append_status_event(service, run_id, "optimizer.run.queued", "queued").await?;
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    service
+        .register_local_recipe(run_id.to_string(), cancel_tx)
+        .await;
+    let worker_service = service.clone();
+    let worker_manager = manager.clone();
+    let worker_run_id = run_id.to_string();
+    tokio::spawn(async move {
+        if let Err(error) = run_recipe_worker(
+            worker_service.clone(),
+            worker_run_id.clone(),
+            cookbook,
+            config_path,
+            run_dir,
+            manager,
+            cancel_rx,
+        )
+        .await
+        {
+            let _ = append_terminal_event(&worker_service, &worker_run_id, true, error.to_string())
+                .await;
+        }
+        worker_manager.release_gepa_recipe(&worker_run_id).await;
+        worker_service.unregister_local_recipe(&worker_run_id).await;
+    });
+    let started = service.get(run_id.to_string()).await?;
+    Ok((started, None))
+}
+
+async fn require_plugin_ready(manager: &super::OptimizerManager) -> Result<()> {
+    if manager.is_running().await {
+        return Ok(());
+    }
+    let status = manager.status().await;
+    let suggested = if status.version.is_none() {
+        "install"
+    } else {
+        "start"
+    };
+    let phase = if status.version.is_none() {
+        "not_installed"
+    } else {
+        status.phase.as_str()
+    };
+    Err(crate::plugins::PluginNotReady::new(phase, suggested).into())
+}
+
+fn preparation_digest(run: &super::models::OptimizerRunRecord) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(run.id.as_bytes());
+    hasher.update(run.algorithm_id.as_bytes());
+    if let Some(version) = run.algorithm_version.as_deref() {
+        hasher.update(version.as_bytes());
+    }
+    hasher.update(serde_json::to_vec(&run.summary).unwrap_or_default());
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+async fn materialize_prepared_run(
+    service: &OptimizerService,
+    request: OptimizerRecipeRunRequest,
+    status: &str,
+) -> Result<(
+    super::models::OptimizerRunRecord,
+    Option<crate::storage::AppEvent>,
+    PathBuf,
+    PathBuf,
+    PathBuf,
+)> {
+    let recipe_id = request.recipe_id.clone();
+    let proposer = ProposerProfile::for_recipe(&recipe_id)?;
+    let cookbook = banking77_cookbook_root()?;
+    let run_id = recipe_run_id(proposer);
+    let runs_root = cookbook
+        .parent()
+        .ok_or_else(|| anyhow!("invalid Banking77 cookbook path"))?
+        .join("runs");
+    let run_dir = runs_root.join(&run_id);
+    fs::create_dir_all(&run_dir).context("create Banking77 GEPA run directory")?;
+    let port = reserve_loopback_port()?;
+    let uv = resolve_uv()?;
+    let codex_home = resolve_codex_home()?;
+    let config_path = run_dir.join("workshop.recipe.toml");
+    materialize_config(
+        &cookbook,
+        &runs_root,
+        &run_id,
+        port,
+        &uv,
+        &config_path,
+        proposer,
+        &codex_home,
+    )?;
+    let create = OptimizerCreateRequest {
+        algorithm_id: "gepa".into(),
+        algorithm_version: Some(DEFAULT_ALGORITHM_VERSION.into()),
+        objective: Some(format!(
+            "Banking77 intent prompt · bounded GEPA · {}",
+            proposer.title()
+        )),
+        source: Some("local".into()),
+        project_ref: Some("banking77@huggingface-polyai-pinned-by-cookbook".into()),
+        session_ref: request.session_ref,
+        id: Some(run_id.clone()),
+        execution_bindings: Some(vec![OptimizerExecutionBinding {
+            kind: "local_process".into(),
+            id: run_id.clone(),
+            label: Some(format!("Banking77 GEPA · {}", proposer.title())),
+            status: Some(status.into()),
+            metadata: json!({
+                "recipeId": recipe_id,
+                "port": port,
+                "proposerPolicyRef": {
+                    "harness": "gepa_proposer",
+                    "config": proposer.config_id(),
+                },
+            }),
+        }]),
+        input_refs: Some(vec![
+            OptimizerResourceRef {
+                kind: "dataset".into(),
+                id: "banking77".into(),
+                digest: None,
+                role: Some("train_and_heldout".into()),
+                title: Some("Banking77 (cookbook-pinned loader)".into()),
+                metadata: json!({ "trainRows": TRAIN_ROWS, "heldoutRows": HELDOUT_ROWS }),
+            },
+            OptimizerResourceRef {
+                kind: "recipe".into(),
+                id: recipe_id.clone(),
+                digest: None,
+                role: Some("configuration".into()),
+                title: Some(format!("Bounded Banking77 GEPA · {}", proposer.title())),
+                metadata: recipe_limits(),
+            },
+            OptimizerResourceRef {
+                kind: "policy_ref".into(),
+                id: proposer.config_id().into(),
+                digest: None,
+                role: Some("proposer".into()),
+                title: Some(format!("GEPA proposer · {}", proposer.title())),
+                metadata: json!({
+                    "harness": "gepa_proposer",
+                    "config": proposer.config_id(),
+                }),
+            },
+            OptimizerResourceRef {
+                kind: "policy_ref".into(),
+                id: "banking77_candidate".into(),
+                digest: None,
+                role: Some("evaluator".into()),
+                title: Some("Banking77 candidate evaluator".into()),
+                metadata: json!({
+                    "harness": "banking77_eval",
+                    "config": "candidate",
+                }),
+            },
+        ]),
+        capabilities: None,
+        summary: Some(json!({
+            "recipeId": recipe_id,
+            "task": "banking77",
+            "proposerPolicyRef": {
+                "harness": "gepa_proposer",
+                "config": proposer.config_id(),
+            },
+            "limits": recipe_limits(),
+            "runDirectory": run_dir,
+            "proposerModel": proposer.model(),
+        })),
+        open_visual: request.open_visual.or(Some(true)),
+        seed_fixture: None,
+        cloud_config: None,
+        local_path: None,
+    };
+    let (run, event) = service.create(create).await?;
+    let (run, _) = service
+        .manager()
+        .pin_run(service, &run.id, &recipe_id)
+        .await?;
+    Ok((run, event, cookbook, config_path, run_dir))
+}
+
 pub fn recipe_catalog() -> Vec<serde_json::Value> {
     let availability = if banking77_cookbook_root().is_ok() {
         "available"
@@ -231,6 +477,11 @@ pub fn recipe_catalog() -> Vec<serde_json::Value> {
         "unavailable"
     };
     [
+        (
+            BANKING77_GEPA_SMOKE_RECIPE,
+            "Banking77 GEPA · bounded smoke",
+            "luna_med",
+        ),
         (
             BANKING77_GEPA_LUNA_RECIPE,
             "Banking77 GEPA · Luna medium",
@@ -1499,14 +1750,14 @@ namespace = "base"
     #[test]
     fn catalog_discloses_no_credential_inputs() {
         let catalog = recipe_catalog();
-        assert_eq!(catalog.len(), 2);
+        assert_eq!(catalog.len(), 3);
         assert!(catalog
             .iter()
             .all(|recipe| recipe["credentialInputs"] == json!([])));
         assert!(catalog
             .iter()
             .all(|recipe| recipe["limits"]["maxCostUsd"] == json!(2.45)));
-        assert_ne!(catalog[0]["policyRef"], catalog[1]["policyRef"]);
+        assert_ne!(catalog[1]["policyRef"], catalog[2]["policyRef"]);
     }
 
     #[test]
@@ -1516,14 +1767,15 @@ namespace = "base"
             .split("#[cfg(test)]")
             .next()
             .expect("recipes.rs production source");
-        assert!(production.contains("manager.ensure_ready().await"));
+        assert!(!production.contains("manager.ensure_ready().await"));
+        assert!(production.contains("require_plugin_ready"));
         assert!(production.contains("spawn_gepa_recipe"));
         assert!(production.contains("manager.pin_run"));
-        let ensure_at = production.find("manager.ensure_ready().await").unwrap();
+        let ready_at = production.find("require_plugin_ready").unwrap();
         let spawn_at = production.find("spawn_gepa_recipe").unwrap();
         assert!(
-            ensure_at < spawn_at,
-            "GEPA recipes must ensure_ready before manager spawn"
+            ready_at < spawn_at,
+            "GEPA recipes must require a ready plugin before manager spawn"
         );
         assert!(
             !production.contains("Command::new"),
@@ -1576,7 +1828,7 @@ namespace = "base"
             let (run, _) = service
                 .create(OptimizerCreateRequest {
                     algorithm_id: "gepa".into(),
-                    algorithm_version: Some("synth-optimizers-0.2.0".into()),
+                    algorithm_version: Some(DEFAULT_ALGORITHM_VERSION.into()),
                     objective: Some(format!("Banking77 GEPA · {}", proposer.title())),
                     source: Some("local".into()),
                     project_ref: None,

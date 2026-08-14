@@ -1,0 +1,265 @@
+{
+  "run": {
+    "schemaVersion": "optimizer_run.v1",
+    "id": "opt_dag_annotated_fbc",
+    "algorithmId": "dag",
+    "algorithmVersion": "0.1.0",
+    "status": "running",
+    "source": "local",
+    "objective": "craftax annotated FBC",
+    "createdAt": "2026-08-14T18:00:00Z",
+    "startedAt": "2026-08-14T18:00:04Z",
+    "cursorSeq": 22,
+    "capabilities": {
+      "cancel": true,
+      "pause": true,
+      "resume": true,
+      "streamEvents": true
+    },
+    "summary": {
+      "dag": "craftax_annotated_fbc"
+    }
+  },
+  "events": [
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:1",
+      "type": "optimizer.run.created",
+      "sequenceNumber": 1,
+      "occurredAt": "2026-08-14T18:00:01Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "delta": { "status": "starting" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:2",
+      "type": "run.started",
+      "sequenceNumber": 2,
+      "occurredAt": "2026-08-14T18:00:04Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "delta": { "status": "running", "dag": "craftax_annotated_fbc" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:3",
+      "type": "dag.checkpoint.written",
+      "sequenceNumber": 3,
+      "occurredAt": "2026-08-14T18:00:05Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "delta": { "dag": "craftax_annotated_fbc" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:4",
+      "type": "node.planned",
+      "sequenceNumber": 4,
+      "occurredAt": "2026-08-14T18:00:06Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "teacher_gate", "status": "planned" },
+      "delta": { "node": "teacher_gate" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:5",
+      "type": "node.planned",
+      "sequenceNumber": 5,
+      "occurredAt": "2026-08-14T18:00:06Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "source", "status": "planned" },
+      "delta": { "node": "source" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:6",
+      "type": "node.planned",
+      "sequenceNumber": 6,
+      "occurredAt": "2026-08-14T18:00:06Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "behavior", "status": "planned" },
+      "delta": { "node": "behavior", "algorithm_id": "annotate.behavior" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:7",
+      "type": "node.planned",
+      "sequenceNumber": 7,
+      "occurredAt": "2026-08-14T18:00:06Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "env_progress", "status": "planned" },
+      "delta": { "node": "env_progress", "algorithm_id": "annotate.env_progress" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:8",
+      "type": "node.planned",
+      "sequenceNumber": 8,
+      "occurredAt": "2026-08-14T18:00:06Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "tokens", "status": "planned" },
+      "delta": { "node": "tokens", "algorithm_id": "annotate.tokens" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:9",
+      "type": "node_planned",
+      "sequenceNumber": 9,
+      "occurredAt": "2026-08-14T18:00:06Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "select", "status": "planned" },
+      "delta": { "node": "select" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:10",
+      "type": "node.planned",
+      "sequenceNumber": 10,
+      "occurredAt": "2026-08-14T18:00:06Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "compile", "status": "planned" },
+      "delta": { "node": "compile" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:11",
+      "type": "node.planned",
+      "sequenceNumber": 11,
+      "occurredAt": "2026-08-14T18:00:06Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "train", "status": "planned" },
+      "delta": { "node": "train" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:12",
+      "type": "node.started",
+      "sequenceNumber": 12,
+      "occurredAt": "2026-08-14T18:00:08Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "teacher_gate", "status": "running" },
+      "delta": { "node": "teacher_gate" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:13",
+      "type": "node.sealed",
+      "sequenceNumber": 13,
+      "occurredAt": "2026-08-14T18:00:09Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "teacher_gate", "status": "sealed" },
+      "delta": { "node": "teacher_gate", "unmetered": true, "wall_seconds": 0.4 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:14",
+      "type": "node.started",
+      "sequenceNumber": 14,
+      "occurredAt": "2026-08-14T18:00:10Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "source", "status": "running" },
+      "delta": { "node": "source", "partitions_total": 160 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:15",
+      "type": "partition.started",
+      "sequenceNumber": 15,
+      "occurredAt": "2026-08-14T18:00:11Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "source", "status": "running" },
+      "delta": { "node": "source", "partitions_total": 160 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:16",
+      "type": "partition.sealed",
+      "sequenceNumber": 16,
+      "occurredAt": "2026-08-14T18:12:00Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "source", "status": "running" },
+      "delta": { "node": "source", "partitions_sealed": 128, "partitions_total": 160 },
+      "usageDelta": { "cost_usd": 4.1 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:17",
+      "type": "node.started",
+      "sequenceNumber": 17,
+      "occurredAt": "2026-08-14T18:12:01Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "behavior", "status": "running" },
+      "delta": { "node": "behavior", "algorithm_id": "annotate.behavior" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:18",
+      "type": "node.sealed",
+      "sequenceNumber": 18,
+      "occurredAt": "2026-08-14T18:12:04Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "behavior", "status": "sealed" },
+      "delta": { "node": "behavior", "unmetered": true, "wall_seconds": 2.1, "algorithm_id": "annotate.behavior" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:19",
+      "type": "node.sealed",
+      "sequenceNumber": 19,
+      "occurredAt": "2026-08-14T18:12:05Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "env_progress", "status": "sealed" },
+      "delta": { "node": "env_progress", "unmetered": true, "wall_seconds": 1.2 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:20",
+      "type": "node.sealed",
+      "sequenceNumber": 20,
+      "occurredAt": "2026-08-14T18:12:06Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "tokens", "status": "sealed" },
+      "delta": { "node": "tokens", "unmetered": true, "wall_seconds": 0.8 }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:21",
+      "type": "node.started",
+      "sequenceNumber": 21,
+      "occurredAt": "2026-08-14T18:12:07Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "train", "status": "running" },
+      "delta": { "node": "train" }
+    },
+    {
+      "schemaVersion": "optimizer_event.v1",
+      "eventId": "opt_dag_annotated_fbc:22",
+      "type": "node.paused",
+      "sequenceNumber": 22,
+      "occurredAt": "2026-08-14T18:12:08Z",
+      "optimizerRunId": "opt_dag_annotated_fbc",
+      "algorithmId": "dag",
+      "item": { "kind": "asset", "id": "train", "status": "paused" },
+      "delta": { "node": "train" }
+    }
+  ]
+}

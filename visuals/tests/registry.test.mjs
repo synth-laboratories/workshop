@@ -32,6 +32,7 @@ test("visuals package exposes the registered templates", () => {
     "optimizer.gepa.candidate.v1",
     "optimizer.gepa.evaluations.v1",
     "optimizer.sft.live.v1",
+    "optimizer.dag.live.v1",
     "optimizer.sft.checkpoints.v1",
     "optimizer.sft.rollouts.v1",
     "optimizer.sft.examples.v1",

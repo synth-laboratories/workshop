@@ -102,6 +102,7 @@ export default function App() {
 						tabLabel={c.tabLabel}
 						appVersion={c.appVersion}
 						activeLocalModel={Boolean(c.activeLocalModel)}
+						reserveNativeControls={c.view.kind === "settings" || !c.sidebarVisible}
 						brand={c.view.kind === "settings" && c.view.section === "models" ? "openai" : "synth"}
 						terminalOpen={c.terminalOpen}
 						sidePanelOpen={c.sidePanelOpen}
@@ -154,6 +155,7 @@ export default function App() {
 						setInventoryContainerWidth={c.setInventoryContainerWidth}
 						persistLayoutSnapshot={c.persistLayoutSnapshot}
 						showSidePanel={c.showSidePanel}
+						sidePanelCanSharePane={c.sidePanelCanSharePane}
 						sidePanelTab={c.sidePanelTab}
 						setSidePanelTab={c.setSidePanelTab}
 						setSidePanelOpen={c.setSidePanelOpen}

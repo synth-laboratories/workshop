@@ -189,6 +189,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [optimizerPayload, setOptimizerPayload] = useState<Record<string, unknown> | null>(null);
 	const [optimizerLoadError, setOptimizerLoadError] = useState<string | null>(null);
 	const [comparisonPayload, setComparisonPayload] = useState<Record<string, unknown> | null>(null);
+	const [connectionState, setConnectionState] = useState<
+		"loading" | "replaying" | "subscribed" | "stale" | "reconnecting" | "terminal" | "failed"
+	>("loading");
 	const resolved = useMemo(() => propsFromBindings(artifact.bindings), [artifact.bindings]);
 
 	useEffect(() => {
@@ -218,12 +221,14 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		if (!optimizerRunId || !bridges.optimizers) {
 			setOptimizerPayload(null);
 			setOptimizerLoadError(optimizerRunId ? "Optimizer bridge is unavailable" : null);
+			if (optimizerRunId) setConnectionState("failed");
 			return;
 		}
 		const pageSize = 500;
 		let current: OptimizerEventCursorState = { events: [], cursor: 0, gap: false };
 		let pending = Promise.resolve();
 		let stopPolling = false;
+		let postedReady = false;
 		const terminal = new Set(["completed", "failed", "cancelled", "succeeded"]);
 		const readPersistedEvents = async (after: number) => {
 			let state: OptimizerEventCursorState = {
@@ -241,6 +246,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		};
 		const load = async (snapshot = false) => {
 			try {
+				if (!snapshot) setConnectionState((current) => current === "subscribed" ? "reconnecting" : current);
+				else setConnectionState("replaying");
 				const run = await bridges.optimizers!.get(optimizerRunId);
 				let next = await readPersistedEvents(snapshot ? 0 : current.cursor);
 				const runCursor = typeof run.cursorSeq === "number" ? run.cursorSeq : next.cursor;
@@ -250,20 +257,37 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					next = await readPersistedEvents(0);
 				}
 				if (next.gap || next.cursor < runCursor) {
+					setConnectionState("stale");
 					throw new Error(`Optimizer event history is incomplete at ${next.cursor}/${runCursor}`);
 				}
 				current = next;
-				if (typeof run.status === "string" && terminal.has(run.status)) {
+				const runStatus = typeof run.status === "string" ? run.status : "";
+				if (terminal.has(runStatus)) {
 					stopPolling = true;
 				}
 				if (!cancelled) {
 					setOptimizerPayload({ run, events: current.events });
 					setOptimizerLoadError(null);
+					setConnectionState(terminal.has(runStatus) ? "terminal" : "subscribed");
+					if (!postedReady) {
+						postedReady = true;
+						void bridges.optimizers?.recordVisualReady?.({
+							visualId: artifact.id,
+							optimizerRunId,
+							templateId: artifact.templateId ?? "optimizer.run.v1",
+							replayedThrough: current.cursor,
+							subscribedFrom: current.cursor + 1,
+							templateDigest: typeof artifact.metadata?.templateDigest === "string"
+								? artifact.metadata.templateDigest
+								: undefined
+						}).catch(() => undefined);
+					}
 				}
 			} catch (reason) {
 				if (!cancelled) {
 					setOptimizerPayload(null);
 					setOptimizerLoadError(reason instanceof Error ? reason.message : String(reason));
+					setConnectionState("failed");
 				}
 			}
 		};
@@ -286,7 +310,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			window.clearInterval(poll);
 			unlisten?.();
 		};
-	}, [artifact.bindings]);
+	}, [artifact.bindings, artifact.id, artifact.templateId, artifact.metadata]);
 
 	const boundRun = optimizerPayload?.run as { id?: string; algorithmId?: string } | undefined;
 	const boundRunId = boundRun?.algorithmId === "gepa" ? boundRun.id ?? null : null;
@@ -332,8 +356,10 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	if (failed) return <VisualInvalidState title="Template unavailable" detail={`No bundled shell is registered for ${artifact.templateId ?? "this visual"}.`} />;
 	if (resolved.errors.length > 0) return <VisualInvalidState title="Visual data unavailable" detail={resolved.errors.join(" · ")} />;
 	if (!Shell) return <p className="visual-loading">Loading visual shell…</p>;
+	const showConnection = Boolean(optimizerPayload || optimizerLoadError || connectionState !== "loading");
 	return (
-		<div data-testid="visual-template-shell">
+		<div data-testid="visual-template-shell" data-connection-state={showConnection ? connectionState : undefined}>
+			{showConnection ? <p className="visual-connection-state" data-testid="visual-connection-state">{connectionState}</p> : null}
 			<Shell
 				{...(resolved.props as ShellProps)}
 				title={artifact.title}

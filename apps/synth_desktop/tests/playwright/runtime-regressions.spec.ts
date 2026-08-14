@@ -181,7 +181,8 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 			catalog: async () => [
 				{ provider: "openrouter", modelId: "openai/gpt-5.6-luna", inputUsdPerM: 0.20, outputUsdPerM: 1.20, cachedInputUsdPerM: 0.02, cacheWriteUsdPerM: 0.25 },
 				{ provider: "openrouter", modelId: "poolside/laguna-s-2.1", inputUsdPerM: 0.10, outputUsdPerM: 0.20, cachedInputUsdPerM: null, cacheWriteUsdPerM: null },
-				{ provider: "openrouter", modelId: "meta/muse-spark-1.2", inputUsdPerM: 1.25, outputUsdPerM: 4.25, cachedInputUsdPerM: 0.15, cacheWriteUsdPerM: null }
+				{ provider: "openrouter", modelId: "meta/muse-spark-1.2", inputUsdPerM: 1.25, outputUsdPerM: 4.25, cachedInputUsdPerM: 0.15, cacheWriteUsdPerM: null },
+				{ provider: "openrouter", modelId: "google/gemini-3.7-flash", inputUsdPerM: 0.375, outputUsdPerM: 1.875, cachedInputUsdPerM: 0.0375, cacheWriteUsdPerM: 0.02085 }
 			]
 		};
 	});
@@ -196,9 +197,10 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 	await expect(luna).toContainText("Cache write / 1M$0.25");
 	await expect(models.getByTestId("authorized-model-openrouter-laguna-s")).toContainText("$0.20");
 	await expect(models.getByTestId("authorized-model-openrouter-muse-spark")).toContainText("$4.25");
+	await expect(models.getByTestId("authorized-model-openrouter-gemini-flash")).toContainText("$1.875");
 	await expect(models.getByTestId("authorized-model-synth-cloud-laguna-s")).toContainText("Plan");
 	const marks = models.locator(".authorized-model-mark");
-	await expect(marks).toHaveCount(5);
+	await expect(marks).toHaveCount(6);
 	const markBoxes = await marks.evaluateAll((elements) => elements.map((element) => {
 		const box = element.getBoundingClientRect();
 		return { width: box.width, height: box.height, centerX: box.left + box.width / 2 };
@@ -214,7 +216,7 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 			return { fontSize: Number.parseFloat(style.fontSize), family: style.fontFamily };
 		})
 	);
-	expect(slugStyles).toHaveLength(5);
+	expect(slugStyles).toHaveLength(6);
 	for (const style of slugStyles) {
 		expect(style.fontSize, "model slugs stay subordinate to provider labels").toBeLessThanOrEqual(10);
 		expect(style.family).toMatch(/SFMono|Menlo|Monaco|Consolas|monospace/i);

@@ -152,6 +152,7 @@ pub(crate) fn normalize_gateway_origin(gateway_url: &str) -> String {
 
 pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Result<()> {
     fs::create_dir_all(home.join("sessions"))?;
+    fs::write(home.join("AGENTS.md"), crate::context::WORKSHOP_AGENTS)?;
     let container_skill = home.join("skills/use-synth-containers");
     fs::create_dir_all(&container_skill)?;
     fs::write(
@@ -218,12 +219,94 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
     ] {
         fs::write(diagrams_skill.join("references").join(name), body)?;
     }
+    let dynamic_explainers_skill = home.join("skills/author-time-dynamic-explainers");
+    fs::create_dir_all(dynamic_explainers_skill.join("references"))?;
+    fs::create_dir_all(dynamic_explainers_skill.join("agents"))?;
+    fs::write(
+        dynamic_explainers_skill.join("SKILL.md"),
+        include_str!("../../../../skills/author-time-dynamic-explainers/SKILL.md"),
+    )?;
+    fs::write(
+        dynamic_explainers_skill.join("agents/openai.yaml"),
+        include_str!("../../../../skills/author-time-dynamic-explainers/agents/openai.yaml"),
+    )?;
+    for (name, body) in [
+        (
+            "visual-grammar.md",
+            include_str!(
+                "../../../../skills/author-time-dynamic-explainers/references/visual-grammar.md"
+            ),
+        ),
+        (
+            "motion-grammar.md",
+            include_str!(
+                "../../../../skills/author-time-dynamic-explainers/references/motion-grammar.md"
+            ),
+        ),
+        (
+            "pattern-library.md",
+            include_str!(
+                "../../../../skills/author-time-dynamic-explainers/references/pattern-library.md"
+            ),
+        ),
+        (
+            "review-checklist.md",
+            include_str!(
+                "../../../../skills/author-time-dynamic-explainers/references/review-checklist.md"
+            ),
+        ),
+        (
+            "observed-sources.md",
+            include_str!(
+                "../../../../skills/author-time-dynamic-explainers/references/observed-sources.md"
+            ),
+        ),
+    ] {
+        fs::write(dynamic_explainers_skill.join("references").join(name), body)?;
+    }
     let optimizers_skill = home.join("skills/use-synth-optimizers");
     fs::create_dir_all(&optimizers_skill)?;
     fs::write(
         optimizers_skill.join("SKILL.md"),
         include_str!("../../../../skills/use-synth-optimizers/SKILL.md"),
     )?;
+    let optimizers_references = optimizers_skill.join("references");
+    fs::create_dir_all(&optimizers_references)?;
+    fs::write(
+        optimizers_references.join("gepa.md"),
+        include_str!("../../../../skills/use-synth-optimizers/references/gepa.md"),
+    )?;
+    let plugins_skill = home.join("skills/use-synth-plugins");
+    fs::create_dir_all(&plugins_skill)?;
+    fs::write(
+        plugins_skill.join("SKILL.md"),
+        include_str!("../../../../skills/use-synth-plugins/SKILL.md"),
+    )?;
+    // Apply the durable Context settings after bundled materialization. This
+    // keeps the existing reference-file setup intact while making disabled
+    // skills and edited SKILL.md copies authoritative for new sessions.
+    for id in [
+        "use-synth-containers",
+        "use-synth-visuals",
+        "author-synth-diagrams",
+        "use-synth-optimizers",
+        "run-live-container-evals",
+    ] {
+        let directory = home.join("skills").join(id);
+        if !crate::context::skill_enabled(id) {
+            if directory.exists() {
+                fs::remove_dir_all(&directory)?;
+            }
+        } else if let Some(body) = crate::context::skill_override(id) {
+            fs::create_dir_all(&directory)?;
+            fs::write(directory.join("SKILL.md"), body)?;
+        }
+    }
+    if let Some(body) = crate::context::cookbook_skill(&crate::context::cookbook()) {
+        let cookbook_skill = home.join("skills/use-synth-cookbooks");
+        fs::create_dir_all(&cookbook_skill)?;
+        fs::write(cookbook_skill.join("SKILL.md"), body)?;
+    }
     let provider = request.provider_name.as_deref().unwrap_or("custom");
     let title = request
         .provider_title
@@ -323,10 +406,17 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         let ipc = crate::storage::app_data_root().join("visuals-ipc.json");
         let mut existing = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
         for (server, binary) in [
+            ("synth_plugins", "synth-plugins-mcp"),
             ("synth_containers", "synth-containers-mcp"),
             ("synth_visuals", "synth-visuals-mcp"),
             ("synth_optimizers", "synth-optimizers-mcp"),
         ] {
+            if !crate::context::mcp_group_enabled("bundled") {
+                continue;
+            }
+            if server == "synth_optimizers" && !crate::plugins::optimizers_plugin_enabled() {
+                continue;
+            }
             let bin = exe
                 .parent()
                 .map(|dir| dir.join(binary))
@@ -638,6 +728,7 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         // same operations after the visual skill is loaded.
         "synth_visuals" => "enabled_tools = [\"visual_manage\"]\n",
         "synth_optimizers" => "enabled_tools = [\"optimizer_manage\"]\n",
+        "synth_plugins" => "enabled_tools = [\"plugin_manage\"]\n",
         _ => "",
     }
 }

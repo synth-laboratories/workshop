@@ -4,6 +4,7 @@ mod cloud;
 mod codex;
 mod codex_oauth;
 mod container_stream;
+mod context;
 pub mod contract;
 pub mod core_runtime;
 mod credential_broker;
@@ -19,6 +20,7 @@ pub mod ipc;
 mod laguna;
 mod limits;
 mod optimizers;
+mod plugins;
 mod runtime;
 mod services;
 mod session;
@@ -56,6 +58,7 @@ use optimizers::{
     OptimizerRecipeRunRequest, OptimizerReconcileRequest, OptimizerRelationship,
     OptimizerRunRecord, OptimizerStateSlice,
 };
+use plugins::PluginStatus;
 use serde_json::Value;
 use std::sync::Arc;
 use storage::{AppEvent, CoreDiagnostics, ModelPerformanceRepository, ModelPerformanceSummary};
@@ -846,6 +849,76 @@ async fn optimizers_list_cloud(
                 .collect()
         })
         .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn plugins_status(
+    state: State<'_, Arc<CoreRuntime>>,
+    plugin_id: Option<String>,
+) -> Result<PluginStatus, AppError> {
+    let _ = plugin_id;
+    Ok(state.plugins().status(&state).await)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn plugins_list(state: State<'_, Arc<CoreRuntime>>) -> Result<Vec<PluginStatus>, AppError> {
+    Ok(vec![state.plugins().status(&state).await])
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn plugins_set_release_channel(
+    state: State<'_, Arc<CoreRuntime>>,
+    plugin_id: String,
+    channel: String,
+) -> Result<PluginStatus, AppError> {
+    if plugin_id != plugins::OPTIMIZERS_PLUGIN_ID {
+        return Err(AppError::from(anyhow::anyhow!(
+            "unknown plugin_id `{plugin_id}`"
+        )));
+    }
+    state
+        .plugins()
+        .registry()
+        .set_release_channel(&channel)
+        .map_err(AppError::from)?;
+    Ok(state.plugins().status(&state).await)
+}
+
+#[derive(Clone, Debug, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+struct VisualReadyRequest {
+    visual_id: String,
+    optimizer_run_id: String,
+    template_id: String,
+    replayed_through: u32,
+    subscribed_from: u32,
+    template_digest: Option<String>,
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visual_subscription_ready(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: VisualReadyRequest,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let receipt = serde_json::json!({
+        "schemaVersion": "synth.visual-subscription-receipt.v1",
+        "visualId": request.visual_id,
+        "optimizerRunId": request.optimizer_run_id,
+        "templateId": request.template_id,
+        "replayedThrough": request.replayed_through,
+        "subscribedFrom": request.subscribed_from,
+        "templateDigest": request.template_digest,
+    });
+    let stored = state
+        .optimizers()
+        .record_visual_ready(request.optimizer_run_id, receipt)
+        .await
+        .map_err(AppError::from)?;
+    Ok(contract::specta::OpaqueJson(stored))
 }
 
 async fn publish_visual_event(
@@ -1872,8 +1945,20 @@ async fn codex_turn_steer(
 async fn codex_approval_resolve(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
+    approvals: State<'_, Arc<crate::session::approval::ApprovalBroker>>,
     request: CodexApprovalDecisionRequest,
 ) -> Result<(), AppError> {
+    if approvals.is_pending(&request.approval_id).await {
+        let decision = approvals
+            .decision_from_shell(&request.approval_id, &request.decision)
+            .await
+            .map_err(AppError::from)?;
+        approvals
+            .resolve(&app, &request.session_id, &request.approval_id, decision)
+            .await
+            .map_err(AppError::from)?;
+        return Ok(());
+    }
     state
         .resolve_approval(app, request)
         .await
@@ -2014,6 +2099,19 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // The main window starts hidden. Showing it from setup races the overlay
+        // webview's first paint on macOS and exposes a dark strip from the window
+        // behind through the transparent native titlebar. Wait until CSS and the
+        // document have loaded so the custom titlebar is present on first reveal.
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main"
+                && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
+            {
+                let window = webview.window();
+                let _ = window.maximize();
+                let _ = window.show();
+            }
+        })
         .setup(|app| {
             instance::mark_manifest_running();
             // Builds before the credential broker exported provider keys into
@@ -2050,6 +2148,9 @@ pub fn run() {
                     std::io::Error::other(format!("start credential broker: {error}"))
                 })?,
             );
+            let approvals = Arc::new(crate::session::approval::ApprovalBroker::new(
+                crate::session::SessionPersistence::from_core(Some(core.clone())),
+            ));
             let whisper = Arc::new(whisper::WhisperManager::new());
             let codex = Arc::new(CodexManager::new(Some(core.clone()), broker.clone()));
             let supervisor = Arc::new(services::ServiceSupervisor::new());
@@ -2060,6 +2161,7 @@ pub fn run() {
             app.manage(migration);
             app.manage(codex.clone());
             app.manage(broker);
+            app.manage(approvals.clone());
             app.manage(receipts);
             app.manage(whisper);
             app.manage(Arc::new(TerminalManager::new()));
@@ -2096,9 +2198,13 @@ pub fn run() {
 
             let bootstrap_handle = app.handle().clone();
             let bootstrap_core = core.clone();
+            let bootstrap_approvals = approvals.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = bootstrap_core.bootstrap(&bootstrap_handle).await {
                     eprintln!("CoreRuntime bootstrap failed: {error}");
+                }
+                if let Err(error) = bootstrap_approvals.expire_restored(&bootstrap_handle).await {
+                    eprintln!("approval restore failed: {error}");
                 }
                 if let Err(error) = bootstrap_core.resume_intern_providers().await {
                     eprintln!("Intern restart reconciliation failed: {error}");
@@ -2149,10 +2255,6 @@ pub fn run() {
                         Err(error) => eprintln!("Eval driver failed to start: {error}"),
                     }
                 });
-            }
-
-            if let Some(window) = app.get_webview_window("main") {
-                window.show()?;
             }
 
             Ok(())

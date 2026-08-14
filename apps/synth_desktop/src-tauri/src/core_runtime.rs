@@ -7,6 +7,7 @@ use crate::contract::events::{origin_for_source_and_kind, tag_event, EventChanne
 use crate::data::{ContainerDeployment, ContainerRegisterRequest, DataStore};
 use crate::domain::{RunService, RunStatus, SessionKind, SessionService, SessionStatus};
 use crate::optimizers::OptimizerService;
+use crate::plugins::PluginService;
 use crate::storage::{
     AppEvent, ContentStore, CoreDiagnostics, EventAppend, EventJournal, EventSource, SessionRecord,
     Storage,
@@ -29,6 +30,7 @@ pub struct CoreRuntime {
     visuals: VisualRegistry,
     data: DataStore,
     optimizers: OptimizerService,
+    plugins: PluginService,
     intern: Arc<InternRuntime>,
     intern_provider: Arc<InternProviderManager>,
     sessions: SessionService,
@@ -73,6 +75,12 @@ impl CoreRuntime {
             events_tx.clone(),
             optimizer_manager,
         );
+        let plugin_path = storage
+            .content_root()
+            .parent()
+            .unwrap_or_else(|| storage.content_root())
+            .join("plugins/optimizers.json");
+        let plugins = PluginService::new(crate::plugins::PluginRegistry::with_path(plugin_path));
         Self {
             storage,
             journal,
@@ -80,6 +88,7 @@ impl CoreRuntime {
             visuals,
             data,
             optimizers,
+            plugins,
             intern,
             intern_provider,
             sessions,
@@ -122,6 +131,10 @@ impl CoreRuntime {
 
     pub fn optimizers(&self) -> &OptimizerService {
         &self.optimizers
+    }
+
+    pub fn plugins(&self) -> &PluginService {
+        &self.plugins
     }
 
     pub fn intern(&self) -> &Arc<InternRuntime> {

@@ -5,7 +5,7 @@ description: Start, inspect, follow, reconcile, cancel, and visualize first-clas
 
 # Use Synth Optimizers
 
-Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursors as authoritative. Never launch an optimizer with a shell command supplied by chat, accept arbitrary config for a local recipe, request credentials in chat, or reproduce secrets and signed URLs.
+Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursors as authoritative. Never launch an optimizer with a shell command supplied by chat, accept arbitrary config for a local recipe, request credentials in chat, or reproduce secrets and signed URLs. If the Optimizers plugin is not ready, the tool returns `plugin_not_ready` — call `mcp__synth_plugins__plugin_manage` to install/start it. Do not expect optimizer tools to download the sidecar.
 
 ## Choose a workflow
 
@@ -15,8 +15,8 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
    - GELO / Go-Ex: explore a hosted search space or reconcile an existing hosted run. Read [references/gelo.md](references/gelo.md).
    - SFT: train and compare model weights/checkpoints. Stream hosted SFT with `sft.hosted.fixture.v1`; the Tinker Craftax smoke is `sft.craftax.gpt-oss.smoke.v1`. The Craftax Nemotron 3.5 Lightning hosted recipe (`sft.craftax.nemotron-nano.tinker.v1`) POSTs to local/hosted optimizers-beta and evaluates against the local Craftax slot. Student ids: `docs/sft_tinker_base_models.toml`. Read [references/sft.md](references/sft.md).
 3. For a local recipe, report its availability, exact fixed inputs, hard limits, prerequisite services, credential names, and whether its cost is dollar-capped or only compute-bounded.
-4. Require explicit user approval before `start_recipe`. Listing, importing, reconciling, inspecting, and visualizing do not require compute approval.
-5. Pass only `recipe_id`, optional `session_ref`, and `open_visual`. The Rust host owns commands, paths, hyperparameters, and credential resolution.
+4. Enforced connect-before-start: `prepare` → `open_visual` → `await_ready` → `start`. `start` requires a visual readiness receipt and a separate compute approval bound to the prepared run. Listing, importing, reconciling, inspecting, and visualizing do not require compute approval.
+5. Pass only `recipe_id` to `prepare`. The Rust host owns commands, paths, hyperparameters, and credential resolution. Retrieve the winner with `get_result` — never read `best_candidate.json` by filesystem path.
 
 ## Follow every run
 

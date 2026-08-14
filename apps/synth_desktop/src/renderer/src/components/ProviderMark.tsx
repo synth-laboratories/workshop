@@ -1,9 +1,10 @@
 import openaiLogo from "../assets/openai-logo.svg";
 import poolsideLogo from "../assets/poolside-logomark.svg";
 import metaLogo from "../assets/meta-logomark.svg";
+import googleLogo from "../assets/google-logomark.svg";
 import { SynthLogo } from "./SynthLogo";
 
-export type ProviderMarkKind = "openai" | "laguna" | "meta" | "synth";
+export type ProviderMarkKind = "openai" | "laguna" | "meta" | "google" | "synth";
 
 /** Underlying model house — not the transport (OpenRouter vs direct).
  *  Synth-hosted Laguna stays Synth-branded; local / OpenRouter Laguna use Poolside. */
@@ -11,6 +12,7 @@ export function providerMarkForTarget(targetId: string): ProviderMarkKind {
 	if (targetId === "openrouter-luna") return "openai";
 	if (targetId === "local-laguna" || targetId === "openrouter-laguna-s") return "laguna";
 	if (targetId === "openrouter-muse-spark") return "meta";
+	if (targetId === "openrouter-gemini-flash") return "google";
 	return "synth";
 }
 
@@ -47,6 +49,9 @@ export function ProviderMark({
 	}
 	if (kind === "meta") {
 		return <img className={className} src={metaLogo} alt="" aria-hidden draggable={false} data-provider-mark="meta" />;
+	}
+	if (kind === "google") {
+		return <img className={className} src={googleLogo} alt="" aria-hidden draggable={false} data-provider-mark="google" />;
 	}
 	return <SynthLogo className={className} compact />;
 }

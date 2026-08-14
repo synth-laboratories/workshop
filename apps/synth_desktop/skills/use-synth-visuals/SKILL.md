@@ -122,6 +122,11 @@ Prepare in this order:
 
 Harbor: open `live.harbor_eval.v1` from register `metadata.liveEval` before trial start. Two `policy_ref`s (`luna_med` and `sol_med`). `live_frames=native` fails.
 
+VisualsBench keeps that Harbor outer card but grades the separate product
+visual authored by Codex. Its register metadata pins `harbor_fused` + Codex
+with `mcp_bind: synth_visuals`; do not start without that bind, and never use
+the `stream` slot on the product visual.
+
 dig.bench: open `live.digbench.v1` before `start_session`. Basic ReAct and agentic Codex + `digbench-mcp` on the same game. No frames. Token never in bindings or screenshots. `/reward` is `completed` → 1, `game_over` → 0, incomplete → null.
 
 ## Iteration rubric

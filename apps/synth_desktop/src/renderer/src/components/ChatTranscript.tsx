@@ -162,6 +162,27 @@ function ActivityLine({
 		);
 	}
 
+	if (line.kind === "visual_lifecycle" && line.visualStage) {
+		const stageLabel = line.visualStage === "draft" ? "Draft"
+			: line.visualStage === "review" ? "In review"
+				: line.visualStage === "ready" ? "Ready" : "Needs attention";
+		return (
+			<div className={`visual-lifecycle stage-${line.visualStage}`} data-testid={`activity-${line.id}`}>
+				<span className="visual-lifecycle-mark" aria-hidden><IconVisual /></span>
+				<span className="visual-lifecycle-copy">
+					<strong>{line.label}</strong>
+					<span>Draft <i /> Review <i /> Ready</span>
+				</span>
+				<span className="visual-lifecycle-status">{stageLabel}</span>
+				{onToggleVisual ? (
+					<button type="button" className="visual-lifecycle-open" onClick={onToggleVisual} aria-label={visualOpen ? "Hide visual" : "Open visual"}>
+						{visualOpen ? "Hide" : "Open"}
+					</button>
+				) : null}
+			</div>
+		);
+	}
+
 	if (line.kind === "context_compaction") {
 		const summary = line.tokensBefore != null && line.tokensAfter != null
 			? (line.detail ?? contextCompactionTokenSummary(line.tokensBefore, line.tokensAfter))
@@ -324,6 +345,9 @@ function VisualCard({
 	active: boolean;
 	onToggle: () => void;
 }) {
+	const lifecycle = artifact.status === "review" ? "In review"
+		: artifact.status === "ready" ? "Ready"
+			: artifact.status === "failed" ? "Needs attention" : "Draft";
 	return (
 		<button
 			type="button"
@@ -343,7 +367,7 @@ function VisualCard({
 			<span className="visual-card-body">
 				<span className="visual-card-title">{artifact.title}</span>
 				<span className="visual-card-meta">
-					{artifact.kind.replace(/_/g, " ")}
+					<span className={`visual-card-status status-${artifact.status ?? "draft"}`}>{lifecycle}</span>
 					{active ? " · open" : " · click to open"}
 				</span>
 			</span>

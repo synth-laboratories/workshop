@@ -51,6 +51,7 @@ test("Synth Cloud hosted models appear under SYNTH CLOUD when api key is configu
 	});
 	await expect(remoteGroup.getByTestId("composer-model-option-openrouter-laguna-s")).toBeVisible();
 	await expect(remoteGroup.getByTestId("composer-model-option-openrouter-muse-spark")).toHaveText(/Muse Spark 1\.2/);
+	await expect(remoteGroup.getByTestId("composer-model-option-openrouter-gemini-flash")).toHaveText(/Gemini 3\.7 Flash/);
 	await expect(cloudGroup.getByTestId("composer-model-option-openrouter-laguna-s")).toHaveCount(0);
 
 	await page.getByTestId("composer-model-option-synth-cloud-muse-spark").click();

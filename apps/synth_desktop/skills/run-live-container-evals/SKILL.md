@@ -37,6 +37,14 @@ Harbor register writes `metadata.liveEval` with template `live.harbor_eval.v1`,
 slot `stream`, `liveFrames: unsupported`, and two `policy_ref`s (`harbor_fused`
 + `luna_med`, `harbor_fused` + `sol_med`). Open that visual before trial start.
 
+VisualsBench is a Harbor specialization: registration advertises
+`benchmarkFamily: visualsbench`, one explicitly pinned `harbor_fused` Codex
+policy, and `mcp_bind: synth_visuals`. The outer `live.harbor_eval.v1` still
+connects before start; Codex then authors a separate product visual that the
+post-exit script node grades. Refuse start if the Codex policy does not carry
+the visuals bind. Missing or ambiguous product identity and incomplete export
+are rig failure with null reward, never task score `0`.
+
 dig.bench opens `live.digbench.v1` before `start_session`. Two `policy_ref`s on
 the same game: basic (`react_legal_actions`) and agentic (`codex` +
 `mcp_bind: digbench-mcp`). Token starts at `start_session`.
