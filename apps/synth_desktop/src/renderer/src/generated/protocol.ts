@@ -71,6 +71,9 @@ export const commands = {
 	optimizersImportLocal: (request: OptimizerImportLocalRequest) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_import_local", { request })),
 	optimizersReconcileCloud: (request: OptimizerReconcileRequest) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_reconcile_cloud", { request })),
 	optimizersListCloud: (algorithm: string | null, status: string | null, limit: unknown | null) => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_list_cloud", { algorithm, status, limit })),
+	pluginsStatus: (pluginId: string | null) => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("plugins_status", { pluginId })),
+	pluginsList: () => typedError<PluginStatus_Serialize[], AppError>(__TAURI_INVOKE("plugins_list")),
+	visualSubscriptionReady: (request: VisualReadyRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_subscription_ready", { request })),
 	optimizerSidecarStatus: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_status")),
 	optimizerSidecarInstall: (version: string | null) => typedError<OptimizerSidecarVersion, AppError>(__TAURI_INVOKE("optimizer_sidecar_install", { version })),
 	optimizerSidecarStart: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_start")),
@@ -1219,6 +1222,54 @@ export type OptimizerUsageSummary = {
 	extra?: unknown,
 };
 
+export type PluginServiceStatus = PluginServiceStatus_Serialize | PluginServiceStatus_Deserialize;
+
+export type PluginServiceStatus_Deserialize = {
+	phase: string,
+	startedAt?: string | null,
+	activeRuns?: number,
+};
+
+export type PluginServiceStatus_Serialize = {
+	phase: string,
+	startedAt?: string | null,
+	activeRuns: number,
+};
+
+export type PluginStatus = PluginStatus_Serialize | PluginStatus_Deserialize;
+
+export type PluginStatus_Deserialize = {
+	schemaVersion: string,
+	pluginId: string,
+	enabled: boolean,
+	phase: string,
+	installedVersion?: string | null,
+	selectedVersion?: string | null,
+	digest?: string | null,
+	service: PluginServiceStatus_Deserialize,
+	capabilitiesDigest?: string | null,
+	algorithms?: string[],
+	templates?: string[],
+	lastActionReceiptId?: string | null,
+	detail?: string | null,
+};
+
+export type PluginStatus_Serialize = {
+	schemaVersion: string,
+	pluginId: string,
+	enabled: boolean,
+	phase: string,
+	installedVersion?: string | null,
+	selectedVersion?: string | null,
+	digest?: string | null,
+	service: PluginServiceStatus_Serialize,
+	capabilitiesDigest?: string | null,
+	algorithms: string[],
+	templates: string[],
+	lastActionReceiptId?: string | null,
+	detail?: string | null,
+};
+
 export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic";
 
 export type ResolvedTraceProjection = {
@@ -1472,6 +1523,15 @@ export type VisualQuery = {
 	search: string | null,
 	limit: unknown,
 	offset: unknown,
+};
+
+export type VisualReadyRequest = {
+	visualId: string,
+	optimizerRunId: string,
+	templateId: string,
+	replayedThrough: number,
+	subscribedFrom: number,
+	templateDigest: string | null,
 };
 
 export type VisualRecord = VisualRecord_Serialize | VisualRecord_Deserialize;

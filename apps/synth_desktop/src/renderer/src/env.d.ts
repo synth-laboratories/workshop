@@ -15,6 +15,7 @@ import type {
 	LagunaBridge,
 	ModelPerformanceBridge,
 	OptimizersBridge,
+	PluginsBridge,
 	RuntimeBridge,
 	SemanticEvalApi,
 	SkillsBridge,
@@ -58,6 +59,7 @@ declare global {
 		synthTariffs?: TariffsBridge;
 		synthUpdates?: UpdatesBridge;
 		synthVisuals?: VisualsBridge;
+		synthPlugins?: PluginsBridge;
 		synthOptimizers?: OptimizersBridge;
 		synthTerminal: TerminalBridge;
 		/** Dev/test semantic eval API — tree-shaken from packaged production builds. */

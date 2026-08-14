@@ -288,7 +288,7 @@ export function Shell({ title, lede, projection, data }: ShellProps) {
         </div>
       </section>
       <div className="sv-mono" style={{ fontSize: 10, color: "var(--sv-text-faint)", margin: "4px 0 10px" }}>{filtered.length} of {items.length} projected items · {density === "focus" ? "operational signal" : "complete projection"}</div>
-      <div ref={listRef} aria-live="polite" style={{ display: "grid", gap: 9 }}>
+      <div ref={listRef} aria-live="polite" style={{ display: "grid", gap: 9, maxHeight: "min(62vh, 640px)", overflow: "auto", padding: 10, border: "1px solid var(--sv-border)", borderRadius: 12, background: "var(--sv-wash, #fafaf9)" }}>
         {filtered.map((item) => <EventCard key={item.item_id} item={item} expanded={expanded.has(item.item_id)} onToggle={() => setExpanded((current) => { const next = new Set(current); next.has(item.item_id) ? next.delete(item.item_id) : next.add(item.item_id); return next; })} />)}
         {!filtered.length ? <p style={{ color: "var(--sv-text-faint)" }}>No projected items match these filters.</p> : null}
       </div>

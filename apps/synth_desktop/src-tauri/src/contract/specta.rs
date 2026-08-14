@@ -119,6 +119,9 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::optimizers_import_local,
         crate::optimizers_reconcile_cloud,
         crate::optimizers_list_cloud,
+        crate::plugins_status,
+        crate::plugins_list,
+        crate::visual_subscription_ready,
         crate::optimizers::manager::optimizer_sidecar_status,
         crate::optimizers::manager::optimizer_sidecar_install,
         crate::optimizers::manager::optimizer_sidecar_start,
@@ -286,7 +289,7 @@ mod tests {
         let exported =
             body.matches("__TAURI_INVOKE(").count() + body.matches("__TAURI_INVOKE<").count();
         assert_eq!(
-            exported, 138,
+            exported, 141,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

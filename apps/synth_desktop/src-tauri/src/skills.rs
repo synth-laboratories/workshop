@@ -36,6 +36,10 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
         content: include_str!("../../skills/use-synth-optimizers/SKILL.md"),
     },
     BundledSkill {
+        id: "use-synth-plugins",
+        content: include_str!("../../skills/use-synth-plugins/SKILL.md"),
+    },
+    BundledSkill {
         id: "run-live-container-evals",
         content: include_str!("../../skills/run-live-container-evals/SKILL.md"),
     },

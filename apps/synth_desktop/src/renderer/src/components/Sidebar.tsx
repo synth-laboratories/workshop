@@ -7,6 +7,7 @@ import { type AccountViewModel } from "../runtime/accountView";
 import { ConversationContextMenu } from "./GeneralPreferencesSettings";
 import { PaneResizeHandle } from "./PaneResizeHandle";
 import { ProviderMark } from "./ProviderMark";
+import { bridges } from "../runtime/desktopBridge";
 
 type CodexUsageSnapshot = {
 	usedPercent: number;
@@ -184,6 +185,7 @@ export function Sidebar({
 	const [accountMenuOpen, setAccountMenuOpen] = useState(false);
 	const [allowanceOpen, setAllowanceOpen] = useState(false);
 	const [codexUsageOpen, setCodexUsageOpen] = useState(false);
+	const [optimizersEnabled, setOptimizersEnabled] = useState(true);
 	const accountMenuRef = useRef<HTMLDivElement>(null);
 	const accountTriggerRef = useRef<HTMLButtonElement>(null);
 	const codexRemaining = codexUsage ? Math.max(0, Math.round(100 - codexUsage.usedPercent)) : null;
@@ -192,6 +194,21 @@ export function Sidebar({
 		: null;
 	const accountTitle = codexOauthConfigured ? "ChatGPT subscription" : account.title;
 	const accountSubtitle = codexOauthConfigured ? "OpenAI account" : account.subtitle;
+
+	useEffect(() => {
+		let cancelled = false;
+		void bridges.plugins
+			?.status("optimizers")
+			.then((status) => {
+				if (!cancelled) setOptimizersEnabled(status.enabled !== false);
+			})
+			.catch(() => {
+				if (!cancelled) setOptimizersEnabled(true);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
 
 	useEffect(() => {
 		if (!accountMenuOpen) return;
@@ -466,15 +483,17 @@ export function Sidebar({
 								<IconSearch />
 								<span className="item-label">Visuals</span>
 							</button>
-							<button
-								type="button"
-								className={`chat-item${optimizersActive ? " active" : ""}`}
-								onClick={onOpenOptimizers}
-								data-testid="open-optimizers"
-							>
-								<IconInventory />
-								<span className="item-label">Optimizers</span>
-							</button>
+							{optimizersEnabled ? (
+								<button
+									type="button"
+									className={`chat-item${optimizersActive ? " active" : ""}`}
+									onClick={onOpenOptimizers}
+									data-testid="open-optimizers"
+								>
+									<IconInventory />
+									<span className="item-label">Optimizers</span>
+								</button>
+							) : null}
 						</div>
 					) : null}
 				</div>

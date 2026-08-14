@@ -224,6 +224,12 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         optimizers_skill.join("SKILL.md"),
         include_str!("../../../../skills/use-synth-optimizers/SKILL.md"),
     )?;
+    let plugins_skill = home.join("skills/use-synth-plugins");
+    fs::create_dir_all(&plugins_skill)?;
+    fs::write(
+        plugins_skill.join("SKILL.md"),
+        include_str!("../../../../skills/use-synth-plugins/SKILL.md"),
+    )?;
     let provider = request.provider_name.as_deref().unwrap_or("custom");
     let title = request
         .provider_title
@@ -323,10 +329,14 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         let ipc = crate::storage::app_data_root().join("visuals-ipc.json");
         let mut existing = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
         for (server, binary) in [
+            ("synth_plugins", "synth-plugins-mcp"),
             ("synth_containers", "synth-containers-mcp"),
             ("synth_visuals", "synth-visuals-mcp"),
             ("synth_optimizers", "synth-optimizers-mcp"),
         ] {
+            if server == "synth_optimizers" && !crate::plugins::optimizers_plugin_enabled() {
+                continue;
+            }
             let bin = exe
                 .parent()
                 .map(|dir| dir.join(binary))
@@ -638,6 +648,7 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         // same operations after the visual skill is loaded.
         "synth_visuals" => "enabled_tools = [\"visual_manage\"]\n",
         "synth_optimizers" => "enabled_tools = [\"optimizer_manage\"]\n",
+        "synth_plugins" => "enabled_tools = [\"plugin_manage\"]\n",
         _ => "",
     }
 }

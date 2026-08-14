@@ -607,6 +607,10 @@ window.synthWorkspaceScope ??= isTauri
 				return () => { disposed = true; unlisten?.(); };
 			}
 		};
+		window.synthPlugins ??= {
+			status: (pluginId) => invokeCommand(COMMANDS.PLUGINS_STATUS, { pluginId: pluginId ?? null }),
+			list: () => invokeCommand(COMMANDS.PLUGINS_LIST)
+		};
 		window.synthOptimizers ??= {
 			listAlgorithms: () => invokeCommand(COMMANDS.OPTIMIZERS_ALGORITHMS_LIST),
 			listRecipes: () => invokeCommand(COMMANDS.OPTIMIZERS_RECIPES_LIST),
@@ -633,6 +637,7 @@ window.synthWorkspaceScope ??= isTauri
 					status: query?.status ?? null,
 					limit: query?.limit ?? null
 				}),
+			recordVisualReady: (request) => invokeCommand(COMMANDS.VISUAL_SUBSCRIPTION_READY, { request }),
 			onEvent(listener) {
 				return listenRuntimeAppEvents((payload) => {
 					if (payload.kind.startsWith("optimizer.")) listener(payload);
@@ -695,6 +700,9 @@ export const bridges = {
 	},
 	get updates() {
 		return window.synthUpdates;
+	},
+	get plugins() {
+		return window.synthPlugins;
 	},
 	get visuals() {
 		return window.synthVisuals;

@@ -1311,10 +1311,36 @@ export function eventsToLocalActivity(
 			: event.eventKind === "approval.granted" ? "Approval granted"
 				: event.eventKind === "approval.rejected" ? "Approval rejected" : "Approval updated";
 		const command = typeof payload.command === "string" ? payload.command : undefined;
-		const safeKind = payload.kind === "shell_command" || payload.kind === "file_change" || payload.kind === "permission";
-		const detail = safeKind && typeof payload.detail === "string"
+		const pluginDetail = payload.kind === "plugin_lifecycle"
+			? [
+				payload.action,
+				payload.pluginId,
+				payload.version,
+				payload.publisher,
+				payload.digest,
+				payload.networkHost,
+				payload.serviceEffect,
+				payload.retention,
+				typeof payload.activeRuns === "number" ? `${payload.activeRuns} active runs` : null
+			].filter((value): value is string => typeof value === "string" && value !== "").join(" · ")
+			: payload.kind === "paid_compute"
+				? [
+					payload.recipeId ?? payload.operation,
+					payload.dataset,
+					payload.proposerModel ? `proposer ${payload.proposerModel}` : null,
+					payload.evaluatorModel ? `evaluator ${payload.evaluatorModel}` : null,
+					payload.requestedCap && typeof payload.requestedCap === "object"
+						? `max ${String((payload.requestedCap as { maxRollouts?: number }).maxRollouts ?? "")} rollouts`
+						: null,
+					Array.isArray(payload.credentialNames) ? `credentials ${payload.credentialNames.join(", ")}` : null
+				].filter((value): value is string => Boolean(value)).join(" · ")
+				: undefined;
+		const safeKind = payload.kind === "shell_command" || payload.kind === "file_change" || payload.kind === "permission"
+			|| payload.kind === "plugin_lifecycle" || payload.kind === "paid_compute";
+		const detail = pluginDetail
+			?? (safeKind && typeof payload.detail === "string"
 			? payload.detail.slice(0, 500)
-			: command ? redactCommand(command) : path;
+			: command ? redactCommand(command) : path);
 		(byMessage[current] ??= []).push({
 			id: `activity-${event.sequence}`,
 			label,

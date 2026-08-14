@@ -96,10 +96,10 @@ fn request_inner(
 
 fn tools() -> Value {
     json!({"tools":[
-        {"name":"optimizer_manage","description":"Operate Synth optimizer runs. Load the use-synth-optimizers skill for operation arguments and safe recipe sequencing.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_algorithms","list_recipes","start_recipe","list_runs","get_run","watch_run","get_state","reconcile_cloud","cancel_run","open_visual"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+        {"name":"optimizer_manage","description":"Operate Synth optimizer runs. Load the use-synth-optimizers skill. Enforced sequence: list_algorithms, list_recipes, prepare, open_visual, await_ready, start. Never install the plugin from this tool.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_algorithms","list_recipes","prepare","open_visual","await_ready","start","start_recipe","list_runs","get_run","watch_run","get_state","get_result","reconcile_cloud","cancel_run","cancel","finalize"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
         {"name":"optimizer_list_algorithms","description":"List optimizer algorithms and availability","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"optimizer_list_recipes","description":"List product-owned bounded optimizer recipes and their hard limits","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-        {"name":"optimizer_start_recipe","description":"Start an allowlisted optimizer recipe. No commands, paths, credentials, or arbitrary config are accepted. Optional base_model must be an id from docs/sft_tinker_base_models.toml; dataset_shard must be advertised by the selected recipe.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.luna.v1","gepa.banking77.sol.v1","gelo.craftax.hosted.v1","sft.craftax.gpt-oss.smoke.v1","sft.hosted.fixture.v1","sft.craftax.nemotron-nano.tinker.v1","sft.banking77.nemotron-lightning.tinker.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]}},"required":["recipe_id"],"additionalProperties":false}},
+        {"name":"optimizer_start_recipe","description":"Prepare an allowlisted optimizer recipe. Does not start paid compute and does not install the plugin. Use optimizer_manage prepare → open_visual → await_ready → start.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.smoke.v1","gepa.banking77.luna.v1","gepa.banking77.sol.v1","gelo.craftax.hosted.v1","sft.craftax.gpt-oss.smoke.v1","sft.hosted.fixture.v1","sft.craftax.nemotron-nano.tinker.v1","sft.banking77.nemotron-lightning.tinker.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]}},"required":["recipe_id"],"additionalProperties":false}},
         {"name":"optimizer_list_runs","description":"List local optimizer run mirrors","inputSchema":{"type":"object","properties":{"status":{"type":"string"},"algorithm_id":{"type":"string"},"source":{"type":"string"},"search":{"type":"string"}},"additionalProperties":false}},
         {"name":"optimizer_get_run","description":"Get one optimizer run mirror","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
         {"name":"optimizer_create_run","description":"Create an optimizer run (local stub, cloud-hosted, fixture, or local path import)","inputSchema":{"type":"object","properties":{"algorithm_id":{"type":"string"},"objective":{"type":"string"},"session_ref":{"type":"string"},"source":{"type":"string","enum":["local","cloud"]},"local_path":{"type":"string"},"seed_fixture":{"type":"string"},"cloud_config":{"type":"object"},"open_visual":{"type":"boolean"}},"required":["algorithm_id"],"additionalProperties":false}},
@@ -113,6 +113,24 @@ fn tools() -> Value {
     ]})
 }
 
+fn reject_secret_keys(args: &Value, allow_path: bool) -> Result<(), String> {
+    let Some(object) = args.as_object() else {
+        return Ok(());
+    };
+    for key in object.keys() {
+        match key.as_str() {
+            "url" | "command" | "env" | "token" | "api_key" | "credential" | "credentials" => {
+                return Err(format!("optimizer arguments reject `{key}`"));
+            }
+            "path" | "local_path" if !allow_path => {
+                return Err(format!("optimizer arguments reject `{key}`"));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     if name == "optimizer_manage" {
         let operation = args
@@ -120,16 +138,23 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             .and_then(Value::as_str)
             .ok_or_else(|| "operation required".to_string())?;
         let nested = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        let allow_path = matches!(operation, "import_local" | "create_run");
+        reject_secret_keys(&nested, allow_path)?;
         let tool = match operation {
             "list_algorithms" => "optimizer_list_algorithms",
             "list_recipes" => "optimizer_list_recipes",
-            "start_recipe" => "optimizer_start_recipe",
+            "prepare" => "optimizer_prepare",
+            "start_recipe" => "optimizer_prepare",
+            "start" => "optimizer_start",
+            "await_ready" => "optimizer_await_ready",
+            "get_result" => "optimizer_get_result",
+            "finalize" => "optimizer_get_result",
             "list_runs" => "optimizer_list_runs",
             "get_run" => "optimizer_get_run",
             "watch_run" => "optimizer_watch_run",
             "get_state" => "optimizer_get_state",
             "reconcile_cloud" => "optimizer_reconcile_cloud",
-            "cancel_run" => "optimizer_cancel_run",
+            "cancel_run" | "cancel" => "optimizer_cancel_run",
             "open_visual" => "optimizer_open_visual",
             other => return Err(format!("unknown optimizer operation {other}")),
         };
@@ -145,16 +170,43 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "optimizer_list_algorithms" => request("GET", "/v1/optimizers/algorithms", None),
         "optimizer_list_recipes" => request("GET", "/v1/optimizers/recipes", None),
-        "optimizer_start_recipe" => request(
+        "optimizer_prepare" => request(
             "POST",
-            "/v1/optimizers/recipes/run",
+            "/v1/optimizers/recipes/prepare",
             Some(json!({
                 "recipeId": args.get("recipe_id"),
                 "sessionRef": session_ref(),
-                "openVisual": args.get("open_visual").cloned().unwrap_or(json!(true)),
-                "baseModel": args.get("base_model"),
-                "datasetShard": args.get("dataset_shard")
+                "openVisual": args.get("open_visual").cloned().unwrap_or(json!(true))
             })),
+        ),
+        "optimizer_start_recipe" => request(
+            "POST",
+            "/v1/optimizers/recipes/prepare",
+            Some(json!({
+                "recipeId": args.get("recipe_id"),
+                "sessionRef": session_ref(),
+                "openVisual": args.get("open_visual").cloned().unwrap_or(json!(true))
+            })),
+        ),
+        "optimizer_start" => request(
+            "POST",
+            "/v1/optimizers/runs/start",
+            Some(json!({
+                "optimizerRunId": args.get("optimizer_run_id"),
+                "preparationDigest": args.get("preparation_digest"),
+                "approvalReceiptId": args.get("approval_receipt_id"),
+                "sessionRef": session_ref()
+            })),
+        ),
+        "optimizer_await_ready" => request(
+            "GET",
+            &format!("/v1/optimizers/runs/{}/ready", id()?),
+            Some(json!({ "timeout_ms": args.get("timeout_ms") })),
+        ),
+        "optimizer_get_result" => request(
+            "GET",
+            &format!("/v1/optimizers/runs/{}/result", id()?),
+            None,
         ),
         "optimizer_list_runs" => request(
             "GET",
@@ -269,6 +321,7 @@ mod tests {
         let tools = catalog["tools"].as_array().unwrap();
         assert!(tools.iter().any(|tool| tool["name"] == "optimizer_manage"));
         let encoded = catalog.to_string();
+        assert!(encoded.contains("gepa.banking77.smoke.v1"));
         assert!(encoded.contains("gepa.banking77.luna.v1"));
         assert!(encoded.contains("gepa.banking77.sol.v1"));
         assert!(encoded.contains("sft.craftax.gpt-oss.smoke.v1"));
@@ -296,5 +349,39 @@ mod tests {
             resolved_session_ref(&json!({"session_ref": null}), Some("session_current")),
             Some(json!("session_current"))
         );
+    }
+
+    #[test]
+    fn prepare_and_start_reject_urls_paths_and_credentials() {
+        let err = call_tool(
+            "optimizer_manage",
+            &json!({
+                "operation": "prepare",
+                "arguments": {
+                    "recipe_id": "gepa.banking77.smoke.v1",
+                    "url": "https://evil.example"
+                }
+            }),
+        )
+        .unwrap_err();
+        assert!(err.contains("reject"));
+        let err = call_tool(
+            "optimizer_manage",
+            &json!({
+                "operation": "start",
+                "arguments": {"optimizer_run_id": "run_1", "path": "/tmp/secret"}
+            }),
+        )
+        .unwrap_err();
+        assert!(err.contains("reject"));
+        let err = call_tool(
+            "optimizer_manage",
+            &json!({
+                "operation": "get_result",
+                "arguments": {"optimizer_run_id": "run_1", "env": {"OPENAI_API_KEY": "x"}}
+            }),
+        )
+        .unwrap_err();
+        assert!(err.contains("reject"));
     }
 }

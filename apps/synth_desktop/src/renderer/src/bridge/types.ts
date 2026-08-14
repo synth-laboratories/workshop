@@ -461,6 +461,27 @@ export type VisualsBridge = {
 	onShow(listener: (event: AppEvent) => void): () => void;
 };
 
+export type PluginStatus = {
+	schemaVersion: string;
+	pluginId: string;
+	enabled: boolean;
+	phase: string;
+	installedVersion?: string | null;
+	selectedVersion?: string | null;
+	digest?: string | null;
+	service: { phase: string; startedAt?: string | null; activeRuns: number };
+	capabilitiesDigest?: string | null;
+	algorithms: string[];
+	templates: string[];
+	lastActionReceiptId?: string | null;
+	detail?: string | null;
+};
+
+export type PluginsBridge = {
+	status(pluginId?: string | null): Promise<PluginStatus>;
+	list(): Promise<PluginStatus[]>;
+};
+
 export type OptimizersBridge = {
 	listAlgorithms(): Promise<OptimizerAlgorithmInfo[]>;
 	listRecipes(): Promise<Array<{
@@ -506,6 +527,14 @@ export type OptimizersBridge = {
 	importLocal(request: { path: string; sessionRef?: string; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	reconcileCloud(request: { optimizerRunId: string; afterSeq?: number; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	listCloud(query?: { algorithm?: string; status?: string; limit?: number }): Promise<unknown[]>;
+	recordVisualReady?(request: {
+		visualId: string;
+		optimizerRunId: string;
+		templateId: string;
+		replayedThrough: number;
+		subscribedFrom: number;
+		templateDigest?: string;
+	}): Promise<unknown>;
 	onEvent(listener: (event: AppEvent) => void): () => void;
 };
 

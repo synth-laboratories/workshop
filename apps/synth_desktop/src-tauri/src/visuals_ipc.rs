@@ -109,6 +109,17 @@ async fn route_request(
         Err(error) if crate::error::error_is::<crate::error::Unauthorized>(&error) => {
             JsonHttpResponse::error(StatusCode::UNAUTHORIZED, error.to_string())
         }
+        Err(error) if crate::error::error_is::<crate::plugins::PluginNotReady>(&error) => {
+            let body = error
+                .downcast_ref::<crate::plugins::PluginNotReady>()
+                .map(crate::plugins::PluginNotReady::to_json)
+                .unwrap_or_else(|| json!({"code":"plugin_not_ready"}));
+            JsonHttpResponse {
+                status: StatusCode::CONFLICT,
+                body,
+                extra_headers: Vec::new(),
+            }
+        }
         Err(error) => JsonHttpResponse::error(StatusCode::BAD_REQUEST, error.to_string()),
     }
 }
@@ -139,8 +150,11 @@ async fn dispatch_request(
     if method == "POST" && path == "/v1/review-window/resize" {
         return resize_review_window(app, &json_body);
     }
+    if path.starts_with("/v1/plugins") {
+        return dispatch_plugins(method, path, json_body, core, app).await;
+    }
     if path.starts_with("/v1/optimizers") {
-        return dispatch_optimizer(method, path, json_body, core).await;
+        return dispatch_optimizer(method, path, json_body, core, app).await;
     }
     dispatch(method, path, json_body, core).await
 }
@@ -1335,6 +1349,7 @@ async fn dispatch_optimizer(
     path: &str,
     body: Value,
     core: &CoreRuntime,
+    app: &AppHandle,
 ) -> Result<Value> {
     let optimizers = core.optimizers();
     match (method, path) {
@@ -1342,10 +1357,68 @@ async fn dispatch_optimizer(
             Ok(json!({ "algorithms": optimizers.list_algorithms() }))
         }
         ("GET", "/v1/optimizers/recipes") => Ok(json!({ "recipes": optimizers.list_recipes() })),
+        ("POST", "/v1/optimizers/recipes/prepare") => {
+            let request: crate::optimizers::OptimizerRecipeRunRequest =
+                serde_json::from_value(body)?;
+            let (run, event) = optimizers.prepare_recipe(request).await?;
+            Ok(json!({ "run": run, "event": event, "preparationDigest": run.summary.get("preparationDigest") }))
+        }
         ("POST", "/v1/optimizers/recipes/run") => {
             let request: crate::optimizers::OptimizerRecipeRunRequest =
                 serde_json::from_value(body)?;
             let (run, event) = optimizers.start_recipe(request).await?;
+            Ok(json!({ "run": run, "event": event }))
+        }
+        ("POST", "/v1/optimizers/runs/start") => {
+            let id = body
+                .get("optimizerRunId")
+                .or_else(|| body.get("optimizer_run_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("optimizer_run_id required"))?;
+            let digest = body
+                .get("preparationDigest")
+                .or_else(|| body.get("preparation_digest"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let approval = body
+                .get("approvalReceiptId")
+                .or_else(|| body.get("approval_receipt_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let session_ref = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_ref"))
+                .and_then(Value::as_str);
+            let mut approval = approval;
+            if approval.is_none() {
+                if let Some(broker) = app.try_state::<Arc<crate::session::approval::ApprovalBroker>>()
+                {
+                    let auth = core
+                        .plugins()
+                        .authorize_compute(
+                            broker.inner(),
+                            app,
+                            session_ref,
+                            run_recipe_id(optimizers, id).await?.as_str(),
+                            digest.as_deref().unwrap_or(""),
+                            2.45,
+                            240,
+                            "gpt-5.6-luna",
+                            300,
+                        )
+                        .await?;
+                    if auth.rejected {
+                        return Ok(json!({
+                            "result": "approval_rejected",
+                            "approvalReceiptId": auth.approval_id
+                        }));
+                    }
+                    approval = Some(auth.approval_id);
+                }
+            }
+            let (run, event) = optimizers
+                .start_prepared(id.to_string(), digest, approval)
+                .await?;
             Ok(json!({ "run": run, "event": event }))
         }
         ("GET", "/v1/optimizers/runs") => {
@@ -1430,6 +1503,36 @@ async fn dispatch_optimizer(
             let (run, event) = optimizers.cancel(id.to_string()).await?;
             Ok(json!({ "run": run, "event": event }))
         }
+        ("GET", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/result") => {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/result");
+            let result = optimizers.get_result(id.to_string()).await?;
+            Ok(json!({ "result": result }))
+        }
+        ("GET", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/ready") => {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/ready");
+            let timeout_ms = body
+                .get("timeout_ms")
+                .or_else(|| body.get("timeoutMs"))
+                .and_then(Value::as_u64)
+                .unwrap_or(15_000);
+            let receipt = optimizers
+                .await_visual_ready(id.to_string(), timeout_ms)
+                .await?;
+            Ok(json!({ "receipt": receipt }))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/finalize") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/finalize");
+            let result = optimizers.get_result(id.to_string()).await?;
+            Ok(json!({ "result": result }))
+        }
         ("GET", path) if path.starts_with("/v1/optimizers/runs/") => {
             let id = path.trim_start_matches("/v1/optimizers/runs/");
             let run = optimizers.get(id.to_string()).await?;
@@ -1461,6 +1564,104 @@ async fn dispatch_optimizer(
             Ok(json!({ "runs": runs }))
         }
         _ => anyhow::bail!("unsupported optimizer IPC route {method} {path}"),
+    }
+}
+
+async fn run_recipe_id(
+    optimizers: &crate::optimizers::OptimizerService,
+    run_id: &str,
+) -> Result<String> {
+    let run = optimizers.get(run_id.to_string()).await?;
+    Ok(run
+        .summary
+        .get("recipeId")
+        .and_then(Value::as_str)
+        .unwrap_or("gepa.banking77.smoke.v1")
+        .to_owned())
+}
+
+async fn dispatch_plugins(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+    app: &AppHandle,
+) -> Result<Value> {
+    let session_owned = body
+        .get("sessionRef")
+        .or_else(|| body.get("session_id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
+    let session_id = session_owned.as_deref();
+    let plugin_id = body
+        .get("plugin_id")
+        .or_else(|| body.get("pluginId"))
+        .cloned()
+        .unwrap_or_else(|| json!("optimizers"));
+    let version = body.get("version").cloned();
+    let arguments = json!({
+        "plugin_id": plugin_id,
+        "version": version,
+    });
+    let mapped = match (method, path) {
+        ("GET", "/v1/plugins") | ("GET", "/v1/plugins/") => "list",
+        ("GET", "/v1/plugins/optimizers") => "status",
+        ("GET", "/v1/plugins/optimizers/capabilities") => "capabilities",
+        ("POST", "/v1/plugins/optimizers/enable") => "enable",
+        ("POST", "/v1/plugins/optimizers/disable") => "disable",
+        ("POST", "/v1/plugins/optimizers/install") => "install",
+        ("POST", "/v1/plugins/optimizers/start") => "start",
+        ("POST", "/v1/plugins/optimizers/stop") => "stop",
+        ("POST", "/v1/plugins/optimizers/update") => "update",
+        ("POST", "/v1/plugins/optimizers/remove") => "remove",
+        ("POST", "/v1/plugins/manage") => body
+            .get("operation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("operation required"))?,
+        _ => anyhow::bail!("unsupported plugin IPC route {method} {path}"),
+    };
+    let arguments = if path == "/v1/plugins/manage" {
+        body.get("arguments").cloned().unwrap_or(arguments)
+    } else {
+        arguments
+    };
+    let broker = app
+        .try_state::<Arc<crate::session::approval::ApprovalBroker>>();
+    match broker {
+        Some(broker) => {
+            core.plugins()
+                .manage(
+                    core,
+                    broker.inner(),
+                    app,
+                    session_id,
+                    mapped,
+                    &arguments,
+                )
+                .await
+        }
+        None => {
+            if matches!(
+                mapped,
+                "list" | "status" | "capabilities"
+            ) {
+                core.plugins()
+                    .manage(
+                        core,
+                        &crate::session::approval::ApprovalBroker::new(
+                            crate::session::SessionPersistence::Null,
+                        ),
+                        app,
+                        session_id,
+                        mapped,
+                        &arguments,
+                    )
+                    .await
+            } else {
+                anyhow::bail!("plugin approval broker is unavailable")
+            }
+        }
     }
 }
 

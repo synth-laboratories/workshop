@@ -126,6 +126,9 @@ impl Commands {
     pub const OPTIMIZERS_IMPORT_LOCAL: &'static str = "optimizers_import_local";
     pub const OPTIMIZERS_RECONCILE_CLOUD: &'static str = "optimizers_reconcile_cloud";
     pub const OPTIMIZERS_LIST_CLOUD: &'static str = "optimizers_list_cloud";
+    pub const PLUGINS_STATUS: &'static str = "plugins_status";
+    pub const PLUGINS_LIST: &'static str = "plugins_list";
+    pub const VISUAL_SUBSCRIPTION_READY: &'static str = "visual_subscription_ready";
     pub const OPTIMIZER_SIDECAR_STATUS: &'static str = "optimizer_sidecar_status";
     pub const OPTIMIZER_SIDECAR_INSTALL: &'static str = "optimizer_sidecar_install";
     pub const OPTIMIZER_SIDECAR_START: &'static str = "optimizer_sidecar_start";

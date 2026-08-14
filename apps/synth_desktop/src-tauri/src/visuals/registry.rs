@@ -32,6 +32,10 @@ impl VisualRegistry {
         }
     }
 
+    pub(crate) fn content(&self) -> &ContentStore {
+        &self.content
+    }
+
     pub async fn list(&self, query: VisualQuery) -> Result<Vec<VisualRecord>> {
         let db = self.db.clone();
         db.run(move |conn| list_visuals(conn, &query)).await
