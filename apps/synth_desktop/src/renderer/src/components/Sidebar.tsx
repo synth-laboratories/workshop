@@ -192,8 +192,11 @@ export function Sidebar({
 	const codexReset = codexUsage
 		? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(codexUsage.resetsAt * 1_000))
 		: null;
-	const accountTitle = codexOauthConfigured ? "ChatGPT subscription" : account.title;
-	const accountSubtitle = codexOauthConfigured ? "OpenAI account" : account.subtitle;
+	// The footer is the Workshop/Synth account surface. A connected Codex OAuth
+	// provider enables models, but it is not the user's Synth identity and must
+	// never replace signed-in or signed-out Synth account copy here.
+	const accountTitle = account.title;
+	const accountSubtitle = account.subtitle;
 
 	useEffect(() => {
 		let cancelled = false;
@@ -535,9 +538,7 @@ export function Sidebar({
 					{accountMenuOpen ? (
 						<div id="account-menu-panel" className="account-menu" role="menu" data-testid="account-menu">
 							<div className="account-menu-identity">
-								{codexOauthConfigured ? (
-									<span className="account-avatar account-avatar-openai" aria-label="OpenAI account"><ProviderMark kind="openai" className="account-openai-mark" /></span>
-								) : <span className="account-avatar" aria-hidden>{account.initial}</span>}
+								<span className="account-avatar" aria-hidden>{account.initial}</span>
 								<span>
 									<strong>{accountTitle}</strong>
 									<small data-testid="account-menu-subtitle">{accountSubtitle}</small>
@@ -641,9 +642,7 @@ export function Sidebar({
 						</div>
 					) : null}
 					<button ref={accountTriggerRef} type="button" className="account-trigger" onClick={() => setAccountMenuOpen((value) => !value)} aria-expanded={accountMenuOpen} aria-controls="account-menu-panel" aria-haspopup="menu" data-testid="account-menu-trigger">
-						{codexOauthConfigured ? (
-							<span className="account-avatar account-avatar-openai" aria-label="OpenAI account"><ProviderMark kind="openai" className="account-openai-mark" /></span>
-						) : <span className="account-avatar" aria-hidden>{account.initial}</span>}
+						<span className="account-avatar" aria-hidden>{account.initial}</span>
 						<span className="account-trigger-copy"><strong>{accountTitle}</strong><small>{accountSubtitle}</small></span>
 						<span className="account-help" aria-hidden>?</span>
 					</button>

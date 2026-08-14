@@ -636,12 +636,33 @@ async fn export_session(core: &CoreRuntime, session_id: &str) -> Result<Value> {
         }
     }
     let session = core.sessions().get(session_id.to_string()).await?;
+    let visuals = core
+        .visuals()
+        .list(crate::visuals::VisualQuery {
+            session_id: Some(session_id.to_string()),
+            limit: Some(100),
+            ..Default::default()
+        })
+        .await?;
+    let mut visual_exports = Vec::with_capacity(visuals.len());
+    for visual in visuals {
+        let revisions = core.visuals().revisions(visual.id.clone()).await?;
+        let renditions = core.visuals().list_renditions(visual.id.clone()).await?;
+        let content = core.visuals().visual_source(visual.id.clone()).await.ok();
+        visual_exports.push(json!({
+            "visual": visual,
+            "revisions": revisions,
+            "renditions": renditions,
+            "content": content,
+        }));
+    }
     Ok(json!({
         "schemaVersion": "synth.eval-session-export.v1",
         "sessionId": session_id,
         "session": session,
         "events": events,
         "eventCount": events.len(),
+        "visuals": visual_exports,
         "sourceRevision": crate::instance::diagnostics().source_revision,
     }))
 }

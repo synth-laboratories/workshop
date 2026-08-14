@@ -75,17 +75,15 @@ function toolCategory(line: LocalActivityLine): string | null {
  */
 export function isAuthoredEvidence(line: LocalActivityLine): boolean {
 	if (
-		line.kind === "visual"
+		line.kind === "visual_lifecycle"
 		|| line.kind === "approval"
 		|| line.kind === "run_summary"
 		|| line.kind === "subagent"
 		|| line.kind === "context_compaction"
 	) return true;
-	if (line.artifactId || line.containerId) return true;
+	if (line.containerId) return true;
 	const label = (line.label ?? "").toLowerCase();
-	return label.includes("synth_visuals")
-		|| label.includes("synth_containers")
-		|| /(^|[._])visual_/.test(label)
+	return label.includes("synth_containers")
 		|| /(^|[._])container_/.test(label);
 }
 

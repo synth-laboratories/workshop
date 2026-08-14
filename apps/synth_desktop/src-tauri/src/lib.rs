@@ -4,6 +4,7 @@ mod cloud;
 mod codex;
 mod codex_oauth;
 mod container_stream;
+mod context;
 pub mod contract;
 pub mod core_runtime;
 mod credential_broker;
@@ -2061,7 +2062,7 @@ pub fn run() {
     }
     let specta = contract::specta::builder();
 
-    tauri::Builder::default()
+	tauri::Builder::default()
         // This must be the first plugin registered. All app state, IPC, and
         // SQLite ownership belongs to the original process.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -2070,9 +2071,22 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+		.plugin(tauri_plugin_dialog::init())
+		.plugin(tauri_plugin_opener::init())
+		// The main window starts hidden. Showing it from setup races the overlay
+		// webview's first paint on macOS and exposes a dark strip from the window
+		// behind through the transparent native titlebar. Wait until CSS and the
+		// document have loaded so the custom titlebar is present on first reveal.
+		.on_page_load(|webview, payload| {
+			if webview.label() == "main"
+				&& matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
+			{
+				let window = webview.window();
+				let _ = window.maximize();
+				let _ = window.show();
+			}
+		})
+		.setup(|app| {
             instance::mark_manifest_running();
             // Builds before the credential broker exported provider keys into
             // Codex, which recorded them in its shell snapshots. Scrub what
@@ -2217,11 +2231,7 @@ pub fn run() {
                 });
             }
 
-            if let Some(window) = app.get_webview_window("main") {
-                window.show()?;
-            }
-
-            Ok(())
+			Ok(())
         })
         .invoke_handler(specta.invoke_handler())
         .build(tauri::generate_context!())

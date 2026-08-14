@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
+import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 
@@ -491,7 +491,7 @@ window.synthWorkspaceScope ??= isTauri
 		}
 		: {
 			status: async () => ({
-				currentVersion: "0.2.0",
+				currentVersion: "0.3.0",
 				channel: "stable",
 				latestVersion: null,
 				updateAvailable: false
@@ -516,6 +516,27 @@ window.synthWorkspaceScope ??= isTauri
 				{ id: "run-live-container-evals", name: "run-live-container-evals", description: "Run live container-backed eval rollouts." },
 				{ id: "author-synth-diagrams", name: "author-synth-diagrams", description: "Author a Mermaid diagram into the right Visual pane." }
 			]
+		};
+	window.synthContext ??= isTauri
+		? {
+			snapshot: (workspace) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_SNAPSHOT, { workspace }),
+			updateWorkspaceAgents: (workspace, content) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_WORKSPACE_AGENTS_UPDATE, { workspace, content }),
+			updateSkill: (workspace, skillId, enabled, content) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_SKILL_UPDATE, { workspace, skillId, enabled, content: content ?? null }),
+			updateMcpGroup: (workspace, groupId, enabled) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_MCP_GROUP_UPDATE, { workspace, groupId, enabled }),
+			installCookbooks: (workspace) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_COOKBOOKS_INSTALL, { workspace }),
+			cancelCookbooks: (workspace) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_COOKBOOKS_CANCEL, { workspace }),
+			setCookbooksEnabled: (workspace, enabled) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_COOKBOOKS_SET_ENABLED, { workspace, enabled }),
+			uninstallCookbooks: (workspace) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_COOKBOOKS_UNINSTALL, { workspace })
+		}
+		: {
+			snapshot: async (workspace) => ({ workshopAgents: { path: "bundled://WORKSHOP_AGENTS.md", content: "Workshop collaboration context", state: "bundled", editable: false, version: "dev" }, workspaceAgents: { path: `${workspace}/AGENTS.md`, content: "", state: "absent", editable: true }, cookbooks: { enabled: false, installed: false, phase: "off" }, skills: [], mcpGroups: [] }),
+			updateWorkspaceAgents: async () => { throw new Error("Context editing requires Synth Desktop"); },
+			updateSkill: async () => { throw new Error("Context editing requires Synth Desktop"); },
+			updateMcpGroup: async () => { throw new Error("Context editing requires Synth Desktop"); },
+			installCookbooks: async () => { throw new Error("Cookbook installation requires Synth Desktop"); },
+			cancelCookbooks: async () => { throw new Error("Cookbook installation requires Synth Desktop"); },
+			setCookbooksEnabled: async () => { throw new Error("Cookbook controls require Synth Desktop"); },
+			uninstallCookbooks: async () => { throw new Error("Cookbook controls require Synth Desktop"); }
 		};
 	if (isTauri) {
 		window.synthCodex ??= {
@@ -664,6 +685,9 @@ export const bridges = {
 	},
 	get skills() {
 		return window.synthSkills;
+	},
+	get context() {
+		return window.synthContext;
 	},
 	get config() {
 		return window.synthConfig;

@@ -10,8 +10,9 @@ use crate::data::ContainerRegisterRequest;
 use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
 use crate::limits;
 use crate::visuals::{
-    assert_live_eval_slot, classify_live_eval_family, live_eval_bind_metadata, VisualCreateRequest,
-    VisualQuery, VisualStatus, VisualUpdateRequest, LIVE_EVAL_SLOT,
+    assert_live_eval_slot, classify_live_eval_family, live_eval_bind_metadata,
+    require_visualsbench_start_policy, VisualCreateRequest, VisualQuery, VisualStatus,
+    VisualUpdateRequest, LIVE_EVAL_SLOT,
 };
 use base64::Engine;
 
@@ -857,6 +858,16 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .filter(|value| value.is_object())
                 .context("start requires the exact prepared stream descriptor")?;
             let policy_ref = require_caller_policy_ref(&body)?;
+            if container
+                .metadata
+                .pointer("/liveEval/requiresVisualsMcp")
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
+                require_visualsbench_start_policy(&policy_ref).context(
+                    "refusing VisualsBench start: synth_visuals is not bound to the Codex policy",
+                )?;
+            }
             let task_instance_id = require_task_instance(&body)?;
             let poll_url = resolve_declared_url(&base, &declared_poll_url(stream)?)?;
             let telemetry = body.get("telemetry").cloned().unwrap_or_else(|| json!({"enabled":true,"transport":"sse","detail":"standard","frame":{"enabled":true,"format":"png","every_n_steps":1}}));

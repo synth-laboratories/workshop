@@ -173,6 +173,22 @@ export type SkillsBridge = {
 	list(): Promise<SkillHit[]>;
 };
 
+export type ContextFile = { path: string; content: string; state: "bundled" | "absent" | "empty" | "overriding"; editable: boolean; version?: string | null };
+export type ContextSkill = { id: string; name: string; description: string; source: "bundled" | "cookbook" | "yours"; enabled: boolean; editable: boolean; content: string; path?: string | null };
+export type McpContextGroup = { id: string; label: string; enabled: boolean; servers: string[]; enabledTools: Record<string, string[]> };
+export type CookbookContext = { enabled: boolean; installed: boolean; phase: string; pin?: string | null; digest?: string | null; path?: string | null; lastFetch?: string | null; detail?: string | null };
+export type ContextSnapshot = { workshopAgents: ContextFile; workspaceAgents: ContextFile; cookbooks: CookbookContext; skills: ContextSkill[]; mcpGroups: McpContextGroup[] };
+export type ContextBridge = {
+	snapshot(workspace: string): Promise<ContextSnapshot>;
+	updateWorkspaceAgents(workspace: string, content: string): Promise<ContextSnapshot>;
+	updateSkill(workspace: string, skillId: string, enabled: boolean, content?: string | null): Promise<ContextSnapshot>;
+	updateMcpGroup(workspace: string, groupId: string, enabled: boolean): Promise<ContextSnapshot>;
+	installCookbooks(workspace: string): Promise<ContextSnapshot>;
+	cancelCookbooks(workspace: string): Promise<ContextSnapshot>;
+	setCookbooksEnabled(workspace: string, enabled: boolean): Promise<ContextSnapshot>;
+	uninstallCookbooks(workspace: string): Promise<ContextSnapshot>;
+};
+
 export type SynthBackendSettings = {
 	configPath: string;
 	envFile: string;

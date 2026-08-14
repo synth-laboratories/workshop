@@ -5,14 +5,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMMAND="${1:-dev}"
 NAME="${2:-${SYNTH_DESKTOP_INSTANCE:-codex}}"
-RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.2}"
-APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.2.0}"
+RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.3}"
+APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.3.0}"
 
-if [[ "$RELEASE_LINE" != "v0.2" ]]; then
-  echo "[desktop:$NAME] invalid release line; this branch only builds v0.2 instances" >&2
+if [[ "$RELEASE_LINE" != "v0.3" ]]; then
+  echo "[desktop:$NAME] invalid release line; this branch only builds v0.3 instances" >&2
   exit 2
 fi
-RELEASE_SLUG="v02"
+RELEASE_SLUG="v03"
 
 usage() {
   cat <<'EOF'
@@ -594,7 +594,7 @@ PY
         "$dev_signing_keychain"
       codesign --force --deep --sign "$dev_signing_identity" \
         --keychain "$dev_signing_keychain" \
-        --identifier "com.synth.desktop.v02.dev.shared" "$app_bundle"
+        --identifier "com.synth.desktop.v03.dev.shared" "$app_bundle"
     else
       codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$app_bundle"
     fi
