@@ -8,7 +8,7 @@ release acceptance and promotion remain separate.
 
 | Repository | Integration tip before this note | Result |
 | --- | --- | --- |
-| Containers | `1b8ec1191d73` | Harbor, healthbench, traces, heartbeat credential rotation, and regression coverage consolidated |
+| Containers | `f0182ed` | Harbor, healthbench, traces, heartbeat credential rotation, hardened author/verifier roles, and regression coverage consolidated |
 | Optimizers | `bc7b5a5b3c89` | GEPA and tunnel work consolidated; reconciled Containers dependency locked |
 | Optimizers Beta | `b13ec3b47082` | OHCO, hosted SFT, sampling replay, and Workshop config-contract route consolidated |
 | Backend | `1b3a469e7c3c` | Main/dev plus the six live catalog, Responses, network, runtime, Buck2, and docs lanes consolidated |
@@ -21,7 +21,8 @@ trunk is `dev`.
 
 ## Checks completed during consolidation
 
-- Containers: full suite, `311 passed, 8 skipped`.
+- Containers: full suite, `312 passed, 8 skipped` after the final Harbor
+  author/verifier-role lane was recovered; its focused tests passed 3/3.
 - Optimizers: Rust workspace excluding the macOS PyO3 extension-link target
   passed (`synth_gepa` 24 and platform 27); the tunnel integration test passed.
   The unexcluded workspace invocation reached only the environment-specific
@@ -54,10 +55,13 @@ terminal receipt.
   `preserve/aug12-stash-0` through `preserve/aug12-stash-6`. Their v0.2 content
   was either landed or superseded. The v0.3-only visual-library primary-list
   resize remains in `preserve/aug12-stash-4`.
-- The live Containers Harbor worktree and the older Containers trace worktree
-  were not rewritten or deleted. Their relevant committed work is represented
-  in the integration tip; any still-live process or uncommitted experiment must
-  be retired by its owner.
+- The formerly live Containers Harbor worktree had no remaining process. Its
+  dirty state was committed as `b716253` on `agent/aug12-harbor-dock-modern`,
+  then landed on dev as `f0182ed`. The older Trace V5 worktree's 10-file state
+  was committed as `11a087f` on
+  `josh/syn-3061-containers-trace-v5-release-20260729`; it is preserved rather
+  than landed because its patch is July version metadata, dead-import cleanup,
+  and test formatting against an obsolete base, not missing runtime behavior.
 - Generated Backend Muse proof and Optimizers MAPO output were excluded from
   source commits.
 - Frontend's large dev/main history difference was not treated as a release
