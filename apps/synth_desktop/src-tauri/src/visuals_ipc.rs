@@ -1372,7 +1372,9 @@ async fn dispatch_optimizer(
             let request: crate::optimizers::OptimizerRecipeRunRequest =
                 serde_json::from_value(body)?;
             let (run, event) = optimizers.prepare_recipe(request).await?;
-            Ok(json!({ "run": run, "event": event, "preparationDigest": run.summary.get("preparationDigest") }))
+            Ok(
+                json!({ "run": run, "event": event, "preparationDigest": run.summary.get("preparationDigest") }),
+            )
         }
         ("POST", "/v1/optimizers/recipes/run") => {
             let request: crate::optimizers::OptimizerRecipeRunRequest =
@@ -1402,7 +1404,8 @@ async fn dispatch_optimizer(
                 .and_then(Value::as_str);
             let mut approval = approval;
             if approval.is_none() {
-                if let Some(broker) = app.try_state::<Arc<crate::session::approval::ApprovalBroker>>()
+                if let Some(broker) =
+                    app.try_state::<Arc<crate::session::approval::ApprovalBroker>>()
                 {
                     let auth = core
                         .plugins()
@@ -1637,26 +1640,15 @@ async fn dispatch_plugins(
     } else {
         arguments
     };
-    let broker = app
-        .try_state::<Arc<crate::session::approval::ApprovalBroker>>();
+    let broker = app.try_state::<Arc<crate::session::approval::ApprovalBroker>>();
     match broker {
         Some(broker) => {
             core.plugins()
-                .manage(
-                    core,
-                    broker.inner(),
-                    app,
-                    session_id,
-                    mapped,
-                    &arguments,
-                )
+                .manage(core, broker.inner(), app, session_id, mapped, &arguments)
                 .await
         }
         None => {
-            if matches!(
-                mapped,
-                "list" | "status" | "capabilities"
-            ) {
+            if matches!(mapped, "list" | "status" | "capabilities") {
                 core.plugins()
                     .manage(
                         core,

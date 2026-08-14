@@ -1104,20 +1104,31 @@ mod tests {
 
     #[test]
     fn isolated_desktop_inherits_canonical_root_permission_defaults() {
-        let root = env::temp_dir().join(format!("synth-permission-inherit-{}", uuid::Uuid::new_v4()));
+        let root =
+            env::temp_dir().join(format!("synth-permission-inherit-{}", uuid::Uuid::new_v4()));
         let isolated = root.join("instance/config.toml");
         let canonical = root.join("canonical/config.toml");
         fs::create_dir_all(isolated.parent().unwrap()).unwrap();
         fs::create_dir_all(canonical.parent().unwrap()).unwrap();
         fs::write(&isolated, "[intern]\nprofile = \"local\"\n").unwrap();
-        fs::write(&canonical, "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n").unwrap();
+        fs::write(
+            &canonical,
+            "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n",
+        )
+        .unwrap();
 
-        let inherited = desktop_permission_settings_with_fallback(&isolated, Some(&canonical)).unwrap();
+        let inherited =
+            desktop_permission_settings_with_fallback(&isolated, Some(&canonical)).unwrap();
         assert_eq!(inherited.approval_policy, "never");
         assert_eq!(inherited.sandbox_mode, "danger-full-access");
 
-        fs::write(&isolated, "[desktop.permissions]\napproval_policy = \"on-request\"\n").unwrap();
-        let overridden = desktop_permission_settings_with_fallback(&isolated, Some(&canonical)).unwrap();
+        fs::write(
+            &isolated,
+            "[desktop.permissions]\napproval_policy = \"on-request\"\n",
+        )
+        .unwrap();
+        let overridden =
+            desktop_permission_settings_with_fallback(&isolated, Some(&canonical)).unwrap();
         assert_eq!(overridden.approval_policy, "on-request");
         assert_eq!(overridden.sandbox_mode, "danger-full-access");
         let _ = fs::remove_dir_all(root);

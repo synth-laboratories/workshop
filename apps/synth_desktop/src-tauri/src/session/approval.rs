@@ -29,11 +29,8 @@ pub(crate) const APPROVAL_REQUESTED_KIND: &str = "approval.requested";
 /// Every durable kind that settles a request. Restore both queries and matches
 /// on this one list — a terminal kind added in only one of those places would
 /// silently resurrect settled approvals and re-expire them on next start.
-pub(crate) const APPROVAL_TERMINAL_KINDS: [&str; 3] = [
-    "approval.granted",
-    "approval.rejected",
-    "approval.expired",
-];
+pub(crate) const APPROVAL_TERMINAL_KINDS: [&str; 3] =
+    ["approval.granted", "approval.rejected", "approval.expired"];
 
 /// Protocol-specific delivery only. Persistence, policy, expiry and redaction
 /// remain broker responsibilities.
@@ -210,9 +207,11 @@ impl ApprovalKind {
                     ..
                 },
                 ApprovalDecision::Approve { scope },
-            ) if matches!(scope, ApprovalScope::Session | ApprovalScope::Workspace) => Err(anyhow!(
-                "this request does not offer a remembered approval; approve once or reject"
-            )),
+            ) if matches!(scope, ApprovalScope::Session | ApprovalScope::Workspace) => {
+                Err(anyhow!(
+                    "this request does not offer a remembered approval; approve once or reject"
+                ))
+            }
             (Self::ShellCommand { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
             (Self::SidecarLifecycle { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
             (Self::PluginLifecycle { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
@@ -1004,7 +1003,10 @@ mod tests {
             .unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(events[1].kind, "approval.expired");
-        assert_eq!(events[1].payload["reason"], "origin_unavailable_after_restart");
+        assert_eq!(
+            events[1].payload["reason"],
+            "origin_unavailable_after_restart"
+        );
     }
 
     #[tokio::test]

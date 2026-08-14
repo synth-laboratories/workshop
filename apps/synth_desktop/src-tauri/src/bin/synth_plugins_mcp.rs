@@ -94,7 +94,8 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     let mut nested = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
     if let Some(object) = nested.as_object() {
         for key in object.keys() {
-            if key != "plugin_id" && key != "version" && key != "sessionRef" && key != "session_id" {
+            if key != "plugin_id" && key != "version" && key != "sessionRef" && key != "session_id"
+            {
                 return Err(format!("plugin arguments reject `{key}`"));
             }
         }

@@ -100,7 +100,8 @@ pub fn plugin_kind(
         version: Some(catalog.version.clone()),
         publisher: catalog.publisher.clone(),
         digest,
-        download_size_bytes: matches!(action, "install" | "update").then_some(catalog.download_size_bytes),
+        download_size_bytes: matches!(action, "install" | "update")
+            .then_some(catalog.download_size_bytes),
         network_host: matches!(action, "install" | "update").then(|| catalog.network_host.clone()),
         service_effect: service_effect.into(),
         active_runs,
@@ -192,7 +193,9 @@ mod tests {
 
     #[test]
     fn never_auto_authorizes_risky_actions() {
-        assert!(auto_decision("never", &install_kind(), 0).unwrap().is_some());
+        assert!(auto_decision("never", &install_kind(), 0)
+            .unwrap()
+            .is_some());
         assert!(auto_decision("never", &compute(), 0).unwrap().is_some());
         match auto_decision("never", &compute(), 0).unwrap() {
             Some(ApprovalDecision::ApproveWithCap { cap }) => {
@@ -207,7 +210,9 @@ mod tests {
         assert!(auto_decision("on-request", &install_kind(), 0)
             .unwrap()
             .is_none());
-        assert!(auto_decision("on-request", &compute(), 0).unwrap().is_none());
+        assert!(auto_decision("on-request", &compute(), 0)
+            .unwrap()
+            .is_none());
         assert!(auto_decision("on-request", &start_kind(), 0)
             .unwrap()
             .is_some());
