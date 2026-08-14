@@ -30,6 +30,10 @@ const BANKING77_CHECKPOINT_STEPS: [u32; 3] = [10, 20, 30];
 /// `max(checkpoint_steps)`, so the checkpoint list silently decided how long a
 /// run trained. It is now named separately and required.
 const BANKING77_TRAINING_STEPS: u32 = 30;
+const CRAFTAX_CHECKPOINT_STEPS: [u32; 3] = [16, 33, 66];
+/// One pass over the proven 131-row corpus at batch size 2. Tinker samples
+/// with replacement, so this is a named optimizer-step budget, not an epoch.
+const CRAFTAX_TRAINING_STEPS: u32 = 66;
 const BANKING77_CAMPAIGN_ROLLOUTS: u32 = 2;
 /// Rows longer than this lose their assistant tokens and are dropped, so the
 /// cap decides which of a dataset is trained on. Banking77 rows are single
@@ -94,7 +98,8 @@ fn craftax_nemotron_recipe() -> Value {
         "availability": availability,
         "limits": {
             "backend": "tinker",
-            "checkpointSteps": [10, 20],
+            "checkpointSteps": CRAFTAX_CHECKPOINT_STEPS,
+            "trainingSteps": CRAFTAX_TRAINING_STEPS,
             "campaignRolloutsPerCheckpoint": 2,
             "evalSeeds": [501, 502],
             "costCeilingUsd": null,
@@ -500,6 +505,8 @@ async fn start_craftax_nemotron(
             "producer": "optimizers-beta",
             "baseModel": model_id,
             "localSlot": container_url,
+            "checkpointSteps": CRAFTAX_CHECKPOINT_STEPS,
+            "trainingSteps": CRAFTAX_TRAINING_STEPS,
         })),
         open_visual: request.open_visual.or(Some(true)),
         seed_fixture: None,
@@ -572,6 +579,8 @@ async fn run_hosted_worker(
     config_toml: String,
     mut cancel: watch::Receiver<bool>,
 ) -> Result<()> {
+    let contract = client.sft_config_contract().await?;
+    validate_config_against_producer_contract(&config_toml, &contract)?;
     client.submit_toml("sft", &run_id, &config_toml).await?;
     let mut upstream_cursor = 0u64;
     // The producer appends to its log while we page it. A read that lands on a
@@ -639,6 +648,61 @@ async fn run_hosted_worker(
     }
 }
 
+fn validate_config_against_producer_contract(config_toml: &str, contract: &Value) -> Result<()> {
+    const CONTRACT_SCHEMA: &str = "optimizers-beta.sft-config-contract.v1";
+    let schema = contract
+        .get("schema_version")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if schema != CONTRACT_SCHEMA {
+        bail!("unsupported optimizers-beta SFT config contract {schema:?}");
+    }
+    if contract.get("algorithm").and_then(Value::as_str) != Some("sft") {
+        bail!("optimizers-beta SFT config contract names the wrong algorithm");
+    }
+    let config: toml::Value =
+        toml::from_str(config_toml).context("parse generated hosted SFT TOML")?;
+    let table = config
+        .as_table()
+        .context("generated hosted SFT config must be a TOML table")?;
+    let backend = table
+        .get("backend")
+        .and_then(toml::Value::as_str)
+        .context("generated hosted SFT config must name backend")?;
+    let mut required = contract
+        .pointer(&format!("/required_by_backend/{backend}"))
+        .and_then(Value::as_array)
+        .with_context(|| format!("SFT config contract does not describe backend {backend}"))?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    let checkpoint_evaluation = table
+        .get("container_url")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    if checkpoint_evaluation {
+        required.extend(
+            contract
+                .get("required_when_checkpoint_evaluation")
+                .and_then(Value::as_array)
+                .context("SFT config contract omits checkpoint-evaluation requirements")?
+                .iter()
+                .filter_map(Value::as_str),
+        );
+    }
+    let missing = required
+        .into_iter()
+        .filter(|field| !table.contains_key(*field))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        bail!(
+            "generated hosted SFT config violates optimizers-beta contract; missing {}",
+            missing.join(", ")
+        );
+    }
+    Ok(())
+}
+
 fn fixture_config_toml(run_id: &str, training_file: &str) -> String {
     format!(
         r#"run_id = "{run_id}"
@@ -663,6 +727,11 @@ fn craftax_nemotron_config_toml(
     container_url: &str,
     training_jsonl: Option<&str>,
 ) -> String {
+    let checkpoint_steps = CRAFTAX_CHECKPOINT_STEPS
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
     let training_jsonl_line = training_jsonl
         .map(|path| format!("training_jsonl = \"{path}\"\n"))
         .unwrap_or_default();
@@ -675,8 +744,8 @@ training_file_id = "{training_file}"
 selection_file_id = "file_selection"
 heldout_file_id = "file_heldout"
 {training_jsonl_line}accelerator_slots = 1
-checkpoint_steps = [10, 20]
-training_steps = 20
+checkpoint_steps = [{checkpoint_steps}]
+training_steps = {CRAFTAX_TRAINING_STEPS}
 max_seq_len = {CRAFTAX_MAX_SEQ_LEN}
 max_dropped_fraction = {MAX_DROPPED_FRACTION}
 campaign_rollouts_per_checkpoint = 2
@@ -809,40 +878,26 @@ async fn persist_remote_terminal(
 mod tests {
     use super::*;
 
-    /// Fields `optimizers-beta` refuses to default for a `backend = "tinker"`
-    /// run that also configures checkpoint evaluation.
-    ///
-    /// This recipe hands `optimizers-beta` a TOML *string* over HTTP, so
-    /// nothing in the type system ties the two together. On 2026-08-13 five
-    /// fields became required there and every hosted recipe here silently went
-    /// stale — the configs still built, still submitted, and were refused on
-    /// arrival. Adding a name to this list is the cheap half of that coupling;
-    /// the expensive half is remembering it exists.
-    const REQUIRED_BY_OPTIMIZERS_BETA: [&str; 6] = [
-        "training_steps",
-        "max_seq_len",
-        "max_dropped_fraction",
-        "checkpoint_evaluation_timeout_s",
-        "checkpoint_evaluation_policy_harness",
-        "[checkpoint_evaluation_policy]",
-    ];
-
-    fn assert_names_every_required_field(label: &str, toml: &str) {
-        let missing: Vec<&str> = REQUIRED_BY_OPTIMIZERS_BETA
-            .iter()
-            .copied()
-            .filter(|key| !toml.contains(key))
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "{label} config omits {missing:?}; optimizers-beta will refuse it on submit"
-        );
+    fn producer_contract() -> Value {
+        json!({
+            "schema_version": "optimizers-beta.sft-config-contract.v1",
+            "algorithm": "sft",
+            "required_by_backend": {
+                "fixture": [],
+                "openai": [],
+                "tinker": ["training_steps", "max_seq_len", "max_dropped_fraction"],
+            },
+            "required_when_checkpoint_evaluation": [
+                "checkpoint_evaluation_timeout_s",
+                "checkpoint_evaluation_policy_harness",
+                "checkpoint_evaluation_policy",
+            ],
+        })
     }
 
     #[test]
-    fn tinker_recipes_name_every_field_optimizers_beta_requires() {
-        assert_names_every_required_field(
-            "banking77",
+    fn tinker_recipes_satisfy_the_producer_contract() {
+        for config in [
             &banking77_config_toml(
                 "sft_banking77_train_a_ab12cd34",
                 "file_train_banking77_train_a_ab12cd34",
@@ -850,9 +905,6 @@ mod tests {
                 "http://127.0.0.1:8110",
                 "/tmp/train_a.jsonl",
             ),
-        );
-        assert_names_every_required_field(
-            "craftax",
             &craftax_nemotron_config_toml(
                 "sft_craftax_ab12cd34",
                 "file_train_ab12cd34",
@@ -860,7 +912,28 @@ mod tests {
                 "http://127.0.0.1:8098",
                 Some("/tmp/craftax.jsonl"),
             ),
-        );
+        ] {
+            validate_config_against_producer_contract(config, &producer_contract()).unwrap();
+        }
+
+        let mut changed = producer_contract();
+        changed["required_by_backend"]["tinker"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("new_required_field"));
+        let error = validate_config_against_producer_contract(
+            &craftax_nemotron_config_toml(
+                "sft_craftax_ab12cd34",
+                "file_train_ab12cd34",
+                "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+                "http://127.0.0.1:8098",
+                Some("/tmp/craftax.jsonl"),
+            ),
+            &changed,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("new_required_field"), "{error}");
     }
 
     #[test]
@@ -967,10 +1040,11 @@ mod tests {
         assert!(toml.contains("base_model = \"nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16\""));
         assert!(toml.contains("evaluator_version = \"craftax_gamebench.v1\""));
         assert!(toml.contains("checkpoint_evaluation_seeds = [501, 502]"));
+        assert!(toml.contains("checkpoint_steps = [16, 33, 66]"));
+        assert!(toml.contains("training_steps = 66"));
         assert!(toml.contains("world:craftax"));
         assert!(!toml.contains("goex.sft"));
         assert!(!toml.contains("UNPINNED"));
         assert!(!toml.contains("nvidia/nemotron-3-nano-30b-a3b"));
     }
 }
-
