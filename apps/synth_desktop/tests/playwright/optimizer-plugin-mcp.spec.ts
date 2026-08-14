@@ -10,9 +10,9 @@ test("plugin phases remain visible and Optimizers nav hides when disabled", asyn
 			enabled: true,
 			phase,
 			installedVersion: phase === "not_installed" ? null : "0.2.5",
-			selectedVersion: releaseChannel === "dev" ? "0.2.7.dev20260814" : "0.2.5",
+			selectedVersion: releaseChannel === "dev" ? "0.2.8.dev20260814" : "0.2.5",
 			releaseChannel,
-			catalogVersion: releaseChannel === "dev" ? "0.2.7.dev20260814" : "0.2.5",
+			catalogVersion: releaseChannel === "dev" ? "0.2.8.dev20260814" : "0.2.5",
 			digest: phase === "installed" || phase === "ready" ? "sha256:abc" : null,
 			service: { phase, activeRuns: 0 },
 			algorithms: ["gepa"],
@@ -59,7 +59,7 @@ test("plugin phases remain visible and Optimizers nav hides when disabled", asyn
 	await expect(page.getByTestId("optimizer-plugin-status")).toContainText("sha256:abc");
 	await page.getByTestId("optimizer-release-channel").selectOption("dev");
 	await expect(page.getByTestId("optimizer-release-warning")).toBeVisible();
-	await expect(page.getByTestId("optimizer-plugin-status")).toContainText("0.2.7.dev20260814");
+	await expect(page.getByTestId("optimizer-plugin-status")).toContainText("0.2.8.dev20260814");
 });
 
 test("disabled Optimizers plugin removes navigation", async ({ page }) => {
