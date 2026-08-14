@@ -27,6 +27,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 	const [focusVisualId, setFocusVisualId] = useState<string | null>(null);
 	const [seals, setSeals] = useState<VisualSeal[]>([]);
 	const [sealedBundle, setSealedBundle] = useState<VisualSealBundle | null>(null);
+	const [compareBundle, setCompareBundle] = useState<VisualSealBundle | null>(null);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -82,11 +83,24 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 	useEffect(() => {
 		if (selected?.metadata?.presentation === "canvas") setFocusVisualId(selected.id);
 		setSealedBundle(null);
+		setCompareBundle(null);
 	}, [selected?.id, selected?.metadata?.presentation]);
 
 	async function reopenSeal(receiptDigest: string) {
 		try {
 			setSealedBundle(await bridges.visuals!.getSeal(receiptDigest));
+			setCompareBundle(null);
+			setError(null);
+		} catch (reason) {
+			setError(String(reason));
+		}
+	}
+
+	async function compareSeal(receiptDigest: string) {
+		try {
+			const bundle = await bridges.visuals!.getSeal(receiptDigest);
+			if (!sealedBundle) setSealedBundle(bundle);
+			else setCompareBundle(bundle);
 			setError(null);
 		} catch (reason) {
 			setError(String(reason));
@@ -181,16 +195,25 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 						</header>
 						{seals.some((seal) => seal.visualId === selected.id) ? (
 							<div className="visual-seal-strip" aria-label="Offline revisions">
-								<button type="button" onClick={() => setSealedBundle(null)}>Live</button>
+								<button type="button" onClick={() => { setSealedBundle(null); setCompareBundle(null); }}>Live</button>
 								{seals.filter((seal) => seal.visualId === selected.id).map((seal) => (
-									<button key={seal.receiptDigest} type="button" onClick={() => void reopenSeal(seal.receiptDigest)}>
-										Offline rev {seal.visualRevision} · {seal.receiptDigest.slice(0, 8)}
-									</button>
+									<span key={seal.receiptDigest} className="visual-seal-choice">
+										<button type="button" onClick={() => void reopenSeal(seal.receiptDigest)}>
+											Offline rev {seal.visualRevision} · {seal.receiptDigest.slice(0, 8)}
+										</button>
+										{sealedBundle?.seal.receiptDigest !== seal.receiptDigest ? (
+											<button type="button" onClick={() => void compareSeal(seal.receiptDigest)}>Compare</button>
+										) : null}
+									</span>
 								))}
+								{compareBundle ? <button type="button" onClick={() => setCompareBundle(null)}>Close comparison</button> : null}
 							</div>
 						) : null}
 						{sealedBundle ? (
-							<iframe className="visual-sealed-frame" title={`Sealed ${selected.title}`} sandbox="" srcDoc={sealedBundle.indexHtml} />
+							<div className={compareBundle ? "visual-sealed-compare" : "visual-sealed-single"}>
+								<iframe className="visual-sealed-frame" title={`Sealed ${selected.title} revision ${sealedBundle.seal.visualRevision}`} sandbox="" srcDoc={sealedBundle.indexHtml} />
+								{compareBundle ? <iframe className="visual-sealed-frame" title={`Sealed ${selected.title} revision ${compareBundle.seal.visualRevision}`} sandbox="" srcDoc={compareBundle.indexHtml} /> : null}
+							</div>
 						) : <VisualHost artifact={artifactFromVisualRecord(selected)} />}
 					</div>
 				) : null}

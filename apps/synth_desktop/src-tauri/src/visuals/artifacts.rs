@@ -306,6 +306,66 @@ impl VisualRegistry {
         })
     }
 
+    pub async fn open_shared_url(
+        &self,
+        committed_url: String,
+        backend_url: String,
+        api_key: String,
+    ) -> Result<VisualSealBundle> {
+        let backend = reqwest::Url::parse(backend_url.trim_end_matches('/'))
+            .context("configured Synth backend URL is invalid")?;
+        let shared =
+            reqwest::Url::parse(committed_url.trim()).context("private artifact URL is invalid")?;
+        if shared.scheme() != backend.scheme()
+            || shared.host_str() != backend.host_str()
+            || shared.port_or_known_default() != backend.port_or_known_default()
+            || shared.query().is_some()
+            || shared.fragment().is_some()
+        {
+            bail!("private artifact URL must use the configured Synth backend origin");
+        }
+        let backend_path = backend.path().trim_end_matches('/');
+        let route_prefix = format!("{backend_path}/artifacts/v1/publications/");
+        if !shared.path().starts_with(&route_prefix)
+            || !shared.path().ends_with("/assets/index.html")
+        {
+            bail!("private artifact URL is not an immutable Artifact publication URL");
+        }
+        if api_key.trim().is_empty() {
+            bail!("opening a private shared visual requires a signed-in Synth account");
+        }
+        let asset_root = committed_url
+            .trim()
+            .strip_suffix("index.html")
+            .ok_or_else(|| anyhow!("private artifact URL must end in index.html"))?;
+        let client = reqwest::Client::new();
+        let mut fetched = BTreeMap::new();
+        for logical_path in ["receipt.json", "data.json", "index.html"] {
+            let response = client
+                .get(format!("{asset_root}{logical_path}"))
+                .bearer_auth(&api_key)
+                .send()
+                .await
+                .with_context(|| format!("fetch private {logical_path}"))?;
+            if !response.status().is_success() {
+                bail!(
+                    "fetch private {logical_path} failed ({})",
+                    response.status()
+                );
+            }
+            let bytes = response.bytes().await?;
+            if bytes.len() > 64 * 1024 * 1024 {
+                bail!("private {logical_path} exceeds the 64 MiB viewer limit");
+            }
+            fetched.insert(logical_path, bytes.to_vec());
+        }
+        validate_hosted_bundle(
+            fetched.remove("index.html").unwrap_or_default(),
+            fetched.remove("data.json").unwrap_or_default(),
+            fetched.remove("receipt.json").unwrap_or_default(),
+        )
+    }
+
     pub async fn upload_status(&self, receipt_digest: String) -> Result<Option<VisualUpload>> {
         let db = self.db.clone();
         db.run(move |conn| {
@@ -850,6 +910,102 @@ fn refuse_network_html(html: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_hosted_bundle(
+    index_bytes: Vec<u8>,
+    data_bytes: Vec<u8>,
+    receipt_bytes: Vec<u8>,
+) -> Result<VisualSealBundle> {
+    let data: Value = serde_json::from_slice(&data_bytes).context("decode hosted data.json")?;
+    let receipt: Value =
+        serde_json::from_slice(&receipt_bytes).context("decode hosted receipt.json")?;
+    if canonical_json(&data)? != data_bytes || canonical_json(&receipt)? != receipt_bytes {
+        bail!("hosted ArtifactBundle JSON is not canonical");
+    }
+    if data.get("schema_version").and_then(Value::as_str) != Some(BUNDLE_SCHEMA)
+        || receipt.get("schema_version").and_then(Value::as_str) != Some(BUNDLE_SCHEMA)
+    {
+        bail!("hosted bundle is not ArtifactBundle v1");
+    }
+    if data.get("artifact_id") != receipt.get("artifact_id")
+        || data.get("source") != receipt.get("source")
+    {
+        bail!("hosted data and receipt identities differ");
+    }
+    let members = receipt
+        .get("members")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("hosted receipt has no members"))?;
+    if members.len() != 2 {
+        bail!("hosted receipt must declare exactly index.html and data.json");
+    }
+    let declaration = |path: &str| -> Result<&Value> {
+        members
+            .iter()
+            .find(|member| member.get("logical_path").and_then(Value::as_str) == Some(path))
+            .ok_or_else(|| anyhow!("hosted receipt does not declare {path}"))
+    };
+    let index_declaration = declaration("index.html")?;
+    let data_declaration = declaration("data.json")?;
+    let index_digest = hex_sha256(&index_bytes);
+    let data_digest = hex_sha256(&data_bytes);
+    for (path, declaration, bytes, digest) in [
+        ("index.html", index_declaration, &index_bytes, &index_digest),
+        ("data.json", data_declaration, &data_bytes, &data_digest),
+    ] {
+        if declaration.get("digest_sha256").and_then(Value::as_str) != Some(digest)
+            || declaration.get("size_bytes").and_then(Value::as_u64) != Some(bytes.len() as u64)
+        {
+            bail!("hosted {path} does not match its receipt");
+        }
+    }
+    let index_html = String::from_utf8(index_bytes).context("hosted index.html must be UTF-8")?;
+    refuse_network_html(&index_html)?;
+    let receipt_digest = hex_sha256(&receipt_bytes);
+    let source = data
+        .get("source")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("hosted data has no source identity"))?;
+    let compiler = receipt
+        .get("compiler")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("hosted receipt has no compiler identity"))?;
+    let required_string = |object: &Map<String, Value>, key: &str| -> Result<String> {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow!("hosted bundle identity is missing {key}"))
+    };
+    let seal = VisualSeal {
+        receipt_digest,
+        visual_id: required_string(source, "visual_id")?,
+        visual_revision: source
+            .get("revision")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| anyhow!("hosted bundle identity is missing revision"))?,
+        artifact_id: data
+            .get("artifact_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("hosted bundle identity is missing artifact_id"))?
+            .to_owned(),
+        schema_version: BUNDLE_SCHEMA.into(),
+        compiler_name: required_string(compiler, "name")?,
+        compiler_version: required_string(compiler, "version")?,
+        runtime_digest: required_string(compiler, "runtime_digest")?,
+        index_digest,
+        data_digest,
+        receipt_size_bytes: receipt_bytes.len() as i64,
+        total_size_bytes: (index_html.len() + data_bytes.len() + receipt_bytes.len()) as i64,
+        created_at: Utc::now().to_rfc3339(),
+    };
+    Ok(VisualSealBundle {
+        seal,
+        index_html,
+        data,
+        receipt,
+    })
+}
+
 fn canonical_json(value: &Value) -> Result<Vec<u8>> {
     fn sorted(value: &Value) -> Value {
         match value {
@@ -978,6 +1134,21 @@ mod tests {
         assert_eq!(bundle.data["overlays"][0]["id"], annotation.id);
         assert!(!bundle.index_html.contains("private-stream"));
         assert!(!bundle.index_html.contains("EventSource"));
+        let hosted = validate_hosted_bundle(
+            bundle.index_html.as_bytes().to_vec(),
+            canonical_json(&bundle.data).unwrap(),
+            canonical_json(&bundle.receipt).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(hosted.seal.receipt_digest, sealed.receipt_digest);
+        let mut tampered_data = canonical_json(&bundle.data).unwrap();
+        tampered_data.push(b' ');
+        assert!(validate_hosted_bundle(
+            bundle.index_html.as_bytes().to_vec(),
+            tampered_data,
+            canonical_json(&bundle.receipt).unwrap(),
+        )
+        .is_err());
 
         let (_updated, _) = registry
             .update(

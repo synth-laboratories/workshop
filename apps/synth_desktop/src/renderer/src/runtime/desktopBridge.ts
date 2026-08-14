@@ -605,6 +605,7 @@ window.synthWorkspaceScope ??= isTauri
 			getSeal: (receiptDigest) => invokeCommand<VisualSealBundle>(COMMANDS.VISUALS_SEAL_GET, { receiptDigest }),
 			uploadStatus: (receiptDigest) => invokeCommand<VisualUpload | null>(COMMANDS.VISUALS_UPLOAD_STATUS, { receiptDigest }),
 			shareSeal: (receiptDigest) => invokeCommand<VisualUpload>(COMMANDS.VISUALS_SHARE_SEAL, { receiptDigest }),
+			openShared: (committedUrl) => invokeCommand<VisualSealBundle>(COMMANDS.VISUALS_OPEN_SHARED, { committedUrl }),
 			create: (request) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_CREATE, { request }),
 			update: (visualId, request) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_UPDATE, { visualId, request }),
 			save: (visualId, tsx) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_SAVE, { visualId, tsx: tsx ?? null }),

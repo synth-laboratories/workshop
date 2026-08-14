@@ -1102,6 +1102,25 @@ async fn visuals_share_seal(
 
 #[tauri::command]
 #[specta::specta]
+async fn visuals_open_shared(
+    state: State<'_, Arc<CoreRuntime>>,
+    committed_url: String,
+) -> Result<VisualSealBundle, AppError> {
+    let backend = synth_config::resolve().map_err(AppError::from)?;
+    let api_key = backend.api_key.ok_or_else(|| {
+        AppError::from(anyhow::anyhow!(
+            "Opening a private shared visual requires a signed-in Synth account"
+        ))
+    })?;
+    state
+        .visuals()
+        .open_shared_url(committed_url, backend.backend_url, api_key)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn visuals_create(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,

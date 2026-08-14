@@ -114,6 +114,7 @@ impl Commands {
     pub const VISUALS_SEAL_GET: &'static str = "visuals_seal_get";
     pub const VISUALS_UPLOAD_STATUS: &'static str = "visuals_upload_status";
     pub const VISUALS_SHARE_SEAL: &'static str = "visuals_share_seal";
+    pub const VISUALS_OPEN_SHARED: &'static str = "visuals_open_shared";
     pub const VISUALS_CREATE: &'static str = "visuals_create";
     pub const VISUALS_UPDATE: &'static str = "visuals_update";
     pub const VISUALS_SAVE: &'static str = "visuals_save";

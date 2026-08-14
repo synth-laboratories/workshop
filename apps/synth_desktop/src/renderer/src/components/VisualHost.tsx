@@ -439,7 +439,9 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const [annotations, setAnnotations] = useState<VisualAnnotation[]>([]);
 	const [seals, setSeals] = useState<VisualSeal[]>([]);
 	const [sealedBundle, setSealedBundle] = useState<VisualSealBundle | null>(null);
+	const [compareBundle, setCompareBundle] = useState<VisualSealBundle | null>(null);
 	const [shareUpload, setShareUpload] = useState<VisualUpload | null>(null);
+	const [sharedUrl, setSharedUrl] = useState("");
 	const [labeling, setLabeling] = useState(false);
 	const [labelPoint, setLabelPoint] = useState<{ x: number; y: number } | null>(null);
 	const [labelBody, setLabelBody] = useState("");
@@ -512,7 +514,39 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 				bridges.visuals.uploadStatus(receiptDigest)
 			]);
 			setSealedBundle(bundle);
+			setCompareBundle(null);
 			setShareUpload(upload);
+		} catch (reason) {
+			setArtifactError(String(reason));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function compareSeal(receiptDigest: string) {
+		if (!bridges.visuals) return;
+		setBusy(true);
+		setArtifactError(null);
+		try {
+			const bundle = await bridges.visuals.getSeal(receiptDigest);
+			if (!sealedBundle) setSealedBundle(bundle);
+			else setCompareBundle(bundle);
+		} catch (reason) {
+			setArtifactError(String(reason));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function openSharedUrl() {
+		if (!bridges.visuals || !sharedUrl.trim()) return;
+		setBusy(true);
+		setArtifactError(null);
+		try {
+			const bundle = await bridges.visuals.openShared(sharedUrl.trim());
+			setSealedBundle(bundle);
+			setCompareBundle(null);
+			setShareUpload(null);
 		} catch (reason) {
 			setArtifactError(String(reason));
 		} finally {
@@ -553,7 +587,8 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 				<div className="visual-pane-head-actions">
 					{sealedBundle ? (
 						<>
-							<button type="button" className="visual-expand" onClick={() => { setSealedBundle(null); setShareUpload(null); }}>Live revision</button>
+							<button type="button" className="visual-expand" onClick={() => { setSealedBundle(null); setCompareBundle(null); setShareUpload(null); }}>Live revision</button>
+							{compareBundle ? <button type="button" className="visual-expand" onClick={() => setCompareBundle(null)}>Close comparison</button> : null}
 							<button type="button" className="visual-expand" onClick={() => void shareCurrentSeal()} disabled={busy} title="Human Share uploads this sealed digest privately">
 								{shareUpload?.state === "committed" ? "Shared privately" : "Share privately"}
 							</button>
@@ -595,12 +630,26 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 				<div className="visual-seal-strip" aria-label="Sealed revisions">
 					<span>Offline:</span>
 					{seals.map((seal) => (
-						<button key={seal.receiptDigest} type="button" onClick={() => void reopenSeal(seal.receiptDigest)}>
-							rev {seal.visualRevision} · {seal.receiptDigest.slice(0, 8)}
-						</button>
+						<span key={seal.receiptDigest} className="visual-seal-choice">
+							<button type="button" onClick={() => void reopenSeal(seal.receiptDigest)}>
+								rev {seal.visualRevision} · {seal.receiptDigest.slice(0, 8)}
+							</button>
+							{sealedBundle?.seal.receiptDigest !== seal.receiptDigest ? (
+								<button type="button" onClick={() => void compareSeal(seal.receiptDigest)}>Compare</button>
+							) : null}
+						</span>
 					))}
 				</div>
 			) : null}
+			<form className="visual-shared-open" onSubmit={(event) => { event.preventDefault(); void openSharedUrl(); }}>
+				<input
+					value={sharedUrl}
+					onChange={(event) => setSharedUrl(event.target.value)}
+					placeholder="Paste private artifact URL"
+					aria-label="Private artifact URL"
+				/>
+				<button type="submit" disabled={!sharedUrl.trim() || busy}>Open shared</button>
+			</form>
 			{shareUpload?.committedUrl ? (
 				<div className="visual-share-url">
 					<span>Private permalink</span>
@@ -627,13 +676,24 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 				} : undefined}
 			>
 				{sealedBundle ? (
-					<iframe
-						className="visual-sealed-frame"
-						title={`Sealed ${artifact.title}`}
-						sandbox=""
-						srcDoc={sealedBundle.indexHtml}
-						data-receipt-digest={sealedBundle.seal.receiptDigest}
-					/>
+					<div className={compareBundle ? "visual-sealed-compare" : "visual-sealed-single"}>
+						<iframe
+							className="visual-sealed-frame"
+							title={`Sealed ${artifact.title} revision ${sealedBundle.seal.visualRevision}`}
+							sandbox=""
+							srcDoc={sealedBundle.indexHtml}
+							data-receipt-digest={sealedBundle.seal.receiptDigest}
+						/>
+						{compareBundle ? (
+							<iframe
+								className="visual-sealed-frame"
+								title={`Sealed ${artifact.title} revision ${compareBundle.seal.visualRevision}`}
+								sandbox=""
+								srcDoc={compareBundle.indexHtml}
+								data-receipt-digest={compareBundle.seal.receiptDigest}
+							/>
+						) : null}
+					</div>
 				) : <VisualHost artifact={artifact} />}
 			</div>
 		</aside>

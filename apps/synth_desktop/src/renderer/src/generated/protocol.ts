@@ -118,6 +118,7 @@ export const commands = {
 	updatedAt: string,
 } | null, AppError>(__TAURI_INVOKE("visuals_upload_status", { receiptDigest })),
 	visualsShareSeal: (receiptDigest: string) => typedError<VisualUpload, AppError>(__TAURI_INVOKE("visuals_share_seal", { receiptDigest })),
+	visualsOpenShared: (committedUrl: string) => typedError<VisualSealBundle, AppError>(__TAURI_INVOKE("visuals_open_shared", { committedUrl })),
 	visualsCreate: (request: VisualCreateRequest) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_create", { request })),
 	visualsUpdate: (visualId: string, request: VisualUpdateRequest) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_update", { visualId, request })),
 	visualsSave: (visualId: string, tsx: string | null) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_save", { visualId, tsx })),

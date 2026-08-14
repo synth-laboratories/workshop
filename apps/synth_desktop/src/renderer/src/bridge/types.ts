@@ -500,6 +500,7 @@ export type VisualsBridge = {
 	getSeal(receiptDigest: string): Promise<VisualSealBundle>;
 	uploadStatus(receiptDigest: string): Promise<VisualUpload | null>;
 	shareSeal(receiptDigest: string): Promise<VisualUpload>;
+	openShared(committedUrl: string): Promise<VisualSealBundle>;
 	create(request: {
 		templateId: string;
 		title?: string;

@@ -143,6 +143,7 @@ export const COMMANDS = {
 	VISUALS_SEAL_GET: "visuals_seal_get",
 	VISUALS_UPLOAD_STATUS: "visuals_upload_status",
 	VISUALS_SHARE_SEAL: "visuals_share_seal",
+	VISUALS_OPEN_SHARED: "visuals_open_shared",
 	VISUALS_CREATE: "visuals_create",
 	VISUALS_UPDATE: "visuals_update",
 	VISUALS_SAVE: "visuals_save",
