@@ -33,7 +33,10 @@ function unwrapRuntimeEvent(payload: AppEvent | OriginTaggedAppEvent): AppEvent 
 }
 
 function appEventToCodexEvent(event: AppEvent): CodexEvent | null {
-	if (!event.sessionId || event.source !== "codex") return null;
+	// Native approval requests for plugin lifecycle and paid compute are
+	// intentionally journaled as system events, but they still belong to the
+	// active Codex session and must render as blocking approval cards.
+	if (!event.sessionId || (event.source !== "codex" && !event.kind.startsWith("approval."))) return null;
 	const params =
 		event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
 			? (event.payload as Record<string, unknown>)
