@@ -713,6 +713,12 @@ const cuaAnalysisVisual = {
   sourceAgentId: "laguna", sourceModel: "laguna-xs-2.1", contentDigest: null, previewDigest: null,
   metadata: {}, createdAt: "2026-08-09T13:24:48.000Z", updatedAt: "2026-08-09T13:24:48.000Z"
 };
+const cuaLongTitleVisual = {
+  ...cuaAnalysisVisual,
+  id: "laguna-prompt-trim-long-title",
+  title: "SFT · Banking77 intent SFT · hosted Tinker · banking77_classify checkpoint campaigns with a deliberately taller wrapped title",
+  updatedAt: "2026-08-09T13:25:48.000Z"
+};
 const groupedCraftaxVisual = {
   schemaVersion: "synth.desktop-visual.v1", id: "vis_w1_craftax", currentRevision: 1,
   title: "Craftax live", templateId: "live.craftax.v1", status: "saved", rendererKind: "template",
@@ -726,11 +732,11 @@ const groupedCraftaxVisual = {
   sessionId: "v02-grouped-visual-session", messageId: "asst-w1", runId: "turn-w1-craftax",
   metadata: {}, createdAt: "2026-08-13T13:58:08Z", updatedAt: "2026-08-13T13:58:08Z"
 };
-const fixtureVisuals = ${includeCuaAnalysisVisual ? "[cuaAnalysisVisual]" : includeGroupedVisualEvidence ? "[groupedCraftaxVisual]" : "[]"};
+const fixtureVisuals = ${includeCuaAnalysisVisual ? "[cuaAnalysisVisual, cuaLongTitleVisual]" : includeGroupedVisualEvidence ? "[groupedCraftaxVisual]" : "[]"};
 window.synthVisuals = {
   listTemplates: async () => [{ id: ${includeGroupedVisualEvidence ? `"live.craftax.v1"` : `"analysis.visual.v1"`}, title: ${includeGroupedVisualEvidence ? `"Craftax live eval"` : `"Agent-authored analysis"`}, genre: ${includeGroupedVisualEvidence ? `"live"` : `"analysis"`} }],
   getTemplate: async () => ({ id: ${includeGroupedVisualEvidence ? `"live.craftax.v1"` : `"analysis.visual.v1"`}, title: ${includeGroupedVisualEvidence ? `"Craftax live eval"` : `"Agent-authored analysis"`} }),
-  list: async () => fixtureVisuals, get: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, revisions: async () => [],
+  list: async () => fixtureVisuals, get: async (visualId) => fixtureVisuals.find((visual) => visual.id === visualId) || ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, revisions: async () => [],
   create: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, update: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, save: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"},
   fork: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, archive: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, show: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"},
   onEvent: () => () => {}, onShow: () => () => {}
