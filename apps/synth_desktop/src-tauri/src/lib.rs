@@ -32,6 +32,7 @@ mod synth_config;
 mod tariffs;
 mod terminal;
 pub mod trace_ingest;
+pub mod trace_query;
 mod update_check;
 mod visuals;
 mod visuals_ipc;

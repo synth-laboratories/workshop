@@ -79,7 +79,7 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
 
 fn tools() -> Value {
     json!({"tools":[
-        {"name":"trace_manage","description":"Inspect sealed Trace V5 archives and open one in the Desktop right panel. Read-only: archives are never mutated and no SQL is accepted. Load the use-synth-traces skill.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list","get","open"]},"arguments":{"type":"object","properties":{"trace_id":{"type":"string"}},"additionalProperties":false}},"required":["operation"],"additionalProperties":false}}
+        {"name":"trace_manage","description":"Inspect sealed Trace V5 archives, run typed read-only queries over the trace index, and open a trace in the Desktop right panel. Archives are never mutated and no SQL is accepted. Load the use-synth-traces skill.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list","get","open","query","snapshot"]},"arguments":{"type":"object","properties":{"trace_id":{"type":"string"},"snapshot_id":{"type":"string"},"query":{"type":"object","description":"Typed trace query. Fields are allow-listed and compile to a parameterized statement; a hard row cap applies."}},"additionalProperties":false}},"required":["operation"],"additionalProperties":false}}
     ]})
 }
 
@@ -96,7 +96,10 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     // strings are how an agent-facing surface turns into arbitrary data access.
     if let Some(object) = nested.as_object() {
         for key in object.keys() {
-            if key != "trace_id" && key != "sessionRef" && key != "session_id" {
+            if !matches!(
+                key.as_str(),
+                "trace_id" | "snapshot_id" | "query" | "sessionRef" | "session_id"
+            ) {
                 return Err(format!("trace arguments reject `{key}`"));
             }
         }
@@ -105,6 +108,8 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         "list" => request("GET", "/v1/traces", None),
         "get" => request("POST", "/v1/traces/get", Some(nested)),
         "open" => request("POST", "/v1/traces/open", Some(nested)),
+        "query" => request("POST", "/v1/traces/query", Some(nested)),
+        "snapshot" => request("POST", "/v1/traces/snapshot", Some(nested)),
         other => Err(format!("unknown trace operation `{other}`")),
     }
 }
@@ -130,7 +135,6 @@ mod tests {
         let encoded = catalog["tools"][0]["inputSchema"].to_string();
         assert!(catalog.to_string().contains("trace_manage"));
         assert!(!encoded.contains("\"sql\""));
-        assert!(!encoded.contains("\"query\""));
         assert!(!encoded.contains("\"path\""));
         assert!(!encoded.contains("\"url\""));
         assert!(!encoded.contains("additionalProperties\":true"));

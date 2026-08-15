@@ -9,7 +9,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{io::Read, sync::Arc};
 use uuid::Uuid;
@@ -405,6 +405,63 @@ impl DataStore {
         self.db
             .clone()
             .run(move |conn| load_trace(conn, &id)?.ok_or_else(|| anyhow!("trace not found: {id}")))
+            .await
+    }
+
+    /// Run a typed trace query and freeze the result as an immutable snapshot.
+    ///
+    /// Reads the projection index rather than the sealed archives: a filtered
+    /// list must never cost a re-parse of every V5 bundle. Re-running mints a
+    /// new snapshot; an existing one is never rewritten, so a visual bound to
+    /// a snapshot id shows the same rows forever.
+    pub async fn query_traces(
+        &self,
+        query: crate::trace_query::TraceQuery,
+        queried_at: String,
+    ) -> Result<crate::trace_query::QuerySnapshot> {
+        use crate::trace_query::{
+            result_digest, snapshot_id, QuerySnapshot, TRACE_QUERY_RESULT_SCHEMA,
+            TRACE_QUERY_SCHEMA,
+        };
+
+        let compiled = query.compile()?;
+        let query_ast = serde_json::to_value(&query)?;
+        let (rows, digests) = self
+            .db
+            .clone()
+            .run(move |conn| run_trace_query(conn, &compiled))
+            .await?;
+
+        let truncated = digests.len() as i64 >= compiled_limit(&query);
+        let digest = result_digest(&query_ast, &digests);
+        let snapshot = QuerySnapshot {
+            schema_version: TRACE_QUERY_RESULT_SCHEMA.into(),
+            snapshot_id: snapshot_id(&digest),
+            domain: "traces".into(),
+            query_schema_version: TRACE_QUERY_SCHEMA.into(),
+            query_ast,
+            result_count: digests.len(),
+            result_ids: digests,
+            facets: json!({ "rows": rows }),
+            result_digest: digest,
+            queried_at,
+            truncated,
+        };
+        let stored = snapshot.clone();
+        self.db
+            .clone()
+            .run(move |conn| insert_query_snapshot(conn, &stored))
+            .await?;
+        Ok(snapshot)
+    }
+
+    pub async fn query_snapshot(
+        &self,
+        snapshot_id: String,
+    ) -> Result<crate::trace_query::QuerySnapshot> {
+        self.db
+            .clone()
+            .run(move |conn| load_query_snapshot(conn, &snapshot_id))
             .await
     }
 
@@ -921,6 +978,121 @@ fn load_trace(conn: &Connection, id: &str) -> Result<Option<TraceRecord>> {
     ).optional()?)
 }
 
+/// Bind every compiled parameter positionally; nothing is formatted into SQL.
+fn run_trace_query(
+    conn: &Connection,
+    compiled: &crate::trace_query::CompiledQuery,
+) -> Result<(Vec<Value>, Vec<String>)> {
+    let mut statement = conn.prepare(&compiled.sql)?;
+    let bound: Vec<Box<dyn rusqlite::ToSql>> = compiled
+        .params
+        .iter()
+        .map(|value| -> Box<dyn rusqlite::ToSql> {
+            match value {
+                Value::String(text) => Box::new(text.clone()),
+                Value::Number(number) if number.is_i64() => Box::new(number.as_i64().unwrap()),
+                Value::Number(number) => Box::new(number.as_f64().unwrap_or_default()),
+                Value::Bool(flag) => Box::new(i64::from(*flag)),
+                other => Box::new(other.to_string()),
+            }
+        })
+        .collect();
+    let rows = statement
+        .query_map(
+            rusqlite::params_from_iter(bound.iter().map(|value| value.as_ref())),
+            |row| {
+                Ok(json!({
+                    "traceDigest": row.get::<_, String>(0)?,
+                    "model": row.get::<_, Option<String>>(1)?,
+                    "provider": row.get::<_, Option<String>>(2)?,
+                    "benchmark": row.get::<_, Option<String>>(3)?,
+                    "taskId": row.get::<_, Option<String>>(4)?,
+                    "lifecycleStatus": row.get::<_, Option<String>>(5)?,
+                    "captureStatus": row.get::<_, Option<String>>(6)?,
+                    "reward": row.get::<_, Option<f64>>(7)?,
+                    "costUsd": row.get::<_, Option<f64>>(8)?,
+                    "eventCount": row.get::<_, i64>(9)?,
+                    "toolCallCount": row.get::<_, i64>(10)?,
+                    "errorCount": row.get::<_, i64>(11)?,
+                    "durationMs": row.get::<_, Option<i64>>(12)?,
+                    "startedAt": row.get::<_, Option<String>>(13)?,
+                    "hasMedia": row.get::<_, i64>(14)? != 0,
+                    "hasEvidence": row.get::<_, i64>(15)? != 0,
+                }))
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let digests = rows
+        .iter()
+        .filter_map(|row| row.get("traceDigest").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    Ok((rows, digests))
+}
+
+fn compiled_limit(query: &crate::trace_query::TraceQuery) -> i64 {
+    query
+        .limit
+        .unwrap_or(crate::trace_query::MAX_LIMIT)
+        .clamp(1, crate::trace_query::MAX_LIMIT)
+}
+
+/// Snapshots are append-only. `INSERT OR IGNORE` makes re-taking an identical
+/// query idempotent rather than rewriting history under an existing id.
+fn insert_query_snapshot(
+    conn: &Connection,
+    snapshot: &crate::trace_query::QuerySnapshot,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO query_snapshots(
+            snapshot_id, domain, query_schema_version, query_ast, result_ids,
+            result_count, facets, result_digest, queried_at, truncated
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        params![
+            snapshot.snapshot_id,
+            snapshot.domain,
+            snapshot.query_schema_version,
+            serde_json::to_string(&snapshot.query_ast)?,
+            serde_json::to_string(&snapshot.result_ids)?,
+            snapshot.result_count as i64,
+            serde_json::to_string(&snapshot.facets)?,
+            snapshot.result_digest,
+            snapshot.queried_at,
+            i64::from(snapshot.truncated),
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_query_snapshot(
+    conn: &Connection,
+    snapshot_id: &str,
+) -> Result<crate::trace_query::QuerySnapshot> {
+    conn.query_row(
+        "SELECT snapshot_id, domain, query_schema_version, query_ast, result_ids,
+                result_count, facets, result_digest, queried_at, truncated
+         FROM query_snapshots WHERE snapshot_id = ?1",
+        [snapshot_id],
+        |row| {
+            Ok(crate::trace_query::QuerySnapshot {
+                schema_version: crate::trace_query::TRACE_QUERY_RESULT_SCHEMA.into(),
+                snapshot_id: row.get(0)?,
+                domain: row.get(1)?,
+                query_schema_version: row.get(2)?,
+                query_ast: serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or_default(),
+                result_ids: serde_json::from_str(&row.get::<_, String>(4)?).unwrap_or_default(),
+                result_count: row.get::<_, i64>(5)? as usize,
+                facets: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+                result_digest: row.get(7)?,
+                queried_at: row.get(8)?,
+                truncated: row.get::<_, i64>(9)? != 0,
+            })
+        },
+    )
+    .optional()?
+    .ok_or_else(|| anyhow!("query snapshot not found: {snapshot_id}"))
+}
+
 fn list_traces(conn: &Connection) -> Result<Vec<TraceRecord>> {
     let mut statement = conn.prepare(
         "SELECT id,digest,title,source,container_id,session_id,run_id,reward,metrics_json,path,metadata_json,created_at FROM traces ORDER BY created_at DESC, id",
@@ -972,6 +1144,111 @@ mod tests {
     use super::*;
     use crate::storage::Storage;
     use tempfile::tempdir;
+
+    async fn seeded_index_store() -> (tempfile::TempDir, DataStore) {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let db = storage.database().clone();
+        db.with_conn(|conn| {
+            for (digest, benchmark, status, reward, started) in [
+                ("sha256:a1", "craftax", "failed", 0.10, "2026-08-14T10:00:00Z"),
+                ("sha256:b2", "craftax", "completed", 0.90, "2026-08-14T11:00:00Z"),
+                ("sha256:c3", "banking77", "failed", 0.30, "2026-08-14T12:00:00Z"),
+            ] {
+                conn.execute(
+                    "INSERT INTO trace_index(trace_digest,projector_version,benchmark,lifecycle_status,reward,started_at,search_text)
+                     VALUES(?1,'v1',?2,?3,?4,?5,?6)",
+                    params![digest, benchmark, status, reward, started, format!("{benchmark} {status}")],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let data = DataStore::new(db, ContentStore::new(storage.content_root()));
+        (dir, data)
+    }
+
+    #[tokio::test]
+    async fn a_typed_query_reads_the_index_and_freezes_its_result() {
+        let (_dir, data) = seeded_index_store().await;
+        let query = crate::trace_query::TraceQuery {
+            r#where: Some(crate::trace_query::TraceWhere {
+                benchmark: vec!["craftax".into()],
+                lifecycle_status: vec!["failed".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let snapshot = data
+            .query_traces(query.clone(), "2026-08-15T10:22:00Z".into())
+            .await
+            .unwrap();
+
+        assert_eq!(snapshot.result_ids, vec!["sha256:a1".to_string()]);
+        assert_eq!(snapshot.result_count, 1);
+        assert_eq!(snapshot.domain, "traces");
+        assert_eq!(snapshot.queried_at, "2026-08-15T10:22:00Z");
+        assert!(!snapshot.truncated);
+        // The snapshot carries the question as well as the answer, so the page
+        // can state what the reader is looking at.
+        assert_eq!(snapshot.query_ast["where"]["benchmark"][0], "craftax");
+
+        let reloaded = data.query_snapshot(snapshot.snapshot_id.clone()).await.unwrap();
+        assert_eq!(reloaded, snapshot);
+    }
+
+    #[tokio::test]
+    async fn re_running_a_query_never_rewrites_an_existing_snapshot() {
+        let (_dir, data) = seeded_index_store().await;
+        let query = crate::trace_query::TraceQuery::default();
+        let first = data.query_traces(query.clone(), "2026-08-15T10:00:00Z".into()).await.unwrap();
+
+        // Same question, same rows, later clock: the stored snapshot keeps its
+        // original timestamp rather than being updated in place.
+        let second = data.query_traces(query, "2026-08-15T23:59:00Z".into()).await.unwrap();
+        assert_eq!(first.snapshot_id, second.snapshot_id);
+        let stored = data.query_snapshot(first.snapshot_id.clone()).await.unwrap();
+        assert_eq!(stored.queried_at, "2026-08-15T10:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn a_different_result_set_is_a_different_snapshot() {
+        let (_dir, data) = seeded_index_store().await;
+        let all = data
+            .query_traces(crate::trace_query::TraceQuery::default(), "t".into())
+            .await
+            .unwrap();
+        let failed = data
+            .query_traces(
+                crate::trace_query::TraceQuery {
+                    r#where: Some(crate::trace_query::TraceWhere {
+                        lifecycle_status: vec!["failed".into()],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                "t".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(all.result_count, 3);
+        assert_eq!(failed.result_count, 2);
+        assert_ne!(all.snapshot_id, failed.snapshot_id);
+    }
+
+    #[tokio::test]
+    async fn a_capped_result_reports_that_it_was_cut() {
+        let (_dir, data) = seeded_index_store().await;
+        let snapshot = data
+            .query_traces(
+                crate::trace_query::TraceQuery { limit: Some(2), ..Default::default() },
+                "t".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(snapshot.result_count, 2);
+        assert!(snapshot.truncated, "a truncated result must not read as complete");
+    }
 
     #[tokio::test]
     async fn lists_rust_owned_inventory_tables() {

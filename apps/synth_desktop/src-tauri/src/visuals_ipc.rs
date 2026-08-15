@@ -1923,6 +1923,25 @@ async fn dispatch_traces(
                 "inspectability": inspectability.label(),
             }))
         }
+        ("POST", "/v1/traces/query") => {
+            let query = crate::trace_query::parse_query(
+                body.get("query").unwrap_or(&Value::Null),
+            )?;
+            let snapshot = core
+                .data()
+                .query_traces(query, chrono::Utc::now().to_rfc3339())
+                .await?;
+            Ok(serde_json::to_value(snapshot)?)
+        }
+        ("POST", "/v1/traces/snapshot") => {
+            let snapshot_id = body
+                .get("snapshot_id")
+                .or_else(|| body.get("snapshotId"))
+                .and_then(Value::as_str)
+                .context("snapshot_id required")?;
+            let snapshot = core.data().query_snapshot(snapshot_id.to_string()).await?;
+            Ok(serde_json::to_value(snapshot)?)
+        }
         ("POST", "/v1/traces/open") => {
             let id = trace_id()?;
             let visual = crate::presentation::ensure_trace_inspector(core, &id).await?;
