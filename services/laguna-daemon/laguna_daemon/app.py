@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
 import time
 from contextlib import asynccontextmanager
 from functools import partial
@@ -19,6 +21,33 @@ from .responses_api import ResponsesService
 from .responses_api.errors import ResponsesError
 from .settings import SettingsStore
 from .synth_control import SynthControl, register_control_routes
+
+
+def _desktop_parent_pid() -> int | None:
+    raw = os.environ.get("SYNTH_DESKTOP_PARENT_PID", "").strip()
+    try:
+        pid = int(raw)
+    except ValueError:
+        return None
+    return pid if pid > 1 else None
+
+
+def _process_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except ProcessLookupError:
+        return False
+
+
+async def _watch_desktop_parent(parent_pid: int) -> None:
+    while True:
+        await asyncio.sleep(1.0)
+        if not _process_is_alive(parent_pid) or os.getppid() == 1:
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
 
 
 class DisconnectAwareStreamingResponse(StreamingResponse):
@@ -93,11 +122,27 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
         native_watchdog = asyncio.create_task(
             responses_service.watch_idle(), name="laguna-native-idle-unload"
         )
+        pressure_watchdog = asyncio.create_task(
+            responses_service.watch_memory_pressure(),
+            name="laguna-native-memory-pressure",
+        )
+        parent_pid = _desktop_parent_pid()
+        parent_watchdog = (
+            asyncio.create_task(
+                _watch_desktop_parent(parent_pid), name="laguna-desktop-parent"
+            )
+            if parent_pid is not None
+            else None
+        )
         try:
             yield
         finally:
-            native_watchdog.cancel()
-            await asyncio.gather(native_watchdog, return_exceptions=True)
+            watchdogs = [native_watchdog, pressure_watchdog]
+            if parent_watchdog is not None:
+                watchdogs.append(parent_watchdog)
+            for watchdog in watchdogs:
+                watchdog.cancel()
+            await asyncio.gather(*watchdogs, return_exceptions=True)
             await responses_service.close()
 
     app = FastAPI(

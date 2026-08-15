@@ -12,7 +12,6 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
-use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
@@ -37,7 +36,8 @@ pub(crate) fn validate_billing_url(
     backend_url: &str,
     allow_development_origin: bool,
 ) -> Result<String> {
-    let url = reqwest::Url::parse(value).map_err(|_| anyhow!("Synth Cloud returned an invalid billing URL."))?;
+    let url = reqwest::Url::parse(value)
+        .map_err(|_| anyhow!("Synth Cloud returned an invalid billing URL."))?;
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
         return Err(anyhow!("Synth Cloud returned an untrusted billing URL."));
     }
@@ -191,6 +191,41 @@ pub struct SnapshotRead {
     pub fetched_at: Option<DateTime<Utc>>,
     /// True when the caller is not signed in (no desktop-managed key).
     pub unauthenticated: bool,
+}
+
+/// Enforce the native spend boundary for a Synth Cloud turn.
+///
+/// The renderer may disable controls for presentation, but only this host-side
+/// decision is authoritative. A stale snapshot is not sufficient: another
+/// device or an earlier concurrent request may have consumed its balance.
+pub fn validate_turn_admission(read: &SnapshotRead) -> Result<(), String> {
+    if read.unauthenticated {
+        return Err("Synth Cloud rejected this device's key. Sign in again to continue.".into());
+    }
+    if read.stale {
+        return Err(
+            "Synth Cloud balance could not be refreshed. No metered turn was started.".into(),
+        );
+    }
+    let snapshot = read.snapshot.as_ref().ok_or_else(|| {
+        read.error.clone().unwrap_or_else(|| {
+            "Synth Cloud balance is unknown. No metered turn was started.".into()
+        })
+    })?;
+    if !matches!(snapshot.status.as_str(), "active") {
+        return Err(format!(
+            "Synth Cloud account state is {}. No metered turn was started.",
+            snapshot.status
+        ));
+    }
+    if snapshot
+        .allowance
+        .remaining_cents
+        .is_some_and(|cents| cents <= 0)
+    {
+        return Err("Synth Cloud balance is exhausted. No metered turn was started.".into());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, specta::Type)]
@@ -397,6 +432,20 @@ impl AccountCloudClient {
                 }
             }
             Err(error) => {
+                // Authentication failures invalidate the identity, not merely
+                // the refresh. Serving a cached paid plan after the backend
+                // revoked this key would make the shell claim the device is
+                // still signed in and could admit more metered work.
+                if matches!(error, AccountError::Unauthorized) {
+                    self.clear_cache();
+                    return SnapshotRead {
+                        snapshot: None,
+                        stale: false,
+                        error: Some(error.public_message()),
+                        fetched_at: None,
+                        unauthenticated: true,
+                    };
+                }
                 if cached.is_none() {
                     self.report_credits_unknown(
                         backend_url,
@@ -566,6 +615,7 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
 
     /// A fake Synth backend that answers a scripted sequence and records the
     /// requests it saw.
@@ -755,6 +805,59 @@ mod tests {
             "Synth Cloud rejected this device's key. Sign in again to continue."
         );
         assert!(!error.contains("sk_dead"));
+        assert!(read.unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn a_revoked_key_evicts_its_cached_plan_instead_of_serving_it_stale() {
+        let (origin, _) = spawn_backend(vec![
+            (200, snapshot_body("pro", 15_000)),
+            (401, r#"{"detail":"revoked"}"#.into()),
+        ]);
+        let client = AccountCloudClient::open();
+        let at = now();
+        let live = client.read(&origin, Some("sk_revoked"), false, at).await;
+        assert_eq!(live.snapshot.unwrap().plan.tier, "pro");
+
+        let revoked = client
+            .read(
+                &origin,
+                Some("sk_revoked"),
+                true,
+                at + chrono::Duration::seconds(1),
+            )
+            .await;
+        assert!(revoked.snapshot.is_none());
+        assert!(!revoked.stale);
+        assert!(revoked.unauthenticated);
+
+        // The revoked identity no longer has a cache entry to revive.
+        let after = client.cached_for(connection_identity(&origin, "sk_revoked"));
+        assert!(after.is_none());
+    }
+
+    #[test]
+    fn metered_turn_admission_requires_fresh_auth_and_positive_known_balance() {
+        let mut read = SnapshotRead {
+            snapshot: Some(serde_json::from_str(&snapshot_body("pro", 1)).unwrap()),
+            ..SnapshotRead::default()
+        };
+        assert!(validate_turn_admission(&read).is_ok());
+
+        read.snapshot.as_mut().unwrap().allowance.remaining_cents = Some(0);
+        assert!(validate_turn_admission(&read)
+            .unwrap_err()
+            .contains("exhausted"));
+        read.snapshot.as_mut().unwrap().allowance.remaining_cents = Some(1);
+        read.stale = true;
+        assert!(validate_turn_admission(&read)
+            .unwrap_err()
+            .contains("could not be refreshed"));
+        read.stale = false;
+        read.unauthenticated = true;
+        assert!(validate_turn_admission(&read)
+            .unwrap_err()
+            .contains("Sign in again"));
     }
 
     #[tokio::test]

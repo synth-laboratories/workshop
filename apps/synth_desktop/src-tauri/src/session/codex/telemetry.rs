@@ -21,6 +21,7 @@ pub(crate) struct TurnPerformanceTracker {
     pub(crate) provider: String,
     pub(crate) model_id: String,
     pub(crate) turn_id: String,
+    pub(crate) receipt_scope: String,
     pub(crate) started_at_ms: i64,
     pub(crate) first_output_at_ms: Option<i64>,
     pub(crate) last_output_at_ms: Option<i64>,
@@ -234,16 +235,14 @@ pub(crate) async fn finalize_performance_tracker(
     // telemetry for the Inference pane only and is intentionally exempt from
     // writing usage rows (not a session turn authority).
     //
-    // Exactly-once contract: draining removes the receipts, and the
-    // `(provider, request_id)` upsert key dedupes a replayed finalize. A
-    // receipt landing after this drain (cancellation race) stays queued no
-    // longer than the session's next finalize; if the session closes first,
-    // the broker logs one line and drops it rather than inventing a row.
-    // The drain reads the injected receipt store — it never starts a broker.
+    // Exactly-once contract: the native turn scope selects only receipts born
+    // under this turn, and draining removes those receipts. A late receipt
+    // keeps the old scope and is never charged to a later turn; session close
+    // logs and drops anything that arrived too late to be finalized.
     let settled_cost_usd = if super::home::provider_class(Some(&tracker.provider))
         == super::home::ProviderClass::SynthCloud
     {
-        settled_cost_from_receipts(&receipts.drain(session_id))
+        settled_cost_from_receipts(&receipts.drain_for_turn(session_id, &tracker.receipt_scope))
     } else {
         None
     };

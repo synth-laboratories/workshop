@@ -336,9 +336,8 @@ impl OptimizerManager {
             // a live paid run merely because the renderer polls this method.
             // Explicit start/stop and process-exit reconciliation own teardown.
             let mut current = self.status().await;
-            current.detail = Some(
-                "Optimizer health probe was missed; retaining the managed runtime".into(),
-            );
+            current.detail =
+                Some("Optimizer health probe was missed; retaining the managed runtime".into());
             self.set_status(current).await;
             return self.status().await;
         }
@@ -439,7 +438,16 @@ impl OptimizerManager {
     }
 
     pub fn advertised_capabilities(&self) -> Value {
-        read_capabilities(&self.home).unwrap_or_else(default_capabilities)
+        read_capabilities(&self.home).unwrap_or_else(|| {
+            json!({
+                "algorithms": [],
+                "recipes": [],
+                "compatibleTemplateIds": [],
+                "controls": [],
+                "replay": false,
+                "cancellation": false
+            })
+        })
     }
 
     pub fn has_offline_runtime(&self, version: &str) -> bool {
@@ -551,7 +559,25 @@ impl OptimizerManager {
         while tokio::time::Instant::now() < deadline {
             if let Some(status) = self.probe().await {
                 if status.phase == "ready" {
-                    self.store_handshake_capabilities(&hit).await;
+                    let capabilities = match self.fetch_handshake_capabilities().await {
+                        Ok(capabilities) => capabilities,
+                        Err(error) => {
+                            self.abort_runtime().await;
+                            self.set_status(OptimizerSidecarStatus {
+                                phase: "error".into(),
+                                base_url: None,
+                                version: Some(hit.version.clone()),
+                                digest: Some(hit.digest.clone()),
+                                detail: Some(
+                                    "Optimizer sidecar did not prove its capabilities".into(),
+                                ),
+                                updated_at: now_ms(),
+                            })
+                            .await;
+                            return Err(error);
+                        }
+                    };
+                    self.store_handshake_capabilities(&capabilities)?;
                     self.set_status(status).await;
                     return Ok(self.status().await);
                 }
@@ -571,12 +597,67 @@ impl OptimizerManager {
         bail!("Timed out waiting for optimizer sidecar");
     }
 
-    async fn store_handshake_capabilities(&self, hit: &OptimizerSidecarVersion) {
-        let capabilities = default_capabilities_for(hit);
-        let _ = fs::write(
+    async fn fetch_handshake_capabilities(&self) -> Result<Value> {
+        let (base_url, api_key) = {
+            let runtime = self.runtime.lock().await;
+            let runtime = runtime
+                .as_ref()
+                .ok_or_else(|| anyhow!("optimizer runtime disappeared before handshake"))?;
+            (runtime.base_url.clone(), runtime.api_key.clone())
+        };
+        let response = self
+            .client
+            .get(format!("{base_url}/v1/optimizer/capabilities"))
+            .bearer_auth(api_key)
+            .send()
+            .await
+            .context("read optimizer capability handshake")?;
+        if !response.status().is_success() {
+            bail!(
+                "optimizer capability handshake returned HTTP {}",
+                response.status()
+            );
+        }
+        let mut capabilities: Value = response
+            .json()
+            .await
+            .context("parse optimizer capability handshake")?;
+        {
+            let object = capabilities
+                .as_object_mut()
+                .ok_or_else(|| anyhow!("optimizer capability handshake was not an object"))?;
+            for field in ["algorithms", "recipes", "compatibleTemplateIds"] {
+                let valid = object
+                    .get(field)
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| {
+                        !items.is_empty() && items.iter().all(|item| item.as_str().is_some())
+                    });
+                if !valid {
+                    bail!("optimizer capability handshake omitted {field}");
+                }
+            }
+            for field in ["replay", "cancellation"] {
+                if object.get(field).and_then(Value::as_bool).is_none() {
+                    bail!("optimizer capability handshake omitted {field}");
+                }
+            }
+            object.remove("digest");
+        }
+        let digest = sha256_hex(&serde_json::to_vec(&capabilities)?);
+        capabilities
+            .as_object_mut()
+            .expect("validated capability object")
+            .insert("digest".into(), json!(format!("sha256:{digest}")));
+        Ok(capabilities)
+    }
+
+    fn store_handshake_capabilities(&self, capabilities: &Value) -> Result<()> {
+        fs::write(
             self.home.join("capabilities.json"),
-            serde_json::to_vec_pretty(&capabilities).unwrap_or_default(),
-        );
+            serde_json::to_vec_pretty(capabilities)?,
+        )?;
+        Ok(())
     }
 
     /// Install the product-pinned sidecar when needed and return only after
@@ -1838,49 +1919,6 @@ fn prove_offline_version(staging: &Path, spec: &OptimizerSidecarInstallSpec) -> 
     Ok(())
 }
 
-fn default_capabilities() -> Value {
-    default_capabilities_for(&OptimizerSidecarVersion {
-        version: DEFAULT_SIDECAR_VERSION.into(),
-        digest: String::new(),
-        signature: String::new(),
-        algorithm_id: "gepa".into(),
-        algorithm_version: DEFAULT_ALGORITHM_VERSION.into(),
-        recipe_schema_version: DEFAULT_RECIPE_SCHEMA_VERSION.into(),
-        selected: false,
-        path: String::new(),
-    })
-}
-
-fn default_capabilities_for(hit: &OptimizerSidecarVersion) -> Value {
-    let body = json!({
-        "algorithms": ["gepa"],
-        "recipes": [
-            "gepa.banking77.smoke.v1",
-            "gepa.banking77.luna.v1",
-            "gepa.banking77.sol.v1",
-            "gepa.craftax.smoke.v1"
-        ],
-        "eventSchemas": ["optimizer_event.v1"],
-        "stateSchemas": ["optimizer_state_slice.v1"],
-        "replay": true,
-        "cancellation": true,
-        "controls": ["cancel"],
-        "limits": { "maxCostUsd": 2.45, "maxTotalRollouts": 240 },
-        "compatibleTemplateIds": [
-            "optimizer.gepa.live.v1",
-            "optimizer.sft.live.v1",
-            "optimizer.dag.live.v1",
-            "optimizer.run.v1"
-        ],
-        "sidecarVersion": hit.version,
-        "algorithmVersion": hit.algorithm_version,
-    });
-    let digest = sha256_hex(&serde_json::to_vec(&body).unwrap_or_default());
-    let mut object = body.as_object().cloned().unwrap_or_default();
-    object.insert("digest".into(), json!(format!("sha256:{digest}")));
-    Value::Object(object)
-}
-
 fn read_capabilities(home: &Path) -> Option<Value> {
     serde_json::from_slice(&fs::read(home.join("capabilities.json")).ok()?).ok()
 }
@@ -1916,7 +1954,7 @@ async fn route_sidecar(
         .next()
         .unwrap_or(request.path.as_str());
     match (request.method.as_str(), path) {
-        ("GET", "/health") | ("GET", "/v1/optimizer/capabilities") => {
+        ("GET", "/health") => {
             let upstream = client
                 .get(format!("{upstream_base_url}/health"))
                 .timeout(crate::limits::OPTIMIZER_SIDECAR_HEALTH_TIMEOUT)
@@ -1951,6 +1989,32 @@ async fn route_sidecar(
                 object.insert("processOwned".into(), Value::Bool(true));
             }
             JsonHttpResponse::ok(health)
+        }
+        ("GET", "/v1/optimizer/capabilities") => {
+            let upstream = client
+                .get(format!("{upstream_base_url}/v1/optimizer/capabilities"))
+                .timeout(crate::limits::OPTIMIZER_SIDECAR_HEALTH_TIMEOUT)
+                .send()
+                .await;
+            let Ok(upstream) = upstream else {
+                return JsonHttpResponse::error(
+                    StatusCode::BAD_GATEWAY,
+                    "optimizer capability endpoint is unavailable",
+                );
+            };
+            if !upstream.status().is_success() {
+                return JsonHttpResponse::error(
+                    StatusCode::BAD_GATEWAY,
+                    "optimizer capability endpoint failed",
+                );
+            }
+            match upstream.json::<Value>().await {
+                Ok(body) => JsonHttpResponse::ok(body),
+                Err(_) => JsonHttpResponse::error(
+                    StatusCode::BAD_GATEWAY,
+                    "optimizer service returned invalid capabilities",
+                ),
+            }
         }
         ("GET", path) if path.starts_with("/runs/") && path.ends_with("/optimizer-events") => {
             let upstream = client
@@ -2880,6 +2944,15 @@ mod tests {
             .unwrap()
             .iter()
             .any(|value| value == "optimizer.gepa.live.v1"));
+        assert!(
+            !caps["compatibleTemplateIds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "optimizer.sft.live.v1"),
+            "persist the live sidecar handshake, not Desktop's broader catalog"
+        );
+        assert!(caps["digest"].as_str().unwrap().starts_with("sha256:"));
     }
 
     #[test]

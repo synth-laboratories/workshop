@@ -3,11 +3,12 @@ use super::event_pump::{
     safe_approval_payload, CREDENTIAL_ENV_NAMES,
 };
 use super::home::{
-    apply_brokered_credential, apply_synth_cloud_provider, auto_compact_token_limit,
-    automatic_thread_title, ensure_home, mcp_enabled_tools, mcp_ipc_env_key, multi_agent_flags,
-    nested_id, normalize_gateway_origin, provider_class, requires_disabled_response_storage,
-    responses_base_url, safe_component, supports_provider_compaction, toml_string,
-    validate_reasoning_effort, validate_start, workspace_write_config, ProviderClass,
+    apply_brokered_credential, apply_openrouter_provider, apply_synth_cloud_provider,
+    auto_compact_token_limit, automatic_thread_title, ensure_home, mcp_enabled_tools,
+    mcp_ipc_env_key, multi_agent_flags, nested_id, normalize_gateway_origin, provider_class,
+    requires_disabled_response_storage, responses_base_url, safe_component,
+    supports_provider_compaction, toml_string, validate_reasoning_effort, validate_start,
+    workspace_write_config, ProviderClass, OPENROUTER_RESPONSES_BASE_URL,
 };
 use super::manager::CodexManager;
 use super::proto::{
@@ -1245,10 +1246,7 @@ fn generated_mcp_configs_use_each_adapter_owned_ipc_variable() {
         mcp_ipc_env_key("synth_optimizers"),
         "SYNTH_DESKTOP_IPC_FILE"
     );
-    assert_eq!(
-        mcp_ipc_env_key("synth_session"),
-        "SYNTH_DESKTOP_IPC_FILE"
-    );
+    assert_eq!(mcp_ipc_env_key("synth_session"), "SYNTH_DESKTOP_IPC_FILE");
 }
 #[test]
 fn normalizes_responses_provider_base_url() {
@@ -1577,6 +1575,30 @@ fn synth_cloud_provider_overwrites_renderer_api_key() {
 }
 
 #[test]
+fn openrouter_provider_overwrites_renderer_endpoint_before_leasing() {
+    let temp = tempdir().unwrap();
+    let (broker, _listener) =
+        CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new()))
+            .unwrap();
+    let mut request = test_request(temp.path(), "openrouter-origin-custody");
+    request.provider_name = Some("openrouter".into());
+    request.base_url = "https://credential-thief.example/api/v1".into();
+    request.api_key = "renderer-value".into();
+
+    apply_openrouter_provider(&mut request, Some("sk-or-native")).unwrap();
+    assert_eq!(request.base_url, OPENROUTER_RESPONSES_BASE_URL);
+    assert_eq!(request.api_key, "sk-or-native");
+    assert!(request.broker_credential);
+
+    apply_brokered_credential(&mut request, &broker).unwrap();
+    assert_eq!(request.base_url, format!("{}/api/v1", broker.origin()));
+    assert_eq!(
+        broker.upstream_for(&request.api_key).as_deref(),
+        Some("https://openrouter.ai")
+    );
+}
+
+#[test]
 fn synth_cloud_normalizes_a_local_bind_address_for_the_client() {
     let temp = tempdir().unwrap();
     let (broker, _listener) =
@@ -1712,6 +1734,7 @@ async fn a_provider_name_change_alone_respawns_the_child() {
     let before = broker.token_for("lease-provider-identity").unwrap();
     manager.receipts().push(credential_broker::SettledReceipt {
         session_id: "lease-provider-identity".into(),
+        turn_scope: None,
         provider_response_id: "resp-born-under-old-name".into(),
         model: None,
         prompt_tokens: None,
@@ -1787,6 +1810,66 @@ async fn a_rotated_credential_respawns_the_child_with_a_fresh_lease() {
     assert_ne!(old_token, new_token);
     assert!(!broker.resolves(&old_token));
     assert!(broker.resolves(&new_token));
+}
+
+#[tokio::test]
+async fn a_refreshed_chatgpt_access_token_rebinds_without_delegating_refresh() {
+    let temp = tempdir().unwrap();
+    let root = temp.path().join("codex");
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let app_handle = app.handle().clone();
+    let request_with = |access: &str| {
+        let mut request = test_request(temp.path(), "oauth-rotation");
+        request.provider_name = Some(crate::codex_oauth::PROVIDER_ID.into());
+        request.provider_title = Some("ChatGPT subscription (Codex OAuth)".into());
+        request.base_url = "https://chatgpt.com/backend-api/codex".into();
+        request.api_key = serde_json::to_string(&crate::codex_oauth::Credential {
+            access_token: access.into(),
+            refresh_token: "native-refresh-secret".into(),
+            id_token: "bounded-id-token".into(),
+            expires_ms: 2_000_000_000_000,
+            account_id: "acct_test".into(),
+            account_hint: None,
+            last_refresh_ms: 1_700_000_000_000,
+        })
+        .unwrap();
+        request
+    };
+
+    manager
+        .start(app_handle.clone(), request_with("old-access"))
+        .await
+        .unwrap();
+    let old_attachment = manager
+        .sessions
+        .read()
+        .await
+        .get("oauth-rotation")
+        .unwrap()
+        .attachment_id;
+
+    manager
+        .start(app_handle, request_with("new-access"))
+        .await
+        .unwrap();
+    let new_attachment = manager
+        .sessions
+        .read()
+        .await
+        .get("oauth-rotation")
+        .unwrap()
+        .attachment_id;
+    assert_ne!(old_attachment, new_attachment);
+    let auth = fs::read_to_string(root.join("homes/oauth-rotation/auth.json")).unwrap();
+    assert!(auth.contains("new-access"));
+    assert!(!auth.contains("old-access"));
+    assert!(!auth.contains("native-refresh-secret"));
 }
 
 #[test]
@@ -2057,6 +2140,7 @@ fn tracker_for(provider: &str, turn_id: &str) -> TurnPerformanceTracker {
         provider: provider.into(),
         model_id: "openrouter/poolside/laguna-s-2.1".into(),
         turn_id: turn_id.into(),
+        receipt_scope: turn_id.into(),
         started_at_ms: 1_000,
         first_output_at_ms: Some(1_100),
         last_output_at_ms: Some(1_900),
@@ -2077,6 +2161,7 @@ fn settled_receipt(
 ) -> credential_broker::SettledReceipt {
     credential_broker::SettledReceipt {
         session_id: session_id.into(),
+        turn_scope: Some("turn-1".into()),
         provider_response_id: response_id.into(),
         model: Some("openrouter/poolside/laguna-s-2.1".into()),
         prompt_tokens: Some(500),
@@ -2197,11 +2282,10 @@ async fn local_turns_neither_drain_receipts_nor_carry_any_charge() {
     assert_eq!(receipts.drain(session).len(), 1);
 }
 
-/// The cancellation-race contract: a receipt landing after its turn
-/// finalized stays queued no longer than the session's next finalize, and
-/// never becomes a row of its own.
+/// A cancellation-race receipt retains its original turn scope and can never
+/// be charged to the next turn merely because that turn finalized later.
 #[tokio::test]
-async fn a_late_receipt_waits_for_the_next_finalize_and_never_invents_a_row() {
+async fn a_late_receipt_is_never_misattributed_to_the_next_turn() {
     let temp = tempdir().unwrap();
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
     let receipts = credential_broker::ReceiptStore::new();
@@ -2217,6 +2301,7 @@ async fn a_late_receipt_waits_for_the_next_finalize_and_never_invents_a_row() {
     finalize_turn(&core, &receipts, session, "synth-cloud", "turn-2").await;
     let totals = usage_totals(&core).await;
     assert_eq!(totals.requests, 2);
-    assert!((totals.billed_cost_usd.unwrap() - 0.05).abs() < 1e-12);
-    assert_eq!(totals.cost_source, CostSource::SynthCloud);
+    assert_eq!(totals.billed_cost_usd, None);
+    assert_eq!(totals.cost_source, CostSource::None);
+    assert_eq!(receipts.drain(session).len(), 1);
 }

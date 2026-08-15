@@ -117,11 +117,7 @@ export default function App() {
 						}}
 						onNewConversation={c.onNewConversation}
 						onToggleTerminal={() => {
-							c.setTerminalOpen((current) => {
-								const next = !current;
-								c.persistLayoutSnapshot({ bottomPanelVisible: next });
-								return next;
-							});
+							c.persistLayoutSnapshot({ bottomPanelVisible: !c.terminalOpen });
 						}}
 						onToggleInference={() => {
 							const next = !(c.sidePanelOpen && c.sidePanelTab === "inference");
@@ -251,7 +247,6 @@ export default function App() {
 						fontFamily={c.preferences.appearance.terminalFontFamily}
 						fontSize={c.preferences.appearance.terminalFontSize}
 						onOpenChange={(open) => {
-							c.setTerminalOpen(open);
 							c.persistLayoutSnapshot({ bottomPanelVisible: open });
 						}}
 						onHeightChange={(height) => c.persistLayoutSnapshot({ bottomPanelHeight: height })}

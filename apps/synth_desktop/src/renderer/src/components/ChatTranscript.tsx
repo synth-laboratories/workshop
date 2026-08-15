@@ -185,10 +185,17 @@ function ActivityLine({
 				<span className="visual-lifecycle-copy">
 					<strong>{line.label}</strong>
 					<span>Draft <i /> Review <i /> Ready</span>
+					{line.detail ? <span className="visual-lifecycle-detail">{line.detail}</span> : null}
 				</span>
 				<span className="visual-lifecycle-status">{stageLabel}</span>
 				{onToggleVisual ? (
-					<button type="button" className="visual-lifecycle-open" onClick={onToggleVisual} aria-label={visualOpen ? "Hide visual" : "Open visual"}>
+					<button
+						type="button"
+						className="visual-lifecycle-open"
+						onClick={onToggleVisual}
+						aria-label={visualOpen ? "Hide visual" : "Open visual"}
+						data-testid={line.artifactId ? `tool-visual-open-${line.artifactId}` : undefined}
+					>
 						{visualOpen ? "Hide" : "Open"}
 					</button>
 				) : null}

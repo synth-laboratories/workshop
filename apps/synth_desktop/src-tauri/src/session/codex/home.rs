@@ -26,6 +26,11 @@ pub enum ProviderClass {
     Direct,
 }
 
+/// OpenRouter's native Responses endpoint. A renderer request may select the
+/// provider and model, but it must never select the origin that receives the
+/// user's credential.
+pub const OPENROUTER_RESPONSES_BASE_URL: &str = "https://openrouter.ai/api/v1";
+
 pub fn provider_class(provider_name: Option<&str>) -> ProviderClass {
     match provider_name {
         Some(name) if name.eq_ignore_ascii_case("local-laguna") => ProviderClass::LocalLaguna,
@@ -65,6 +70,28 @@ pub fn apply_synth_cloud_provider(
     request.base_url = format!("{}/api/v1", normalize_gateway_origin(gateway_url));
     request.provider_name = Some("synth-cloud".into());
     request.provider_title = Some("Synth Cloud Responses".into());
+    stage_brokered_credential(request, key)
+}
+
+/// Point an OpenRouter request at the source-owned endpoint and stage the
+/// native credential for the loopback broker.
+///
+/// Overwriting `base_url` before leasing is the security boundary: otherwise
+/// a compromised renderer could ask the native host to attach the real
+/// OpenRouter key to an attacker-controlled HTTPS origin.
+pub fn apply_openrouter_provider(
+    request: &mut CodexSessionStartRequest,
+    api_key: Option<&str>,
+) -> Result<(), String> {
+    let key = api_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "OpenRouter API key is not configured. Add it in Synth backend settings.".to_string()
+        })?;
+    request.base_url = OPENROUTER_RESPONSES_BASE_URL.into();
+    request.provider_name = Some("openrouter".into());
+    request.provider_title = Some("OpenRouter Responses".into());
     stage_brokered_credential(request, key)
 }
 

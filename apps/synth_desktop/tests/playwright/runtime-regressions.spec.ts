@@ -282,7 +282,7 @@ test("Settings can force and reset a model multi-agent preset", async ({ page })
 	});
 	await installLagunaFixture(page, "ready");
 	await openSettings(page);
-	await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
+	await page.getByTestId("settings-page").getByRole("button", { name: "Context" }).click();
 
 	const controls = page.getByRole("group", { name: "Laguna XS 2.1 multi-agent compatibility" });
 	const row = controls.locator("..");
@@ -1378,9 +1378,10 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(transcript.getByText("App.tsx")).toBeVisible();
 	await expect(transcript.getByText("Searched the web")).toBeVisible();
 	await expect(transcript.locator("code.mcp-activity-name").getByText("synth_containers.container_probe")).toBeVisible();
-	await expect(transcript.locator("code.mcp-activity-name").getByText("synth_visuals.visual_create")).toHaveCount(2);
-	await expect(transcript.getByText("Completed")).toHaveCount(2);
-	await expect(transcript.getByText("Failed")).toBeVisible();
+	await expect(transcript.getByText("Visual update failed", { exact: true })).toBeVisible();
+	await expect(transcript.getByText("Visual draft created", { exact: true })).toBeVisible();
+	await expect(transcript.getByText("Completed", { exact: true })).toHaveCount(1);
+	await expect(transcript.getByText("Needs attention", { exact: true })).toBeVisible();
 	await expect(transcript).toContainText("template id craftax.rollout.v1 · title Craftax rollout · 2ms");
 	await transcript.getByTestId("resource-shelf-trigger").click();
 	const resourceShelf = page.getByTestId("resource-shelf");
@@ -1397,11 +1398,9 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(visualPane.getByTestId("visual-craftax-eval-matrix")).toBeVisible();
 	await page.getByTestId("activity-mode-menu-trigger").click();
 	await page.getByTestId("activity-mode-option-grouped").click();
-	const groupedWithContext = transcript.locator(".activity-group").first();
-	await groupedWithContext.locator(".activity-group-toggle").click();
-	const contextualStep = groupedWithContext.locator(".activity-group-step.has-context").first();
-	expect((await contextualStep.locator(".activity-group-action").boundingBox())!.y)
-		.toBeGreaterThanOrEqual((await contextualStep.locator(".activity-group-context").boundingBox())!.y);
+	const groupedActions = transcript.locator(".activity-group").first();
+	await groupedActions.locator(".activity-group-toggle").click();
+	await expect(groupedActions.locator(".activity-group-step")).toHaveCount(4);
 	await expect(transcript.getByText(/Worked .*ran 1 command, read 1 file, searched once, used 4 tools/)).toBeVisible();
 	await expect(transcript).not.toContainText("super-secret-value");
 	await expect(transcript).not.toContainText("raw command output");

@@ -12,8 +12,13 @@ test("ChatGPT subscription card connects, shows allowance copy, and disconnects"
 				configured = true;
 				return { configured, accountHint: "person@example.com" };
 			},
-			status: async () => ({ configured, accountHint: configured ? "person@example.com" : null }),
-			disconnect: async () => ({ configured: configured = false }),
+			ensureReady: async () => configured
+				? ({ state: "ready" as const, action: "reauthenticate" as const, canUseModels: true, guidance: "Ready", configured, accountHint: "person@example.com" })
+				: ({ state: "disconnected" as const, action: "connect" as const, canUseModels: false, guidance: "Connect", configured }),
+			status: async () => configured
+				? ({ state: "ready" as const, action: "reauthenticate" as const, canUseModels: true, guidance: "Ready", configured, accountHint: "person@example.com" })
+				: ({ state: "disconnected" as const, action: "connect" as const, canUseModels: false, guidance: "Connect", configured }),
+			disconnect: async () => ({ state: "disconnected" as const, action: "connect" as const, canUseModels: false, guidance: "Connect", configured: configured = false }),
 			cancel: async () => undefined
 		};
 	});

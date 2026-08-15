@@ -651,7 +651,7 @@ impl OptimizerService {
             .find(|r| r.kind == "visual")
             .map(|r| r.id.clone());
         let template_id =
-            negotiate_visual_template(&run.algorithm_id, &self.manager.advertised_capabilities());
+            negotiate_visual_template(&run.algorithm_id, &self.manager.advertised_capabilities())?;
         let template_digest = self.manager.status().await.digest;
         let visual = if let Some(visual_id) = existing {
             self.visuals.get(visual_id).await?
@@ -1105,16 +1105,7 @@ fn algorithm_label(algorithm_id: &str) -> &'static str {
     }
 }
 
-fn primary_visual_template(algorithm_id: &str) -> &'static str {
-    match algorithm_id {
-        "sft" => "optimizer.sft.live.v1",
-        "gepa" => "optimizer.gepa.live.v1",
-        id if id == "dag" || id.starts_with("dag.") => "optimizer.dag.live.v1",
-        _ => "optimizer.run.v1",
-    }
-}
-
-fn negotiate_visual_template(algorithm_id: &str, advertised: &Value) -> String {
+fn negotiate_visual_template(algorithm_id: &str, advertised: &Value) -> Result<String> {
     let preferred: &[&str] = match algorithm_id {
         "sft" => &["optimizer.sft.live.v1", "optimizer.run.v1"],
         "gepa" => &["optimizer.gepa.live.v1", "optimizer.run.v1"],
@@ -1133,10 +1124,10 @@ fn negotiate_visual_template(algorithm_id: &str, advertised: &Value) -> String {
             .iter()
             .any(|value| value.as_str() == Some(candidate))
         {
-            return (*candidate).to_owned();
+            return Ok((*candidate).to_owned());
         }
     }
-    primary_visual_template(algorithm_id).into()
+    bail!("optimizer sidecar did not advertise a compatible visual template")
 }
 
 async fn materialize_optimizer_result(
@@ -2784,8 +2775,31 @@ mod tests {
         let content = ContentStore::new(storage.content_root());
         let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
         let (events_tx, events_rx) = tokio::sync::broadcast::channel(16);
+        let manager = Arc::new(crate::optimizers::OptimizerManager::with_home(
+            dir.path().join("optimizer-home"),
+        ));
+        std::fs::create_dir_all(manager.home()).unwrap();
+        std::fs::write(
+            manager.home().join("capabilities.json"),
+            serde_json::to_vec(&json!({
+                "compatibleTemplateIds": [
+                    "optimizer.gepa.live.v1",
+                    "optimizer.sft.live.v1",
+                    "optimizer.dag.live.v1",
+                    "optimizer.run.v1"
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         (
-            OptimizerService::new(storage.database().clone(), journal, visuals, events_tx),
+            OptimizerService::new_with_manager(
+                storage.database().clone(),
+                journal,
+                visuals,
+                events_tx,
+                manager,
+            ),
             dir,
             events_rx,
         )
@@ -2874,6 +2888,18 @@ mod tests {
             second_event.unwrap().session_id.as_deref(),
             Some("session_current")
         );
+    }
+
+    #[test]
+    fn visual_negotiation_refuses_unadvertised_templates() {
+        let error = negotiate_visual_template(
+            "gepa",
+            &json!({
+                "compatibleTemplateIds": ["optimizer.sft.live.v1"]
+            }),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("did not advertise"));
     }
 
     #[tokio::test]

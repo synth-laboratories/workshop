@@ -1,6 +1,19 @@
 mod account;
 mod account_cloud;
 mod cloud;
+
+/// Narrow public seam for the standalone Intern wire-contract integration
+/// test. Re-exporting the protocol types keeps that test on the real crate
+/// graph; path-including `cloud/mod.rs` built a second fake crate root and
+/// failed as soon as cloud code referenced `crate::storage` or `crate::error`.
+#[doc(hidden)]
+pub mod intern_protocol_test_support {
+    pub use crate::cloud::intern::{
+        normalize_event, AsyncCommandRequest, AsyncEnsureRequest, CommandReceipt, InternClient,
+        InternEvent, InternRuntime, RuntimeBinding, RuntimeKind, SyncCommandRequest,
+        SyncCreateRequest,
+    };
+}
 mod codex;
 mod codex_oauth;
 mod container_stream;
@@ -676,21 +689,25 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         credential_names: vec![],
         preparation_digest: None,
     };
-    let paid_approval_id = codex.approvals.authorize_host(app, session_id, paid)
+    let paid_approval_id = codex
+        .approvals
+        .authorize_host(app, session_id, paid)
         .await
         .map_err(AppError::from)?;
 
     for provider in optimizer_recipe_credentials(&request.recipe_id) {
-        codex.approvals.authorize_host(
-            app,
-            session_id,
-            session::approval::ApprovalKind::CredentialAccess {
-                provider: (*provider).into(),
-                purpose: format!("run bounded optimizer recipe {}", request.recipe_id),
-            },
-        )
-        .await
-        .map_err(AppError::from)?;
+        codex
+            .approvals
+            .authorize_host(
+                app,
+                session_id,
+                session::approval::ApprovalKind::CredentialAccess {
+                    provider: (*provider).into(),
+                    purpose: format!("run bounded optimizer recipe {}", request.recipe_id),
+                },
+            )
+            .await
+            .map_err(AppError::from)?;
     }
 
     let sidecar_status = state.optimizers().manager().refresh().await;
@@ -700,16 +717,18 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         } else {
             "start"
         };
-        codex.approvals.authorize_host(
-            app,
-            session_id,
-            session::approval::ApprovalKind::SidecarLifecycle {
-                sidecar: "optimizers".into(),
-                action: action.into(),
-            },
-        )
-        .await
-        .map_err(AppError::from)?;
+        codex
+            .approvals
+            .authorize_host(
+                app,
+                session_id,
+                session::approval::ApprovalKind::SidecarLifecycle {
+                    sidecar: "optimizers".into(),
+                    action: action.into(),
+                },
+            )
+            .await
+            .map_err(AppError::from)?;
     }
 
     let (run, event) = state
@@ -2087,7 +2106,7 @@ async fn account_summary_now(
         core.storage(),
         &origin,
         &settings.profile,
-        settings.api_key_configured,
+        settings.api_key_configured && !read.unauthenticated,
         now,
         &read,
     )
@@ -2484,16 +2503,12 @@ async fn prepare_codex_provider(
             request.api_key = laguna.api_key().unwrap_or_default();
         }
         codex::ProviderClass::OpenRouter => {
-            let key = synth_config::openrouter_api_key()
-                .map_err(AppError::from)?
-                .ok_or_else(|| {
-                    AppError::message(
-                        "OpenRouter API key is not configured. Add it in Synth backend settings.",
-                    )
-                })?;
+            let key = synth_config::openrouter_api_key().map_err(AppError::from)?;
             // The OpenRouter key is the user's, and leaks into shell snapshots
             // the same way the Synth key did; it goes into native custody too.
-            codex::stage_brokered_credential(&mut request, &key)?;
+            // Its origin is also native-owned: renderer input must never decide
+            // where that credential is forwarded.
+            codex::apply_openrouter_provider(&mut request, key.as_deref())?;
         }
         codex::ProviderClass::SynthCloud => {
             let resolved = synth_config::resolve().map_err(AppError::from)?;
@@ -2563,9 +2578,37 @@ async fn codex_turn_send(
         .map_err(|error| CodexTurnFailure {
             code: "codex_provider_unavailable".into(),
             message: error.message.clone(),
-            session_id,
+            session_id: session_id.clone(),
             detail: error.detail,
         })?;
+    if codex::provider_class(request.start.provider_name.as_deref())
+        == codex::ProviderClass::SynthCloud
+    {
+        let resolved = synth_config::resolve().map_err(|error| CodexTurnFailure {
+            code: "synth_cloud_admission_failed".into(),
+            message: error.to_string(),
+            session_id: session_id.clone(),
+            detail: String::new(),
+        })?;
+        // Admission is intentionally isolated from the display cache. A
+        // network failure or revoked key must fail closed rather than reuse a
+        // previously healthy account snapshot for a paid turn.
+        let admission = account_cloud::AccountCloudClient::open();
+        let read = admission
+            .read(
+                &resolved.backend_url,
+                resolved.api_key.as_deref(),
+                true,
+                chrono::Utc::now(),
+            )
+            .await;
+        account_cloud::validate_turn_admission(&read).map_err(|message| CodexTurnFailure {
+            code: "synth_cloud_admission_failed".into(),
+            message,
+            session_id: session_id.clone(),
+            detail: String::new(),
+        })?;
+    }
     state.send_turn(app, request).await
 }
 
@@ -2625,8 +2668,12 @@ async fn codex_thread_compact(
 async fn codex_thread_read(
     state: State<'_, Arc<CodexManager>>,
     request: CodexThreadReadRequest,
-) -> Result<Value, AppError> {
-    state.read_thread(request).await.map_err(AppError::from)
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .read_thread(request)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -2634,10 +2681,11 @@ async fn codex_thread_read(
 async fn codex_thread_items_list(
     state: State<'_, Arc<CodexManager>>,
     request: CodexThreadItemsRequest,
-) -> Result<Value, AppError> {
+) -> Result<contract::specta::OpaqueJson, AppError> {
     state
         .list_thread_items(request)
         .await
+        .map(contract::specta::OpaqueJson)
         .map_err(AppError::from)
 }
 

@@ -124,7 +124,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = ContentStore::new(dir.path());
         let digest = store.put_bytes("report_bundles", b"sealed report").unwrap();
-        fs::write(store.path_for("report_bundles", &digest), b"tampered report").unwrap();
+        fs::write(
+            store.path_for("report_bundles", &digest),
+            b"tampered report",
+        )
+        .unwrap();
 
         let error = store
             .get_bytes("report_bundles", &digest)

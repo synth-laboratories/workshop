@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import time
 from collections import deque
 from copy import deepcopy
@@ -106,6 +107,23 @@ class ResponsesService:
         while True:
             await asyncio.sleep(1.0)
             await self.unload_if_idle()
+
+    async def watch_memory_pressure(self) -> None:
+        """Evict idle MLX or terminate this sidecar under sustained emergency."""
+        relieve = getattr(self.backend, "relieve_memory_pressure", None)
+        if relieve is None:
+            while True:
+                await asyncio.sleep(5.0)
+        emergencies = 0
+        while True:
+            await asyncio.sleep(1.0)
+            outcome = await relieve()
+            emergencies = emergencies + 1 if outcome == "active_emergency" else 0
+            if emergencies >= 2:
+                # Native prefill may be blocked in a worker and unable to honor
+                # cooperative cancellation. Immediate sidecar exit is the one
+                # bounded way to return its Metal allocation to macOS.
+                os._exit(70)
 
     def residency(self) -> dict[str, Any] | None:
         residency = getattr(self.backend, "residency", None)

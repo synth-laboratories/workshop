@@ -36,7 +36,8 @@ function appEventToCodexEvent(event: AppEvent): CodexEvent | null {
 	// Native approval requests for plugin lifecycle and paid compute are
 	// intentionally journaled as system events, but they still belong to the
 	// active Codex session and must render as blocking approval cards.
-	if (!event.sessionId || (event.source !== "codex" && !event.kind.startsWith("approval."))) return null;
+	const isApprovalBoundary = event.kind.startsWith("approval.");
+	if (!event.sessionId || (event.source !== "codex" && !isApprovalBoundary)) return null;
 	const params =
 		event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
 			? (event.payload as Record<string, unknown>)

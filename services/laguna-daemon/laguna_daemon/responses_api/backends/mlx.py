@@ -33,6 +33,8 @@ _TOOL_CALL_STOP_GRACE_TOKENS = 16
 _MIN_SYSTEM_MEMORY_BYTES = 32 * 1024**3
 _MODEL_MEMORY_HEADROOM_BYTES = 8 * 1024**3
 _MIN_AVAILABLE_MEMORY_BYTES = 24 * 1024**3
+_RESIDENT_MEMORY_FLOOR_BYTES = 4 * 1024**3
+_EMERGENCY_MEMORY_FLOOR_BYTES = 2 * 1024**3
 
 
 def _physical_memory_bytes() -> int | None:
@@ -699,11 +701,13 @@ class NativeMlxBackend:
                         self._system_memory_bytes is not None
                         and self._system_memory_bytes < required_memory
                     )
-                    available_gib = min(
-                        value
-                        for value in (self._system_memory_bytes, available_memory)
-                        if value is not None
-                    ) / 1024**3
+                    measured_capacity = (
+                        self._system_memory_bytes
+                        if capacity_shortfall
+                        else available_memory
+                    )
+                    assert measured_capacity is not None
+                    available_gib = measured_capacity / 1024**3
                     required_gib = (
                         required_memory if capacity_shortfall else required_available
                     ) / 1024**3
@@ -1232,6 +1236,32 @@ class NativeMlxBackend:
                     return False
             await self._release_model_memory()
             return True
+
+    async def relieve_memory_pressure(self) -> str:
+        """Continuously enforce a safe floor while MLX weights are resident."""
+        if self._model is None:
+            return "ok"
+        available = (
+            self._available_memory_override
+            if self._available_memory_override is not None
+            else _available_memory_bytes()
+        )
+        if available is None or available >= _RESIDENT_MEMORY_FLOOR_BYTES:
+            return "ok"
+        async with self._load_lock:
+            async with self._admission_lock:
+                if self._model is None:
+                    return "ok"
+                if self._inflight_generations > 0:
+                    for flag in self._cancel_flags.values():
+                        flag.set()
+                    return (
+                        "active_emergency"
+                        if available < _EMERGENCY_MEMORY_FLOOR_BYTES
+                        else "ok"
+                    )
+            await self._release_model_memory()
+            return "unloaded"
 
     async def _release_model_memory(self) -> None:
         def release() -> None:

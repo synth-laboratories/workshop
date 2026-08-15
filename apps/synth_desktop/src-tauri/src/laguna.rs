@@ -378,9 +378,33 @@ impl LagunaManager {
         let model_dir = models_root.join(spec.id);
         fs::create_dir_all(&model_dir)?;
         let python = LagunaRuntimeState::detect().require_ready()?;
-        let script = r#"from huggingface_hub import snapshot_download
-import json, sys
-snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[3])
+        let script = r#"from huggingface_hub import HfApi, snapshot_download
+import hashlib, json, pathlib, sys
+repo, revision, target = sys.argv[1], sys.argv[2], pathlib.Path(sys.argv[3])
+snapshot_download(repo_id=repo, revision=revision, local_dir=target)
+index = json.loads((target / 'model.safetensors.index.json').read_text())
+shards = {v for v in (index.get('weight_map') or {}).values()
+          if isinstance(v, str) and v.endswith('.safetensors')}
+if not shards:
+    raise RuntimeError('model index references no safetensor shards')
+info = HfApi().model_info(repo, revision=revision, files_metadata=True)
+expected = {}
+for sibling in info.siblings:
+    lfs = getattr(sibling, 'lfs', None)
+    digest = lfs.get('sha256') if isinstance(lfs, dict) else getattr(lfs, 'sha256', None)
+    if isinstance(digest, str) and len(digest) == 64:
+        expected[sibling.rfilename] = digest.lower()
+for shard in sorted(shards):
+    if '/' in shard or '\\' in shard:
+        raise RuntimeError(f'unsafe indexed model shard: {shard}')
+    if shard not in expected:
+        raise RuntimeError(f'provider omitted a SHA-256 for model shard: {shard}')
+    hasher = hashlib.sha256()
+    with (target / shard).open('rb') as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b''):
+            hasher.update(chunk)
+    if hasher.hexdigest() != expected[shard]:
+        raise RuntimeError(f'provider checksum mismatch for model shard: {shard}')
 "#;
         progress(
             "downloading",
@@ -1315,6 +1339,9 @@ fn spawn_sidecar(root: &Path, api_key: &str, backend: &str) -> Result<()> {
         "PYTHONPATH",
         append_path(&daemon, env::var("PYTHONPATH").ok()),
     );
+    // Keep explicit ownership even though the daemon has its own process group:
+    // if Desktop crashes, the large MLX allocation must not survive it.
+    command.env("SYNTH_DESKTOP_PARENT_PID", std::process::id().to_string());
     apply_daemon_env(&mut command, api_key, backend, &models_dir()?);
     detach(&mut command);
     let child = command.spawn().context("spawn Laguna sidecar")?;

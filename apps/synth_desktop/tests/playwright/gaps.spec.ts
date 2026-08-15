@@ -146,7 +146,7 @@ test.describe("coverage gaps", () => {
 			send("turn/completed", { turn: { id: "turn-visual-create" } });
 		});
 		const transcript = page.getByTestId("chat-transcript");
-		await expect(transcript.locator("code.mcp-activity-name").getByText("synth_visuals.visual_manage")).toBeVisible();
+		await expect(transcript.getByText("Visual draft created", { exact: true })).toBeVisible();
 		const open = transcript.getByTestId("tool-visual-open-vis-originating-create");
 		await expect(open).toBeVisible();
 		await open.click();

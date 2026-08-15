@@ -1,11 +1,11 @@
 //! Authenticated loopback IPC so the visual MCP adapter never opens SQLite.
 
+use crate::codex::CodexManager;
 use crate::container_stream::{
     authoritative_poll_telemetry, declared_poll_url, declared_sse_url, declared_stream_descriptor,
     refuse_auto_transport, require_caller_policy_ref, require_task_instance, resolve_declared_url,
     wait_for_stream_subscribed, SUBSCRIBE_READY_TIMEOUT,
 };
-use crate::codex::CodexManager;
 use crate::core_runtime::CoreRuntime;
 use crate::data::ContainerRegisterRequest;
 use crate::domain::{PresentationField, SessionTitleOrigin};
@@ -741,10 +741,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             request.projection = None;
             let projection_verified = if let Ok(resolved) = core
                 .data()
-                .resolve_trace_projection(
-                    request.trace_digest.clone(),
-                    "rollout-inspector".into(),
-                )
+                .resolve_trace_projection(request.trace_digest.clone(), "rollout-inspector".into())
                 .await
             {
                 request.projection = Some(resolved.payload);

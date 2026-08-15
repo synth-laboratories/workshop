@@ -541,12 +541,15 @@ impl CodexManager {
             .map(|record| record.provider_name.clone())
             .unwrap_or_else(|| "custom".into());
         let pending_turn_id = format!("pending-{}", uuid::Uuid::new_v4().simple());
+        let receipt_scope = uuid::Uuid::new_v4().simple().to_string();
+        self.broker.begin_turn(&request.session_id, &receipt_scope);
         self.performance_trackers.lock().await.insert(
             request.session_id.clone(),
             TurnPerformanceTracker {
                 provider,
                 model_id: session.model.clone(),
                 turn_id: pending_turn_id.clone(),
+                receipt_scope,
                 started_at_ms,
                 first_output_at_ms: None,
                 last_output_at_ms: None,
@@ -882,16 +885,8 @@ impl CodexManager {
             .await?;
         let owned = events.iter().any(|event| {
             payload_mentions_thread(&event.payload, thread_id)
-                || event
-                    .payload
-                    .get("threadId")
-                    .and_then(Value::as_str)
-                    == Some(thread_id)
-                || event
-                    .payload
-                    .get("thread_id")
-                    .and_then(Value::as_str)
-                    == Some(thread_id)
+                || event.payload.get("threadId").and_then(Value::as_str) == Some(thread_id)
+                || event.payload.get("thread_id").and_then(Value::as_str) == Some(thread_id)
         });
         if !owned {
             anyhow::bail!("thread {thread_id} is not owned by session {session_id}");
@@ -1073,11 +1068,7 @@ impl CodexManager {
         let _ = self.persist_records().await;
         if let Ok(Some(mutation)) = self
             .persistence
-            .set_title(
-                session_id.to_owned(),
-                title,
-                SessionTitleOrigin::Manual,
-            )
+            .set_title(session_id.to_owned(), title, SessionTitleOrigin::Manual)
             .await
         {
             if let Some(event) = mutation.event {
@@ -1138,12 +1129,7 @@ impl CodexManager {
         }
         let _ = self.persist_records().await;
         let record = mutation.map(|item| item.value);
-        let fallback = self
-            .records
-            .read()
-            .await
-            .get(session_id)
-            .cloned();
+        let fallback = self.records.read().await.get(session_id).cloned();
         Ok(json!({
             "sessionId": session_id,
             "title": record.as_ref().map(|item| item.title.clone())
@@ -1179,7 +1165,8 @@ fn payload_mentions_thread(payload: &Value, thread_id: &str) -> bool {
                     {
                         return true;
                     }
-                    if walk(nested, thread_id) && matches!(key.as_str(), "item" | "params" | "payload")
+                    if walk(nested, thread_id)
+                        && matches!(key.as_str(), "item" | "params" | "payload")
                     {
                         return true;
                     }

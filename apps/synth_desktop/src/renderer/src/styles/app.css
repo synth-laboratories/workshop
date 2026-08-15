@@ -3903,11 +3903,9 @@ html.sidebar-hidden .titlebar {
 
 @keyframes visual-in {
 	from {
-		opacity: 0;
 		transform: translateX(12px);
 	}
 	to {
-		opacity: 1;
 		transform: translateX(0);
 	}
 }
@@ -7119,15 +7117,15 @@ html.sidebar-hidden .sidebar {
 
 /* ── Optimizer workbench ── */
 
-.optimizers-page { gap: 0; background: #f7f8fa; }
+.optimizers-page { gap: 0; background: var(--color-bg); color: var(--color-text); }
 .optimizer-head { align-items: center; gap: 12px; margin-bottom: 16px; }
-.optimizer-back-button { flex: 0 0 auto; width: 34px; height: 34px; border: 1px solid var(--color-border); border-radius: 10px; background: #fff; color: var(--color-text-muted); font-size: 17px; }
+.optimizer-back-button { flex: 0 0 auto; width: 34px; height: 34px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-card); color: var(--color-text-muted); font-size: 17px; }
 .optimizer-back-button:hover { border-color: #c9ced4; color: var(--color-text); }
 .optimizer-head-copy { min-width: 0; }
 .optimizer-head-copy h1 { margin-top: 2px; }
 .optimizer-head-actions { display: flex; align-items: center; gap: 7px; margin-left: auto; }
 .optimizer-head-actions button { min-height: 34px; padding: 0 12px; border-radius: 8px; font-size: 12px; font-weight: 650; }
-.optimizer-plugin-status { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 18px; margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--color-border); border-radius: 12px; background: #fff; }
+.optimizer-plugin-status { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 18px; margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-card); }
 .optimizer-plugin-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; min-width: 0; }
 .optimizer-plugin-status strong { font-size: 13px; }
 .optimizer-plugin-status code { font-size: 11px; color: var(--color-text-muted); }
@@ -7404,6 +7402,7 @@ html.sidebar-hidden .sidebar {
 .visual-lifecycle-copy { display: grid; min-width: 0; gap: 2px; flex: 1; }
 .visual-lifecycle-copy strong { font-size: 13px; font-weight: 600; }
 .visual-lifecycle-copy > span { display: flex; align-items: center; gap: 5px; color: var(--color-text-muted); font-size: 11px; }
+.visual-lifecycle-copy > .visual-lifecycle-detail { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .visual-lifecycle-copy i { width: 13px; height: 1px; background: var(--color-border-strong); }
 .visual-lifecycle-status,
 .visual-card-status { font-size: 11px; font-weight: 600; white-space: nowrap; }

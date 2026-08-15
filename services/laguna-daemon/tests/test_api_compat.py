@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
 import tempfile
 import threading
 import time
@@ -8,13 +10,15 @@ import unittest
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from laguna_daemon.app import build_app
+from laguna_daemon.app import _desktop_parent_pid, _process_is_alive, build_app
 from laguna_daemon.config import LagunaConfig
 from laguna_daemon.responses_api.backends.mlx import NativeMlxBackend
 from laguna_daemon.responses_api.telemetry import GenerationTiming
+from laguna_daemon.synth_control import _verify_huggingface_shards
 
 
 def _config(
@@ -43,6 +47,64 @@ def _config(
         context_length=262144,
         started_at=time.time(),
     )
+
+
+class ProviderChecksumTests(unittest.TestCase):
+    def test_every_indexed_shard_must_match_provider_sha256(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="laguna-checksum-") as tmp:
+            root = Path(tmp)
+            shard = root / "weights.safetensors"
+            shard.write_bytes(b"verified weights")
+            (root / "model.safetensors.index.json").write_text(
+                '{"weight_map":{"layer":"weights.safetensors"}}',
+                encoding="utf-8",
+            )
+            digest = hashlib.sha256(shard.read_bytes()).hexdigest()
+            api = SimpleNamespace(
+                model_info=lambda *args, **kwargs: SimpleNamespace(
+                    siblings=[
+                        SimpleNamespace(
+                            rfilename="weights.safetensors",
+                            lfs=SimpleNamespace(sha256=digest),
+                        )
+                    ]
+                )
+            )
+
+            _verify_huggingface_shards("owner/model", "commit", root, api=api)
+            shard.write_bytes(b"tampered")
+            with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
+                _verify_huggingface_shards("owner/model", "commit", root, api=api)
+
+    def test_missing_provider_digest_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="laguna-checksum-") as tmp:
+            root = Path(tmp)
+            (root / "weights.safetensors").write_bytes(b"weights")
+            (root / "model.safetensors.index.json").write_text(
+                '{"weight_map":{"layer":"weights.safetensors"}}',
+                encoding="utf-8",
+            )
+            api = SimpleNamespace(
+                model_info=lambda *args, **kwargs: SimpleNamespace(siblings=[])
+            )
+            with self.assertRaisesRegex(RuntimeError, "omitted a SHA-256"):
+                _verify_huggingface_shards("owner/model", "commit", root, api=api)
+
+
+class ParentOwnershipTests(unittest.TestCase):
+    def test_parent_pid_is_explicit_and_validated(self) -> None:
+        previous = os.environ.get("SYNTH_DESKTOP_PARENT_PID")
+        try:
+            os.environ["SYNTH_DESKTOP_PARENT_PID"] = str(os.getpid())
+            self.assertEqual(_desktop_parent_pid(), os.getpid())
+            self.assertTrue(_process_is_alive(os.getpid()))
+            os.environ["SYNTH_DESKTOP_PARENT_PID"] = "not-a-pid"
+            self.assertIsNone(_desktop_parent_pid())
+        finally:
+            if previous is None:
+                os.environ.pop("SYNTH_DESKTOP_PARENT_PID", None)
+            else:
+                os.environ["SYNTH_DESKTOP_PARENT_PID"] = previous
 
 
 class SidecarApiCompatTests(unittest.TestCase):
@@ -189,6 +251,26 @@ class NativeResidencyLifecycleTests(unittest.IsolatedAsyncioTestCase):
         backend._inflight_generations = 0
         self.assertTrue(await backend.unload_if_idle(1))
         self.assertIsNone(backend._model)
+        await backend.close()
+
+    async def test_memory_pressure_unloads_idle_weights(self) -> None:
+        backend = self._backend()
+        backend._available_memory_override = 3 * 1024**3
+        self.assertEqual(await backend.relieve_memory_pressure(), "unloaded")
+        self.assertIsNone(backend._model)
+        await backend.close()
+
+    async def test_emergency_pressure_cancels_active_generation(self) -> None:
+        backend = self._backend()
+        backend._available_memory_override = 1024**3
+        backend._inflight_generations = 1
+        cancel = threading.Event()
+        backend._cancel_flags["generation"] = cancel
+        self.assertEqual(
+            await backend.relieve_memory_pressure(), "active_emergency"
+        )
+        self.assertTrue(cancel.is_set())
+        backend._inflight_generations = 0
         await backend.close()
 
     async def test_zero_delay_disables_automatic_eviction(self) -> None:

@@ -10,8 +10,9 @@ mod telemetry;
 mod tests;
 
 pub use home::{
-    apply_brokered_credential, apply_synth_cloud_provider, codex_root, oauth_auth_path,
-    provider_class, scrub_oauth_auth_files, stage_brokered_credential, ProviderClass,
+    apply_brokered_credential, apply_openrouter_provider, apply_synth_cloud_provider, codex_root,
+    oauth_auth_path, provider_class, scrub_oauth_auth_files, stage_brokered_credential,
+    ProviderClass,
 };
 pub use manager::CodexManager;
 pub use proto::{

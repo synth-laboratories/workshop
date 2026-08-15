@@ -22,8 +22,9 @@ test.describe("preferences persistence", () => {
 		await page.getByTestId("theme-dark").click();
 		await page.getByTestId("tool-activity-compact").click();
 		await page.getByTestId("active-enter-steer").click();
+		await page.getByTestId("chat-font-size-trigger").click();
 		await page.getByTestId("chat-font-size").fill("18");
-		await page.getByTestId("chat-font-size").blur();
+		await page.getByRole("button", { name: "Apply", exact: true }).click();
 		await page.getByTestId("save-layout-default").click();
 
 		const stored = await page.evaluate(() => window.localStorage.getItem("synth.preferences.v1"));
@@ -67,10 +68,11 @@ test.describe("preferences persistence", () => {
 
 	test("invalid font size is rejected with feedback", async ({ page }) => {
 		await openSettings(page);
+		await page.getByTestId("chat-font-size-trigger").click();
 		await page.getByTestId("chat-font-size").fill("99");
-		await page.getByTestId("chat-font-size").blur();
+		await page.getByRole("button", { name: "Apply", exact: true }).click();
 		await expect(page.getByTestId("chat-font-size-error")).toBeVisible();
-		await expect(page.getByTestId("chat-font-size")).toHaveValue("14");
+		await expect(page.getByTestId("chat-font-size-trigger")).toContainText("14");
 	});
 });
 

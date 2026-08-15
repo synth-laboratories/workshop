@@ -176,7 +176,7 @@ class HuggingFaceDownloader:
         destination: Path,
         progress: Callable[[int | None, int | None], None],
     ) -> None:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import HfApi, snapshot_download
 
         destination.mkdir(parents=True, exist_ok=True)
         # snapshot_download exposes no byte-level callback through this API,
@@ -184,6 +184,54 @@ class HuggingFaceDownloader:
         snapshot_download(
             repo_id=model, revision=self.revision, local_dir=str(destination)
         )
+        _verify_huggingface_shards(
+            model, self.revision, destination, api=HfApi()
+        )
+
+
+def _verify_huggingface_shards(
+    model: str,
+    revision: str | None,
+    destination: Path,
+    *,
+    api: Any,
+) -> None:
+    """Hash every indexed weight shard against provider LFS metadata."""
+    index_path = destination / "model.safetensors.index.json"
+    if not index_path.is_file():
+        return
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    shards = {
+        value
+        for value in (index.get("weight_map") or {}).values()
+        if isinstance(value, str) and value.endswith(".safetensors")
+    }
+    if not shards:
+        raise RuntimeError("model index references no safetensor shards")
+    info = api.model_info(model, revision=revision, files_metadata=True)
+    provider_hashes: dict[str, str] = {}
+    for sibling in info.siblings:
+        lfs = getattr(sibling, "lfs", None)
+        digest = (
+            lfs.get("sha256")
+            if isinstance(lfs, dict)
+            else getattr(lfs, "sha256", None)
+        )
+        if isinstance(digest, str) and len(digest) == 64:
+            provider_hashes[sibling.rfilename] = digest.lower()
+    for shard in sorted(shards):
+        if "/" in shard or "\\" in shard:
+            raise RuntimeError(f"unsafe indexed model shard: {shard}")
+        expected = provider_hashes.get(shard)
+        if expected is None:
+            raise RuntimeError(f"provider omitted a SHA-256 for model shard: {shard}")
+        hasher = hashlib.sha256()
+        with (destination / shard).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+                hasher.update(chunk)
+        actual = hasher.hexdigest()
+        if actual != expected:
+            raise RuntimeError(f"provider checksum mismatch for model shard: {shard}")
 
 
 @dataclass(slots=True)

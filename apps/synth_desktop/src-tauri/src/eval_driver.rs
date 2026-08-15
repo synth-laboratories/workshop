@@ -593,11 +593,10 @@ async fn prepare_start(
             request.api_key = laguna.api_key().unwrap_or_default();
         }
         crate::codex::ProviderClass::OpenRouter => {
-            let key = synth_config::openrouter_api_key()?
-                .ok_or_else(|| anyhow!("OpenRouter API key is not configured"))?;
+            let key = synth_config::openrouter_api_key()?;
             // Staged for native custody, exactly like the production path;
             // `CodexManager::start` exchanges it for a loopback lease at spawn.
-            crate::codex::stage_brokered_credential(&mut request, &key)
+            crate::codex::apply_openrouter_provider(&mut request, key.as_deref())
                 .map_err(|message| anyhow!(message))?;
         }
         crate::codex::ProviderClass::SynthCloud => {

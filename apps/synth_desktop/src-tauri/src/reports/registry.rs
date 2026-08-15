@@ -2413,4 +2413,15 @@ mod tests {
         assert!(html.contains("\\u003c/SCRIPT>"));
         assert!(html.contains("\\u003c/ScRiPt>"));
     }
+
+    #[test]
+    fn frozen_report_runtime_validates_data_owned_colors_before_markup() {
+        assert!(FROZEN_RUNTIME.contains("function color(value"));
+        for unsafe_interpolation in ["${arm.color}", "${p.color}"] {
+            assert!(
+                !FROZEN_RUNTIME.contains(unsafe_interpolation),
+                "unvalidated style/SVG interpolation returned: {unsafe_interpolation}"
+            );
+        }
+    }
 }

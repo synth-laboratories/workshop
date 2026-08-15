@@ -1249,11 +1249,11 @@ export function eventsToLocalActivity(
 			if (messageText) lastContentSequenceByMessageId.set(resolvedAssistant, event.sequence);
 		}
 		if (event.eventKind === "message.created" && payload.role === "user") {
-			const userIndex = messages.findIndex((message) => message.id === explicit);
-			const followingAssistant = userIndex >= 0
-				? messages.slice(userIndex + 1).find((message) => message.role === "assistant")
-				: undefined;
-			current = followingAssistant?.id ?? "__active__";
+			// `messages` is the projection of the complete event slice, so it may
+			// already contain a future assistant message. Do not attach activity
+			// following this user event to that future bubble until its own event is
+			// encountered; otherwise pre-answer tools render below the answer.
+			current = "__active__";
 			shownToolLines.clear();
 			openCompactionLine = undefined;
 			continue;

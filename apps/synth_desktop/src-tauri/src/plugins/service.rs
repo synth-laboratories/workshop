@@ -94,7 +94,7 @@ impl PluginService {
                         .map(str::to_string)
                         .collect()
                 })
-                .unwrap_or_else(|| vec!["gepa".into()]),
+                .unwrap_or_default(),
             templates: capabilities
                 .get("compatibleTemplateIds")
                 .and_then(Value::as_array)
@@ -105,9 +105,7 @@ impl PluginService {
                         .map(str::to_string)
                         .collect()
                 })
-                .unwrap_or_else(|| {
-                    vec!["optimizer.gepa.live.v1".into(), "optimizer.run.v1".into()]
-                }),
+                .unwrap_or_default(),
             last_action_receipt_id: None,
             detail: sidecar.detail.as_deref().map(redact_secrets),
         };
@@ -335,9 +333,7 @@ impl PluginService {
             session_id: session_id.into(),
             instance_id: format!("desktop-{}", std::process::id()),
         };
-        let approval_id = broker
-            .request(app, origin.clone(), kind, resolver)
-            .await?;
+        let approval_id = broker.request(app, origin.clone(), kind, resolver).await?;
         let decision = match tokio::time::timeout(PLUGIN_APPROVAL_TIMEOUT, rx).await {
             Ok(result) => result,
             Err(_) => {
@@ -347,8 +343,8 @@ impl PluginService {
                 bail!("plugin approval timed out");
             }
         }
-            .map_err(|_| anyhow!("plugin approval waiter closed"))?
-            .map_err(|reason| anyhow!("plugin approval expired: {reason}"))?;
+        .map_err(|_| anyhow!("plugin approval waiter closed"))?
+        .map_err(|reason| anyhow!("plugin approval expired: {reason}"))?;
         Ok(Authorization {
             approval_id,
             rejected: matches!(decision, ApprovalDecision::Reject),

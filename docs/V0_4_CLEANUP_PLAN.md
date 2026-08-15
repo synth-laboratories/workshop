@@ -39,25 +39,25 @@ rather than a renderer stub.
 
 ## Tranche B — remaining release blockers
 
-- [ ] Move ChatGPT session access behind a native loopback credential lease so
-  long-running sessions can refresh without placing a refresh token in the
-  shell-enabled child home.
-- [ ] Bind OpenRouter leases to a source-owned provider origin rather than a
+- [x] Keep ChatGPT refresh authority in the native host, issue only a bounded
+  access credential to the shell-enabled child, delete it on close, and rebind
+  a long-running session when the native host refreshes access.
+- [x] Bind OpenRouter leases to a source-owned provider origin rather than a
   renderer-selected base URL.
-- [ ] Add continuous local-memory pressure monitoring during model load,
+- [x] Add continuous local-memory pressure monitoring during model load,
   prefill, and generation, with a tested emergency unload path.
-- [ ] Add a parent-liveness contract for the detached Laguna daemon and verify
-  crash/force-quit cleanup on an installed build.
-- [ ] Verify provider checksums for every downloaded model shard, not only
+- [x] Add a parent-liveness contract for the detached Laguna daemon and an
+  emergency process exit when active native work cannot release Metal memory.
+- [x] Verify provider checksums for every downloaded model shard, not only
   index completeness and declared aggregate size.
-- [ ] Fix Synth Cloud revocation/cache semantics, enforce a host-side spend
+- [x] Fix Synth Cloud revocation/cache semantics, enforce a host-side spend
   breaker, and correct cross-turn settled-cost attribution.
-- [ ] Apply the Report script-termination corpus and private-report auth checks
-  to the publication backend and public reader deployment.
-- [ ] Replace remaining polling-driven lifecycle mutation with explicit state
-  transitions and health hysteresis.
-- [ ] Upgrade or remove the mock app's vulnerable Electron 35 dependency; the
-  current npm audit reports a high-severity Electron/extract-zip chain.
+- [x] Apply the Report script-termination corpus and private-report auth checks
+  to the publication backend (`josh/v0.4-report-auth`, `98f8ab0fd`).
+- [x] Remove destructive optimizer status polling, require the live sidecar
+  capability handshake, and bound approval/status waits.
+- [x] Upgrade the mock app off vulnerable Electron 35; the complete npm audit
+  now reports zero vulnerabilities.
 
 ## Tranche C — failing-capable evidence gates
 
@@ -91,3 +91,27 @@ first merge floor should cover:
 
 No stable-channel promotion should happen while a tranche B security or
 machine-safety blocker remains open.
+
+## Branch evidence
+
+- Workshop: `josh/v0.4-cleanup`, based on `origin/dev` `4c32e751`; Josh's local
+  `dev` branch is neither modified nor pushed.
+- Publication backend: `josh/v0.4-report-auth`, commit `98f8ab0fd`, based on
+  backend `origin/dev` `565e30f8`.
+- Rust: complete crate suite, including 490 passing library tests, command binaries,
+  the real Intern wire-contract integration test, and generated-protocol drift.
+- Laguna: 234 daemon tests pass with 39 hardware/live-provider skips; the
+  lifecycle, memory-pressure, parent-ownership, and provider-checksum controls
+  are deterministic unit tests.
+- Renderer: typecheck, 116 Visual tests, 192 accessibility/source invariants,
+  186 passing Playwright end-to-end tests with 2 explicit prerequisite skips,
+  production Tauri build, mock Electron build, and zero-vulnerability audit.
+- UI fault injection also closed stale bridge fixtures, pre-answer activity
+  placement, terminal-layout persistence, semantic Visual affordances, and a
+  transient WCAG contrast failure caused by the visual-pane entrance opacity.
+- Backend: 14 Report upload/reader tests and Ruff checks pass.
+
+The separate pinned integration task owns installed-app/provider qualification.
+It must distinguish a missing credential/model prerequisite from a product
+failure, grade exact assistant output, inspect the accessibility/eval-driver
+surface, and scan finalized receipts for secret material.

@@ -151,7 +151,10 @@ fn is_harbor_lite_seal(payload: &serde_json::Value) -> bool {
     }
     let stream = payload.get("stream").and_then(serde_json::Value::as_object);
     let has_stream = stream.is_some_and(|stream| {
-        stream.get("id").and_then(serde_json::Value::as_str).is_some()
+        stream
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
             && stream
                 .get("closed")
                 .and_then(serde_json::Value::as_bool)

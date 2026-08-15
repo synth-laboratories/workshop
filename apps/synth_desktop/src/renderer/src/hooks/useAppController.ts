@@ -396,11 +396,7 @@ export function useAppController() {
 			if (!(event.metaKey || event.ctrlKey)) return;
 			if (event.key.toLowerCase() === "j" && !event.shiftKey) {
 				event.preventDefault();
-				setTerminalOpen((current) => {
-					const next = !current;
-					persistLayoutSnapshot({ bottomPanelVisible: next });
-					return next;
-				});
+				persistLayoutSnapshot({ bottomPanelVisible: !terminalOpen });
 			}
 			if (event.key.toLowerCase() === "t" && event.shiftKey) {
 				event.preventDefault();
@@ -412,7 +408,7 @@ export function useAppController() {
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	}, []);
+	}, [persistLayoutSnapshot, terminalOpen]);
 
 	useEffect(() => {
 		let disposed = false;
