@@ -16,6 +16,9 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
    - SFT: train and compare model weights/checkpoints. Stream hosted SFT with `sft.hosted.fixture.v1`; the Tinker Craftax smoke is `sft.craftax.gpt-oss.smoke.v1`. The Craftax Nemotron 3.5 Lightning hosted recipe (`sft.craftax.nemotron-nano.tinker.v1`) POSTs to local/hosted optimizers-beta and evaluates against the local Craftax slot. Student ids: `docs/sft_tinker_base_models.toml`. Read [references/sft.md](references/sft.md).
 3. For a local recipe, report its availability, exact fixed inputs, hard limits, prerequisite services, credential names, and whether its cost is dollar-capped or only compute-bounded.
 4. Enforced connect-before-start: `prepare` → `open_visual` → `await_ready` → `start`. `start` requires a visual readiness receipt and a separate compute approval bound to the prepared run. Listing, importing, reconciling, inspecting, and visualizing do not require compute approval.
+   - `open_visual` owns and configures the product visual. Do not call `authoring_context`, `capture_review`, `review`, `update`, or `mark_ready` for it.
+   - If the first `await_ready` reports that no receipt was posted, call `mcp__synth_visuals__visual_manage` once with `operation: "show"` and the run's primary visual ID, then retry `await_ready`. Do not inspect processes, environment variables, source files, databases, or IPC files to manufacture readiness.
+   - Preserve the exact `preparationDigest` returned by `prepare` and pass it as `preparation_digest` with `optimizer_run_id` on the first `start` call. Never request approval with a missing or reconstructed digest.
 5. Pass only `recipe_id` to `prepare`. The Rust host owns commands, paths, hyperparameters, and credential resolution. Retrieve the winner with `get_result` — never read `best_candidate.json` by filesystem path.
 
 ## Follow every run
@@ -24,6 +27,7 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 2. For an existing or historical run, call `open_visual` with its `optimizer_run_id`. This reuses its primary visual and presents it in the current conversation without changing the run's original ownership.
 3. Record `run.id`, the primary visual ID in `run.visualRefs`, and `run.cursorSeq`. Keep the pane open while following the run; the visual reads the same durable event cursor and continues updating independently of tool polling.
 4. Call `watch_run` with `optimizer_run_id` and `after_seq` equal to the last processed sequence. Advance to the greatest returned sequence. Empty batches are normal.
+   - Wait for progress only by calling `watch_run` again (or `get_run` when a status snapshot is useful). Never run a shell or terminal command, including `sleep`, just to delay or poll an optimizer run; repeated optimizer MCP calls are the supported waiting mechanism.
 5. Use `get_run` for status and summary, and `get_state` for the algorithm-specific slices in its reference.
 6. Stop only at `completed`, `failed`, or `cancelled`. Use `cancel_run` only when the user requests it.
 7. After a Desktop restart, recover with `list_runs`/`get_run`, call `open_visual`, and continue from the persisted cursor. Reconcile cloud runs before watching them. Local process records and events survive restart, but a process owned by the previous Desktop session is not reattached.

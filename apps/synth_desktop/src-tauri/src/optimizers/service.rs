@@ -652,6 +652,7 @@ impl OptimizerService {
             .map(|r| r.id.clone());
         let template_id =
             negotiate_visual_template(&run.algorithm_id, &self.manager.advertised_capabilities());
+        let template_digest = self.manager.status().await.digest;
         let visual = if let Some(visual_id) = existing {
             self.visuals.get(visual_id).await?
         } else {
@@ -674,17 +675,21 @@ impl OptimizerService {
                     content: None,
                     metadata: Some(json!({
                         "optimizerRunId": run.id,
-                        "algorithmId": run.algorithm_id
+                        "algorithmId": run.algorithm_id,
+                        "templateDigest": template_digest
                     })),
                 })
                 .await?;
             run.visual_refs.push(OptimizerResourceRef {
                 kind: "visual".into(),
                 id: created.id.clone(),
-                digest: None,
+                digest: template_digest.clone(),
                 role: Some("primary".into()),
                 title: Some(created.title.clone()),
-                metadata: json!({ "templateId": template_id }),
+                metadata: json!({
+                    "templateId": template_id,
+                    "templateDigest": template_digest
+                }),
             });
             let visual_id = created.id.clone();
             let db = self.db.clone();
@@ -2812,6 +2817,16 @@ mod tests {
     #[tokio::test]
     async fn opens_primary_visual_in_current_conversation_without_reassigning_run() {
         let (svc, _dir, _) = service().await;
+        svc.manager()
+            .set_status(crate::optimizers::OptimizerSidecarStatus {
+                phase: "ready".into(),
+                base_url: None,
+                version: Some("0.2.9.dev20260814".into()),
+                digest: Some("sha256:template-package".into()),
+                detail: None,
+                updated_at: 0,
+            })
+            .await;
         let (run, _) = svc
             .create(
                 serde_json::from_value(json!({
@@ -2835,8 +2850,21 @@ mod tests {
         assert_eq!(event.kind, "visual.show");
         assert_eq!(event.session_id.as_deref(), Some("session_current"));
         assert_eq!(shown.visual_refs.len(), 1);
+        assert_eq!(
+            shown.visual_refs[0].digest.as_deref(),
+            Some("sha256:template-package")
+        );
 
         let visual_id = shown.visual_refs[0].id.clone();
+        assert_eq!(
+            svc.visuals
+                .get(visual_id.clone())
+                .await
+                .unwrap()
+                .metadata
+                .get("templateDigest"),
+            Some(&json!("sha256:template-package"))
+        );
         let (reopened, second_event) = svc
             .open_visual_in_session(run.id, Some("session_current".into()))
             .await
@@ -3452,7 +3480,18 @@ mod tests {
         std::fs::create_dir_all(&run_dir).unwrap();
         std::fs::write(
             run_dir.join("best_candidate.json"),
-            r#"{"id":"candidate_winner","parent_id":"seed","prompt":"Classify the Banking77 intent carefully."}"#,
+            r#"{
+                "candidate_id": "candidate_winner",
+                "parent_id": "seed",
+                "lever_bundle": {
+                    "values": {
+                        "stage2_system": "Classify the Banking77 intent carefully."
+                    }
+                },
+                "payload": {
+                    "stage2_system": "Classify the Banking77 intent carefully."
+                }
+            }"#,
         )
         .unwrap();
         let (run, _) = svc
