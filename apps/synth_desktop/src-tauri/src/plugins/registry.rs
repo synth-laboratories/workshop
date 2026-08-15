@@ -68,7 +68,7 @@ impl PluginRegistry {
             package: "synth-optimizers".into(),
             network_host: "pypi.org".into(),
             download_size_bytes: 12_000_000,
-            workshop_compat: "0.3.0".into(),
+            workshop_compat: "0.4.0".into(),
             algorithms: vec!["gepa".into()],
             templates: vec!["optimizer.gepa.live.v1".into(), "optimizer.run.v1".into()],
             recipe_schema_version: "gepa.recipe.v1".into(),
