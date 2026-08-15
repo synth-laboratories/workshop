@@ -40,12 +40,14 @@ test("paid-compute approval is a cap-scoped modal, not a transcript card", () =>
 test("optimizer MCP recipe starts cannot bypass the typed approval broker", () => {
 	const ipc = readTauri("visuals_ipc.rs");
 	const commands = readTauri("lib.rs");
+	const bridge = read("runtime/desktopBridge.ts");
 	assert.match(ipc, /authorize_optimizer_recipe_start\(app, core, &codex, request\)/);
 	assert.doesNotMatch(ipc, /optimizers\.start_recipe\(request\)/);
 	assert.match(commands, /async fn authorize_optimizer_recipe_start/);
 	assert.match(commands, /ApprovalKind::PaidCompute/);
 	assert.match(commands, /ApprovalKind::CredentialAccess/);
 	assert.match(commands, /ApprovalKind::SidecarLifecycle/);
+	assert.match(bridge, /event\.source !== "codex" && !isApprovalBoundary/);
 });
 
 test("v0.2 grouped activity keeps visual and container MCP calls out of used-tools summaries", () => {

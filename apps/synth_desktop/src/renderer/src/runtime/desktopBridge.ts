@@ -33,7 +33,11 @@ function unwrapRuntimeEvent(payload: AppEvent | OriginTaggedAppEvent): AppEvent 
 }
 
 function appEventToCodexEvent(event: AppEvent): CodexEvent | null {
-	if (!event.sessionId || event.source !== "codex") return null;
+	const isApprovalBoundary = event.kind === "approval.requested"
+		|| event.kind === "approval.granted"
+		|| event.kind === "approval.rejected"
+		|| event.kind === "approval.expired";
+	if (!event.sessionId || (event.source !== "codex" && !isApprovalBoundary)) return null;
 	const params =
 		event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
 			? (event.payload as Record<string, unknown>)
