@@ -204,7 +204,7 @@ async fn read_stdout<R: tauri::Runtime>(
         // `phase: final_answer` is a protocol lifecycle signal, not an
         // inference from response text, so EOF must not overwrite it as an
         // unhealthy local agent.
-        let final_answer = is_final_agent_message(&params);
+        let final_answer = is_final_agent_message(&method, &params);
         if is_context_compaction_notification(&method, &params) {
             if let Some(source) = persistence
                 .pending_compact_sources
@@ -494,7 +494,10 @@ async fn read_stdout<R: tauri::Runtime>(
     }
 }
 
-fn is_final_agent_message(params: &Value) -> bool {
+fn is_final_agent_message(method: &str, params: &Value) -> bool {
+    if !matches!(method, "item/completed" | "item/agentMessage") {
+        return false;
+    }
     let Some(item) = params.get("item").and_then(Value::as_object) else {
         return false;
     };
@@ -610,6 +613,38 @@ mod oauth_failure_tests {
         let mut quota = json!({"error":{"type":"usage_limit"}});
         normalize_oauth_failure(&mut quota);
         assert_eq!(quota["code"], "codex_oauth_usage_limit");
+    }
+}
+
+#[cfg(test)]
+mod terminal_message_tests {
+    use super::*;
+
+    #[test]
+    fn only_completed_final_agent_messages_are_terminal() {
+        let final_answer = json!({
+            "item": {
+                "type": "agentMessage",
+                "phase": "final_answer",
+                "text": "done"
+            }
+        });
+        assert!(!is_final_agent_message("item/started", &final_answer));
+        assert!(!is_final_agent_message(
+            "item/agentMessage/delta",
+            &final_answer
+        ));
+        assert!(is_final_agent_message("item/completed", &final_answer));
+        assert!(is_final_agent_message("item/agentMessage", &final_answer));
+
+        let commentary = json!({
+            "item": {
+                "type": "agentMessage",
+                "phase": "commentary",
+                "text": "working"
+            }
+        });
+        assert!(!is_final_agent_message("item/completed", &commentary));
     }
 }
 
