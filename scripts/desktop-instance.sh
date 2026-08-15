@@ -29,6 +29,10 @@ Usage: ./scripts/desktop-instance.sh <command> [name]
   print [name]     Print the resolved instance contract without launching
 
 Names must match [a-z][a-z0-9-]{0,31}. The default name is "codex".
+
+Optimizer services use the immutable installed plugin runtime by default.
+Set SYNTH_OPTIMIZER_USE_LOCAL_SOURCE=1 only when intentionally testing a
+reviewed local synth-optimizers checkout.
 EOF
 }
 
@@ -378,6 +382,7 @@ stage_gepa_runtime() {
   local cookbook_source="${SYNTH_BANKING77_GEPA_COOKBOOK_SOURCE:-$(dirname "$ROOT")/synth-cookbooks-public/cookbooks/optimizers/gepa/banking77_container}"
   local optimizer_target="$runtime_root/optimizer-project"
   local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-$(dirname "$ROOT")/optimizers-g1}"
+  local use_local_optimizer="${SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0}"
   local secret_target="$DATA_ROOT/banking77-secret.env"
   local secret_source="${SYNTH_BANKING77_SECRET_ENV_SOURCE:-$(dirname "$ROOT")/synth-ai/.env}"
 
@@ -393,21 +398,27 @@ stage_gepa_runtime() {
     "$cookbook_source/" "$cookbook_target/"
   export SYNTH_BANKING77_GEPA_COOKBOOK_ROOT="$cookbook_target"
 
-  if [[ ! -f "$optimizer_source/pyproject.toml" || ! -f "$optimizer_source/rust/crates/synth_gepa/Cargo.toml" ]]; then
-    echo "[desktop:$NAME] ERROR optimizer project source is unavailable: $optimizer_source" >&2
-    exit 1
+  if [[ "$use_local_optimizer" == "1" ]]; then
+    if [[ ! -f "$optimizer_source/pyproject.toml" || ! -f "$optimizer_source/rust/crates/synth_gepa/Cargo.toml" ]]; then
+      echo "[desktop:$NAME] ERROR optimizer project source is unavailable: $optimizer_source" >&2
+      exit 1
+    fi
+    mkdir -p "$optimizer_target"
+    rsync -a --delete \
+      --exclude '.git' \
+      --exclude '.venv' \
+      --exclude 'target' \
+      --exclude '.out' \
+      --exclude '.pytest_cache' \
+      --exclude '.ruff_cache' \
+      --exclude '__pycache__' \
+      "$optimizer_source/" "$optimizer_target/"
+    export SYNTH_OPTIMIZER_PROJECT_ROOT="$optimizer_target"
+  elif [[ -n "${SYNTH_OPTIMIZER_PROJECT_ROOT:-}" ]]; then
+    echo "[desktop:$NAME] using caller-provided optimizer project root: $SYNTH_OPTIMIZER_PROJECT_ROOT"
+  else
+    echo "[desktop:$NAME] optimizer runtime=immutable installed plugin"
   fi
-  mkdir -p "$optimizer_target"
-  rsync -a --delete \
-    --exclude '.git' \
-    --exclude '.venv' \
-    --exclude 'target' \
-    --exclude '.out' \
-    --exclude '.pytest_cache' \
-    --exclude '.ruff_cache' \
-    --exclude '__pycache__' \
-    "$optimizer_source/" "$optimizer_target/"
-  export SYNTH_OPTIMIZER_PROJECT_ROOT="$optimizer_target"
 
   # Finder-launched apps do not inherit shell secrets. Stage only the one
   # allowlisted key inside the mode-0700 instance data root so the app never
