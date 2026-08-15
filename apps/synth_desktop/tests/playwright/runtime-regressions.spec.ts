@@ -781,7 +781,7 @@ test("Rust Inventory navigation never replaces native Codex sessions with legacy
 	});
 	await installLagunaFixture(page, "ready");
 	await expect(page.getByTestId("local-chat-native-session")).toBeVisible();
-	await page.getByRole("button", { name: "Containers · Traces · Usage" }).click();
+	await page.getByTestId("open-inventory").click();
 	await page.waitForTimeout(3_000);
 	await expect(page.getByTestId("local-chat-native-session")).toBeVisible();
 });
@@ -1187,6 +1187,11 @@ test("native Codex deltas form one readable message with working and stop state"
 	const secondCommand = transcript.locator(".command-activity").last();
 	await expect(secondCommand).toContainText("pwd");
 	expect((await secondCommand.boundingBox())!.y).toBeGreaterThan((await secondUser.boundingBox())!.y);
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitConversationCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitConversationCodex;
+		emit({ sessionId: "stream-session", method: "turn/started", params: { turn: { id: "turn-stream-2" } } });
+	});
+	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
 	await page.getByRole("button", { name: "Stop generating" }).click();
 	expect(await page.evaluate(() => (window as typeof window & { __conversationInterrupts: () => number }).__conversationInterrupts())).toBe(1);
 	await expect(page.getByTestId("workbench-side-panel")).toBeVisible();
