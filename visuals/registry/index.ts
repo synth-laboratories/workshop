@@ -2,7 +2,8 @@
  * Visual template registry — list + resolve by id.
  *
  * Families are the v0.3 public catalog. `templates/` and `templates-internal/`
- * may add IDs (DAG live, private overlays) but never shadow a family id.
+ * may add private overlays but never shadow a family id. `optimizer.dag.live.v1`
+ * is a v0.4 surface and is not in this catalog.
  */
 
 import type { VisualTemplate, VisualTemplateMeta } from "../runtime/types.ts";

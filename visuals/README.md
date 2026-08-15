@@ -99,7 +99,6 @@ or
 | `optimizer.gepa.candidate.v1` | Candidate lineage and prompt diff |
 | `optimizer.gepa.evaluations.v1` | Child `resource-ref` → Containers stream id + `/reward` |
 | `optimizer.sft.live.v1` | SFT curves, job status, live campaigns (aligned records) |
-| `optimizer.dag.live.v1` | Local experiment DAG node stages and honest known spend |
 | `optimizer.sft.checkpoints.v1` | Checkpoint rail; promotion ≠ ready |
 | `optimizer.sft.rollouts.v1` | Campaign child rollout refs |
 | `optimizer.sft.examples.v1` | Paired baseline vs checkpoint |
