@@ -60,6 +60,14 @@ test("installed desktop authorizes its declared window drag regions", () => {
   assert.match(permissions, /core:window:allow-start-dragging/);
 });
 
+test("plugin navigation announces the active page and hides impossible pre-install actions", () => {
+  const sidebar = read("components/Sidebar.tsx");
+  const optimizers = read("components/OptimizersPage.tsx");
+  assert.match(sidebar, /aria-current=\{active \? "page" : undefined\}/);
+  assert.match(optimizers, /operation: "enable"[\s\S]*status\.phase !== "not_installed" && !status\.enabled/);
+  assert.match(optimizers, /operation: "disable"[\s\S]*status\.phase !== "not_installed" && status\.enabled/);
+});
+
 test("execution targets include Laguna local + OpenRouter Luna/Laguna + Synth Cloud + Intern", () => {
   const types = read("types/landing.ts");
   const composer = read("components/Composer.tsx");

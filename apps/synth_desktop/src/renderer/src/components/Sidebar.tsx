@@ -538,6 +538,7 @@ export function Sidebar({
 										type="button"
 										className={`chat-item${active ? " active" : ""}`}
 										onClick={pluginRowOpen[entry.id]}
+										aria-current={active ? "page" : undefined}
 										data-testid={entry.testId}
 										data-plugin-phase={presentation?.label ?? undefined}
 									>

@@ -126,7 +126,7 @@ const LIFECYCLE_ACTIONS: readonly LifecycleAction[] = [
 	{
 		operation: "enable",
 		label: "Enable",
-		available: (status) => !status.enabled
+		available: (status) => status.phase !== "not_installed" && !status.enabled
 	},
 	{
 		operation: "start",
@@ -155,7 +155,7 @@ const LIFECYCLE_ACTIONS: readonly LifecycleAction[] = [
 		confirm: (_status, presentation) => presentation.activeRuns > 0
 			? `Disable Optimizers? ${presentation.activeRuns} run(s) keep running; only the plugin is turned off.`
 			: "Disable Optimizers? Installed files and runs are retained.",
-		available: (status) => status.enabled
+		available: (status) => status.phase !== "not_installed" && status.enabled
 	},
 	{
 		operation: "remove",
