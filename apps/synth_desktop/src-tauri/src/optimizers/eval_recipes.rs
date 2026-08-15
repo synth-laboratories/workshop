@@ -212,6 +212,53 @@ pub fn recipe_catalog() -> Vec<Value> {
     }
 }
 
+/// Convert the eval runtime's per-trial budget into the total product approval
+/// bound for this immutable candidate set. The worker continues to enforce the
+/// recipe-owned per-trial cap; this aggregate is the maximum exposure the
+/// Workshop approval surface must display and retain.
+pub(crate) fn paid_compute_bounds(
+    recipe: &Value,
+    candidate_set_id: Option<&str>,
+) -> Result<(f64, u64)> {
+    let candidate_set_id = candidate_set_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("paid eval recipes require a staged candidate_set_id"))?;
+    let candidate_set = super::eval_candidates::load(candidate_set_id)?;
+    let candidate_count = candidate_set
+        .get("candidates")
+        .and_then(Value::as_array)
+        .map(|candidates| candidates.len() as u64)
+        .filter(|count| *count > 0)
+        .ok_or_else(|| anyhow!("staged candidate set has no candidates"))?;
+    paid_compute_bounds_for_candidate_count(recipe, candidate_count)
+}
+
+fn paid_compute_bounds_for_candidate_count(
+    recipe: &Value,
+    candidate_count: u64,
+) -> Result<(f64, u64)> {
+    let per_trial_usd = recipe
+        .pointer("/budget/max_usd")
+        .or_else(|| recipe.pointer("/budget/maxUsd"))
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .ok_or_else(|| anyhow!("eval recipe is missing budget.max_usd"))?;
+    let trials_per_candidate = recipe
+        .pointer("/limits/trials")
+        .and_then(Value::as_u64)
+        .filter(|count| *count > 0)
+        .ok_or_else(|| anyhow!("eval recipe is missing limits.trials"))?;
+    let total_trials = trials_per_candidate
+        .checked_mul(candidate_count)
+        .ok_or_else(|| anyhow!("eval trial count overflow"))?;
+    let total_usd = per_trial_usd * total_trials as f64;
+    if !total_usd.is_finite() || total_usd <= 0.0 {
+        bail!("eval paid-compute cap is invalid");
+    }
+    Ok((total_usd, total_trials))
+}
+
 /// The catalog is still worth showing when the runtime is missing: an empty
 /// list reads as "this product does not exist", which is the wrong answer.
 fn offline_catalog(reason: &str) -> Vec<Value> {
@@ -1317,5 +1364,33 @@ mod tests {
             committed, rendered,
             "the visual example has drifted from what Workshop mirrors"
         );
+    }
+
+    #[test]
+    fn paid_eval_cap_aggregates_per_trial_budget_across_candidates() {
+        let (max_usd, max_trials) = paid_compute_bounds_for_candidate_count(
+            &json!({
+                "budget": {"max_usd": 0.30},
+                "limits": {"trials": 4}
+            }),
+            2,
+        )
+        .unwrap();
+        assert_eq!(max_trials, 8);
+        assert!((max_usd - 2.40).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn paid_eval_cap_fails_closed_without_recipe_owned_bounds() {
+        assert!(paid_compute_bounds_for_candidate_count(
+            &json!({"budget": {}, "limits": {"trials": 4}}),
+            2,
+        )
+        .is_err());
+        assert!(paid_compute_bounds_for_candidate_count(
+            &json!({"budget": {"max_usd": 0.30}, "limits": {}}),
+            2,
+        )
+        .is_err());
     }
 }

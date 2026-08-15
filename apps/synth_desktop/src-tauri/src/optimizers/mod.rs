@@ -18,6 +18,7 @@ mod sft_recipes;
 mod tinker_catalog;
 
 pub use eval_candidates::EvalStageCandidatesRequest;
+pub(crate) use eval_recipes::paid_compute_bounds;
 #[allow(unused_imports)] // public sidecar status/version types for Desktop callers
 pub use manager::{OptimizerManager, OptimizerSidecarStatus, OptimizerSidecarVersion};
 pub use models::{

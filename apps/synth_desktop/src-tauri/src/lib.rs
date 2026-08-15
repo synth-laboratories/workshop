@@ -715,22 +715,32 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     let requesting_agent = session_id
         .map(|value| format!("Agent session {value}"))
         .unwrap_or_else(|| "Workshop operator".into());
+    let is_local_eval = recipe.get("algorithmId").and_then(Value::as_str) == Some("eval");
     let limits = recipe
         .get("limits")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    let max_cost_usd = limits
-        .get("maxCostUsd")
-        .or_else(|| limits.get("costCeilingUsd"))
-        .and_then(Value::as_f64)
-        .filter(|value| value.is_finite() && *value > 0.0);
-    let max_rollouts = [
-        "maxTotalRollouts",
-        "maxTotalEnvironmentRollouts",
-        "maxSearchRollouts",
-    ]
-    .into_iter()
-    .find_map(|key| limits.get(key).and_then(Value::as_u64));
+    let (max_cost_usd, max_rollouts) = if is_local_eval {
+        let (cost, trials) =
+            optimizers::paid_compute_bounds(&recipe, request.candidate_set_id.as_deref())
+                .map_err(AppError::from)?;
+        (Some(cost), Some(trials))
+    } else {
+        (
+            limits
+                .get("maxCostUsd")
+                .or_else(|| limits.get("costCeilingUsd"))
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && *value > 0.0),
+            [
+                "maxTotalRollouts",
+                "maxTotalEnvironmentRollouts",
+                "maxSearchRollouts",
+            ]
+            .into_iter()
+            .find_map(|key| limits.get(key).and_then(Value::as_u64)),
+        )
+    };
     let paid_cap = session::approval::PaidComputeCap {
         max_cost_usd_micros: max_cost_usd.map(|value| (value * 1_000_000.0).round() as u64),
         max_rollouts,
@@ -741,6 +751,21 @@ pub(crate) async fn authorize_optimizer_recipe_start(
             request.recipe_id
         )));
     }
+    let credential_names: Vec<String> = if is_local_eval {
+        recipe
+            .get("credentialInputs")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    } else {
+        optimizer_recipe_credentials(&request.recipe_id)
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect()
+    };
     let paid = session::approval::ApprovalKind::PaidCompute {
         operation: "optimizer.recipe.start".into(),
         parameters: serde_json::json!({
@@ -757,7 +782,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         proposer_model: None,
         evaluator_model: None,
         timeout_seconds: None,
-        credential_names: vec![],
+        credential_names: credential_names.clone(),
         preparation_digest: None,
     };
     let paid_approval_id = codex
@@ -766,14 +791,14 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .await
         .map_err(AppError::from)?;
 
-    for provider in optimizer_recipe_credentials(&request.recipe_id) {
+    for provider in &credential_names {
         codex
             .approvals
             .authorize_host(
                 app,
                 session_id,
                 session::approval::ApprovalKind::CredentialAccess {
-                    provider: (*provider).into(),
+                    provider: provider.clone(),
                     purpose: format!("run bounded optimizer recipe {}", request.recipe_id),
                 },
             )
@@ -782,7 +807,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     }
 
     let sidecar_status = state.optimizers().manager().refresh().await;
-    if sidecar_status.phase != "ready" {
+    if !is_local_eval && sidecar_status.phase != "ready" {
         let action = if sidecar_status.phase == "not_installed" {
             "install_and_start"
         } else {
