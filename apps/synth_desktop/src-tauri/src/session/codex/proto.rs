@@ -126,6 +126,7 @@ pub struct CodexTurnFailure {
 }
 
 pub const CODEX_SESSION_DETACHED: &str = "codex_session_detached";
+pub const CODEX_SESSION_UNHEALTHY: &str = "codex_session_unhealthy";
 pub const CODEX_TURN_START_FAILED: &str = "codex_turn_start_failed";
 pub(crate) const DETACHED_MESSAGE: &str =
     "The local agent process disconnected before the turn started. Retry to reconnect.";

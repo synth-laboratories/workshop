@@ -81,6 +81,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::core_diagnostics,
         crate::core_events_after,
         crate::core_session_events_after,
+        crate::core_session_events_tail,
+        crate::core_session_events_before,
         crate::intern_sessions_list,
         crate::intern_session_create,
         crate::intern_session_send,
@@ -336,7 +338,7 @@ mod tests {
         // here rather than pass quietly. Bump it only alongside a reviewed
         // `collect_commands!` change.
         assert_eq!(
-            exported, 185,
+            exported, 187,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

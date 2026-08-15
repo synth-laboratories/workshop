@@ -162,6 +162,42 @@ async fn core_session_events_after(
 
 #[tauri::command]
 #[specta::specta]
+async fn core_session_events_tail(
+    state: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<Vec<AppEvent>, AppError> {
+    state
+        .journal()
+        .session_events_tail(
+            session_id,
+            limit.map(|value| value.0).unwrap_or(250).clamp(1, 2000),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn core_session_events_before(
+    state: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+    before_sequence: contract::specta::OpaqueInteger<i64>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<Vec<AppEvent>, AppError> {
+    state
+        .journal()
+        .session_events_before(
+            session_id,
+            before_sequence.0,
+            limit.map(|value| value.0).unwrap_or(1000).clamp(1, 2000),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn intern_sessions_list(
     state: State<'_, Arc<CoreRuntime>>,
 ) -> Result<Vec<InternSessionWire>, AppError> {
@@ -2741,10 +2777,16 @@ async fn codex_approval_resolve(
             .map_err(AppError::from)?;
         return Ok(());
     }
-    state
-        .resolve_approval(app, request)
-        .await
-        .map_err(AppError::from)
+    match state.resolve_approval(app, request).await {
+        Ok(()) => Ok(()),
+        Err(error) if crate::session::codex::is_detached_failure(&error) => Err(AppError {
+            code: crate::session::codex::CODEX_SESSION_UNHEALTHY.into(),
+            message: "This task's local agent is no longer running. Start a new turn to reconnect."
+                .into(),
+            detail: format!("{error:?}"),
+        }),
+        Err(error) => Err(AppError::from(error)),
+    }
 }
 
 #[tauri::command]

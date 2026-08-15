@@ -38,6 +38,8 @@ export const COMMANDS = {
 	CORE_DIAGNOSTICS: "core_diagnostics",
 	CORE_EVENTS_AFTER: "core_events_after",
 	CORE_SESSION_EVENTS_AFTER: "core_session_events_after",
+	CORE_SESSION_EVENTS_TAIL: "core_session_events_tail",
+	CORE_SESSION_EVENTS_BEFORE: "core_session_events_before",
 	INTERN_SESSIONS_LIST: "intern_sessions_list",
 	INTERN_SESSION_CREATE: "intern_session_create",
 	INTERN_SESSION_SEND: "intern_session_send",
