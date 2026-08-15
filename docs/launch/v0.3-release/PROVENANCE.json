@@ -1,13 +1,13 @@
 {
   "schema": "synth.desktop-release-provenance.v1",
-  "generatedAt": "2026-08-15T04:49:16Z",
+  "generatedAt": "2026-08-15T04:54:17Z",
   "stage": {
     "path": "/tmp/synth-desktop-v0.3-release/stage/Synth Desktop.app",
     "launched": false
   },
   "source": {
-    "workshopCommit": "20466f694a7c8af7133fc1c4ab20adf380088074",
-    "workshopTree": "d2e8d245b81db769486d442cc74edf72223526bf",
+    "workshopCommit": "4965ca4786d8b5685ada8fa4a41421ee0f1f087b",
+    "workshopTree": "ca4e7b0ff649e09b14af74067fffae97b212fd24",
     "containersCommit": "25d7a34fe66f00ff21113eaf105c0da4011607d2",
     "containersTree": "ad9ae645731671ea92a9e585ebf826e5296fc9e3"
   },
@@ -15,17 +15,17 @@
     "bundleId": "com.synth.desktop",
     "version": "0.3.0",
     "signing": "adhoc",
-    "cdHash": "792c75d84691a333aaa816a5d43cee41c3d2f880",
-    "executableSha256": "139cfd1c497b0f7f0f98feff375fdfd96a9000de0107c4e2451ffef13a3ebee3",
-    "frontendSha256": "0ff9d16ba91361e4993fdc23d480431ffa2eaf53efea153cb61e76311b3cfbc1"
+    "cdHash": "5fc5d057a02cd26e3f8a9d3f9b81edd708819ca7",
+    "executableSha256": "5f3fb32e72327ef53dd683962d2061978d829b31bb938d5d3062a3112ea59a26",
+    "frontendSha256": "ef5ca15867180cd41884de85d3906667b9a20c7903cbf5285a47796f354bae70"
   },
   "zip": {
     "path": "/tmp/synth-desktop-v0.3-release/Synth-Desktop-v0.3.0-macOS-arm64-UNNOTARIZED.zip",
-    "sha256": "a6bad770c7e86d54b84ff53f0adb1b6e10930c0ff90b44d4511c738f0c559533",
-    "bytes": 17362290
+    "sha256": "01d4a4f2ca2eb0b32d70f9b0e8b3899f56fd4307a0b35495c2a55beac7fa7251",
+    "bytes": 17723808
   },
   "roundTrip": {
     "codesignVerified": true,
-    "cdHash": "792c75d84691a333aaa816a5d43cee41c3d2f880"
+    "cdHash": "5fc5d057a02cd26e3f8a9d3f9b81edd708819ca7"
   }
 }
