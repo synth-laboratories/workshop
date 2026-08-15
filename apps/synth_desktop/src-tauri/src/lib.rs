@@ -996,8 +996,53 @@ async fn plugins_status(
     state: State<'_, Arc<CoreRuntime>>,
     plugin_id: Option<String>,
 ) -> Result<PluginStatus, AppError> {
-    let _ = plugin_id;
+    // Validate rather than discard: returning the optimizers status for any id
+    // asked about let the caller believe a plugin existed that does not.
+    if let Some(plugin_id) = plugin_id.as_deref() {
+        if plugin_id != plugins::OPTIMIZERS_PLUGIN_ID {
+            return Err(AppError::from(anyhow::anyhow!(
+                "unknown plugin_id `{plugin_id}`"
+            )));
+        }
+    }
     Ok(state.plugins().status(&state).await)
+}
+
+/// Human-triggered plugin lifecycle.
+///
+/// Delegates to the same `PluginService::manage` the agent-facing
+/// `plugin_manage` MCP tool reaches over loopback IPC, so approval policy,
+/// active-run guards, retention classes, and receipts are enforced once. Until
+/// this existed an agent could install, update, disable, and remove the
+/// Optimizers plugin while the UI had no way to do any of it.
+#[tauri::command]
+#[specta::specta]
+async fn plugins_manage(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    approvals: State<'_, Arc<crate::session::approval::ApprovalBroker>>,
+    operation: String,
+    plugin_id: String,
+    version: Option<String>,
+    session_id: Option<String>,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let arguments = serde_json::json!({
+        "plugin_id": plugin_id,
+        "version": version,
+    });
+    state
+        .plugins()
+        .manage(
+            &state,
+            approvals.inner(),
+            &app,
+            session_id.as_deref(),
+            &operation,
+            &arguments,
+        )
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
 }
 
 #[tauri::command]

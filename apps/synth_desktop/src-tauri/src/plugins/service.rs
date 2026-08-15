@@ -431,4 +431,29 @@ mod tests {
         )
         .unwrap();
     }
+
+    /// The renderer and the MCP facade reach the same lifecycle surface, so the
+    /// set of operations must not drift apart between them.
+    #[test]
+    fn lifecycle_operations_match_the_agent_facing_surface() {
+        let advertised = [
+            "list",
+            "status",
+            "capabilities",
+            "enable",
+            "disable",
+            "install",
+            "start",
+            "stop",
+            "update",
+            "remove",
+        ];
+        let mcp_schema = include_str!("../bin/synth_plugins_mcp.rs");
+        for operation in advertised {
+            assert!(
+                mcp_schema.contains(&format!("\"{operation}\"")),
+                "`{operation}` is reachable natively but absent from the MCP schema"
+            );
+        }
+    }
 }

@@ -47,7 +47,10 @@ test("optimizer MCP recipe starts cannot bypass the typed approval broker", () =
 	assert.match(commands, /ApprovalKind::PaidCompute/);
 	assert.match(commands, /ApprovalKind::CredentialAccess/);
 	assert.match(commands, /ApprovalKind::SidecarLifecycle/);
-	assert.match(bridge, /event\.source !== "codex" && !isApprovalBoundary/);
+	// The invariant is that approval events reach the transcript even though
+	// they are journaled as system rather than codex events. The predicate was
+	// once a named `isApprovalBoundary`; it is now an inline kind check.
+	assert.match(bridge, /event\.source !== "codex" && !event\.kind\.startsWith\("approval\."\)/);
 });
 
 test("v0.2 grouped activity keeps visual and container MCP calls out of used-tools summaries", () => {

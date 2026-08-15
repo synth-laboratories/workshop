@@ -22,6 +22,9 @@ test("stable accessibility testids remain on core surfaces", () => {
     "components/VisualsPage.tsx",
     "components/DataPage.tsx",
     "components/CloudDesk.tsx",
+    // The Plugins section's test ids are declared once as data and rendered
+    // through `data-testid={entry.testId}`, so the declaration is the surface.
+    "runtime/pluginNav.ts",
   ];
   const blob = files
     .filter((f) => existsSync(join(renderer, f)))
@@ -40,7 +43,12 @@ test("stable accessibility testids remain on core surfaces", () => {
     "visuals-page",
     "open-visuals",
   ]) {
-    assert.ok(blob.includes(`data-testid="${id}"`) || blob.includes(`'${id}'`), id);
+    // Accept a declared id as well as an inline attribute: ids rendered from
+    // data still have to exist, and quote style is not the invariant.
+    assert.ok(
+      blob.includes(`data-testid="${id}"`) || blob.includes(`'${id}'`) || blob.includes(`"${id}"`),
+      id
+    );
   }
 });
 

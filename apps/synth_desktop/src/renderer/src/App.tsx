@@ -69,6 +69,7 @@ export default function App() {
 								c.setView({ kind: "landing" });
 							}
 						}}
+						pluginStatuses={c.pluginStatuses}
 						onOpenInventory={() => c.setView({ kind: "inventory" })}
 						onOpenVisuals={() => c.setView({ kind: "visuals" })}
 						onOpenReports={() => c.setView({ kind: "reports" })}
@@ -140,6 +141,8 @@ export default function App() {
 					<MainRoutes
 						view={c.view}
 						setView={c.setView}
+						pluginStatuses={c.pluginStatuses}
+						refreshPluginStatuses={c.refreshPluginStatuses}
 						state={c.state}
 						sessions={c.sessions}
 						selectedTargetId={c.selectedTargetId}

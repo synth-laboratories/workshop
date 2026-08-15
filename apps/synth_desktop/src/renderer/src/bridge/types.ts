@@ -568,10 +568,52 @@ export type PluginStatus = {
 	detail?: string | null;
 };
 
+/** Mirrors the operations `PluginService::manage` accepts. */
+export type PluginLifecycleOperation =
+	| "enable"
+	| "disable"
+	| "install"
+	| "start"
+	| "stop"
+	| "update"
+	| "remove";
+
+/** `PluginActionReceipt` from src-tauri/src/plugins/types.rs. */
+export type PluginActionReceipt = {
+	schemaVersion: string;
+	receiptId?: string;
+	pluginId: string;
+	action: string;
+	version?: string | null;
+	digest?: string | null;
+	approvalReceiptId?: string | null;
+	startedAt?: string;
+	finishedAt?: string;
+	result: string;
+	retainedData?: string;
+	status?: PluginStatus | null;
+	error?: string | null;
+};
+
 export type PluginsBridge = {
 	status(pluginId?: string | null): Promise<PluginStatus>;
 	list(): Promise<PluginStatus[]>;
 	setReleaseChannel(pluginId: "optimizers", channel: "official" | "dev"): Promise<PluginStatus>;
+	/**
+	 * Human-triggered lifecycle. Approval policy, active-run guards, retention
+	 * classes, and receipts are enforced natively — the renderer never decides
+	 * whether an action is permitted, only whether to offer it.
+	 */
+	manage?(
+		operation: PluginLifecycleOperation,
+		pluginId: string,
+		version?: string | null
+	): Promise<PluginActionReceipt>;
+	/**
+	 * Fires whenever the native sidecar status changes. Subscribing is what
+	 * replaces polling the registry: every poll runs a live sidecar probe.
+	 */
+	onStatusChanged?(listener: () => void): () => void;
 };
 
 export type ReportStatus = "draft" | "sealed";

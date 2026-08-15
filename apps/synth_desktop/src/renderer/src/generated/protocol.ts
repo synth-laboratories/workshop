@@ -73,6 +73,16 @@ export const commands = {
 	optimizersListCloud: (algorithm: string | null, status: string | null, limit: unknown | null) => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_list_cloud", { algorithm, status, limit })),
 	pluginsStatus: (pluginId: string | null) => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("plugins_status", { pluginId })),
 	pluginsList: () => typedError<PluginStatus_Serialize[], AppError>(__TAURI_INVOKE("plugins_list")),
+	/**
+	 *  Human-triggered plugin lifecycle.
+	 *
+	 *  Delegates to the same `PluginService::manage` the agent-facing
+	 *  `plugin_manage` MCP tool reaches over loopback IPC, so approval policy,
+	 *  active-run guards, retention classes, and receipts are enforced once. Until
+	 *  this existed an agent could install, update, disable, and remove the
+	 *  Optimizers plugin while the UI had no way to do any of it.
+	 */
+	pluginsManage: (operation: string, pluginId: string, version: string | null, sessionId: string | null) => typedError<unknown, AppError>(__TAURI_INVOKE("plugins_manage", { operation, pluginId, version, sessionId })),
 	pluginsSetReleaseChannel: (pluginId: string, channel: string) => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("plugins_set_release_channel", { pluginId, channel })),
 	visualSubscriptionReady: (request: VisualReadyRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_subscription_ready", { request })),
 	optimizerSidecarStatus: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_status")),

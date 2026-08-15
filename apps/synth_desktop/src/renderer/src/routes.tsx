@@ -10,7 +10,7 @@ import type { AccountViewModel } from "./runtime/accountView";
 import type { DeviceUsageSummary } from "./components/UsageSheet";
 import type { DesktopPreferences, ToolActivityMode } from "./preferences";
 import { applyPreferencesToDocument } from "./preferences";
-import type { LagunaStatus, ModelPerformanceSummary, SynthAccountSummary, SynthBackendSettings } from "./bridge";
+import type { LagunaStatus, ModelPerformanceSummary, PluginStatus, SynthAccountSummary, SynthBackendSettings } from "./bridge";
 import type { InferenceMonitor } from "./components/InferencePanel";
 import type { ApprovalMode, ApprovalPolicy, SandboxMode } from "./runtime/nativeCodex";
 import { ChatTranscript, OutputsPanel, outputContainerIds } from "./components/ChatTranscript";
@@ -88,6 +88,8 @@ export type MainRoutesProps = {
 	setSandboxMode: (mode: SandboxMode) => void;
 	showToast: (message: string) => void;
 	startOptimizerAgent: (title: string, prompt: string) => Promise<void>;
+	pluginStatuses: readonly PluginStatus[] | null;
+	refreshPluginStatuses: () => Promise<void>;
 	openChat: (chatId: string) => void;
 	openVisualRecord: (visual: VisualInstanceRecord | VisualRecord) => void;
 	toggleArtifact: (id: string | null) => void;
@@ -121,6 +123,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		openContainer,
 		containerPaneExpanded,
 		setContainerPaneExpanded,
+		pluginStatuses,
+		refreshPluginStatuses,
 		inventoryContainerWidth,
 		setInventoryContainerWidth,
 		persistLayoutSnapshot,
@@ -259,6 +263,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 			{view.kind === "optimizers" ? (
 				<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`} style={{ "--visual-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}>
 					<OptimizersPage
+						pluginStatuses={pluginStatuses}
+						onRefreshPlugins={refreshPluginStatuses}
 						onStartAgent={(guide) => startOptimizerAgent(`Plan a ${guide.name} optimization`, guide.prompt)}
 						onOpenVisual={(visualId) => {
 							void (async () => {

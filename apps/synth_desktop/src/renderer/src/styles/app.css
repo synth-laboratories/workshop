@@ -11,6 +11,10 @@
 	--color-accent-hover: #d9541e;
 	--color-accent-subtle: rgba(240, 95, 34, 0.1);
 	--color-accent-ring: rgba(240, 95, 34, 0.35);
+	/* Semantic status text. `--color-warning-text` was referenced with an
+	   inline fallback and never defined; both now live in the palette. */
+	--color-warning-text: #8a4b08;
+	--color-danger-text: #9d3535;
 	--color-blue: #447dfc;
 	--color-selection: #3671e8;
 	--color-selection-subtle: rgba(54, 113, 232, 0.11);
@@ -872,6 +876,39 @@ a,
 	flex: 1;
 }
 
+/*
+ * Managed-plugin lifecycle status. Subdued and right-aligned: it reports, it
+ * does not compete with the destination name. Tone is never the only signal —
+ * every row also carries an sr-only sentence.
+ *
+ * Normal states stay in the muted text ramp; only attention states leave it,
+ * onto the existing accent and the danger colour the optimizer controls
+ * already use.
+ */
+.plugin-row-status {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	flex: 0 0 auto;
+	font-size: 11px;
+	letter-spacing: -0.005em;
+	color: var(--color-text-faint);
+}
+
+.plugin-row-status.tone-success { color: var(--color-text-faint); }
+.plugin-row-status.tone-warning { color: var(--color-accent); }
+.plugin-row-status.tone-danger { color: var(--color-danger-text); }
+
+.plugin-row-spinner {
+	width: 9px;
+	height: 9px;
+	flex: 0 0 auto;
+	border: 1.4px solid currentColor;
+	border-top-color: transparent;
+	border-radius: 50%;
+	animation: chat-working-spin 0.85s linear infinite;
+}
+
 .chat-working-indicator,
 .chat-unread-indicator {
 	width: 10px;
@@ -912,6 +949,7 @@ a,
 
 @media (prefers-reduced-motion: reduce) {
 	.chat-working-indicator { animation: none; }
+	.plugin-row-spinner { animation: none; }
 }
 
 .empty-hint {
@@ -7025,6 +7063,8 @@ html.sidebar-hidden .titlebar {
 	--color-settings-bg: #121316;
 	--color-card: #1b1d21;
 	--color-card-header: #212429;
+	--color-warning-text: #e0b341;
+	--color-danger-text: #ec8b8b;
 }
 
 html.sidebar-hidden .sidebar {
@@ -7134,7 +7174,10 @@ html.sidebar-hidden .sidebar {
 .optimizer-plugin-status p { width: 100%; margin: 0; color: var(--color-text-faint); font-size: 11px; }
 .optimizer-release-channel { display: grid; gap: 4px; min-width: 250px; font-size: 11px; color: var(--color-text-muted); }
 .optimizer-release-channel select { min-height: 32px; border: 1px solid var(--color-border); border-radius: 8px; padding: 0 30px 0 10px; background: var(--color-bg-primary); color: var(--color-text); }
-.optimizer-plugin-status .optimizer-release-warning { grid-column: 1 / -1; color: var(--color-warning-text, #8a4b08); }
+.optimizer-plugin-status .optimizer-release-warning { grid-column: 1 / -1; color: var(--color-warning-text); }
+.optimizer-plugin-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+.optimizer-plugin-status .optimizer-plugin-active-runs { grid-column: 1 / -1; color: var(--color-warning-text); font-weight: 600; }
+.optimizer-plugin-status .optimizer-plugin-receipt { grid-column: 1 / -1; font-variant-numeric: tabular-nums; }
 @media (max-width: 760px) { .optimizer-plugin-status { grid-template-columns: 1fr; } .optimizer-release-channel { min-width: 0; } }
 .visual-connection-state { margin: 0 0 8px; color: var(--color-text-faint); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 
@@ -7231,7 +7274,7 @@ html.sidebar-hidden .sidebar {
 .optimizer-run-files code { display: block; color: var(--color-text-faint); font: 10.5px/1.4 var(--font-mono); overflow-wrap: anywhere; }
 .optimizer-run-files summary { cursor: pointer; }
 .optimizer-run-files ul { margin: 8px 0 0; padding-left: 18px; color: var(--color-text-muted); font-size: 11px; }
-.optimizer-danger-button { color: #9d3535; }
+.optimizer-danger-button { color: var(--color-danger-text); }
 .optimizer-danger-button:hover { border-color: #d9abab; color: #7f2020; }
 .optimizer-empty { min-height: 260px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 28px; text-align: center; color: var(--color-text-muted); }
 .optimizer-empty-icon { width: 38px; height: 38px; display: grid; place-items: center; margin-bottom: 11px; border: 1px solid var(--color-border); border-radius: 11px; background: #f7f8fa; color: #7766b2; font-size: 18px; }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { type LandingState } from "../types/landing";
 import { ModelDownloadBar } from "./ModelDownloadBar";
 import { LocalModelResidency } from "./LocalModelResidency";
@@ -7,7 +7,9 @@ import { type AccountViewModel } from "../runtime/accountView";
 import { ConversationContextMenu } from "./GeneralPreferencesSettings";
 import { PaneResizeHandle } from "./PaneResizeHandle";
 import { ProviderMark } from "./ProviderMark";
-import { bridges } from "../runtime/desktopBridge";
+import { PLUGIN_NAV, type PluginNavEntry } from "../runtime/pluginNav";
+import { findPluginStatus, pluginPresentation } from "../runtime/pluginPresentation";
+import type { PluginStatus } from "../bridge/types";
 
 type CodexUsageSnapshot = {
 	usedPercent: number;
@@ -37,6 +39,8 @@ type Props = {
 	onOpenOptimizers: () => void;
 	onSearch: () => void;
 	onSettings: () => void;
+	/** Canonical registry listing, owned by the app controller. */
+	pluginStatuses?: readonly PluginStatus[] | null;
 	/** Composed by the renderer from the host's account summary. */
 	account: AccountViewModel;
 	codexOauthConfigured?: boolean;
@@ -141,6 +145,44 @@ function IconInventory() {
 	);
 }
 
+// Four destinations sit adjacent in one section, so each needs its own mark:
+// Visuals used to share the Search glyph, and Reports and Optimizers were both
+// the Data box.
+function IconVisuals() {
+	return (
+		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="2.4" y="3" width="11.2" height="9" rx="1.4" stroke="currentColor" strokeWidth="1.25" />
+			<path d="M2.4 9.6l2.9-2.6 2.3 2 2.4-2.9 3.6 3.8" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+		</svg>
+	);
+}
+
+function IconReports() {
+	return (
+		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<path d="M4 2.2h5.2L12.4 5v8.1a.9.9 0 01-.9.9h-7.5a.9.9 0 01-.9-.9V3.1a.9.9 0 01.9-.9z" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" />
+			<path d="M9 2.4V5h3M5.8 8.4h4.4M5.8 10.8h3" stroke="currentColor" strokeWidth="1.15" strokeLinecap="round" />
+		</svg>
+	);
+}
+
+function IconOptimizers() {
+	return (
+		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<path d="M2.6 12.4l3.1-4.2 2.6 2.2 4.9-6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+			<circle cx="5.7" cy="8.2" r="1.15" stroke="currentColor" strokeWidth="1.15" />
+			<circle cx="8.3" cy="10.4" r="1.15" stroke="currentColor" strokeWidth="1.15" />
+		</svg>
+	);
+}
+
+const PLUGIN_NAV_ICONS: Record<PluginNavEntry["id"], () => ReactElement> = {
+	visuals: IconVisuals,
+	reports: IconReports,
+	optimizers: IconOptimizers,
+	inventory: IconInventory
+};
+
 export function Sidebar({
 	state,
 	lagunaStatus = null,
@@ -162,6 +204,7 @@ export function Sidebar({
 	onOpenOptimizers,
 	onSearch,
 	onSettings,
+	pluginStatuses = null,
 	account,
 	codexOauthConfigured = false,
 	codexUsage = null,
@@ -180,8 +223,7 @@ export function Sidebar({
 	sidebarVisible = true
 }: Props) {
 	const [chatsOpen, setChatsOpen] = useState(true);
-	const [inventoryOpen, setInventoryOpen] = useState(true);
-	const [researchOpen, setResearchOpen] = useState(true);
+	const [pluginsOpen, setPluginsOpen] = useState(true);
 	const [menu, setMenu] = useState<{ id: string; x: number; y: number; invoker: HTMLButtonElement } | null>(null);
 	const [renamingId, setRenamingId] = useState<string | null>(null);
 	const [renameDraft, setRenameDraft] = useState("");
@@ -189,7 +231,6 @@ export function Sidebar({
 	const [accountMenuOpen, setAccountMenuOpen] = useState(false);
 	const [allowanceOpen, setAllowanceOpen] = useState(false);
 	const [codexUsageOpen, setCodexUsageOpen] = useState(false);
-	const [optimizersEnabled, setOptimizersEnabled] = useState(true);
 	const accountMenuRef = useRef<HTMLDivElement>(null);
 	const accountTriggerRef = useRef<HTMLButtonElement>(null);
 	const codexRemaining = codexUsage ? Math.max(0, Math.round(100 - codexUsage.usedPercent)) : null;
@@ -201,21 +242,6 @@ export function Sidebar({
 	// never replace signed-in or signed-out Synth account copy here.
 	const accountTitle = account.title;
 	const accountSubtitle = account.subtitle;
-
-	useEffect(() => {
-		let cancelled = false;
-		void bridges.plugins
-			?.status("optimizers")
-			.then((status) => {
-				if (!cancelled) setOptimizersEnabled(status.enabled !== false);
-			})
-			.catch(() => {
-				if (!cancelled) setOptimizersEnabled(true);
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, []);
 
 	useEffect(() => {
 		if (!accountMenuOpen) return;
@@ -271,6 +297,18 @@ export function Sidebar({
 	}, [activeChatId, orderedChats, pinnedChatIds, showAllChats, workingChatIds]);
 	const firstPinnedIndex = visibleChats.findIndex((chat) => pinnedChatIds.has(chat.id));
 	const firstRecentIndex = visibleChats.findIndex((chat) => !pinnedChatIds.has(chat.id));
+	const pluginRowActive: Record<PluginNavEntry["id"], boolean> = {
+		visuals: visualsActive,
+		reports: reportsActive,
+		optimizers: optimizersActive,
+		inventory: inventoryActive
+	};
+	const pluginRowOpen: Record<PluginNavEntry["id"], () => void> = {
+		visuals: onOpenVisuals,
+		reports: onOpenReports,
+		optimizers: onOpenOptimizers,
+		inventory: onOpenInventory
+	};
 
 	if (!sidebarVisible) return null;
 
@@ -465,80 +503,61 @@ export function Sidebar({
 				 * bridge, and CloudDesk component remain for v0.2 re-entry.
 				 */}
 
-				{/* ── Research = Visuals + Data ── */}
+				{/*
+				 * ── Plugins ──
+				 * One section for every capability the user can open. Built-in
+				 * surfaces and managed plugins share the shelf; only managed
+				 * rows carry lifecycle status, and a managed row is never
+				 * hidden — a plugin that is disabled, stopped, uninstalled, or
+				 * unhealthy still navigates to the page that explains it.
+				 */}
 				<div className="sidebar-section">
 					<div className="section-header">
 						<button
 							type="button"
 							className="section-header-label"
-							onClick={() => setResearchOpen((v) => !v)}
-							aria-expanded={researchOpen}
-							aria-controls="sidebar-research"
+							onClick={() => setPluginsOpen((v) => !v)}
+							aria-expanded={pluginsOpen}
+							aria-controls="sidebar-plugins"
 						>
-							Research
-							<SectionChevron open={researchOpen} />
+							Plugins
+							<SectionChevron open={pluginsOpen} />
 						</button>
 					</div>
-					{researchOpen ? (
-						<div id="sidebar-research" className="section-list" data-testid="research-nav">
-							<button
-								type="button"
-								className={`chat-item${visualsActive ? " active" : ""}`}
-								onClick={onOpenVisuals}
-								data-testid="open-visuals"
-							>
-								<IconSearch />
-								<span className="item-label">Visuals</span>
-							</button>
-							<button
-								type="button"
-								className={`chat-item${reportsActive ? " active" : ""}`}
-								onClick={onOpenReports}
-								data-testid="open-reports"
-							>
-								<IconInventory />
-								<span className="item-label">Reports</span>
-							</button>
-							{optimizersEnabled ? (
-								<button
-									type="button"
-									className={`chat-item${optimizersActive ? " active" : ""}`}
-									onClick={onOpenOptimizers}
-									data-testid="open-optimizers"
-								>
-									<IconInventory />
-									<span className="item-label">Optimizers</span>
-								</button>
-							) : null}
-						</div>
-					) : null}
-				</div>
-
-				{/* ── Data = containers / traces / usage ── */}
-				<div className="sidebar-section">
-					<div className="section-header">
-						<button
-							type="button"
-							className="section-header-label"
-							onClick={() => setInventoryOpen((v) => !v)}
-							aria-expanded={inventoryOpen}
-							aria-controls="sidebar-inventory"
-						>
-							Data
-							<SectionChevron open={inventoryOpen} />
-						</button>
-					</div>
-					{inventoryOpen ? (
-						<div id="sidebar-inventory" className="section-list" data-testid="inventory-nav">
-							<button
-								type="button"
-								className={`chat-item${inventoryActive ? " active" : ""}`}
-								onClick={onOpenInventory}
-								data-testid="open-inventory"
-							>
-								<IconInventory />
-								<span className="item-label">Containers · Traces · Usage</span>
-							</button>
+					{pluginsOpen ? (
+						<div id="sidebar-plugins" className="section-list" data-testid="plugins-nav">
+							{PLUGIN_NAV.map((entry) => {
+								const Icon = PLUGIN_NAV_ICONS[entry.id];
+								const active = pluginRowActive[entry.id];
+								const presentation = entry.kind === "managed" && entry.pluginId
+									? pluginPresentation(findPluginStatus(pluginStatuses, entry.pluginId))
+									: null;
+								return (
+									<button
+										key={entry.id}
+										type="button"
+										className={`chat-item${active ? " active" : ""}`}
+										onClick={pluginRowOpen[entry.id]}
+										data-testid={entry.testId}
+										data-plugin-phase={presentation?.label ?? undefined}
+									>
+										<Icon />
+										<span className="item-label">{entry.label}</span>
+										{presentation?.label ? (
+											<span
+												className={`plugin-row-status tone-${presentation.tone}`}
+												data-testid={`plugin-status-${entry.id}`}
+											>
+												{presentation.isTransitional ? (
+													<span className="plugin-row-spinner" aria-hidden />
+												) : null}
+												<span aria-hidden>{presentation.label}</span>
+												<span className="sr-only">{presentation.a11yLabel}</span>
+											</span>
+										) : null}
+									</button>
+								);
+							})}
 						</div>
 					) : null}
 				</div>

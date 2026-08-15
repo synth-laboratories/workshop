@@ -651,7 +651,27 @@ window.synthWorkspaceScope ??= isTauri
 			status: (pluginId) => invokeCommand(COMMANDS.PLUGINS_STATUS, { pluginId: pluginId ?? null }),
 			list: () => invokeCommand(COMMANDS.PLUGINS_LIST),
 			setReleaseChannel: (pluginId, channel) =>
-				invokeCommand(COMMANDS.PLUGINS_SET_RELEASE_CHANNEL, { pluginId, channel })
+				invokeCommand(COMMANDS.PLUGINS_SET_RELEASE_CHANNEL, { pluginId, channel }),
+			manage: (operation, pluginId, version) =>
+				invokeCommand(COMMANDS.PLUGINS_MANAGE, {
+					operation,
+					pluginId,
+					version: version ?? null,
+					sessionId: null
+				}),
+			// `optimizer:status` has been emitted since the sidecar manager
+			// landed and had no subscriber, which is why the Optimizers page
+			// polled the registry every 750 ms — and every poll re-probed the
+			// live sidecar.
+			onStatusChanged(listener) {
+				let disposed = false;
+				let unlisten: (() => void) | undefined;
+				void listen(EVENT_CHANNELS.OPTIMIZER_STATUS, () => listener()).then((next) => {
+					if (disposed) next();
+					else unlisten = next;
+				});
+				return () => { disposed = true; unlisten?.(); };
+			}
 		};
 		window.synthReports ??= {
 			list: (query) => invokeCommand(COMMANDS.REPORTS_LIST, { query: query ?? null }),

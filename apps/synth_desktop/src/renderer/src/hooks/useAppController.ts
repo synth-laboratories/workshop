@@ -38,6 +38,7 @@ import type { ArtifactRef } from "../types/landing";
 import { useInferenceMonitor } from "../components/InferencePanel";
 import { artifactFromVisualRecord } from "../components/VisualHost";
 import { useAccountShell } from "./useAccountShell";
+import { usePluginStatuses } from "./usePluginStatuses";
 import { useShellLayout } from "./useShellLayout";
 import { useCodexEventBridge, type CodexUsageSnapshot } from "./useCodexEventBridge";
 import { useForeignSessionEventBridge } from "./useForeignSessionEventBridge";
@@ -218,6 +219,9 @@ export function useAppController() {
 		accountView,
 		openBilling
 	} = useAccountShell(showToast);
+
+	// One owner for plugin registry status; Sidebar and OptimizersPage read it.
+	const { pluginStatuses, refreshPluginStatuses } = usePluginStatuses();
 
 	useEffect(() => subscribePreferences((next) => {
 		setPreferences(next);
@@ -1367,6 +1371,8 @@ export function useAppController() {
 		refreshAccountSummary,
 		accountView,
 		openBilling,
+		pluginStatuses,
+		refreshPluginStatuses,
 		view,
 		setView,
 		toast,
