@@ -257,14 +257,7 @@ async fn read_stdout<R: tauri::Runtime>(
         ) {
             let _ = persistence
                 .approvals
-                .expire_origin(
-                    &app,
-                    &ApprovalOrigin {
-                        session_id: session_id.clone(),
-                        instance_id: persistence.attachment_id.to_string(),
-                    },
-                    "origin_turn_ended",
-                )
+                .expire_session(&app, &session_id, "origin_turn_ended")
                 .await;
         }
         persistence
@@ -449,14 +442,7 @@ async fn read_stdout<R: tauri::Runtime>(
     }
     let _ = persistence
         .approvals
-        .expire_origin(
-            &app,
-            &ApprovalOrigin {
-                session_id: session_id.clone(),
-                instance_id: persistence.attachment_id.to_string(),
-            },
-            "origin_process_exited",
-        )
+        .expire_session(&app, &session_id, "origin_process_exited")
         .await;
     // Release failed requests only after the attachment owner has finalized
     // its durable run. Command callers therefore observe authoritative state

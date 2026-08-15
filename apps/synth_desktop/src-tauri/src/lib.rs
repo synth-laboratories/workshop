@@ -590,15 +590,130 @@ async fn optimizers_recipes_list(
 async fn optimizers_recipe_start(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
+    codex: State<'_, Arc<CodexManager>>,
     request: OptimizerRecipeRunRequest,
 ) -> Result<OptimizerRunRecord, AppError> {
+    let recipe = state
+        .optimizers()
+        .list_recipes()
+        .into_iter()
+        .find(|recipe| recipe.get("id").and_then(Value::as_str) == Some(request.recipe_id.as_str()))
+        .ok_or_else(|| {
+            AppError::from(anyhow::anyhow!(
+                "unknown optimizer recipe: {}",
+                request.recipe_id
+            ))
+        })?;
+    let session_id = request
+        .session_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let requesting_agent = session_id
+        .map(|value| format!("Agent session {value}"))
+        .unwrap_or_else(|| "Workshop operator".into());
+    let limits = recipe
+        .get("limits")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let max_cost_usd = limits
+        .get("maxCostUsd")
+        .or_else(|| limits.get("costCeilingUsd"))
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value > 0.0);
+    let max_rollouts = [
+        "maxTotalRollouts",
+        "maxTotalEnvironmentRollouts",
+        "maxSearchRollouts",
+    ]
+    .into_iter()
+    .find_map(|key| limits.get(key).and_then(Value::as_u64));
+    let paid_cap = session::approval::PaidComputeCap {
+        max_cost_usd_micros: max_cost_usd.map(|value| (value * 1_000_000.0).round() as u64),
+        max_rollouts,
+    };
+    if !paid_cap.is_bounded() {
+        return Err(AppError::from(anyhow::anyhow!(
+            "optimizer recipe `{}` does not declare an enforceable paid-compute cap",
+            request.recipe_id
+        )));
+    }
+    let paid = session::approval::ApprovalKind::PaidCompute {
+        operation: "optimizer.recipe.start".into(),
+        parameters: serde_json::json!({
+            "recipeId": request.recipe_id,
+            "algorithmId": recipe.get("algorithmId"),
+            "task": recipe.get("task"),
+            "limits": limits,
+        }),
+        estimated_cost_usd_micros: paid_cap.max_cost_usd_micros,
+        requested_cap: paid_cap.clone(),
+        requesting_agent,
+    };
+    let paid_approval_id = codex.approvals.authorize_host(&app, session_id, paid)
+        .await
+        .map_err(AppError::from)?;
+
+    for provider in optimizer_recipe_credentials(&request.recipe_id) {
+        codex.approvals.authorize_host(
+            &app,
+            session_id,
+            session::approval::ApprovalKind::CredentialAccess {
+                provider: (*provider).into(),
+                purpose: format!("run bounded optimizer recipe {}", request.recipe_id),
+            },
+        )
+        .await
+        .map_err(AppError::from)?;
+    }
+
+    let sidecar_status = state.optimizers().manager().refresh().await;
+    if sidecar_status.phase != "ready" {
+        let action = if sidecar_status.phase == "not_installed" {
+            "install_and_start"
+        } else {
+            "start"
+        };
+        codex.approvals.authorize_host(
+            &app,
+            session_id,
+            session::approval::ApprovalKind::SidecarLifecycle {
+                sidecar: "optimizers".into(),
+                action: action.into(),
+            },
+        )
+        .await
+        .map_err(AppError::from)?;
+    }
+
     let (run, event) = state
         .optimizers()
         .start_recipe(request)
         .await
         .map_err(AppError::from)?;
     publish_optimizer_event(&app, &state, event).await?;
-    Ok(run)
+    state
+        .optimizers()
+        .attach_paid_compute_approval(
+            run,
+            &paid_approval_id,
+            paid_cap.max_cost_usd_micros,
+            paid_cap.max_rollouts,
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+fn optimizer_recipe_credentials(recipe_id: &str) -> &'static [&'static str] {
+    if recipe_id.starts_with("gepa.banking77.") {
+        &["OPENAI_API_KEY"]
+    } else if recipe_id == "sft.craftax.gpt-oss.smoke.v1" {
+        &["GROQ_API_KEY", "TINKER_API_KEY"]
+    } else if recipe_id.starts_with("hosted.") {
+        &["OPTIMIZERS_BETA_SERVICE_TOKEN"]
+    } else {
+        &[]
+    }
 }
 
 #[tauri::command]

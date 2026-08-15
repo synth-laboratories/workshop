@@ -127,6 +127,27 @@ impl OptimizerService {
         .await
     }
 
+    pub(crate) async fn attach_paid_compute_approval(
+        &self,
+        mut run: OptimizerRunRecord,
+        approval_id: &str,
+        max_cost_usd_micros: Option<u64>,
+        max_rollouts: Option<u64>,
+    ) -> Result<OptimizerRunRecord> {
+        run.usage.extra.insert(
+            "paidComputeApproval".into(),
+            json!({
+                "approvalId": approval_id,
+                "cap": {
+                    "maxCostUsdMicros": max_cost_usd_micros,
+                    "maxRollouts": max_rollouts,
+                },
+                "receiptViolation": false,
+            }),
+        );
+        self.persist_run(run).await
+    }
+
     pub async fn list(&self, query: OptimizerQuery) -> Result<Vec<OptimizerRunRecord>> {
         let db = self.db.clone();
         db.run(move |conn| list_runs(conn, &query)).await
@@ -1257,6 +1278,7 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
             run.usage.wall_time_ms += v;
         }
     }
+    update_paid_compute_violation(run);
     if let Some(snapshot) = &event.snapshot {
         if let Some(summary) = snapshot.get("summary") {
             run.summary = summary.clone();
@@ -1274,6 +1296,42 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
     }
     if let Some(error) = &event.error {
         run.error = Some(error.clone());
+    }
+}
+
+fn update_paid_compute_violation(run: &mut OptimizerRunRecord) {
+    let Some(approval) = run.usage.extra.get("paidComputeApproval").cloned() else {
+        return;
+    };
+    let max_rollouts = approval.pointer("/cap/maxRollouts").and_then(Value::as_u64);
+    let max_cost_micros = approval
+        .pointer("/cap/maxCostUsdMicros")
+        .and_then(Value::as_u64);
+    let rollouts_exceeded = max_rollouts.is_some_and(|cap| run.usage.rollouts > cap);
+    let cost_exceeded = match (max_cost_micros, run.usage.cost_usd) {
+        (Some(cap), Some(cost)) => cost * 1_000_000.0 > cap as f64,
+        _ => false,
+    };
+    if rollouts_exceeded || cost_exceeded {
+        if let Some(object) = run
+            .usage
+            .extra
+            .get_mut("paidComputeApproval")
+            .and_then(Value::as_object_mut)
+        {
+            object.insert("receiptViolation".into(), Value::Bool(true));
+            object.insert(
+                "violationReason".into(),
+                Value::String(
+                    if rollouts_exceeded {
+                        "rollout_cap_exceeded"
+                    } else {
+                        "cost_cap_exceeded"
+                    }
+                    .into(),
+                ),
+            );
+        }
     }
 }
 
@@ -2688,6 +2746,60 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(usage.data.get("costUsd"), Some(&Value::Null));
+    }
+
+    #[tokio::test]
+    async fn exceeding_an_approved_cap_is_a_durable_receipt_violation() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_cap_probe",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let run = svc
+            .attach_paid_compute_approval(run, "approval-paid", Some(500_000), Some(4))
+            .await
+            .unwrap();
+        let event = OptimizerEventEnvelope {
+            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+            event_id: Some("gepa_cap_probe:1".into()),
+            event_type: "optimizer.usage".into(),
+            sequence_number: 1,
+            occurred_at: chrono::Utc::now().to_rfc3339(),
+            optimizer_run_id: run.id.clone(),
+            algorithm_id: "gepa".into(),
+            level: Some("info".into()),
+            item: None,
+            delta: Map::new(),
+            snapshot: None,
+            usage_delta: Some(
+                json!({"rollouts":5,"cost_usd":0.25})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            artifact_refs: vec![],
+            error: None,
+            raw: json!({}),
+        };
+        svc.append_events(run.id.clone(), vec![event])
+            .await
+            .unwrap();
+        let stored = svc.get(run.id).await.unwrap();
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["receiptViolation"],
+            true
+        );
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["violationReason"],
+            "rollout_cap_exceeded"
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@ use crate::credential_broker::{CredentialBroker, ReceiptStore};
 use crate::domain::{
     RunCreate, RuntimeTarget, SessionCreate, SessionKind, SessionStatus, SessionTitleOrigin,
 };
-use crate::session::approval::{ApprovalBroker, ApprovalDecision, ApprovalOrigin};
+use crate::session::approval::ApprovalBroker;
 use crate::storage::{EventAppend, EventSource};
 
 use super::event_pump::{spawn_server, EventPumpState, SpawnServerRequest};
@@ -672,14 +672,7 @@ impl CodexManager {
             )
             .await?;
         self.approvals
-            .expire_origin(
-                &app,
-                &ApprovalOrigin {
-                    session_id: session_id.to_owned(),
-                    instance_id: session.attachment_id.to_string(),
-                },
-                "origin_interrupted",
-            )
+            .expire_session(&app, session_id, "origin_interrupted")
             .await?;
         Ok(())
     }
@@ -799,7 +792,10 @@ impl CodexManager {
         app: AppHandle<R>,
         request: CodexApprovalDecisionRequest,
     ) -> Result<()> {
-        let decision = ApprovalDecision::from_shell_wire(&request.decision)?;
+        let decision = self
+            .approvals
+            .decision_from_shell(&request.approval_id, &request.decision)
+            .await?;
         self.approvals
             .resolve(&app, &request.session_id, &request.approval_id, decision)
             .await?;

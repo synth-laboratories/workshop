@@ -9,7 +9,7 @@ const read = (rel) => readFileSync(join(renderer, rel), "utf8");
 
 test("v0.2 pending approval cards pin above Working in ChatTranscript", () => {
 	const source = read("components/ChatTranscript.tsx");
-	const approvals = source.indexOf("{pendingApprovals.map((line) => renderActivityLine(line, [], false, false))}");
+	const approvals = source.indexOf("{inlineApprovals.map((line) => renderActivityLine(line, [], false, false))}");
 	const working = source.indexOf('data-testid="model-working"');
 	assert.ok(approvals >= 0, "pending approval pin is missing");
 	assert.ok(working >= 0, "Working… marker is missing");
@@ -22,6 +22,17 @@ test("v0.2 pending approval cards pin above Working in ChatTranscript", () => {
 	// behavior is owned by tests/playwright/v02-approval-ux.spec.ts; asserting
 	// the old `if (!running) return []` guard here pinned the defect in place.
 	assert.doesNotMatch(source, /if \(!running\) return \[\];/);
+});
+
+test("paid-compute approval is a cap-scoped modal, not a transcript card", () => {
+	const transcript = read("components/ChatTranscript.tsx");
+	assert.match(transcript, /data-testid="paid-compute-approval-modal"/);
+	assert.match(transcript, /role="dialog" aria-modal="true"/);
+	assert.match(transcript, /Approve with cap/);
+	assert.match(transcript, /Predicted spend/);
+	assert.match(transcript, /requestingAgent/);
+	assert.match(transcript, /line\.approvalKind !== "paid_compute"/);
+	assert.match(transcript, /Escape/);
 });
 
 test("v0.2 grouped activity keeps visual and container MCP calls out of used-tools summaries", () => {

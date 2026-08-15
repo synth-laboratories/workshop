@@ -1534,25 +1534,34 @@ pub async fn optimizer_sidecar_status(
 #[tauri::command]
 #[specta::specta]
 pub async fn optimizer_sidecar_install(
+    app: tauri::AppHandle,
     state: State<'_, Arc<OptimizerManager>>,
+    codex: State<'_, Arc<crate::codex::CodexManager>>,
     version: Option<String>,
 ) -> Result<OptimizerSidecarVersion, AppError> {
+    authorize_sidecar(&app, &codex, "install").await?;
     state.install(version.as_deref()).map_err(AppError::from)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn optimizer_sidecar_start(
+    app: tauri::AppHandle,
     state: State<'_, Arc<OptimizerManager>>,
+    codex: State<'_, Arc<crate::codex::CodexManager>>,
 ) -> Result<OptimizerSidecarStatus, AppError> {
+    authorize_sidecar(&app, &codex, "start").await?;
     state.start().await.map_err(AppError::from)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn optimizer_sidecar_stop(
+    app: tauri::AppHandle,
     state: State<'_, Arc<OptimizerManager>>,
+    codex: State<'_, Arc<crate::codex::CodexManager>>,
 ) -> Result<OptimizerSidecarStatus, AppError> {
+    authorize_sidecar(&app, &codex, "stop").await?;
     state.stop().await.map_err(AppError::from)
 }
 
@@ -1567,13 +1576,36 @@ pub async fn optimizer_sidecar_version(
 #[tauri::command]
 #[specta::specta]
 pub async fn optimizer_sidecar_uninstall(
+    app: tauri::AppHandle,
     state: State<'_, Arc<OptimizerManager>>,
     core: State<'_, Arc<crate::CoreRuntime>>,
+    codex: State<'_, Arc<crate::codex::CodexManager>>,
     version: String,
 ) -> Result<OptimizerSidecarStatus, AppError> {
+    authorize_sidecar(&app, &codex, "uninstall").await?;
     state
         .uninstall(&version, core.optimizers())
         .await
+        .map_err(AppError::from)
+}
+
+async fn authorize_sidecar(
+    app: &tauri::AppHandle,
+    codex: &crate::codex::CodexManager,
+    action: &str,
+) -> Result<(), AppError> {
+    codex
+        .approvals
+        .authorize_host(
+            app,
+            None,
+            crate::session::approval::ApprovalKind::SidecarLifecycle {
+                sidecar: "optimizers".into(),
+                action: action.into(),
+            },
+        )
+        .await
+        .map(|_| ())
         .map_err(AppError::from)
 }
 
