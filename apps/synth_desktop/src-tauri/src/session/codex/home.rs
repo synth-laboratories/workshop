@@ -282,6 +282,12 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         plugins_skill.join("SKILL.md"),
         include_str!("../../../../skills/use-synth-plugins/SKILL.md"),
     )?;
+    let session_skill = home.join("skills/use-synth-session");
+    fs::create_dir_all(&session_skill)?;
+    fs::write(
+        session_skill.join("SKILL.md"),
+        include_str!("../../../../skills/use-synth-session/SKILL.md"),
+    )?;
     // Apply the durable Context settings after bundled materialization. This
     // keeps the existing reference-file setup intact while making disabled
     // skills and edited SKILL.md copies authoritative for new sessions.
@@ -410,6 +416,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
             ("synth_containers", "synth-containers-mcp"),
             ("synth_visuals", "synth-visuals-mcp"),
             ("synth_optimizers", "synth-optimizers-mcp"),
+            ("synth_session", "synth-session-mcp"),
         ] {
             if !crate::context::mcp_group_enabled("bundled") {
                 continue;
@@ -729,6 +736,7 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         "synth_visuals" => "enabled_tools = [\"visual_manage\"]\n",
         "synth_optimizers" => "enabled_tools = [\"optimizer_manage\"]\n",
         "synth_plugins" => "enabled_tools = [\"plugin_manage\"]\n",
+        "synth_session" => "enabled_tools = [\"session_present\"]\n",
         _ => "",
     }
 }
