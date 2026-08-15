@@ -25,6 +25,7 @@ use super::{
 pub const BANKING77_GEPA_SMOKE_RECIPE: &str = "gepa.banking77.smoke.v1";
 pub const BANKING77_GEPA_LUNA_RECIPE: &str = "gepa.banking77.luna.v1";
 pub const BANKING77_GEPA_SOL_RECIPE: &str = "gepa.banking77.sol.v1";
+pub const CRAFTAX_GEPA_SMOKE_RECIPE: &str = "gepa.craftax.smoke.v1";
 const TRAIN_ROWS: usize = 50;
 const HELDOUT_ROWS: usize = 50;
 const MAX_GENERATIONS: i64 = 1;
@@ -42,6 +43,15 @@ const PROPOSER_ESTIMATED_COST_USD: f64 = 0.05;
 const ROLLOUT_ESTIMATED_COST_USD: f64 = 0.01;
 const PROPOSER_TIMEOUT_SECONDS: i64 = 300;
 const PROPOSER_MESSAGE_STALL_TIMEOUT_SECONDS: i64 = 120;
+const CRAFTAX_TRAIN_ROWS: usize = 1;
+const CRAFTAX_HELDOUT_ROWS: usize = 1;
+const CRAFTAX_MINIBATCH_SIZE: i64 = 1;
+const CRAFTAX_MAX_TRAIN_ROLLOUTS: i64 = 4;
+const CRAFTAX_MAX_HELDOUT_ROLLOUTS: i64 = 2;
+const CRAFTAX_MAX_TOTAL_ROLLOUTS: i64 = 6;
+const CRAFTAX_MAX_COST_USD: f64 = 1.50;
+const CRAFTAX_ROLLOUT_ESTIMATED_COST_USD: f64 = 0.20;
+const CRAFTAX_MAX_TURNS: i64 = 8;
 
 #[derive(Clone, Copy)]
 enum ProposerProfile {
@@ -52,9 +62,11 @@ enum ProposerProfile {
 impl ProposerProfile {
     fn for_recipe(recipe_id: &str) -> Result<Self> {
         match recipe_id {
-            BANKING77_GEPA_SMOKE_RECIPE | BANKING77_GEPA_LUNA_RECIPE => Ok(Self::LunaMedium),
+            BANKING77_GEPA_SMOKE_RECIPE
+            | BANKING77_GEPA_LUNA_RECIPE
+            | CRAFTAX_GEPA_SMOKE_RECIPE => Ok(Self::LunaMedium),
             BANKING77_GEPA_SOL_RECIPE => Ok(Self::SolMedium),
-            _ => bail!("unknown Banking77 GEPA recipe: {recipe_id}"),
+            _ => bail!("unknown product-owned GEPA recipe: {recipe_id}"),
         }
     }
 
@@ -88,9 +100,40 @@ pub(super) async fn start(
     Option<crate::storage::AppEvent>,
 )> {
     let recipe_id = request.recipe_id.clone();
-    let proposer = ProposerProfile::for_recipe(&recipe_id)?;
     let manager = service.manager().clone();
     require_plugin_ready(&manager).await?;
+    if recipe_id == CRAFTAX_GEPA_SMOKE_RECIPE {
+        let (run, event, cookbook, config_path, run_dir) =
+            materialize_prepared_run(service, request, "starting").await?;
+        append_status_event(service, &run.id, "optimizer.run.queued", "queued").await?;
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        service
+            .register_local_recipe(run.id.clone(), cancel_tx)
+            .await;
+        let worker_service = service.clone();
+        let worker_manager = manager.clone();
+        let run_id = run.id.clone();
+        tokio::spawn(async move {
+            if let Err(error) = run_recipe_worker(
+                worker_service.clone(),
+                run_id.clone(),
+                cookbook,
+                config_path,
+                run_dir,
+                manager,
+                cancel_rx,
+            )
+            .await
+            {
+                let _ =
+                    append_terminal_event(&worker_service, &run_id, true, error.to_string()).await;
+            }
+            worker_manager.release_gepa_recipe(&run_id).await;
+            worker_service.unregister_local_recipe(&run_id).await;
+        });
+        return Ok((run, event));
+    }
+    let proposer = ProposerProfile::for_recipe(&recipe_id)?;
     let cookbook = banking77_cookbook_root()?;
     let run_id = recipe_run_id(proposer);
     let runs_root = cookbook
@@ -273,7 +316,11 @@ pub(super) async fn start_prepared(
         .ok_or_else(|| anyhow!("prepared run omitted recipeId"))?
         .to_owned();
     let _ = ProposerProfile::for_recipe(&recipe_id)?;
-    let cookbook = banking77_cookbook_root()?;
+    let cookbook = if recipe_id == CRAFTAX_GEPA_SMOKE_RECIPE {
+        craftax_cookbook_root()?
+    } else {
+        banking77_cookbook_root()?
+    };
     let run_dir = run
         .summary
         .get("runDirectory")
@@ -357,6 +404,9 @@ async fn materialize_prepared_run(
     PathBuf,
 )> {
     let recipe_id = request.recipe_id.clone();
+    if recipe_id == CRAFTAX_GEPA_SMOKE_RECIPE {
+        return materialize_craftax_prepared_run(service, request, status).await;
+    }
     let proposer = ProposerProfile::for_recipe(&recipe_id)?;
     let cookbook = banking77_cookbook_root()?;
     let run_id = recipe_run_id(proposer);
@@ -470,13 +520,153 @@ async fn materialize_prepared_run(
     Ok((run, event, cookbook, config_path, run_dir))
 }
 
+async fn materialize_craftax_prepared_run(
+    service: &OptimizerService,
+    request: OptimizerRecipeRunRequest,
+    status: &str,
+) -> Result<(
+    super::models::OptimizerRunRecord,
+    Option<crate::storage::AppEvent>,
+    PathBuf,
+    PathBuf,
+    PathBuf,
+)> {
+    let recipe_id = request.recipe_id.clone();
+    if recipe_id != CRAFTAX_GEPA_SMOKE_RECIPE {
+        bail!("unknown Craftax GEPA recipe: {recipe_id}");
+    }
+    let proposer = ProposerProfile::LunaMedium;
+    let cookbook = craftax_cookbook_root()?;
+    let run_suffix = uuid::Uuid::new_v4().simple().to_string();
+    let run_id = format!("craftax_gepa_luna_med_{}", &run_suffix[..8]);
+    let runs_root = cookbook
+        .parent()
+        .ok_or_else(|| anyhow!("invalid Craftax cookbook path"))?
+        .join("runs");
+    let run_dir = runs_root.join(&run_id);
+    fs::create_dir_all(&run_dir).context("create Craftax GEPA run directory")?;
+    let port = reserve_loopback_port()?;
+    let uv = resolve_uv()?;
+    let codex_home = resolve_codex_home()?;
+    let config_path = run_dir.join("workshop.recipe.toml");
+    materialize_craftax_config(
+        &cookbook,
+        &runs_root,
+        &run_id,
+        port,
+        &uv,
+        &config_path,
+        proposer,
+        &codex_home,
+    )?;
+
+    let create = OptimizerCreateRequest {
+        algorithm_id: "gepa".into(),
+        algorithm_version: Some(DEFAULT_ALGORITHM_VERSION.into()),
+        objective: Some("Craftax ReAct prompt · bounded GEPA · Luna medium".into()),
+        source: Some("local".into()),
+        project_ref: Some("craftax@public-crafter-live".into()),
+        session_ref: request.session_ref,
+        id: Some(run_id.clone()),
+        execution_bindings: Some(vec![OptimizerExecutionBinding {
+            kind: "local_process".into(),
+            id: run_id.clone(),
+            label: Some("Craftax GEPA · Luna medium".into()),
+            status: Some(status.into()),
+            metadata: json!({
+                "recipeId": recipe_id,
+                "port": port,
+                "proposerPolicyRef": {
+                    "harness": "gepa_proposer",
+                    "config": proposer.config_id(),
+                },
+                "candidatePolicyRef": {
+                    "provider": "openai",
+                    "model": "gpt-4.1-nano",
+                },
+            }),
+        }]),
+        input_refs: Some(vec![
+            OptimizerResourceRef {
+                kind: "dataset".into(),
+                id: "crafter_public_episodes".into(),
+                digest: None,
+                role: Some("train_and_heldout".into()),
+                title: Some("Craftax deterministic episode seeds".into()),
+                metadata: json!({
+                    "trainRows": CRAFTAX_TRAIN_ROWS,
+                    "heldoutRows": CRAFTAX_HELDOUT_ROWS,
+                    "maxTurns": CRAFTAX_MAX_TURNS,
+                }),
+            },
+            OptimizerResourceRef {
+                kind: "recipe".into(),
+                id: recipe_id.clone(),
+                digest: None,
+                role: Some("configuration".into()),
+                title: Some("Bounded Craftax ReAct GEPA".into()),
+                metadata: craftax_recipe_limits(),
+            },
+            OptimizerResourceRef {
+                kind: "policy_ref".into(),
+                id: proposer.config_id().into(),
+                digest: None,
+                role: Some("proposer".into()),
+                title: Some("GEPA proposer · Luna medium".into()),
+                metadata: json!({
+                    "harness": "gepa_proposer",
+                    "config": proposer.config_id(),
+                }),
+            },
+            OptimizerResourceRef {
+                kind: "policy_ref".into(),
+                id: "craftax_gpt_4_1_nano".into(),
+                digest: None,
+                role: Some("evaluator".into()),
+                title: Some("Craftax ReAct candidate policy".into()),
+                metadata: json!({
+                    "provider": "openai",
+                    "model": "gpt-4.1-nano",
+                    "task": "crafter.react_policy",
+                }),
+            },
+        ]),
+        capabilities: None,
+        summary: Some(json!({
+            "recipeId": recipe_id,
+            "task": "craftax",
+            "proposerPolicyRef": {
+                "harness": "gepa_proposer",
+                "config": proposer.config_id(),
+            },
+            "candidatePolicyRef": {
+                "provider": "openai",
+                "model": "gpt-4.1-nano",
+            },
+            "limits": craftax_recipe_limits(),
+            "runDirectory": run_dir,
+            "proposerModel": proposer.model(),
+        })),
+        open_visual: request.open_visual.or(Some(true)),
+        seed_fixture: None,
+        cloud_config: None,
+        local_path: None,
+    };
+    let (run, event) = service.create(create).await?;
+    let (run, _) = service
+        .manager()
+        .pin_run(service, &run.id, &recipe_id)
+        .await?;
+    Ok((run, event, cookbook, config_path, run_dir))
+}
+
 pub fn recipe_catalog() -> Vec<serde_json::Value> {
     let availability = if banking77_cookbook_root().is_ok() {
         "available"
     } else {
         "unavailable"
     };
-    [
+    let mut recipes = [
         (
             BANKING77_GEPA_SMOKE_RECIPE,
             "Banking77 GEPA · bounded smoke",
@@ -506,7 +696,19 @@ pub fn recipe_catalog() -> Vec<serde_json::Value> {
             "credentialInputs": [],
         })
     })
-    .collect()
+    .collect::<Vec<_>>();
+    recipes.push(json!({
+        "id": CRAFTAX_GEPA_SMOKE_RECIPE,
+        "title": "Craftax GEPA · bounded ReAct smoke",
+        "algorithmId": "gepa",
+        "task": "craftax",
+        "availability": if craftax_cookbook_root().is_ok() { "available" } else { "unavailable" },
+        "limits": craftax_recipe_limits(),
+        "policyRef": { "harness": "gepa_proposer", "config": "luna_med" },
+        "candidatePolicyRef": { "provider": "openai", "model": "gpt-4.1-nano" },
+        "credentialInputs": [],
+    }));
+    recipes
 }
 
 pub(super) async fn reconcile_persisted(
@@ -633,6 +835,21 @@ fn recipe_limits() -> serde_json::Value {
     })
 }
 
+fn craftax_recipe_limits() -> serde_json::Value {
+    json!({
+        "maxGenerations": MAX_GENERATIONS,
+        "proposalsPerGeneration": PROPOSALS_PER_GENERATION,
+        "minibatchSize": CRAFTAX_MINIBATCH_SIZE,
+        "maxTrainRollouts": CRAFTAX_MAX_TRAIN_ROLLOUTS,
+        "maxHeldoutRollouts": CRAFTAX_MAX_HELDOUT_ROLLOUTS,
+        "maxTotalRollouts": CRAFTAX_MAX_TOTAL_ROLLOUTS,
+        "maxCostUsd": CRAFTAX_MAX_COST_USD,
+        "proposerEstimatedCostUsd": PROPOSER_ESTIMATED_COST_USD,
+        "rolloutEstimatedCostUsd": CRAFTAX_ROLLOUT_ESTIMATED_COST_USD,
+        "maxTurns": CRAFTAX_MAX_TURNS,
+    })
+}
+
 async fn run_recipe_worker(
     service: OptimizerService,
     run_id: String,
@@ -671,10 +888,10 @@ async fn run_recipe_worker(
         }
         tokio::select! {
             status = child.wait() => {
-                let status = status.context("wait for Banking77 GEPA process")?;
+                let status = status.context("wait for product-owned GEPA process")?;
                 ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await?;
                 if !status.success() {
-                    bail!("Banking77 GEPA exited with {status}; see {}", run_dir.join("workshop.stderr.log").display());
+                    bail!("GEPA recipe exited with {status}; see {}", run_dir.join("workshop.stderr.log").display());
                 }
                 append_recipe_artifacts(&service, &run_id, &run_dir).await?;
                 append_recipe_candidates(&service, &run_id, &run_dir).await?;
@@ -686,7 +903,7 @@ async fn run_recipe_worker(
                 if changed.is_ok() && *cancel_rx.borrow() {
                     manager.terminate_gepa_recipe(&run_id).await;
                     if child.try_wait()?.is_none() {
-                        child.kill().await.context("cancel Banking77 GEPA process")?;
+                        child.kill().await.context("cancel product-owned GEPA process")?;
                     }
                     append_status_event(&service, &run_id, "optimizer.run.cancelled", "cancelled").await?;
                     return Ok(());
@@ -719,7 +936,8 @@ fn resolve_secret(name: &str) -> Result<String> {
             return Ok(value);
         }
     }
-    let candidates = std::env::var_os("SYNTH_BANKING77_SECRET_ENV_FILE")
+    let candidates = std::env::var_os("SYNTH_GEPA_SECRET_ENV_FILE")
+        .or_else(|| std::env::var_os("SYNTH_BANKING77_SECRET_ENV_FILE"))
         .map(PathBuf::from)
         .into_iter();
     for path in candidates {
@@ -731,7 +949,7 @@ fn resolve_secret(name: &str) -> Result<String> {
         }
     }
     bail!(
-        "Banking77 GEPA requires {name}; configure it in the Desktop process or a trusted recipe env file"
+        "the selected GEPA recipe requires {name}; configure it in the Desktop process or a trusted recipe env file"
     )
 }
 
@@ -1336,6 +1554,23 @@ fn banking77_cookbook_root() -> Result<PathBuf> {
     Ok(path)
 }
 
+fn craftax_cookbook_root() -> Result<PathBuf> {
+    let path = std::env::var_os("SYNTH_CRAFTAX_GEPA_COOKBOOK_ROOT")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("SYNTH_CRAFTAX_GEPA_COOKBOOK_ROOT is not configured"))?;
+    let path = path.canonicalize().unwrap_or(path);
+    if !path.join("gepa.toml").is_file()
+        || !path.join("synth_service_app.py").is_file()
+        || !path.join("crafter_text_env.py").is_file()
+        || !path.join("uv.lock").is_file()
+    {
+        bail!(
+            "Craftax GEPA cookbook is unavailable; set SYNTH_CRAFTAX_GEPA_COOKBOOK_ROOT in the Desktop process"
+        );
+    }
+    Ok(path)
+}
+
 fn reserve_loopback_port() -> Result<u16> {
     Ok(TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port())
 }
@@ -1550,6 +1785,190 @@ fn materialize_config(
     Ok(())
 }
 
+fn materialize_craftax_config(
+    cookbook: &Path,
+    runs_root: &Path,
+    run_id: &str,
+    port: u16,
+    uv: &Path,
+    destination: &Path,
+    proposer_profile: ProposerProfile,
+    codex_home: &Path,
+) -> Result<()> {
+    let source = fs::read_to_string(cookbook.join("gepa.toml"))?;
+    let mut config: toml::Value = toml::from_str(&source)?;
+    let run = table_mut(&mut config, "run")?;
+    run.insert("run_id".into(), toml::Value::String(run_id.into()));
+    run.insert(
+        "output_dir".into(),
+        toml::Value::String(runs_root.display().to_string()),
+    );
+
+    let container = table_mut(&mut config, "container")?;
+    container.insert("startup_timeout_seconds".into(), 240.into());
+    container.insert(
+        "url".into(),
+        toml::Value::String(format!("http://127.0.0.1:{port}")),
+    );
+    container.insert(
+        "cwd".into(),
+        toml::Value::String(
+            cookbook
+                .parent()
+                .ok_or_else(|| anyhow!("invalid Craftax cookbook path"))?
+                .display()
+                .to_string(),
+        ),
+    );
+    container.insert(
+        "command".into(),
+        toml::Value::Array(
+            vec![
+                "/usr/bin/env",
+                "CRAFTER_POLICY_MODEL=gpt-4.1-nano",
+                &format!("CRAFTER_MAX_TURNS={CRAFTAX_MAX_TURNS}"),
+                "CRAFTER_MIN_BATCH=1",
+                "CRAFTER_MAX_BATCH=5",
+                &uv.display().to_string(),
+                "run",
+                "--frozen",
+                "--project",
+                "crafter_container",
+                "python",
+                "crafter_container/synth_service_app.py",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                &port.to_string(),
+            ]
+            .into_iter()
+            .map(|value| toml::Value::String(value.into()))
+            .collect(),
+        ),
+    );
+
+    let dataset = table_mut(&mut config, "dataset")?;
+    dataset.insert("train_split".into(), toml::Value::String("train".into()));
+    dataset.insert("heldout_split".into(), toml::Value::String("test".into()));
+    dataset.insert("train_seeds".into(), integer_array(11, CRAFTAX_TRAIN_ROWS));
+    dataset.insert(
+        "heldout_seeds".into(),
+        integer_array(101, CRAFTAX_HELDOUT_ROWS),
+    );
+
+    let taskset = [
+        ("train_split".into(), toml::Value::String("train".into())),
+        ("heldout_split".into(), toml::Value::String("test".into())),
+        (
+            "train_ids".into(),
+            string_array((11..11 + CRAFTAX_TRAIN_ROWS).map(|seed| format!("train:{seed}"))),
+        ),
+        (
+            "heldout_ids".into(),
+            string_array((101..101 + CRAFTAX_HELDOUT_ROWS).map(|seed| format!("test:{seed}"))),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    config
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("Craftax base config must be a TOML table"))?
+        .insert("taskset".into(), toml::Value::Table(taskset));
+
+    let gepa = table_mut(&mut config, "gepa")?;
+    gepa.insert("max_generations".into(), MAX_GENERATIONS.into());
+    gepa.insert(
+        "proposals_per_generation".into(),
+        PROPOSALS_PER_GENERATION.into(),
+    );
+    gepa.insert("minibatch_size".into(), CRAFTAX_MINIBATCH_SIZE.into());
+    gepa.insert(
+        "max_train_rollouts".into(),
+        CRAFTAX_MAX_TRAIN_ROLLOUTS.into(),
+    );
+    gepa.insert(
+        "max_heldout_rollouts".into(),
+        CRAFTAX_MAX_HELDOUT_ROLLOUTS.into(),
+    );
+    gepa.insert(
+        "max_total_rollouts".into(),
+        CRAFTAX_MAX_TOTAL_ROLLOUTS.into(),
+    );
+    gepa.insert("max_cost_usd".into(), CRAFTAX_MAX_COST_USD.into());
+    gepa.insert(
+        "proposer_estimated_cost_usd".into(),
+        PROPOSER_ESTIMATED_COST_USD.into(),
+    );
+    gepa.insert(
+        "rollout_estimated_cost_usd".into(),
+        CRAFTAX_ROLLOUT_ESTIMATED_COST_USD.into(),
+    );
+    let task_pools = [
+        (
+            "pareto".into(),
+            string_array((11..11 + CRAFTAX_TRAIN_ROWS).map(|seed| format!("train:{seed}"))),
+        ),
+        (
+            "minibatch".into(),
+            string_array((11..11 + CRAFTAX_TRAIN_ROWS).map(|seed| format!("train:{seed}"))),
+        ),
+        (
+            "reflection".into(),
+            string_array((11..11 + CRAFTAX_TRAIN_ROWS).map(|seed| format!("train:{seed}"))),
+        ),
+        (
+            "heldout".into(),
+            string_array((101..101 + CRAFTAX_HELDOUT_ROWS).map(|seed| format!("test:{seed}"))),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    gepa.insert("task_pools".into(), toml::Value::Table(task_pools));
+
+    let cache = table_mut(&mut config, "cache")?;
+    cache.insert("mode".into(), toml::Value::String("off".into()));
+    cache.insert("path".into(), toml::Value::String(String::new()));
+    cache.insert("namespace".into(), toml::Value::String(run_id.into()));
+
+    let policy = table_mut(&mut config, "policy")?;
+    policy.insert("provider".into(), toml::Value::String("openai".into()));
+    policy.insert("model".into(), toml::Value::String("gpt-4.1-nano".into()));
+    policy.insert(
+        "api_key_env".into(),
+        toml::Value::String("OPENAI_API_KEY".into()),
+    );
+    policy.remove("base_url");
+
+    let proposer = table_mut(&mut config, "proposer")?;
+    proposer.insert(
+        "model".into(),
+        toml::Value::String(proposer_profile.model().into()),
+    );
+    proposer.insert(
+        "reasoning_effort".into(),
+        toml::Value::String("medium".into()),
+    );
+    proposer.insert(
+        "timeout_seconds".into(),
+        toml::Value::Integer(PROPOSER_TIMEOUT_SECONDS),
+    );
+    proposer.insert(
+        "message_stall_timeout_seconds".into(),
+        toml::Value::Integer(PROPOSER_MESSAGE_STALL_TIMEOUT_SECONDS),
+    );
+    proposer.insert("auth_mode".into(), toml::Value::String("chatgpt".into()));
+    proposer.insert("copy_host_auth".into(), toml::Value::Boolean(true));
+    proposer.remove("api_key_env");
+    proposer.insert(
+        "codex_home".into(),
+        toml::Value::String(codex_home.display().to_string()),
+    );
+
+    validate_craftax_limits(&config)?;
+    fs::write(destination, toml::to_string_pretty(&config)?)?;
+    Ok(())
+}
+
 fn table_mut<'a>(config: &'a mut toml::Value, key: &str) -> Result<&'a mut toml::value::Table> {
     config
         .get_mut(key)
@@ -1619,6 +2038,38 @@ fn validate_limits(config: &toml::Value) -> Result<()> {
         .ok_or_else(|| anyhow!("generated recipe missing gepa.rollout_estimated_cost_usd"))?;
     if rollout_cost <= 0.0 || rollout_cost > MAX_COST_USD {
         bail!("generated Banking77 GEPA recipe has an invalid rollout cost estimate");
+    }
+    Ok(())
+}
+
+fn validate_craftax_limits(config: &toml::Value) -> Result<()> {
+    let gepa = config
+        .get("gepa")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| anyhow!("generated Craftax recipe missing [gepa]"))?;
+    let integer = |key: &str| {
+        gepa.get(key)
+            .and_then(toml::Value::as_integer)
+            .ok_or_else(|| anyhow!("generated Craftax recipe missing gepa.{key}"))
+    };
+    if integer("max_generations")? > MAX_GENERATIONS
+        || integer("proposals_per_generation")? > PROPOSALS_PER_GENERATION
+        || integer("max_train_rollouts")? > CRAFTAX_MAX_TRAIN_ROLLOUTS
+        || integer("max_heldout_rollouts")? > CRAFTAX_MAX_HELDOUT_ROLLOUTS
+        || integer("max_total_rollouts")? > CRAFTAX_MAX_TOTAL_ROLLOUTS
+    {
+        bail!("generated Craftax GEPA recipe exceeds hard rollout bounds");
+    }
+    let cost = gepa
+        .get("max_cost_usd")
+        .and_then(|value| {
+            value
+                .as_float()
+                .or_else(|| value.as_integer().map(|value| value as f64))
+        })
+        .ok_or_else(|| anyhow!("generated Craftax recipe missing gepa.max_cost_usd"))?;
+    if !(0.0..=CRAFTAX_MAX_COST_USD).contains(&cost) {
+        bail!("generated Craftax GEPA recipe exceeds hard cost bound");
     }
     Ok(())
 }
@@ -1750,14 +2201,110 @@ namespace = "base"
     #[test]
     fn catalog_discloses_no_credential_inputs() {
         let catalog = recipe_catalog();
-        assert_eq!(catalog.len(), 3);
+        assert_eq!(catalog.len(), 4);
         assert!(catalog
             .iter()
             .all(|recipe| recipe["credentialInputs"] == json!([])));
-        assert!(catalog
+        assert!(catalog[..3]
             .iter()
             .all(|recipe| recipe["limits"]["maxCostUsd"] == json!(2.45)));
+        assert_eq!(catalog[3]["id"], json!(CRAFTAX_GEPA_SMOKE_RECIPE));
+        assert_eq!(catalog[3]["limits"]["maxCostUsd"], json!(1.5));
+        assert_eq!(catalog[3]["limits"]["maxTotalRollouts"], json!(6));
+        assert_eq!(
+            catalog[3]["candidatePolicyRef"]["model"],
+            json!("gpt-4.1-nano")
+        );
         assert_ne!(catalog[1]["policyRef"], catalog[2]["policyRef"]);
+    }
+
+    #[test]
+    fn materialized_craftax_recipe_enforces_exact_bounds_and_frozen_runtime() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("gepa.toml"),
+            r#"[run]
+run_id = "base"
+output_dir = "runs"
+[container]
+url = "http://127.0.0.1:8765"
+command = []
+cwd = "."
+[dataset]
+train_split = "train"
+heldout_split = "test"
+train_seeds = [0]
+heldout_seeds = [1]
+[policy]
+provider = "openai"
+model = "old"
+api_key_env = "OLD_KEY"
+[proposer]
+model = "old"
+auth_mode = "api_key"
+api_key_env = "OLD_KEY"
+[gepa]
+max_generations = 99
+proposals_per_generation = 99
+minibatch_size = 99
+max_train_rollouts = 999
+max_heldout_rollouts = 999
+max_total_rollouts = 999
+max_cost_usd = 99.0
+[cache]
+mode = "readwrite"
+path = "secret"
+namespace = "base"
+"#,
+        )
+        .unwrap();
+        fs::write(dir.path().join("synth_service_app.py"), "").unwrap();
+        fs::write(dir.path().join("crafter_text_env.py"), "").unwrap();
+        fs::write(dir.path().join("uv.lock"), "").unwrap();
+        let runs = dir.path().join("runs");
+        fs::create_dir_all(&runs).unwrap();
+        let codex_home = dir.path().join("codex-home");
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::write(codex_home.join("auth.json"), "{}").unwrap();
+        let output = dir.path().join("recipe.toml");
+        materialize_craftax_config(
+            dir.path(),
+            &runs,
+            "craftax_test",
+            23457,
+            Path::new("/usr/bin/true"),
+            &output,
+            ProposerProfile::LunaMedium,
+            &codex_home,
+        )
+        .unwrap();
+        let text = fs::read_to_string(output).unwrap();
+        let config: toml::Value = toml::from_str(&text).unwrap();
+        validate_craftax_limits(&config).unwrap();
+        assert_eq!(
+            config["taskset"]["train_ids"],
+            toml::Value::Array(vec![toml::Value::String("train:11".into())])
+        );
+        assert_eq!(
+            config["taskset"]["heldout_ids"],
+            toml::Value::Array(vec![toml::Value::String("test:101".into())])
+        );
+        assert_eq!(config["gepa"]["minibatch_size"].as_integer(), Some(1));
+        assert_eq!(config["gepa"]["max_train_rollouts"].as_integer(), Some(4));
+        assert_eq!(config["gepa"]["max_heldout_rollouts"].as_integer(), Some(2));
+        assert_eq!(config["gepa"]["max_total_rollouts"].as_integer(), Some(6));
+        assert_eq!(config["gepa"]["max_cost_usd"].as_float(), Some(1.5));
+        assert_eq!(config["policy"]["model"].as_str(), Some("gpt-4.1-nano"));
+        assert_eq!(
+            config["policy"]["api_key_env"].as_str(),
+            Some("OPENAI_API_KEY")
+        );
+        assert!(text.contains("\"--frozen\""));
+        assert!(text.contains("\"CRAFTER_MAX_TURNS=8\""));
+        assert!(text.contains("startup_timeout_seconds = 240"));
+        assert!(text.contains("auth_mode = \"chatgpt\""));
+        assert!(!text.contains("OLD_KEY"));
+        assert!(!text.contains("path = \"secret\""));
     }
 
     #[test]

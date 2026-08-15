@@ -91,7 +91,8 @@ impl OptimizerService {
         match request.recipe_id.as_str() {
             super::recipes::BANKING77_GEPA_SMOKE_RECIPE
             | super::recipes::BANKING77_GEPA_LUNA_RECIPE
-            | super::recipes::BANKING77_GEPA_SOL_RECIPE => {
+            | super::recipes::BANKING77_GEPA_SOL_RECIPE
+            | super::recipes::CRAFTAX_GEPA_SMOKE_RECIPE => {
                 super::recipes::start(self, request).await
             }
             super::sft_recipes::CRAFTAX_SFT_SMOKE_RECIPE => {
@@ -116,11 +117,12 @@ impl OptimizerService {
         match request.recipe_id.as_str() {
             super::recipes::BANKING77_GEPA_SMOKE_RECIPE
             | super::recipes::BANKING77_GEPA_LUNA_RECIPE
-            | super::recipes::BANKING77_GEPA_SOL_RECIPE => {
+            | super::recipes::BANKING77_GEPA_SOL_RECIPE
+            | super::recipes::CRAFTAX_GEPA_SMOKE_RECIPE => {
                 super::recipes::prepare(self, request).await
             }
             _ => bail!(
-                "prepare is only implemented for bounded Banking77 GEPA recipes; got {}",
+                "prepare is only implemented for bounded product-owned GEPA recipes; got {}",
                 request.recipe_id
             ),
         }
@@ -1175,6 +1177,14 @@ async fn materialize_optimizer_result(
             .or_else(|| value.pointer("/values/prompt"))
             .or_else(|| value.pointer("/payload/prompt"))
             .or_else(|| value.pointer("/lever_bundle/values/prompt"))
+            .or_else(|| value.get("stage2_system"))
+            .or_else(|| value.pointer("/values/stage2_system"))
+            .or_else(|| value.pointer("/payload/stage2_system"))
+            .or_else(|| value.pointer("/lever_bundle/values/stage2_system"))
+            .or_else(|| value.get("react_system_prompt"))
+            .or_else(|| value.pointer("/values/react_system_prompt"))
+            .or_else(|| value.pointer("/payload/react_system_prompt"))
+            .or_else(|| value.pointer("/lever_bundle/values/react_system_prompt"))
             .and_then(Value::as_str)
             .map(str::to_owned)
     });
@@ -1205,7 +1215,7 @@ async fn materialize_optimizer_result(
             .filter(|value| !value.is_empty())
             .is_none()
     {
-        bail!("completed Banking77 result omitted a materialized prompt");
+        bail!("completed GEPA result omitted a materialized prompt");
     }
     let mut selected_candidate = json!({});
     if let Some(id) = candidate_id {
@@ -3484,6 +3494,60 @@ mod tests {
         assert!(!encoded.contains("runDirectory"));
         assert!(!encoded.contains(&run_dir.display().to_string()));
         assert!(!result["artifactRefs"][0]["id"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn craftax_result_materializes_react_prompt_without_filesystem_paths() {
+        let (svc, dir, _) = service().await;
+        let run_dir = dir.path().join("craftax_result");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("best_candidate.json"),
+            r#"{
+                "candidate_id": "craftax_winner",
+                "parent_id": "seed",
+                "lever_bundle": {
+                    "values": {
+                        "react_system_prompt": "Observe carefully, choose one valid Craftax action, then reassess."
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "craftax_result_run",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = run.clone();
+        stored.status = "completed".into();
+        stored.summary = json!({
+            "recipeId": "gepa.craftax.smoke.v1",
+            "runDirectory": run_dir.display().to_string(),
+            "selection": {"score": 0.4},
+            "heldout": {"score": 0.3}
+        });
+        svc.persist_run(stored).await.unwrap();
+        let result = svc.get_result(run.id).await.unwrap();
+        assert_eq!(result["schemaVersion"], json!("optimizer_result.v1"));
+        assert_eq!(
+            result["selectedCandidate"]["materializedValues"]["prompt"],
+            json!("Observe carefully, choose one valid Craftax action, then reassess.")
+        );
+        assert!(result["selectedCandidate"]["materializedDigest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        let encoded = result.to_string();
+        assert!(!encoded.contains("best_candidate.json"));
+        assert!(!encoded.contains("runDirectory"));
+        assert!(!encoded.contains(&run_dir.display().to_string()));
     }
 
     #[tokio::test]

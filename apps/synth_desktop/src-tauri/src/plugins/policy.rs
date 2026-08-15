@@ -120,6 +120,10 @@ pub fn compute_kind(
     timeout_seconds: u64,
 ) -> ApprovalKind {
     let micros = (max_cost_usd * 1_000_000.0).round() as u64;
+    let (dataset, evaluator_model) = match recipe_id {
+        "gepa.craftax.smoke.v1" => ("craftax", "craftax_gpt_4_1_nano"),
+        _ => ("banking77", "banking77_candidate"),
+    };
     ApprovalKind::PaidCompute {
         operation: recipe_id.into(),
         parameters: json!({
@@ -133,9 +137,9 @@ pub fn compute_kind(
         },
         requesting_agent: "agent".into(),
         recipe_id: Some(recipe_id.into()),
-        dataset: Some("banking77".into()),
+        dataset: Some(dataset.into()),
         proposer_model: Some(proposer_model.into()),
-        evaluator_model: Some("banking77_candidate".into()),
+        evaluator_model: Some(evaluator_model.into()),
         timeout_seconds: Some(timeout_seconds),
         credential_names: vec!["OPENAI_API_KEY".into()],
         preparation_digest: Some(preparation_digest.into()),
@@ -234,5 +238,33 @@ mod tests {
         assert!(auto_decision("untrusted", &install_kind(), 0)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn craftax_compute_approval_discloses_exact_bounded_workload() {
+        let approval = compute_kind(
+            "gepa.craftax.smoke.v1",
+            "sha256:craftax",
+            1.50,
+            6,
+            "gpt-5.6-luna",
+            300,
+        );
+        match approval {
+            ApprovalKind::PaidCompute {
+                dataset,
+                evaluator_model,
+                requested_cap,
+                preparation_digest,
+                ..
+            } => {
+                assert_eq!(dataset.as_deref(), Some("craftax"));
+                assert_eq!(evaluator_model.as_deref(), Some("craftax_gpt_4_1_nano"));
+                assert_eq!(requested_cap.max_cost_usd_micros, Some(1_500_000));
+                assert_eq!(requested_cap.max_rollouts, Some(6));
+                assert_eq!(preparation_digest.as_deref(), Some("sha256:craftax"));
+            }
+            other => panic!("expected paid compute approval, got {other:?}"),
+        }
     }
 }

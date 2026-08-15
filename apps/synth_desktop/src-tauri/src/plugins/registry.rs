@@ -76,6 +76,7 @@ impl PluginRegistry {
                 "gepa.banking77.smoke.v1".into(),
                 "gepa.banking77.luna.v1".into(),
                 "gepa.banking77.sol.v1".into(),
+                "gepa.craftax.smoke.v1".into(),
             ],
         })
     }

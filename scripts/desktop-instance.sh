@@ -378,25 +378,37 @@ status_instance() {
 
 stage_gepa_runtime() {
   local runtime_root="$INSTANCE_ROOT/runtime/gepa"
-  local cookbook_target="$runtime_root/banking77_container"
-  local cookbook_source="${SYNTH_BANKING77_GEPA_COOKBOOK_SOURCE:-$(dirname "$ROOT")/synth-cookbooks-public/cookbooks/optimizers/gepa/banking77_container}"
+  local banking_target="$runtime_root/banking77_container"
+  local banking_source="${SYNTH_BANKING77_GEPA_COOKBOOK_SOURCE:-$(dirname "$ROOT")/synth-cookbooks-public/cookbooks/optimizers/gepa/banking77_container}"
+  local craftax_target="$runtime_root/crafter_container"
+  local craftax_source="${SYNTH_CRAFTAX_GEPA_COOKBOOK_SOURCE:-$(dirname "$ROOT")/synth-cookbooks-public/cookbooks/optimizers/gepa/crafter_container}"
   local optimizer_target="$runtime_root/optimizer-project"
   local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-$(dirname "$ROOT")/optimizers-g1}"
   local use_local_optimizer="${SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0}"
-  local secret_target="$DATA_ROOT/banking77-secret.env"
-  local secret_source="${SYNTH_BANKING77_SECRET_ENV_SOURCE:-$(dirname "$ROOT")/synth-ai/.env}"
+  local secret_target="$DATA_ROOT/gepa-secret.env"
+  local secret_source="${SYNTH_GEPA_SECRET_ENV_SOURCE:-${SYNTH_BANKING77_SECRET_ENV_SOURCE:-$(dirname "$ROOT")/synth-ai/.env}}"
 
-  if [[ ! -f "$cookbook_source/gepa.toml" || ! -f "$cookbook_source/synth_service_app.py" ]]; then
-    echo "[desktop:$NAME] ERROR GEPA cookbook source is unavailable: $cookbook_source" >&2
+  if [[ ! -f "$banking_source/gepa.toml" || ! -f "$banking_source/synth_service_app.py" ]]; then
+    echo "[desktop:$NAME] ERROR Banking77 GEPA cookbook source is unavailable: $banking_source" >&2
     exit 1
   fi
-  mkdir -p "$cookbook_target"
+  if [[ ! -f "$craftax_source/gepa.toml" || ! -f "$craftax_source/synth_service_app.py" || ! -f "$craftax_source/crafter_text_env.py" || ! -f "$craftax_source/uv.lock" ]]; then
+    echo "[desktop:$NAME] ERROR Craftax GEPA cookbook source is unavailable: $craftax_source" >&2
+    exit 1
+  fi
+  mkdir -p "$banking_target" "$craftax_target"
   rsync -a --delete \
     --exclude '.venv' \
     --exclude '__pycache__' \
     --exclude 'runs' \
-    "$cookbook_source/" "$cookbook_target/"
-  export SYNTH_BANKING77_GEPA_COOKBOOK_ROOT="$cookbook_target"
+    "$banking_source/" "$banking_target/"
+  rsync -a --delete \
+    --exclude '.venv' \
+    --exclude '__pycache__' \
+    --exclude 'runs' \
+    "$craftax_source/" "$craftax_target/"
+  export SYNTH_BANKING77_GEPA_COOKBOOK_ROOT="$banking_target"
+  export SYNTH_CRAFTAX_GEPA_COOKBOOK_ROOT="$craftax_target"
 
   if [[ "$use_local_optimizer" == "1" ]]; then
     if [[ ! -f "$optimizer_source/pyproject.toml" || ! -f "$optimizer_source/rust/crates/synth_gepa/Cargo.toml" ]]; then
@@ -433,6 +445,7 @@ stage_gepa_runtime() {
       rm -f "$secret_tmp"
     fi
   fi
+  export SYNTH_GEPA_SECRET_ENV_FILE="$secret_target"
   export SYNTH_BANKING77_SECRET_ENV_FILE="$secret_target"
 }
 

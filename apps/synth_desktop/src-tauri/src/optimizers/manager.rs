@@ -1110,7 +1110,8 @@ async fn launch_sidecar_upstream(
                                 "recipes": [
                                     "gepa.banking77.smoke.v1",
                                     "gepa.banking77.luna.v1",
-                                    "gepa.banking77.sol.v1"
+                                    "gepa.banking77.sol.v1",
+                                    "gepa.craftax.smoke.v1"
                                 ],
                                 "replay": true,
                                 "cancellation": true,
@@ -1848,7 +1849,8 @@ fn default_capabilities_for(hit: &OptimizerSidecarVersion) -> Value {
         "recipes": [
             "gepa.banking77.smoke.v1",
             "gepa.banking77.luna.v1",
-            "gepa.banking77.sol.v1"
+            "gepa.banking77.sol.v1",
+            "gepa.craftax.smoke.v1"
         ],
         "eventSchemas": ["optimizer_event.v1"],
         "stateSchemas": ["optimizer_state_slice.v1"],

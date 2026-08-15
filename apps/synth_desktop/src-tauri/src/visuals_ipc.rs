@@ -1596,17 +1596,44 @@ async fn dispatch_optimizer(
                 if let Some(broker) =
                     app.try_state::<Arc<crate::session::approval::ApprovalBroker>>()
                 {
+                    let run = optimizers.get(id.to_string()).await?;
+                    let recipe_id = run
+                        .summary
+                        .get("recipeId")
+                        .and_then(Value::as_str)
+                        .unwrap_or("gepa.banking77.smoke.v1");
+                    let max_cost_usd = run
+                        .summary
+                        .pointer("/limits/maxCostUsd")
+                        .and_then(Value::as_f64)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("prepared optimizer run omitted maxCostUsd")
+                        })?;
+                    let max_rollouts = run
+                        .summary
+                        .pointer("/limits/maxTotalRollouts")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("prepared optimizer run omitted maxTotalRollouts")
+                        })?;
+                    let proposer_model = run
+                        .summary
+                        .get("proposerModel")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                        anyhow::anyhow!("prepared optimizer run omitted proposerModel")
+                    })?;
                     let auth = core
                         .plugins()
                         .authorize_compute(
                             broker.inner(),
                             app,
                             session_ref,
-                            run_recipe_id(optimizers, id).await?.as_str(),
+                            recipe_id,
                             digest.as_deref().unwrap_or(""),
-                            2.45,
-                            240,
-                            "gpt-5.6-luna",
+                            max_cost_usd,
+                            max_rollouts,
+                            proposer_model,
                             300,
                         )
                         .await?;
@@ -1768,19 +1795,6 @@ async fn dispatch_optimizer(
         }
         _ => anyhow::bail!("unsupported optimizer IPC route {method} {path}"),
     }
-}
-
-async fn run_recipe_id(
-    optimizers: &crate::optimizers::OptimizerService,
-    run_id: &str,
-) -> Result<String> {
-    let run = optimizers.get(run_id.to_string()).await?;
-    Ok(run
-        .summary
-        .get("recipeId")
-        .and_then(Value::as_str)
-        .unwrap_or("gepa.banking77.smoke.v1")
-        .to_owned())
 }
 
 async fn dispatch_plugins(

@@ -11,7 +11,7 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 
 1. Call `list_algorithms` and `list_recipes` before proposing a run.
 2. Choose the algorithm from the user's objective:
-   - GEPA: improve prompts or other candidate values. The pinned smoke is `gepa.banking77.smoke.v1`; read [references/gepa.md](references/gepa.md).
+   - GEPA: improve prompts or other candidate values. The pinned smokes are `gepa.banking77.smoke.v1` and `gepa.craftax.smoke.v1`; read [references/gepa.md](references/gepa.md).
    - GELO / Go-Ex: explore a hosted search space or reconcile an existing hosted run. Read [references/gelo.md](references/gelo.md).
    - SFT: train and compare model weights/checkpoints. Stream hosted SFT with `sft.hosted.fixture.v1`; the Tinker Craftax smoke is `sft.craftax.gpt-oss.smoke.v1`. The Craftax Nemotron 3.5 Lightning hosted recipe (`sft.craftax.nemotron-nano.tinker.v1`) POSTs to local/hosted optimizers-beta and evaluates against the local Craftax slot. Student ids: `docs/sft_tinker_base_models.toml`. Read [references/sft.md](references/sft.md).
 3. For a local recipe, report its availability, exact fixed inputs, hard limits, prerequisite services, credential names, and whether its cost is dollar-capped or only compute-bounded.
@@ -39,3 +39,4 @@ Show the visual before a chat-started run and whenever the user asks to inspect 
 - bounded failure diagnostic and log filename when failed.
 
 Distinguish measurement-only held-out evaluations from evidence used for selection or promotion.
+For GEPA, do not stop at `get_result`: retrieve both `gepa.candidates` and `gepa.frontier`, then explain the selected candidate against the seed and other proposals using the available train, minibatch, held-out, frontier, and rejection evidence.
