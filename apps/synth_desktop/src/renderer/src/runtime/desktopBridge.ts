@@ -113,6 +113,8 @@ function browserCoreBridge() {
 		},
 		async eventsAfter(): Promise<AppEvent[]> { return []; },
 		async sessionEventsAfter(): Promise<AppEvent[]> { return []; },
+		async sessionEventsTail(): Promise<AppEvent[]> { return []; },
+		async sessionEventsBefore(): Promise<AppEvent[]> { return []; },
 		onEvent(): () => void { return () => undefined; }
 	};
 }
@@ -300,6 +302,10 @@ export function installDesktopBridge(): void {
 				invokeCommand<AppEvent[]>(COMMANDS.CORE_EVENTS_AFTER, { afterSequence, limit }),
 			sessionEventsAfter: (sessionId, afterSequence = 0, limit) =>
 				invokeCommand<AppEvent[]>(COMMANDS.CORE_SESSION_EVENTS_AFTER, { sessionId, afterSequence, limit }),
+			sessionEventsTail: (sessionId, limit) =>
+				invokeCommand<AppEvent[]>(COMMANDS.CORE_SESSION_EVENTS_TAIL, { sessionId, limit }),
+			sessionEventsBefore: (sessionId, beforeSequence, limit) =>
+				invokeCommand<AppEvent[]>(COMMANDS.CORE_SESSION_EVENTS_BEFORE, { sessionId, beforeSequence, limit }),
 			onEvent(listener) {
 				return listenRuntimeAppEvents(listener);
 			}

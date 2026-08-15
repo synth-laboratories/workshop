@@ -11,6 +11,8 @@ impl Commands {
     pub const CORE_DIAGNOSTICS: &'static str = "core_diagnostics";
     pub const CORE_EVENTS_AFTER: &'static str = "core_events_after";
     pub const CORE_SESSION_EVENTS_AFTER: &'static str = "core_session_events_after";
+    pub const CORE_SESSION_EVENTS_TAIL: &'static str = "core_session_events_tail";
+    pub const CORE_SESSION_EVENTS_BEFORE: &'static str = "core_session_events_before";
     pub const INTERN_SESSIONS_LIST: &'static str = "intern_sessions_list";
     pub const INTERN_SESSION_CREATE: &'static str = "intern_session_create";
     pub const INTERN_SESSION_SEND: &'static str = "intern_session_send";

@@ -1,6 +1,6 @@
 use super::event_pump::{
-    automatic_approval_response, normalized_turn_method, provider_child_env, rejection_response,
-    safe_approval_payload, CREDENTIAL_ENV_NAMES,
+    approval_decisions, automatic_approval_response, is_approval_method, normalized_turn_method,
+    provider_child_env, rejection_response, safe_approval_payload, CREDENTIAL_ENV_NAMES,
 };
 use super::home::{
     apply_brokered_credential, apply_local_laguna_catalog_metadata, apply_local_laguna_provider,
@@ -520,6 +520,44 @@ async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
 }
 
 #[tokio::test]
+async fn final_answer_before_app_server_exit_completes_the_run() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let request = test_request(temp.path(), "final-answer-exit");
+
+    manager
+        .start(app.handle().clone(), request.clone())
+        .await
+        .unwrap();
+    arm_final_answer_then_exit(&codex_root, &request.session_id);
+    let turn_id = manager
+        .start_turn(
+            app.handle().clone(),
+            CodexTurnStartRequest {
+                session_id: request.session_id.clone(),
+                prompt: "reply and finish".into(),
+                effort: Some("none".into()),
+                client_message_id: None,
+            },
+        )
+        .await
+        .unwrap()
+        .turn_id
+        .unwrap();
+
+    wait_for_record_status(&manager, &request.session_id, SessionStatus::Ready.as_str()).await;
+    wait_for_run_status(&core, &turn_id, RunStatus::Completed.as_str()).await;
+}
+
+#[tokio::test]
 async fn steer_turn_sends_turn_steer_with_the_active_turn_id() {
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
@@ -683,6 +721,12 @@ fn arm_terminal_before_turn_start_response(root: &Path, session_id: &str) {
     let home = session_home(root, session_id);
     fs::create_dir_all(&home).unwrap();
     fs::write(home.join("complete-before-turn-start-response"), "1").unwrap();
+}
+
+fn arm_final_answer_then_exit(root: &Path, session_id: &str) {
+    let home = session_home(root, session_id);
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("final-answer-then-exit"), "1").unwrap();
 }
 
 fn send_request(start: CodexSessionStartRequest, prompt: &str) -> CodexTurnSendRequest {
@@ -1338,6 +1382,100 @@ fn approval_payload_does_not_expose_command_or_arbitrary_reason() {
     let encoded = payload.to_string();
     assert!(!encoded.contains("secret"));
     assert!(!encoded.contains("raw model"));
+}
+#[test]
+fn approval_request_variants_and_nested_decisions_are_normalized() {
+    assert!(is_approval_method("item/commandExecution/requestApproval"));
+    assert!(is_approval_method("item/commandExecution/request_approval"));
+    assert!(is_approval_method("permissions/request"));
+    assert!(!is_approval_method("item/commandExecution/started"));
+    assert_eq!(
+        approval_decisions(&json!({"item":{"available_decisions":["decline","accept"]}})),
+        vec!["decline", "accept"]
+    );
+}
+#[tokio::test]
+async fn app_server_approval_is_journaled_and_resumes_after_one_approval() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let mut request = test_request(temp.path(), "approval-round-trip");
+    request.approval_policy = Some("untrusted".into());
+    let home = codex_root.join("homes").join("approval-round-trip");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("request-approval-on-turn-start"), "1").unwrap();
+    manager
+        .start(app.handle().clone(), request.clone())
+        .await
+        .unwrap();
+    manager
+        .start_turn(
+            app.handle().clone(),
+            CodexTurnStartRequest {
+                session_id: request.session_id.clone(),
+                prompt: "request a shell approval".into(),
+                effort: Some("none".into()),
+                client_message_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let approval = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let events = core
+                .journal()
+                .session_events_after(request.session_id.clone(), 0, 100)
+                .await
+                .unwrap();
+            if let Some(event) = events
+                .into_iter()
+                .find(|event| event.kind == "approval.requested")
+            {
+                break event;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("approval should be journaled");
+    let approval_id = approval.payload["approvalId"].as_str().unwrap().to_owned();
+    assert_eq!(
+        approval.payload["detail"],
+        "Run a shell command in /workspace"
+    );
+    assert!(!approval.payload.to_string().contains("hidden-command"));
+
+    manager
+        .resolve_approval(
+            app.handle().clone(),
+            super::proto::CodexApprovalDecisionRequest {
+                session_id: request.session_id.clone(),
+                approval_id,
+                decision: "once".into(),
+            },
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !home.join("approval-response.json").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("approval response should reach the app server");
+    let response: Value =
+        serde_json::from_str(&fs::read_to_string(home.join("approval-response.json")).unwrap())
+            .unwrap();
+    assert_eq!(response["result"]["decision"], "accept");
+    manager.close(&request.session_id).await.unwrap();
 }
 #[test]
 fn sanitizes_session_home_component() {
