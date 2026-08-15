@@ -61,6 +61,13 @@ mod tests {
                 max_rollouts: Some(8),
             },
             requesting_agent: "agent:test".into(),
+            recipe_id: None,
+            dataset: None,
+            proposer_model: None,
+            evaluator_model: None,
+            timeout_seconds: None,
+            credential_names: vec![],
+            preparation_digest: None,
         }
     }
 

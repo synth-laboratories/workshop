@@ -4,10 +4,10 @@
   "title": "Optimizer run",
   "genre": "optimizer",
   "version": "1.0.0",
-  "description": "Shared optimizer chrome with GEPA / GELO / SFT overlays, historical scrub, and state slices.",
+  "description": "Shared optimizer chrome with GEPA / GELO / SFT / DAG overlays, historical scrub, and state slices.",
   "accent": "#F05F22",
   "shell": "shell.tsx",
-  "tags": ["optimizer", "gepa", "go-ex", "sft", "timeline"],
+  "tags": ["optimizer", "gepa", "go-ex", "sft", "dag", "timeline"],
   "slots": [
     {
       "name": "optimizer_run",

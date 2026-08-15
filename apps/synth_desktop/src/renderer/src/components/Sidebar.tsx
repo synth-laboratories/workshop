@@ -7,6 +7,7 @@ import { type AccountViewModel } from "../runtime/accountView";
 import { ConversationContextMenu } from "./GeneralPreferencesSettings";
 import { PaneResizeHandle } from "./PaneResizeHandle";
 import { ProviderMark } from "./ProviderMark";
+import { bridges } from "../runtime/desktopBridge";
 
 type CodexUsageSnapshot = {
 	usedPercent: number;
@@ -21,6 +22,7 @@ type Props = {
 	activeChatId?: string | null;
 	inventoryActive?: boolean;
 	visualsActive?: boolean;
+	reportsActive?: boolean;
 	optimizersActive?: boolean;
 	workingChatIds?: ReadonlySet<string>;
 	activeLocalDecodeTps?: string | null;
@@ -31,6 +33,7 @@ type Props = {
 	onOpenChat: (id: string) => void;
 	onOpenInventory: () => void;
 	onOpenVisuals: () => void;
+	onOpenReports: () => void;
 	onOpenOptimizers: () => void;
 	onSearch: () => void;
 	onSettings: () => void;
@@ -144,6 +147,7 @@ export function Sidebar({
 	activeChatId = null,
 	inventoryActive = false,
 	visualsActive = false,
+	reportsActive = false,
 	optimizersActive = false,
 	workingChatIds = new Set<string>(),
 	activeLocalDecodeTps = null,
@@ -154,6 +158,7 @@ export function Sidebar({
 	onOpenChat,
 	onOpenInventory,
 	onOpenVisuals,
+	onOpenReports,
 	onOpenOptimizers,
 	onSearch,
 	onSettings,
@@ -184,6 +189,7 @@ export function Sidebar({
 	const [accountMenuOpen, setAccountMenuOpen] = useState(false);
 	const [allowanceOpen, setAllowanceOpen] = useState(false);
 	const [codexUsageOpen, setCodexUsageOpen] = useState(false);
+	const [optimizersEnabled, setOptimizersEnabled] = useState(true);
 	const accountMenuRef = useRef<HTMLDivElement>(null);
 	const accountTriggerRef = useRef<HTMLButtonElement>(null);
 	const codexRemaining = codexUsage ? Math.max(0, Math.round(100 - codexUsage.usedPercent)) : null;
@@ -195,6 +201,21 @@ export function Sidebar({
 	// never replace signed-in or signed-out Synth account copy here.
 	const accountTitle = account.title;
 	const accountSubtitle = account.subtitle;
+
+	useEffect(() => {
+		let cancelled = false;
+		void bridges.plugins
+			?.status("optimizers")
+			.then((status) => {
+				if (!cancelled) setOptimizersEnabled(status.enabled !== false);
+			})
+			.catch(() => {
+				if (!cancelled) setOptimizersEnabled(true);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
 
 	useEffect(() => {
 		if (!accountMenuOpen) return;
@@ -471,13 +492,24 @@ export function Sidebar({
 							</button>
 							<button
 								type="button"
-								className={`chat-item${optimizersActive ? " active" : ""}`}
-								onClick={onOpenOptimizers}
-								data-testid="open-optimizers"
+								className={`chat-item${reportsActive ? " active" : ""}`}
+								onClick={onOpenReports}
+								data-testid="open-reports"
 							>
 								<IconInventory />
-								<span className="item-label">Optimizers</span>
+								<span className="item-label">Reports</span>
 							</button>
+							{optimizersEnabled ? (
+								<button
+									type="button"
+									className={`chat-item${optimizersActive ? " active" : ""}`}
+									onClick={onOpenOptimizers}
+									data-testid="open-optimizers"
+								>
+									<IconInventory />
+									<span className="item-label">Optimizers</span>
+								</button>
+							) : null}
 						</div>
 					) : null}
 				</div>

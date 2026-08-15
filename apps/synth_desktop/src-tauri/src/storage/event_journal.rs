@@ -427,6 +427,61 @@ fn list_events_after(conn: &Connection, after_sequence: i64, limit: i64) -> Resu
     Ok(events)
 }
 
+fn list_events_of_kinds_after(
+    conn: &Connection,
+    after_sequence: i64,
+    kinds: &[String],
+    limit: i64,
+) -> Result<Vec<AppEvent>> {
+    if kinds.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = kinds
+        .iter()
+        .enumerate()
+        .map(|(index, _)| format!("?{}", index + 3))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                payload_json, remote_sequence, command_id, created_at
+         FROM events
+         WHERE sequence > ?1 AND kind IN ({placeholders})
+         ORDER BY sequence ASC
+         LIMIT ?2"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    binds.push(Box::new(after_sequence));
+    binds.push(Box::new(limit));
+    for kind in kinds {
+        binds.push(Box::new(kind.clone()));
+    }
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        binds.iter().map(|value| value.as_ref()).collect();
+    let rows = stmt.query_map(param_refs.as_slice(), |row| {
+        Ok(AppEvent {
+            schema_version: APP_EVENT_SCHEMA_VERSION.to_string(),
+            sequence: row.get(0)?,
+            event_id: row.get(1)?,
+            session_id: row.get(2)?,
+            session_sequence: row.get(3)?,
+            run_id: row.get(4)?,
+            source: EventSource::parse(&row.get::<_, String>(5)?),
+            kind: row.get(6)?,
+            payload: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or(Value::Null),
+            remote_sequence: row.get(8)?,
+            command_id: row.get(9)?,
+            created_at: row.get(10)?,
+        })
+    })?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row?);
+    }
+    Ok(events)
+}
+
 fn list_session_events_after(
     conn: &Connection,
     session_id: &str,

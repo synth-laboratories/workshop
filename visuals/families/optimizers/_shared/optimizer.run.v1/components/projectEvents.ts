@@ -388,6 +388,7 @@ export type ProjectedState = {
       pairs: SftComparisonPair[];
     };
   };
+  dag?: DagState;
 };
 
 function optimizerFailureDetail(error: unknown): string | undefined {
@@ -436,6 +437,93 @@ export type SftComparisonPair = {
   base: SftSeedResult | null;
   trained: SftSeedResult | null;
 };
+
+export type DagNodeState = {
+  id: string;
+  kind?: string;
+  status: string; // planned | running | paused | sealed | failed | cancelled
+  partitionsSealed?: number;
+  partitionsTotal?: number;
+  /** null = missing/unmetered; never fabricate 0 */
+  costUsd?: number | null;
+  wallSeconds?: number | null;
+  accountedSeconds?: number | null;
+  unmetered?: boolean;
+  /** Step id: source, annotate.behavior, … */
+  algorithmId?: string;
+};
+
+export type DagState = {
+  dag?: string;
+  nodes: DagNodeState[];
+  /** Sum of non-null node costs; null if any sealed metered node is missing cost. */
+  knownCostUsd: number | null;
+  unmeteredCount: number;
+  missingMeterCount: number;
+  sequence?: number;
+};
+
+export function isDagAlgorithm(algorithmId: string): boolean {
+  return algorithmId === "dag" || algorithmId.startsWith("dag.");
+}
+
+const DAG_NODE_STATUS_FROM_TYPE: Record<string, string> = {
+  "node.planned": "planned",
+  "node.started": "running",
+  "node.sealed": "sealed",
+  "node.failed": "failed",
+  "node.paused": "paused",
+  "node.resumed": "running"
+};
+
+function canonicalDagEventType(type: string): string {
+  const dotted = type.replaceAll("_", ".");
+  if (dotted.startsWith("dag.node.") || dotted.startsWith("dag.partition.")) {
+    return dotted.slice("dag.".length);
+  }
+  return dotted;
+}
+
+function dagUsageSource(event: OptimizerEvent): Record<string, unknown> | undefined {
+  if (event.usageDelta) return event.usageDelta;
+  const delta = event.delta ?? {};
+  const nested = delta.usage_delta ?? delta.usageDelta;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return nested as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+function finalizeDagState(
+  nodes: DagNodeState[],
+  dag?: string,
+  sequence?: number
+): DagState {
+  let unmeteredCount = 0;
+  let missingMeterCount = 0;
+  let knownSum = 0;
+  let hasKnown = false;
+  for (const node of nodes) {
+    if (node.unmetered) {
+      unmeteredCount += 1;
+      continue;
+    }
+    if (node.costUsd != null) {
+      knownSum += node.costUsd;
+      hasKnown = true;
+      continue;
+    }
+    if (node.status === "sealed") missingMeterCount += 1;
+  }
+  return {
+    dag,
+    nodes,
+    knownCostUsd: missingMeterCount > 0 ? null : hasKnown ? knownSum : unmeteredCount > 0 ? knownSum : null,
+    unmeteredCount,
+    missingMeterCount,
+    sequence
+  };
+}
 
 function numberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -666,6 +754,11 @@ export function projectAtCursor(
   let comparisonSplitDigest: string | undefined;
   let comparisonBaseLabel: string | undefined;
   let comparisonTrainedLabel: string | undefined;
+  const dagNodes = new Map<string, DagNodeState>();
+  const dagFailedPartitions = new Map<string, number>();
+  let dagName: string | undefined;
+  let dagSequence: number | undefined;
+  const projectDag = isDagAlgorithm(run.algorithmId);
   let status = run.status;
   let summary = { ...(run.summary ?? {}) };
 
@@ -793,6 +886,98 @@ export function projectAtCursor(
       // GEPA's terminal event is the authoritative total. Replacing accumulated
       // counters avoids double counting while preserving summed job wall time.
       applyUsage(event.delta ?? {}, true);
+    }
+    if (projectDag) {
+      const kind = canonicalDagEventType(event.type);
+      const delta = event.delta ?? {};
+      const snapshot = event.snapshot ?? {};
+      const dagLabel = [delta.dag, snapshot.dag, delta.name, snapshot.name]
+        .find((value) => typeof value === "string" && value) as string | undefined;
+      if (dagLabel) dagName = dagLabel;
+      if (kind === "dag.checkpoint.written") {
+        dagSequence = event.sequenceNumber;
+      }
+      const nodeIdRaw = event.item?.id ?? delta.node ?? delta.node_id ?? delta.nodeId;
+      const nodeId = typeof nodeIdRaw === "string" && nodeIdRaw ? nodeIdRaw : "";
+      const isNodeEvent = kind.startsWith("node.");
+      const isPartitionEvent = kind.startsWith("partition.");
+      if (nodeId && (isNodeEvent || isPartitionEvent)) {
+        const previous = dagNodes.get(nodeId) ?? { id: nodeId, status: "planned" };
+        const statusFromType = DAG_NODE_STATUS_FROM_TYPE[kind];
+        const nextStatus = (typeof event.item?.status === "string" && event.item.status
+          ? event.item.status
+          : statusFromType)
+          ?? (isPartitionEvent && previous.status === "planned" ? "running" : previous.status);
+        const unmetered = delta.unmetered === true || previous.unmetered === true;
+        const usageSource = dagUsageSource(event);
+        const costRaw = usageSource
+          ? (Object.prototype.hasOwnProperty.call(usageSource, "cost_usd")
+            ? usageSource.cost_usd
+            : Object.prototype.hasOwnProperty.call(usageSource, "costUsd")
+              ? usageSource.costUsd
+              : undefined)
+          : (Object.prototype.hasOwnProperty.call(delta, "cost_usd")
+            ? delta.cost_usd
+            : Object.prototype.hasOwnProperty.call(delta, "costUsd")
+              ? delta.costUsd
+              : undefined);
+        const reportedCost = missingNumber(costRaw);
+        let costUsd = previous.costUsd ?? null;
+        if (unmetered) {
+          costUsd = null;
+        } else if (reportedCost != null) {
+          costUsd = kind === "node.sealed" ? reportedCost : (costUsd ?? 0) + reportedCost;
+        }
+
+        let partitionsSealed = previous.partitionsSealed;
+        let partitionsTotal = previous.partitionsTotal;
+        let partitionsFailed = dagFailedPartitions.get(nodeId) ?? 0;
+        const sealedCount = missingNumber(delta.partitions_sealed ?? delta.partitionsSealed);
+        const totalCount = missingNumber(delta.partitions_total ?? delta.partitionsTotal);
+        const failedCount = missingNumber(delta.partitions_failed ?? delta.partitionsFailed);
+        if (kind === "partition.sealed") {
+          partitionsSealed = sealedCount ?? (partitionsSealed ?? 0) + 1;
+        } else if (sealedCount != null) {
+          partitionsSealed = sealedCount;
+        }
+        if (kind === "partition.failed") {
+          partitionsFailed = failedCount ?? partitionsFailed + 1;
+        } else if (failedCount != null) {
+          partitionsFailed = failedCount;
+        }
+        dagFailedPartitions.set(nodeId, partitionsFailed);
+        if (totalCount != null) {
+          partitionsTotal = totalCount;
+        } else if (isPartitionEvent) {
+          partitionsTotal = Math.max(partitionsTotal ?? 0, (partitionsSealed ?? 0) + partitionsFailed);
+        }
+
+        const wallSeconds = missingNumber(delta.wall_seconds ?? delta.wallSeconds);
+        const accountedSeconds = missingNumber(delta.accounted_seconds ?? delta.accountedSeconds);
+        const kindLabel = event.item?.kind ?? event.item?.type ?? (typeof delta.kind === "string" ? delta.kind : undefined);
+        const stepId = typeof delta.algorithm_id === "string"
+          ? delta.algorithm_id
+          : typeof delta.algorithmId === "string"
+            ? delta.algorithmId
+            : typeof delta.step === "string"
+              ? delta.step
+              : undefined;
+
+        dagNodes.set(nodeId, {
+          ...previous,
+          id: nodeId,
+          status: nextStatus,
+          kind: typeof kindLabel === "string" ? kindLabel : previous.kind,
+          algorithmId: stepId ?? previous.algorithmId ?? nodeId,
+          unmetered: unmetered || undefined,
+          costUsd: unmetered ? null : costUsd,
+          partitionsSealed,
+          partitionsTotal,
+          wallSeconds: wallSeconds ?? previous.wallSeconds ?? null,
+          accountedSeconds: accountedSeconds ?? previous.accountedSeconds ?? null
+        });
+        dagSequence = event.sequenceNumber;
+      }
     }
     // Item lifecycle events also carry `status`; those describe candidates,
     // checkpoints, or child rollouts and must never overwrite the run status.
@@ -2300,6 +2485,8 @@ export function projectAtCursor(
           }
         : undefined
     };
+  } else if (projectDag) {
+    projected.dag = finalizeDagState([...dagNodes.values()], dagName, dagSequence);
   }
 
   return projected;

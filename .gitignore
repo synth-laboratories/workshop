@@ -14,6 +14,10 @@ test-results/
 .DS_Store
 visuals/instances/*.tsx
 !visuals/instances/.gitkeep
+# Private visual templates staged from ~/.synth; never committed, never released.
+visuals/templates-internal/*
+!visuals/templates-internal/.gitkeep
+!visuals/templates-internal/README.md
 apps/_ref_first_pass/
 work/bombadil-src/
 .env

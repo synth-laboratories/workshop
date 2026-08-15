@@ -128,13 +128,29 @@ pub struct BackendSettings {
     pub openrouter_api_key_source: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, specta::Type)]
+#[derive(Clone, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BackendSettingsUpdate {
     pub profile: String,
     pub backend_url: String,
     pub env_file: String,
     pub api_key_env: String,
+    /// Write-only. It may arrive from the renderer for manual API-key setup,
+    /// but is never returned by any settings command.
+    pub api_key: Option<String>,
+}
+
+impl std::fmt::Debug for BackendSettingsUpdate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BackendSettingsUpdate")
+            .field("profile", &self.profile)
+            .field("backend_url", &self.backend_url)
+            .field("env_file", &self.env_file)
+            .field("api_key_env", &self.api_key_env)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 #[derive(Clone)]
@@ -223,11 +239,15 @@ pub fn update(request: BackendSettingsUpdate) -> Result<BackendSettings> {
     endpoints.insert(profile, toml::Value::String(backend_url));
     write_toml(&config_path, &document)?;
 
+    if let Some(api_key) = request.api_key.as_deref() {
+        store_api_key(api_key)?;
+    }
+
     get()
 }
 
-/// Persist a Synth API key obtained by device pairing into the configured
-/// 0600 env file, without touching routing config. Renderer never calls this.
+/// Persist a Synth API key obtained by device pairing or the write-only manual
+/// setup field into the configured 0600 env file, without returning the key.
 pub fn store_api_key(secret: &str) -> Result<()> {
     let secret = secret.trim();
     if secret.is_empty() {
@@ -920,7 +940,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backend_settings_update_ignores_legacy_renderer_key_fields() {
+    fn backend_settings_update_redacts_write_only_renderer_key_field() {
         let request: BackendSettingsUpdate = serde_json::from_value(serde_json::json!({
             "profile": "local",
             "backendUrl": "http://127.0.0.1:8000",
@@ -933,6 +953,7 @@ mod tests {
         let debug = format!("{request:?}");
         assert!(!debug.contains("renderer-secret"));
         assert!(!debug.contains("renderer-openrouter-secret"));
+        assert!(debug.contains("<redacted>"));
     }
 
     #[test]
@@ -1083,20 +1104,31 @@ mod tests {
 
     #[test]
     fn isolated_desktop_inherits_canonical_root_permission_defaults() {
-        let root = env::temp_dir().join(format!("synth-permission-inherit-{}", uuid::Uuid::new_v4()));
+        let root =
+            env::temp_dir().join(format!("synth-permission-inherit-{}", uuid::Uuid::new_v4()));
         let isolated = root.join("instance/config.toml");
         let canonical = root.join("canonical/config.toml");
         fs::create_dir_all(isolated.parent().unwrap()).unwrap();
         fs::create_dir_all(canonical.parent().unwrap()).unwrap();
         fs::write(&isolated, "[intern]\nprofile = \"local\"\n").unwrap();
-        fs::write(&canonical, "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n").unwrap();
+        fs::write(
+            &canonical,
+            "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n",
+        )
+        .unwrap();
 
-        let inherited = desktop_permission_settings_with_fallback(&isolated, Some(&canonical)).unwrap();
+        let inherited =
+            desktop_permission_settings_with_fallback(&isolated, Some(&canonical)).unwrap();
         assert_eq!(inherited.approval_policy, "never");
         assert_eq!(inherited.sandbox_mode, "danger-full-access");
 
-        fs::write(&isolated, "[desktop.permissions]\napproval_policy = \"on-request\"\n").unwrap();
-        let overridden = desktop_permission_settings_with_fallback(&isolated, Some(&canonical)).unwrap();
+        fs::write(
+            &isolated,
+            "[desktop.permissions]\napproval_policy = \"on-request\"\n",
+        )
+        .unwrap();
+        let overridden =
+            desktop_permission_settings_with_fallback(&isolated, Some(&canonical)).unwrap();
         assert_eq!(overridden.approval_policy, "on-request");
         assert_eq!(overridden.sandbox_mode, "danger-full-access");
         let _ = fs::remove_dir_all(root);

@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
+import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 
@@ -33,11 +33,10 @@ function unwrapRuntimeEvent(payload: AppEvent | OriginTaggedAppEvent): AppEvent 
 }
 
 function appEventToCodexEvent(event: AppEvent): CodexEvent | null {
-	const isApprovalBoundary = event.kind === "approval.requested"
-		|| event.kind === "approval.granted"
-		|| event.kind === "approval.rejected"
-		|| event.kind === "approval.expired";
-	if (!event.sessionId || (event.source !== "codex" && !isApprovalBoundary)) return null;
+	// Native approval requests for plugin lifecycle and paid compute are
+	// intentionally journaled as system events, but they still belong to the
+	// active Codex session and must render as blocking approval cards.
+	if (!event.sessionId || (event.source !== "codex" && !event.kind.startsWith("approval."))) return null;
 	const params =
 		event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
 			? (event.payload as Record<string, unknown>)
@@ -599,6 +598,14 @@ window.synthWorkspaceScope ??= isTauri
 			list: (query) => invokeCommand<VisualRecord[]>(COMMANDS.VISUALS_LIST, { query: query ?? null }),
 			get: (visualId) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_GET, { visualId }),
 			revisions: (visualId) => invokeCommand<VisualRevision[]>(COMMANDS.VISUALS_REVISIONS, { visualId }),
+			annotations: (visualId) => invokeCommand<VisualAnnotation[]>(COMMANDS.VISUALS_ANNOTATIONS_LIST, { visualId }),
+			createAnnotation: (visualId, request) => invokeCommand<VisualAnnotation>(COMMANDS.VISUALS_ANNOTATION_CREATE, { visualId, request }),
+			listSeals: (visualId) => invokeCommand<VisualSeal[]>(COMMANDS.VISUALS_SEALS_LIST, { visualId: visualId ?? null }),
+			seal: (visualId, revision) => invokeCommand<VisualSeal>(COMMANDS.VISUALS_SEAL, { visualId, revision }),
+			getSeal: (receiptDigest) => invokeCommand<VisualSealBundle>(COMMANDS.VISUALS_SEAL_GET, { receiptDigest }),
+			uploadStatus: (receiptDigest) => invokeCommand<VisualUpload | null>(COMMANDS.VISUALS_UPLOAD_STATUS, { receiptDigest }),
+			shareSeal: (receiptDigest) => invokeCommand<VisualUpload>(COMMANDS.VISUALS_SHARE_SEAL, { receiptDigest }),
+			openShared: (committedUrl) => invokeCommand<VisualSealBundle>(COMMANDS.VISUALS_OPEN_SHARED, { committedUrl }),
 			create: (request) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_CREATE, { request }),
 			update: (visualId, request) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_UPDATE, { visualId, request }),
 			save: (visualId, tsx) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_SAVE, { visualId, tsx: tsx ?? null }),
@@ -632,6 +639,52 @@ window.synthWorkspaceScope ??= isTauri
 				return () => { disposed = true; unlisten?.(); };
 			}
 		};
+		window.synthPlugins ??= {
+			status: (pluginId) => invokeCommand(COMMANDS.PLUGINS_STATUS, { pluginId: pluginId ?? null }),
+			list: () => invokeCommand(COMMANDS.PLUGINS_LIST),
+			setReleaseChannel: (pluginId, channel) =>
+				invokeCommand(COMMANDS.PLUGINS_SET_RELEASE_CHANNEL, { pluginId, channel })
+		};
+		window.synthReports ??= {
+			list: (query) => invokeCommand(COMMANDS.REPORTS_LIST, { query: query ?? null }),
+			get: (reportId) => invokeCommand(COMMANDS.REPORTS_GET, { reportId }),
+			getRevision: (reportId, revision) =>
+				invokeCommand(COMMANDS.REPORTS_REVISION_GET, { reportId, revision: revision ?? null }),
+			create: (request) => invokeCommand(COMMANDS.REPORTS_CREATE, { request }),
+			update: (reportId, request) => invokeCommand(COMMANDS.REPORTS_UPDATE, { reportId, request }),
+			archive: (reportId) => invokeCommand(COMMANDS.REPORTS_ARCHIVE, { reportId }),
+			restore: (reportId) => invokeCommand(COMMANDS.REPORTS_RESTORE, { reportId }),
+			listVisibilityRequests: (reportId) =>
+				invokeCommand(COMMANDS.REPORTS_VISIBILITY_REQUESTS, { reportId: reportId ?? null }),
+			requestVisibility: (reportId, request) =>
+				invokeCommand(COMMANDS.REPORTS_VISIBILITY_REQUEST, { reportId, request }),
+			decideVisibility: (requestId, approved) =>
+				invokeCommand(COMMANDS.REPORTS_VISIBILITY_DECIDE, { requestId, approved }),
+			seal: (reportId, revision) => invokeCommand(COMMANDS.REPORTS_SEAL, { reportId, revision }),
+			listSeals: (reportId) => invokeCommand(COMMANDS.REPORTS_SEALS_LIST, { reportId: reportId ?? null }),
+			getSeal: (receiptDigest) => invokeCommand(COMMANDS.REPORTS_SEAL_GET, { receiptDigest }),
+			compareSeals: (leftDigest, rightDigest) =>
+				invokeCommand(COMMANDS.REPORTS_SEALS_COMPARE, { leftDigest, rightDigest }),
+			uploadStatus: (receiptDigest) =>
+				invokeCommand(COMMANDS.REPORTS_UPLOAD_STATUS, { receiptDigest }),
+			shareSeal: (receiptDigest) => invokeCommand(COMMANDS.REPORTS_SHARE, { receiptDigest }),
+			promote: (publicationId, slug) => invokeCommand(COMMANDS.REPORTS_PROMOTE, { publicationId, slug }),
+			openShared: (committedUrl) => invokeCommand(COMMANDS.REPORTS_OPEN_SHARED, { committedUrl }),
+			listComments: (reportId, revision) =>
+				invokeCommand(COMMANDS.REPORTS_COMMENTS_LIST, { reportId, revision: revision ?? null }),
+			createComment: (reportId, revision, request) =>
+				invokeCommand(COMMANDS.REPORTS_COMMENT_CREATE, { reportId, revision, request }),
+			listExperiments: (reportId) => invokeCommand(COMMANDS.REPORTS_EXPERIMENTS_LIST, { reportId }),
+			upsertExperiment: (reportId, request) =>
+				invokeCommand(COMMANDS.REPORTS_EXPERIMENT_UPSERT, { reportId, request }),
+			listLog: (reportId) => invokeCommand(COMMANDS.REPORTS_LOG_LIST, { reportId }),
+			appendLog: (reportId, request) => invokeCommand(COMMANDS.REPORTS_LOG_APPEND, { reportId, request }),
+			onEvent(listener) {
+				return listenRuntimeAppEvents((payload) => {
+					if (payload.kind.startsWith("report.")) listener(payload);
+				});
+			}
+		};
 		window.synthOptimizers ??= {
 			listAlgorithms: () => invokeCommand(COMMANDS.OPTIMIZERS_ALGORITHMS_LIST),
 			listRecipes: () => invokeCommand(COMMANDS.OPTIMIZERS_RECIPES_LIST),
@@ -658,6 +711,7 @@ window.synthWorkspaceScope ??= isTauri
 					status: query?.status ?? null,
 					limit: query?.limit ?? null
 				}),
+			recordVisualReady: (request) => invokeCommand(COMMANDS.VISUAL_SUBSCRIPTION_READY, { request }),
 			onEvent(listener) {
 				return listenRuntimeAppEvents((payload) => {
 					if (payload.kind.startsWith("optimizer.")) listener(payload);
@@ -724,8 +778,14 @@ export const bridges = {
 	get updates() {
 		return window.synthUpdates;
 	},
+	get plugins() {
+		return window.synthPlugins;
+	},
 	get visuals() {
 		return window.synthVisuals;
+	},
+	get reports() {
+		return window.synthReports;
 	},
 	get optimizers() {
 		return window.synthOptimizers;

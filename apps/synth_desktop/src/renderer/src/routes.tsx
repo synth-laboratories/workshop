@@ -24,6 +24,7 @@ import { PaneResizeHandle } from "./components/PaneResizeHandle";
 import { SettingsPage } from "./components/SettingsPage";
 import { VisualPane } from "./components/VisualHost";
 import { VisualsPage } from "./components/VisualsPage";
+import { ReportsPage } from "./components/ReportsPage";
 import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
 import { sessionIsLocalChat, sessionIsSync } from "./runtime/sessionView";
 import { bridges } from "./runtime/desktopBridge";
@@ -37,6 +38,7 @@ export type MainView =
 	| { kind: "connectors" }
 	| { kind: "inventory" }
 	| { kind: "visuals" }
+	| { kind: "reports" }
 	| { kind: "optimizers" };
 
 export type MainRoutesProps = {
@@ -245,6 +247,12 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					{openArtifact ? (
 						<><PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => { setInventoryContainerWidth(width); persistLayoutSnapshot({ outputPaneWidth: width }); }} ariaLabel="Resize visual pane" /><VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} /></>
 					) : null}
+				</div>
+			) : null}
+
+			{view.kind === "reports" ? (
+				<div className="inventory-workbench">
+					<ReportsPage onBack={() => setView({ kind: "landing" })} />
 				</div>
 			) : null}
 

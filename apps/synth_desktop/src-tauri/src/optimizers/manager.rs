@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    cell::Cell,
     collections::HashMap,
     env, fs,
     io::Write,
@@ -33,8 +34,10 @@ use tauri::State;
 use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
-pub const DEFAULT_SIDECAR_VERSION: &str = "0.2.0";
-pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.0";
+pub const OFFICIAL_SIDECAR_VERSION: &str = "0.2.5";
+pub const DEV_SIDECAR_VERSION: &str = "0.2.7.dev20260814";
+pub const DEFAULT_SIDECAR_VERSION: &str = OFFICIAL_SIDECAR_VERSION;
+pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.5";
 pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = "gepa.recipe.v1";
 /// Optimizer-family visuals bind this slot. `live` and `jobs` are refused.
 pub const OPTIMIZER_VISUAL_SLOT: &str = "optimizer_run";
@@ -43,6 +46,22 @@ const SIGNING_KEY_FILE: &str = "signing.key";
 const API_KEY_FILE: &str = "api_key";
 const PAYLOAD_FILE: &str = "payload.json";
 const MANIFEST_FILE: &str = "manifest.json";
+const WHEELHOUSE_MANIFEST_FILE: &str = "wheelhouse-manifest.json";
+
+thread_local! {
+    static TEST_FORCE_DIGEST_MISMATCH: Cell<bool> = const { Cell::new(false) };
+    static TEST_INTERRUPT_INSTALL: Cell<bool> = const { Cell::new(false) };
+}
+
+fn force_digest_mismatch() -> bool {
+    TEST_FORCE_DIGEST_MISMATCH.with(Cell::get)
+        || env::var("SYNTH_OPTIMIZER_FORCE_DIGEST_MISMATCH").as_deref() == Ok("1")
+}
+
+fn interrupt_install() -> bool {
+    TEST_INTERRUPT_INSTALL.with(Cell::get)
+        || env::var("SYNTH_OPTIMIZER_INTERRUPT_INSTALL").as_deref() == Ok("1")
+}
 
 #[derive(Debug)]
 struct OptimizerEventRunNotFound {
@@ -107,6 +126,21 @@ pub struct OptimizerSidecarInstallSpec {
     pub template_ids: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct WheelArtifact {
+    file_name: String,
+    sha256: String,
+    size_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct WheelhouseManifest {
+    schema_version: String,
+    artifacts: Vec<WheelArtifact>,
+}
+
 impl Default for OptimizerSidecarInstallSpec {
     fn default() -> Self {
         catalog_spec(DEFAULT_SIDECAR_VERSION)
@@ -114,16 +148,17 @@ impl Default for OptimizerSidecarInstallSpec {
 }
 
 fn catalog_spec(version: &str) -> OptimizerSidecarInstallSpec {
+    let algorithm_version = format!("synth-optimizers-{version}");
     OptimizerSidecarInstallSpec {
         version: version.to_owned(),
         algorithm_id: "gepa".into(),
-        algorithm_version: DEFAULT_ALGORITHM_VERSION.into(),
+        algorithm_version: algorithm_version.clone(),
         recipe_schema_version: DEFAULT_RECIPE_SCHEMA_VERSION.into(),
         payload: json!({
             "sidecarVersion": version,
             "algorithms": [{
                 "id": "gepa",
-                "version": DEFAULT_ALGORITHM_VERSION
+                "version": algorithm_version
             }],
             "recipeSchemaVersion": DEFAULT_RECIPE_SCHEMA_VERSION,
             "templates": ["optimizer.gepa.live.v1", "optimizer.run.v1"],
@@ -217,6 +252,10 @@ impl OptimizerManager {
 
     pub async fn status(&self) -> OptimizerSidecarStatus {
         self.status.read().await.clone()
+    }
+
+    pub async fn is_running(&self) -> bool {
+        self.runtime.lock().await.is_some() && self.status().await.phase == "ready"
     }
 
     /// Read one durable, run-scoped cursor page from the managed sidecar.
@@ -374,10 +413,29 @@ impl OptimizerManager {
 
     pub fn install(&self, version: Option<&str>) -> Result<OptimizerSidecarVersion> {
         let version = version.unwrap_or(DEFAULT_SIDECAR_VERSION);
-        if version != DEFAULT_SIDECAR_VERSION {
+        if !matches!(version, OFFICIAL_SIDECAR_VERSION | DEV_SIDECAR_VERSION) {
             bail!("unknown optimizer sidecar version `{version}`");
         }
         self.install_spec(catalog_spec(version))
+    }
+
+    pub async fn set_status_phase(&self, phase: &str, detail: Option<&str>) {
+        let current = self.status().await;
+        self.set_status(OptimizerSidecarStatus {
+            phase: phase.into(),
+            detail: detail.map(str::to_string).or(current.detail),
+            updated_at: now_ms(),
+            ..current
+        })
+        .await;
+    }
+
+    pub fn advertised_capabilities(&self) -> Value {
+        read_capabilities(&self.home).unwrap_or_else(default_capabilities)
+    }
+
+    pub fn has_offline_runtime(&self, version: &str) -> bool {
+        installed_runtime_bin(&self.home, version).is_ok()
     }
 
     pub fn install_spec(
@@ -386,30 +444,43 @@ impl OptimizerManager {
     ) -> Result<OptimizerSidecarVersion> {
         validate_version_id(&spec.version)?;
         fs::create_dir_all(&self.home)?;
-        let signing_key = ensure_signing_key(&self.home)?;
-        let payload = serde_json::to_vec(&spec.payload).context("encode sidecar payload")?;
-        let digest = sha256_hex(&payload);
-        let signature = sign_manifest(&signing_key, &spec.version, &digest);
-        let dir = self.home.join("versions").join(&spec.version);
-        fs::create_dir_all(&dir)?;
-        fs::write(dir.join(PAYLOAD_FILE), &payload)?;
-        let manifest = json!({
-            "version": spec.version,
-            "digest": digest,
-            "signature": signature,
-            "algorithmId": spec.algorithm_id,
-            "algorithmVersion": spec.algorithm_version,
-            "recipeSchemaVersion": spec.recipe_schema_version,
-            "templates": spec.template_ids,
-        });
-        fs::write(
-            dir.join(MANIFEST_FILE),
-            serde_json::to_vec_pretty(&manifest)?,
-        )?;
-        for template_id in &spec.template_ids {
-            retain_template_package(&self.home, template_id, &spec.version, &digest)?;
+        let previous_selected = read_selected_version(&self.home)?;
+        let staging_name = format!(
+            ".staging-{}-{}",
+            spec.version,
+            uuid::Uuid::new_v4().simple()
+        );
+        let staging = self.home.join("versions").join(&staging_name);
+        fs::create_dir_all(&staging)
+            .with_context(|| format!("create optimizer staging {}", staging.display()))?;
+        let installed = match materialize_verified_distribution(&self.home, &staging, &spec) {
+            Ok(hit) => hit,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&staging);
+                return Err(error);
+            }
+        };
+        if interrupt_install() {
+            bail!("install interrupted before activation");
         }
-        self.select_version(&spec.version)
+        let dest = self.home.join("versions").join(&spec.version);
+        if dest.exists() {
+            fs::remove_dir_all(&dest).with_context(|| {
+                format!("replace optimizer version directory {}", dest.display())
+            })?;
+        }
+        fs::rename(&staging, &dest)
+            .with_context(|| format!("activate optimizer version {}", dest.display()))?;
+        for template_id in &spec.template_ids {
+            retain_template_package(&self.home, template_id, &spec.version, &installed.digest)?;
+        }
+        let selected = self.select_version(&spec.version)?;
+        debug_assert_eq!(
+            read_selected_version(&self.home).ok().flatten(),
+            Some(spec.version.clone())
+        );
+        let _ = previous_selected;
+        Ok(selected)
     }
 
     pub async fn start(&self) -> Result<OptimizerSidecarStatus> {
@@ -472,6 +543,7 @@ impl OptimizerManager {
         while tokio::time::Instant::now() < deadline {
             if let Some(status) = self.probe().await {
                 if status.phase == "ready" {
+                    self.store_handshake_capabilities(&hit).await;
                     self.set_status(status).await;
                     return Ok(self.status().await);
                 }
@@ -481,16 +553,22 @@ impl OptimizerManager {
         self.abort_runtime().await;
         self.set_status(OptimizerSidecarStatus {
             phase: "error".into(),
-            base_url: Some(base_url.clone()),
+            base_url: None,
             version: Some(hit.version),
             digest: Some(hit.digest),
-            detail: Some(format!(
-                "Timed out waiting for optimizer sidecar at {base_url}"
-            )),
+            detail: Some("Timed out waiting for optimizer sidecar".into()),
             updated_at: now_ms(),
         })
         .await;
-        bail!("Timed out waiting for optimizer sidecar at {base_url}");
+        bail!("Timed out waiting for optimizer sidecar");
+    }
+
+    async fn store_handshake_capabilities(&self, hit: &OptimizerSidecarVersion) {
+        let capabilities = default_capabilities_for(hit);
+        let _ = fs::write(
+            self.home.join("capabilities.json"),
+            serde_json::to_vec_pretty(&capabilities).unwrap_or_default(),
+        );
     }
 
     /// Install the product-pinned sidecar when needed and return only after
@@ -522,7 +600,7 @@ impl OptimizerManager {
         validate_optimizer_run_id(run_id)?;
         if self.runtime.lock().await.is_none() {
             bail!(
-                "optimizer sidecar is not running; call ensure_ready before spawning a GEPA recipe"
+                "optimizer sidecar is not running; the Optimizers plugin must be started before spawning a GEPA recipe"
             );
         }
         let selected = self
@@ -540,6 +618,7 @@ impl OptimizerManager {
         }
         self.ensure_memory_spool(run_id).await;
         match launch_gepa_recipe_process(
+            &self.home,
             &selected.version,
             cookbook,
             config_path,
@@ -913,25 +992,52 @@ fn optimizer_project_root() -> Result<Option<PathBuf>> {
     Ok(Some(path))
 }
 
-fn optimizer_command(version: &str) -> Result<Command> {
+fn optimizer_command(home: &Path, version: &str) -> Result<Command> {
     validate_version_id(version)?;
-    let uv = resolve_uv()?;
-    let mut command = Command::new(uv);
-    if let Some(project) = optimizer_project_root()? {
-        command.args(["run", "--project"]).arg(project);
-    } else {
-        command.args([
-            "run",
-            "--no-project",
-            "--with",
-            &format!("synth-optimizers=={version}"),
-        ]);
+    if developer_uv_mode()? {
+        let uv = resolve_uv()?;
+        let mut command = Command::new(uv);
+        if let Some(project) = optimizer_project_root()? {
+            command.args(["run", "--project"]).arg(project);
+        } else {
+            command.args([
+                "run",
+                "--no-project",
+                "--with",
+                &format!("synth-optimizers=={version}"),
+            ]);
+        }
+        command.arg("synth-optimizers");
+        return Ok(command);
     }
-    command.arg("synth-optimizers");
-    Ok(command)
+    let bin = installed_runtime_bin(home, version)?;
+    Ok(Command::new(bin))
+}
+
+fn developer_uv_mode() -> Result<bool> {
+    if env::var("SYNTH_OPTIMIZER_DEV_MODE").as_deref() == Ok("1") {
+        return Ok(true);
+    }
+    Ok(optimizer_project_root()?.is_some())
+}
+
+fn installed_runtime_bin(home: &Path, version: &str) -> Result<PathBuf> {
+    validate_version_id(version)?;
+    let runtime = home.join("versions").join(version).join("runtime");
+    for candidate in [
+        runtime.join("bin/synth-optimizers"),
+        runtime.join("Scripts/synth-optimizers.exe"),
+        runtime.join("synth-optimizers"),
+    ] {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    bail!("installed optimizer runtime for `{version}` is missing; install the plugin before start")
 }
 
 fn launch_gepa_recipe_process(
+    home: &Path,
     version: &str,
     cookbook: &Path,
     config_path: &Path,
@@ -942,7 +1048,7 @@ fn launch_gepa_recipe_process(
     #[cfg(test)]
     {
         if env::var("SYNTH_OPTIMIZER_LIVE_SIDECAR").as_deref() != Ok("1") {
-            let _ = (version, cookbook, openai_api_key, config_path);
+            let _ = (home, version, cookbook, openai_api_key, config_path);
             let mut command = Command::new("/usr/bin/true");
             command
                 .stdin(Stdio::null())
@@ -954,7 +1060,7 @@ fn launch_gepa_recipe_process(
                 .context("launch in-process GEPA recipe stand-in");
         }
     }
-    let mut command = optimizer_command(version)?;
+    let mut command = optimizer_command(home, version)?;
     isolate_process_group(&mut command);
     command
         .args(["gepa", "run", "--config"])
@@ -995,6 +1101,25 @@ async fn launch_sidecar_upstream(
                         if request.method == hyper::Method::GET && path == "/health" {
                             JsonHttpResponse::ok(body)
                         } else if request.method == hyper::Method::GET
+                            && (path == "/v1/optimizer/capabilities"
+                                || path == "/v1/optimizer/status")
+                        {
+                            JsonHttpResponse::ok(json!({
+                                "status": "ok",
+                                "algorithms": ["gepa"],
+                                "recipes": [
+                                    "gepa.banking77.smoke.v1",
+                                    "gepa.banking77.luna.v1",
+                                    "gepa.banking77.sol.v1"
+                                ],
+                                "replay": true,
+                                "cancellation": true,
+                                "compatibleTemplateIds": [
+                                    "optimizer.gepa.live.v1",
+                                    "optimizer.run.v1"
+                                ]
+                            }))
+                        } else if request.method == hyper::Method::GET
                             && path.starts_with("/runs/")
                             && path.ends_with("/optimizer-events")
                         {
@@ -1018,7 +1143,7 @@ async fn launch_sidecar_upstream(
         .create(true)
         .append(true)
         .open(home.join("sidecar.log"))?;
-    let mut command = optimizer_command(&hit.version)?;
+    let mut command = optimizer_command(home, &hit.version)?;
     isolate_process_group(&mut command);
     command
         .args(["gepa", "service", "--db"])
@@ -1193,6 +1318,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn distribution_digest(payload: &[u8], wheelhouse_manifest: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update((payload.len() as u64).to_be_bytes());
+    digest.update(payload);
+    digest.update((wheelhouse_manifest.len() as u64).to_be_bytes());
+    digest.update(wheelhouse_manifest);
+    format!("{:x}", digest.finalize())
+}
+
 fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     const BLOCK: usize = 64;
     let mut key_block = [0u8; BLOCK];
@@ -1323,7 +1457,12 @@ fn load_verified_manifest(home: &Path, dir: &Path) -> Result<OptimizerSidecarVer
         .ok_or_else(|| anyhow!("sidecar manifest missing signature"))?
         .to_owned();
     let payload = fs::read(dir.join(PAYLOAD_FILE)).context("read sidecar payload")?;
-    let actual = sha256_hex(&payload);
+    let wheelhouse_manifest = fs::read(dir.join(WHEELHOUSE_MANIFEST_FILE))
+        .context("read optimizer wheelhouse manifest")?;
+    let wheelhouse: WheelhouseManifest = serde_json::from_slice(&wheelhouse_manifest)
+        .context("decode optimizer wheelhouse manifest")?;
+    verify_wheelhouse(dir, &wheelhouse)?;
+    let actual = distribution_digest(&payload, &wheelhouse_manifest);
     if actual != digest {
         bail!("optimizer sidecar `{version}` digest mismatch");
     }
@@ -1378,7 +1517,341 @@ fn retain_template_package(
             "retained": true,
         }))?,
     )?;
+    let staging_templates = home
+        .join("versions")
+        .join(format!("{sidecar_version}"))
+        .join("templates");
+    let _ = staging_templates;
     Ok(())
+}
+
+fn materialize_verified_distribution(
+    home: &Path,
+    staging: &Path,
+    spec: &OptimizerSidecarInstallSpec,
+) -> Result<OptimizerSidecarVersion> {
+    if force_digest_mismatch() {
+        fs::write(staging.join(PAYLOAD_FILE), b"tampered")?;
+        fs::write(
+            staging.join(WHEELHOUSE_MANIFEST_FILE),
+            serde_json::to_vec_pretty(&WheelhouseManifest {
+                schema_version: "synth.optimizer-wheelhouse.v1".into(),
+                artifacts: Vec::new(),
+            })?,
+        )?;
+        fs::write(
+            staging.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&json!({
+                "version": spec.version,
+                "digest": "deadbeef",
+                "signature": "invalid",
+            }))?,
+        )?;
+        return load_verified_manifest(home, staging);
+    }
+    let payload = serde_json::to_vec(&spec.payload).context("encode sidecar payload")?;
+    let artifacts = if fixture_install() {
+        materialize_fixture_runtime(staging, spec)?;
+        Vec::new()
+    } else {
+        materialize_uv_runtime(staging, spec)?
+    };
+    let wheelhouse = WheelhouseManifest {
+        schema_version: "synth.optimizer-wheelhouse.v1".into(),
+        artifacts,
+    };
+    let wheelhouse_manifest = serde_json::to_vec_pretty(&wheelhouse)?;
+    fs::write(staging.join(WHEELHOUSE_MANIFEST_FILE), &wheelhouse_manifest)?;
+    let digest = distribution_digest(&payload, &wheelhouse_manifest);
+    let signing_key = ensure_signing_key(home)?;
+    let signature = sign_manifest(&signing_key, &spec.version, &digest);
+    let manifest = json!({
+        "version": spec.version,
+        "digest": digest,
+        "signature": signature,
+        "algorithmId": spec.algorithm_id,
+        "algorithmVersion": spec.algorithm_version,
+        "recipeSchemaVersion": spec.recipe_schema_version,
+        "templates": spec.template_ids,
+        "package": "synth-optimizers",
+        "publisher": "Synth Laboratories",
+        "networkHost": "pypi.org",
+        "platform": std::env::consts::OS,
+        "workshopCompat": "0.3.0",
+    });
+    fs::write(staging.join(PAYLOAD_FILE), &payload)?;
+    fs::write(
+        staging.join(MANIFEST_FILE),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
+    fs::write(
+        staging.join("package-lock.json"),
+        serde_json::to_vec_pretty(&json!({
+            "package": "synth-optimizers",
+            "version": spec.version,
+            "digest": format!("sha256:{digest}"),
+            "offline": true,
+            "wheelhouseManifest": WHEELHOUSE_MANIFEST_FILE,
+            "artifacts": wheelhouse.artifacts,
+        }))?,
+    )?;
+    let templates = staging.join("templates");
+    fs::create_dir_all(&templates)?;
+    for template_id in &spec.template_ids {
+        fs::write(
+            templates.join(format!("{template_id}.json")),
+            serde_json::to_vec_pretty(&json!({
+                "templateId": template_id,
+                "sidecarVersion": spec.version,
+                "digest": format!("sha256:{digest}"),
+            }))?,
+        )?;
+    }
+    prove_offline_version(staging, spec)?;
+    load_verified_manifest(home, staging)
+}
+
+fn fixture_install() -> bool {
+    if env::var("SYNTH_OPTIMIZER_LIVE_INSTALL").as_deref() == Ok("1") {
+        return false;
+    }
+    cfg!(test) || env::var("SYNTH_OPTIMIZER_FIXTURE_INSTALL").as_deref() == Ok("1")
+}
+
+fn materialize_fixture_runtime(staging: &Path, spec: &OptimizerSidecarInstallSpec) -> Result<()> {
+    let bin_dir = staging.join("runtime/bin");
+    fs::create_dir_all(&bin_dir)?;
+    let bin = bin_dir.join("synth-optimizers");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo synth-optimizers {}; exit 0; fi\nexit 0\n",
+                spec.version
+            ),
+        )?;
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755))?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(&bin, spec.version.as_bytes())?;
+    }
+    Ok(())
+}
+
+fn materialize_uv_runtime(
+    staging: &Path,
+    spec: &OptimizerSidecarInstallSpec,
+) -> Result<Vec<WheelArtifact>> {
+    let uv = resolve_uv()?;
+    let runtime = staging.join("runtime");
+    let wheels = staging.join("wheels");
+    fs::create_dir_all(&wheels)?;
+    let status = std::process::Command::new(&uv)
+        .args(["venv", "--clear"])
+        .arg(&runtime)
+        .status()
+        .context("create optimizer runtime venv")?;
+    if !status.success() {
+        bail!("failed to create optimizer runtime venv");
+    }
+    let python = runtime.join("bin/python");
+    let download = std::process::Command::new(&uv)
+        .args([
+            "run",
+            "--no-project",
+            "--with",
+            "pip",
+            "python",
+            "-m",
+            "pip",
+            "download",
+            "--only-binary=:all:",
+            "-d",
+        ])
+        .arg(&wheels)
+        .arg(format!("synth-optimizers=={}", spec.version))
+        .status()
+        .context("download optimizer wheel")?;
+    if !download.success() {
+        bail!("failed to download synth-optimizers=={}", spec.version);
+    }
+    let artifacts = collect_wheel_artifacts(&wheels)?;
+    let optimizer_prefix = format!("synth_optimizers-{}-", spec.version);
+    if !artifacts
+        .iter()
+        .any(|artifact| artifact.file_name.starts_with(&optimizer_prefix))
+    {
+        bail!(
+            "optimizer wheelhouse omitted synth-optimizers=={}",
+            spec.version
+        );
+    }
+    let install = std::process::Command::new(&uv)
+        .args([
+            "pip",
+            "install",
+            "--prerelease=allow",
+            "--offline",
+            "--no-index",
+            "--find-links",
+        ])
+        .arg(&wheels)
+        .arg("--python")
+        .arg(&python)
+        .arg(format!("synth-optimizers=={}", spec.version))
+        .status()
+        .context("install optimizer wheel offline")?;
+    if !install.success() {
+        bail!(
+            "failed to install synth-optimizers=={} offline",
+            spec.version
+        );
+    }
+    Ok(artifacts)
+}
+
+fn collect_wheel_artifacts(wheels: &Path) -> Result<Vec<WheelArtifact>> {
+    let mut artifacts = Vec::new();
+    for entry in fs::read_dir(wheels).context("read optimizer wheelhouse")? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("whl") {
+            continue;
+        }
+        let bytes =
+            fs::read(&path).with_context(|| format!("hash optimizer wheel {}", path.display()))?;
+        artifacts.push(WheelArtifact {
+            file_name: entry.file_name().to_string_lossy().into_owned(),
+            sha256: sha256_hex(&bytes),
+            size_bytes: bytes.len() as u64,
+        });
+    }
+    artifacts.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+    if artifacts.is_empty() {
+        bail!("optimizer wheelhouse is empty");
+    }
+    Ok(artifacts)
+}
+
+fn verify_wheelhouse(root: &Path, manifest: &WheelhouseManifest) -> Result<()> {
+    if manifest.schema_version != "synth.optimizer-wheelhouse.v1" {
+        bail!("optimizer wheelhouse manifest schema is unsupported");
+    }
+    for artifact in &manifest.artifacts {
+        if artifact.file_name.contains('/') || artifact.file_name.contains('\\') {
+            bail!("optimizer wheelhouse manifest contains an invalid file name");
+        }
+        let path = root.join("wheels").join(&artifact.file_name);
+        let bytes =
+            fs::read(&path).with_context(|| format!("read optimizer wheel {}", path.display()))?;
+        if bytes.len() as u64 != artifact.size_bytes || sha256_hex(&bytes) != artifact.sha256 {
+            bail!("optimizer wheel `{}` digest mismatch", artifact.file_name);
+        }
+    }
+    Ok(())
+}
+
+fn prove_offline_version(staging: &Path, spec: &OptimizerSidecarInstallSpec) -> Result<()> {
+    let bin = staging.join("runtime/bin/synth-optimizers");
+    if !bin.is_file() {
+        bail!("optimizer runtime omitted synth-optimizers executable");
+    }
+    if fixture_install() {
+        let output = std::process::Command::new(&bin)
+            .arg("--version")
+            .output()
+            .context("prove fixture optimizer runtime")?;
+        if !output.status.success()
+            || !String::from_utf8_lossy(&output.stdout).contains(&spec.version)
+        {
+            bail!(
+                "fixture optimizer runtime did not identify {}",
+                spec.version
+            );
+        }
+        return Ok(());
+    }
+    let python = staging.join("runtime/bin/python");
+    if !python.is_file() {
+        bail!("optimizer runtime omitted its Python executable");
+    }
+    let output = std::process::Command::new(&python)
+        .args([
+            "-c",
+            "import importlib.metadata as m; import synth_optimizers; print(m.version('synth-optimizers'))",
+        ])
+        .env("UV_OFFLINE", "1")
+        .env("UV_NO_NETWORK", "1")
+        .output()
+        .context("prove installed synth-optimizers metadata offline")?;
+    if !output.status.success() {
+        bail!("installed synth-optimizers import failed offline");
+    }
+    if String::from_utf8_lossy(&output.stdout).trim() != spec.version {
+        bail!(
+            "installed synth-optimizers metadata did not identify {}",
+            spec.version
+        );
+    }
+    let cli = std::process::Command::new(&bin)
+        .arg("--help")
+        .env("UV_OFFLINE", "1")
+        .env("UV_NO_NETWORK", "1")
+        .output()
+        .context("prove installed synth-optimizers CLI offline")?;
+    if !cli.status.success() {
+        bail!("installed synth-optimizers CLI failed offline");
+    }
+    Ok(())
+}
+
+fn default_capabilities() -> Value {
+    default_capabilities_for(&OptimizerSidecarVersion {
+        version: DEFAULT_SIDECAR_VERSION.into(),
+        digest: String::new(),
+        signature: String::new(),
+        algorithm_id: "gepa".into(),
+        algorithm_version: DEFAULT_ALGORITHM_VERSION.into(),
+        recipe_schema_version: DEFAULT_RECIPE_SCHEMA_VERSION.into(),
+        selected: false,
+        path: String::new(),
+    })
+}
+
+fn default_capabilities_for(hit: &OptimizerSidecarVersion) -> Value {
+    let body = json!({
+        "algorithms": ["gepa"],
+        "recipes": [
+            "gepa.banking77.smoke.v1",
+            "gepa.banking77.luna.v1",
+            "gepa.banking77.sol.v1"
+        ],
+        "eventSchemas": ["optimizer_event.v1"],
+        "stateSchemas": ["optimizer_state_slice.v1"],
+        "replay": true,
+        "cancellation": true,
+        "controls": ["cancel"],
+        "limits": { "maxCostUsd": 2.45, "maxTotalRollouts": 240 },
+        "compatibleTemplateIds": [
+            "optimizer.gepa.live.v1",
+            "optimizer.sft.live.v1",
+            "optimizer.dag.live.v1",
+            "optimizer.run.v1"
+        ],
+        "sidecarVersion": hit.version,
+        "algorithmVersion": hit.algorithm_version,
+    });
+    let digest = sha256_hex(&serde_json::to_vec(&body).unwrap_or_default());
+    let mut object = body.as_object().cloned().unwrap_or_default();
+    object.insert("digest".into(), json!(format!("sha256:{digest}")));
+    Value::Object(object)
+}
+
+fn read_capabilities(home: &Path) -> Option<Value> {
+    serde_json::from_slice(&fs::read(home.join("capabilities.json")).ok()?).ok()
 }
 
 fn health_body(hit: &OptimizerSidecarVersion) -> Value {
@@ -2038,7 +2511,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("ensure_ready"), "{error:#}");
+        assert!(error.to_string().contains("plugin"), "{error:#}");
     }
 
     #[tokio::test]
@@ -2287,5 +2760,94 @@ mod tests {
             .join("identity.json")
             .is_file());
         let _ = pinned_sol;
+    }
+
+    #[test]
+    fn digest_mismatch_leaves_no_installed_version() {
+        let (mgr, home) = manager();
+        TEST_FORCE_DIGEST_MISMATCH.with(|flag| flag.set(true));
+        let error = mgr.install(None).unwrap_err();
+        TEST_FORCE_DIGEST_MISMATCH.with(|flag| flag.set(false));
+        assert!(error.to_string().contains("digest") || error.to_string().contains("signature"));
+        assert!(read_selected_version(home.path()).unwrap().is_none());
+        assert!(!home
+            .path()
+            .join("versions")
+            .join(DEFAULT_SIDECAR_VERSION)
+            .exists());
+    }
+
+    #[test]
+    fn interrupted_download_leaves_selected_version_unchanged() {
+        let (mgr, home) = manager();
+        mgr.install(None).unwrap();
+        assert_eq!(
+            read_selected_version(home.path()).unwrap().as_deref(),
+            Some(DEFAULT_SIDECAR_VERSION)
+        );
+        TEST_INTERRUPT_INSTALL.with(|flag| flag.set(true));
+        let error = mgr.install(None).unwrap_err();
+        TEST_INTERRUPT_INSTALL.with(|flag| flag.set(false));
+        assert!(error.to_string().contains("interrupted"));
+        assert_eq!(
+            read_selected_version(home.path()).unwrap().as_deref(),
+            Some(DEFAULT_SIDECAR_VERSION)
+        );
+        assert!(mgr.has_offline_runtime(DEFAULT_SIDECAR_VERSION));
+    }
+
+    #[tokio::test]
+    async fn installed_service_has_offline_runtime() {
+        let (mgr, _home) = manager();
+        let installed = mgr.install(None).unwrap();
+        assert!(mgr.has_offline_runtime(&installed.version));
+        assert!(Path::new(&installed.path)
+            .join("runtime/bin/synth-optimizers")
+            .is_file());
+        assert!(Path::new(&installed.path)
+            .join("package-lock.json")
+            .is_file());
+        assert!(Path::new(&installed.path)
+            .join(WHEELHOUSE_MANIFEST_FILE)
+            .is_file());
+        let started = mgr.start().await.unwrap();
+        assert_eq!(started.phase, "ready");
+        let caps = mgr.advertised_capabilities();
+        assert_eq!(caps["algorithms"][0], "gepa");
+        assert!(caps["compatibleTemplateIds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "optimizer.gepa.live.v1"));
+    }
+
+    #[test]
+    fn dev_catalog_version_installs_as_an_immutable_selection() {
+        let (mgr, home) = manager();
+        let installed = mgr.install(Some(DEV_SIDECAR_VERSION)).unwrap();
+        assert_eq!(installed.version, DEV_SIDECAR_VERSION);
+        assert_eq!(
+            read_selected_version(home.path()).unwrap().as_deref(),
+            Some(DEV_SIDECAR_VERSION)
+        );
+        assert!(home
+            .path()
+            .join("versions")
+            .join(DEV_SIDECAR_VERSION)
+            .join(MANIFEST_FILE)
+            .is_file());
+    }
+
+    #[test]
+    fn wheelhouse_manifest_tampering_fails_closed() {
+        let (mgr, _home) = manager();
+        let installed = mgr.install(None).unwrap();
+        fs::write(
+            Path::new(&installed.path).join(WHEELHOUSE_MANIFEST_FILE),
+            br#"{"schemaVersion":"tampered","artifacts":[]}"#,
+        )
+        .unwrap();
+        let error = load_verified_manifest(mgr.home(), Path::new(&installed.path)).unwrap_err();
+        assert!(error.to_string().contains("schema") || error.to_string().contains("digest"));
     }
 }

@@ -14,6 +14,7 @@ import {
   type OptimizerEvent,
   type OptimizerRun
 } from "./components/projectEvents.ts";
+import { DagOverlay } from "./overlays/dag.tsx";
 import { GepaOverlay } from "./overlays/gepa.tsx";
 import { GoExOverlay } from "./overlays/go-ex.tsx";
 import { SftOverlay } from "./overlays/sft.tsx";
@@ -212,6 +213,7 @@ export function Shell(props: ShellProps) {
       ) : null}
       {run.algorithmId === "go-ex" ? <GoExOverlay state={projected} /> : null}
       {run.algorithmId === "sft" ? <SftOverlay state={projected} /> : null}
+      {run.algorithmId === "dag" || run.algorithmId.startsWith("dag.") ? <DagOverlay state={projected} /> : null}
 
       <ExecutionBindings bindings={projected.execution.bindings} />
       <UsageCards usage={projected.usage} />

@@ -104,6 +104,28 @@ fn build_template_index(visuals_root: &Path) -> anyhow::Result<BTreeMap<String, 
         meta.path = Some(directory.display().to_string());
         templates.insert(meta.id.clone(), meta);
     }
+    for extra_root_name in ["templates", "templates-internal"] {
+        let extra_root = visuals_root.join(extra_root_name);
+        if !extra_root.exists() {
+            continue;
+        }
+        let mut entries: Vec<_> = fs::read_dir(&extra_root)?
+            .filter_map(|entry| entry.ok())
+            .collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            if !path.is_dir() || !path.join("template.json").exists() {
+                continue;
+            }
+            let mut meta = load_template_meta(&path)?;
+            if templates.contains_key(&meta.id) {
+                continue;
+            }
+            meta.path = Some(path.display().to_string());
+            templates.insert(meta.id.clone(), meta);
+        }
+    }
     Ok(templates)
 }
 

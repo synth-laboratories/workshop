@@ -20,6 +20,8 @@ pub mod ipc;
 mod laguna;
 mod limits;
 mod optimizers;
+mod plugins;
+mod reports;
 mod runtime;
 mod services;
 mod session;
@@ -57,6 +59,13 @@ use optimizers::{
     OptimizerRecipeRunRequest, OptimizerReconcileRequest, OptimizerRelationship,
     OptimizerRunRecord, OptimizerStateSlice,
 };
+use plugins::PluginStatus;
+use reports::{
+    ExperimentRecord, ExperimentRecordUpsert, ReportComment, ReportCommentCreate,
+    ReportCreateRequest, ReportQuery, ReportRecord, ReportRevision, ReportRevisionCompare,
+    ReportSeal, ReportSealBundle, ReportUpdateRequest, ReportUpload, ReportVisibilityRequest,
+    ReportVisibilityRequestCreate, ResearchLogAppend, ResearchLogEntry,
+};
 use serde_json::Value;
 use std::sync::Arc;
 use storage::{AppEvent, CoreDiagnostics, ModelPerformanceRepository, ModelPerformanceSummary};
@@ -70,8 +79,9 @@ use tauri_plugin_opener::OpenerExt;
 use terminal::{TerminalCreateRequest, TerminalEvent, TerminalInfo, TerminalManager};
 use trace_ingest::{TraceBundleIngestRequest, TraceBundleIngestResult};
 use visuals::{
-    TemplateMeta, VisualAsset, VisualCreateRequest, VisualQuery, VisualRecord, VisualRendition,
-    VisualRevision, VisualUpdateRequest,
+    TemplateMeta, VisualAnnotation, VisualAnnotationCreate, VisualAsset, VisualCreateRequest,
+    VisualQuery, VisualRecord, VisualRendition, VisualRevision, VisualSeal, VisualSealBundle,
+    VisualUpdateRequest, VisualUpload,
 };
 use workspace_scope::WorkspaceGrantRequest;
 use workspace_scope::{ConversationWorkspaceScope, WorkspaceAccessMode};
@@ -658,6 +668,13 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         estimated_cost_usd_micros: paid_cap.max_cost_usd_micros,
         requested_cap: paid_cap.clone(),
         requesting_agent,
+        recipe_id: Some(request.recipe_id.clone()),
+        dataset: None,
+        proposer_model: None,
+        evaluator_model: None,
+        timeout_seconds: None,
+        credential_names: vec![],
+        preparation_digest: None,
     };
     let paid_approval_id = codex.approvals.authorize_host(app, session_id, paid)
         .await
@@ -973,6 +990,76 @@ async fn optimizers_list_cloud(
         .map_err(AppError::from)
 }
 
+#[tauri::command]
+#[specta::specta]
+async fn plugins_status(
+    state: State<'_, Arc<CoreRuntime>>,
+    plugin_id: Option<String>,
+) -> Result<PluginStatus, AppError> {
+    let _ = plugin_id;
+    Ok(state.plugins().status(&state).await)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn plugins_list(state: State<'_, Arc<CoreRuntime>>) -> Result<Vec<PluginStatus>, AppError> {
+    Ok(vec![state.plugins().status(&state).await])
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn plugins_set_release_channel(
+    state: State<'_, Arc<CoreRuntime>>,
+    plugin_id: String,
+    channel: String,
+) -> Result<PluginStatus, AppError> {
+    if plugin_id != plugins::OPTIMIZERS_PLUGIN_ID {
+        return Err(AppError::from(anyhow::anyhow!(
+            "unknown plugin_id `{plugin_id}`"
+        )));
+    }
+    state
+        .plugins()
+        .registry()
+        .set_release_channel(&channel)
+        .map_err(AppError::from)?;
+    Ok(state.plugins().status(&state).await)
+}
+
+#[derive(Clone, Debug, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+struct VisualReadyRequest {
+    visual_id: String,
+    optimizer_run_id: String,
+    template_id: String,
+    replayed_through: u32,
+    subscribed_from: u32,
+    template_digest: Option<String>,
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visual_subscription_ready(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: VisualReadyRequest,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let receipt = serde_json::json!({
+        "schemaVersion": "synth.visual-subscription-receipt.v1",
+        "visualId": request.visual_id,
+        "optimizerRunId": request.optimizer_run_id,
+        "templateId": request.template_id,
+        "replayedThrough": request.replayed_through,
+        "subscribedFrom": request.subscribed_from,
+        "templateDigest": request.template_digest,
+    });
+    let stored = state
+        .optimizers()
+        .record_visual_ready(request.optimizer_run_id, receipt)
+        .await
+        .map_err(AppError::from)?;
+    Ok(contract::specta::OpaqueJson(stored))
+}
+
 async fn publish_visual_event(
     app: &tauri::AppHandle,
     core: &CoreRuntime,
@@ -1039,6 +1126,133 @@ async fn visuals_revisions(
     state
         .visuals()
         .revisions(visual_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_annotations_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+) -> Result<Vec<VisualAnnotation>, AppError> {
+    state
+        .visuals()
+        .annotations(visual_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_annotation_create(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+    request: VisualAnnotationCreate,
+) -> Result<VisualAnnotation, AppError> {
+    let (annotation, event) = state
+        .visuals()
+        .create_annotation(visual_id, request)
+        .await
+        .map_err(AppError::from)?;
+    publish_visual_event(&app, &state, event).await?;
+    Ok(annotation)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_seals_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: Option<String>,
+) -> Result<Vec<VisualSeal>, AppError> {
+    state
+        .visuals()
+        .list_seals(visual_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_seal(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    visual_id: String,
+    revision: contract::specta::OpaqueInteger<i64>,
+) -> Result<VisualSeal, AppError> {
+    let (seal, event) = state
+        .visuals()
+        .seal(visual_id, revision.0)
+        .await
+        .map_err(AppError::from)?;
+    publish_visual_event(&app, &state, event).await?;
+    Ok(seal)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_seal_get(
+    state: State<'_, Arc<CoreRuntime>>,
+    receipt_digest: String,
+) -> Result<VisualSealBundle, AppError> {
+    state
+        .visuals()
+        .get_seal(receipt_digest)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_upload_status(
+    state: State<'_, Arc<CoreRuntime>>,
+    receipt_digest: String,
+) -> Result<Option<VisualUpload>, AppError> {
+    state
+        .visuals()
+        .upload_status(receipt_digest)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_share_seal(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    receipt_digest: String,
+) -> Result<VisualUpload, AppError> {
+    let backend = synth_config::resolve().map_err(AppError::from)?;
+    let api_key = backend.api_key.ok_or_else(|| {
+        AppError::from(anyhow::anyhow!("Share requires a signed-in Synth account"))
+    })?;
+    let (upload, event) = state
+        .visuals()
+        .share_seal(receipt_digest, backend.backend_url, api_key)
+        .await
+        .map_err(AppError::from)?;
+    if event.get("schemaVersion").is_some() {
+        publish_visual_event(&app, &state, event).await?;
+    }
+    Ok(upload)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visuals_open_shared(
+    state: State<'_, Arc<CoreRuntime>>,
+    committed_url: String,
+) -> Result<VisualSealBundle, AppError> {
+    let backend = synth_config::resolve().map_err(AppError::from)?;
+    let api_key = backend.api_key.ok_or_else(|| {
+        AppError::from(anyhow::anyhow!(
+            "Opening a private shared visual requires a signed-in Synth account"
+        ))
+    })?;
+    state
+        .visuals()
+        .open_shared_url(committed_url, backend.backend_url, api_key)
         .await
         .map_err(AppError::from)
 }
@@ -1201,6 +1415,448 @@ async fn visuals_render(
 
 #[tauri::command]
 #[specta::specta]
+async fn reports_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    query: Option<ReportQuery>,
+) -> Result<Vec<ReportRecord>, AppError> {
+    state
+        .reports()
+        .list(query.unwrap_or_default())
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_get(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+) -> Result<ReportRecord, AppError> {
+    state.reports().get(report_id).await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_revision_get(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+    revision: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<ReportRevision, AppError> {
+    state
+        .reports()
+        .get_revision(report_id, revision.map(|value| value.0))
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_create(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ReportCreateRequest,
+) -> Result<ReportRecord, AppError> {
+    let (report, event) = state
+        .reports()
+        .create(request)
+        .await
+        .map_err(AppError::from)?;
+    publish_visual_event(&app, &state, event).await?;
+    Ok(report)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_update(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+    request: ReportUpdateRequest,
+) -> Result<ReportRecord, AppError> {
+    let (report, event) = state
+        .reports()
+        .update(report_id, request)
+        .await
+        .map_err(AppError::from)?;
+    publish_visual_event(&app, &state, event).await?;
+    Ok(report)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_archive(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+) -> Result<ReportRecord, AppError> {
+    state
+        .reports()
+        .set_archived(report_id, true)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_restore(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+) -> Result<ReportRecord, AppError> {
+    state
+        .reports()
+        .set_archived(report_id, false)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_visibility_requests(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: Option<String>,
+) -> Result<Vec<ReportVisibilityRequest>, AppError> {
+    state
+        .reports()
+        .list_visibility_requests(report_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_visibility_request(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+    request: ReportVisibilityRequestCreate,
+) -> Result<ReportVisibilityRequest, AppError> {
+    state
+        .reports()
+        .request_visibility(report_id, request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_visibility_decide(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    request_id: String,
+    approved: bool,
+) -> Result<ReportVisibilityRequest, AppError> {
+    let decision = state
+        .reports()
+        .decide_visibility(request_id.clone(), approved, "human".into())
+        .await
+        .map_err(AppError::from)?;
+    if !approved {
+        return Ok(decision);
+    }
+    let execution: anyhow::Result<()> = async {
+        let backend = synth_config::resolve()?;
+        let api_key = backend.api_key.ok_or_else(|| {
+            anyhow::anyhow!("Approving Report visibility requires a signed-in Synth account")
+        })?;
+        match decision.target.as_str() {
+            "private" => {
+                let (_, event) = state
+                    .reports()
+                    .share_seal(
+                        decision.receipt_digest.clone(),
+                        backend.backend_url.clone(),
+                        api_key.clone(),
+                    )
+                    .await?;
+                if event.get("schemaVersion").is_some() {
+                    publish_visual_event(&app, &state, event).await?;
+                }
+            }
+            "public" => {
+                let (upload, event) = state
+                    .reports()
+                    .share_seal(
+                        decision.receipt_digest.clone(),
+                        backend.backend_url.clone(),
+                        api_key.clone(),
+                    )
+                    .await?;
+                if event.get("schemaVersion").is_some() {
+                    publish_visual_event(&app, &state, event).await?;
+                }
+                state
+                    .reports()
+                    .promote_publication(
+                        upload.publication_id.ok_or_else(|| {
+                            anyhow::anyhow!("committed upload has no publication")
+                        })?,
+                        decision
+                            .slug
+                            .clone()
+                            .ok_or_else(|| anyhow::anyhow!("public request has no slug"))?,
+                        backend.backend_url.clone(),
+                        api_key.clone(),
+                        Some(decision.request_id.clone()),
+                        decision.reason.clone(),
+                    )
+                    .await?;
+            }
+            "unpublished" => {
+                let upload = state
+                    .reports()
+                    .upload_status(decision.receipt_digest.clone())
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("sealed Report has not been shared"))?;
+                state
+                    .reports()
+                    .unpublish_publication(
+                        upload
+                            .publication_id
+                            .ok_or_else(|| anyhow::anyhow!("shared Report has no publication"))?,
+                        backend.backend_url.clone(),
+                        api_key.clone(),
+                        decision.reason.clone(),
+                    )
+                    .await?;
+            }
+            _ => anyhow::bail!("unsupported visibility target"),
+        }
+        Ok(())
+    }
+    .await;
+    let error = execution.as_ref().err().map(ToString::to_string);
+    let finished = state
+        .reports()
+        .finish_visibility(request_id, error)
+        .await
+        .map_err(AppError::from)?;
+    execution.map_err(AppError::from)?;
+    Ok(finished)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_seal(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+    revision: contract::specta::OpaqueInteger<i64>,
+) -> Result<ReportSeal, AppError> {
+    let (seal, event) = state
+        .reports()
+        .seal(report_id, revision.0)
+        .await
+        .map_err(AppError::from)?;
+    if event.get("schemaVersion").is_some() {
+        publish_visual_event(&app, &state, event).await?;
+    }
+    Ok(seal)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_seals_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: Option<String>,
+) -> Result<Vec<ReportSeal>, AppError> {
+    state
+        .reports()
+        .list_seals(report_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_seal_get(
+    state: State<'_, Arc<CoreRuntime>>,
+    receipt_digest: String,
+) -> Result<ReportSealBundle, AppError> {
+    state
+        .reports()
+        .get_seal(receipt_digest)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_seals_compare(
+    state: State<'_, Arc<CoreRuntime>>,
+    left_digest: String,
+    right_digest: String,
+) -> Result<ReportRevisionCompare, AppError> {
+    state
+        .reports()
+        .compare_seals(left_digest, right_digest)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_experiments_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+) -> Result<Vec<ExperimentRecord>, AppError> {
+    state
+        .reports()
+        .list_experiments(report_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_experiment_upsert(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+    request: ExperimentRecordUpsert,
+) -> Result<ExperimentRecord, AppError> {
+    state
+        .reports()
+        .upsert_experiment(report_id, request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_log_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+) -> Result<Vec<ResearchLogEntry>, AppError> {
+    state
+        .reports()
+        .list_research_log(report_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_log_append(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+    request: ResearchLogAppend,
+) -> Result<ResearchLogEntry, AppError> {
+    state
+        .reports()
+        .append_research_log(report_id, request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_upload_status(
+    state: State<'_, Arc<CoreRuntime>>,
+    receipt_digest: String,
+) -> Result<Option<ReportUpload>, AppError> {
+    state
+        .reports()
+        .upload_status(receipt_digest)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_share(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    receipt_digest: String,
+) -> Result<ReportUpload, AppError> {
+    let backend = synth_config::resolve().map_err(AppError::from)?;
+    let api_key = backend.api_key.ok_or_else(|| {
+        AppError::from(anyhow::anyhow!("Share requires a signed-in Synth account"))
+    })?;
+    let (upload, event) = state
+        .reports()
+        .share_seal(receipt_digest, backend.backend_url, api_key)
+        .await
+        .map_err(AppError::from)?;
+    if event.get("schemaVersion").is_some() {
+        publish_visual_event(&app, &state, event).await?;
+    }
+    Ok(upload)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_promote(
+    state: State<'_, Arc<CoreRuntime>>,
+    publication_id: String,
+    slug: String,
+) -> Result<reports::ReportPromotion, AppError> {
+    let backend = synth_config::resolve().map_err(AppError::from)?;
+    let api_key = backend.api_key.ok_or_else(|| {
+        AppError::from(anyhow::anyhow!(
+            "Publishing a Report requires a signed-in Synth account"
+        ))
+    })?;
+    state
+        .reports()
+        .promote_publication(
+            publication_id,
+            slug,
+            backend.backend_url,
+            api_key,
+            None,
+            None,
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_open_shared(
+    state: State<'_, Arc<CoreRuntime>>,
+    committed_url: String,
+) -> Result<ReportSealBundle, AppError> {
+    let backend = synth_config::resolve().map_err(AppError::from)?;
+    let api_key = backend.api_key.ok_or_else(|| {
+        AppError::from(anyhow::anyhow!(
+            "opening a private shared Report requires a signed-in Synth account"
+        ))
+    })?;
+    state
+        .reports()
+        .open_shared_url(committed_url, backend.backend_url, api_key)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_comments_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+    revision: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<Vec<ReportComment>, AppError> {
+    state
+        .reports()
+        .list_comments(report_id, revision.map(|value| value.0))
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_comment_create(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+    revision: contract::specta::OpaqueInteger<i64>,
+    request: ReportCommentCreate,
+) -> Result<ReportComment, AppError> {
+    state
+        .reports()
+        .create_comment(report_id, revision.0, request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 fn synth_config_get() -> Result<BackendSettings, AppError> {
     synth_config::get().map_err(AppError::from)
 }
@@ -1295,10 +1951,16 @@ async fn model_performance_get(
 #[specta::specta]
 async fn synth_config_update(
     core: State<'_, Arc<CoreRuntime>>,
+    cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
     request: BackendSettingsUpdate,
 ) -> Result<BackendSettings, AppError> {
+    let api_key_updated = request.api_key.is_some();
     let settings = synth_config::update(request).map_err(AppError::from)?;
     core.reload_intern_config().await.map_err(AppError::from)?;
+    if api_key_updated {
+        cloud.clear_cache();
+        let _ = account::mark_paired(core.storage(), chrono::Utc::now());
+    }
     Ok(settings)
 }
 
@@ -1992,8 +2654,20 @@ async fn codex_turn_steer(
 async fn codex_approval_resolve(
     app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
+    approvals: State<'_, Arc<crate::session::approval::ApprovalBroker>>,
     request: CodexApprovalDecisionRequest,
 ) -> Result<(), AppError> {
+    if approvals.is_pending(&request.approval_id).await {
+        let decision = approvals
+            .decision_from_shell(&request.approval_id, &request.decision)
+            .await
+            .map_err(AppError::from)?;
+        approvals
+            .resolve(&app, &request.session_id, &request.approval_id, decision)
+            .await
+            .map_err(AppError::from)?;
+        return Ok(());
+    }
     state
         .resolve_approval(app, request)
         .await
@@ -2128,7 +2802,7 @@ pub fn run() {
     }
     let specta = contract::specta::builder();
 
-	tauri::Builder::default()
+    tauri::Builder::default()
         // This must be the first plugin registered. All app state, IPC, and
         // SQLite ownership belongs to the original process.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -2137,22 +2811,22 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-		.plugin(tauri_plugin_dialog::init())
-		.plugin(tauri_plugin_opener::init())
-		// The main window starts hidden. Showing it from setup races the overlay
-		// webview's first paint on macOS and exposes a dark strip from the window
-		// behind through the transparent native titlebar. Wait until CSS and the
-		// document have loaded so the custom titlebar is present on first reveal.
-		.on_page_load(|webview, payload| {
-			if webview.label() == "main"
-				&& matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
-			{
-				let window = webview.window();
-				let _ = window.maximize();
-				let _ = window.show();
-			}
-		})
-		.setup(|app| {
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        // The main window starts hidden. Showing it from setup races the overlay
+        // webview's first paint on macOS and exposes a dark strip from the window
+        // behind through the transparent native titlebar. Wait until CSS and the
+        // document have loaded so the custom titlebar is present on first reveal.
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main"
+                && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
+            {
+                let window = webview.window();
+                let _ = window.maximize();
+                let _ = window.show();
+            }
+        })
+        .setup(|app| {
             instance::mark_manifest_running();
             // Builds before the credential broker exported provider keys into
             // Codex, which recorded them in its shell snapshots. Scrub what
@@ -2188,6 +2862,9 @@ pub fn run() {
                     std::io::Error::other(format!("start credential broker: {error}"))
                 })?,
             );
+            let approvals = Arc::new(crate::session::approval::ApprovalBroker::new(
+                crate::session::SessionPersistence::from_core(Some(core.clone())),
+            ));
             let whisper = Arc::new(whisper::WhisperManager::new());
             let codex = Arc::new(CodexManager::new(Some(core.clone()), broker.clone()));
             let supervisor = Arc::new(services::ServiceSupervisor::new());
@@ -2198,6 +2875,7 @@ pub fn run() {
             app.manage(migration);
             app.manage(codex.clone());
             app.manage(broker);
+            app.manage(approvals.clone());
             app.manage(receipts);
             app.manage(whisper);
             app.manage(Arc::new(TerminalManager::new()));
@@ -2234,9 +2912,13 @@ pub fn run() {
 
             let bootstrap_handle = app.handle().clone();
             let bootstrap_core = core.clone();
+            let bootstrap_approvals = approvals.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = bootstrap_core.bootstrap(&bootstrap_handle).await {
                     eprintln!("CoreRuntime bootstrap failed: {error}");
+                }
+                if let Err(error) = bootstrap_approvals.expire_restored(&bootstrap_handle).await {
+                    eprintln!("approval restore failed: {error}");
                 }
                 if let Err(error) = bootstrap_core.resume_intern_providers().await {
                     eprintln!("Intern restart reconciliation failed: {error}");
@@ -2289,7 +2971,7 @@ pub fn run() {
                 });
             }
 
-			Ok(())
+            Ok(())
         })
         .invoke_handler(specta.invoke_handler())
         .build(tauri::generate_context!())

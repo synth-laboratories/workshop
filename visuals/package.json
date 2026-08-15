@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Synth Desktop deep visuals — genre templates, registry, bindings, and MCP schemas",
+  "description": "Synth Desktop deep visuals \u2014 genre templates, registry, bindings, and MCP schemas",
   "exports": {
     ".": "./registry/index.ts",
     "./registry": "./registry/index.ts",

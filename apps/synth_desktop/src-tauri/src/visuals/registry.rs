@@ -18,9 +18,9 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct VisualRegistry {
-    db: Arc<Database>,
-    journal: EventJournal,
-    content: ContentStore,
+    pub(super) db: Arc<Database>,
+    pub(super) journal: EventJournal,
+    pub(super) content: ContentStore,
 }
 
 impl VisualRegistry {
@@ -30,6 +30,10 @@ impl VisualRegistry {
             journal,
             content,
         }
+    }
+
+    pub(crate) fn content(&self) -> &ContentStore {
+        &self.content
     }
 
     pub async fn list(&self, query: VisualQuery) -> Result<Vec<VisualRecord>> {

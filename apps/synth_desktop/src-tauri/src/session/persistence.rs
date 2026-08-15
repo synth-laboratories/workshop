@@ -273,6 +273,47 @@ impl SessionPersistence {
         let repository = UsageRecordsRepository::new(core.storage().database().clone());
         repository.record(record).await
     }
+
+    pub async fn append_boundary_event<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: impl Into<String>,
+        source: EventSource,
+        kind: impl Into<String>,
+        payload: Value,
+    ) -> Result<Option<AppEvent>> {
+        self.append_and_emit(
+            app,
+            EventAppend {
+                event_id: None,
+                session_id: Some(session_id.into()),
+                run_id: None,
+                source,
+                kind: kind.into(),
+                payload,
+                remote_sequence: None,
+                command_id: None,
+                created_at: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn events_of_kinds_after(
+        &self,
+        after_sequence: i64,
+        kinds: Vec<String>,
+        limit: i64,
+    ) -> Result<Vec<AppEvent>> {
+        match self {
+            Self::Core(core) => {
+                core.journal()
+                    .events_of_kinds_after(after_sequence, kinds, limit)
+                    .await
+            }
+            Self::Null => Ok(Vec::new()),
+        }
+    }
 }
 
 fn ephemeral_codex_app_event(session_id: &str, method: &str, params: Value) -> AppEvent {

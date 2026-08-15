@@ -270,6 +270,18 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         optimizers_skill.join("SKILL.md"),
         include_str!("../../../../skills/use-synth-optimizers/SKILL.md"),
     )?;
+    let optimizers_references = optimizers_skill.join("references");
+    fs::create_dir_all(&optimizers_references)?;
+    fs::write(
+        optimizers_references.join("gepa.md"),
+        include_str!("../../../../skills/use-synth-optimizers/references/gepa.md"),
+    )?;
+    let plugins_skill = home.join("skills/use-synth-plugins");
+    fs::create_dir_all(&plugins_skill)?;
+    fs::write(
+        plugins_skill.join("SKILL.md"),
+        include_str!("../../../../skills/use-synth-plugins/SKILL.md"),
+    )?;
     // Apply the durable Context settings after bundled materialization. This
     // keeps the existing reference-file setup intact while making disabled
     // skills and edited SKILL.md copies authoritative for new sessions.
@@ -394,11 +406,15 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         let ipc = crate::storage::app_data_root().join("visuals-ipc.json");
         let mut existing = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
         for (server, binary) in [
+            ("synth_plugins", "synth-plugins-mcp"),
             ("synth_containers", "synth-containers-mcp"),
             ("synth_visuals", "synth-visuals-mcp"),
             ("synth_optimizers", "synth-optimizers-mcp"),
         ] {
             if !crate::context::mcp_group_enabled("bundled") {
+                continue;
+            }
+            if server == "synth_optimizers" && !crate::plugins::optimizers_plugin_enabled() {
                 continue;
             }
             let bin = exe
@@ -712,6 +728,7 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         // same operations after the visual skill is loaded.
         "synth_visuals" => "enabled_tools = [\"visual_manage\"]\n",
         "synth_optimizers" => "enabled_tools = [\"optimizer_manage\"]\n",
+        "synth_plugins" => "enabled_tools = [\"plugin_manage\"]\n",
         _ => "",
     }
 }

@@ -117,9 +117,25 @@ Step 5 is deliberately last and is not first-pass scope.
 - A test asserts that `paid_compute` cannot be remembered, and that a decision carries its cap.
 - `grep -rn "approval" ` over the transport layer shows the transport no longer owns approval semantics (or a written note on why step 5 is deferred).
 
+## Decided — the `paid_compute` surface
+
+**A modal, not a chat turn.** When an agent starts paid compute the user sees a modal carrying:
+
+- the operation's parameters — what is actually about to run
+- predicted spend, where a prediction exists
+- the cap the approval would grant
+- which agent is asking
+
+Prose assent in a conversation is not a gate. The modal is the gate, and the decision it returns is the capped `ApproveWithCap` above, so the granted cap is recorded and a run that exceeds it is a receipt violation rather than a judgement call.
+
+Two consequences for the build:
+
+- Predicted spend is *optional and must stay honest*. Where no prediction exists, show no number — never a zero, never an estimate presented as a figure. This is the same missing≠0 rule the cost lane is enforcing, on the surface where getting it wrong costs money.
+- "Which agent is asking" means the modal needs the requesting agent's identity in the approval payload. `ApprovalKind::PaidCompute` carries `operation` and cost fields today; it needs the requester too, and `safe_payload` must expose it without leaking session internals.
+
 ## Open questions for review — decide, don't guess
 
-1. **Does `paid_compute` gate the MCP `start_recipe` call, the optimizer mutation, or both?** Gating the mutation is safer (an agent cannot route around it) but means the approval fires below the tool call, which changes what the agent sees on rejection.
+1. **Does `paid_compute` gate the MCP `start_recipe` call, the optimizer mutation, or both?** Gating the mutation is safer (an agent cannot route around it) but means the approval fires below the tool call, which changes what the agent sees on rejection. The modal decision above does not settle this — it says what the user sees, not where the block sits.
 2. **What is the cap unit** — dollars, rollouts, or both? The GEPA cost lane is concurrently making cost nullable, so a dollar cap must define its behavior when cost is unknown. Suggest: unknown cost blocks a capped run rather than counting as `$0`, consistent with the `UnknownCost` budget state in the v0.2 cost work.
 3. **Is "always-this-workspace" still correct for shell** once the broker owns policy, or should it become a workspace-scoped preference rather than an approval decision?
 4. **Do restored-but-expired approvals stay visible in the transcript** as resolved history, or disappear? Affects whether `approval.expired` is a journaled event or a local state change.

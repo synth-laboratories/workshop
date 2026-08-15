@@ -29,6 +29,7 @@ export default function App() {
 						activeChatId={c.view.kind === "chat" ? c.view.chatId : null}
 						inventoryActive={c.view.kind === "inventory"}
 						visualsActive={c.view.kind === "visuals"}
+						reportsActive={c.view.kind === "reports"}
 						optimizersActive={c.view.kind === "optimizers"}
 						workingChatIds={c.workingChatIds}
 						activeLocalDecodeTps={c.inferenceMonitor.snapshot?.active?.decodeTokensPerSecond == null
@@ -68,6 +69,7 @@ export default function App() {
 						}}
 						onOpenInventory={() => c.setView({ kind: "inventory" })}
 						onOpenVisuals={() => c.setView({ kind: "visuals" })}
+						onOpenReports={() => c.setView({ kind: "reports" })}
 						onOpenOptimizers={() => c.setView({ kind: "optimizers" })}
 						onSearch={c.openSearch}
 						onSettings={() => c.setView({ kind: "settings" })}

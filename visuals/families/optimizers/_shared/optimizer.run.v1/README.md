@@ -13,6 +13,7 @@ Shared optimizer visual shell with algorithm overlays.
 - `gepa` — candidate rail, Pareto frontier, reflections
 - `go-ex` — phase board, themes, slot execution binding
 - `sft` — fixture-only curves/checkpoints until hosted SFT is available
+- `dag` — local experiment DAG node table and honest known spend
 
 ## Fixture
 

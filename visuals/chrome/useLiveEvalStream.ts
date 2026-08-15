@@ -136,7 +136,7 @@ export function useLiveEvalStream(options: {
           es.addEventListener(kind, receive as EventListener);
         }
         es.onerror = () => {
-          if (es?.readyState !== EventSource.CLOSED) {
+          if (!abort.signal.aborted) {
             setError("SSE connection interrupted");
             void backfill();
           }

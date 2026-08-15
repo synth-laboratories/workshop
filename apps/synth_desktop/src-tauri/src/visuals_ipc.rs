@@ -9,10 +9,14 @@ use crate::core_runtime::CoreRuntime;
 use crate::data::ContainerRegisterRequest;
 use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
 use crate::limits;
+use crate::reports::{
+    ExperimentRecordUpsert, ReportAttachTrace, ReportCreateRequest, ReportQuery,
+    ReportUpdateRequest, ReportVisibilityRequestCreate, ResearchLogAppend,
+};
 use crate::visuals::{
     assert_live_eval_slot, classify_live_eval_family, live_eval_bind_metadata,
-    require_visualsbench_start_policy, VisualCreateRequest, VisualQuery, VisualStatus,
-    VisualUpdateRequest, LIVE_EVAL_SLOT,
+    require_visualsbench_start_policy, VisualAnnotationCreate, VisualCreateRequest, VisualQuery,
+    VisualStatus, VisualUpdateRequest, LIVE_EVAL_SLOT,
 };
 use base64::Engine;
 
@@ -110,6 +114,17 @@ async fn route_request(
         Err(error) if crate::error::error_is::<crate::error::Unauthorized>(&error) => {
             JsonHttpResponse::error(StatusCode::UNAUTHORIZED, error.to_string())
         }
+        Err(error) if crate::error::error_is::<crate::plugins::PluginNotReady>(&error) => {
+            let body = error
+                .downcast_ref::<crate::plugins::PluginNotReady>()
+                .map(crate::plugins::PluginNotReady::to_json)
+                .unwrap_or_else(|| json!({"code":"plugin_not_ready"}));
+            JsonHttpResponse {
+                status: StatusCode::CONFLICT,
+                body,
+                extra_headers: Vec::new(),
+            }
+        }
         Err(error) => JsonHttpResponse::error(StatusCode::BAD_REQUEST, error.to_string()),
     }
 }
@@ -139,6 +154,9 @@ async fn dispatch_request(
     let method = request.method.as_str();
     if method == "POST" && path == "/v1/review-window/resize" {
         return resize_review_window(app, &json_body);
+    }
+    if path.starts_with("/v1/plugins") {
+        return dispatch_plugins(method, path, json_body, core, app).await;
     }
     if path.starts_with("/v1/optimizers") {
         return dispatch_optimizer(method, path, json_body, core, app).await;
@@ -552,8 +570,136 @@ async fn register_hydrated_container(
 
 pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime) -> Result<Value> {
     let registry = core.visuals();
+    let reports = core.reports();
     match (method, path) {
         ("GET", "/health") => Ok(json!({"ok": true, "service": "synth-visuals-ipc"})),
+        ("GET", "/v1/reports") => {
+            let query: ReportQuery = serde_json::from_value(body.clone()).unwrap_or_default();
+            Ok(json!({"reports": reports.list(query).await?}))
+        }
+        ("POST", "/v1/reports") => {
+            let request: ReportCreateRequest = serde_json::from_value(body)?;
+            let (report, event) = reports.create(request).await?;
+            Ok(json!({"report": report, "event": event}))
+        }
+        ("GET", path) if path.starts_with("/v1/report-seals/") => {
+            let digest = path.trim_start_matches("/v1/report-seals/");
+            Ok(json!({"bundle": reports.get_seal(digest.to_string()).await?}))
+        }
+        ("GET", "/v1/report-seals") => {
+            let report_id = body
+                .get("report_id")
+                .or_else(|| body.get("reportId"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Ok(json!({"seals": reports.list_seals(report_id).await?}))
+        }
+        ("GET", "/v1/report-visibility-requests") => {
+            let report_id = body
+                .get("report_id")
+                .or_else(|| body.get("reportId"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Ok(json!({"requests": reports.list_visibility_requests(report_id).await?}))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/reports/") && path.ends_with("/visibility-requests") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/visibility-requests");
+            let request: ReportVisibilityRequestCreate = serde_json::from_value(body)?;
+            Ok(json!({"request": reports.request_visibility(id.to_string(), request).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/reports/") && path.ends_with("/archive") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/archive");
+            Ok(json!({"report": reports.set_archived(id.to_string(), true).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/reports/") && path.ends_with("/restore") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/restore");
+            Ok(json!({"report": reports.set_archived(id.to_string(), false).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/reports/") && path.ends_with("/experiments") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/experiments");
+            Ok(json!({"experiments": reports.list_experiments(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/reports/") && path.ends_with("/experiments") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/experiments");
+            let request: ExperimentRecordUpsert = serde_json::from_value(body)?;
+            Ok(json!({"experiment": reports.upsert_experiment(id.to_string(), request).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/reports/") && path.ends_with("/log") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/log");
+            Ok(json!({"entries": reports.list_research_log(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/reports/") && path.ends_with("/log") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/log");
+            let request: ResearchLogAppend = serde_json::from_value(body)?;
+            Ok(json!({"entry": reports.append_research_log(id.to_string(), request).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/reports/") && path.ends_with("/revision") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/revision");
+            let revision = body.get("revision").and_then(Value::as_i64);
+            Ok(json!({"revision": reports.get_revision(id.to_string(), revision).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/reports/") && path.ends_with("/traces") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/traces");
+            let mut request: ReportAttachTrace = serde_json::from_value(body)?;
+            if request.projection.is_none() {
+                if let Ok(resolved) = core
+                    .data()
+                    .resolve_trace_projection(
+                        request.trace_digest.clone(),
+                        "rollout-inspector".into(),
+                    )
+                    .await
+                {
+                    request.projection = Some(resolved.payload);
+                    if request.trace_id.is_none() {
+                        request.trace_id = Some(resolved.trace_digest);
+                    }
+                }
+            }
+            let (report, event) = reports.attach_trace(id.to_string(), request).await?;
+            Ok(json!({"report": report, "event": event}))
+        }
+        ("POST", path) if path.starts_with("/v1/reports/") && path.ends_with("/seal") => {
+            let id = path
+                .trim_start_matches("/v1/reports/")
+                .trim_end_matches("/seal");
+            let revision = body
+                .get("revision")
+                .and_then(Value::as_i64)
+                .context("seal requires exact revision")?;
+            let (seal, event) = reports.seal(id.to_string(), revision).await?;
+            Ok(json!({"seal": seal, "event": event}))
+        }
+        ("GET", path) if path.starts_with("/v1/reports/") => {
+            let id = path.trim_start_matches("/v1/reports/");
+            Ok(json!({"report": reports.get(id.to_string()).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/reports/") => {
+            let id = path.trim_start_matches("/v1/reports/");
+            let request: ReportUpdateRequest = serde_json::from_value(body)?;
+            let (report, event) = reports.update(id.to_string(), request).await?;
+            Ok(json!({"report": report, "event": event}))
+        }
         ("GET", "/v1/containers") => {
             Ok(json!({"containers": core.data().list_containers().await?}))
         }
@@ -1006,6 +1152,33 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let query: VisualQuery = serde_json::from_value(body.clone()).unwrap_or_default();
             Ok(json!({"visuals": registry.list(query).await?}))
         }
+        ("GET", "/v1/seals") => {
+            let visual_id = body
+                .get("visual_id")
+                .or_else(|| body.get("visualId"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Ok(json!({"seals": registry.list_seals(visual_id).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/seals/") => {
+            let digest = path.trim_start_matches("/v1/seals/");
+            if digest.is_empty() || digest.contains('/') {
+                anyhow::bail!("invalid seal receipt digest");
+            }
+            Ok(json!({"bundle": registry.get_seal(digest.to_string()).await?}))
+        }
+        ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/annotations") => {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/annotations")
+                .trim_end_matches('/');
+            let annotations = registry.annotations(id.to_string()).await?;
+            let revision = registry.get(id.to_string()).await?.current_revision;
+            let overlay_digest = registry.overlay_digest(id.to_string(), revision).await?;
+            Ok(
+                json!({"annotations": annotations, "overlayDigest": overlay_digest, "revision": revision}),
+            )
+        }
         ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/authoring") => {
             let id = path
                 .trim_start_matches("/v1/visuals/")
@@ -1032,9 +1205,15 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 } else {
                     Vec::new()
                 };
+            let annotations = registry.annotations(id.to_string()).await?;
+            let overlay_digest = registry
+                .overlay_digest(id.to_string(), visual.current_revision)
+                .await?;
             Ok(json!({
                 "visual": visual,
                 "template": template,
+                "annotations": annotations,
+                "overlayDigest": overlay_digest,
                 "authoring": {
                     "rendererContract": "trusted_template_configuration",
                     "arbitraryTsxExecuted": false,
@@ -1045,6 +1224,27 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     "instruction": "Render and show in Desktop, capture and inspect screenshots at wide and compact viewports, revise until automated findings and visible collisions are resolved, then record two screenshot-backed passing reviews before mark_ready."
                 }
             }))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/annotations") => {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/annotations")
+                .trim_end_matches('/');
+            let request: VisualAnnotationCreate = serde_json::from_value(body)?;
+            let (annotation, event) = registry.create_annotation(id.to_string(), request).await?;
+            Ok(json!({"annotation": annotation, "event": event}))
+        }
+        ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/seal") => {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/seal")
+                .trim_end_matches('/');
+            let revision = body
+                .get("revision")
+                .and_then(Value::as_i64)
+                .context("seal requires exact revision")?;
+            let (seal, event) = registry.seal(id.to_string(), revision).await?;
+            Ok(json!({"seal": seal, "event": event}))
         }
         ("GET", path) if path.starts_with("/v1/visuals/") && path.ends_with("/content") => {
             let id = path
@@ -1354,6 +1554,14 @@ async fn dispatch_optimizer(
             Ok(json!({ "algorithms": optimizers.list_algorithms() }))
         }
         ("GET", "/v1/optimizers/recipes") => Ok(json!({ "recipes": optimizers.list_recipes() })),
+        ("POST", "/v1/optimizers/recipes/prepare") => {
+            let request: crate::optimizers::OptimizerRecipeRunRequest =
+                serde_json::from_value(body)?;
+            let (run, event) = optimizers.prepare_recipe(request).await?;
+            Ok(
+                json!({ "run": run, "event": event, "preparationDigest": run.summary.get("preparationDigest") }),
+            )
+        }
         ("POST", "/v1/optimizers/recipes/run") => {
             let request: crate::optimizers::OptimizerRecipeRunRequest =
                 serde_json::from_value(body)?;
@@ -1362,6 +1570,59 @@ async fn dispatch_optimizer(
                 .await
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
             Ok(json!({ "run": run }))
+        }
+        ("POST", "/v1/optimizers/runs/start") => {
+            let id = body
+                .get("optimizerRunId")
+                .or_else(|| body.get("optimizer_run_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("optimizer_run_id required"))?;
+            let digest = body
+                .get("preparationDigest")
+                .or_else(|| body.get("preparation_digest"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let approval = body
+                .get("approvalReceiptId")
+                .or_else(|| body.get("approval_receipt_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let session_ref = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_ref"))
+                .and_then(Value::as_str);
+            let mut approval = approval;
+            if approval.is_none() {
+                if let Some(broker) =
+                    app.try_state::<Arc<crate::session::approval::ApprovalBroker>>()
+                {
+                    let auth = core
+                        .plugins()
+                        .authorize_compute(
+                            broker.inner(),
+                            app,
+                            session_ref,
+                            run_recipe_id(optimizers, id).await?.as_str(),
+                            digest.as_deref().unwrap_or(""),
+                            2.45,
+                            240,
+                            "gpt-5.6-luna",
+                            300,
+                        )
+                        .await?;
+                    if auth.rejected {
+                        return Ok(json!({
+                            "result": "approval_rejected",
+                            "approvalReceiptId": auth.approval_id
+                        }));
+                    }
+                    approval = Some(auth.approval_id);
+                }
+            }
+            let (run, event) = optimizers
+                .start_prepared(id.to_string(), digest, approval)
+                .await?;
+            Ok(json!({ "run": run, "event": event }))
         }
         ("GET", "/v1/optimizers/runs") => {
             let query: crate::optimizers::OptimizerQuery =
@@ -1445,6 +1706,36 @@ async fn dispatch_optimizer(
             let (run, event) = optimizers.cancel(id.to_string()).await?;
             Ok(json!({ "run": run, "event": event }))
         }
+        ("GET", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/result") => {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/result");
+            let result = optimizers.get_result(id.to_string()).await?;
+            Ok(json!({ "result": result }))
+        }
+        ("GET", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/ready") => {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/ready");
+            let timeout_ms = body
+                .get("timeout_ms")
+                .or_else(|| body.get("timeoutMs"))
+                .and_then(Value::as_u64)
+                .unwrap_or(15_000);
+            let receipt = optimizers
+                .await_visual_ready(id.to_string(), timeout_ms)
+                .await?;
+            Ok(json!({ "receipt": receipt }))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/finalize") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/finalize");
+            let result = optimizers.get_result(id.to_string()).await?;
+            Ok(json!({ "result": result }))
+        }
         ("GET", path) if path.starts_with("/v1/optimizers/runs/") => {
             let id = path.trim_start_matches("/v1/optimizers/runs/");
             let run = optimizers.get(id.to_string()).await?;
@@ -1476,6 +1767,93 @@ async fn dispatch_optimizer(
             Ok(json!({ "runs": runs }))
         }
         _ => anyhow::bail!("unsupported optimizer IPC route {method} {path}"),
+    }
+}
+
+async fn run_recipe_id(
+    optimizers: &crate::optimizers::OptimizerService,
+    run_id: &str,
+) -> Result<String> {
+    let run = optimizers.get(run_id.to_string()).await?;
+    Ok(run
+        .summary
+        .get("recipeId")
+        .and_then(Value::as_str)
+        .unwrap_or("gepa.banking77.smoke.v1")
+        .to_owned())
+}
+
+async fn dispatch_plugins(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+    app: &AppHandle,
+) -> Result<Value> {
+    let session_owned = body
+        .get("sessionRef")
+        .or_else(|| body.get("session_id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
+    let session_id = session_owned.as_deref();
+    let plugin_id = body
+        .get("plugin_id")
+        .or_else(|| body.get("pluginId"))
+        .cloned()
+        .unwrap_or_else(|| json!("optimizers"));
+    let version = body.get("version").cloned();
+    let arguments = json!({
+        "plugin_id": plugin_id,
+        "version": version,
+    });
+    let mapped = match (method, path) {
+        ("GET", "/v1/plugins") | ("GET", "/v1/plugins/") => "list",
+        ("GET", "/v1/plugins/optimizers") => "status",
+        ("GET", "/v1/plugins/optimizers/capabilities") => "capabilities",
+        ("POST", "/v1/plugins/optimizers/enable") => "enable",
+        ("POST", "/v1/plugins/optimizers/disable") => "disable",
+        ("POST", "/v1/plugins/optimizers/install") => "install",
+        ("POST", "/v1/plugins/optimizers/start") => "start",
+        ("POST", "/v1/plugins/optimizers/stop") => "stop",
+        ("POST", "/v1/plugins/optimizers/update") => "update",
+        ("POST", "/v1/plugins/optimizers/remove") => "remove",
+        ("POST", "/v1/plugins/manage") => body
+            .get("operation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("operation required"))?,
+        _ => anyhow::bail!("unsupported plugin IPC route {method} {path}"),
+    };
+    let arguments = if path == "/v1/plugins/manage" {
+        body.get("arguments").cloned().unwrap_or(arguments)
+    } else {
+        arguments
+    };
+    let broker = app.try_state::<Arc<crate::session::approval::ApprovalBroker>>();
+    match broker {
+        Some(broker) => {
+            core.plugins()
+                .manage(core, broker.inner(), app, session_id, mapped, &arguments)
+                .await
+        }
+        None => {
+            if matches!(mapped, "list" | "status" | "capabilities") {
+                core.plugins()
+                    .manage(
+                        core,
+                        &crate::session::approval::ApprovalBroker::new(
+                            crate::session::SessionPersistence::Null,
+                        ),
+                        app,
+                        session_id,
+                        mapped,
+                        &arguments,
+                    )
+                    .await
+            } else {
+                anyhow::bail!("plugin approval broker is unavailable")
+            }
+        }
     }
 }
 

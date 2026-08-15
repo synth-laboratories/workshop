@@ -139,10 +139,30 @@ pub(crate) enum ApprovalKind {
         estimated_cost_usd_micros: Option<u64>,
         requested_cap: PaidComputeCap,
         requesting_agent: String,
+        recipe_id: Option<String>,
+        dataset: Option<String>,
+        proposer_model: Option<String>,
+        evaluator_model: Option<String>,
+        timeout_seconds: Option<u64>,
+        credential_names: Vec<String>,
+        preparation_digest: Option<String>,
     },
     SidecarLifecycle {
         sidecar: String,
         action: String,
+    },
+    PluginLifecycle {
+        plugin_id: String,
+        action: String,
+        version: Option<String>,
+        publisher: String,
+        digest: Option<String>,
+        download_size_bytes: Option<u64>,
+        network_host: Option<String>,
+        service_effect: String,
+        active_runs: u64,
+        retention: String,
+        always_supported: bool,
     },
     CredentialAccess {
         provider: String,
@@ -156,6 +176,7 @@ impl ApprovalKind {
             Self::ShellCommand { .. } => "shell_command",
             Self::PaidCompute { .. } => "paid_compute",
             Self::SidecarLifecycle { .. } => "sidecar_lifecycle",
+            Self::PluginLifecycle { .. } => "plugin_lifecycle",
             Self::CredentialAccess { .. } => "credential_access",
         }
     }
@@ -196,6 +217,7 @@ impl ApprovalKind {
             }
             (Self::ShellCommand { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
             (Self::SidecarLifecycle { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
+            (Self::PluginLifecycle { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
             (
                 Self::CredentialAccess { .. },
                 ApprovalDecision::Approve {
@@ -239,6 +261,13 @@ impl ApprovalKind {
                 estimated_cost_usd_micros,
                 requested_cap,
                 requesting_agent,
+                recipe_id,
+                dataset,
+                proposer_model,
+                evaluator_model,
+                timeout_seconds,
+                credential_names,
+                preparation_digest,
             } => json!({
                 "approvalId": approval_id,
                 "kind": self.name(),
@@ -247,6 +276,13 @@ impl ApprovalKind {
                 "estimatedCostUsdMicros": estimated_cost_usd_micros,
                 "requestedCap": requested_cap,
                 "requestingAgent": requesting_agent,
+                "recipeId": recipe_id,
+                "dataset": dataset,
+                "proposerModel": proposer_model,
+                "evaluatorModel": evaluator_model,
+                "timeoutSeconds": timeout_seconds,
+                "credentialNames": credential_names,
+                "preparationDigest": preparation_digest,
                 "alwaysSupported": false,
             }),
             Self::SidecarLifecycle { sidecar, action } => json!({
@@ -255,6 +291,33 @@ impl ApprovalKind {
                 "sidecar": sidecar,
                 "action": action,
                 "alwaysSupported": true,
+            }),
+            Self::PluginLifecycle {
+                plugin_id,
+                action,
+                version,
+                publisher,
+                digest,
+                download_size_bytes,
+                network_host,
+                service_effect,
+                active_runs,
+                retention,
+                always_supported,
+            } => json!({
+                "approvalId": approval_id,
+                "kind": self.name(),
+                "pluginId": plugin_id,
+                "action": action,
+                "version": version,
+                "publisher": publisher,
+                "digest": digest,
+                "downloadSizeBytes": download_size_bytes,
+                "networkHost": network_host,
+                "serviceEffect": service_effect,
+                "activeRuns": active_runs,
+                "retention": retention,
+                "alwaysSupported": always_supported,
             }),
             Self::CredentialAccess { provider, purpose } => json!({
                 "approvalId": approval_id,
@@ -674,6 +737,10 @@ impl ApprovalBroker {
         ))
     }
 
+    pub(crate) async fn is_pending(&self, approval_id: &str) -> bool {
+        self.pending.lock().await.contains_key(approval_id)
+    }
+
     pub(crate) async fn pending_kind(&self, approval_id: &str) -> Option<ApprovalKind> {
         self.pending
             .lock()
@@ -960,6 +1027,13 @@ mod tests {
                 max_rollouts: Some(4),
             },
             requesting_agent: "agent:planner".into(),
+            recipe_id: Some("gepa.banking77.smoke.v1".into()),
+            dataset: Some("banking77".into()),
+            proposer_model: Some("gpt-5.6-luna".into()),
+            evaluator_model: Some("banking77_candidate".into()),
+            timeout_seconds: Some(300),
+            credential_names: vec!["OPENAI_API_KEY".into()],
+            preparation_digest: Some("sha256:prep".into()),
         };
         let remembered = ApprovalDecision::Approve {
             scope: ApprovalScope::Workspace,
@@ -1078,5 +1152,70 @@ mod tests {
             events[1].payload["reason"],
             "origin_unavailable_after_restart"
         );
+    }
+
+    #[tokio::test]
+    async fn stale_or_replayed_receipts_fail_closed() {
+        let broker = ApprovalBroker::new(SessionPersistence::Null);
+        let app = tauri::test::mock_app();
+        let (resolver, rx) = HostDecisionResolver::pair();
+        let approval_id = broker
+            .request(
+                app.handle(),
+                ApprovalOrigin {
+                    session_id: "approval-session".into(),
+                    instance_id: "process-1".into(),
+                },
+                ApprovalKind::PluginLifecycle {
+                    plugin_id: "optimizers".into(),
+                    action: "install".into(),
+                    version: Some("0.2.0".into()),
+                    publisher: "Synth Laboratories".into(),
+                    digest: None,
+                    download_size_bytes: Some(1),
+                    network_host: Some("pypi.org".into()),
+                    service_effect: "download".into(),
+                    active_runs: 0,
+                    retention: "keep".into(),
+                    always_supported: true,
+                },
+                resolver,
+            )
+            .await
+            .unwrap();
+        broker
+            .resolve(
+                app.handle(),
+                "approval-session",
+                &approval_id,
+                ApprovalDecision::Approve {
+                    scope: ApprovalScope::Once,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(rx.await.unwrap().is_ok());
+        let replayed = broker
+            .resolve(
+                app.handle(),
+                "approval-session",
+                &approval_id,
+                ApprovalDecision::Approve {
+                    scope: ApprovalScope::Once,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(replayed.to_string().contains("no longer pending"));
+        let missing = broker
+            .resolve(
+                app.handle(),
+                "approval-session",
+                "approval-missing",
+                ApprovalDecision::Reject,
+            )
+            .await
+            .unwrap_err();
+        assert!(missing.to_string().contains("no longer pending"));
     }
 }

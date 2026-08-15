@@ -60,6 +60,7 @@ const EXPECTED_IDS = [
 test("visuals package exposes the registered templates", () => {
   const templates = discoverTemplates();
   assert.deepEqual([...templates.keys()].sort(), EXPECTED_IDS);
+  assert.ok(existsSync(join(root, "templates", "optimizer.dag.live.v1", "template.json")), "missing optimizer.dag.live.v1 overlay");
   for (const id of EXPECTED_IDS) {
     const { meta, path } = templates.get(id);
     assert.equal(meta.id, id);

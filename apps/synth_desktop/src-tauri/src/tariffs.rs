@@ -274,8 +274,18 @@ mod tests {
 
     #[test]
     fn gemini_flash_is_priced_from_its_openrouter_listing_day() {
-        assert!(tariff_for("openrouter", "google/gemini-3.7-flash", GEMINI_37_FLASH_2026_MS - 1).is_none());
-        let gemini = tariff_for("openrouter", "google/gemini-3.7-flash", GEMINI_37_FLASH_2026_MS).unwrap();
+        assert!(tariff_for(
+            "openrouter",
+            "google/gemini-3.7-flash",
+            GEMINI_37_FLASH_2026_MS - 1
+        )
+        .is_none());
+        let gemini = tariff_for(
+            "openrouter",
+            "google/gemini-3.7-flash",
+            GEMINI_37_FLASH_2026_MS,
+        )
+        .unwrap();
         assert_eq!(gemini.input_usd_per_m, 0.375);
         assert_eq!(gemini.output_usd_per_m, 1.875);
         assert_eq!(gemini.cached_input_usd_per_m, Some(0.0375));
