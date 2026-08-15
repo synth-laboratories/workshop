@@ -440,6 +440,10 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         optimizers_references.join("gepa.md"),
         include_str!("../../../../skills/use-synth-optimizers/references/gepa.md"),
     )?;
+    fs::write(
+        optimizers_references.join("eval.md"),
+        include_str!("../../../../skills/use-synth-optimizers/references/eval.md"),
+    )?;
     let plugins_skill = home.join("skills/use-synth-plugins");
     fs::create_dir_all(&plugins_skill)?;
     fs::write(

@@ -1697,6 +1697,10 @@ fn synth_cloud_provider_writes_expected_config() {
     assert!(optimizer_skill.contains("Do not inspect processes"));
     assert!(optimizer_skill.contains("on the first `start` call"));
     assert!(optimizer_skill.contains("Never run a shell or terminal command, including `sleep`"));
+    let optimizer_eval_reference =
+        fs::read_to_string(home.join("skills/use-synth-optimizers/references/eval.md")).unwrap();
+    assert!(optimizer_eval_reference.contains("candidate_set_id"));
+    assert!(optimizer_eval_reference.contains("stage_eval_candidates"));
     let visuals_skill = fs::read_to_string(home.join("skills/use-synth-visuals/SKILL.md")).unwrap();
     assert!(visuals_skill.contains("Optimizer visuals are a strict exception"));
 }
