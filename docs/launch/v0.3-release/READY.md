@@ -14,8 +14,8 @@
 
 ## Still not this cut
 
-1. SYN-3222 Codex-like subagent rail / child workspace / overlapping spawn-wait (grouped visual only; WIP stashed).
-2. SYN-3224 E4 Harbor DEO matrix evidence.
+1. SYN-3222 rail / child reads / overlap Playwright landed on `2dd1cf0`. Live Gemini CUA on the packaged ZIP still outstanding.
+2. SYN-3224 Workshop SSE backfill + harbor-lite ingest landed on `2dd1cf0`. Adapter/protocol PRs are in isolated worktrees; the 3×2×5 matrix has not been executed. Do not close on the Craftax Harbor demo.
 3. Optimizer DAG live visual (`optimizer.dag.live.v1`) — v0.4.
 4. Intern — v0.4.
 5. Installed-app CUA, Bombadil, and Playwright UI gates were not run on this ZIP.
