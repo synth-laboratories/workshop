@@ -33,7 +33,7 @@ export type MainView =
 	| { kind: "chat"; chatId: string }
 	| { kind: "sync"; sessionId: string }
 	| { kind: "async"; sessionId: string }
-	| { kind: "settings"; section?: "general" | "models" | "inference" | "voice" | "account" | "about" }
+	| { kind: "settings"; section?: "general" | "models" | "inference" | "context" | "voice" | "account" | "about" }
 	| { kind: "connectors" }
 	| { kind: "inventory" }
 	| { kind: "visuals" }

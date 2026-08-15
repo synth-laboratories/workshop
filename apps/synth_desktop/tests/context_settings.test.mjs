@@ -16,7 +16,7 @@ test("Settings exposes Context and moves the existing subagent control", () => {
 });
 test("Context controls call native mutations instead of updating decorative preferences", () => {
   const context = read("src/renderer/src/components/ContextSettings.tsx");
-  for (const operation of ["updateWorkspaceAgents", "updateSkill", "updateMcpGroup", "installCookbooks", "setCookbooksEnabled", "uninstallCookbooks"]) {
+  for (const operation of ["updateWorkspaceAgents", "updateSkill", "updateMcpGroup", "installCookbooks", "cancelCookbooks", "setCookbooksEnabled", "uninstallCookbooks"]) {
     assert.match(context, new RegExp(`bridges\\.context!?\\.${operation}`), operation);
   }
   assert.match(context, /runs\/ is never checked out/);
