@@ -54,6 +54,7 @@ const EXPECTED_IDS = [
   "optimizer.sft.rollouts.v1",
   "posttrain.rollout_viewer.v1",
   "reward.breakdown.v1",
+  "trace.catalog.v1",
   "trace.rollout_inspector.v1",
 ];
 
