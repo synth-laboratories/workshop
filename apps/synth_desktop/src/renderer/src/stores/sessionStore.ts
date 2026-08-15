@@ -141,6 +141,15 @@ export function replaceSessionEvents(
 	});
 }
 
+export function evictSessionEvents(sessionIds: Iterable<string>): SessionStoreState {
+	const evicted = new Set(sessionIds);
+	if (evicted.size === 0 || !Object.keys(cached.eventsBySession).some((id) => evicted.has(id))) return cached;
+	const eventsBySession = Object.fromEntries(
+		Object.entries(cached.eventsBySession).filter(([id]) => !evicted.has(id))
+	);
+	return commit({ ...cached, eventsBySession });
+}
+
 export function mergeSessionReplay(
 	replay: ReadonlyArray<readonly [string, RuntimeEvent[]]>
 ): SessionStoreState {
