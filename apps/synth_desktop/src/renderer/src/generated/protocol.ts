@@ -823,6 +823,7 @@ export type InstanceDiagnostics = {
 	sourceRevision: string,
 	buildRevision: string,
 	buildTimestamp: string,
+	executableDigest: string | null,
 	processId: number,
 	executable: string,
 	dataRoot: string,
