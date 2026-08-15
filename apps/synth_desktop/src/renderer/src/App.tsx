@@ -162,8 +162,6 @@ export default function App() {
 						sidePanelTab={c.sidePanelTab}
 						setSidePanelTab={c.setSidePanelTab}
 						setSidePanelOpen={c.setSidePanelOpen}
-						responseTraceBySession={c.responseTraceBySession}
-						responseTraceLoadBySession={c.responseTraceLoadBySession}
 						transcriptHistoryBySession={c.transcriptHistoryBySession}
 						loadOlderTranscript={c.loadOlderTranscript}
 						inferenceMonitor={c.inferenceMonitor}

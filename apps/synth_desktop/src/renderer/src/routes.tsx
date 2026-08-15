@@ -11,7 +11,6 @@ import type { DeviceUsageSummary } from "./components/UsageSheet";
 import type { DesktopPreferences, ToolActivityMode } from "./preferences";
 import { applyPreferencesToDocument } from "./preferences";
 import type { LagunaStatus, ModelPerformanceSummary, PluginStatus, SynthAccountSummary, SynthBackendSettings } from "./bridge";
-import type { ReceivedResponseEvent, ResponseTraceLoadState } from "./components/ResponsesTracePanel";
 import type { InferenceMonitor } from "./components/InferencePanel";
 import type { ApprovalMode, ApprovalPolicy, SandboxMode } from "./runtime/nativeCodex";
 import { ChatTranscript, OutputsPanel, outputContainerIds, type TranscriptHistoryState } from "./components/ChatTranscript";
@@ -68,8 +67,6 @@ export type MainRoutesProps = {
 	sidePanelCanSharePane: boolean;
 	sidePanelTab: "outputs" | "inference" | "trace";
 	setSidePanelTab: (tab: "outputs" | "inference" | "trace") => void;
-	responseTraceBySession: Record<string, ReceivedResponseEvent[]>;
-	responseTraceLoadBySession: Record<string, ResponseTraceLoadState>;
 	transcriptHistoryBySession: Record<string, TranscriptHistoryState>;
 	loadOlderTranscript: () => void;
 	setSidePanelOpen: (open: boolean) => void;
@@ -166,8 +163,6 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		controlActive,
 		onActivityModeChange,
 		activeSessionId,
-		responseTraceBySession,
-		responseTraceLoadBySession,
 		transcriptHistoryBySession,
 		loadOlderTranscript
 	} = props;
@@ -439,8 +434,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 								{
 									id: "trace",
 									label: "Advanced",
-									badge: responseTraceBySession[activeChat.id]?.length,
-									content: <ResponsesTracePanel events={responseTraceBySession[activeChat.id] ?? []} running={activeChatRunning} loadState={responseTraceLoadBySession[activeChat.id]} />
+									content: <ResponsesTracePanel sessionId={activeChat.id} running={activeChatRunning} />
 								},
 								...(activeLocalModel
 									? [

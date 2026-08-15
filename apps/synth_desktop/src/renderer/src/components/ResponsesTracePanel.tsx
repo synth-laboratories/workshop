@@ -1,44 +1,78 @@
-import { useEffect, useState } from "react";
-import type { CodexEvent } from "../bridge";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useResponseTrace, type ReceivedResponseEvent } from "../runtime/responseTraceStore";
 
-export type ReceivedResponseEvent = CodexEvent & { receivedAt: string };
-export type ResponseTraceLoadState = { state: "loading" | "loaded" | "error"; message?: string };
+const ROW_HEIGHT = 42;
+const VIEWPORT_HEIGHT = 360;
+const OVERSCAN = 4;
 
-const INITIAL_VISIBLE_EVENTS = 50;
-
-function ResponseTraceEvent({ event, index }: { event: ReceivedResponseEvent; index: number }) {
-	const [expanded, setExpanded] = useState(false);
-	return <li>
-		<details open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
-			<summary>
-				<code>{event.method}</code>
-				<time dateTime={event.receivedAt}>received {new Date(event.receivedAt).toLocaleTimeString()}</time>
-				<span className="sr-only">Event {index + 1}</span>
-			</summary>
-			{expanded ? <pre>{JSON.stringify(event.params, null, 2)}</pre> : null}
-		</details>
-	</li>;
+function eventKey(event: ReceivedResponseEvent, index: number): string {
+	return `${event.sessionId}-${event.method}-${event.receivedAt}-${index}`;
 }
 
-export function ResponsesTracePanel({ events, running, loadState }: { events: ReceivedResponseEvent[]; running: boolean; loadState?: ResponseTraceLoadState }) {
-	const sessionId = events.at(-1)?.sessionId ?? "empty";
-	const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_EVENTS);
-	useEffect(() => setVisibleCount(INITIAL_VISIBLE_EVENTS), [sessionId]);
-	const visibleEvents = events.slice(-visibleCount);
-	const hiddenCount = events.length - visibleEvents.length;
+export function ResponsesTracePanel({ sessionId, running }: { sessionId: string; running: boolean }) {
+	const { events, loadState } = useResponseTrace(sessionId);
+	const viewportRef = useRef<HTMLDivElement>(null);
+	const followTailRef = useRef(true);
+	const [scrollTop, setScrollTop] = useState(0);
+	const [selected, setSelected] = useState<ReceivedResponseEvent | null>(null);
+	useEffect(() => {
+		setSelected(null);
+		followTailRef.current = true;
+	}, [sessionId]);
+	useEffect(() => {
+		if (!followTailRef.current) return;
+		const next = Math.max(0, events.length * ROW_HEIGHT - VIEWPORT_HEIGHT);
+		setScrollTop(next);
+		if (viewportRef.current) viewportRef.current.scrollTop = next;
+	}, [events.length, sessionId]);
+	const windowed = useMemo(() => {
+		const first = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+		const count = Math.ceil(VIEWPORT_HEIGHT / ROW_HEIGHT) + OVERSCAN * 2;
+		return { first, events: events.slice(first, first + count) };
+	}, [events, scrollTop]);
+
 	return <section className="responses-trace" aria-label="Raw Responses API trace" data-testid="responses-trace">
-		<header><div><strong>Responses API v5</strong><span>{running ? "Live stream" : "Latest receipt"}</span></div><span>{events.length} events</span></header>
-		{events.length === 0 ? <p className="responses-trace-empty">{loadState?.state === "loading"
+		<header><div><strong>Responses API v5</strong><span>{running ? "Receiving events" : "Latest receipt"}</span></div><span>{events.length} events</span></header>
+		{events.length === 0 ? <p className="responses-trace-empty">{loadState.state === "loading"
 			? "Loading recorded events…"
-			: loadState?.state === "error"
+			: loadState.state === "error"
 				? `Trace unavailable: ${loadState.message ?? "Unknown error"}`
-				: "No provider events recorded for this conversation."}</p> : <>
-			{hiddenCount > 0 ? <button type="button" className="responses-trace-earlier" onClick={() => setVisibleCount((count) => Math.min(events.length, count + INITIAL_VISIBLE_EVENTS))}>
-				Show {Math.min(INITIAL_VISIBLE_EVENTS, hiddenCount)} earlier events
-			</button> : null}
-			<ol>
-				{visibleEvents.map((event, index) => <ResponseTraceEvent key={`${event.sessionId}-${event.method}-${event.receivedAt}-${events.length - visibleEvents.length + index}`} event={event} index={events.length - visibleEvents.length + index} />)}
-			</ol>
-		</>}
+				: "No provider events recorded for this conversation."}</p> : <div className="responses-trace-workspace">
+			<div
+				className="responses-trace-viewport"
+				ref={viewportRef}
+				role="region"
+				aria-label={`${events.length} recorded provider events`}
+				onScroll={(event) => {
+					const viewport = event.currentTarget;
+					followTailRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= ROW_HEIGHT;
+					setScrollTop(viewport.scrollTop);
+				}}
+			>
+				<div className="responses-trace-spacer" style={{ height: events.length * ROW_HEIGHT }}>
+					{windowed.events.map((event, offset) => {
+						const index = windowed.first + offset;
+						return <button
+							type="button"
+							aria-pressed={selected === event}
+							aria-label={`${event.method}, event ${index + 1} of ${events.length}, received ${new Date(event.receivedAt).toLocaleTimeString()}`}
+							className="responses-trace-row"
+							key={eventKey(event, index)}
+							style={{ height: ROW_HEIGHT, transform: `translateY(${index * ROW_HEIGHT}px)` }}
+							onClick={() => setSelected(event)}
+						>
+							<code>{event.method}</code>
+							<time dateTime={event.receivedAt}>{new Date(event.receivedAt).toLocaleTimeString()}</time>
+						</button>;
+					})}
+				</div>
+			</div>
+			<aside className="responses-trace-inspector" aria-label="Selected event payload">
+				{selected ? <>
+					<div><code>{selected.method}</code><time dateTime={selected.receivedAt}>received {new Date(selected.receivedAt).toLocaleTimeString()}</time></div>
+					<pre>{JSON.stringify(selected.params, null, 2)}</pre>
+				</> : <p>Select an event to inspect its payload.</p>}
+			</aside>
+		</div>}
 	</section>;
 }

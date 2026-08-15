@@ -137,8 +137,16 @@ test("transcript and Advanced share one durable journal hydration", async ({ pag
 			onEvent: () => () => undefined
 		};
 		const rows = [
-			{ sequence: 1, sessionSequence: 1, kind: "message.created", payload: { messageId: "shared-user", role: "user", content: "hydrate this once" } },
-			{ sequence: 2, sessionSequence: 2, kind: "message.created", payload: { messageId: "shared-assistant", role: "assistant", content: "hydrated without interference" } }
+			...Array.from({ length: 213 }, (_, index) => ({
+				sequence: index + 1,
+				sessionSequence: index + 1,
+				kind: index === 199 ? "item/completed" : "account/rateLimits/updated",
+				payload: index === 199
+					? { item: { id: "large-command", output: "x".repeat(145_000) } }
+					: { primary: { usedPercent: index % 100 } }
+			})),
+			{ sequence: 214, sessionSequence: 214, kind: "message.created", payload: { messageId: "shared-user", role: "user", content: "hydrate this once" } },
+			{ sequence: 215, sessionSequence: 215, kind: "message.created", payload: { messageId: "shared-assistant", role: "assistant", content: "hydrated without interference" } }
 		].map((row) => ({
 			schemaVersion: "synth.desktop-app-event.v1" as const,
 			eventId: `shared-event-${row.sequence}`,
@@ -148,7 +156,7 @@ test("transcript and Advanced share one durable journal hydration", async ({ pag
 			...row
 		}));
 		testWindow.synthCore = {
-			diagnostics: async () => ({ databasePath: "/tmp/core.sqlite3", schemaVersion: 1, integrityOk: true, contentStorePath: "/tmp/content", journalHead: 2, sessionCount: 1, runCount: 0, visualCount: 0, migrationComplete: true }),
+			diagnostics: async () => ({ databasePath: "/tmp/core.sqlite3", schemaVersion: 1, integrityOk: true, contentStorePath: "/tmp/content", journalHead: 215, sessionCount: 1, runCount: 0, visualCount: 0, migrationComplete: true }),
 			eventsAfter: async () => [],
 			sessionEventsAfter: async () => rows,
 			sessionEventsTail: async (_sessionId: string, limit: number) => {
@@ -182,13 +190,28 @@ test("transcript and Advanced share one durable journal hydration", async ({ pag
 		})
 	)).toEqual({ calls: 1, limits: [251] });
 
-	await page.getByRole("button", { name: "Open advanced trace" }).click();
+	const advancedOpenMs = await page.evaluate(async () => {
+		const trigger = document.querySelector<HTMLButtonElement>('button[aria-label="Open advanced trace"]');
+		if (!trigger) throw new Error("Advanced trigger missing");
+		const startedAt = performance.now();
+		trigger.click();
+		await new Promise(requestAnimationFrame);
+		await new Promise(requestAnimationFrame);
+		return performance.now() - startedAt;
+	});
+	expect(advancedOpenMs).toBeLessThan(250);
 	const advanced = page.getByTestId("workbench-side-panel");
 	await expect(advanced).toContainText("message.created");
 	await expect(advanced).not.toContainText(/loading/i);
+	const virtualRows = advanced.locator(".responses-trace-row");
+	await expect(virtualRows).not.toHaveCount(0);
+	expect(await virtualRows.count()).toBeLessThanOrEqual(18);
 	await expect(advanced).not.toContainText("hydrate this once");
-	await advanced.locator("summary").first().click();
-	await expect(advanced).toContainText("hydrate this once");
+	const accessibilityStartedAt = Date.now();
+	await advanced.ariaSnapshot();
+	expect(Date.now() - accessibilityStartedAt).toBeLessThan(1_000);
+	await virtualRows.last().click();
+	await expect(advanced).toContainText("hydrated without interference");
 });
 
 test("new conversation keeps the configured machine permission defaults", async ({ page }) => {

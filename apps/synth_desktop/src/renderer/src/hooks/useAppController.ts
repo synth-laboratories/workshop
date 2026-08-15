@@ -9,7 +9,6 @@ import desktopPackage from "../../../../package.json";
 import type {
 	CodexActivityEvent,
 	ContainerDeployment,
-	AppEvent,
 	RuntimeControlKind,
 	RuntimeEvent,
 	RuntimeHealth,
@@ -76,7 +75,6 @@ import type {
 	ConversationWorkspaceScope,
 	LagunaStatus
 } from "../bridge";
-import type { ReceivedResponseEvent } from "../components/ResponsesTracePanel";
 import {
 	applyPreferencesToDocument,
 	loadPreferences,
@@ -102,6 +100,7 @@ import { loadDeviceUsage } from "../runtime/deviceUsage";
 import { createSemanticEvalApi } from "../runtime/evalApi";
 import { drainPromptQueues, removeQueuedPrompt } from "../runtime/promptQueue";
 import { bridges } from "../runtime/desktopBridge";
+import { responseTraceStore } from "../runtime/responseTraceStore";
 import type { MainView } from "../routes";
 
 // `turn/start` only proves the app-server accepted the request. It does not
@@ -128,44 +127,6 @@ type TranscriptHydrationEntry = {
 
 type TranscriptHistoryState = Pick<TranscriptHydrationEntry, "state" | "hasMore" | "error">;
 
-function responseTraceEventFromJournal(sessionId: string, event: AppEvent): ReceivedResponseEvent {
-	const payload = event.payload;
-	return {
-		sessionId,
-		method: event.kind,
-		params: payload && typeof payload === "object" && !Array.isArray(payload)
-			? payload as Record<string, unknown>
-			: { payload },
-		receivedAt: event.createdAt
-	};
-}
-
-function responseTraceContentKey(event: ReceivedResponseEvent): string {
-	return `${event.method}\u001f${JSON.stringify(event.params)}`;
-}
-
-function mergeHydratedResponseTrace(
-	hydrated: ReceivedResponseEvent[],
-	live: ReceivedResponseEvent[]
-): ReceivedResponseEvent[] {
-	const hydratedCounts = new Map<string, number>();
-	for (const event of hydrated) {
-		const key = responseTraceContentKey(event);
-		hydratedCounts.set(key, (hydratedCounts.get(key) ?? 0) + 1);
-	}
-	const liveCounts = new Map<string, number>();
-	const liveOnly: ReceivedResponseEvent[] = [];
-	for (const event of live) {
-		const key = responseTraceContentKey(event);
-		const count = (liveCounts.get(key) ?? 0) + 1;
-		liveCounts.set(key, count);
-		if (count > (hydratedCounts.get(key) ?? 0)) liveOnly.push(event);
-	}
-	return [...hydrated, ...liveOnly]
-		.sort((left, right) => Date.parse(left.receivedAt) - Date.parse(right.receivedAt))
-		.slice(-250);
-}
-
 export function useAppController() {
 	const isDesktop = window.location.protocol === "tauri:" || "__TAURI_INTERNALS__" in window;
 	const nativeCodex = bridges.codex;
@@ -187,8 +148,6 @@ export function useAppController() {
 	const sessionsRef = useRef<Session[]>(sessions);
 	const eventsBySession = useEventsBySession();
 	const [codexActivityBySession, setCodexActivityBySession] = useState<Record<string, CodexActivityEvent[]>>({});
-	const [responseTraceBySession, setResponseTraceBySession] = useState<Record<string, ReceivedResponseEvent[]>>({});
-	const [responseTraceLoadBySession, setResponseTraceLoadBySession] = useState<Record<string, { state: "loading" | "loaded" | "error"; message?: string }>>({});
 	const transcriptHydrationRef = useRef(new Map<string, TranscriptHydrationEntry>());
 	const transcriptHydrationGenerationRef = useRef(0);
 	const transcriptLruRef = useRef(new Map<string, true>());
@@ -604,13 +563,7 @@ export function useAppController() {
 				armTurnActivityWatchdog(sessionId, input.text, input.messageId);
 			}
 		},
-		onRawEvent: (event: CodexEvent) => {
-			const receivedAt = new Date().toISOString();
-			setResponseTraceBySession((current) => ({
-				...current,
-				[event.sessionId]: [...(current[event.sessionId] ?? []), { ...event, receivedAt }].slice(-250)
-			}));
-		},
+		onRawEvent: (event: CodexEvent) => responseTraceStore.appendLive(event),
 		onOauthReauthRequired: () => {
 			setCodexOauthConfigured(false);
 			setCodexOauthStatus({
@@ -854,12 +807,7 @@ export function useAppController() {
 		setTranscriptHistoryBySession((current) => Object.fromEntries(
 			Object.entries(current).filter(([id]) => !evicted.includes(id))
 		));
-		setResponseTraceBySession((current) => Object.fromEntries(
-			Object.entries(current).filter(([id]) => !evicted.includes(id))
-		));
-		setResponseTraceLoadBySession((current) => Object.fromEntries(
-			Object.entries(current).filter(([id]) => !evicted.includes(id))
-		));
+		for (const id of evicted) responseTraceStore.evict(id);
 	}, []);
 	const hydrateTranscript = useCallback((sessionId: string, targetKind: Session["target"]["kind"]) => {
 		const core = bridges.core;
@@ -877,10 +825,7 @@ export function useAppController() {
 			...current,
 			[sessionId]: { state: "loading", hasMore: false }
 		}));
-		setResponseTraceLoadBySession((current) => ({
-			...current,
-			[sessionId]: { state: "loading" }
-		}));
+		responseTraceStore.setLoading(sessionId);
 		void core.sessionEventsTail(sessionId, TRANSCRIPT_INITIAL_PAGE_SIZE + 1).then((fetched) => {
 			// Hydration belongs to the session cache, not to the currently mounted
 			// chat view. Navigation, target attachment and StrictMode effect replay
@@ -910,15 +855,7 @@ export function useAppController() {
 				...current,
 				[sessionId]: { state: "loaded", hasMore }
 			}));
-			const trace = rows.slice(-250).map((event) => responseTraceEventFromJournal(sessionId, event));
-			setResponseTraceBySession((current) => ({
-				...current,
-				[sessionId]: mergeHydratedResponseTrace(trace, current[sessionId] ?? [])
-			}));
-			setResponseTraceLoadBySession((current) => ({
-				...current,
-				[sessionId]: { state: "loaded" }
-			}));
+			responseTraceStore.setJournal(sessionId, rows);
 		}).catch((reason: unknown) => {
 			if (transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
 			const message = desktopBootError(reason);
@@ -933,10 +870,7 @@ export function useAppController() {
 				...current,
 				[sessionId]: { state: "error", hasMore: false, error: message }
 			}));
-			setResponseTraceLoadBySession((current) => ({
-				...current,
-				[sessionId]: { state: "error", message }
-			}));
+			responseTraceStore.setError(sessionId, message);
 			mergeSessionReplay([[sessionId, [{
 				schemaVersion: "synth.desktop-runtime-event.v1",
 				sessionId,
@@ -1230,10 +1164,7 @@ export function useAppController() {
 						...current,
 						[id]: { state: "loaded", hasMore: false }
 					}));
-					setResponseTraceLoadBySession((current) => ({
-						...current,
-						[id]: { state: "loaded" }
-					}));
+					responseTraceStore.markLoaded(id);
 					setView({ kind: "chat", chatId: session.id });
 					return session;
 				}
@@ -1714,8 +1645,6 @@ export function useAppController() {
 		appVersion,
 		sessions,
 		eventsBySession,
-		responseTraceBySession,
-		responseTraceLoadBySession,
 		transcriptHistoryBySession,
 		loadOlderTranscript,
 		health,
