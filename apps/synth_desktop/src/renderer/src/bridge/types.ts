@@ -340,6 +340,8 @@ export type CoreBridge = {
 	diagnostics(): Promise<CoreDiagnostics>;
 	eventsAfter(afterSequence?: number, limit?: number): Promise<AppEvent[]>;
 	sessionEventsAfter(sessionId: string, afterSequence?: number, limit?: number): Promise<AppEvent[]>;
+	sessionEventsTail(sessionId: string, limit?: number): Promise<AppEvent[]>;
+	sessionEventsBefore(sessionId: string, beforeSequence: number, limit?: number): Promise<AppEvent[]>;
 	onEvent(listener: (event: AppEvent) => void): () => void;
 };
 

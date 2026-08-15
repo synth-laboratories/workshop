@@ -39,6 +39,9 @@ pub struct CodexManager {
     /// UI source label (`manual` or `model_switch`). Auto token-threshold
     /// compaction leaves this empty and renders as "automatically compacted".
     pub(crate) pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
+    /// Terminal protocol notifications that arrive before `turn/start` has
+    /// returned its id and the durable run can be created.
+    pub(crate) early_terminal_turns: Arc<Mutex<HashMap<String, (String, Value)>>>,
     pub(crate) performance_trackers: PerformanceTrackers,
     pub(crate) root: PathBuf,
     pub(crate) state_path: PathBuf,
@@ -95,6 +98,7 @@ impl CodexManager {
             turn_locks: Mutex::new(HashMap::new()),
             compact_waiters: Arc::new(Mutex::new(HashMap::new())),
             pending_compact_sources: Arc::new(Mutex::new(HashMap::new())),
+            early_terminal_turns: Arc::new(Mutex::new(HashMap::new())),
             performance_trackers: Arc::new(Mutex::new(HashMap::new())),
             root,
             state_path,
@@ -188,6 +192,7 @@ impl CodexManager {
                 sessions: self.sessions.clone(),
                 compact_waiters: self.compact_waiters.clone(),
                 pending_compact_sources: self.pending_compact_sources.clone(),
+                early_terminal_turns: self.early_terminal_turns.clone(),
                 performance_trackers: self.performance_trackers.clone(),
                 receipts: self.receipts(),
                 approvals: self.approvals.clone(),
@@ -589,10 +594,20 @@ impl CodexManager {
             }
         }
         *session.turn_id.write().await = Some(turn_id.clone());
+        // Mark the session running before any queued terminal notification can
+        // be observed. A fast app-server may emit its final answer in the same
+        // stdout read cycle as the `turn/start` response.
+        self.set_status(&request.session_id, SessionStatus::Running)
+            .await?;
+        let early_terminal = self
+            .early_terminal_turns
+            .lock()
+            .await
+            .remove(&request.session_id);
         self.set_automatic_title(&app, &request.session_id, &request.prompt, &session)
             .await;
         let start_run = self.persistence.start_run(RunCreate {
-            id: turn_id,
+            id: turn_id.clone(),
             session_id: request.session_id.clone(),
             mode: "codex_turn".into(),
             model: Some(session.model.clone()),
@@ -603,12 +618,45 @@ impl CodexManager {
         if let Ok(Ok(Some(mutation))) =
             tokio::time::timeout(std::time::Duration::from_secs(2), start_run).await
         {
-            if let Some(event) = mutation.event {
-                let _ = self.persistence.publish_event(&app, event).await;
+            // A fast terminal notification can precede `turn/start`'s
+            // response. Its assistant message is already journaled, so do
+            // not append a late `run.started` event after that answer: doing
+            // so would invert the lifecycle seen by the transcript.
+            if early_terminal.is_none() {
+                if let Some(event) = mutation.event {
+                    let _ = self.persistence.publish_event(&app, event).await;
+                }
             }
         }
-        self.set_status(&request.session_id, SessionStatus::Running)
-            .await?;
+        if let Some((terminal_method, params)) = early_terminal {
+            let run_status = match terminal_method.as_str() {
+                "turn/completed" => crate::domain::RunStatus::Completed,
+                "turn/failed" => crate::domain::RunStatus::Failed,
+                _ => crate::domain::RunStatus::Interrupted,
+            };
+            let session_status = match terminal_method.as_str() {
+                "turn/completed" => SessionStatus::Ready,
+                "turn/failed" => SessionStatus::Failed,
+                _ => SessionStatus::Interrupted,
+            };
+            if let Some(runs) = self.persistence.runs() {
+                if let Ok(mutation) = runs
+                    .transition(
+                        turn_id,
+                        run_status,
+                        Some(params),
+                        EventSource::Codex,
+                    )
+                    .await
+                {
+                    if let Some(event) = mutation.event {
+                        let _ = self.persistence.publish_event(&app, event).await;
+                    }
+                }
+            }
+            self.set_status(&request.session_id, session_status).await?;
+            return Ok(session_info(&request.session_id, &session).await);
+        }
         Ok(session_info(&request.session_id, &session).await)
     }
 

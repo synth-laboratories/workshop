@@ -22,7 +22,8 @@ use crate::storage::EventSource;
 use super::home::persist_records;
 use super::proto::{
     default_approval_policy, select_approval_decision, AppServer, CodexResolver,
-    CodexSessionRecord, CodexSessionStartRequest, CompactWaiters, Pending, Session, STDOUT_CLOSED,
+    CodexSessionRecord, CodexSessionStartRequest, CompactWaiters, Pending, ProviderTransport,
+    Session, STDOUT_CLOSED,
 };
 use super::telemetry::{
     finalize_performance_tracker, is_context_compaction_notification, track_performance_event,
@@ -84,6 +85,9 @@ pub(crate) struct EventPumpState {
     pub sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     pub compact_waiters: CompactWaiters,
     pub pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
+    /// Typed terminal notifications that can race ahead of `turn/start`'s
+    /// response. The manager consumes one when it creates that run.
+    pub early_terminal_turns: Arc<Mutex<HashMap<String, (String, Value)>>>,
     pub performance_trackers: PerformanceTrackers,
     pub receipts: Arc<crate::credential_broker::ReceiptStore>,
     pub approvals: Arc<crate::session::approval::ApprovalBroker>,
@@ -195,6 +199,12 @@ async fn read_stdout<R: tauri::Runtime>(
         if persistence.codex_oauth && method == "turn/failed" {
             normalize_oauth_failure(&mut params);
         }
+        // Some app-server versions close the stream immediately after a
+        // typed final agent message instead of sending `turn/completed`.
+        // `phase: final_answer` is a protocol lifecycle signal, not an
+        // inference from response text, so EOF must not overwrite it as an
+        // unhealthy local agent.
+        let final_answer = is_final_agent_message(&params);
         if is_context_compaction_notification(&method, &params) {
             if let Some(source) = persistence
                 .pending_compact_sources
@@ -207,43 +217,65 @@ async fn read_stdout<R: tauri::Runtime>(
                 }
             }
         }
-        if let Some(rpc_id) = message.get("id").cloned() {
-            if is_approval_method(&method) {
-                let available_decisions = params
-                    .get("availableDecisions")
-                    .and_then(Value::as_array)
-                    .map(|values| {
-                        values
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_owned)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                if approval_policy == "never" {
-                    // “Allow all” is an explicit session policy. A provider
-                    // may still ask despite it, so resolve the request rather
-                    // than surfacing a contradictory approval card.
-                    let response = automatic_approval_response(&available_decisions, rpc_id);
-                    let _ = write_message(&stdin, &response).await;
-                    continue;
-                }
-                let kind = shell_approval_kind(&method, &params, &available_decisions);
-                let resolver = Arc::new(CodexResolver {
-                    stdin: stdin.clone(),
-                    rpc_id,
-                    available_decisions,
-                });
-                let origin = ApprovalOrigin {
-                    session_id: session_id.clone(),
-                    instance_id: persistence.attachment_id.to_string(),
-                };
-                let _ = persistence
-                    .approvals
-                    .request(&app, origin, kind, resolver)
-                    .await;
+        if is_approval_method(&method) {
+            let available_decisions = approval_decisions(&params);
+            let Some(rpc_id) = message.get("id").cloned() else {
+                // An approval without a JSON-RPC request id cannot be answered.
+                // Do not leave the turn indefinitely in Working: surface a safe,
+                // actionable terminal event instead of treating it as activity.
+                fail_malformed_approval(
+                    &app,
+                    &session_id,
+                    &persistence,
+                    "The provider requested approval in an unsupported format. Stop and retry this turn.",
+                )
+                .await;
+                continue;
+            };
+            if available_decisions.is_empty() {
+                let _ = write_message(
+                    &stdin,
+                    &json!({
+                        "jsonrpc":"2.0",
+                        "id":rpc_id,
+                        "error":{"code":-32602,"message":"Approval request did not advertise any supported decisions"}
+                    }),
+                )
+                .await;
+                fail_malformed_approval(
+                    &app,
+                    &session_id,
+                    &persistence,
+                    "The provider requested approval without any available decision. Stop and retry this turn.",
+                )
+                .await;
                 continue;
             }
+            if approval_policy == "never" {
+                // “Allow all” is an explicit session policy. A provider
+                // may still ask despite it, so resolve the request rather
+                // than surfacing a contradictory approval card.
+                let response = automatic_approval_response(&available_decisions, rpc_id);
+                let _ = write_message(&stdin, &response).await;
+                continue;
+            }
+            let kind = shell_approval_kind(&method, &params, &available_decisions);
+            let resolver = Arc::new(CodexResolver {
+                stdin: stdin.clone(),
+                rpc_id,
+                available_decisions,
+            });
+            let origin = ApprovalOrigin {
+                session_id: session_id.clone(),
+                instance_id: persistence.attachment_id.to_string(),
+            };
+            let _ = persistence
+                .approvals
+                .request(&app, origin, kind, resolver)
+                .await;
+            continue;
+        }
+        if let Some(rpc_id) = message.get("id").cloned() {
             // Unknown server requests are never approved implicitly.
             let _ = write_message(&stdin, &json!({
                 "jsonrpc":"2.0","id":rpc_id,
@@ -273,14 +305,19 @@ async fn read_stdout<R: tauri::Runtime>(
             &params,
         )
         .await;
+        let terminal_method = if final_answer {
+            "turn/completed"
+        } else {
+            method.as_str()
+        };
         if matches!(
-            method.as_str(),
+            terminal_method,
             "turn/completed" | "thread/compact/completed"
         ) {
             if let Some(waiter) = persistence.compact_waiters.lock().await.remove(&session_id) {
                 let _ = waiter.send(Ok(()));
             }
-        } else if matches!(method.as_str(), "turn/failed" | "turn/interrupted") {
+        } else if matches!(terminal_method, "turn/failed" | "turn/interrupted") {
             if let Some(waiter) = persistence.compact_waiters.lock().await.remove(&session_id) {
                 let _ = waiter.send(Err(format!("context compaction ended with {method}")));
             }
@@ -326,15 +363,20 @@ async fn read_stdout<R: tauri::Runtime>(
             }
         }
         if matches!(
-            method.as_str(),
+            terminal_method,
             "turn/completed" | "turn/failed" | "turn/interrupted"
         ) {
+            persistence
+                .early_terminal_turns
+                .lock()
+                .await
+                .insert(session_id.clone(), (terminal_method.to_owned(), params.clone()));
             persistence
                 .pending_compact_sources
                 .lock()
                 .await
                 .remove(&session_id);
-            let status = match method.as_str() {
+            let status = match terminal_method {
                 "turn/completed" => SessionStatus::Ready,
                 "turn/failed" => SessionStatus::Failed,
                 _ => SessionStatus::Interrupted,
@@ -349,7 +391,7 @@ async fn read_stdout<R: tauri::Runtime>(
                 .await
             {
                 if let Some(run_id) = session.active_run_id {
-                    let run_status = match method.as_str() {
+                    let run_status = match terminal_method {
                         "turn/completed" => RunStatus::Completed,
                         "turn/failed" => RunStatus::Failed,
                         _ => RunStatus::Interrupted,
@@ -450,6 +492,84 @@ async fn read_stdout<R: tauri::Runtime>(
     let mut pending = pending.lock().await;
     for (_, sender) in pending.drain() {
         let _ = sender.send(Err(STDOUT_CLOSED.into()));
+    }
+}
+
+fn is_final_agent_message(params: &Value) -> bool {
+    let Some(item) = params.get("item").and_then(Value::as_object) else {
+        return false;
+    };
+    let item_type = item
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase);
+    let phase = item
+        .get("phase")
+        .or_else(|| params.get("phase"))
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase);
+    matches!(item_type.as_deref(), Some("agentmessage"))
+        && matches!(phase.as_deref(), Some("final_answer"))
+}
+
+async fn fail_malformed_approval<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: &str,
+    persistence: &EventPumpState,
+    message: &str,
+) {
+    let params = json!({
+        "code": "approval_request_malformed",
+        "message": message,
+    });
+    persistence
+        .persistence
+        .notify_codex_event(app, session_id.to_owned(), "turn/failed", params.clone())
+        .await;
+    if let Some(record) = persistence.records.write().await.get_mut(session_id) {
+        record.status = SessionStatus::Failed.as_str().into();
+    }
+    let _ = persist_records(&persistence.records, &persistence.state_path).await;
+    if let Ok(Some(session)) = persistence
+        .persistence
+        .get_session(session_id.to_owned())
+        .await
+    {
+        if let Some(run_id) = session.active_run_id {
+            if let Some(runs) = persistence.persistence.runs() {
+                if let Ok(mutation) = runs
+                    .transition(run_id, RunStatus::Failed, Some(params), EventSource::Codex)
+                    .await
+                {
+                    if let Some(event) = mutation.event {
+                        let _ = persistence.persistence.publish_event(app, event).await;
+                    }
+                }
+            }
+        } else if let Ok(Some(mutation)) = persistence
+            .persistence
+            .transition_session(
+                session_id.to_owned(),
+                SessionStatus::Failed,
+                EventSource::Codex,
+                params,
+            )
+            .await
+        {
+            if let Some(event) = mutation.event {
+                let _ = persistence.persistence.publish_event(app, event).await;
+            }
+        }
+    }
+    let server = persistence
+        .sessions
+        .read()
+        .await
+        .get(session_id)
+        .cloned()
+        .map(|session| session.server.clone());
+    if let Some(server) = server {
+        let _ = server.stop().await;
     }
 }
 
@@ -584,16 +704,24 @@ fn shell_approval_kind(method: &str, params: &Value, available: &[String]) -> Ap
 }
 
 pub(crate) fn is_approval_method(method: &str) -> bool {
-    matches!(
-        method,
-        "item/commandExecution/requestApproval"
-            | "item/fileChange/requestApproval"
-            | "commandExecution/requestApproval"
-            | "applyPatch/requestApproval"
-            | "fileChange/requestApproval"
-            | "permissions/request"
-            | "execCommandApproval"
-    )
+    matches!(method, "permissions/request" | "execCommandApproval")
+        || method.ends_with("/requestApproval")
+        || method.ends_with("/request_approval")
+}
+
+pub(crate) fn approval_decisions(params: &Value) -> Vec<String> {
+    let values = params
+        .get("availableDecisions")
+        .or_else(|| params.get("available_decisions"))
+        .or_else(|| params.pointer("/item/availableDecisions"))
+        .or_else(|| params.pointer("/item/available_decisions"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
+    values
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
 }
 
 pub(crate) async fn write_message(

@@ -15,9 +15,10 @@ pub use home::{
     ProviderClass,
 };
 pub use manager::CodexManager;
+pub(crate) use proto::is_detached_failure;
 pub use proto::{
     CodexApprovalDecisionRequest, CodexSessionInfo, CodexSessionRecord, CodexSessionRequest,
     CodexSessionStartRequest, CodexSteerRequest, CodexThreadItemsRequest, CodexThreadReadRequest,
     CodexTurnFailure, CodexTurnSendRequest, CodexTurnStartRequest, ProviderTransport,
-    CODEX_SESSION_DETACHED, CODEX_TURN_START_FAILED,
+    CODEX_SESSION_DETACHED, CODEX_SESSION_UNHEALTHY, CODEX_TURN_START_FAILED,
 };
