@@ -17,6 +17,8 @@
 - Native Mermaid and systems diagrams use the packaged Rust renderer, work offline, and fail closed on invalid source.
 - Chat/visual and Visuals list/preview splitters drag and persist independently, then stack at compact widths with no dead gap.
 - Subagent activity is grouped in the visual pane (working / needs attention / completed) without dumping child chat into the parent transcript.
+- A dedicated Subagents rail lists overlapping child threads; opening a child reads that thread instead of flooding the parent chat.
+- Harbor live eval streams backfill before close and accept harbor-lite seals without synthesizing identity.
 - Craftax GEPA can run as a bounded Optimizers product recipe.
 
 ## Fixed
@@ -26,7 +28,6 @@
 
 ## Known limitations
 
-- The Codex-like subagent rail, child workspace, and overlapping spawn/wait product surface (SYN-3222) is not in this cut. The grouped visual remains.
-- E4 Harbor DEO matrix evidence (SYN-3224) is not a v0.3 claim. E2, E3, and E5 remain deferred.
+- E4 Harbor DEO 3×2×5 matrix evidence (SYN-3224) is not a v0.3 claim. Adapter/protocol code is merged; the matrix was not executed. E2, E3, and E5 remain deferred.
 - The optimizer DAG live visual (`optimizer.dag.live.v1`) is deferred to v0.4.
 - Intern remains dormant (v0.4).
