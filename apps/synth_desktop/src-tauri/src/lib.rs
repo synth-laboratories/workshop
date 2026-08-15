@@ -1829,11 +1829,12 @@ async fn codex_turn_start(
 #[tauri::command]
 #[specta::specta]
 async fn codex_turn_interrupt(
+    app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
     request: CodexSessionRequest,
 ) -> Result<(), AppError> {
     state
-        .interrupt(&request.session_id)
+        .interrupt(app, &request.session_id)
         .await
         .map_err(AppError::from)
 }
@@ -1894,8 +1895,13 @@ async fn codex_session_close(
 #[tauri::command]
 #[specta::specta]
 async fn codex_sessions_list(
+    app: tauri::AppHandle,
     state: State<'_, Arc<CodexManager>>,
 ) -> Result<Vec<CodexSessionRecord>, AppError> {
+    state
+        .expire_restored_approvals(&app)
+        .await
+        .map_err(AppError::from)?;
     Ok(state.list().await)
 }
 

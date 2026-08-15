@@ -9,6 +9,7 @@ use crate::credential_broker::{CredentialBroker, ReceiptStore};
 use crate::domain::{
     RunCreate, RuntimeTarget, SessionCreate, SessionKind, SessionStatus, SessionTitleOrigin,
 };
+use crate::session::approval::{ApprovalBroker, ApprovalDecision, ApprovalOrigin};
 use crate::storage::{EventAppend, EventSource};
 
 use super::event_pump::{spawn_server, EventPumpState, SpawnServerRequest};
@@ -41,6 +42,7 @@ pub struct CodexManager {
     pub(crate) state_path: PathBuf,
     pub(crate) binary: PathBuf,
     pub(crate) persistence: crate::session::SessionPersistence,
+    pub(crate) approvals: Arc<ApprovalBroker>,
     /// Injected loopback credential proxy (composition root). Every cloud
     /// session leases through this same Arc.
     pub(crate) broker: Arc<CredentialBroker>,
@@ -72,6 +74,7 @@ impl CodexManager {
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default();
+        let approvals = Arc::new(ApprovalBroker::new(persistence.clone()));
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::new(RwLock::new(records)),
@@ -83,6 +86,7 @@ impl CodexManager {
             state_path,
             binary,
             persistence,
+            approvals,
             broker,
         }
     }
@@ -172,6 +176,7 @@ impl CodexManager {
                 pending_compact_sources: self.pending_compact_sources.clone(),
                 performance_trackers: self.performance_trackers.clone(),
                 receipts: self.receipts(),
+                approvals: self.approvals.clone(),
                 attachment_id,
                 codex_oauth: super::home::provider_class(request.provider_name.as_deref())
                     == super::home::ProviderClass::OpenaiCodexOauth,
@@ -647,7 +652,11 @@ impl CodexManager {
         }
     }
 
-    pub async fn interrupt(&self, session_id: &str) -> Result<()> {
+    pub async fn interrupt<R: tauri::Runtime>(
+        &self,
+        app: AppHandle<R>,
+        session_id: &str,
+    ) -> Result<()> {
         let Some(session) = self.sessions.read().await.get(session_id).cloned() else {
             // Stop is idempotent once no live transport owns the turn.
             return Ok(());
@@ -660,6 +669,16 @@ impl CodexManager {
             .request(
                 "turn/interrupt",
                 json!({"threadId":session.thread_id,"turnId":turn_id}),
+            )
+            .await?;
+        self.approvals
+            .expire_origin(
+                &app,
+                &ApprovalOrigin {
+                    session_id: session_id.to_owned(),
+                    instance_id: session.attachment_id.to_string(),
+                },
+                "origin_interrupted",
             )
             .await?;
         Ok(())
@@ -780,25 +799,18 @@ impl CodexManager {
         app: AppHandle<R>,
         request: CodexApprovalDecisionRequest,
     ) -> Result<()> {
-        let session = self.session(&request.session_id).await?;
-        let decision = session
-            .server
-            .resolve_approval(&request.approval_id, &request.decision)
+        let decision = ApprovalDecision::from_shell_wire(&request.decision)?;
+        self.approvals
+            .resolve(&app, &request.session_id, &request.approval_id, decision)
             .await?;
-        let kind = if request.decision == "reject" {
-            "approval.rejected"
-        } else {
-            "approval.granted"
-        };
-        let payload = json!({
-            "approvalId": request.approval_id,
-            "decision": request.decision,
-            "appServerDecision": decision,
-        });
-        self.persistence
-            .notify_codex_event(&app, request.session_id, kind, payload)
-            .await;
         Ok(())
+    }
+
+    pub async fn expire_restored_approvals<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+    ) -> Result<usize> {
+        self.approvals.expire_restored(app).await
     }
 
     pub async fn list(&self) -> Vec<CodexSessionRecord> {

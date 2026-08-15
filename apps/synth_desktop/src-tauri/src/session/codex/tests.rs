@@ -11,10 +11,11 @@ use super::home::{
 };
 use super::manager::CodexManager;
 use super::proto::{
-    is_detached_failure, select_approval_decision, CodexSessionRecord, CodexSessionStartRequest,
-    CodexSteerRequest, CodexTurnFailure, CodexTurnSendRequest, CodexTurnStartRequest,
-    ProviderTransport, SessionDetached, CODEX_SESSION_DETACHED, CODEX_TURN_START_FAILED,
-    DETACHED_MESSAGE, MIN_AUTO_COMPACT_TOKEN_LIMIT, STDOUT_CLOSED,
+    is_detached_failure, select_approval_decision, CodexApprovalDecisionRequest,
+    CodexSessionRecord, CodexSessionStartRequest, CodexSteerRequest, CodexTurnFailure,
+    CodexTurnSendRequest, CodexTurnStartRequest, ProviderTransport, SessionDetached,
+    CODEX_SESSION_DETACHED, CODEX_TURN_START_FAILED, DETACHED_MESSAGE,
+    MIN_AUTO_COMPACT_TOKEN_LIMIT, STDOUT_CLOSED,
 };
 use super::telemetry::{
     extract_turn_usage, finalize_performance_tracker, is_output_delta, settled_cost_from_receipts,
@@ -143,6 +144,159 @@ fn fixture_requests(root: &Path, session_id: &str) -> Vec<Value> {
         .collect()
 }
 
+async fn wait_for_pending_approval(manager: &CodexManager) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if manager.approvals.pending_len().await == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("fixture approval did not reach the broker");
+}
+
+#[tokio::test]
+async fn shell_approval_resolves_through_the_broker_and_drains_pending_state() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let app_handle = app.handle().clone();
+    let mut request = test_request(temp.path(), "broker-resolve");
+    request.approval_policy = Some("untrusted".into());
+    let home = codex_root.join("homes").join("broker-resolve");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("request-approval-on-turn-start"), "1").unwrap();
+
+    manager
+        .start(app_handle.clone(), request.clone())
+        .await
+        .unwrap();
+    manager
+        .start_turn(
+            app_handle.clone(),
+            CodexTurnStartRequest {
+                session_id: request.session_id.clone(),
+                prompt: "request fixture approval".into(),
+                effort: Some("none".into()),
+                client_message_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    wait_for_pending_approval(&manager).await;
+    let events = core
+        .journal()
+        .session_events_after(request.session_id.clone(), 0, 100)
+        .await
+        .unwrap();
+    let approval_id = events
+        .iter()
+        .find(|event| event.kind == "approval.requested")
+        .and_then(|event| event.payload["approvalId"].as_str())
+        .unwrap()
+        .to_owned();
+
+    manager
+        .resolve_approval(
+            app_handle,
+            CodexApprovalDecisionRequest {
+                session_id: request.session_id.clone(),
+                approval_id: approval_id.clone(),
+                decision: "once".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(manager.approvals.pending_len().await, 0);
+    let requests = fixture_requests(&codex_root, &request.session_id);
+    assert!(requests
+        .iter()
+        .any(|message| { message["id"] == 9001 && message["result"]["decision"] == "accept" }));
+    let events = core
+        .journal()
+        .session_events_after(request.session_id.clone(), 0, 100)
+        .await
+        .unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "approval.granted"
+            && event.payload["approvalId"] == approval_id
+            && event.payload["appServerDecision"] == "accept"
+    }));
+    manager.close(&request.session_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn dead_approval_origin_expires_and_drains_pending_state() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let mut request = test_request(temp.path(), "broker-expire");
+    request.approval_policy = Some("untrusted".into());
+    let home = codex_root.join("homes").join("broker-expire");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("request-approval-on-turn-start"), "1").unwrap();
+
+    manager
+        .start(app.handle().clone(), request.clone())
+        .await
+        .unwrap();
+    manager
+        .start_turn(
+            app.handle().clone(),
+            CodexTurnStartRequest {
+                session_id: request.session_id.clone(),
+                prompt: "leave approval pending".into(),
+                effort: Some("none".into()),
+                client_message_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    wait_for_pending_approval(&manager).await;
+    let attachment = manager
+        .sessions
+        .read()
+        .await
+        .get(&request.session_id)
+        .unwrap()
+        .clone();
+    attachment.server.stop().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if manager.approvals.pending_len().await == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("dead origin left an approval pending");
+    let events = core
+        .journal()
+        .session_events_after(request.session_id, 0, 100)
+        .await
+        .unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "approval.expired" && event.payload["reason"] == "origin_process_exited"
+    }));
+}
+
 #[tokio::test]
 async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
     let temp = tempdir().unwrap();
@@ -210,7 +364,10 @@ async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
     );
 
     // Stop remains safe after the process and active attachment are gone.
-    manager.interrupt(&request.session_id).await.unwrap();
+    manager
+        .interrupt(app.handle().clone(), &request.session_id)
+        .await
+        .unwrap();
 
     let resumed = manager
         .start(app_handle.clone(), request.clone())
@@ -521,7 +678,10 @@ async fn turn_send_reports_detachment_after_event_pump_finalizes_the_run() {
         None
     );
     // Stop stays idempotent while nothing is attached.
-    manager.interrupt(&request.session_id).await.unwrap();
+    manager
+        .interrupt(app.handle().clone(), &request.session_id)
+        .await
+        .unwrap();
 
     // Retry reattaches, resumes the same Codex thread and succeeds.
     disarm_turn_start_exit(&codex_root, &request.session_id);
