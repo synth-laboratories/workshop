@@ -196,7 +196,7 @@ export function installDesktopBridge(): void {
 			: Promise.resolve({
 				mode: "development", name: "browser", displayName: "Synth Desktop · browser",
 				appVersion: desktopPackage.version, sourceRevision: "vite", buildRevision: "vite",
-				buildTimestamp: "0", processId: 0, executable: "browser",
+				buildTimestamp: "0", executableDigest: null, processId: 0, executable: "browser",
 				dataRoot: "browser-memory://", viteUrl: window.location.origin, manifest: null
 			}),
 		chooseWorkspaceDirectory: async () => {
