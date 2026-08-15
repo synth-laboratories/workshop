@@ -602,6 +602,15 @@ impl OptimizerService {
                     })
                     .await;
             }
+            if run.source == "hosted" && run.algorithm_id == "sft" {
+                // A restarted desktop has no in-memory recipe worker, but cancellation
+                // must still reach the canonical public SFT run. Do not fall back to
+                // Optimizers-beta: it is an executor, not a Workshop control plane.
+                super::sft_client::SftOptimizerClient::from_env()?
+                    .cancel(&id)
+                    .await?;
+                return self.command(id, "cancel", "cancelled").await;
+            }
         }
         self.command(id, "cancel", "cancelled").await
     }
