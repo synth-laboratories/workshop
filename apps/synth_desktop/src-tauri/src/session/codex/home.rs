@@ -421,9 +421,12 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
             if !crate::context::mcp_group_enabled("bundled") {
                 continue;
             }
-            if server == "synth_optimizers" && !crate::plugins::optimizers_plugin_enabled() {
-                continue;
-            }
+            // A disabled plugin keeps its MCP server registered. Dropping it
+            // made the capability vanish with no way for the agent to learn
+            // why — the same failure the sidebar's Plugins section fixes for
+            // the human. Operations refuse with a typed `plugin_not_ready`
+            // instead, enforced in `optimizers::recipes::require_plugin_ready`
+            // rather than by whether this file ran at session start.
             let bin = exe
                 .parent()
                 .map(|dir| dir.join(binary))

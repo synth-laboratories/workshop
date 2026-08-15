@@ -363,6 +363,14 @@ pub(super) async fn start_prepared(
 }
 
 async fn require_plugin_ready(manager: &super::OptimizerManager) -> Result<()> {
+    // A disabled plugin refuses work even when its sidecar is still up.
+    // `disable` only clears the registry flag, so the process keeps running;
+    // without this check the only thing enforcing "disabled" was that the MCP
+    // server stopped being registered at session start — which a session that
+    // was already open never sees.
+    if !crate::plugins::optimizers_plugin_enabled() {
+        return Err(crate::plugins::PluginNotReady::new("disabled", "enable").into());
+    }
     if manager.is_running().await {
         return Ok(());
     }

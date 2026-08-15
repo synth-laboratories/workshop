@@ -94,8 +94,15 @@ async fn missing_rollout_on_resume_starts_a_replacement_thread() {
     assert_eq!(methods, vec!["thread/resume", "thread/start"]);
 }
 
+/// These waits poll a spawned fixture process, so they are load-sensitive:
+/// five seconds passed on an idle machine and failed intermittently while a
+/// build or another suite ran alongside. The assertion is that the state
+/// settles at all, not that it settles quickly — give it room so a busy CI box
+/// does not read as a product defect.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 async fn wait_for_record_status(manager: &CodexManager, session_id: &str, expected: &str) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(SETTLE_TIMEOUT, async {
         loop {
             let actual = manager
                 .records
@@ -115,7 +122,7 @@ async fn wait_for_record_status(manager: &CodexManager, session_id: &str, expect
 
 async fn wait_for_run_status(core: &CoreRuntime, run_id: &str, expected: &str) {
     let runs = RunService::new(core.storage().database().clone());
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(SETTLE_TIMEOUT, async {
         loop {
             let actual = runs
                 .get(run_id.to_owned())
@@ -145,7 +152,7 @@ fn fixture_requests(root: &Path, session_id: &str) -> Vec<Value> {
 }
 
 async fn wait_for_pending_approval(manager: &CodexManager) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(SETTLE_TIMEOUT, async {
         loop {
             if manager.approvals.pending_len().await == 1 {
                 break;
@@ -277,7 +284,7 @@ async fn dead_approval_origin_expires_and_drains_pending_state() {
         .unwrap()
         .clone();
     attachment.server.stop().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(SETTLE_TIMEOUT, async {
         loop {
             if manager.approvals.pending_len().await == 0 {
                 break;
