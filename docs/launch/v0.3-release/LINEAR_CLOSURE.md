@@ -18,6 +18,5 @@ Linear MCP in this agent environment is `needsAuth`. Tickets were **not** moved.
 
 ## Follow-ups to file only if still true after the package cut
 
-- Port Reports onto this branch without optimizer plugin MCP.
-- SYN-3222 rail / child workspace / overlapping spawn-wait.
 - SYN-3224 evidence package with explicit missing/failed/timeout cells.
+- Remint friends ZIP from `2dd1cf0` (current ZIP is `4965ca4` and does not include SYN-3222/3224).
