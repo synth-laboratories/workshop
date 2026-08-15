@@ -10,6 +10,12 @@ function Toggle({ checked, disabled, label, onChange }: { checked: boolean; disa
 
 type EditorTarget = { kind: "workspace" } | { kind: "workshop" } | { kind: "skill"; skillId: string };
 
+function contextErrorMessage(reason: unknown): string {
+	if (reason instanceof Error) return reason.message;
+	if (reason && typeof reason === "object" && "message" in reason && typeof reason.message === "string") return reason.message;
+	return typeof reason === "string" ? reason : "Context operation failed";
+}
+
 function ContextEditorDialog({ open, label, path, value, readOnly, dirty, busy, onChange, onClose, onSave, onCopy }: { open: boolean; label: string; path: string; value: string; readOnly?: boolean; dirty?: boolean; busy?: boolean; onChange?: (value: string) => void; onClose: () => void; onSave?: () => void; onCopy?: () => void }) {
 	const dialog = useRef<HTMLDialogElement>(null);
 	useEffect(() => {
@@ -42,7 +48,7 @@ export function ContextSettings({ subagents }: { subagents: ReactNode }) {
 				setWorkspace(path);
 				const next = await bridges.context!.snapshot(path);
 				if (!cancelled) accept(next);
-			} catch (reason) { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); }
+			} catch (reason) { if (!cancelled) setError(contextErrorMessage(reason)); }
 		})();
 		return () => { cancelled = true; };
 	}, []);
@@ -50,7 +56,10 @@ export function ContextSettings({ subagents }: { subagents: ReactNode }) {
 	const run = async (id: string, operation: () => Promise<ContextSnapshot | undefined>) => {
 		setBusy(id); setError(null);
 		try { const next = await operation(); if (next) accept(next); }
-		catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+		catch (reason) {
+			const message = contextErrorMessage(reason);
+			if (!message.toLowerCase().includes("cancelled")) setError(message);
+		}
 		finally { setBusy(null); }
 	};
 
@@ -70,7 +79,7 @@ export function ContextSettings({ subagents }: { subagents: ReactNode }) {
 	const cancelCookbooks = () => {
 		setError(null);
 		void bridges.context!.cancelCookbooks(workspace).then(accept).catch((reason) => {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(contextErrorMessage(reason));
 		});
 	};
 

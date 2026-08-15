@@ -30,6 +30,8 @@ test("Context uses one modal editor and keeps editors out of the page scroll", (
   assert.match(context, /context-advanced/);
   assert.match(context, /Not configured/);
   assert.match(context, /activeSkill\.name}\/SKILL\.md/);
+  assert.match(context, /function contextErrorMessage/);
+  assert.doesNotMatch(context, /String\(reason\)/);
 });
 
 test("new Codex homes apply skill, cookbook, and MCP context gates", () => {
