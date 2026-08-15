@@ -299,4 +299,3 @@ mod tests {
         assert!(manifest_path("").is_err());
     }
 }
-

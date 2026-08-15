@@ -912,12 +912,14 @@ export type OptimizersBridge = {
 		sessionRef?: string;
 		openVisual?: boolean;
 		baseModel?: string;
+		/** Required by `eval.*` recipes. An id from `stageEvalCandidates`, never a path. */
 		candidateSetId?: string;
 	}): Promise<OptimizerRunRecord>;
 	stageEvalCandidates(request: {
 		sessionRef: string;
 		candidates: Array<{
 			label: string;
+			/** Workspace-relative file or directory. */
 			path: string;
 			entrypoint?: string;
 			kind?: string;

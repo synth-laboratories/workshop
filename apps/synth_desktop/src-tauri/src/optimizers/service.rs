@@ -20,6 +20,33 @@ const GEPA_FIXTURE_ID: &str = "opt_gepa_fixture";
 const SFT_FIXTURE_ID: &str = "opt_sft_fixture";
 const GOEX_FIXTURE_ID: &str = "opt_goex_fixture";
 
+fn validate_control(run: &OptimizerRunRecord, command: &str) -> Result<()> {
+    match command {
+        "cancel" if !run.capabilities.cancel => bail!("cancel is not available for this run"),
+        "pause" if !run.capabilities.pause => bail!("pause is not available for this run"),
+        "resume" if !run.capabilities.resume => bail!("resume is not available for this run"),
+        _ => {}
+    }
+    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+        bail!("{command} is not available for a {} run", run.status);
+    }
+    match command {
+        "pause" if run.status != "running" => {
+            bail!(
+                "pause requires a running optimizer; current status is {}",
+                run.status
+            )
+        }
+        "resume" if run.status != "paused" => {
+            bail!(
+                "resume requires a paused optimizer; current status is {}",
+                run.status
+            )
+        }
+        _ => Ok(()),
+    }
+}
+
 #[derive(Clone)]
 pub struct OptimizerService {
     db: Arc<Database>,
@@ -73,6 +100,8 @@ impl OptimizerService {
             json!({"id":"gepa","title":"GEPA","availability":"available","description":"Genetic-Pareto prompt optimization"}),
             json!({"id":"go-ex","title":"GELO / Go-Ex","availability":"available","description":"Hosted exploration with optional local slot binding"}),
             json!({"id":"sft","title":"SFT","availability":"available","description":"Hosted fine-tuning through the public Optimizers SFT service, streamed live into optimizer.sft visuals"}),
+            // Local only, and only when its own runtime and a pinned target
+            // recipe preflight. `eval` is never hosted.
             super::eval_recipes::algorithm_entry(),
         ]
     }
@@ -630,11 +659,39 @@ impl OptimizerService {
     }
 
     pub async fn pause(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
-        self.command(id, "pause", "paused").await
+        let run = self.get(id.clone()).await?;
+        validate_control(&run, "pause")?;
+        let is_eval = run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID;
+        if is_eval {
+            super::eval_recipes::set_paused(&id, true)?;
+        }
+        match self.command(id.clone(), "pause", "paused").await {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                if is_eval {
+                    let _ = super::eval_recipes::set_paused(&id, false);
+                }
+                Err(error)
+            }
+        }
     }
 
     pub async fn resume(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
-        self.command(id, "resume", "running").await
+        let run = self.get(id.clone()).await?;
+        validate_control(&run, "resume")?;
+        let is_eval = run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID;
+        if is_eval {
+            super::eval_recipes::set_paused(&id, false)?;
+        }
+        match self.command(id.clone(), "resume", "running").await {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                if is_eval {
+                    let _ = super::eval_recipes::set_paused(&id, true);
+                }
+                Err(error)
+            }
+        }
     }
 
     pub async fn open_visual(
@@ -678,11 +735,13 @@ impl OptimizerService {
                 .execution_bindings
                 .iter()
                 .any(|binding| binding.kind == "synth_optimizers_sft");
-        let template_id = if public_sft {
-            // Hosted SFT is controlled by the public service and its visual is
-            // bundled with Workshop. It must not depend on the private optimizer
-            // plugin being installed or advertising capabilities.
-            "optimizer.sft.live.v1".to_owned()
+        let app_owned_visual =
+            public_sft || run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID;
+        let template_id = if app_owned_visual {
+            // Public SFT and local eval are controlled outside the optional
+            // Optimizers plugin, and their visuals are bundled with Workshop.
+            // Neither may depend on plugin installation or advertised templates.
+            primary_visual_template(&run.algorithm_id).to_owned()
         } else {
             negotiate_visual_template(&run.algorithm_id, &self.manager.advertised_capabilities())?
         };
@@ -1064,16 +1123,7 @@ impl OptimizerService {
         let db = self.db.clone();
         db.run_transaction(move |conn| {
             let mut run = load_run(conn, &optimizer_run_id)?;
-            match command.as_str() {
-                "cancel" if !run.capabilities.cancel => {
-                    bail!("cancel is not available for this run")
-                }
-                "pause" if !run.capabilities.pause => bail!("pause is not available for this run"),
-                "resume" if !run.capabilities.resume => {
-                    bail!("resume is not available for this run")
-                }
-                _ => {}
-            }
+            validate_control(&run, &command)?;
             run.status = next_status;
             if command == "resume" && run.started_at.is_none() {
                 run.started_at = Some(Utc::now().to_rfc3339());
@@ -1140,10 +1190,21 @@ fn algorithm_label(algorithm_id: &str) -> &'static str {
     }
 }
 
+pub(in crate::optimizers) fn primary_visual_template(algorithm_id: &str) -> &'static str {
+    match algorithm_id {
+        "sft" => "optimizer.sft.live.v1",
+        "gepa" => "optimizer.gepa.live.v1",
+        "eval" => "optimizer.eval.live.v1",
+        id if id == "dag" || id.starts_with("dag.") => "optimizer.dag.live.v1",
+        _ => "optimizer.run.v1",
+    }
+}
+
 fn negotiate_visual_template(algorithm_id: &str, advertised: &Value) -> Result<String> {
     let preferred: &[&str] = match algorithm_id {
         "sft" => &["optimizer.sft.live.v1", "optimizer.run.v1"],
         "gepa" => &["optimizer.gepa.live.v1", "optimizer.run.v1"],
+        "eval" => &["optimizer.eval.live.v1", "optimizer.run.v1"],
         id if id == "dag" || id.starts_with("dag.") => {
             &["optimizer.dag.live.v1", "optimizer.run.v1"]
         }
@@ -2128,6 +2189,8 @@ fn project_from_events(
             "failed".into(),
             json!(eval_trials.len() - counts("queued") - counts("running") - counts("evaluated")),
         );
+        // A trial holds exactly one semaphore lease while it runs, so the
+        // running count is the run's share of the machine-wide ceiling.
         target.insert("leasesHeld".into(), json!(counts("running")));
         target.insert(
             "cancelling".into(),
@@ -2919,7 +2982,7 @@ fn map_from(value: Value) -> Map<String, Value> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::optimizers) mod tests {
     use super::*;
     use crate::storage::{ContentStore, Storage};
     use tempfile::tempdir;
@@ -2942,7 +3005,36 @@ mod tests {
         );
     }
 
-    async fn service() -> (
+    #[tokio::test]
+    async fn optimizer_controls_require_a_valid_lifecycle_transition() {
+        let (svc, _dir, _) = service().await;
+        let (mut run, _) = svc
+            .seed_fixture("gepa", Some("session_controls".into()))
+            .await
+            .unwrap();
+        run.capabilities.cancel = true;
+        run.capabilities.pause = true;
+        run.capabilities.resume = true;
+
+        run.status = "running".into();
+        assert!(validate_control(&run, "pause").is_ok());
+        assert!(validate_control(&run, "resume").is_err());
+
+        run.status = "paused".into();
+        assert!(validate_control(&run, "resume").is_ok());
+        assert!(validate_control(&run, "pause").is_err());
+
+        for terminal in ["completed", "failed", "cancelled"] {
+            run.status = terminal.into();
+            assert!(validate_control(&run, "cancel").is_err());
+            assert!(validate_control(&run, "pause").is_err());
+            assert!(validate_control(&run, "resume").is_err());
+        }
+    }
+
+    /// Shared with `eval_recipes::tests`, which replays a real worker stream
+    /// through the same service to prove the projection.
+    pub(in crate::optimizers) async fn service() -> (
         OptimizerService,
         tempfile::TempDir,
         tokio::sync::broadcast::Receiver<AppEvent>,

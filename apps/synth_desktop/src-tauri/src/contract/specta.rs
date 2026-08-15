@@ -295,6 +295,8 @@ fn export_typescript_bindings_to(path: &std::path::Path) -> Result<(), String> {
         .map(str::trim_end)
         .collect::<Vec<_>>()
         .join("\n")
+        .trim_end_matches('\n')
+        .to_owned()
         + "\n";
     std::fs::write(&path, normalized).map_err(|error| error.to_string())
 }

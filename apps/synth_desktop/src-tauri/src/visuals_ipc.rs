@@ -1813,6 +1813,20 @@ async fn dispatch_optimizer(
             let run = optimizers.refresh(id.to_string()).await?;
             Ok(json!({ "run": run }))
         }
+        ("POST", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/pause") => {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/pause");
+            let (run, event) = optimizers.pause(id.to_string()).await?;
+            Ok(json!({ "run": run, "event": event }))
+        }
+        ("POST", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/resume") => {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/resume");
+            let (run, event) = optimizers.resume(id.to_string()).await?;
+            Ok(json!({ "run": run, "event": event }))
+        }
         ("POST", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/cancel") => {
             let id = path
                 .trim_start_matches("/v1/optimizers/runs/")

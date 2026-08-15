@@ -99,7 +99,18 @@ Rules when reporting:
 - Never replace a policy on the user's behalf, even after `promoted`. Report the
   winner and the evidence link and let the user decide.
 
+## Holding and stopping
+
+`pause_run` holds the matrix: the worker stops dispatching new trials, and the
+ones already in a container finish and seal. A paused run does not sit on a
+semaphore token, so pausing frees capacity for another run. `resume_run` picks
+up where it left off — a pause changes timing, not evidence, and the selection
+is the same either way. Watch for `eval.run.paused` / `eval.run.resumed`.
+
 Cancellation seals evidence: `cancel_run` asks the worker to stop its containers,
 release its leases, and finish writing. Expect `cancelled` with
 `invalid_evidence`, which is correct, not a bug.
 
+The run opens `optimizer.eval.live.v1`: stage timeline, selection verdict,
+candidate comparison, trial matrix, and sealed evidence. Open it when comparing
+candidates is clearer there than in text — which is most of the time.

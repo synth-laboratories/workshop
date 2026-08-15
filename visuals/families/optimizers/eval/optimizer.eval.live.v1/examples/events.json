@@ -1,0 +1,2566 @@
+{
+  "events": [
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "message": "Planned 4 trials across 2 candidates"
+      },
+      "eventId": "opt_eval_example:eval:1",
+      "level": "info",
+      "occurredAt": "2026-08-15T16:31:51.856270+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "candidate_set_id": "policy_set_0d00afa974f4",
+        "candidates": [
+          {
+            "id": "policy_e8d067b11684",
+            "is_baseline": true,
+            "label": "luna-low"
+          },
+          {
+            "id": "policy_30d2c7e911d3",
+            "is_baseline": false,
+            "label": "luna-med"
+          }
+        ],
+        "event": "eval.run.planned",
+        "global_capacity": 4,
+        "manifest_digest": "sha256:973da91319a66d5113e899ade5e21ac327d2a8c234573fdcd59bc9ce8ea67867",
+        "occurred_at": "2026-08-15T16:31:51.856270+00:00",
+        "parallelism": 4,
+        "planned_trials": 4,
+        "recipe_id": "eval.craftax.llm-policy.smoke.v1",
+        "reclaimed_leases": 0,
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 1
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 1,
+      "snapshot": {
+        "candidate_set_id": "policy_set_0d00afa974f4",
+        "candidates": [
+          {
+            "id": "policy_e8d067b11684",
+            "is_baseline": true,
+            "label": "luna-low"
+          },
+          {
+            "id": "policy_30d2c7e911d3",
+            "is_baseline": false,
+            "label": "luna-med"
+          }
+        ],
+        "global_capacity": 4,
+        "manifest_digest": "sha256:973da91319a66d5113e899ade5e21ac327d2a8c234573fdcd59bc9ce8ea67867",
+        "parallelism": 4,
+        "planned_trials": 4,
+        "recipe_id": "eval.craftax.llm-policy.smoke.v1"
+      },
+      "type": "eval.run.planned"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "message": "Sealed the seed ledger"
+      },
+      "eventId": "opt_eval_example:eval:2",
+      "level": "info",
+      "occurredAt": "2026-08-15T16:31:51.856379+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "event": "eval.seed_ledger.sealed",
+        "ledger": {
+          "confirmation": [],
+          "scenarios": [
+            "craftax-default-48x48"
+          ],
+          "schema_version": "eval.seed-ledger.v1",
+          "screening": [
+            101,
+            102
+          ],
+          "sealed_at": "2026-08-15T16:31:51.855102+00:00"
+        },
+        "occurred_at": "2026-08-15T16:31:51.856379+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 2
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 2,
+      "snapshot": {
+        "seedLedger": {
+          "confirmation": [],
+          "scenarios": [
+            "craftax-default-48x48"
+          ],
+          "schema_version": "eval.seed-ledger.v1",
+          "screening": [
+            101,
+            102
+          ],
+          "sealed_at": "2026-08-15T16:31:51.855102+00:00"
+        }
+      },
+      "type": "eval.seed_ledger.sealed"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "candidate_id": "policy_e8d067b11684",
+        "scenario": "craftax-default-48x48",
+        "seed": 102,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+      },
+      "eventId": "opt_eval_example:eval:3",
+      "level": "info",
+      "occurredAt": "2026-08-15T16:31:51.856690+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "candidate_id": "policy_e8d067b11684",
+        "event": "eval.trial.queued",
+        "occurred_at": "2026-08-15T16:31:51.856690+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "scenario": "craftax-default-48x48",
+        "schema_version": "eval.worker-event.v1",
+        "seed": 102,
+        "seq": 3,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 3,
+      "type": "eval.trial.queued"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "candidate_id": "policy_30d2c7e911d3",
+        "scenario": "craftax-default-48x48",
+        "seed": 101,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+      },
+      "eventId": "opt_eval_example:eval:4",
+      "level": "info",
+      "occurredAt": "2026-08-15T16:31:51.856910+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "candidate_id": "policy_30d2c7e911d3",
+        "event": "eval.trial.queued",
+        "occurred_at": "2026-08-15T16:31:51.856910+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "scenario": "craftax-default-48x48",
+        "schema_version": "eval.worker-event.v1",
+        "seed": 101,
+        "seq": 4,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 4,
+      "type": "eval.trial.queued"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "candidate_id": "policy_e8d067b11684",
+        "scenario": "craftax-default-48x48",
+        "seed": 101,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+      },
+      "eventId": "opt_eval_example:eval:5",
+      "level": "info",
+      "occurredAt": "2026-08-15T16:31:51.857034+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "candidate_id": "policy_e8d067b11684",
+        "event": "eval.trial.queued",
+        "occurred_at": "2026-08-15T16:31:51.857034+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "scenario": "craftax-default-48x48",
+        "schema_version": "eval.worker-event.v1",
+        "seed": 101,
+        "seq": 5,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 5,
+      "type": "eval.trial.queued"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "candidate_id": "policy_30d2c7e911d3",
+        "scenario": "craftax-default-48x48",
+        "seed": 102,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+      },
+      "eventId": "opt_eval_example:eval:6",
+      "level": "info",
+      "occurredAt": "2026-08-15T16:31:51.857161+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "candidate_id": "policy_30d2c7e911d3",
+        "event": "eval.trial.queued",
+        "occurred_at": "2026-08-15T16:31:51.857161+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "scenario": "craftax-default-48x48",
+        "schema_version": "eval.worker-event.v1",
+        "seed": 102,
+        "seq": 6,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 6,
+      "type": "eval.trial.queued"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "candidate_id": "policy_e8d067b11684",
+        "scenario": "craftax-default-48x48",
+        "seed": 102,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+      },
+      "eventId": "opt_eval_example:eval:7",
+      "level": "info",
+      "occurredAt": "2026-08-15T16:31:51.858057+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "candidate_id": "policy_e8d067b11684",
+        "event": "eval.trial.started",
+        "lease_id": "lease_82ce6763d61b",
+        "occurred_at": "2026-08-15T16:31:51.858057+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "scenario": "craftax-default-48x48",
+        "schema_version": "eval.worker-event.v1",
+        "seed": 102,
+        "seq": 7,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 7,
+      "type": "eval.trial.started"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "candidate_id": "policy_30d2c7e911d3",
+        "scenario": "craftax-default-48x48",
+        "seed": 101,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+      },
+      "eventId": "opt_eval_example:eval:8",
+      "level": "info",
+      "occurredAt": "2026-08-15T16:31:51.858362+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "candidate_id": "policy_30d2c7e911d3",
+        "event": "eval.trial.started",
+        "lease_id": "lease_06195014a729",
+        "occurred_at": "2026-08-15T16:31:51.858362+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "scenario": "craftax-default-48x48",
+        "schema_version": "eval.worker-event.v1",
+        "seed": 101,
+        "seq": 8,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 8,
+      "type": "eval.trial.started"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "candidate_id": "policy_e8d067b11684",
+        "scenario": "craftax-default-48x48",
+        "seed": 101,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+      },
+      "eventId": "opt_eval_example:eval:9",
+      "level": "info",
+      "occurredAt": "2026-08-15T16:31:51.862139+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "candidate_id": "policy_e8d067b11684",
+        "event": "eval.trial.started",
+        "lease_id": "lease_67d39cbe8118",
+        "occurred_at": "2026-08-15T16:31:51.862139+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "scenario": "craftax-default-48x48",
+        "schema_version": "eval.worker-event.v1",
+        "seed": 101,
+        "seq": 9,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 9,
+      "type": "eval.trial.started"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "candidate_id": "policy_30d2c7e911d3",
+        "scenario": "craftax-default-48x48",
+        "seed": 102,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+      },
+      "eventId": "opt_eval_example:eval:10",
+      "level": "info",
+      "occurredAt": "2026-08-15T16:31:51.863424+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "candidate_id": "policy_30d2c7e911d3",
+        "event": "eval.trial.started",
+        "lease_id": "lease_731ea2c3e70d",
+        "occurred_at": "2026-08-15T16:31:51.863424+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "scenario": "craftax-default-48x48",
+        "schema_version": "eval.worker-event.v1",
+        "seed": 102,
+        "seq": 10,
+        "stage": "screen",
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 10,
+      "type": "eval.trial.started"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "containerEvent": {
+          "at": 1786811512.1970153,
+          "event": "trial.started",
+          "scenario": "craftax-default-48x48",
+          "seed": 102,
+          "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+        },
+        "message": "trial.started",
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+      },
+      "eventId": "opt_eval_example:eval:11",
+      "level": "debug",
+      "occurredAt": "2026-08-15T16:31:52.263907+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "container_event": {
+          "at": 1786811512.1970153,
+          "event": "trial.started",
+          "scenario": "craftax-default-48x48",
+          "seed": 102,
+          "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+        },
+        "event": "eval.trial.event",
+        "occurred_at": "2026-08-15T16:31:52.263907+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 11,
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 11,
+      "type": "eval.trial.event"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "containerEvent": {
+          "at": 1786811512.1980317,
+          "event": "rollout.started",
+          "max_steps": 500,
+          "seed": 102,
+          "world": "craftax_default (48x48, 9 levels)"
+        },
+        "message": "rollout.started",
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+      },
+      "eventId": "opt_eval_example:eval:12",
+      "level": "debug",
+      "occurredAt": "2026-08-15T16:31:52.264240+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "container_event": {
+          "at": 1786811512.1980317,
+          "event": "rollout.started",
+          "max_steps": 500,
+          "seed": 102,
+          "world": "craftax_default (48x48, 9 levels)"
+        },
+        "event": "eval.trial.event",
+        "occurred_at": "2026-08-15T16:31:52.264240+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 12,
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 12,
+      "type": "eval.trial.event"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "containerEvent": {
+          "at": 1786811512.232303,
+          "event": "trial.started",
+          "scenario": "craftax-default-48x48",
+          "seed": 101,
+          "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+        },
+        "message": "trial.started",
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+      },
+      "eventId": "opt_eval_example:eval:13",
+      "level": "debug",
+      "occurredAt": "2026-08-15T16:31:52.264750+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "container_event": {
+          "at": 1786811512.232303,
+          "event": "trial.started",
+          "scenario": "craftax-default-48x48",
+          "seed": 101,
+          "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+        },
+        "event": "eval.trial.event",
+        "occurred_at": "2026-08-15T16:31:52.264750+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 13,
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 13,
+      "type": "eval.trial.event"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "containerEvent": {
+          "at": 1786811512.2332523,
+          "event": "rollout.started",
+          "max_steps": 500,
+          "seed": 101,
+          "world": "craftax_default (48x48, 9 levels)"
+        },
+        "message": "rollout.started",
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+      },
+      "eventId": "opt_eval_example:eval:14",
+      "level": "debug",
+      "occurredAt": "2026-08-15T16:31:52.264928+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "container_event": {
+          "at": 1786811512.2332523,
+          "event": "rollout.started",
+          "max_steps": 500,
+          "seed": 101,
+          "world": "craftax_default (48x48, 9 levels)"
+        },
+        "event": "eval.trial.event",
+        "occurred_at": "2026-08-15T16:31:52.264928+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 14,
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 14,
+      "type": "eval.trial.event"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "containerEvent": {
+          "at": 1786811512.2103975,
+          "event": "trial.started",
+          "scenario": "craftax-default-48x48",
+          "seed": 101,
+          "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+        },
+        "message": "trial.started",
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+      },
+      "eventId": "opt_eval_example:eval:15",
+      "level": "debug",
+      "occurredAt": "2026-08-15T16:31:52.268965+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "container_event": {
+          "at": 1786811512.2103975,
+          "event": "trial.started",
+          "scenario": "craftax-default-48x48",
+          "seed": 101,
+          "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+        },
+        "event": "eval.trial.event",
+        "occurred_at": "2026-08-15T16:31:52.268965+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 15,
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 15,
+      "type": "eval.trial.event"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "containerEvent": {
+          "at": 1786811512.2113242,
+          "event": "rollout.started",
+          "max_steps": 500,
+          "seed": 101,
+          "world": "craftax_default (48x48, 9 levels)"
+        },
+        "message": "rollout.started",
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+      },
+      "eventId": "opt_eval_example:eval:16",
+      "level": "debug",
+      "occurredAt": "2026-08-15T16:31:52.269110+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "container_event": {
+          "at": 1786811512.2113242,
+          "event": "rollout.started",
+          "max_steps": 500,
+          "seed": 101,
+          "world": "craftax_default (48x48, 9 levels)"
+        },
+        "event": "eval.trial.event",
+        "occurred_at": "2026-08-15T16:31:52.269110+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 16,
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 16,
+      "type": "eval.trial.event"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "containerEvent": {
+          "at": 1786811512.2251587,
+          "event": "trial.started",
+          "scenario": "craftax-default-48x48",
+          "seed": 102,
+          "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+        },
+        "message": "trial.started",
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+      },
+      "eventId": "opt_eval_example:eval:17",
+      "level": "debug",
+      "occurredAt": "2026-08-15T16:31:52.272962+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "container_event": {
+          "at": 1786811512.2251587,
+          "event": "trial.started",
+          "scenario": "craftax-default-48x48",
+          "seed": 102,
+          "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+        },
+        "event": "eval.trial.event",
+        "occurred_at": "2026-08-15T16:31:52.272962+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 17,
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 17,
+      "type": "eval.trial.event"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "containerEvent": {
+          "at": 1786811512.2258265,
+          "event": "rollout.started",
+          "max_steps": 500,
+          "seed": 102,
+          "world": "craftax_default (48x48, 9 levels)"
+        },
+        "message": "rollout.started",
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+      },
+      "eventId": "opt_eval_example:eval:18",
+      "level": "debug",
+      "occurredAt": "2026-08-15T16:31:52.273120+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "container_event": {
+          "at": 1786811512.2258265,
+          "event": "rollout.started",
+          "max_steps": 500,
+          "seed": 102,
+          "world": "craftax_default (48x48, 9 levels)"
+        },
+        "event": "eval.trial.event",
+        "occurred_at": "2026-08-15T16:31:52.273120+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 18,
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 18,
+      "type": "eval.trial.event"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "containerEvent": {
+          "achievements": 2.0,
+          "at": 1786811580.4739783,
+          "cost_usd": 0.009256,
+          "event": "rollout.finished",
+          "reward": 1.1
+        },
+        "message": "rollout.finished",
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+      },
+      "eventId": "opt_eval_example:eval:19",
+      "level": "debug",
+      "occurredAt": "2026-08-15T16:33:00.707533+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "container_event": {
+          "achievements": 2.0,
+          "at": 1786811580.4739783,
+          "cost_usd": 0.009256,
+          "event": "rollout.finished",
+          "reward": 1.1
+        },
+        "event": "eval.trial.event",
+        "occurred_at": "2026-08-15T16:33:00.707533+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 19,
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 19,
+      "type": "eval.trial.event"
+    },
+    {
+      "algorithmId": "eval",
+      "artifactRefs": [
+        {
+          "bytes": 23690,
+          "digest": "sha256:ea2c48d5c29d9da932da1d83955f74c0a8f95b85060965c34169287e850e3a0d",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/trace.jsonl",
+          "kind": "trace",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/trace.jsonl",
+          "title": "trace · trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+        },
+        {
+          "bytes": 423,
+          "digest": "sha256:bfef320744748cec71a05eaf6b1ceb7653370d613bbd9d968f3c243f94ce39c6",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/events.jsonl",
+          "kind": "events",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/events.jsonl",
+          "title": "events · trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+        },
+        {
+          "bytes": 203,
+          "digest": "sha256:c571b6155f7c82c844584e14fe3260bc1bab80e5b5354c72d61939177376e7c5",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/suite.json",
+          "kind": "suite",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/suite.json",
+          "title": "suite · trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+        },
+        {
+          "bytes": 5062,
+          "digest": "sha256:f522de3499aba21e960276a31739ece0090624698929b955bc88f3f39e4b67eb",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/usage.jsonl",
+          "kind": "usage",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/usage.jsonl",
+          "title": "usage · trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+        },
+        {
+          "bytes": 71538,
+          "digest": "sha256:04cbe211ba2eef166d5ac70c7a0705d619f1aada4734b29126d168f69be98dd2",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/verifier/report.json",
+          "kind": "verifier",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/verifier/report.json",
+          "title": "verifier · trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+        }
+      ],
+      "delta": {
+        "message": "Trial trial_screen_policy_e8d067b11684_craftax-default-48x48_102 evaluated"
+      },
+      "eventId": "opt_eval_example:eval:20",
+      "item": {
+        "artifacts": [
+          {
+            "bytes": 23690,
+            "declared": true,
+            "digest": "sha256:ea2c48d5c29d9da932da1d83955f74c0a8f95b85060965c34169287e850e3a0d",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/trace.jsonl",
+            "relative_path": "trace.jsonl",
+            "role": "trace"
+          },
+          {
+            "bytes": 423,
+            "declared": true,
+            "digest": "sha256:bfef320744748cec71a05eaf6b1ceb7653370d613bbd9d968f3c243f94ce39c6",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/events.jsonl",
+            "relative_path": "events.jsonl",
+            "role": "events"
+          },
+          {
+            "bytes": 203,
+            "declared": true,
+            "digest": "sha256:c571b6155f7c82c844584e14fe3260bc1bab80e5b5354c72d61939177376e7c5",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/suite.json",
+            "relative_path": "suite.json",
+            "role": "suite"
+          },
+          {
+            "bytes": 5062,
+            "declared": true,
+            "digest": "sha256:f522de3499aba21e960276a31739ece0090624698929b955bc88f3f39e4b67eb",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/usage.jsonl",
+            "relative_path": "usage.jsonl",
+            "role": "usage"
+          },
+          {
+            "bytes": 71538,
+            "declared": true,
+            "digest": "sha256:04cbe211ba2eef166d5ac70c7a0705d619f1aada4734b29126d168f69be98dd2",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/verifier/report.json",
+            "relative_path": "verifier/report.json",
+            "role": "verifier"
+          },
+          {
+            "bytes": 0,
+            "declared": false,
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/container.stderr.log",
+            "relative_path": "container.stderr.log",
+            "role": "retained"
+          },
+          {
+            "bytes": 987,
+            "declared": false,
+            "digest": "sha256:60570c37a5a9c503888559beaea9a1f0c78c86947299e724af1f9534889c7d2d",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/result.json",
+            "relative_path": "result.json",
+            "role": "retained"
+          },
+          {
+            "bytes": 0,
+            "declared": false,
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/verifier/stderr.log",
+            "relative_path": "verifier/stderr.log",
+            "role": "retained"
+          }
+        ],
+        "benchmarkStatus": "passed",
+        "candidateId": "policy_e8d067b11684",
+        "evidenceDir": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102",
+        "gates": {
+          "policy_loaded": true,
+          "verifier_completed": true
+        },
+        "id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102",
+        "kind": "trial",
+        "metrics": {
+          "achievements": 2.0,
+          "reward": 1.1
+        },
+        "missingArtifacts": [],
+        "missingGates": [],
+        "raw": {
+          "artifacts": [
+            {
+              "bytes": 23690,
+              "declared": true,
+              "digest": "sha256:ea2c48d5c29d9da932da1d83955f74c0a8f95b85060965c34169287e850e3a0d",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/trace.jsonl",
+              "relative_path": "trace.jsonl",
+              "role": "trace"
+            },
+            {
+              "bytes": 423,
+              "declared": true,
+              "digest": "sha256:bfef320744748cec71a05eaf6b1ceb7653370d613bbd9d968f3c243f94ce39c6",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/events.jsonl",
+              "relative_path": "events.jsonl",
+              "role": "events"
+            },
+            {
+              "bytes": 203,
+              "declared": true,
+              "digest": "sha256:c571b6155f7c82c844584e14fe3260bc1bab80e5b5354c72d61939177376e7c5",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/suite.json",
+              "relative_path": "suite.json",
+              "role": "suite"
+            },
+            {
+              "bytes": 5062,
+              "declared": true,
+              "digest": "sha256:f522de3499aba21e960276a31739ece0090624698929b955bc88f3f39e4b67eb",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/usage.jsonl",
+              "relative_path": "usage.jsonl",
+              "role": "usage"
+            },
+            {
+              "bytes": 71538,
+              "declared": true,
+              "digest": "sha256:04cbe211ba2eef166d5ac70c7a0705d619f1aada4734b29126d168f69be98dd2",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/verifier/report.json",
+              "relative_path": "verifier/report.json",
+              "role": "verifier"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/container.stderr.log",
+              "relative_path": "container.stderr.log",
+              "role": "retained"
+            },
+            {
+              "bytes": 987,
+              "declared": false,
+              "digest": "sha256:60570c37a5a9c503888559beaea9a1f0c78c86947299e724af1f9534889c7d2d",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/result.json",
+              "relative_path": "result.json",
+              "role": "retained"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/verifier/stderr.log",
+              "relative_path": "verifier/stderr.log",
+              "role": "retained"
+            }
+          ],
+          "benchmark_status": "passed",
+          "error": null,
+          "evidence_dir": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102",
+          "exit_code": 0,
+          "finished_at": "2026-08-15T16:33:00.712703+00:00",
+          "gates": {
+            "policy_loaded": true,
+            "verifier_completed": true
+          },
+          "key": {
+            "candidate_id": "policy_e8d067b11684",
+            "scenario": "craftax-default-48x48",
+            "seed": 102,
+            "stage": "screen"
+          },
+          "metrics": {
+            "achievements": 2.0,
+            "reward": 1.1
+          },
+          "missing_artifacts": [],
+          "missing_gates": [],
+          "schema_version": "eval.trial-result.v1",
+          "started_at": "2026-08-15T16:31:51.857620+00:00",
+          "status": "evaluated",
+          "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102",
+          "usage": {
+            "cached_tokens": 0,
+            "calls": 20,
+            "completion_tokens": 5005,
+            "cost_usd": 0.009256,
+            "llm_seconds": 67.431,
+            "prompt_tokens": 16249,
+            "rollouts": 1,
+            "route_errors": 0,
+            "wall_time_ms": 68278
+          },
+          "valid": true
+        },
+        "scenario": "craftax-default-48x48",
+        "seed": 102,
+        "stage": "screen",
+        "status": "evaluated",
+        "valid": true
+      },
+      "level": "info",
+      "occurredAt": "2026-08-15T16:33:00.713390+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "event": "eval.trial.terminal",
+        "occurred_at": "2026-08-15T16:33:00.713390+00:00",
+        "resumed": false,
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 20,
+        "trial": {
+          "artifacts": [
+            {
+              "bytes": 23690,
+              "declared": true,
+              "digest": "sha256:ea2c48d5c29d9da932da1d83955f74c0a8f95b85060965c34169287e850e3a0d",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/trace.jsonl",
+              "relative_path": "trace.jsonl",
+              "role": "trace"
+            },
+            {
+              "bytes": 423,
+              "declared": true,
+              "digest": "sha256:bfef320744748cec71a05eaf6b1ceb7653370d613bbd9d968f3c243f94ce39c6",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/events.jsonl",
+              "relative_path": "events.jsonl",
+              "role": "events"
+            },
+            {
+              "bytes": 203,
+              "declared": true,
+              "digest": "sha256:c571b6155f7c82c844584e14fe3260bc1bab80e5b5354c72d61939177376e7c5",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/suite.json",
+              "relative_path": "suite.json",
+              "role": "suite"
+            },
+            {
+              "bytes": 5062,
+              "declared": true,
+              "digest": "sha256:f522de3499aba21e960276a31739ece0090624698929b955bc88f3f39e4b67eb",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/usage.jsonl",
+              "relative_path": "usage.jsonl",
+              "role": "usage"
+            },
+            {
+              "bytes": 71538,
+              "declared": true,
+              "digest": "sha256:04cbe211ba2eef166d5ac70c7a0705d619f1aada4734b29126d168f69be98dd2",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/verifier/report.json",
+              "relative_path": "verifier/report.json",
+              "role": "verifier"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/container.stderr.log",
+              "relative_path": "container.stderr.log",
+              "role": "retained"
+            },
+            {
+              "bytes": 987,
+              "declared": false,
+              "digest": "sha256:60570c37a5a9c503888559beaea9a1f0c78c86947299e724af1f9534889c7d2d",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/result.json",
+              "relative_path": "result.json",
+              "role": "retained"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102/output/verifier/stderr.log",
+              "relative_path": "verifier/stderr.log",
+              "role": "retained"
+            }
+          ],
+          "benchmark_status": "passed",
+          "error": null,
+          "evidence_dir": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_102",
+          "exit_code": 0,
+          "finished_at": "2026-08-15T16:33:00.712703+00:00",
+          "gates": {
+            "policy_loaded": true,
+            "verifier_completed": true
+          },
+          "key": {
+            "candidate_id": "policy_e8d067b11684",
+            "scenario": "craftax-default-48x48",
+            "seed": 102,
+            "stage": "screen"
+          },
+          "metrics": {
+            "achievements": 2.0,
+            "reward": 1.1
+          },
+          "missing_artifacts": [],
+          "missing_gates": [],
+          "schema_version": "eval.trial-result.v1",
+          "started_at": "2026-08-15T16:31:51.857620+00:00",
+          "status": "evaluated",
+          "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102",
+          "usage": {
+            "cached_tokens": 0,
+            "calls": 20,
+            "completion_tokens": 5005,
+            "cost_usd": 0.009256,
+            "llm_seconds": 67.431,
+            "prompt_tokens": 16249,
+            "rollouts": 1,
+            "route_errors": 0,
+            "wall_time_ms": 68278
+          },
+          "valid": true
+        },
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 20,
+      "type": "eval.trial.terminal",
+      "usageDelta": {
+        "cost_usd": 0.009256,
+        "rollouts": 1,
+        "wall_time_ms": 68278
+      }
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "containerEvent": {
+          "achievements": 0.0,
+          "at": 1786811592.3143232,
+          "cost_usd": 0.009946,
+          "event": "rollout.finished",
+          "reward": 0.0
+        },
+        "message": "rollout.finished",
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+      },
+      "eventId": "opt_eval_example:eval:21",
+      "level": "debug",
+      "occurredAt": "2026-08-15T16:33:12.489345+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "container_event": {
+          "achievements": 0.0,
+          "at": 1786811592.3143232,
+          "cost_usd": 0.009946,
+          "event": "rollout.finished",
+          "reward": 0.0
+        },
+        "event": "eval.trial.event",
+        "occurred_at": "2026-08-15T16:33:12.489345+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 21,
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 21,
+      "type": "eval.trial.event"
+    },
+    {
+      "algorithmId": "eval",
+      "artifactRefs": [
+        {
+          "bytes": 156170,
+          "digest": "sha256:1248c7b18fe64a2de7c5c61372e803b444ff0c9409928701802aca693df76b69",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/trace.jsonl",
+          "kind": "trace",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/trace.jsonl",
+          "title": "trace · trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+        },
+        {
+          "bytes": 423,
+          "digest": "sha256:e438a7a41e8c380faff5fb7f3b3e19aadb0bc42353b324602d1ffb549a0272b8",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/events.jsonl",
+          "kind": "events",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/events.jsonl",
+          "title": "events · trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+        },
+        {
+          "bytes": 203,
+          "digest": "sha256:a33d6dc1f41ad568cf10bd5c74078c2ee73171276057eb7e2bb8e0bb9d60a489",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/suite.json",
+          "kind": "suite",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/suite.json",
+          "title": "suite · trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+        },
+        {
+          "bytes": 4846,
+          "digest": "sha256:dd7cc58d5c89e299dad060efea00eabeca5a3dc55cc46dd8f22dc915ec410e54",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/usage.jsonl",
+          "kind": "usage",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/usage.jsonl",
+          "title": "usage · trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+        },
+        {
+          "bytes": 509024,
+          "digest": "sha256:64a5c49a9c49e70efc9da7829d538ee9b130f2bbe2ea1cd5067fe87ebb56f5d1",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/verifier/report.json",
+          "kind": "verifier",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/verifier/report.json",
+          "title": "verifier · trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+        }
+      ],
+      "delta": {
+        "message": "Trial trial_screen_policy_e8d067b11684_craftax-default-48x48_101 evaluated"
+      },
+      "eventId": "opt_eval_example:eval:22",
+      "item": {
+        "artifacts": [
+          {
+            "bytes": 156170,
+            "declared": true,
+            "digest": "sha256:1248c7b18fe64a2de7c5c61372e803b444ff0c9409928701802aca693df76b69",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/trace.jsonl",
+            "relative_path": "trace.jsonl",
+            "role": "trace"
+          },
+          {
+            "bytes": 423,
+            "declared": true,
+            "digest": "sha256:e438a7a41e8c380faff5fb7f3b3e19aadb0bc42353b324602d1ffb549a0272b8",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/events.jsonl",
+            "relative_path": "events.jsonl",
+            "role": "events"
+          },
+          {
+            "bytes": 203,
+            "declared": true,
+            "digest": "sha256:a33d6dc1f41ad568cf10bd5c74078c2ee73171276057eb7e2bb8e0bb9d60a489",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/suite.json",
+            "relative_path": "suite.json",
+            "role": "suite"
+          },
+          {
+            "bytes": 4846,
+            "declared": true,
+            "digest": "sha256:dd7cc58d5c89e299dad060efea00eabeca5a3dc55cc46dd8f22dc915ec410e54",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/usage.jsonl",
+            "relative_path": "usage.jsonl",
+            "role": "usage"
+          },
+          {
+            "bytes": 509024,
+            "declared": true,
+            "digest": "sha256:64a5c49a9c49e70efc9da7829d538ee9b130f2bbe2ea1cd5067fe87ebb56f5d1",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/verifier/report.json",
+            "relative_path": "verifier/report.json",
+            "role": "verifier"
+          },
+          {
+            "bytes": 0,
+            "declared": false,
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/container.stderr.log",
+            "relative_path": "container.stderr.log",
+            "role": "retained"
+          },
+          {
+            "bytes": 987,
+            "declared": false,
+            "digest": "sha256:a8772a1f0a1840ee6b02591f8a13138f63d04e0069311cf75c96b23ff2eb5ba9",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/result.json",
+            "relative_path": "result.json",
+            "role": "retained"
+          },
+          {
+            "bytes": 0,
+            "declared": false,
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/verifier/stderr.log",
+            "relative_path": "verifier/stderr.log",
+            "role": "retained"
+          }
+        ],
+        "benchmarkStatus": "failed",
+        "candidateId": "policy_e8d067b11684",
+        "evidenceDir": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101",
+        "gates": {
+          "policy_loaded": true,
+          "verifier_completed": true
+        },
+        "id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101",
+        "kind": "trial",
+        "metrics": {
+          "achievements": 0.0,
+          "reward": 0.0
+        },
+        "missingArtifacts": [],
+        "missingGates": [],
+        "raw": {
+          "artifacts": [
+            {
+              "bytes": 156170,
+              "declared": true,
+              "digest": "sha256:1248c7b18fe64a2de7c5c61372e803b444ff0c9409928701802aca693df76b69",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/trace.jsonl",
+              "relative_path": "trace.jsonl",
+              "role": "trace"
+            },
+            {
+              "bytes": 423,
+              "declared": true,
+              "digest": "sha256:e438a7a41e8c380faff5fb7f3b3e19aadb0bc42353b324602d1ffb549a0272b8",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/events.jsonl",
+              "relative_path": "events.jsonl",
+              "role": "events"
+            },
+            {
+              "bytes": 203,
+              "declared": true,
+              "digest": "sha256:a33d6dc1f41ad568cf10bd5c74078c2ee73171276057eb7e2bb8e0bb9d60a489",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/suite.json",
+              "relative_path": "suite.json",
+              "role": "suite"
+            },
+            {
+              "bytes": 4846,
+              "declared": true,
+              "digest": "sha256:dd7cc58d5c89e299dad060efea00eabeca5a3dc55cc46dd8f22dc915ec410e54",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/usage.jsonl",
+              "relative_path": "usage.jsonl",
+              "role": "usage"
+            },
+            {
+              "bytes": 509024,
+              "declared": true,
+              "digest": "sha256:64a5c49a9c49e70efc9da7829d538ee9b130f2bbe2ea1cd5067fe87ebb56f5d1",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/verifier/report.json",
+              "relative_path": "verifier/report.json",
+              "role": "verifier"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/container.stderr.log",
+              "relative_path": "container.stderr.log",
+              "role": "retained"
+            },
+            {
+              "bytes": 987,
+              "declared": false,
+              "digest": "sha256:a8772a1f0a1840ee6b02591f8a13138f63d04e0069311cf75c96b23ff2eb5ba9",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/result.json",
+              "relative_path": "result.json",
+              "role": "retained"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/verifier/stderr.log",
+              "relative_path": "verifier/stderr.log",
+              "role": "retained"
+            }
+          ],
+          "benchmark_status": "failed",
+          "error": null,
+          "evidence_dir": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101",
+          "exit_code": 0,
+          "finished_at": "2026-08-15T16:33:12.492832+00:00",
+          "gates": {
+            "policy_loaded": true,
+            "verifier_completed": true
+          },
+          "key": {
+            "candidate_id": "policy_e8d067b11684",
+            "scenario": "craftax-default-48x48",
+            "seed": 101,
+            "stage": "screen"
+          },
+          "metrics": {
+            "achievements": 0.0,
+            "reward": 0.0
+          },
+          "missing_artifacts": [],
+          "missing_gates": [],
+          "schema_version": "eval.trial-result.v1",
+          "started_at": "2026-08-15T16:31:51.857924+00:00",
+          "status": "evaluated",
+          "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101",
+          "usage": {
+            "cached_tokens": 0,
+            "calls": 20,
+            "completion_tokens": 5689,
+            "cost_usd": 0.009946,
+            "llm_seconds": 72.054,
+            "prompt_tokens": 15595,
+            "rollouts": 1,
+            "route_errors": 0,
+            "wall_time_ms": 80104
+          },
+          "valid": true
+        },
+        "scenario": "craftax-default-48x48",
+        "seed": 101,
+        "stage": "screen",
+        "status": "evaluated",
+        "valid": true
+      },
+      "level": "info",
+      "occurredAt": "2026-08-15T16:33:12.493356+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "event": "eval.trial.terminal",
+        "occurred_at": "2026-08-15T16:33:12.493356+00:00",
+        "resumed": false,
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 22,
+        "trial": {
+          "artifacts": [
+            {
+              "bytes": 156170,
+              "declared": true,
+              "digest": "sha256:1248c7b18fe64a2de7c5c61372e803b444ff0c9409928701802aca693df76b69",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/trace.jsonl",
+              "relative_path": "trace.jsonl",
+              "role": "trace"
+            },
+            {
+              "bytes": 423,
+              "declared": true,
+              "digest": "sha256:e438a7a41e8c380faff5fb7f3b3e19aadb0bc42353b324602d1ffb549a0272b8",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/events.jsonl",
+              "relative_path": "events.jsonl",
+              "role": "events"
+            },
+            {
+              "bytes": 203,
+              "declared": true,
+              "digest": "sha256:a33d6dc1f41ad568cf10bd5c74078c2ee73171276057eb7e2bb8e0bb9d60a489",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/suite.json",
+              "relative_path": "suite.json",
+              "role": "suite"
+            },
+            {
+              "bytes": 4846,
+              "declared": true,
+              "digest": "sha256:dd7cc58d5c89e299dad060efea00eabeca5a3dc55cc46dd8f22dc915ec410e54",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/usage.jsonl",
+              "relative_path": "usage.jsonl",
+              "role": "usage"
+            },
+            {
+              "bytes": 509024,
+              "declared": true,
+              "digest": "sha256:64a5c49a9c49e70efc9da7829d538ee9b130f2bbe2ea1cd5067fe87ebb56f5d1",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/verifier/report.json",
+              "relative_path": "verifier/report.json",
+              "role": "verifier"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/container.stderr.log",
+              "relative_path": "container.stderr.log",
+              "role": "retained"
+            },
+            {
+              "bytes": 987,
+              "declared": false,
+              "digest": "sha256:a8772a1f0a1840ee6b02591f8a13138f63d04e0069311cf75c96b23ff2eb5ba9",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/result.json",
+              "relative_path": "result.json",
+              "role": "retained"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101/output/verifier/stderr.log",
+              "relative_path": "verifier/stderr.log",
+              "role": "retained"
+            }
+          ],
+          "benchmark_status": "failed",
+          "error": null,
+          "evidence_dir": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_e8d067b11684_craftax-default-48x48_101",
+          "exit_code": 0,
+          "finished_at": "2026-08-15T16:33:12.492832+00:00",
+          "gates": {
+            "policy_loaded": true,
+            "verifier_completed": true
+          },
+          "key": {
+            "candidate_id": "policy_e8d067b11684",
+            "scenario": "craftax-default-48x48",
+            "seed": 101,
+            "stage": "screen"
+          },
+          "metrics": {
+            "achievements": 0.0,
+            "reward": 0.0
+          },
+          "missing_artifacts": [],
+          "missing_gates": [],
+          "schema_version": "eval.trial-result.v1",
+          "started_at": "2026-08-15T16:31:51.857924+00:00",
+          "status": "evaluated",
+          "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101",
+          "usage": {
+            "cached_tokens": 0,
+            "calls": 20,
+            "completion_tokens": 5689,
+            "cost_usd": 0.009946,
+            "llm_seconds": 72.054,
+            "prompt_tokens": 15595,
+            "rollouts": 1,
+            "route_errors": 0,
+            "wall_time_ms": 80104
+          },
+          "valid": true
+        },
+        "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 22,
+      "type": "eval.trial.terminal",
+      "usageDelta": {
+        "cost_usd": 0.009946,
+        "rollouts": 1,
+        "wall_time_ms": 80104
+      }
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "containerEvent": {
+          "achievements": 2.0,
+          "at": 1786811615.0537543,
+          "cost_usd": 0.013944,
+          "event": "rollout.finished",
+          "reward": 1.1
+        },
+        "message": "rollout.finished",
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+      },
+      "eventId": "opt_eval_example:eval:23",
+      "level": "debug",
+      "occurredAt": "2026-08-15T16:33:35.131238+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "container_event": {
+          "achievements": 2.0,
+          "at": 1786811615.0537543,
+          "cost_usd": 0.013944,
+          "event": "rollout.finished",
+          "reward": 1.1
+        },
+        "event": "eval.trial.event",
+        "occurred_at": "2026-08-15T16:33:35.131238+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 23,
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 23,
+      "type": "eval.trial.event"
+    },
+    {
+      "algorithmId": "eval",
+      "artifactRefs": [
+        {
+          "bytes": 28514,
+          "digest": "sha256:203e3e30b5ec688c9e321053c6c69fb97361a6d51924aea20b9dbbea8c1dcf12",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/trace.jsonl",
+          "kind": "trace",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/trace.jsonl",
+          "title": "trace · trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+        },
+        {
+          "bytes": 423,
+          "digest": "sha256:3aa990d465a17159f48f376eb849669f0772e2f660300adc3753291b9c1e6c63",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/events.jsonl",
+          "kind": "events",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/events.jsonl",
+          "title": "events · trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+        },
+        {
+          "bytes": 203,
+          "digest": "sha256:c571b6155f7c82c844584e14fe3260bc1bab80e5b5354c72d61939177376e7c5",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/suite.json",
+          "kind": "suite",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/suite.json",
+          "title": "suite · trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+        },
+        {
+          "bytes": 5032,
+          "digest": "sha256:b19f76b9bf7d8bdfb80694bd6c7c2f1ad9b43313ec3d7493f230dea679e6fd2d",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/usage.jsonl",
+          "kind": "usage",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/usage.jsonl",
+          "title": "usage · trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+        },
+        {
+          "bytes": 90009,
+          "digest": "sha256:9d36311a3fb190e97a8b22572800cd3cc3f477a9803cf6ea45eddaa4c291767e",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/verifier/report.json",
+          "kind": "verifier",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/verifier/report.json",
+          "title": "verifier · trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+        }
+      ],
+      "delta": {
+        "message": "Trial trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102 evaluated"
+      },
+      "eventId": "opt_eval_example:eval:24",
+      "item": {
+        "artifacts": [
+          {
+            "bytes": 28514,
+            "declared": true,
+            "digest": "sha256:203e3e30b5ec688c9e321053c6c69fb97361a6d51924aea20b9dbbea8c1dcf12",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/trace.jsonl",
+            "relative_path": "trace.jsonl",
+            "role": "trace"
+          },
+          {
+            "bytes": 423,
+            "declared": true,
+            "digest": "sha256:3aa990d465a17159f48f376eb849669f0772e2f660300adc3753291b9c1e6c63",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/events.jsonl",
+            "relative_path": "events.jsonl",
+            "role": "events"
+          },
+          {
+            "bytes": 203,
+            "declared": true,
+            "digest": "sha256:c571b6155f7c82c844584e14fe3260bc1bab80e5b5354c72d61939177376e7c5",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/suite.json",
+            "relative_path": "suite.json",
+            "role": "suite"
+          },
+          {
+            "bytes": 5032,
+            "declared": true,
+            "digest": "sha256:b19f76b9bf7d8bdfb80694bd6c7c2f1ad9b43313ec3d7493f230dea679e6fd2d",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/usage.jsonl",
+            "relative_path": "usage.jsonl",
+            "role": "usage"
+          },
+          {
+            "bytes": 90009,
+            "declared": true,
+            "digest": "sha256:9d36311a3fb190e97a8b22572800cd3cc3f477a9803cf6ea45eddaa4c291767e",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/verifier/report.json",
+            "relative_path": "verifier/report.json",
+            "role": "verifier"
+          },
+          {
+            "bytes": 0,
+            "declared": false,
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/container.stderr.log",
+            "relative_path": "container.stderr.log",
+            "role": "retained"
+          },
+          {
+            "bytes": 989,
+            "declared": false,
+            "digest": "sha256:2f9e06b5988018ce9187fb43e02fb9af8e535b951d30d193cc7a502f1028aad5",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/result.json",
+            "relative_path": "result.json",
+            "role": "retained"
+          },
+          {
+            "bytes": 0,
+            "declared": false,
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/verifier/stderr.log",
+            "relative_path": "verifier/stderr.log",
+            "role": "retained"
+          }
+        ],
+        "benchmarkStatus": "passed",
+        "candidateId": "policy_30d2c7e911d3",
+        "evidenceDir": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102",
+        "gates": {
+          "policy_loaded": true,
+          "verifier_completed": true
+        },
+        "id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102",
+        "kind": "trial",
+        "metrics": {
+          "achievements": 2.0,
+          "reward": 1.1
+        },
+        "missingArtifacts": [],
+        "missingGates": [],
+        "raw": {
+          "artifacts": [
+            {
+              "bytes": 28514,
+              "declared": true,
+              "digest": "sha256:203e3e30b5ec688c9e321053c6c69fb97361a6d51924aea20b9dbbea8c1dcf12",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/trace.jsonl",
+              "relative_path": "trace.jsonl",
+              "role": "trace"
+            },
+            {
+              "bytes": 423,
+              "declared": true,
+              "digest": "sha256:3aa990d465a17159f48f376eb849669f0772e2f660300adc3753291b9c1e6c63",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/events.jsonl",
+              "relative_path": "events.jsonl",
+              "role": "events"
+            },
+            {
+              "bytes": 203,
+              "declared": true,
+              "digest": "sha256:c571b6155f7c82c844584e14fe3260bc1bab80e5b5354c72d61939177376e7c5",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/suite.json",
+              "relative_path": "suite.json",
+              "role": "suite"
+            },
+            {
+              "bytes": 5032,
+              "declared": true,
+              "digest": "sha256:b19f76b9bf7d8bdfb80694bd6c7c2f1ad9b43313ec3d7493f230dea679e6fd2d",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/usage.jsonl",
+              "relative_path": "usage.jsonl",
+              "role": "usage"
+            },
+            {
+              "bytes": 90009,
+              "declared": true,
+              "digest": "sha256:9d36311a3fb190e97a8b22572800cd3cc3f477a9803cf6ea45eddaa4c291767e",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/verifier/report.json",
+              "relative_path": "verifier/report.json",
+              "role": "verifier"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/container.stderr.log",
+              "relative_path": "container.stderr.log",
+              "role": "retained"
+            },
+            {
+              "bytes": 989,
+              "declared": false,
+              "digest": "sha256:2f9e06b5988018ce9187fb43e02fb9af8e535b951d30d193cc7a502f1028aad5",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/result.json",
+              "relative_path": "result.json",
+              "role": "retained"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/verifier/stderr.log",
+              "relative_path": "verifier/stderr.log",
+              "role": "retained"
+            }
+          ],
+          "benchmark_status": "passed",
+          "error": null,
+          "evidence_dir": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102",
+          "exit_code": 0,
+          "finished_at": "2026-08-15T16:33:35.225142+00:00",
+          "gates": {
+            "policy_loaded": true,
+            "verifier_completed": true
+          },
+          "key": {
+            "candidate_id": "policy_30d2c7e911d3",
+            "scenario": "craftax-default-48x48",
+            "seed": 102,
+            "stage": "screen"
+          },
+          "metrics": {
+            "achievements": 2.0,
+            "reward": 1.1
+          },
+          "missing_artifacts": [],
+          "missing_gates": [],
+          "schema_version": "eval.trial-result.v1",
+          "started_at": "2026-08-15T16:31:51.857967+00:00",
+          "status": "evaluated",
+          "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102",
+          "usage": {
+            "cached_tokens": 0,
+            "calls": 20,
+            "completion_tokens": 8925,
+            "cost_usd": 0.013944,
+            "llm_seconds": 101.743,
+            "prompt_tokens": 16170,
+            "rollouts": 1,
+            "route_errors": 0,
+            "wall_time_ms": 102829
+          },
+          "valid": true
+        },
+        "scenario": "craftax-default-48x48",
+        "seed": 102,
+        "stage": "screen",
+        "status": "evaluated",
+        "valid": true
+      },
+      "level": "info",
+      "occurredAt": "2026-08-15T16:33:35.225941+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "event": "eval.trial.terminal",
+        "occurred_at": "2026-08-15T16:33:35.225941+00:00",
+        "resumed": false,
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 24,
+        "trial": {
+          "artifacts": [
+            {
+              "bytes": 28514,
+              "declared": true,
+              "digest": "sha256:203e3e30b5ec688c9e321053c6c69fb97361a6d51924aea20b9dbbea8c1dcf12",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/trace.jsonl",
+              "relative_path": "trace.jsonl",
+              "role": "trace"
+            },
+            {
+              "bytes": 423,
+              "declared": true,
+              "digest": "sha256:3aa990d465a17159f48f376eb849669f0772e2f660300adc3753291b9c1e6c63",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/events.jsonl",
+              "relative_path": "events.jsonl",
+              "role": "events"
+            },
+            {
+              "bytes": 203,
+              "declared": true,
+              "digest": "sha256:c571b6155f7c82c844584e14fe3260bc1bab80e5b5354c72d61939177376e7c5",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/suite.json",
+              "relative_path": "suite.json",
+              "role": "suite"
+            },
+            {
+              "bytes": 5032,
+              "declared": true,
+              "digest": "sha256:b19f76b9bf7d8bdfb80694bd6c7c2f1ad9b43313ec3d7493f230dea679e6fd2d",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/usage.jsonl",
+              "relative_path": "usage.jsonl",
+              "role": "usage"
+            },
+            {
+              "bytes": 90009,
+              "declared": true,
+              "digest": "sha256:9d36311a3fb190e97a8b22572800cd3cc3f477a9803cf6ea45eddaa4c291767e",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/verifier/report.json",
+              "relative_path": "verifier/report.json",
+              "role": "verifier"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/container.stderr.log",
+              "relative_path": "container.stderr.log",
+              "role": "retained"
+            },
+            {
+              "bytes": 989,
+              "declared": false,
+              "digest": "sha256:2f9e06b5988018ce9187fb43e02fb9af8e535b951d30d193cc7a502f1028aad5",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/result.json",
+              "relative_path": "result.json",
+              "role": "retained"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102/output/verifier/stderr.log",
+              "relative_path": "verifier/stderr.log",
+              "role": "retained"
+            }
+          ],
+          "benchmark_status": "passed",
+          "error": null,
+          "evidence_dir": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102",
+          "exit_code": 0,
+          "finished_at": "2026-08-15T16:33:35.225142+00:00",
+          "gates": {
+            "policy_loaded": true,
+            "verifier_completed": true
+          },
+          "key": {
+            "candidate_id": "policy_30d2c7e911d3",
+            "scenario": "craftax-default-48x48",
+            "seed": 102,
+            "stage": "screen"
+          },
+          "metrics": {
+            "achievements": 2.0,
+            "reward": 1.1
+          },
+          "missing_artifacts": [],
+          "missing_gates": [],
+          "schema_version": "eval.trial-result.v1",
+          "started_at": "2026-08-15T16:31:51.857967+00:00",
+          "status": "evaluated",
+          "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102",
+          "usage": {
+            "cached_tokens": 0,
+            "calls": 20,
+            "completion_tokens": 8925,
+            "cost_usd": 0.013944,
+            "llm_seconds": 101.743,
+            "prompt_tokens": 16170,
+            "rollouts": 1,
+            "route_errors": 0,
+            "wall_time_ms": 102829
+          },
+          "valid": true
+        },
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 24,
+      "type": "eval.trial.terminal",
+      "usageDelta": {
+        "cost_usd": 0.013944,
+        "rollouts": 1,
+        "wall_time_ms": 102829
+      }
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "containerEvent": {
+          "achievements": 0.0,
+          "at": 1786811637.5470097,
+          "cost_usd": 0.016233,
+          "event": "rollout.finished",
+          "reward": -0.9
+        },
+        "message": "rollout.finished",
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+      },
+      "eventId": "opt_eval_example:eval:25",
+      "level": "debug",
+      "occurredAt": "2026-08-15T16:33:57.710266+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "container_event": {
+          "achievements": 0.0,
+          "at": 1786811637.5470097,
+          "cost_usd": 0.016233,
+          "event": "rollout.finished",
+          "reward": -0.9
+        },
+        "event": "eval.trial.event",
+        "occurred_at": "2026-08-15T16:33:57.710266+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 25,
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 25,
+      "type": "eval.trial.event"
+    },
+    {
+      "algorithmId": "eval",
+      "artifactRefs": [
+        {
+          "bytes": 170063,
+          "digest": "sha256:cf03e301eac50b6fbb84a7245b5e080dee768f4eb5df66a9ef71d2bfec8984cc",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/trace.jsonl",
+          "kind": "trace",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/trace.jsonl",
+          "title": "trace · trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+        },
+        {
+          "bytes": 423,
+          "digest": "sha256:15f21a5f00dc82c363e23d0a117b9b5fd95c47607d49809e46a28ac8e1d2a2b4",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/events.jsonl",
+          "kind": "events",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/events.jsonl",
+          "title": "events · trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+        },
+        {
+          "bytes": 203,
+          "digest": "sha256:a33d6dc1f41ad568cf10bd5c74078c2ee73171276057eb7e2bb8e0bb9d60a489",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/suite.json",
+          "kind": "suite",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/suite.json",
+          "title": "suite · trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+        },
+        {
+          "bytes": 4874,
+          "digest": "sha256:657765b6547524e1b16e2cd7bc6df46422b1c40521acf51a7e22ae969f4ca7ce",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/usage.jsonl",
+          "kind": "usage",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/usage.jsonl",
+          "title": "usage · trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+        },
+        {
+          "bytes": 567517,
+          "digest": "sha256:7c47c7294aa9b9a3563c5c10f39a252ad0262ad734fe338dcd6b81bd812b036b",
+          "id": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/verifier/report.json",
+          "kind": "verifier",
+          "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/verifier/report.json",
+          "title": "verifier · trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+        }
+      ],
+      "delta": {
+        "message": "Trial trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101 evaluated"
+      },
+      "eventId": "opt_eval_example:eval:26",
+      "item": {
+        "artifacts": [
+          {
+            "bytes": 170063,
+            "declared": true,
+            "digest": "sha256:cf03e301eac50b6fbb84a7245b5e080dee768f4eb5df66a9ef71d2bfec8984cc",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/trace.jsonl",
+            "relative_path": "trace.jsonl",
+            "role": "trace"
+          },
+          {
+            "bytes": 423,
+            "declared": true,
+            "digest": "sha256:15f21a5f00dc82c363e23d0a117b9b5fd95c47607d49809e46a28ac8e1d2a2b4",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/events.jsonl",
+            "relative_path": "events.jsonl",
+            "role": "events"
+          },
+          {
+            "bytes": 203,
+            "declared": true,
+            "digest": "sha256:a33d6dc1f41ad568cf10bd5c74078c2ee73171276057eb7e2bb8e0bb9d60a489",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/suite.json",
+            "relative_path": "suite.json",
+            "role": "suite"
+          },
+          {
+            "bytes": 4874,
+            "declared": true,
+            "digest": "sha256:657765b6547524e1b16e2cd7bc6df46422b1c40521acf51a7e22ae969f4ca7ce",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/usage.jsonl",
+            "relative_path": "usage.jsonl",
+            "role": "usage"
+          },
+          {
+            "bytes": 567517,
+            "declared": true,
+            "digest": "sha256:7c47c7294aa9b9a3563c5c10f39a252ad0262ad734fe338dcd6b81bd812b036b",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/verifier/report.json",
+            "relative_path": "verifier/report.json",
+            "role": "verifier"
+          },
+          {
+            "bytes": 0,
+            "declared": false,
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/container.stderr.log",
+            "relative_path": "container.stderr.log",
+            "role": "retained"
+          },
+          {
+            "bytes": 991,
+            "declared": false,
+            "digest": "sha256:0c35729a3ed0ae7d82ca0ec4c3c88f5b1d2cae3d5ba0ccedc05726e7642c5f7d",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/result.json",
+            "relative_path": "result.json",
+            "role": "retained"
+          },
+          {
+            "bytes": 0,
+            "declared": false,
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/verifier/stderr.log",
+            "relative_path": "verifier/stderr.log",
+            "role": "retained"
+          }
+        ],
+        "benchmarkStatus": "failed",
+        "candidateId": "policy_30d2c7e911d3",
+        "evidenceDir": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101",
+        "gates": {
+          "policy_loaded": true,
+          "verifier_completed": true
+        },
+        "id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101",
+        "kind": "trial",
+        "metrics": {
+          "achievements": 0.0,
+          "reward": -0.9
+        },
+        "missingArtifacts": [],
+        "missingGates": [],
+        "raw": {
+          "artifacts": [
+            {
+              "bytes": 170063,
+              "declared": true,
+              "digest": "sha256:cf03e301eac50b6fbb84a7245b5e080dee768f4eb5df66a9ef71d2bfec8984cc",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/trace.jsonl",
+              "relative_path": "trace.jsonl",
+              "role": "trace"
+            },
+            {
+              "bytes": 423,
+              "declared": true,
+              "digest": "sha256:15f21a5f00dc82c363e23d0a117b9b5fd95c47607d49809e46a28ac8e1d2a2b4",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/events.jsonl",
+              "relative_path": "events.jsonl",
+              "role": "events"
+            },
+            {
+              "bytes": 203,
+              "declared": true,
+              "digest": "sha256:a33d6dc1f41ad568cf10bd5c74078c2ee73171276057eb7e2bb8e0bb9d60a489",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/suite.json",
+              "relative_path": "suite.json",
+              "role": "suite"
+            },
+            {
+              "bytes": 4874,
+              "declared": true,
+              "digest": "sha256:657765b6547524e1b16e2cd7bc6df46422b1c40521acf51a7e22ae969f4ca7ce",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/usage.jsonl",
+              "relative_path": "usage.jsonl",
+              "role": "usage"
+            },
+            {
+              "bytes": 567517,
+              "declared": true,
+              "digest": "sha256:7c47c7294aa9b9a3563c5c10f39a252ad0262ad734fe338dcd6b81bd812b036b",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/verifier/report.json",
+              "relative_path": "verifier/report.json",
+              "role": "verifier"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/container.stderr.log",
+              "relative_path": "container.stderr.log",
+              "role": "retained"
+            },
+            {
+              "bytes": 991,
+              "declared": false,
+              "digest": "sha256:0c35729a3ed0ae7d82ca0ec4c3c88f5b1d2cae3d5ba0ccedc05726e7642c5f7d",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/result.json",
+              "relative_path": "result.json",
+              "role": "retained"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/verifier/stderr.log",
+              "relative_path": "verifier/stderr.log",
+              "role": "retained"
+            }
+          ],
+          "benchmark_status": "failed",
+          "error": null,
+          "evidence_dir": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101",
+          "exit_code": 0,
+          "finished_at": "2026-08-15T16:33:57.750808+00:00",
+          "gates": {
+            "policy_loaded": true,
+            "verifier_completed": true
+          },
+          "key": {
+            "candidate_id": "policy_30d2c7e911d3",
+            "scenario": "craftax-default-48x48",
+            "seed": 101,
+            "stage": "screen"
+          },
+          "metrics": {
+            "achievements": 0.0,
+            "reward": -0.9
+          },
+          "missing_artifacts": [],
+          "missing_gates": [],
+          "schema_version": "eval.trial-result.v1",
+          "started_at": "2026-08-15T16:31:51.857829+00:00",
+          "status": "evaluated",
+          "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101",
+          "usage": {
+            "cached_tokens": 0,
+            "calls": 20,
+            "completion_tokens": 10876,
+            "cost_usd": 0.016233,
+            "llm_seconds": 117.473,
+            "prompt_tokens": 15909,
+            "rollouts": 1,
+            "route_errors": 0,
+            "wall_time_ms": 125315
+          },
+          "valid": true
+        },
+        "scenario": "craftax-default-48x48",
+        "seed": 101,
+        "stage": "screen",
+        "status": "evaluated",
+        "valid": true
+      },
+      "level": "info",
+      "occurredAt": "2026-08-15T16:33:57.751321+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "event": "eval.trial.terminal",
+        "occurred_at": "2026-08-15T16:33:57.751321+00:00",
+        "resumed": false,
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "seq": 26,
+        "trial": {
+          "artifacts": [
+            {
+              "bytes": 170063,
+              "declared": true,
+              "digest": "sha256:cf03e301eac50b6fbb84a7245b5e080dee768f4eb5df66a9ef71d2bfec8984cc",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/trace.jsonl",
+              "relative_path": "trace.jsonl",
+              "role": "trace"
+            },
+            {
+              "bytes": 423,
+              "declared": true,
+              "digest": "sha256:15f21a5f00dc82c363e23d0a117b9b5fd95c47607d49809e46a28ac8e1d2a2b4",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/events.jsonl",
+              "relative_path": "events.jsonl",
+              "role": "events"
+            },
+            {
+              "bytes": 203,
+              "declared": true,
+              "digest": "sha256:a33d6dc1f41ad568cf10bd5c74078c2ee73171276057eb7e2bb8e0bb9d60a489",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/suite.json",
+              "relative_path": "suite.json",
+              "role": "suite"
+            },
+            {
+              "bytes": 4874,
+              "declared": true,
+              "digest": "sha256:657765b6547524e1b16e2cd7bc6df46422b1c40521acf51a7e22ae969f4ca7ce",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/usage.jsonl",
+              "relative_path": "usage.jsonl",
+              "role": "usage"
+            },
+            {
+              "bytes": 567517,
+              "declared": true,
+              "digest": "sha256:7c47c7294aa9b9a3563c5c10f39a252ad0262ad734fe338dcd6b81bd812b036b",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/verifier/report.json",
+              "relative_path": "verifier/report.json",
+              "role": "verifier"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/container.stderr.log",
+              "relative_path": "container.stderr.log",
+              "role": "retained"
+            },
+            {
+              "bytes": 991,
+              "declared": false,
+              "digest": "sha256:0c35729a3ed0ae7d82ca0ec4c3c88f5b1d2cae3d5ba0ccedc05726e7642c5f7d",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/result.json",
+              "relative_path": "result.json",
+              "role": "retained"
+            },
+            {
+              "bytes": 0,
+              "declared": false,
+              "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "path": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101/output/verifier/stderr.log",
+              "relative_path": "verifier/stderr.log",
+              "role": "retained"
+            }
+          ],
+          "benchmark_status": "failed",
+          "error": null,
+          "evidence_dir": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1/trials/trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101",
+          "exit_code": 0,
+          "finished_at": "2026-08-15T16:33:57.750808+00:00",
+          "gates": {
+            "policy_loaded": true,
+            "verifier_completed": true
+          },
+          "key": {
+            "candidate_id": "policy_30d2c7e911d3",
+            "scenario": "craftax-default-48x48",
+            "seed": 101,
+            "stage": "screen"
+          },
+          "metrics": {
+            "achievements": 0.0,
+            "reward": -0.9
+          },
+          "missing_artifacts": [],
+          "missing_gates": [],
+          "schema_version": "eval.trial-result.v1",
+          "started_at": "2026-08-15T16:31:51.857829+00:00",
+          "status": "evaluated",
+          "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101",
+          "usage": {
+            "cached_tokens": 0,
+            "calls": 20,
+            "completion_tokens": 10876,
+            "cost_usd": 0.016233,
+            "llm_seconds": 117.473,
+            "prompt_tokens": 15909,
+            "rollouts": 1,
+            "route_errors": 0,
+            "wall_time_ms": 125315
+          },
+          "valid": true
+        },
+        "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 26,
+      "type": "eval.trial.terminal",
+      "usageDelta": {
+        "cost_usd": 0.016233,
+        "rollouts": 1,
+        "wall_time_ms": 125315
+      }
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "candidate_id": "policy_e8d067b11684"
+      },
+      "eventId": "opt_eval_example:eval:27",
+      "item": {
+        "costUsd": 0.019202,
+        "eliminatedAt": null,
+        "eliminationReason": null,
+        "gateFailures": {},
+        "id": "policy_e8d067b11684",
+        "isBaseline": true,
+        "kind": "candidate",
+        "label": "luna-low",
+        "metrics": [
+          {
+            "count": 2,
+            "max": 1.1,
+            "mean": 0.55,
+            "metric": "reward",
+            "min": 0.0
+          },
+          {
+            "count": 2,
+            "max": 2.0,
+            "mean": 1.0,
+            "metric": "achievements",
+            "min": 0.0
+          }
+        ],
+        "pairedLift": null,
+        "pairedTrials": 0,
+        "raw": {
+          "candidate_id": "policy_e8d067b11684",
+          "cost_usd": 0.019202,
+          "eliminated_at": null,
+          "elimination_reason": null,
+          "gate_failures": {},
+          "is_baseline": true,
+          "label": "luna-low",
+          "metrics": [
+            {
+              "count": 2,
+              "max": 1.1,
+              "mean": 0.55,
+              "metric": "reward",
+              "min": 0.0
+            },
+            {
+              "count": 2,
+              "max": 2.0,
+              "mean": 1.0,
+              "metric": "achievements",
+              "min": 0.0
+            }
+          ],
+          "paired_lift": null,
+          "paired_trials": 0,
+          "schema_version": "eval.scorecard.v1",
+          "stage": "screen",
+          "trials": {
+            "failed": 0,
+            "total": 2,
+            "valid": 2
+          }
+        },
+        "stage": "screen",
+        "trials": {
+          "failed": 0,
+          "total": 2,
+          "valid": 2
+        }
+      },
+      "level": "info",
+      "occurredAt": "2026-08-15T16:33:57.751955+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "event": "eval.candidate.scored",
+        "occurred_at": "2026-08-15T16:33:57.751955+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "scorecard": {
+          "candidate_id": "policy_e8d067b11684",
+          "cost_usd": 0.019202,
+          "eliminated_at": null,
+          "elimination_reason": null,
+          "gate_failures": {},
+          "is_baseline": true,
+          "label": "luna-low",
+          "metrics": [
+            {
+              "count": 2,
+              "max": 1.1,
+              "mean": 0.55,
+              "metric": "reward",
+              "min": 0.0
+            },
+            {
+              "count": 2,
+              "max": 2.0,
+              "mean": 1.0,
+              "metric": "achievements",
+              "min": 0.0
+            }
+          ],
+          "paired_lift": null,
+          "paired_trials": 0,
+          "schema_version": "eval.scorecard.v1",
+          "stage": "screen",
+          "trials": {
+            "failed": 0,
+            "total": 2,
+            "valid": 2
+          }
+        },
+        "seq": 27
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 27,
+      "type": "eval.candidate.scored"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "candidate_id": "policy_30d2c7e911d3"
+      },
+      "eventId": "opt_eval_example:eval:28",
+      "item": {
+        "costUsd": 0.030177,
+        "eliminatedAt": null,
+        "eliminationReason": null,
+        "gateFailures": {},
+        "id": "policy_30d2c7e911d3",
+        "isBaseline": false,
+        "kind": "candidate",
+        "label": "luna-med",
+        "metrics": [
+          {
+            "count": 2,
+            "max": 1.1,
+            "mean": 0.10000000000000003,
+            "metric": "reward",
+            "min": -0.9
+          },
+          {
+            "count": 2,
+            "max": 2.0,
+            "mean": 1.0,
+            "metric": "achievements",
+            "min": 0.0
+          }
+        ],
+        "pairedLift": -0.45,
+        "pairedTrials": 2,
+        "raw": {
+          "candidate_id": "policy_30d2c7e911d3",
+          "cost_usd": 0.030177,
+          "eliminated_at": null,
+          "elimination_reason": null,
+          "gate_failures": {},
+          "is_baseline": false,
+          "label": "luna-med",
+          "metrics": [
+            {
+              "count": 2,
+              "max": 1.1,
+              "mean": 0.10000000000000003,
+              "metric": "reward",
+              "min": -0.9
+            },
+            {
+              "count": 2,
+              "max": 2.0,
+              "mean": 1.0,
+              "metric": "achievements",
+              "min": 0.0
+            }
+          ],
+          "paired_lift": -0.45,
+          "paired_trials": 2,
+          "schema_version": "eval.scorecard.v1",
+          "stage": "screen",
+          "trials": {
+            "failed": 0,
+            "total": 2,
+            "valid": 2
+          }
+        },
+        "stage": "screen",
+        "trials": {
+          "failed": 0,
+          "total": 2,
+          "valid": 2
+        }
+      },
+      "level": "info",
+      "occurredAt": "2026-08-15T16:33:57.752281+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "event": "eval.candidate.scored",
+        "occurred_at": "2026-08-15T16:33:57.752281+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "scorecard": {
+          "candidate_id": "policy_30d2c7e911d3",
+          "cost_usd": 0.030177,
+          "eliminated_at": null,
+          "elimination_reason": null,
+          "gate_failures": {},
+          "is_baseline": false,
+          "label": "luna-med",
+          "metrics": [
+            {
+              "count": 2,
+              "max": 1.1,
+              "mean": 0.10000000000000003,
+              "metric": "reward",
+              "min": -0.9
+            },
+            {
+              "count": 2,
+              "max": 2.0,
+              "mean": 1.0,
+              "metric": "achievements",
+              "min": 0.0
+            }
+          ],
+          "paired_lift": -0.45,
+          "paired_trials": 2,
+          "schema_version": "eval.scorecard.v1",
+          "stage": "screen",
+          "trials": {
+            "failed": 0,
+            "total": 2,
+            "valid": 2
+          }
+        },
+        "seq": 28
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 28,
+      "type": "eval.candidate.scored"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "message": "recipe is report-only; it measures candidates but never promotes one"
+      },
+      "eventId": "opt_eval_example:eval:29",
+      "level": "info",
+      "occurredAt": "2026-08-15T16:33:57.753652+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "event": "eval.selection.completed",
+        "occurred_at": "2026-08-15T16:33:57.753652+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "selection": {
+          "baseline_id": "policy_e8d067b11684",
+          "lift": null,
+          "min_lift": 0.0,
+          "primary_metric": "reward",
+          "reason": "recipe is report-only; it measures candidates but never promotes one",
+          "schema_version": "eval.selection.v1",
+          "status": "inconclusive",
+          "winner_id": null
+        },
+        "seq": 29
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 29,
+      "snapshot": {
+        "selection": {
+          "baseline_id": "policy_e8d067b11684",
+          "lift": null,
+          "min_lift": 0.0,
+          "primary_metric": "reward",
+          "reason": "recipe is report-only; it measures candidates but never promotes one",
+          "schema_version": "eval.selection.v1",
+          "status": "inconclusive",
+          "winner_id": null
+        }
+      },
+      "type": "eval.selection.completed"
+    },
+    {
+      "algorithmId": "eval",
+      "delta": {
+        "evidenceDir": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1",
+        "selectionStatus": "inconclusive",
+        "status": "completed",
+        "winnerId": null
+      },
+      "eventId": "opt_eval_example:eval:30",
+      "level": "info",
+      "occurredAt": "2026-08-15T16:33:57.753776+00:00",
+      "optimizerRunId": "opt_eval_example",
+      "raw": {
+        "event": "eval.run.terminal",
+        "evidence_dir": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1",
+        "occurred_at": "2026-08-15T16:33:57.753776+00:00",
+        "run_id": "opt_eval_craftax_luna_1",
+        "schema_version": "eval.worker-event.v1",
+        "selection_status": "inconclusive",
+        "seq": 30,
+        "status": "completed",
+        "winner_id": null
+      },
+      "schemaVersion": "optimizer_event.v1",
+      "sequenceNumber": 30,
+      "type": "optimizer.run.completed"
+    }
+  ],
+  "run": {
+    "algorithmId": "eval",
+    "cursorSeq": 30,
+    "id": "opt_eval_example",
+    "objective": "Craftax LLM policy smoke · luna low vs medium",
+    "source": "local",
+    "status": "completed"
+  }
+}

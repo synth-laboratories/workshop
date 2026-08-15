@@ -66,11 +66,14 @@ impl OptimizerCapabilities {
                 local_slot_binding: true,
                 ..Self::default()
             },
-            // Local `eval` can be cancelled and streams events, candidates,
-            // and state. It has no checkpoints and no inference endpoint, and
-            // must not claim them: a scorecard is not a model.
+            // Local `eval` can be cancelled, paused, and resumed, and streams
+            // events, candidates, and state. It has no checkpoints and no
+            // inference endpoint, and must not claim them: a scorecard is not
+            // a model. Pausing holds the matrix; in-flight trials still seal.
             "eval" => Self {
                 cancel: true,
+                pause: true,
+                resume: true,
                 stream_events: true,
                 state_slices: true,
                 candidates: true,

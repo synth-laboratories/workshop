@@ -73,6 +73,8 @@ type EvalScorecard = {
 	trials?: { total: number; valid: number; failed: number };
 	metrics?: Array<{ metric: string; mean: number | null; count: number }>;
 	pairedLift?: number | null;
+	pairedTrials?: number;
+	eliminationReason?: string | null;
 };
 
 type EvalSelection = {
@@ -97,6 +99,7 @@ function sliceData(slice: unknown): Record<string, unknown> {
 }
 
 function formatMetric(value: number | null | undefined): string {
+	// A metric no valid trial produced is unknown, not zero.
 	return value == null ? "—" : value.toFixed(3);
 }
 
@@ -632,7 +635,7 @@ export function OptimizersPage({
 					</div>
 					<div className="optimizer-recipe-grid">
 						{evalRecipes.map((recipe) => {
-							const limits = recipe.limits ?? {};
+							const limits = (recipe.limits ?? {}) as Record<string, unknown>;
 							const screening = (limits.screeningSeeds as number[] | undefined) ?? [];
 							const confirmation = (limits.confirmationSeeds as number[] | undefined) ?? [];
 							const selection = (limits.selection as Record<string, unknown> | undefined) ?? {};
@@ -664,7 +667,7 @@ export function OptimizersPage({
 											name: recipe.title,
 											description: recipe.description ?? "",
 											flow: ["Stage", "Score", "Select"],
-											prompt: `Run the Workshop eval recipe ${recipe.id} on policy variants in this project. Stage the policy files with optimizer_stage_eval_candidates using workspace-relative paths, kind python-code.v1, entrypoint policy:Policy, one labelled candidate each, marking the baseline; then call optimizer_start_recipe with the recipe id and returned candidate_set_id. Report the run status and selection status separately, the per-candidate scorecard, and the evidence directory.`
+											prompt: `Run the Workshop eval recipe ${recipe.id} on policy variants in this project. Stage the policy files with optimizer_stage_eval_candidates using workspace-relative paths, kind python-code.v1, entrypoint policy:Policy, one labelled candidate each, marking the baseline; then call optimizer_start_recipe with the recipe id and returned candidate_set_id. Never replace a policy on your own. Report the run status and selection status separately, the per-candidate scorecard, and the evidence directory.`
 										})}
 									>
 										{startingAgent === "eval" ? "Opening agent…" : "Set up run"}
@@ -755,7 +758,9 @@ export function OptimizersPage({
 								<section className="optimizer-eval-scorecard" data-testid="optimizer-eval-scorecard">
 									<span className="optimizer-eyebrow">Scorecard</span>
 									<table>
-										<thead><tr><th>Candidate</th><th>Stage</th><th>Valid</th><th>Failed</th><th>Primary</th><th>Lift</th></tr></thead>
+										<thead>
+											<tr><th>Candidate</th><th>Stage</th><th>Valid</th><th>Failed</th><th>Primary</th><th>Lift</th></tr>
+										</thead>
 										<tbody>
 											{evalState.scorecards.map((card) => {
 												const primary = evalState.selection?.primary_metric;
@@ -780,7 +785,9 @@ export function OptimizersPage({
 											<dt>Why</dt><dd>{evalState.selection.reason}</dd>
 										</dl>
 									) : null}
-									{evalState.evidenceDir ? <code className="optimizer-eval-evidence" data-testid="optimizer-eval-evidence">{evalState.evidenceDir}</code> : null}
+									{evalState.evidenceDir ? (
+										<code className="optimizer-eval-evidence" data-testid="optimizer-eval-evidence">{evalState.evidenceDir}</code>
+									) : null}
 								</section>
 							) : null}
 							<div className="optimizer-inspector-actions">

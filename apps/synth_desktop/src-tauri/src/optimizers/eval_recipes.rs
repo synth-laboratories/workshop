@@ -23,7 +23,12 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
-use tokio::{process::Command, sync::watch, time::sleep};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::Command,
+    sync::watch,
+    time::sleep,
+};
 
 use super::{
     models::{
@@ -54,6 +59,9 @@ pub const EVAL_RECIPE_IDS: [&str; 5] = [
 /// How long a cancelled worker gets to stop its containers, release its
 /// semaphore leases, and seal evidence before it is killed outright.
 const CANCEL_GRACE: Duration = Duration::from_secs(30);
+/// Sentinels the worker watches. Pausing stops it dispatching new trials;
+/// trials already in flight finish and seal rather than being abandoned.
+const PAUSE_SENTINEL: &str = "PAUSE";
 const PREFLIGHT_TTL: Duration = Duration::from_secs(20);
 
 pub fn is_eval_recipe(recipe_id: &str) -> bool {
@@ -399,7 +407,6 @@ async fn run_worker(
     fs::create_dir_all(&run_dir).context("create eval run directory")?;
     let stdout_path = run_dir.join("worker.stdout.log");
     let stderr_path = run_dir.join("worker.stderr.log");
-    let stdout = fs::File::create(&stdout_path)?;
     let stderr = fs::File::create(&stderr_path)?;
     let mut child = Command::new(&python)
         .arg("-m")
@@ -408,27 +415,59 @@ async fn run_worker(
         .arg("--manifest")
         .arg(&manifest_path)
         .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
+        .stdout(Stdio::piped())
         .stderr(Stdio::from(stderr))
         .kill_on_drop(true)
         .spawn()
         .context("launch the local eval worker")?;
 
+    // The worker's stdout is the event stream. Read it as it arrives and
+    // mirror each line immediately; the same bytes are also appended to the
+    // durable log so a Desktop restart can reconcile a run it no longer owns.
+    let pipe = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("eval worker stdout was not piped"))?;
+    let mut ingest = LiveIngest::open(&service, &run_id).await?;
+    let mut log = fs::File::create(&stdout_path)?;
+    let mut lines = BufReader::new(pipe).lines();
+    let mut streaming = true;
+
     let mut cancelled_at: Option<Instant> = None;
     loop {
-        ingest_stdout(&service, &run_id, &stdout_path).await?;
         tokio::select! {
+            line = lines.next_line(), if streaming => {
+                match line {
+                    Ok(Some(line)) => {
+                        use std::io::Write;
+                        let _ = writeln!(log, "{line}");
+                        let _ = log.flush();
+                        if let Err(error) = ingest.push(&line).await {
+                            // One unusable line must not end a live run; the
+                            // durable log still has it for reconcile.
+                            eprintln!("eval event ingest failed: {error}");
+                        }
+                    }
+                    // Stdout closed: the worker is finishing. Stop selecting on
+                    // it or the branch spins on a closed pipe.
+                    Ok(None) | Err(_) => streaming = false,
+                }
+            }
             status = child.wait() => {
                 let status = status.context("wait for the eval worker")?;
-                ingest_stdout(&service, &run_id, &stdout_path).await?;
+                // Drain anything buffered between the last read and exit.
+                while let Ok(Some(line)) = lines.next_line().await {
+                    use std::io::Write;
+                    let _ = writeln!(log, "{line}");
+                    let _ = ingest.push(&line).await;
+                }
+                let _ = std::io::Write::flush(&mut log);
                 if !status.success() {
                     bail!(
                         "eval worker exited with {status}; see {}",
                         stderr_path.display()
                     );
                 }
-                // The worker's own terminal event carries the selection status.
-                // Only synthesise one if it died before emitting it.
                 append_terminal(&service, &run_id, "completed", "eval worker finished".into())
                     .await?;
                 return Ok(());
@@ -441,7 +480,7 @@ async fn run_worker(
                     cancelled_at = Some(Instant::now());
                 }
             }
-            _ = sleep(Duration::from_millis(500)) => {}
+            _ = sleep(Duration::from_millis(250)) => {}
         }
         if let Some(at) = cancelled_at {
             if at.elapsed() > CANCEL_GRACE {
@@ -460,6 +499,98 @@ async fn run_worker(
     }
 }
 
+/// Pausing a matrix stops the worker dispatching new trials. In-flight trials
+/// finish and seal — a paused run is a run holding position, not a run that
+/// threw away the containers it had already started.
+pub fn set_paused(run_id: &str, paused: bool) -> Result<()> {
+    let sentinel = eval_home().join("runs").join(run_id).join(PAUSE_SENTINEL);
+    if paused {
+        let dir = sentinel
+            .parent()
+            .ok_or_else(|| anyhow!("invalid eval run directory"))?;
+        fs::create_dir_all(dir).context("create eval run directory")?;
+        fs::write(&sentinel, chrono::Utc::now().to_rfc3339()).context("write pause sentinel")?;
+    } else {
+        let _ = fs::remove_file(&sentinel);
+    }
+    Ok(())
+}
+
+/// Appends worker events as they arrive on the pipe.
+///
+/// The worker's stdout *is* the event stream, so it is read line by line and
+/// mirrored immediately rather than polled off a log file. The cursor is held
+/// here instead of re-read per event: a live run appends, it does not re-scan
+/// what it has already written.
+struct LiveIngest {
+    service: OptimizerService,
+    run_id: String,
+    sequence: u64,
+}
+
+impl LiveIngest {
+    async fn open(service: &OptimizerService, run_id: &str) -> Result<Self> {
+        let sequence = service.get(run_id.to_string()).await?.cursor_seq;
+        Ok(Self {
+            service: service.clone(),
+            run_id: run_id.to_string(),
+            sequence,
+        })
+    }
+
+    async fn push(&mut self, line: &str) -> Result<()> {
+        let Ok(raw) = serde_json::from_str::<Value>(line) else {
+            return Ok(());
+        };
+        if raw.get("schema_version").and_then(Value::as_str) != Some("eval.worker-event.v1") {
+            return Ok(());
+        }
+        let worker_seq = raw.get("seq").and_then(Value::as_u64).unwrap_or(0);
+        let Some(envelope) = envelope_for(&self.run_id, self.sequence + 1, worker_seq, raw) else {
+            return Ok(());
+        };
+        self.sequence += 1;
+        self.service
+            .append_events(self.run_id.clone(), vec![envelope])
+            .await?;
+        Ok(())
+    }
+}
+
+/// Build one `optimizer_event.v1` from one worker line. Shared by the live pipe
+/// and the file-based reconcile path so both produce identical envelopes.
+fn envelope_for(
+    run_id: &str,
+    sequence: u64,
+    worker_seq: u64,
+    raw: Value,
+) -> Option<OptimizerEventEnvelope> {
+    let (event_type, item, delta, snapshot, usage, level) = canonicalize(&raw)?;
+    Some(OptimizerEventEnvelope {
+        schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+        event_id: Some(format!("{run_id}:eval:{worker_seq}")),
+        event_type: event_type.into(),
+        sequence_number: sequence,
+        occurred_at: raw
+            .get("occurred_at")
+            .and_then(Value::as_str)
+            .unwrap_or(&chrono::Utc::now().to_rfc3339())
+            .to_string(),
+        optimizer_run_id: run_id.into(),
+        algorithm_id: EVAL_ALGORITHM_ID.into(),
+        level: Some(level.into()),
+        item,
+        delta,
+        snapshot,
+        usage_delta: usage,
+        artifact_refs: artifact_refs(&raw),
+        error: raw.get("error").cloned().filter(|value| !value.is_null()),
+        raw,
+    })
+}
+
+/// Reconcile path: re-read the durable log for a run whose worker process is
+/// gone (a Desktop restart), deduplicating against what already mirrored.
 async fn ingest_stdout(service: &OptimizerService, run_id: &str, path: &Path) -> Result<()> {
     if !path.is_file() {
         return Ok(());
@@ -481,35 +612,13 @@ async fn ingest_stdout(service: &OptimizerService, run_id: &str, path: &Path) ->
             continue;
         }
         let worker_seq = raw.get("seq").and_then(Value::as_u64).unwrap_or(0);
-        let event_id = format!("{run_id}:eval:{worker_seq}");
-        if seen.contains(event_id.as_str()) {
+        if seen.contains(format!("{run_id}:eval:{worker_seq}").as_str()) {
             continue;
         }
-        let Some((event_type, item, delta, snapshot, usage, level)) = canonicalize(&raw) else {
-            continue;
-        };
-        sequence += 1;
-        events.push(OptimizerEventEnvelope {
-            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-            event_id: Some(event_id),
-            event_type: event_type.into(),
-            sequence_number: sequence,
-            occurred_at: raw
-                .get("occurred_at")
-                .and_then(Value::as_str)
-                .unwrap_or(&chrono::Utc::now().to_rfc3339())
-                .to_string(),
-            optimizer_run_id: run_id.into(),
-            algorithm_id: EVAL_ALGORITHM_ID.into(),
-            level: Some(level.into()),
-            item,
-            delta,
-            snapshot,
-            usage_delta: usage,
-            artifact_refs: artifact_refs(&raw),
-            error: raw.get("error").cloned().filter(|value| !value.is_null()),
-            raw,
-        });
+        if let Some(envelope) = envelope_for(run_id, sequence + 1, worker_seq, raw) {
+            sequence += 1;
+            events.push(envelope);
+        }
     }
     if !events.is_empty() {
         service.append_events(run_id.to_string(), events).await?;
@@ -920,6 +1029,7 @@ fn tail_text(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::optimizers::models::OptimizerCreateRequest;
 
     #[test]
     fn only_allowlisted_recipe_ids_are_eval() {
@@ -977,5 +1087,235 @@ mod tests {
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0]["kind"], json!("trace"));
     }
-}
 
+    /// Replay of a real worker stream, captured verbatim from the Craftax
+    /// luna-low vs luna-med run on 2026-08-15. This is the whole Workshop
+    /// contract in one test: an eval run must mirror, stream, and project like
+    /// any other first-class optimizer, and the only way to know that without
+    /// launching the app is to push real bytes through the real path.
+    #[tokio::test]
+    async fn a_real_worker_stream_projects_like_a_first_class_optimizer() {
+        let (svc, _dir, _) = super::super::service::tests::service().await;
+        let run_id = "opt_eval_replay".to_string();
+        let (run, _) = svc
+            .create(OptimizerCreateRequest {
+                algorithm_id: EVAL_ALGORITHM_ID.into(),
+                algorithm_version: Some("1".into()),
+                objective: Some("replay".into()),
+                source: Some("local".into()),
+                project_ref: None,
+                session_ref: Some("session_replay".into()),
+                id: Some(run_id.clone()),
+                execution_bindings: None,
+                input_refs: None,
+                capabilities: Some(OptimizerCapabilities::for_algorithm(EVAL_ALGORITHM_ID)),
+                summary: None,
+                open_visual: Some(false),
+                seed_fixture: None,
+                cloud_config: None,
+                local_path: None,
+            })
+            .await
+            .unwrap();
+        // A local eval run is cancellable and streams; it must not claim a
+        // checkpoint or an inference endpoint, because a scorecard is neither.
+        assert!(run.capabilities.cancel);
+        assert!(run.capabilities.stream_events);
+        assert!(run.capabilities.state_slices);
+        assert!(run.capabilities.candidates);
+        assert!(!run.capabilities.checkpoints);
+        assert!(!run.capabilities.inference_endpoint);
+
+        let log = _dir.path().join("worker.stdout.log");
+        fs::write(&log, include_str!("fixtures/eval_worker_stdout.jsonl")).unwrap();
+
+        // Ingest twice: the poller runs on a timer while the worker writes, so
+        // re-reading a log it has already seen must not duplicate an event.
+        ingest_stdout(&svc, &run_id, &log).await.unwrap();
+        let after_first = svc.get(run_id.clone()).await.unwrap().cursor_seq;
+        ingest_stdout(&svc, &run_id, &log).await.unwrap();
+        let run = svc.get(run_id.clone()).await.unwrap();
+        assert_eq!(run.cursor_seq, after_first, "re-ingest duplicated events");
+
+        let events = svc
+            .events_after(run_id.clone(), 0, Some(500))
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 30, "every worker event should mirror");
+        for (index, event) in events.iter().enumerate() {
+            assert_eq!(event.schema_version, OPTIMIZER_EVENT_SCHEMA_VERSION);
+            assert_eq!(event.algorithm_id, EVAL_ALGORITHM_ID);
+            assert_eq!(
+                event.sequence_number,
+                index as u64 + 1,
+                "sequence must be dense"
+            );
+        }
+
+        // Terminal orchestration status, mapped onto the shared vocabulary.
+        assert_eq!(run.status, "completed");
+        assert!(run.finished_at.is_some());
+        // Rollouts accrued from trial usage, exactly like any other algorithm.
+        assert_eq!(run.usage.rollouts, 4);
+
+        let scorecard = svc
+            .get_state(run_id.clone(), "eval.scorecard".into(), None)
+            .await
+            .unwrap();
+        let candidates = scorecard.data["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 2);
+        let labels: Vec<&str> = candidates
+            .iter()
+            .map(|c| c["label"].as_str().unwrap())
+            .collect();
+        assert!(
+            labels.contains(&"luna-low") && labels.contains(&"luna-med"),
+            "{labels:?}"
+        );
+        let baseline = candidates
+            .iter()
+            .find(|c| c["label"] == "luna-low")
+            .unwrap();
+        assert_eq!(baseline["isBaseline"], json!(true));
+        assert_eq!(baseline["trials"]["valid"], json!(2));
+
+        let trials = svc
+            .get_state(run_id.clone(), "eval.trials".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(trials.data["trials"].as_array().unwrap().len(), 4);
+
+        let evidence = svc
+            .get_state(run_id.clone(), "eval.evidence".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(evidence.data["selection"]["status"], json!("inconclusive"));
+        assert!(evidence.data["seedLedger"]["screening"].is_array());
+        assert!(evidence.data["manifestDigest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+
+        let runtime = svc
+            .get_state(run_id.clone(), "eval.runtime".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(runtime.data["evaluated"], json!(4));
+        assert_eq!(runtime.data["running"], json!(0));
+        assert_eq!(runtime.data["leasesHeld"], json!(0));
+
+        // The generic slices every optimizer has must be populated too, or the
+        // run is a special case rather than a first-class noun.
+        let timeline = svc
+            .get_state(run_id.clone(), "run.timeline".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(timeline.data["events"].as_array().unwrap().len(), 30);
+        let artifacts = svc
+            .get_state(run_id.clone(), "run.artifacts".into(), None)
+            .await
+            .unwrap();
+        let traces = artifacts.data["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|a| a["kind"] == "trace")
+            .count();
+        assert_eq!(
+            traces, 4,
+            "every trial's trace should reach the artifact slice"
+        );
+    }
+
+    /// An eval run is a first-class optimizer noun, so it gets a visual and a
+    /// session relationship on the same path every other algorithm uses.
+    #[tokio::test]
+    async fn an_eval_run_opens_a_visual_like_any_other_algorithm() {
+        let (svc, _dir, _) = super::super::service::tests::service().await;
+        let (run, _) = svc
+            .create(OptimizerCreateRequest {
+                algorithm_id: EVAL_ALGORITHM_ID.into(),
+                algorithm_version: Some("1".into()),
+                objective: Some("visual check".into()),
+                source: Some("local".into()),
+                project_ref: None,
+                session_ref: Some("session_visual".into()),
+                id: Some("opt_eval_visual".into()),
+                execution_bindings: None,
+                input_refs: None,
+                capabilities: None,
+                summary: None,
+                open_visual: Some(true),
+                seed_fixture: None,
+                cloud_config: None,
+                local_path: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            run.visual_refs.iter().any(|r| r.kind == "visual"),
+            "eval run should carry a visual ref: {:?}",
+            run.visual_refs
+        );
+        let primary = run
+            .visual_refs
+            .iter()
+            .find(|reference| reference.role.as_deref() == Some("primary"))
+            .expect("eval run should attach a primary visual");
+        assert_eq!(
+            primary.metadata.get("templateId").and_then(Value::as_str),
+            Some("optimizer.eval.live.v1")
+        );
+        // Eval has its own app-owned live workspace, like public SFT, even
+        // when no Optimizers plugin advertises it.
+        assert_eq!(
+            super::super::service::primary_visual_template(EVAL_ALGORITHM_ID),
+            "optimizer.eval.live.v1"
+        );
+    }
+
+    /// The visual template renders whatever Workshop mirrors, so its committed
+    /// example must be exactly what this module produces. Regenerate with
+    /// `EVAL_WRITE_VISUAL_EXAMPLE=1 cargo test eval_visual_example`.
+    #[test]
+    fn eval_visual_example_matches_the_mirrored_stream() {
+        let mut sequence = 0u64;
+        let mut events = Vec::new();
+        for line in include_str!("fixtures/eval_worker_stdout.jsonl").lines() {
+            let Ok(raw) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let worker_seq = raw.get("seq").and_then(Value::as_u64).unwrap_or(0);
+            if let Some(envelope) = envelope_for("opt_eval_example", sequence + 1, worker_seq, raw)
+            {
+                sequence += 1;
+                events.push(envelope);
+            }
+        }
+        let document = json!({
+            "run": {
+                "id": "opt_eval_example",
+                "algorithmId": EVAL_ALGORITHM_ID,
+                "status": "completed",
+                "source": "local",
+                "objective": "Craftax LLM policy smoke · luna low vs medium",
+                "cursorSeq": sequence
+            },
+            "events": events,
+        });
+        let rendered = serde_json::to_string_pretty(&document).unwrap() + "\n";
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../visuals/families/optimizers/eval/optimizer.eval.live.v1/examples/events.json",
+        );
+        if std::env::var("EVAL_WRITE_VISUAL_EXAMPLE").is_ok() {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, &rendered).unwrap();
+            return;
+        }
+        let committed = fs::read_to_string(&path).expect("visual example is committed");
+        assert_eq!(
+            committed, rendered,
+            "the visual example has drifted from what Workshop mirrors"
+        );
+    }
+}
