@@ -21,6 +21,7 @@ mod laguna;
 mod limits;
 mod optimizers;
 mod plugins;
+pub mod presentation;
 mod reports;
 mod runtime;
 mod services;

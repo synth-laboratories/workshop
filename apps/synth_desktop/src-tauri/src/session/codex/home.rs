@@ -417,6 +417,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
             ("synth_visuals", "synth-visuals-mcp"),
             ("synth_optimizers", "synth-optimizers-mcp"),
             ("synth_session", "synth-session-mcp"),
+            ("synth_traces", "synth-traces-mcp"),
         ] {
             if !crate::context::mcp_group_enabled("bundled") {
                 continue;

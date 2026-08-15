@@ -166,6 +166,9 @@ async fn dispatch_request(
     if path.starts_with("/v1/optimizers") {
         return dispatch_optimizer(method, path, json_body, core, app).await;
     }
+    if path.starts_with("/v1/traces") {
+        return dispatch_traces(method, path, json_body, core).await;
+    }
     dispatch(method, path, json_body, core).await
 }
 
@@ -1867,6 +1870,80 @@ async fn dispatch_optimizer(
             Ok(json!({ "runs": runs }))
         }
         _ => anyhow::bail!("unsupported optimizer IPC route {method} {path}"),
+    }
+}
+
+/// Agent-facing Trace V5 access.
+///
+/// Read-only. `open` goes through the same `PresentationService` the native
+/// Data page uses, so the agent cannot reach a different inspector, bind one
+/// trace's visual to another's digest, or bypass the inspectability policy.
+async fn dispatch_traces(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+) -> Result<Value> {
+    let trace_id = || -> Result<String> {
+        body.get("trace_id")
+            .or_else(|| body.get("traceId"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .context("trace_id required")
+    };
+    match (method, path) {
+        ("GET", "/v1/traces") | ("GET", "/v1/traces/") => {
+            let traces = core.data().list_traces().await?;
+            // Report why an unavailable trace is unavailable rather than
+            // omitting it, so the agent can say so instead of guessing.
+            let rows: Vec<Value> = traces
+                .iter()
+                .map(|trace| {
+                    let inspectability = crate::presentation::trace_inspectability(trace);
+                    json!({
+                        "traceId": trace.id,
+                        "digest": trace.digest,
+                        "title": trace.title,
+                        "source": trace.source,
+                        "reward": trace.reward,
+                        "createdAt": trace.created_at,
+                        "inspectable": inspectability.eligible(),
+                        "inspectability": inspectability.label(),
+                    })
+                })
+                .collect();
+            Ok(json!({ "traces": rows, "count": rows.len() }))
+        }
+        ("POST", "/v1/traces/get") => {
+            let trace = core.data().get_trace(trace_id()?).await?;
+            let inspectability = crate::presentation::trace_inspectability(&trace);
+            Ok(json!({
+                "trace": trace,
+                "inspectable": inspectability.eligible(),
+                "inspectability": inspectability.label(),
+            }))
+        }
+        ("POST", "/v1/traces/open") => {
+            let id = trace_id()?;
+            let visual = crate::presentation::ensure_trace_inspector(core, &id).await?;
+            let session_id = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
+            let (shown, event) = core.visuals().show(visual.id.clone(), session_id).await?;
+            core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
+            Ok(json!({
+                "opened": true,
+                "traceId": id,
+                "digest": crate::presentation::trace_digest_binding(&shown),
+                "visualId": shown.id,
+                "templateId": shown.template_id,
+                "visual": shown,
+            }))
+        }
+        _ => anyhow::bail!("unsupported trace IPC route {method} {path}"),
     }
 }
 
