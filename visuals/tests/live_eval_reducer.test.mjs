@@ -85,9 +85,9 @@ function assertDeclaredStreamSource(source, descriptor) {
   return null;
 }
 
-const craftax = loadEvents("templates/live.craftax.v1/examples/events.json");
-const harbor = loadEvents("templates/live.harbor_eval.v1/examples/events.json");
-const digbench = loadEvents("templates/live.digbench.v1/examples/events.json");
+const craftax = loadEvents("families/first_class_example_containers/live.craftax.v1/examples/events.json");
+const harbor = loadEvents("families/first_class_example_containers/live.harbor_eval.v1/examples/events.json");
+const digbench = loadEvents("families/first_class_example_containers/live.digbench.v1/examples/events.json");
 
 test("C7-W03 missing reward stays em dash", () => {
   const missing = [
@@ -221,7 +221,7 @@ test("dig.bench lane projection distinguishes authenticated Codex exec from MCP"
 
 test("official P-1 Luna/Terra fixture keeps score and command compliance separate", async () => {
   const { projectDigbenchLane } = await import("../runtime/liveEvalReducer.ts");
-  const events = loadEvents("templates/live.digbench.v1/examples/codex-auth-results.json");
+  const events = loadEvents("families/first_class_example_containers/live.digbench.v1/examples/codex-auth-results.json");
   const runIds = [...new Set(events.map((event) => event.run_id))];
   assert.equal(runIds.length, 2);
   const luna = projectDigbenchLane(events.filter((event) => event.run_id === "dig_official_p1_luna"));

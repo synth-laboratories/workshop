@@ -45,7 +45,7 @@ require_clean_source() {
 
 verify_resource_hygiene() {
   local path
-  for path in visuals/templates visuals/chrome visuals/components visuals/runtime \
+  for path in visuals/families visuals/chrome visuals/components visuals/runtime \
     visuals/ambient.d.ts visuals/package.json visuals/tsconfig.json; do
     git -C "$ROOT" ls-files --error-unmatch "$path" >/dev/null 2>&1 \
       || git -C "$ROOT" ls-files "$path/**" | grep -q . \

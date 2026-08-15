@@ -93,6 +93,38 @@ test("Visuals page can create a draft visual from the registry", async ({ page }
 	await expect(page.getByTestId("visuals-grid")).toContainText("New visual");
 });
 
+test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears when stacked", async ({ page }) => {
+	await page.setViewportSize({ width: 1280, height: 840 });
+	await installVisualsFixture(page);
+	await page.getByTestId("open-visuals").click();
+	const splitter = page.getByTestId("visuals-resize-handle");
+	await expect(splitter).toBeVisible();
+	await expect(splitter).toHaveAttribute("role", "separator");
+	await expect(splitter).toHaveAttribute("aria-orientation", "vertical");
+	const before = Number(await splitter.getAttribute("aria-valuenow"));
+	const box = await splitter.boundingBox();
+	if (!box) throw new Error("Visuals splitter geometry unavailable");
+	await page.mouse.move(box.x + box.width / 2, box.y + 80);
+	await page.mouse.down();
+	await page.mouse.move(box.x + 72, box.y + 80, { steps: 4 });
+	await page.mouse.up();
+	const dragged = Number(await splitter.getAttribute("aria-valuenow"));
+	expect(dragged).toBeGreaterThan(before + 40);
+	await splitter.focus();
+	await page.keyboard.press("Shift+ArrowLeft");
+	const keyboard = Number(await splitter.getAttribute("aria-valuenow"));
+	expect(keyboard).toBe(dragged - 64);
+	await page.reload();
+	await page.getByTestId("open-visuals").click();
+	await expect(page.getByTestId("visuals-resize-handle")).toHaveAttribute("aria-valuenow", String(keyboard));
+	await page.setViewportSize({ width: 720, height: 840 });
+	await expect(page.getByTestId("visuals-resize-handle")).toBeHidden();
+	expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+	await page.setViewportSize({ width: 1280, height: 840 });
+	await expect(page.getByTestId("visuals-resize-handle")).toBeVisible();
+	expect(Number(await page.getByTestId("visuals-resize-handle").getAttribute("aria-valuenow"))).toBe(keyboard);
+});
+
 test("Trace V5 inspector provides focus, full, evidence, and expandable output views", async ({ page }) => {
 	const traceVisual: VisualRecord = {
 		...sampleVisual,

@@ -84,6 +84,8 @@ export type ArtifactRef = {
 	rendererKind?: string;
 	/** Runtime visual instance id from `/v1/visuals`. */
 	visualId?: string;
+	/** Durable revision used to invalidate asynchronous binding resolutions. */
+	revision?: number;
 	bindings?: import("@synth/runtime-protocol").VisualBindings | Record<string, unknown>;
 	/** Durable visual metadata, including presentation and authoring review receipts. */
 	metadata?: Record<string, unknown>;

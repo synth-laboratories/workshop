@@ -1,7 +1,7 @@
 import { Component, useEffect, useMemo, useState, type ComponentType, type ErrorInfo, type ReactNode } from "react";
 import type { ArtifactRef } from "../types/landing";
 import type { VisualRecord } from "@synth/runtime-protocol";
-import { propsFromBindings } from "@synth/visuals";
+import { bindTemplateSlots, bindingSlots, isVisualBindings, propsFromBindings, resolveTemplate } from "@synth/visuals";
 import { loadVisualShell } from "../runtime/visualsLoader";
 import { bridges } from "../runtime/desktopBridge";
 import { mergeOptimizerEventPage, type OptimizerEventCursorState } from "../runtime/optimizerEventCursor";
@@ -24,6 +24,7 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 		title: visual.title,
 		templateId: visual.templateId,
 		visualId: visual.id,
+		revision: visual.currentRevision,
 		rendererKind: visual.rendererKind,
 		bindings: visual.bindings,
 		metadata: visual.metadata,
@@ -189,11 +190,30 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [optimizerPayload, setOptimizerPayload] = useState<Record<string, unknown> | null>(null);
 	const [optimizerLoadError, setOptimizerLoadError] = useState<string | null>(null);
 	const [comparisonPayload, setComparisonPayload] = useState<Record<string, unknown> | null>(null);
-	const resolved = useMemo(() => propsFromBindings(artifact.bindings), [artifact.bindings]);
+	const traceBindings = useMemo(
+		() => bindingSlots(artifact.bindings).filter((binding) => binding.kind === "trace_v5"),
+		[artifact.bindings]
+	);
+	const synchronouslyResolved = useMemo(() => {
+		if (!isVisualBindings(artifact.bindings) || traceBindings.length === 0) {
+			return propsFromBindings(artifact.bindings);
+		}
+		return propsFromBindings({
+			schemaVersion: "synth.visual-bindings.v1",
+			slots: artifact.bindings.slots.filter((binding) => binding.kind !== "trace_v5")
+		});
+	}, [artifact.bindings, traceBindings.length]);
+	const [traceResolution, setTraceResolution] = useState<{
+		status: "idle" | "loading" | "ready" | "error";
+		props: Record<string, unknown>;
+		error?: string;
+	}>({ status: "idle", props: {} });
 
 	useEffect(() => {
 		let cancelled = false;
 		const templateId = artifact.templateId;
+		setFailed(false);
+		setShell(null);
 		if (!templateId) {
 			setFailed(true);
 			return;
@@ -209,6 +229,71 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			});
 		return () => { cancelled = true; };
 	}, [artifact.templateId]);
+
+	useEffect(() => {
+		let cancelled = false;
+		if (traceBindings.length === 0 || !isVisualBindings(artifact.bindings)) {
+			setTraceResolution({ status: "idle", props: {} });
+			return () => { cancelled = true; };
+		}
+		const bindings = artifact.bindings;
+		const template = artifact.templateId ? resolveTemplate(artifact.templateId) : undefined;
+		if (!template) {
+			setTraceResolution({ status: "error", props: {}, error: `Template ${artifact.templateId ?? "unknown"} is unavailable` });
+			return () => { cancelled = true; };
+		}
+		if (!bridges.inventory) {
+			setTraceResolution({ status: "error", props: {}, error: "Trace projection resolver is unavailable" });
+			return () => { cancelled = true; };
+		}
+		const unsupportedBinding = traceBindings.find((binding) =>
+			binding.schema && binding.schema !== "synth.trace-projection.rollout-inspector.v1"
+		);
+		if (unsupportedBinding) {
+			setTraceResolution({ status: "error", props: {}, error: `Unsupported trace projection schema: ${unsupportedBinding.schema}` });
+			return () => { cancelled = true; };
+		}
+
+		setTraceResolution({ status: "loading", props: {} });
+		const projectionByDigest = new Map<string, Promise<unknown>>();
+		const loadTraceV5 = (source: string) => {
+			let pending = projectionByDigest.get(source);
+			if (!pending) {
+				pending = bridges.inventory!.resolveTraceProjection(source, "rollout-inspector").then((projection) => {
+					if (projection.traceDigest !== source) {
+						throw new Error(`Trace resolver returned digest ${projection.traceDigest} for ${source}`);
+					}
+					if (projection.projectionKind !== "rollout-inspector") {
+						throw new Error(`Unsupported trace projection kind: ${projection.projectionKind}`);
+					}
+					if (projection.projectionSchema !== "synth.trace-projection.rollout-inspector.v1") {
+						throw new Error(`Unsupported trace projection schema: ${projection.projectionSchema}`);
+					}
+					return projection.payload;
+				});
+				projectionByDigest.set(source, pending);
+			}
+			return pending;
+		};
+		void bindTemplateSlots(template, bindings, { loadTraceV5, skipOptional: true })
+			.then((result) => {
+				if (cancelled) return;
+				if (result.errors.length > 0) {
+					setTraceResolution({ status: "error", props: {}, error: result.errors.join(" · ") });
+					return;
+				}
+				const props = Object.fromEntries(
+					Object.values(result.slots)
+						.filter((slot) => slot.kind === "trace_v5")
+						.map((slot) => [slot.slot, slot.data])
+				);
+				setTraceResolution({ status: "ready", props });
+			})
+			.catch((reason) => {
+				if (!cancelled) setTraceResolution({ status: "error", props: {}, error: reason instanceof Error ? reason.message : String(reason) });
+			});
+		return () => { cancelled = true; };
+	}, [artifact.id, artifact.revision, artifact.templateId, artifact.bindings, traceBindings.length]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -330,19 +415,31 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	}, [boundRunId]);
 
 	if (failed) return <VisualInvalidState title="Template unavailable" detail={`No bundled shell is registered for ${artifact.templateId ?? "this visual"}.`} />;
-	if (resolved.errors.length > 0) return <VisualInvalidState title="Visual data unavailable" detail={resolved.errors.join(" · ")} />;
+	if (synchronouslyResolved.errors.length > 0) return <VisualInvalidState title="Visual data unavailable" detail={synchronouslyResolved.errors.join(" · ")} />;
+	if (traceResolution.status === "loading") return <p className="visual-loading" role="status">Loading sealed trace…</p>;
+	if (traceResolution.status === "error") {
+		const detail = traceResolution.error ?? "Trace projection resolution failed";
+		const lower = detail.toLowerCase();
+		const title = lower.includes("quarant") ? "Trace is quarantined"
+			: lower.includes("extractor") || lower.includes("projection kind") || lower.includes("not registered") ? "Trace extractor unavailable"
+				: lower.includes("unsupported") || lower.includes("schema") ? "Unsupported trace schema"
+					: lower.includes("not found") || lower.includes("missing") || lower.includes("archive") ? "Sealed trace archive missing"
+						: lower.includes("unavailable") ? "Trace resolver unavailable" : "Trace data unavailable";
+		return <VisualInvalidState title={title} detail={detail} />;
+	}
 	if (!Shell) return <p className="visual-loading">Loading visual shell…</p>;
+	const resolvedProps = { ...synchronouslyResolved.props, ...traceResolution.props };
 	return (
 		<div data-testid="visual-template-shell">
 			<Shell
-				{...(resolved.props as ShellProps)}
+				{...(resolvedProps as ShellProps)}
 				title={artifact.title}
 				lede={artifact.summary}
 				bindings={artifact.bindings}
 				visualMetadata={artifact.metadata}
 				loadError={optimizerLoadError ?? undefined}
 				{...(optimizerPayload ?? {})}
-				data={optimizerPayload ?? resolved.props.optimizer_run}
+				data={optimizerPayload ?? resolvedProps.optimizer_run}
 				comparison={comparisonPayload ?? undefined}
 			/>
 		</div>

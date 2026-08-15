@@ -39,7 +39,7 @@
     },
     "resources": {
       "../../../services/laguna-daemon/laguna_daemon": "services/laguna-daemon/laguna_daemon",
-      "../../../visuals/templates": "visuals/templates",
+      "../../../visuals/families": "visuals/families",
       "../../../visuals/chrome": "visuals/chrome",
       "../../../visuals/components": "visuals/components",
       "../../../visuals/runtime": "visuals/runtime",

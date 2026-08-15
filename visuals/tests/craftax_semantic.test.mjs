@@ -5,7 +5,7 @@ import {
   projectCraftaxSemanticTrace,
   projectCraftaxViewer,
   semanticCheckpointIndexes
-} from "../templates/live.craftax.v1/projectCraftax.ts";
+} from "../families/first_class_example_containers/live.craftax.v1/projectCraftax.ts";
 
 const LANE = "rollout_craftax_luna_med_seed7_2026_08_12";
 

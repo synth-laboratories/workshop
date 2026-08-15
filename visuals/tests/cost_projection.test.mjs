@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { projectAtCursor } from "../templates/optimizer.run.v1/components/projectEvents.ts";
+import { projectAtCursor } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
 
 test("usage projection preserves unknown cost after a later known receipt", () => {
   const run = { id: "cost-fold", algorithmId: "gepa", status: "running" };

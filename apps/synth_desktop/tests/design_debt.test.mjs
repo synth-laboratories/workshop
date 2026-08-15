@@ -77,7 +77,7 @@ test("Async Intern Respond opens an intervention control instead of a stub toast
 });
 
 test("design debt: agent-authored analysis shell normalizes persisted type-block payloads", () => {
-	const shell = readFileSync(join(appRoot, "../../visuals/templates/analysis.visual.v1/shell.tsx"), "utf8");
+	const shell = readFileSync(join(appRoot, "../../visuals/families/analysis/analysis.visual.v1/shell.tsx"), "utf8");
 	assert.match(shell, /normalizeBlock/);
 	assert.match(shell, /block\.type/);
 	assert.match(shell, /if \(kind === "note"\)/);
@@ -156,4 +156,31 @@ test("Codex thread compaction uses the native app glyph and divider", () => {
 	assert.match(transcript, /context-compaction-toggle/);
 	assert.match(transcript, /line\.placement !== "after"/);
 	assert.match(transcript, /line\.placement === "after"/);
+});
+
+test("Trace V5 viewer keeps async resolution revision-safe and failures explicit", () => {
+	const host = read("components/VisualHost.tsx");
+	assert.match(host, /bindTemplateSlots\(template, bindings, \{ loadTraceV5/);
+	assert.match(host, /resolveTraceProjection\(source, "rollout-inspector"\)/);
+	assert.match(host, /if \(cancelled\) return;/);
+	assert.match(host, /artifact\.revision/);
+	assert.match(host, /status: "loading", props: \{\}/);
+	for (const state of [
+		"Trace is quarantined",
+		"Unsupported trace schema",
+		"Trace extractor unavailable",
+		"Sealed trace archive missing",
+		"Trace resolver unavailable"
+	]) assert.match(host, new RegExp(state));
+});
+
+test("Data Inspect persists trace identity and digest binding without projection payload", () => {
+	const inventory = read("components/DataPage.tsx");
+	assert.match(inventory, /templateId: TRACE_INSPECTOR_TEMPLATE/);
+	assert.match(inventory, /slot: "projection"/);
+	assert.match(inventory, /kind: "trace_v5"/);
+	assert.match(inventory, /source: trace\.digest/);
+	assert.match(inventory, /traceRecordId: trace\.id/);
+	assert.match(inventory, /bridges\.visuals\.list\(\{ templateId: TRACE_INSPECTOR_TEMPLATE/);
+	assert.doesNotMatch(inventory, /payload:\s*projection/);
 });
