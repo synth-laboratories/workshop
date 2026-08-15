@@ -187,10 +187,17 @@ export default function App() {
 						setSandboxMode={c.setSandboxMode}
 						showToast={c.showToast}
 						startOptimizerAgent={async (title, prompt) => {
-							const targetId = c.selectedTargetId === "local-laguna" && c.state.codexOauthConfigured
-								? "chatgpt-luna"
-								: c.selectedTargetId;
-							const session = await c.createConversation(targetId, title);
+							// An optimizer setup is an ordinary product turn on the
+							// operator-selected target. Do not silently route a local
+							// request through ChatGPT merely because OAuth exists.
+							// Defer native startup so sendTurn atomically takes custody
+							// of the first prompt instead of opening a blank eager thread.
+							const session = await c.createConversation(
+								c.selectedTargetId,
+								title,
+								undefined,
+								{ deferNativeStart: true }
+							);
 							const sent = await c.sendToSession(session.id, prompt);
 							if (!sent) throw new Error("The optimizer setup agent could not start");
 						}}
