@@ -50,6 +50,8 @@ export const COMMANDS = {
 	CODEX_TURN_SEND: "codex_turn_send",
 	CODEX_TURN_INTERRUPT: "codex_turn_interrupt",
 	CODEX_THREAD_COMPACT: "codex_thread_compact",
+	CODEX_THREAD_READ: "codex_thread_read",
+	CODEX_THREAD_ITEMS_LIST: "codex_thread_items_list",
 	CODEX_TURN_STEER: "codex_turn_steer",
 	CODEX_APPROVAL_RESOLVE: "codex_approval_resolve",
 	CODEX_SESSION_CLOSE: "codex_session_close",

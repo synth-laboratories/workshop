@@ -127,11 +127,15 @@ export function envelopeIdentity(event: LiveEnvelope, index: number): string {
   // legitimately contains ten `event_id: "1"` records, so identity must keep
   // the producer lane. Treating event_id as globally unique silently drops
   // all but one lane while still making the aggregate lane count look valid.
-  const scope = event.rollout_id ?? event.lane ?? event.run_id ?? "run";
+  const streamId = typeof event.stream_id === "string" ? event.stream_id : "";
+  const sequence = event.sequence_number ?? event.sequence;
+  if (streamId && sequence != null && String(sequence).length > 0) {
+    return `${streamId}:${sequence}`;
+  }
+  const scope = streamId || event.rollout_id || event.lane || event.run_id || "run";
   if (typeof event.event_id === "string" && event.event_id.length > 0) {
     return `${scope}:${event.event_id}`;
   }
-  const sequence = event.sequence_number ?? event.sequence;
   if (sequence != null && String(sequence).length > 0) {
     return `${scope}:${sequence}`;
   }

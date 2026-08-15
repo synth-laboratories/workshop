@@ -455,6 +455,69 @@ test("V2 subAgentActivity and child turn lifecycle drive the same first-class Su
 	await expect(page.getByTestId("chat-transcript")).not.toContainText("The provider could not produce a response");
 });
 
+test("two V2 children overlap in wall-clock and keep a dedicated Subagents rail", async ({ page }) => {
+	await page.addInitScript(() => {
+		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
+		let listener: ((event: Event) => void) | undefined;
+		(window as typeof window & { __emitCodexOverlap?: (event: Event) => void }).__emitCodexOverlap = (event) => listener?.(event);
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId: "subagent-overlap-session", threadId: "parent-overlap-thread", workspace: "/workspaces/default",
+				model: "openai/gpt-5.6-terra", providerName: "openrouter", providerTitle: "OpenRouter",
+				baseUrl: "https://openrouter.ai/api/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId: "subagent-overlap-session", threadId: "parent-overlap-thread" }),
+			startTurn: async () => ({ sessionId: "subagent-overlap-session", threadId: "parent-overlap-thread", turnId: "turn-1" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: (next: (event: Event) => void) => { listener = next; return () => { listener = undefined; }; }
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-subagent-overlap-session").click();
+
+	const wallStart = Date.now();
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCodexOverlap: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexOverlap;
+		const send = (method: string, params: Record<string, unknown>) => emit({ sessionId: "subagent-overlap-session", method, params });
+		send("agentMessage/completed", { messageId: "parent-overlap", content: "I’ll run two reviews in parallel." });
+		send("item/started", { item: {
+			id: "spawn-a", type: "subAgentActivity", kind: "started", agentThreadId: "child-overlap-a", agentPath: "/root/api_boundary"
+		} });
+		send("turn/started", { threadId: "child-overlap-a", turn: { id: "turn-a" } });
+	});
+	await page.waitForTimeout(1500);
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCodexOverlap: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexOverlap;
+		const send = (method: string, params: Record<string, unknown>) => emit({ sessionId: "subagent-overlap-session", method, params });
+		send("item/started", { item: {
+			id: "spawn-b", type: "subAgentActivity", kind: "started", agentThreadId: "child-overlap-b", agentPath: "/root/readme_location"
+		} });
+		send("turn/started", { threadId: "child-overlap-b", turn: { id: "turn-b" } });
+	});
+	await expect(page.getByTestId("visual-subagents")).toBeVisible();
+	await page.getByTestId("resource-shelf-trigger").click();
+	await expect(page.getByTestId("subagents-rail")).toBeVisible();
+	await expect(page.getByTestId("visual-subagents")).toContainText("Working · 2");
+	await page.waitForTimeout(1500);
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitCodexOverlap: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexOverlap;
+		emit({ sessionId: "subagent-overlap-session", method: "turn/completed", params: { threadId: "child-overlap-a", turn: { status: "completed", lastAgentMessage: "API boundary review done." } } });
+		emit({ sessionId: "subagent-overlap-session", method: "turn/completed", params: { threadId: "child-overlap-b", turn: { status: "completed", lastAgentMessage: "README location confirmed." } } });
+	});
+	const wallMs = Date.now() - wallStart;
+	await expect(page.getByTestId("visual-subagents")).toContainText("Completed · 2");
+	await expect(page.getByTestId("chat-transcript")).not.toContainText("API boundary review done.");
+	await expect(page.getByTestId("chat-transcript")).not.toContainText("README location confirmed.");
+	await page.getByTestId("subagent-row-child-overlap-a").click();
+	await expect(page.getByTestId("subagents-detail")).toBeVisible();
+	await page.getByTestId("subagents-back").click();
+	await expect(page.getByTestId("subagent-row-child-overlap-b")).toBeVisible();
+	expect(wallMs).toBeLessThan(5000);
+	expect(wallMs).toBeGreaterThan(2500);
+});
+
 test("Codex thread name updates rename the durable sidebar session", async ({ page }) => {
 	await page.addInitScript(() => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
@@ -1446,6 +1509,95 @@ test("approval modes configure new native sessions and pending requests resolve 
 		{ sessionId, approvalId: "approval-1", decision: "once" },
 		{ sessionId, approvalId: "approval-paid-1", decision: "once" }
 	]);
+});
+
+test("paid compute Reject writes a durable decision and restart expiry closes the modal", async ({ page }) => {
+	await page.addInitScript(() => {
+		let listener: ((event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) | undefined;
+		let started: Record<string, unknown> | undefined;
+		const decisions: Array<{ sessionId: string; approvalId: string; decision: string }> = [];
+		const testWindow = window as typeof window & {
+			__approvalStarted?: () => Record<string, unknown> | undefined;
+			__approvalDecisions?: () => typeof decisions;
+			__emitApproval?: typeof listener;
+			synthCodex?: unknown;
+		};
+		testWindow.__approvalStarted = () => started;
+		testWindow.__approvalDecisions = () => decisions;
+		testWindow.synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [],
+			start: async (request: Record<string, unknown>) => {
+				started = request;
+				return { sessionId: request.sessionId, threadId: "thread-paid-reject" };
+			},
+			startTurn: async (sessionId: string) => ({ sessionId, threadId: "thread-paid-reject", turnId: "turn-paid-reject" }),
+			interrupt: async () => undefined,
+			resolveApproval: async (sessionId: string, approvalId: string, decision: string) => {
+				decisions.push({ sessionId, approvalId, decision });
+				listener?.({ sessionId, method: decision === "reject" ? "approval.rejected" : "approval.granted", params: { approvalId, decision } });
+			},
+			close: async () => undefined,
+			onEvent: (next: typeof listener) => { listener = next; testWindow.__emitApproval = next; return () => { listener = undefined; }; }
+		};
+	});
+	await installLagunaFixture(page, "ready");
+	await page.getByTestId("approval-mode-select").click();
+	await page.getByTestId("approval-mode-menu").getByRole("option", { name: /Always ask/ }).click();
+	await page.getByTestId("composer-input").fill("start_recipe gepa.banking77.luna.v1");
+	await page.getByTestId("composer-send").click();
+	const started = await page.evaluate(() => (window as typeof window & { __approvalStarted: () => Record<string, unknown> }).__approvalStarted());
+	const sessionId = String(started?.sessionId);
+	await page.evaluate((id) => {
+		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({
+			sessionId: id,
+			method: "approval.requested",
+			params: {
+				approvalId: "approval-paid-reject",
+				kind: "paid_compute",
+				operation: "optimizer.recipe.start",
+				requestingAgent: "Agent session paid-reject",
+				estimatedCostUsdMicros: 2450000,
+				requestedCap: { maxCostUsdMicros: 2450000, maxRollouts: 240 },
+				parameters: { recipeId: "gepa.banking77.luna.v1", task: "banking77" },
+				alwaysSupported: false
+			}
+		});
+	}, sessionId);
+	const modal = page.getByTestId("paid-compute-approval-modal");
+	await expect(modal).toBeVisible();
+	await expect(modal).toContainText("$2.45");
+	await expect(modal).toContainText("240");
+	await modal.getByRole("button", { name: "Reject" }).click();
+	await expect(modal).toBeHidden();
+	expect(await page.evaluate(() => (window as typeof window & { __approvalDecisions: () => unknown[] }).__approvalDecisions())).toEqual([
+		{ sessionId, approvalId: "approval-paid-reject", decision: "reject" }
+	]);
+	await page.evaluate((id) => {
+		const emit = (window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval;
+		emit({
+			sessionId: id,
+			method: "approval.requested",
+			params: {
+				approvalId: "approval-paid-restart",
+				kind: "paid_compute",
+				operation: "optimizer.recipe.start",
+				estimatedCostUsdMicros: 2450000,
+				requestedCap: { maxCostUsdMicros: 2450000, maxRollouts: 240 },
+				parameters: { recipeId: "gepa.banking77.luna.v1" },
+				alwaysSupported: false
+			}
+		});
+	}, sessionId);
+	await expect(modal).toBeVisible();
+	await page.evaluate((id) => {
+		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({
+			sessionId: id,
+			method: "approval.expired",
+			params: { approvalId: "approval-paid-restart", decision: "expired", reason: "origin_interrupted" }
+		});
+	}, sessionId);
+	await expect(modal).toBeHidden();
 });
 
 test("a recent folder can create and attach to a conversation from the landing composer", async ({ page }) => {

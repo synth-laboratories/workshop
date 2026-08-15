@@ -176,6 +176,30 @@ pub struct CodexSessionRequest {
 
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
+pub struct CodexThreadReadRequest {
+    pub session_id: String,
+    pub thread_id: String,
+    #[serde(default = "default_include_turns")]
+    pub include_turns: bool,
+}
+
+fn default_include_turns() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexThreadItemsRequest {
+    pub session_id: String,
+    pub thread_id: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
 pub struct CodexApprovalDecisionRequest {
     pub session_id: String,
     pub approval_id: String,

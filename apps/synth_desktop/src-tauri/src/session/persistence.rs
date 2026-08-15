@@ -131,6 +131,22 @@ impl SessionPersistence {
         }
     }
 
+    pub async fn session_events_after(
+        &self,
+        session_id: String,
+        after_sequence: i64,
+        limit: i64,
+    ) -> Result<Vec<AppEvent>> {
+        match self {
+            Self::Core(core) => {
+                core.journal()
+                    .session_events_after(session_id, after_sequence, limit)
+                    .await
+            }
+            Self::Null => Ok(Vec::new()),
+        }
+    }
+
     pub async fn events_of_kinds_after(
         &self,
         after_sequence: i64,

@@ -14,7 +14,13 @@ import { projectLiveEval } from "../../../runtime/liveEvalReducer.ts";
 import { bindingSlots } from "../../../runtime/bind.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../../runtime/types.ts";
 
-type StreamPayload = { events?: LiveEvalEvent[]; sse_url?: string; replay_ms?: number };
+type StreamPayload = {
+  events?: LiveEvalEvent[];
+  sse_url?: string;
+  replay_ms?: number;
+  poll_url?: string;
+  transports?: { poll?: { url?: string }; sse?: { url?: string } };
+};
 
 export type ShellProps = {
   title?: string;
@@ -88,14 +94,19 @@ export function Shell(props: ShellProps) {
   const stream = asStream(props.data ?? props.stream ?? props.jobs);
   const sseUrl =
     props.sseUrl ??
+    stream.transports?.sse?.url ??
     stream.sse_url ??
     bindingSlots(props.bindings).find((binding) => binding.slot === "stream" && binding.kind === "live_sse")?.source;
+  const pollUrl =
+    stream.transports?.poll?.url ??
+    stream.poll_url ??
+    bindingSlots(props.bindings).find((binding) => binding.slot === "stream")?.poll_url;
   const fixtureEvents = useMemo(
     () => (sseUrl ? undefined : stream.events),
     [sseUrl, stream.events]
   );
   const hasSource = Boolean(sseUrl || stream.events);
-  const { events, live, error, ready } = useLiveEvalStream({ sseUrl, fixtureEvents, replayMs: stream.replay_ms });
+  const { events, live, error, ready } = useLiveEvalStream({ sseUrl, pollUrl, fixtureEvents, replayMs: stream.replay_ms });
   const [showFullStream, setShowFullStream] = useState(false);
   const [eventCutoff, setEventCutoff] = useState<number | null>(null);
   const [selectedEventIndex, setSelectedEventIndex] = useState<number | null>(null);

@@ -247,6 +247,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::codex_turn_send,
         crate::codex_turn_interrupt,
         crate::codex_thread_compact,
+        crate::codex_thread_read,
+        crate::codex_thread_items_list,
         crate::codex_turn_steer,
         crate::codex_approval_resolve,
         crate::codex_session_close,

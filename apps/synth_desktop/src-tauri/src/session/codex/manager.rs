@@ -22,8 +22,9 @@ use super::home::{
 use super::proto::{
     default_approval_policy, default_sandbox, is_detached_failure, CodexApprovalDecisionRequest,
     CodexSessionInfo, CodexSessionRecord, CodexSessionRequest, CodexSessionStartRequest,
-    CodexSteerRequest, CodexTurnFailure, CodexTurnSendRequest, CodexTurnStartRequest,
-    CompactWaiters, ProviderTransport, Session, SessionDetached, COMPACT_PROMPT, DETACHED_MESSAGE,
+    CodexSteerRequest, CodexThreadItemsRequest, CodexThreadReadRequest, CodexTurnFailure,
+    CodexTurnSendRequest, CodexTurnStartRequest, CompactWaiters, ProviderTransport, Session,
+    SessionDetached, COMPACT_PROMPT, DETACHED_MESSAGE,
 };
 use super::telemetry::{PerformanceTrackers, TurnPerformanceTracker, TurnTokenUsage};
 
@@ -824,6 +825,68 @@ impl CodexManager {
         records
     }
 
+    pub async fn read_thread(&self, request: CodexThreadReadRequest) -> Result<Value> {
+        let session = self
+            .assert_thread_readable(&request.session_id, &request.thread_id)
+            .await?;
+        session
+            .server
+            .request(
+                "thread/read",
+                json!({
+                    "threadId": request.thread_id,
+                    "includeTurns": request.include_turns,
+                }),
+            )
+            .await
+    }
+
+    pub async fn list_thread_items(&self, request: CodexThreadItemsRequest) -> Result<Value> {
+        let session = self
+            .assert_thread_readable(&request.session_id, &request.thread_id)
+            .await?;
+        let mut params = json!({ "threadId": request.thread_id });
+        if let Some(cursor) = request.cursor {
+            params["cursor"] = Value::String(cursor);
+        }
+        if let Some(limit) = request.limit {
+            params["limit"] = json!(limit);
+        }
+        session.server.request("thread/items/list", params).await
+    }
+
+    async fn assert_thread_readable(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<Arc<Session>> {
+        let session = self.session(session_id).await?;
+        if session.thread_id == thread_id {
+            return Ok(session);
+        }
+        let events = self
+            .persistence
+            .session_events_after(session_id.to_owned(), 0, 10_000)
+            .await?;
+        let owned = events.iter().any(|event| {
+            payload_mentions_thread(&event.payload, thread_id)
+                || event
+                    .payload
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    == Some(thread_id)
+                || event
+                    .payload
+                    .get("thread_id")
+                    .and_then(Value::as_str)
+                    == Some(thread_id)
+        });
+        if !owned {
+            anyhow::bail!("thread {thread_id} is not owned by session {session_id}");
+        }
+        Ok(session)
+    }
+
     async fn session(&self, id: &str) -> Result<Arc<Session>> {
         self.sessions
             .read()
@@ -1083,4 +1146,36 @@ impl CodexManager {
     async fn persist_records(&self) -> Result<()> {
         super::home::persist_records(&self.records, &self.state_path).await
     }
+}
+
+fn payload_mentions_thread(payload: &Value, thread_id: &str) -> bool {
+    fn walk(value: &Value, thread_id: &str) -> bool {
+        match value {
+            Value::String(text) => text == thread_id,
+            Value::Array(items) => items.iter().any(|item| walk(item, thread_id)),
+            Value::Object(map) => {
+                for (key, nested) in map {
+                    if matches!(
+                        key.as_str(),
+                        "threadId"
+                            | "thread_id"
+                            | "agentThreadId"
+                            | "agent_thread_id"
+                            | "receiverThreadIds"
+                            | "receiver_thread_ids"
+                    ) && walk(nested, thread_id)
+                    {
+                        return true;
+                    }
+                    if walk(nested, thread_id) && matches!(key.as_str(), "item" | "params" | "payload")
+                    {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+    walk(payload, thread_id)
 }

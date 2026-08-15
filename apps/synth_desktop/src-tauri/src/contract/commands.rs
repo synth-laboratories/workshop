@@ -23,6 +23,8 @@ impl Commands {
     pub const CODEX_TURN_SEND: &'static str = "codex_turn_send";
     pub const CODEX_TURN_INTERRUPT: &'static str = "codex_turn_interrupt";
     pub const CODEX_THREAD_COMPACT: &'static str = "codex_thread_compact";
+    pub const CODEX_THREAD_READ: &'static str = "codex_thread_read";
+    pub const CODEX_THREAD_ITEMS_LIST: &'static str = "codex_thread_items_list";
     pub const CODEX_TURN_STEER: &'static str = "codex_turn_steer";
     pub const CODEX_APPROVAL_RESOLVE: &'static str = "codex_approval_resolve";
     pub const CODEX_SESSION_CLOSE: &'static str = "codex_session_close";

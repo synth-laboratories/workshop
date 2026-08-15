@@ -3117,7 +3117,8 @@ html.sidebar-hidden .titlebar {
 .subagents-group + .subagents-group { margin-top: 34px; }
 .subagents-group h3 { margin: 0 0 14px; color: #9298a2; font-size: 14px; font-weight: 500; }
 .subagents-empty { margin: 0; color: #9298a2; font-size: 14px; }
-.subagent-row { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 11px 0; }
+.subagent-row { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 11px 0; width: 100%; border: 0; background: transparent; text-align: left; cursor: pointer; border-radius: 8px; }
+.subagent-row:hover, .subagent-row:focus-visible { background: #f4f6f9; }
 .subagent-mark { font-size: 24px; line-height: 24px; color: #62a8ff; }
 .subagent-mark.mark-starting,
 .subagent-mark.mark-working { color: #f1c53d; animation: subagent-pulse 1.6s ease-in-out infinite; }
@@ -3128,7 +3129,7 @@ html.sidebar-hidden .titlebar {
 .subagent-mark.mark-unavailable { color: #ef6d78; }
 .subagent-copy { min-width: 0; }
 .subagent-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.subagent-copy strong { display: block; color: #292d33; font-size: 15px; font-weight: 520; }
+.subagent-copy strong { display: block; color: #292d33; font-size: 15px; font-weight: 520; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .subagent-copy p { margin: 3px 0 0; color: #747b85; font-size: 14px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .subagent-state { flex: 0 0 auto; border-radius: 999px; padding: 2px 7px; background: #f0f3f8; color: #68717e; font-size: 11px; font-weight: 600; line-height: 1.25; }
 .subagent-state.state-starting,
@@ -3139,6 +3140,10 @@ html.sidebar-hidden .titlebar {
 .subagent-state.state-stopped,
 .subagent-state.state-unavailable { background: #ffe9ec; color: #af4351; }
 .subagent-row time { color: #969ca5; font-size: 12px; white-space: nowrap; }
+.subagents-back { border: 0; background: transparent; color: #376cab; font-size: 14px; font-weight: 600; padding: 0 0 12px; cursor: pointer; }
+.subagents-workspace-summary { margin: 0 0 18px; color: #68717e; font-size: 13px; }
+.subagents-detail { color: #292d33; font-size: 14px; }
+.subagents-detail pre { margin: 12px 0 0; max-height: 320px; overflow: auto; font-size: 11px; white-space: pre-wrap; }
 @keyframes subagent-pulse { 50% { opacity: .48; transform: scale(.92); } }
 
 /* ── Cloud desk (sync / async) ── */

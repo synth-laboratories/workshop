@@ -40,8 +40,8 @@ mod workspace_scope;
 use base64::Engine as _;
 use codex::{
     CodexApprovalDecisionRequest, CodexManager, CodexSessionInfo, CodexSessionRecord,
-    CodexSessionRequest, CodexSessionStartRequest, CodexSteerRequest, CodexTurnFailure,
-    CodexTurnSendRequest, CodexTurnStartRequest,
+    CodexSessionRequest, CodexSessionStartRequest, CodexSteerRequest, CodexThreadItemsRequest,
+    CodexThreadReadRequest, CodexTurnFailure, CodexTurnSendRequest, CodexTurnStartRequest,
 };
 pub use core_runtime::CoreRuntime;
 use data::{
@@ -2637,6 +2637,27 @@ async fn codex_thread_compact(
 ) -> Result<(), AppError> {
     let request = prepare_codex_start(&laguna, &oauth, &core, request).await?;
     state.compact(app, request).await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn codex_thread_read(
+    state: State<'_, Arc<CodexManager>>,
+    request: CodexThreadReadRequest,
+) -> Result<Value, AppError> {
+    state.read_thread(request).await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn codex_thread_items_list(
+    state: State<'_, Arc<CodexManager>>,
+    request: CodexThreadItemsRequest,
+) -> Result<Value, AppError> {
+    state
+        .list_thread_items(request)
+        .await
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
