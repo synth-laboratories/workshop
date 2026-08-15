@@ -9,6 +9,14 @@ import type {
 
 import { CONTAINER_POLL_MS } from "../limits";
 import { bridges } from "../runtime/desktopBridge";
+import {
+	findTraceInspectorVisual,
+	traceDigestBinding,
+	traceInspectability,
+	traceInspectorCreateRequest,
+	traceInspectorVisualId,
+	TRACE_INSPECTOR_TEMPLATE
+} from "../runtime/traceInspector";
 
 export type DataTab = "containers" | "traces" | "visuals" | "usage" | "inference";
 
@@ -63,33 +71,6 @@ function formatDuration(durationMs: number): string {
 	if (durationMs < 1_000) return `${durationMs} ms`;
 	if (durationMs < 60_000) return `${(durationMs / 1_000).toFixed(1)} s`;
 	return `${Math.floor(durationMs / 60_000)}m ${Math.round((durationMs % 60_000) / 1_000)}s`;
-}
-
-const TRACE_INSPECTOR_TEMPLATE = "trace.rollout_inspector.v1";
-const TRACE_PROJECTION_SCHEMA = "synth.trace-projection.rollout-inspector.v1";
-
-function traceInspectability(trace: TraceV5Record): { eligible: boolean; label: string } {
-	const metadata = trace.metadata ?? {};
-	const compatibility = typeof metadata.compatibilityLevel === "string" ? metadata.compatibilityLevel.toLowerCase() : null;
-	const validation = typeof metadata.validationStatus === "string" ? metadata.validationStatus.toLowerCase() : null;
-	if (metadata.quarantined === true || metadata.trusted === false || validation === "invalid" || validation === "quarantined") {
-		return { eligible: false, label: "Quarantined" };
-	}
-	if (metadata.selfContained === false) return { eligible: false, label: "Archive incomplete" };
-	if (compatibility === "invalid" || compatibility === "opaque") return { eligible: false, label: "Unsupported" };
-	return { eligible: true, label: "Inspect" };
-}
-
-function traceDigestBinding(visual: VisualRecord): string | null {
-	if (visual.templateId !== TRACE_INSPECTOR_TEMPLATE) return null;
-	const bindings = visual.bindings as { slots?: Array<{ slot?: string; kind?: string; source?: string }> };
-	const projection = bindings?.slots?.find((slot) => slot.slot === "projection" && slot.kind === "trace_v5");
-	return typeof projection?.source === "string" ? projection.source : null;
-}
-
-function traceInspectorVisualId(trace: TraceV5Record): string {
-	const digest = trace.digest.replace(/^sha256:/, "").replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 64);
-	return `vis_trace_${digest || trace.id.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 64)}`;
 }
 
 export function DataPage({
@@ -311,35 +292,11 @@ export function DataPage({
 			// Re-read the durable registry so reopening after a restart reuses the
 			// digest-bound visual even when this page's initial catalog is stale.
 			const registered = await bridges.visuals.list({ templateId: TRACE_INSPECTOR_TEMPLATE, limit: 500 });
-			let visual = registered.find((candidate) =>
-				candidate.traceId === trace.id
-				|| candidate.metadata?.traceRecordId === trace.id
-				|| candidate.metadata?.traceDigest === trace.digest
-				|| traceDigestBinding(candidate) === trace.digest
-			);
+			let visual = findTraceInspectorVisual(registered, trace);
 			if (!visual) {
 				const visualId = traceInspectorVisualId(trace);
 				try {
-					visual = await bridges.visuals.create({
-						id: visualId,
-						templateId: TRACE_INSPECTOR_TEMPLATE,
-						title: trace.title,
-						traceId: trace.id,
-						bindings: {
-							schemaVersion: "synth.visual-bindings.v1",
-							slots: [{
-								slot: "projection",
-								kind: "trace_v5",
-								source: trace.digest,
-								schema: TRACE_PROJECTION_SCHEMA
-							}]
-						},
-						metadata: {
-							traceRecordId: trace.id,
-							traceDigest: trace.digest,
-							projectionSchema: TRACE_PROJECTION_SCHEMA
-						}
-					});
+					visual = await bridges.visuals.create(traceInspectorCreateRequest(trace));
 				} catch (createError) {
 					// Another window may have created the deterministic identity after
 					// our list. Reuse it only if it is bound to this exact sealed digest.
