@@ -6522,7 +6522,7 @@ html.sidebar-hidden .titlebar {
 	.visuals-layout > .visuals-preview { margin-top: 12px; }
 }
 
-@container visuals-library (max-width: 680px) {
+@container visuals-library (max-width: 800px) {
 	.visuals-layout { grid-template-columns: minmax(0, 1fr); }
 	.visuals-layout > .primary-resize-handle { display: none; }
 	.visuals-layout > .visuals-grid,
