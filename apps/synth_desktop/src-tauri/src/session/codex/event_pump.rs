@@ -22,7 +22,8 @@ use crate::storage::EventSource;
 use super::home::persist_records;
 use super::proto::{
     default_approval_policy, select_approval_decision, AppServer, CodexResolver,
-    CodexSessionRecord, CodexSessionStartRequest, CompactWaiters, Pending, Session, STDOUT_CLOSED,
+    CodexSessionRecord, CodexSessionStartRequest, CompactWaiters, Pending, ProviderTransport,
+    Session, STDOUT_CLOSED,
 };
 use super::telemetry::{
     finalize_performance_tracker, is_context_compaction_notification, track_performance_event,
