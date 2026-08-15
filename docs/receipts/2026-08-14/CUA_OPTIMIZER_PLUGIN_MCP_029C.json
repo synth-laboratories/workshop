@@ -1,0 +1,188 @@
+{
+  "schemaVersion": "synth.optimizer-plugin-cua-receipt.v1",
+  "recordedAt": "2026-08-14T23:58:23.457398Z",
+  "result": "pass",
+  "definitionOfDone": "Fresh Gemini CUA completed the plugin lifecycle and bounded Banking77 recipe, returned a materialized optimizer_result.v1 prompt, stopped the service without deleting the run, and replayed the terminal visual from the retained local mirror.",
+  "workshop": {
+    "appVersion": "0.3.0",
+    "testedCommit": "cf71bd2fe0dfec18af921a25eedf636a4541878d",
+    "instanceId": "optimizer-e2e-029c",
+    "modelId": "google/gemini-3.7-flash",
+    "approvalPolicy": "ask_for_risky_actions",
+    "filesystemAccess": "full_system_access"
+  },
+  "instruction": "Download and start the Optimizers plugin, run the bounded Banking77 GEPA recipe, keep its native visual open, give me the optimized prompt and evidence when it finishes, then stop the optimizer service without deleting the run.",
+  "releaseSelection": {
+    "channel": "dev",
+    "selectedVersion": "0.2.9.dev20260814",
+    "observedUxLabels": [
+      "Official releases",
+      "Dev nightlies"
+    ]
+  },
+  "plugin": {
+    "pluginId": "optimizers",
+    "sidecarVersion": "0.2.9.dev20260814",
+    "sidecarDigest": "sha256:cbef67f68d6ca19e5bf766666a45620c5ff005b786d0c1c9b78ab9f2b7df77ef",
+    "capabilitiesDigest": "sha256:70ef9076972937e662b29bc46b1bc56f0fe48cc09f0737e9f621644889d43020",
+    "actionReceipts": {
+      "install": {
+        "receiptId": "plugin_action_03e304186d1f4f9baf21211854c062f1",
+        "approvalReceiptId": "approval-861595d0559148c99d4a769f59133fe2",
+        "result": "ok"
+      },
+      "start": {
+        "receiptId": "plugin_action_3a7cd42a9d8f44bf8e46717e1bda38b3",
+        "approvalReceiptId": "approval-auto-06f93109a19b46b7bfb5f86385dd90d9",
+        "result": "ok"
+      },
+      "stop": {
+        "receiptId": "plugin_action_ac38ed5a9000467bace172145ab8e430",
+        "approvalReceiptId": "approval-auto-79f1cbaf3e4f48cc8619cde3d937ec44",
+        "result": "ok"
+      }
+    },
+    "finalStatus": {
+      "enabled": true,
+      "phase": "stopped",
+      "activeRuns": 0,
+      "installedVersion": "0.2.9.dev20260814",
+      "runAndVisualRetained": true
+    }
+  },
+  "computeApproval": {
+    "approvalReceiptId": "approval-8e319d3cfe65417a8b989c9fa11b6add",
+    "decision": "approve-with-cap",
+    "recipeId": "gepa.banking77.smoke.v1",
+    "maxRollouts": 240,
+    "maxCostUsd": 2.45
+  },
+  "optimizer": {
+    "algorithmId": "gepa",
+    "algorithmVersion": "synth-optimizers-0.2.5",
+    "recipeId": "gepa.banking77.smoke.v1",
+    "preparationDigest": "sha256:18f7898dbca51db3cebc54475304ba15ff30b704c9c6a802801f38586f6ea38a",
+    "optimizerRunId": "banking77_gepa_luna_med_691e41b9",
+    "status": "completed",
+    "firstCursor": 1,
+    "finalCursor": 1010,
+    "declaredLimits": {
+      "maxCostUsd": 2.45,
+      "maxGenerations": 1,
+      "maxHeldoutRollouts": 100,
+      "maxTotalRollouts": 240,
+      "maxTrainRollouts": 140,
+      "minibatchSize": 20,
+      "proposalsPerGeneration": 1
+    },
+    "usage": {
+      "costUsd": 0.011035500000000002,
+      "rollouts": 140,
+      "failedRollouts": 0,
+      "promptTokens": 169977,
+      "completionTokens": 670,
+      "totalTokens": 170647,
+      "wallTimeMs": 152087
+    },
+    "scores": {
+      "selectedCandidateTrain": 0.72,
+      "selectedCandidateHeldout": 0.6,
+      "candidateMinibatch": 0.9,
+      "parentMinibatch": 0.9
+    },
+    "selection": {
+      "selectedCandidateId": "gepa_1c284a9e221e",
+      "proposedCandidateId": "gepa_ec1e8eaca942",
+      "proposedCandidateDecision": "rejected",
+      "proposedCandidateReason": "primary_not_improved"
+    }
+  },
+  "visual": {
+    "visualId": "vis_6a9edb0abfd84bed9eeaba58145061ac",
+    "templateId": "optimizer.gepa.live.v1",
+    "templateDigest": "sha256:cbef67f68d6ca19e5bf766666a45620c5ff005b786d0c1c9b78ab9f2b7df77ef",
+    "initialReadinessReceipt": {
+      "schemaVersion": "synth.visual-subscription-receipt.v1",
+      "optimizerRunId": "banking77_gepa_luna_med_691e41b9",
+      "visualId": "vis_6a9edb0abfd84bed9eeaba58145061ac",
+      "templateId": "optimizer.gepa.live.v1",
+      "templateDigest": "cbef67f68d6ca19e5bf766666a45620c5ff005b786d0c1c9b78ab9f2b7df77ef",
+      "replayedThrough": 1,
+      "subscribedFrom": 2
+    },
+    "historicalReplay": {
+      "replayedThrough": 1010,
+      "subscribedFrom": 1011,
+      "terminalStateRendered": "COMPLETED",
+      "renderedRollouts": "140 / 240",
+      "sameVisualId": true
+    }
+  },
+  "optimizerResult": {
+    "schemaVersion": "optimizer_result.v1",
+    "status": "completed",
+    "completionReceiptId": "optimizer_completion_banking77_gepa_luna_med_691e41b9",
+    "selectedCandidateId": "gepa_1c284a9e221e",
+    "promptDigest": "sha256:e4abe2cbf2d234873f613920ebde0eac1e943a4efad43fe55f52cc7ccee6b888",
+    "prompt": "Classify the customer banking query into exactly one Banking77 intent. Return exactly one label from the allowed label list, preserving the label's spelling, underscores, capitalization, and punctuation. Use the full query, not one keyword. Prefer the label for the user's concrete banking action, status, or problem: separate physical-card ordering from delivery timing, virtual-card creation from virtual-card problems, card payments from cash withdrawals, top-ups from incoming transfers, pending from failed/declined/reverted, passcodes from card PINs, and phone loss from card compromise. Return only the label.",
+    "artifactRefs": [
+      {
+        "kind": "content",
+        "id": "e29df444e85ff5719eaa1aea60f4b1768f619519beaac4fad15cd0eda3b66027",
+        "role": "best_candidate"
+      },
+      {
+        "kind": "content",
+        "id": "8079a06726fe260826acb38a72395daeca7bebea8d15c2196a4e2f13a2eb88b8",
+        "role": "result_manifest"
+      }
+    ],
+    "promptNonEmpty": true,
+    "digestPresent": true,
+    "filesystemPathsPresent": false
+  },
+  "mcpSequence": [
+    "plugin.status:not_installed",
+    "plugin.install:ok",
+    "plugin.start:ready",
+    "optimizer.list_algorithms:ok",
+    "optimizer.list_recipes:ok",
+    "optimizer.prepare:waiting_for_viewer",
+    "optimizer.open_visual:ok",
+    "optimizer.await_ready:timeout",
+    "visual.show:ok",
+    "optimizer.await_ready:ready",
+    "optimizer.start:approved",
+    "optimizer.watch_run:completed",
+    "optimizer.get_result:completed",
+    "optimizer.get_run:completed",
+    "plugin.stop:stopped",
+    "visual.reopen:terminal_replay"
+  ],
+  "assertions": {
+    "freshInstanceStartedNotInstalled": true,
+    "installUsedNativeApproval": true,
+    "installedRuntimeStartedOffline": true,
+    "prepareDidNotInstallOrStartCompute": true,
+    "startBoundToPreparationDigest": true,
+    "computeUsedNativeApproval": true,
+    "resultHasPromptAndDigest": true,
+    "resultContainsNoFilesystemPaths": true,
+    "happyPathEndedInStopNotRemove": true,
+    "historicalVisualReplayPassed": true,
+    "secretsRecorded": false
+  },
+  "verification": {
+    "liveGeminiCua": "pass",
+    "optimizerServiceRustTests": "21 passed",
+    "optimizerPluginPlaywrightTests": "3 passed",
+    "storedResultContractCheck": "pass",
+    "receiptJsonValidation": "pass",
+    "receiptSecretAndPathScan": "pass"
+  },
+  "devexObservations": [
+    "The first await_ready call timed out after 15 seconds; one explicit visual show followed by await_ready succeeded in 3 milliseconds.",
+    "Gemini issued many immediate watch_run calls because the current MCP operation returns promptly instead of long-polling.",
+    "The complete final answer rendered, then the provider surface displayed an additional ended-without-response notice. This did not affect the optimizer result or retained run."
+  ]
+}
