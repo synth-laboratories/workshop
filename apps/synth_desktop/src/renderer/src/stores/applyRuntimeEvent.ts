@@ -106,6 +106,22 @@ function patchSession(
 	return changed ? next : sessions;
 }
 
+function patchPresentationMetadata(
+	metadata: Record<string, unknown>,
+	payload: Record<string, unknown> | undefined
+): Record<string, unknown> {
+	const next = { ...metadata };
+	if (payload && "emotion" in payload) {
+		if (payload.emotion == null || payload.emotion === "") delete next.presentationEmotion;
+		else if (typeof payload.emotion === "string") next.presentationEmotion = payload.emotion;
+	}
+	if (payload && "summary" in payload) {
+		if (payload.summary == null || payload.summary === "") delete next.presentationSummary;
+		else if (typeof payload.summary === "string") next.presentationSummary = payload.summary;
+	}
+	return next;
+}
+
 /**
  * Append a runtime event and update Session.status when the event kind owns it.
  * This is the sole event-driven status writer.
@@ -127,14 +143,23 @@ export function applyRuntimeEvent(
 		const nextTitle =
 			typeof options.title === "string" && options.title.trim()
 				? options.title.trim()
-				: session.title;
+				: event.eventKind === "session.title_changed" && typeof event.payload?.to === "string" && event.payload.to.trim()
+					? event.payload.to.trim()
+					: event.eventKind === "session.presented" && typeof event.payload?.title === "string" && event.payload.title.trim()
+						? event.payload.title.trim()
+						: session.title;
+		const nextMetadata = event.eventKind === "session.presented"
+			? patchPresentationMetadata(session.metadata, event.payload)
+			: session.metadata;
 		const statusChanged = nextStatus !== session.status;
 		const titleChanged = nextTitle !== session.title;
-		if (!statusChanged && !titleChanged && !eventsChanged) return session;
+		const metadataChanged = nextMetadata !== session.metadata;
+		if (!statusChanged && !titleChanged && !metadataChanged && !eventsChanged) return session;
 		return {
 			...session,
 			...(titleChanged ? { title: nextTitle } : {}),
 			...(statusChanged ? { status: nextStatus } : {}),
+			...(metadataChanged ? { metadata: nextMetadata } : {}),
 			updatedAt: event.createdAt,
 			latestCursor: Math.max(session.latestCursor, event.sequence)
 		};

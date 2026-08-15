@@ -112,3 +112,10 @@ test("unset appearance numbers fall back to defaults instead of their minimums",
 	assert.equal(normalized.appearance.chatFontSize, DEFAULT_PREFERENCES.appearance.chatFontSize);
 	assert.equal(normalized.appearance.codeFontSize, DEFAULT_PREFERENCES.appearance.codeFontSize);
 });
+
+test("showMascot defaults off and only true survives", () => {
+	assert.equal(DEFAULT_PREFERENCES.appearance.showMascot, false);
+	assert.equal(normalizePreferences({}).appearance.showMascot, false);
+	assert.equal(normalizePreferences({ appearance: { showMascot: "yes" } }).appearance.showMascot, false);
+	assert.equal(normalizePreferences({ appearance: { showMascot: true } }).appearance.showMascot, true);
+});

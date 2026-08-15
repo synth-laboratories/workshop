@@ -8,8 +8,8 @@ use crate::contract::events::{
 };
 use crate::core_runtime::CoreRuntime;
 use crate::domain::{
-    DomainMutation, RunCreate, RunService, RunStatus, SessionCreate, SessionService, SessionStatus,
-    SessionTitleOrigin,
+    DomainMutation, PresentationField, RunCreate, RunService, RunStatus, SessionCreate,
+    SessionService, SessionStatus, SessionTitleOrigin,
 };
 use crate::storage::{
     AppEvent, Database, EventAppend, EventSource, RunRecord, SessionRecord, UsageRecord,
@@ -216,6 +216,22 @@ impl SessionPersistence {
         };
         Ok(Some(
             core.sessions().set_title(session_id, title, origin).await?,
+        ))
+    }
+
+    pub async fn set_presentation(
+        &self,
+        session_id: String,
+        emotion: PresentationField<String>,
+        summary: PresentationField<String>,
+    ) -> Result<Option<DomainMutation<SessionRecord>>> {
+        let Self::Core(core) = self else {
+            return Ok(None);
+        };
+        Ok(Some(
+            core.sessions()
+                .set_presentation(session_id, emotion, summary)
+                .await?,
         ))
     }
 

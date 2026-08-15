@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ArtifactRef, LocalActivityLine, LocalChat } from "../types/landing";
+import type { Session } from "@synth/runtime-protocol";
 import { FileTypeIcon, shortenPath } from "./FileTypeIcon";
 import { ContainerIcon } from "./ContainerPane";
+import { ManderPresence } from "./mander";
 import {
 	activityStatusAnnouncement,
 	pairActivityGroupLines,
@@ -28,6 +30,8 @@ type Props = {
 	onActivityModeChange?: (mode: ToolActivityMode) => void;
 	outputsOpen?: boolean;
 	onToggleOutputs?: () => void;
+	showMascot?: boolean;
+	session?: Session;
 };
 
 export function outputContainerIds(chat: LocalChat): string[] {
@@ -584,7 +588,9 @@ export function ChatTranscript({
 	activityMode = "grouped",
 	onActivityModeChange,
 	outputsOpen = false,
-	onToggleOutputs
+	onToggleOutputs,
+	showMascot = false,
+	session
 }: Props) {
 	const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
 	const [modeMenuOpen, setModeMenuOpen] = useState(false);
@@ -730,6 +736,7 @@ export function ChatTranscript({
 
 	return (
 		<div className={`chat-transcript${outputsOpen ? " resources-open" : ""}`} data-testid="chat-transcript" data-activity-mode={activityMode}>
+			{showMascot ? <ManderPresence session={session} chat={chat} running={running} /> : null}
 			<div className="transcript-toolbar" data-testid="transcript-toolbar">
 			<div className="activity-mode-bar" ref={modeMenuRef}>
 				<button

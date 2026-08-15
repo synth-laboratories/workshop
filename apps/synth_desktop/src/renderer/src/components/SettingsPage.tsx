@@ -148,7 +148,8 @@ const CHANGELOG = [
 					"Data → Traces can inspect any compatible sealed Trace V5 archive in the generic rollout viewer.",
 					"Typed approvals cover paid compute, sidecar lifecycle, and credential access. Permissive policy stays auditable and does not silently revert to Always Ask.",
 					"Reports can be created, sealed, compared, privately shared, and published as a committed revision.",
-					"Optimizers install and run through the plugin MCP lifecycle and the typed approval broker."
+					"Optimizers install and run through the plugin MCP lifecycle and the typed approval broker.",
+					"Larval Mander presence and session_present MCP land from main so chats can show a title, emotion, and short summary."
 				]
 			},
 			{

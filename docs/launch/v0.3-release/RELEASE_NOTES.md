@@ -10,6 +10,7 @@
 - Paid-compute approvals carry an explicit cap. Exceeding that cap is recorded as a receipt violation, not coerced to zero.
 - Added local Reports: create, seal, reopen, compare, then privately share or publish a committed revision.
 - Added the Optimizers plugin MCP lifecycle: install/start/stop through the typed broker, then prepare → open visual → await ready → start.
+- Added Larval Mander presence and `session_present` MCP so a chat can show a title, emotion, and ≤7-word summary.
 
 ## Improved
 
