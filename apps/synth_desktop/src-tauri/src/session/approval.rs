@@ -161,10 +161,11 @@ impl ApprovalKind {
     }
 
     fn source(&self) -> EventSource {
-        match self {
-            Self::ShellCommand { .. } => EventSource::Codex,
-            _ => EventSource::System,
-        }
+        // These receipts belong to the agent session whose mutation is being
+        // gated. Keeping every typed kind on the Codex session stream makes
+        // the request, decision, and restart terminalization observable by
+        // the same live UI path as shell approvals.
+        EventSource::Codex
     }
 
     pub(crate) fn validate_decision(&self, decision: &ApprovalDecision) -> Result<()> {
@@ -983,6 +984,15 @@ mod tests {
         assert_eq!(payload["estimatedCostUsdMicros"], Value::Null);
         assert_eq!(payload["requestedCap"]["maxCostUsdMicros"], 500_000);
         assert_eq!(payload["requestedCap"]["maxRollouts"], 4);
+    }
+
+    #[test]
+    fn typed_host_approvals_stay_on_the_owning_codex_session_stream() {
+        let kind = ApprovalKind::SidecarLifecycle {
+            sidecar: "optimizers".into(),
+            action: "start".into(),
+        };
+        assert_eq!(kind.source(), EventSource::Codex);
     }
 
     #[test]
