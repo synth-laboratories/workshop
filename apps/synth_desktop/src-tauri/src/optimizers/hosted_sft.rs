@@ -1,14 +1,15 @@
-//! Hosted SFT control plane. The producer is optimizers-beta (`algorithm_id = "sft"`),
-//! not a public package and not `goex.sft.v1`. Workshop only mirrors pages and opens
-//! `optimizer.sft.live.v1`.
+//! Hosted SFT recipes backed by the public `synth-optimizers` control plane.
+//!
+//! Optimizers-beta remains an internal training executor. Workshop starts, watches,
+//! cancels, and mirrors only public SFT runs before opening `optimizer.sft.live.v1`.
 
 use super::{
-    hosted_client::HostedOptimizerClient,
     ingest,
     models::{
         OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding,
         OptimizerRecipeRunRequest, OptimizerResourceRef,
     },
+    sft_client::SftOptimizerClient,
     OptimizerService,
 };
 use anyhow::{bail, Context, Result};
@@ -61,7 +62,7 @@ pub fn recipe_catalog() -> Vec<Value> {
 }
 
 fn fixture_recipe() -> Value {
-    let availability = match HostedOptimizerClient::from_env() {
+    let availability = match SftOptimizerClient::from_env() {
         Ok(_) => "available",
         Err(_) => "unavailable",
     };
@@ -76,16 +77,16 @@ fn fixture_recipe() -> Value {
             "checkpointSteps": [10, 20],
             "campaignRolloutsPerCheckpoint": 2,
             "costCeilingUsd": null,
-            "costNotice": "Fixture backend; no provider charges. Requires a running optimizers-beta."
+            "costNotice": "Fixture backend; no provider charges. Requires the public Optimizers SFT service."
         },
         "credentialInputs": [],
-        "prerequisites": ["SYNTH_OPTIMIZERS_BETA_URL", "OPTIMIZERS_BETA_SERVICE_TOKEN"],
+        "prerequisites": ["SYNTH_OPTIMIZERS_SFT_SERVICE_URL", "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN"],
     })
 }
 
 fn craftax_nemotron_recipe() -> Value {
     let catalog_ok = super::tinker_catalog::TinkerBaseModelCatalog::load().is_ok();
-    let availability = if catalog_ok && HostedOptimizerClient::from_env().is_ok() {
+    let availability = if catalog_ok && SftOptimizerClient::from_env().is_ok() {
         "available"
     } else {
         "unavailable"
@@ -107,9 +108,9 @@ fn craftax_nemotron_recipe() -> Value {
         },
         "credentialInputs": [],
         "prerequisites": [
-            "SYNTH_OPTIMIZERS_BETA_URL (or local http://127.0.0.1:8879)",
-            "OPTIMIZERS_BETA_SERVICE_TOKEN",
-            "TINKER_API_KEY on the beta process",
+            "SYNTH_OPTIMIZERS_SFT_SERVICE_URL (or local http://127.0.0.1:8878)",
+            "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN",
+            "TINKER_API_KEY held by the Optimizers-beta executor",
             "Craftax gold / GameBench on 127.0.0.1:8098"
         ],
     })
@@ -118,7 +119,7 @@ fn craftax_nemotron_recipe() -> Value {
 fn banking77_recipe() -> Value {
     let catalog_ok = super::tinker_catalog::TinkerBaseModelCatalog::load().is_ok();
     let availability =
-        if catalog_ok && HostedOptimizerClient::from_env().is_ok() && banking77_source().is_ok() {
+        if catalog_ok && SftOptimizerClient::from_env().is_ok() && banking77_source().is_ok() {
             "available"
         } else {
             "unavailable"
@@ -141,9 +142,9 @@ fn banking77_recipe() -> Value {
         },
         "credentialInputs": [],
         "prerequisites": [
-            "SYNTH_OPTIMIZERS_BETA_URL (or local http://127.0.0.1:8879)",
-            "OPTIMIZERS_BETA_SERVICE_TOKEN",
-            "TINKER_API_KEY on the beta process",
+            "SYNTH_OPTIMIZERS_SFT_SERVICE_URL (or local http://127.0.0.1:8878)",
+            "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN",
+            "TINKER_API_KEY held by the Optimizers-beta executor",
             "SYNTH_SFT_BANKING77_TRAIN_JSONL",
             "banking77_classify container on 127.0.0.1:8110"
         ],
@@ -232,7 +233,7 @@ async fn start_banking77(
 )> {
     let catalog = super::tinker_catalog::TinkerBaseModelCatalog::load()?;
     let model_id = catalog.resolve(request.base_model.as_deref())?;
-    let client = HostedOptimizerClient::from_env()?;
+    let client = SftOptimizerClient::from_env()?;
     let shard = request
         .dataset_shard
         .as_deref()
@@ -264,9 +265,9 @@ async fn start_banking77(
         id: Some(run_id.clone()),
         execution_bindings: Some(vec![
             OptimizerExecutionBinding {
-                kind: "optimizers_beta".into(),
+                kind: "synth_optimizers_sft".into(),
                 id: client.base_url.clone(),
-                label: Some("optimizers-beta hosted SFT".into()),
+                label: Some("public Optimizers hosted SFT".into()),
                 status: Some("starting".into()),
                 metadata: json!({
                     "recipeId": HOSTED_SFT_BANKING77_RECIPE,
@@ -310,7 +311,7 @@ async fn start_banking77(
         summary: Some(json!({
             "recipeId": HOSTED_SFT_BANKING77_RECIPE,
             "backend": "tinker",
-            "producer": "optimizers-beta",
+            "producer": "synth-optimizers",
             "baseModel": model_id,
             "datasetShard": shard,
             "localSlot": container_url,
@@ -383,7 +384,7 @@ async fn start_fixture(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
-    let client = HostedOptimizerClient::from_env()?;
+    let client = SftOptimizerClient::from_env()?;
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_hosted_{}", &suffix[..8]);
     let training_file = format!("file_train_{}", &suffix[..8]);
@@ -391,15 +392,15 @@ async fn start_fixture(
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
         algorithm_version: Some("hosted-fixture-v1".into()),
-        objective: Some("Hosted SFT fixture · streamed from optimizers-beta".into()),
+        objective: Some("Hosted SFT fixture · streamed from public Optimizers".into()),
         source: Some("hosted".into()),
         project_ref: Some("sft@hosted-fixture".into()),
         session_ref: request.session_ref,
         id: Some(run_id.clone()),
         execution_bindings: Some(vec![OptimizerExecutionBinding {
-            kind: "optimizers_beta".into(),
+            kind: "synth_optimizers_sft".into(),
             id: client.base_url.clone(),
-            label: Some("optimizers-beta hosted SFT".into()),
+            label: Some("public Optimizers hosted SFT".into()),
             status: Some("starting".into()),
             metadata: json!({
                 "recipeId": HOSTED_SFT_FIXTURE_RECIPE,
@@ -419,7 +420,7 @@ async fn start_fixture(
         summary: Some(json!({
             "recipeId": HOSTED_SFT_FIXTURE_RECIPE,
             "backend": "fixture",
-            "producer": "optimizers-beta",
+            "producer": "synth-optimizers",
         })),
         open_visual: request.open_visual.or(Some(true)),
         seed_fixture: None,
@@ -440,7 +441,7 @@ async fn start_craftax_nemotron(
 )> {
     let catalog = super::tinker_catalog::TinkerBaseModelCatalog::load()?;
     let model_id = catalog.resolve(request.base_model.as_deref())?;
-    let client = HostedOptimizerClient::from_env()?;
+    let client = SftOptimizerClient::from_env()?;
     let container_url = local_craftax_slot_url()?;
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_craftax_nemo_{}", &suffix[..8]);
@@ -460,7 +461,7 @@ async fn start_craftax_nemotron(
         algorithm_id: "sft".into(),
         algorithm_version: Some("craftax-nemotron-nano-tinker-v1".into()),
         objective: Some(
-            "Craftax Nemotron 3.5 Lightning Tinker SFT · streamed from optimizers-beta".into(),
+            "Craftax Nemotron 3.5 Lightning Tinker SFT · streamed from public Optimizers".into(),
         ),
         source: Some("hosted".into()),
         project_ref: Some("craftax@nemotron-nano-tinker".into()),
@@ -468,9 +469,9 @@ async fn start_craftax_nemotron(
         id: Some(run_id.clone()),
         execution_bindings: Some(vec![
             OptimizerExecutionBinding {
-                kind: "optimizers_beta".into(),
+                kind: "synth_optimizers_sft".into(),
                 id: client.base_url.clone(),
-                label: Some("optimizers-beta hosted SFT".into()),
+                label: Some("public Optimizers hosted SFT".into()),
                 status: Some("starting".into()),
                 metadata: json!({
                     "recipeId": HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE,
@@ -502,7 +503,7 @@ async fn start_craftax_nemotron(
         summary: Some(json!({
             "recipeId": HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE,
             "backend": "tinker",
-            "producer": "optimizers-beta",
+            "producer": "synth-optimizers",
             "baseModel": model_id,
             "localSlot": container_url,
             "checkpointSteps": CRAFTAX_CHECKPOINT_STEPS,
@@ -544,7 +545,7 @@ fn local_craftax_slot_url() -> Result<String> {
 
 async fn spawn_hosted_worker(
     service: &OptimizerService,
-    client: HostedOptimizerClient,
+    client: SftOptimizerClient,
     run_id: String,
     config_toml: String,
 ) {
@@ -574,14 +575,12 @@ async fn spawn_hosted_worker(
 
 async fn run_hosted_worker(
     service: OptimizerService,
-    client: HostedOptimizerClient,
+    client: SftOptimizerClient,
     run_id: String,
     config_toml: String,
     mut cancel: watch::Receiver<bool>,
 ) -> Result<()> {
-    let contract = client.sft_config_contract().await?;
-    validate_config_against_producer_contract(&config_toml, &contract)?;
-    client.submit_toml("sft", &run_id, &config_toml).await?;
+    client.submit_toml(&run_id, &config_toml).await?;
     let mut upstream_cursor = 0u64;
     // The producer appends to its log while we page it. A read that lands on a
     // half-written record is a retry, not a dead run — the cursor has not moved
@@ -1012,13 +1011,13 @@ mod tests {
     }
 
     #[test]
-    fn craftax_nemotron_recipe_is_unavailable_without_beta_token() {
+    fn craftax_nemotron_recipe_is_unavailable_without_public_sft_token() {
         let recipe = craftax_nemotron_recipe();
         assert_eq!(recipe["id"], HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE);
         assert_eq!(recipe["algorithmId"], "sft");
         assert_eq!(recipe["limits"]["backend"], "tinker");
         assert_ne!(recipe["id"], "goex.sft.v1");
-        if std::env::var("OPTIMIZERS_BETA_SERVICE_TOKEN")
+        if std::env::var("SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .is_none()

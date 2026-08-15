@@ -11,6 +11,7 @@ mod models;
 mod normalize;
 mod recipes;
 mod service;
+mod sft_client;
 mod sft_recipes;
 mod tinker_catalog;
 

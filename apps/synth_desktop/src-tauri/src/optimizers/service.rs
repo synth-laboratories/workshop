@@ -72,7 +72,7 @@ impl OptimizerService {
         vec![
             json!({"id":"gepa","title":"GEPA","availability":"available","description":"Genetic-Pareto prompt optimization"}),
             json!({"id":"go-ex","title":"GELO / Go-Ex","availability":"available","description":"Hosted exploration with optional local slot binding"}),
-            json!({"id":"sft","title":"SFT","availability":"available","description":"Hosted fine-tuning from optimizers-beta, streamed live into optimizer.sft visuals"}),
+            json!({"id":"sft","title":"SFT","availability":"available","description":"Hosted fine-tuning through the public Optimizers SFT service, streamed live into optimizer.sft visuals"}),
         ]
     }
 
@@ -3207,7 +3207,7 @@ mod tests {
             .find(|item| item.get("id") == Some(&json!("sft.craftax.nemotron-nano.tinker.v1")))
             .unwrap();
         assert_eq!(recipe.get("algorithmId"), Some(&json!("sft")));
-        if std::env::var("OPTIMIZERS_BETA_SERVICE_TOKEN")
+        if std::env::var("SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .is_none()
