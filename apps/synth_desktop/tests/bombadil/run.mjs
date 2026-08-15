@@ -275,6 +275,7 @@ window.synthModelPerformance = {
 function approvalCardBridgeScript() {
 	return `
 const approvalSessionId = "v02-approval-session";
+window.__approvalResolverCalls = [];
 function approvalAppEvent(sequence, kind, payload) {
   return {
     schemaVersion: "synth.desktop-app-event.v1",
@@ -328,6 +329,7 @@ window.synthCodex = {
   interrupt: async () => undefined,
   resolveApproval: async (sessionId, approvalId, decision) => {
     window.__bombadilApprovalDecisions.push({ sessionId, approvalId, decision });
+    window.__approvalResolverCalls.push([sessionId, approvalId, decision]);
     const event = {
       sessionId,
       method: decision === "reject" ? "approval.rejected" : "approval.granted",
@@ -359,6 +361,27 @@ window.synthCore = {
   eventsAfter: async () => approvalEvents,
   sessionEventsAfter: async (sessionId) => sessionId === approvalSessionId ? approvalEvents : [],
   onEvent: () => () => undefined
+};
+window.synthCodexOauth = {
+  begin: async () => { throw new Error("not used"); },
+  completeManual: async () => ({ state: "connected", action: "none", canUseModels: true, configured: true }),
+  status: async () => ({ state: "connected", action: "none", canUseModels: true, configured: true }),
+  ensureReady: async () => ({ state: "connected", action: "none", canUseModels: true, configured: true }),
+  disconnect: async () => ({ state: "disconnected", action: "connect", canUseModels: false, configured: false }),
+  cancel: async () => undefined
+};
+window.synthConfig = {
+  get: async () => ({
+    configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "test",
+    backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY",
+    apiKeyConfigured: true, workerKeyConfigured: false, openrouterApiKeyConfigured: true
+  }),
+  update: async () => { throw new Error("not used"); },
+  listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
+  getWorkspaceAccess: async () => ({ allowedRoots: [] }),
+  updateWorkspaceAccess: async () => ({ allowedRoots: [] }),
+  getDesktopPermissions: async () => ({ approvalPolicy: "untrusted", sandboxMode: "workspace-write" }),
+  updateDesktopPermissions: async (request) => request
 };
 `;
 }
@@ -713,6 +736,12 @@ const cuaAnalysisVisual = {
   sourceAgentId: "laguna", sourceModel: "laguna-xs-2.1", contentDigest: null, previewDigest: null,
   metadata: {}, createdAt: "2026-08-09T13:24:48.000Z", updatedAt: "2026-08-09T13:24:48.000Z"
 };
+const cuaLongTitleVisual = {
+  ...cuaAnalysisVisual,
+  id: "laguna-prompt-trim-long-title",
+  title: "SFT · Banking77 intent SFT · hosted Tinker · banking77_classify checkpoint campaigns with a deliberately taller wrapped title",
+  updatedAt: "2026-08-09T13:25:48.000Z"
+};
 const groupedCraftaxVisual = {
   schemaVersion: "synth.desktop-visual.v1", id: "vis_w1_craftax", currentRevision: 1,
   title: "Craftax live", templateId: "live.craftax.v1", status: "saved", rendererKind: "template",
@@ -726,11 +755,11 @@ const groupedCraftaxVisual = {
   sessionId: "v02-grouped-visual-session", messageId: "asst-w1", runId: "turn-w1-craftax",
   metadata: {}, createdAt: "2026-08-13T13:58:08Z", updatedAt: "2026-08-13T13:58:08Z"
 };
-const fixtureVisuals = ${includeCuaAnalysisVisual ? "[cuaAnalysisVisual]" : includeGroupedVisualEvidence ? "[groupedCraftaxVisual]" : "[]"};
+const fixtureVisuals = ${includeCuaAnalysisVisual ? "[cuaAnalysisVisual, cuaLongTitleVisual]" : includeGroupedVisualEvidence ? "[groupedCraftaxVisual]" : "[]"};
 window.synthVisuals = {
   listTemplates: async () => [{ id: ${includeGroupedVisualEvidence ? `"live.craftax.v1"` : `"analysis.visual.v1"`}, title: ${includeGroupedVisualEvidence ? `"Craftax live eval"` : `"Agent-authored analysis"`}, genre: ${includeGroupedVisualEvidence ? `"live"` : `"analysis"`} }],
   getTemplate: async () => ({ id: ${includeGroupedVisualEvidence ? `"live.craftax.v1"` : `"analysis.visual.v1"`}, title: ${includeGroupedVisualEvidence ? `"Craftax live eval"` : `"Agent-authored analysis"`} }),
-  list: async () => fixtureVisuals, get: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, revisions: async () => [],
+  list: async () => fixtureVisuals, get: async (visualId) => fixtureVisuals.find((visual) => visual.id === visualId) || ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, revisions: async () => [],
   create: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, update: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, save: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"},
   fork: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, archive: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"}, show: async () => ${includeGroupedVisualEvidence ? "groupedCraftaxVisual" : "cuaAnalysisVisual"},
   onEvent: () => () => {}, onShow: () => () => {}

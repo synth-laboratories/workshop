@@ -6,7 +6,7 @@ Read these completely before acting:
 
 - `apps/synth_desktop/skills/use-synth-visuals/SKILL.md`
 - `apps/synth_desktop/skills/run-live-container-evals/SKILL.md`
-- `visuals/templates/live.craftax.v1/README.md`
+- `visuals/families/first_class_example_containers/live.craftax.v1/README.md`
 
 Use the `synth_visuals` MCP as the authority for visual state. Use Computer Use through the available local UI tooling to inspect the running Workshop app when possible. The repository sandbox is intentionally read-only; all authoring changes belong in the visual registry through MCP.
 

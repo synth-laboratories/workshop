@@ -176,6 +176,51 @@ pub fn harbor_policy_pins(requested: Option<&Value>) -> Result<Vec<Value>> {
     Ok(pins)
 }
 
+fn is_visualsbench(info: &Value) -> bool {
+    ["benchmark_family", "task_family", "target_id", "dataset"]
+        .iter()
+        .filter_map(|key| info.get(*key).and_then(Value::as_str))
+        .any(|value| value.to_ascii_lowercase().contains("visualsbench"))
+}
+
+pub fn visualsbench_policy_pins(requested: Option<&Value>) -> Result<Vec<Value>> {
+    let pins = if let Some(value) = requested {
+        value
+            .as_array()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("VisualsBench policyRefs must be an array"))?
+    } else {
+        vec![json!({
+            "harness": "harbor_fused",
+            "config": "luna_med",
+            "policy": "codex",
+            "mcp_bind": "synth_visuals"
+        })]
+    };
+    if pins.is_empty() {
+        bail!("VisualsBench requires an explicitly pinned Codex policy_ref");
+    }
+    for pin in &pins {
+        if pin.get("harness").and_then(Value::as_str) != Some("harbor_fused")
+            || pin
+                .get("config")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .is_empty()
+            || pin.get("policy").and_then(Value::as_str) != Some("codex")
+            || pin.get("mcp_bind").and_then(Value::as_str) != Some("synth_visuals")
+        {
+            bail!("VisualsBench policy_ref requires harbor_fused + Codex + mcp_bind=synth_visuals");
+        }
+    }
+    Ok(pins)
+}
+
+pub fn require_visualsbench_start_policy(policy_ref: &Value) -> Result<()> {
+    visualsbench_policy_pins(Some(&json!([policy_ref])))?;
+    Ok(())
+}
+
 pub fn require_harbor_policy_pins(pins: &[Value]) -> Result<()> {
     if pins.len() < 2 {
         bail!("C5-02: Harbor requires two policy_refs registered before start");
@@ -402,7 +447,17 @@ pub fn live_eval_bind_metadata(
     }
     match family {
         LiveEvalFamily::Harbor => {
-            bind.insert("policyRefs".into(), json!(harbor_policy_pins(policy_refs)?));
+            if is_visualsbench(info) {
+                bind.insert("benchmarkFamily".into(), json!("visualsbench"));
+                bind.insert("mcpBind".into(), json!("synth_visuals"));
+                bind.insert("requiresVisualsMcp".into(), json!(true));
+                bind.insert(
+                    "policyRefs".into(),
+                    json!(visualsbench_policy_pins(policy_refs)?),
+                );
+            } else {
+                bind.insert("policyRefs".into(), json!(harbor_policy_pins(policy_refs)?));
+            }
         }
         LiveEvalFamily::Digbench => {
             bind.insert(
@@ -559,6 +614,31 @@ mod tests {
         )
         .is_err());
         assert!(assert_live_eval_slot(bind["slot"].as_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn visualsbench_harbor_pins_codex_and_visuals_mcp() {
+        let bind = live_eval_bind_metadata(
+            LiveEvalFamily::Harbor,
+            &json!({
+                "runtime_family":"harbor",
+                "benchmark_family":"visualsbench",
+                "live_frames":"unsupported"
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(bind["templateId"], "live.harbor_eval.v1");
+        assert_eq!(bind["slot"], "stream");
+        assert_eq!(bind["benchmarkFamily"], "visualsbench");
+        assert_eq!(bind["requiresVisualsMcp"], true);
+        assert_eq!(bind["policyRefs"][0]["policy"], "codex");
+        assert_eq!(bind["policyRefs"][0]["mcp_bind"], "synth_visuals");
+        assert!(require_visualsbench_start_policy(&bind["policyRefs"][0]).is_ok());
+        assert!(require_visualsbench_start_policy(&json!({
+            "harness":"harbor_fused", "config":"luna_med", "policy":"codex"
+        }))
+        .is_err());
     }
 
     #[test]

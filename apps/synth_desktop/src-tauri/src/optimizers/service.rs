@@ -91,7 +91,8 @@ impl OptimizerService {
         match request.recipe_id.as_str() {
             super::recipes::BANKING77_GEPA_SMOKE_RECIPE
             | super::recipes::BANKING77_GEPA_LUNA_RECIPE
-            | super::recipes::BANKING77_GEPA_SOL_RECIPE => {
+            | super::recipes::BANKING77_GEPA_SOL_RECIPE
+            | super::recipes::CRAFTAX_GEPA_SMOKE_RECIPE => {
                 super::recipes::start(self, request).await
             }
             super::sft_recipes::CRAFTAX_SFT_SMOKE_RECIPE => {
@@ -107,6 +108,113 @@ impl OptimizerService {
             }
             _ => bail!("unknown optimizer recipe: {}", request.recipe_id),
         }
+    }
+
+    pub async fn prepare_recipe(
+        &self,
+        request: super::models::OptimizerRecipeRunRequest,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        match request.recipe_id.as_str() {
+            super::recipes::BANKING77_GEPA_SMOKE_RECIPE
+            | super::recipes::BANKING77_GEPA_LUNA_RECIPE
+            | super::recipes::BANKING77_GEPA_SOL_RECIPE
+            | super::recipes::CRAFTAX_GEPA_SMOKE_RECIPE => {
+                super::recipes::prepare(self, request).await
+            }
+            _ => bail!(
+                "prepare is only implemented for bounded product-owned GEPA recipes; got {}",
+                request.recipe_id
+            ),
+        }
+    }
+
+    pub async fn start_prepared(
+        &self,
+        optimizer_run_id: String,
+        preparation_digest: Option<String>,
+        approval_receipt_id: Option<String>,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        let run = self.get(optimizer_run_id.clone()).await?;
+        let expected = run.summary.get("preparationDigest").and_then(Value::as_str);
+        if let Some(expected) = expected {
+            if preparation_digest.as_deref() != Some(expected) {
+                bail!("preparation digest mismatch; refusing to start paid compute");
+            }
+        }
+        let ready = run.summary.get("visualReadyReceipt").cloned();
+        if ready.is_none() {
+            bail!("visual readiness receipt is required before starting paid compute");
+        }
+        if approval_receipt_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            bail!("compute approval receipt is required before starting paid compute");
+        }
+        let current_caps = self.manager.advertised_capabilities();
+        if let Some(prepared_caps) = run
+            .summary
+            .get("capabilitiesDigest")
+            .and_then(Value::as_str)
+        {
+            if current_caps.get("digest").and_then(Value::as_str) != Some(prepared_caps) {
+                bail!("optimizer capability digest changed since prepare; refusing to start");
+            }
+        }
+        super::recipes::start_prepared(self, &optimizer_run_id).await
+    }
+
+    pub async fn record_visual_ready(
+        &self,
+        optimizer_run_id: String,
+        receipt: Value,
+    ) -> Result<Value> {
+        let mut run = self.get(optimizer_run_id.clone()).await?;
+        let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+        summary.insert("visualReadyReceipt".into(), receipt.clone());
+        run.summary = Value::Object(summary);
+        self.persist_run(run).await?;
+        Ok(receipt)
+    }
+
+    pub async fn await_visual_ready(
+        &self,
+        optimizer_run_id: String,
+        timeout_ms: u64,
+    ) -> Result<Value> {
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(50));
+        loop {
+            let run = self.get(optimizer_run_id.clone()).await?;
+            if let Some(receipt) = run.summary.get("visualReadyReceipt").cloned() {
+                if !receipt.is_null() {
+                    return Ok(receipt);
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!("visual readiness receipt was not posted for `{optimizer_run_id}`");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    pub async fn get_result(&self, optimizer_run_id: String) -> Result<Value> {
+        let run = self.get(optimizer_run_id.clone()).await?;
+        if let Some(existing) = run.summary.get("optimizerResult").cloned() {
+            if existing.get("schemaVersion").and_then(Value::as_str) == Some("optimizer_result.v1")
+            {
+                return Ok(existing);
+            }
+        }
+        let result = materialize_optimizer_result(self, &run).await?;
+        let mut stored = run.clone();
+        let mut summary = stored.summary.as_object().cloned().unwrap_or_default();
+        summary.insert("optimizerResult".into(), result.clone());
+        stored.summary = Value::Object(summary);
+        self.persist_run(stored).await?;
+        Ok(result)
     }
 
     pub(super) async fn register_local_recipe(&self, run_id: String, cancel: watch::Sender<bool>) {
@@ -125,6 +233,27 @@ impl OptimizerService {
             Ok(stored)
         })
         .await
+    }
+
+    pub(crate) async fn attach_paid_compute_approval(
+        &self,
+        mut run: OptimizerRunRecord,
+        approval_id: &str,
+        max_cost_usd_micros: Option<u64>,
+        max_rollouts: Option<u64>,
+    ) -> Result<OptimizerRunRecord> {
+        run.usage.extra.insert(
+            "paidComputeApproval".into(),
+            json!({
+                "approvalId": approval_id,
+                "cap": {
+                    "maxCostUsdMicros": max_cost_usd_micros,
+                    "maxRollouts": max_rollouts,
+                },
+                "receiptViolation": false,
+            }),
+        );
+        self.persist_run(run).await
     }
 
     pub async fn list(&self, query: OptimizerQuery) -> Result<Vec<OptimizerRunRecord>> {
@@ -521,13 +650,16 @@ impl OptimizerService {
             .iter()
             .find(|r| r.kind == "visual")
             .map(|r| r.id.clone());
+        let template_id =
+            negotiate_visual_template(&run.algorithm_id, &self.manager.advertised_capabilities());
+        let template_digest = self.manager.status().await.digest;
         let visual = if let Some(visual_id) = existing {
             self.visuals.get(visual_id).await?
         } else {
             let (created, _) = self
                 .visuals
                 .create(VisualCreateRequest {
-                    template_id: primary_visual_template(&run.algorithm_id).into(),
+                    template_id: template_id.clone(),
                     title: Some(title),
                     bindings: Some(bindings),
                     id: None,
@@ -543,17 +675,21 @@ impl OptimizerService {
                     content: None,
                     metadata: Some(json!({
                         "optimizerRunId": run.id,
-                        "algorithmId": run.algorithm_id
+                        "algorithmId": run.algorithm_id,
+                        "templateDigest": template_digest
                     })),
                 })
                 .await?;
             run.visual_refs.push(OptimizerResourceRef {
                 kind: "visual".into(),
                 id: created.id.clone(),
-                digest: None,
+                digest: template_digest.clone(),
                 role: Some("primary".into()),
                 title: Some(created.title.clone()),
-                metadata: json!({ "templateId": primary_visual_template(&run.algorithm_id) }),
+                metadata: json!({
+                    "templateId": template_id,
+                    "templateDigest": template_digest
+                }),
             });
             let visual_id = created.id.clone();
             let db = self.db.clone();
@@ -964,6 +1100,7 @@ fn algorithm_label(algorithm_id: &str) -> &'static str {
         "gepa" => "GEPA",
         "go-ex" => "GELO",
         "sft" => "SFT",
+        id if id == "dag" || id.starts_with("dag.") => "DAG",
         _ => "Optimizer",
     }
 }
@@ -972,8 +1109,148 @@ fn primary_visual_template(algorithm_id: &str) -> &'static str {
     match algorithm_id {
         "sft" => "optimizer.sft.live.v1",
         "gepa" => "optimizer.gepa.live.v1",
+        id if id == "dag" || id.starts_with("dag.") => "optimizer.dag.live.v1",
         _ => "optimizer.run.v1",
     }
+}
+
+fn negotiate_visual_template(algorithm_id: &str, advertised: &Value) -> String {
+    let preferred: &[&str] = match algorithm_id {
+        "sft" => &["optimizer.sft.live.v1", "optimizer.run.v1"],
+        "gepa" => &["optimizer.gepa.live.v1", "optimizer.run.v1"],
+        id if id == "dag" || id.starts_with("dag.") => {
+            &["optimizer.dag.live.v1", "optimizer.run.v1"]
+        }
+        _ => &["optimizer.run.v1", "optimizer.run.v1"],
+    };
+    let installed = advertised
+        .get("compatibleTemplateIds")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for candidate in preferred {
+        if installed
+            .iter()
+            .any(|value| value.as_str() == Some(candidate))
+        {
+            return (*candidate).to_owned();
+        }
+    }
+    primary_visual_template(algorithm_id).into()
+}
+
+async fn materialize_optimizer_result(
+    service: &OptimizerService,
+    run: &OptimizerRunRecord,
+) -> Result<Value> {
+    let run_dir = run
+        .summary
+        .get("runDirectory")
+        .and_then(Value::as_str)
+        .map(std::path::PathBuf::from);
+    let candidate_path = run_dir.as_ref().map(|dir| dir.join("best_candidate.json"));
+    let manifest_path = run_dir.as_ref().map(|dir| dir.join("result_manifest.json"));
+    let candidate_raw = candidate_path
+        .as_ref()
+        .and_then(|path| std::fs::read(path).ok());
+    let manifest_raw = manifest_path
+        .as_ref()
+        .and_then(|path| std::fs::read(path).ok());
+    let mut artifact_refs = Vec::new();
+    if let Some(bytes) = candidate_raw.as_ref() {
+        if let Ok(digest) = service.visuals.content().put_bytes("blobs", bytes) {
+            artifact_refs.push(json!({
+                "kind": "content",
+                "id": digest,
+                "role": "best_candidate"
+            }));
+        }
+    }
+    if let Some(bytes) = manifest_raw.as_ref() {
+        if let Ok(digest) = service.visuals.content().put_bytes("blobs", bytes) {
+            artifact_refs.push(json!({
+                "kind": "content",
+                "id": digest,
+                "role": "result_manifest"
+            }));
+        }
+    }
+    let prompt = candidate_raw.as_ref().and_then(|bytes| {
+        let value: Value = serde_json::from_slice(bytes).ok()?;
+        value
+            .get("prompt")
+            .or_else(|| value.pointer("/values/prompt"))
+            .or_else(|| value.pointer("/payload/prompt"))
+            .or_else(|| value.pointer("/lever_bundle/values/prompt"))
+            .or_else(|| value.get("stage2_system"))
+            .or_else(|| value.pointer("/values/stage2_system"))
+            .or_else(|| value.pointer("/payload/stage2_system"))
+            .or_else(|| value.pointer("/lever_bundle/values/stage2_system"))
+            .or_else(|| value.get("react_system_prompt"))
+            .or_else(|| value.pointer("/values/react_system_prompt"))
+            .or_else(|| value.pointer("/payload/react_system_prompt"))
+            .or_else(|| value.pointer("/lever_bundle/values/react_system_prompt"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    });
+    let candidate_id = candidate_raw.as_ref().and_then(|bytes| {
+        let value: Value = serde_json::from_slice(bytes).ok()?;
+        value
+            .get("id")
+            .or_else(|| value.get("candidate_id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    });
+    let parent_id = candidate_raw.as_ref().and_then(|bytes| {
+        let value: Value = serde_json::from_slice(bytes).ok()?;
+        value
+            .get("parent_id")
+            .or_else(|| value.get("parentId"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    });
+    let materialized_digest = prompt.as_ref().map(|text| {
+        use sha2::{Digest, Sha256};
+        format!("sha256:{:x}", Sha256::digest(text.as_bytes()))
+    });
+    if run.status == "completed"
+        && prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+    {
+        bail!("completed GEPA result omitted a materialized prompt");
+    }
+    let mut selected_candidate = json!({});
+    if let Some(id) = candidate_id {
+        selected_candidate["id"] = json!(id);
+    }
+    if let Some(parent) = parent_id {
+        selected_candidate["parentId"] = json!(parent);
+    }
+    if let Some(prompt) = prompt {
+        selected_candidate["materializedValues"] = json!({ "prompt": prompt });
+    }
+    if let Some(digest) = materialized_digest {
+        selected_candidate["materializedDigest"] = json!(digest);
+    }
+    selected_candidate["frontierMember"] = json!(true);
+    Ok(json!({
+        "schemaVersion": "optimizer_result.v1",
+        "optimizerRunId": run.id,
+        "algorithmId": run.algorithm_id,
+        "status": run.status,
+        "finalCursor": run.cursor_seq,
+        "selectedCandidate": selected_candidate,
+        "metrics": {
+            "selection": run.summary.get("selection").cloned().unwrap_or(Value::Null),
+            "heldoutMeasurement": run.summary.get("heldout").cloned().unwrap_or(Value::Null)
+        },
+        "usage": serde_json::to_value(&run.usage).unwrap_or(Value::Null),
+        "artifactRefs": artifact_refs,
+        "completionReceiptId": format!("optimizer_completion_{}", run.id)
+    }))
 }
 
 fn list_runs(conn: &Connection, query: &OptimizerQuery) -> Result<Vec<OptimizerRunRecord>> {
@@ -1257,6 +1534,7 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
             run.usage.wall_time_ms += v;
         }
     }
+    update_paid_compute_violation(run);
     if let Some(snapshot) = &event.snapshot {
         if let Some(summary) = snapshot.get("summary") {
             run.summary = summary.clone();
@@ -1274,6 +1552,42 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
     }
     if let Some(error) = &event.error {
         run.error = Some(error.clone());
+    }
+}
+
+fn update_paid_compute_violation(run: &mut OptimizerRunRecord) {
+    let Some(approval) = run.usage.extra.get("paidComputeApproval").cloned() else {
+        return;
+    };
+    let max_rollouts = approval.pointer("/cap/maxRollouts").and_then(Value::as_u64);
+    let max_cost_micros = approval
+        .pointer("/cap/maxCostUsdMicros")
+        .and_then(Value::as_u64);
+    let rollouts_exceeded = max_rollouts.is_some_and(|cap| run.usage.rollouts > cap);
+    let cost_exceeded = match (max_cost_micros, run.usage.cost_usd) {
+        (Some(cap), Some(cost)) => cost * 1_000_000.0 > cap as f64,
+        _ => false,
+    };
+    if rollouts_exceeded || cost_exceeded {
+        if let Some(object) = run
+            .usage
+            .extra
+            .get_mut("paidComputeApproval")
+            .and_then(Value::as_object_mut)
+        {
+            object.insert("receiptViolation".into(), Value::Bool(true));
+            object.insert(
+                "violationReason".into(),
+                Value::String(
+                    if rollouts_exceeded {
+                        "rollout_cap_exceeded"
+                    } else {
+                        "cost_cap_exceeded"
+                    }
+                    .into(),
+                ),
+            );
+        }
     }
 }
 
@@ -2503,6 +2817,16 @@ mod tests {
     #[tokio::test]
     async fn opens_primary_visual_in_current_conversation_without_reassigning_run() {
         let (svc, _dir, _) = service().await;
+        svc.manager()
+            .set_status(crate::optimizers::OptimizerSidecarStatus {
+                phase: "ready".into(),
+                base_url: None,
+                version: Some("0.2.9.dev20260814".into()),
+                digest: Some("sha256:template-package".into()),
+                detail: None,
+                updated_at: 0,
+            })
+            .await;
         let (run, _) = svc
             .create(
                 serde_json::from_value(json!({
@@ -2526,8 +2850,21 @@ mod tests {
         assert_eq!(event.kind, "visual.show");
         assert_eq!(event.session_id.as_deref(), Some("session_current"));
         assert_eq!(shown.visual_refs.len(), 1);
+        assert_eq!(
+            shown.visual_refs[0].digest.as_deref(),
+            Some("sha256:template-package")
+        );
 
         let visual_id = shown.visual_refs[0].id.clone();
+        assert_eq!(
+            svc.visuals
+                .get(visual_id.clone())
+                .await
+                .unwrap()
+                .metadata
+                .get("templateDigest"),
+            Some(&json!("sha256:template-package"))
+        );
         let (reopened, second_event) = svc
             .open_visual_in_session(run.id, Some("session_current".into()))
             .await
@@ -2688,6 +3025,60 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(usage.data.get("costUsd"), Some(&Value::Null));
+    }
+
+    #[tokio::test]
+    async fn exceeding_an_approved_cap_is_a_durable_receipt_violation() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_cap_probe",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let run = svc
+            .attach_paid_compute_approval(run, "approval-paid", Some(500_000), Some(4))
+            .await
+            .unwrap();
+        let event = OptimizerEventEnvelope {
+            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+            event_id: Some("gepa_cap_probe:1".into()),
+            event_type: "optimizer.usage".into(),
+            sequence_number: 1,
+            occurred_at: chrono::Utc::now().to_rfc3339(),
+            optimizer_run_id: run.id.clone(),
+            algorithm_id: "gepa".into(),
+            level: Some("info".into()),
+            item: None,
+            delta: Map::new(),
+            snapshot: None,
+            usage_delta: Some(
+                json!({"rollouts":5,"cost_usd":0.25})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            artifact_refs: vec![],
+            error: None,
+            raw: json!({}),
+        };
+        svc.append_events(run.id.clone(), vec![event])
+            .await
+            .unwrap();
+        let stored = svc.get(run.id).await.unwrap();
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["receiptViolation"],
+            true
+        );
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["violationReason"],
+            "rollout_cap_exceeded"
+        );
     }
 
     #[test]
@@ -3016,5 +3407,214 @@ mod tests {
         assert_eq!(run.id, "goex_canon_1");
         assert_eq!(run.algorithm_id, "go-ex");
         assert!(run.cursor_seq >= 2);
+    }
+
+    #[tokio::test]
+    async fn prepared_compute_requires_ready_approval_and_matching_digest() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "banking77_prepare_gate",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = run.clone();
+        stored.status = "waiting_for_viewer".into();
+        stored.summary = json!({
+            "recipeId": "gepa.banking77.smoke.v1",
+            "preparationDigest": "sha256:prepare",
+            "capabilitiesDigest": "sha256:caps"
+        });
+        svc.persist_run(stored).await.unwrap();
+
+        let mismatch = svc
+            .start_prepared(
+                run.id.clone(),
+                Some("sha256:other".into()),
+                Some("approval-1".into()),
+            )
+            .await
+            .unwrap_err();
+        assert!(mismatch.to_string().contains("digest mismatch"));
+
+        let missing_ready = svc
+            .start_prepared(
+                run.id.clone(),
+                Some("sha256:prepare".into()),
+                Some("approval-1".into()),
+            )
+            .await
+            .unwrap_err();
+        assert!(missing_ready.to_string().contains("visual readiness"));
+
+        svc.record_visual_ready(
+            run.id.clone(),
+            json!({
+                "schemaVersion": "synth.visual-subscription-receipt.v1",
+                "visualId": "visual_prepare_gate",
+                "optimizerRunId": run.id,
+                "templateId": "optimizer.gepa.live.v1",
+                "replayedThrough": 0,
+                "subscribedFrom": 1
+            }),
+        )
+        .await
+        .unwrap();
+
+        let missing_approval = svc
+            .start_prepared(run.id.clone(), Some("sha256:prepare".into()), None)
+            .await
+            .unwrap_err();
+        assert!(missing_approval.to_string().contains("approval"));
+    }
+
+    #[tokio::test]
+    async fn get_result_returns_structured_prompt_without_filesystem_paths() {
+        let (svc, dir, _) = service().await;
+        let run_dir = dir.path().join("banking77_result");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("best_candidate.json"),
+            r#"{
+                "candidate_id": "candidate_winner",
+                "parent_id": "seed",
+                "lever_bundle": {
+                    "values": {
+                        "stage2_system": "Classify the Banking77 intent carefully."
+                    }
+                },
+                "payload": {
+                    "stage2_system": "Classify the Banking77 intent carefully."
+                }
+            }"#,
+        )
+        .unwrap();
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "banking77_result_run",
+                    "openVisual": false,
+                    "summary": {
+                        "runDirectory": run_dir.display().to_string(),
+                        "selection": {"score": 0.82},
+                        "heldout": {"score": 0.80}
+                    }
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = run.clone();
+        stored.status = "completed".into();
+        stored.summary = json!({
+            "runDirectory": run_dir.display().to_string(),
+            "selection": {"score": 0.82},
+            "heldout": {"score": 0.80}
+        });
+        svc.persist_run(stored).await.unwrap();
+        let result = svc.get_result(run.id.clone()).await.unwrap();
+        assert_eq!(result["schemaVersion"], json!("optimizer_result.v1"));
+        assert_eq!(
+            result["selectedCandidate"]["materializedValues"]["prompt"],
+            json!("Classify the Banking77 intent carefully.")
+        );
+        assert!(result["selectedCandidate"]["materializedDigest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        let encoded = result.to_string();
+        assert!(!encoded.contains("best_candidate.json"));
+        assert!(!encoded.contains("runDirectory"));
+        assert!(!encoded.contains(&run_dir.display().to_string()));
+        assert!(!result["artifactRefs"][0]["id"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn craftax_result_materializes_react_prompt_without_filesystem_paths() {
+        let (svc, dir, _) = service().await;
+        let run_dir = dir.path().join("craftax_result");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("best_candidate.json"),
+            r#"{
+                "candidate_id": "craftax_winner",
+                "parent_id": "seed",
+                "lever_bundle": {
+                    "values": {
+                        "react_system_prompt": "Observe carefully, choose one valid Craftax action, then reassess."
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "craftax_result_run",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = run.clone();
+        stored.status = "completed".into();
+        stored.summary = json!({
+            "recipeId": "gepa.craftax.smoke.v1",
+            "runDirectory": run_dir.display().to_string(),
+            "selection": {"score": 0.4},
+            "heldout": {"score": 0.3}
+        });
+        svc.persist_run(stored).await.unwrap();
+        let result = svc.get_result(run.id).await.unwrap();
+        assert_eq!(result["schemaVersion"], json!("optimizer_result.v1"));
+        assert_eq!(
+            result["selectedCandidate"]["materializedValues"]["prompt"],
+            json!("Observe carefully, choose one valid Craftax action, then reassess.")
+        );
+        assert!(result["selectedCandidate"]["materializedDigest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        let encoded = result.to_string();
+        assert!(!encoded.contains("best_candidate.json"));
+        assert!(!encoded.contains("runDirectory"));
+        assert!(!encoded.contains(&run_dir.display().to_string()));
+    }
+
+    #[tokio::test]
+    async fn completed_result_without_prompt_fails_closed() {
+        let (svc, dir, _) = service().await;
+        let run_dir = dir.path().join("banking77_empty");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("best_candidate.json"),
+            r#"{"id":"candidate_empty"}"#,
+        )
+        .unwrap();
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "banking77_empty_prompt",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = run.clone();
+        stored.status = "completed".into();
+        stored.summary = json!({ "runDirectory": run_dir.display().to_string() });
+        svc.persist_run(stored).await.unwrap();
+        let error = svc.get_result(run.id).await.unwrap_err();
+        assert!(error.to_string().contains("materialized prompt"));
     }
 }

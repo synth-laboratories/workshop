@@ -22,6 +22,7 @@ import type { DesktopPreferences } from "../preferences";
 import { ProviderMark } from "./ProviderMark";
 import { bridges } from "../runtime/desktopBridge";
 import { ChatgptCodexSubscriptionCard } from "./ChatgptCodexSubscriptionCard";
+import { ContextSettings } from "./ContextSettings";
 
 type Props = {
 	onBack: () => void;
@@ -52,6 +53,10 @@ function IconChip() {
 			<path d="M6 1.5v2M10 1.5v2M6 12.5v2M10 12.5v2M1.5 6h2M1.5 10h2M12.5 6h2M12.5 10h2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
 		</svg>
 	);
+}
+
+function IconContext() {
+	return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden><path d="M3 3.5h10v9H3zM5.2 6h5.6M5.2 8h5.6M5.2 10h3.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }
 
 function IconGauge() {
@@ -103,6 +108,7 @@ function IconChevronLeft() {
 /** Adapter UI is intentionally absent until its full runtime path exists. */
 const SECTIONS = [
 	{ id: "general", label: "General", icon: IconSliders },
+	{ id: "context", label: "Context", icon: IconContext },
 	{ id: "models", label: "Models", icon: IconChip },
 	{ id: "inference", label: "Inference", icon: IconGauge },
 	{ id: "voice", label: "Voice", icon: IconMic },
@@ -129,6 +135,40 @@ const MULTI_AGENT_OPTIONS: Array<{ value: MultiAgentVersion; label: string }> = 
 ];
 
 const CHANGELOG = [
+	{
+		version: "0.3.0",
+		date: "August 14, 2026",
+		groups: [
+			{
+				label: "New",
+				items: [
+					"Gemini 3.7 Flash is available through OpenRouter for live collaboration turns.",
+					"Settings → Context shows agent limits, skills, MCP groups, cookbooks, and subagent compatibility in one place.",
+					"Visual templates now live in families (containers, optimizers, diagrams, analysis) without changing template IDs.",
+					"Data → Traces can inspect any compatible sealed Trace V5 archive in the generic rollout viewer.",
+					"Typed approvals cover paid compute, sidecar lifecycle, and credential access. Permissive policy stays auditable and does not silently revert to Always Ask.",
+					"Reports can be created, sealed, compared, privately shared, and published as a committed revision.",
+					"Optimizers install and run through the plugin MCP lifecycle and the typed approval broker.",
+					"Larval Mander presence and session_present MCP land from main so chats can show a title, emotion, and short summary."
+				]
+			},
+			{
+				label: "Improved",
+				items: [
+					"Native Mermaid and systems diagrams use the packaged Rust renderer and work offline.",
+					"Chat/visual and Visuals list/preview splitters drag and persist independently, then stack at compact widths.",
+					"Subagent activity is grouped in the visual pane with working, needs-attention, and completed states."
+				]
+			},
+			{
+				label: "Fixed",
+				items: [
+					"Cookbook pin progress stays current, and Context command errors are shown instead of failing silently.",
+					"Pending approvals survive restart as real history or expire cleanly — they no longer render as live cards with dead buttons."
+				]
+			}
+		]
+	},
 	{
 		version: "0.2.0",
 		date: "August 12, 2026",
@@ -203,7 +243,7 @@ type AuthorizedModel = {
 	id: string;
 	name: string;
 	provider: string;
-	providerMark: "openai" | "laguna" | "meta" | "synth";
+	providerMark: "openai" | "laguna" | "meta" | "google" | "synth";
 	modelId: string;
 	tariffProvider?: string;
 	planMetered?: boolean;
@@ -228,7 +268,8 @@ function AuthorizedModelsSettings({ connection }: { connection: SynthBackendSett
 		models.push(
 			{ id: "openrouter-luna", name: "GPT 5.6 Luna", provider: "OpenRouter · OpenAI", providerMark: "openai", modelId: "openai/gpt-5.6-luna", tariffProvider: "openrouter" },
 			{ id: "openrouter-laguna-s", name: "Laguna S 2.1", provider: "OpenRouter · Poolside", providerMark: "laguna", modelId: "poolside/laguna-s-2.1", tariffProvider: "openrouter" },
-			{ id: "openrouter-muse-spark", name: "Muse Spark 1.2", provider: "OpenRouter · Meta", providerMark: "meta", modelId: "meta/muse-spark-1.2", tariffProvider: "openrouter" }
+			{ id: "openrouter-muse-spark", name: "Muse Spark 1.2", provider: "OpenRouter · Meta", providerMark: "meta", modelId: "meta/muse-spark-1.2", tariffProvider: "openrouter" },
+			{ id: "openrouter-gemini-flash", name: "Gemini 3.7 Flash", provider: "OpenRouter · Google", providerMark: "google", modelId: "google/gemini-3.7-flash", tariffProvider: "openrouter" }
 		);
 	}
 	if (connection?.apiKeyConfigured) {
@@ -271,7 +312,7 @@ function multiAgentOverrideWarning(model: ModelMultiAgentSetting): string | null
 	return "Override exposes V2 direct collaboration tools, agent-message routing, and encrypted message/tool payloads. Models or Responses-compatible providers without V2 support may reject the request or fail to read delegated tasks.";
 }
 
-function MultiAgentModelSettings() {
+export function MultiAgentModelSettings() {
 	const [models, setModels] = useState<ModelMultiAgentSetting[]>([]);
 	const [busyModel, setBusyModel] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -423,10 +464,10 @@ export function SettingsPage({
 							<ChatgptCodexSubscriptionCard />
 							<SettingsCard testId="models-all" className="settings-card-embed">
 								<ModelObservabilitySettings />
-								<MultiAgentModelSettings />
 							</SettingsCard>
 						</div>
 					) : null}
+					{section === "context" ? <ContextSettings subagents={<MultiAgentModelSettings />} /> : null}
 					{section === "inference" ? (
 						<div className="settings-sections" data-testid="settings-inference">
 							<InferenceSettings />

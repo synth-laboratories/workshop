@@ -22,7 +22,11 @@ export function MermaidVisual({ artifact }: { artifact: ArtifactRef }) {
 	const [showSource, setShowSource] = useState(false);
 	const [scale, setScale] = useState(1);
 	const [offset, setOffset] = useState({ x: 0, y: 0 });
+	const [reload, setReload] = useState(0);
 	const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+	const stage = useRef<HTMLDivElement>(null);
+	const retryToken = useRef("");
+	retryToken.current = `${visualId}:${String(artifact.metadata?.currentRevision ?? artifact.metadata?.revision ?? "")}`;
 	const renderStatus = (metadataString(artifact.metadata, "renderStatus") ?? "queued") as RenderStatus;
 	const renderError = metadataString(artifact.metadata, "renderError");
 	const diagramKind = metadataString(artifact.metadata, "diagramKind");
@@ -52,7 +56,7 @@ export function MermaidVisual({ artifact }: { artifact: ArtifactRef }) {
 		return () => {
 			cancelled = true;
 		};
-	}, [visualId, artifact.metadata]);
+	}, [visualId, artifact.metadata, reload]);
 
 	const statusLabel = useMemo(() => {
 		if (error || renderStatus === "failed") return "Render failed — showing source";
@@ -62,6 +66,12 @@ export function MermaidVisual({ artifact }: { artifact: ArtifactRef }) {
 
 	const failed = Boolean(error || renderStatus === "failed" || (!imageUrl && source));
 	const displaySource = showSource || (failed && !imageUrl);
+	const endDrag = (pointerId?: number) => {
+		drag.current = null;
+		const target = stage.current;
+		if (target && pointerId !== undefined && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
+	};
+	useEffect(() => () => endDrag(), []);
 
 	return (
 		<div className="mermaid-visual" data-testid="visual-mermaid" data-render-status={renderStatus}>
@@ -97,7 +107,11 @@ export function MermaidVisual({ artifact }: { artifact: ArtifactRef }) {
 					<button
 						type="button"
 						onClick={() => {
-							void bridges.visuals?.render?.(visualId);
+							const token = retryToken.current;
+							void bridges.visuals?.render?.(visualId).then(() => {
+								if (retryToken.current !== token) return;
+								setReload((value) => value + 1);
+							});
 						}}
 					>
 						Retry
@@ -109,6 +123,7 @@ export function MermaidVisual({ artifact }: { artifact: ArtifactRef }) {
 			) : imageUrl ? (
 				<div
 					className="mermaid-visual-stage"
+					ref={stage}
 					onPointerDown={(event) => {
 						drag.current = { x: event.clientX, y: event.clientY, ox: offset.x, oy: offset.y };
 						(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -120,9 +135,9 @@ export function MermaidVisual({ artifact }: { artifact: ArtifactRef }) {
 							y: drag.current.oy + event.clientY - drag.current.y
 						});
 					}}
-					onPointerUp={() => {
-						drag.current = null;
-					}}
+					onPointerUp={(event) => endDrag(event.pointerId)}
+					onPointerCancel={(event) => endDrag(event.pointerId)}
+					onLostPointerCapture={() => { drag.current = null; }}
 				>
 					<img
 						src={imageUrl}

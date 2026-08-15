@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { projectAtCursor } from "../templates/optimizer.run.v1/components/projectEvents.ts";
+import { projectAtCursor } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
 import {
   sftComparison,
   sftCurationFunnel,
   sftDistribution,
   sftStages
-} from "../templates/optimizer.run.v1/overlays/sft/model.ts";
+} from "../families/optimizers/_shared/optimizer.run.v1/overlays/sft/model.ts";
 
 const RUN = { id: "sft_hosted_workspace", algorithmId: "sft", status: "running", source: "hosted" };
 const base = { occurredAt: "2026-08-12T19:40:00Z", optimizerRunId: RUN.id, algorithmId: "sft" };

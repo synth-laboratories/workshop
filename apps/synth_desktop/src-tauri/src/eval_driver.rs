@@ -350,10 +350,152 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
         ("POST", path) if path.starts_with("/v1/visuals/") && path.ends_with("/show") => {
             visuals_ipc::dispatch(method, path, body, core).await
         }
+        ("POST", path)
+            if path.starts_with("/v1/visuals/") && path.ends_with("/visualsbench_export") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/visuals/")
+                .trim_end_matches("/visualsbench_export")
+                .trim_end_matches('/');
+            export_visualsbench(core, id, body).await
+        }
         ("POST", "/v1/traces/ingest") => ingest_trace_bundle(core, body).await,
         ("POST", "/v1/policy_preflight") => policy_preflight(deps, body).await,
         _ => bail!("unsupported eval driver route {method} {path}"),
     }
+}
+
+async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -> Result<Value> {
+    let visual = core.visuals().get(visual_id.to_string()).await?;
+    let mut revisions = core.visuals().revisions(visual_id.to_string()).await?;
+    revisions.sort_by_key(|row| row.revision);
+    let current_revision = revisions
+        .iter()
+        .find(|row| row.revision == visual.current_revision)
+        .context("current visual revision is missing")?;
+    let annotations = core.visuals().annotations(visual_id.to_string()).await?;
+    let active_annotations = annotations
+        .into_iter()
+        .filter(|row| !row.tombstoned && row.visual_revision <= visual.current_revision)
+        .collect::<Vec<_>>();
+    let overlay_digest = core
+        .visuals()
+        .overlay_digest(visual_id.to_string(), visual.current_revision)
+        .await?;
+
+    let mut journal = Vec::new();
+    let mut after = 0_i64;
+    loop {
+        let page = core.journal().events_after(after, 1_000).await?;
+        if page.is_empty() {
+            break;
+        }
+        for event in &page {
+            after = after.max(event.sequence);
+            if event.payload.get("visualId").and_then(Value::as_str) == Some(visual_id) {
+                journal.push(json!({
+                    "kind": event.kind,
+                    "visualId": visual_id,
+                    "revision": event.payload.get("revision").or_else(|| event.payload.get("visualRevision")),
+                    "sequence": event.sequence,
+                }));
+            }
+        }
+        if page.len() < 1_000 || journal.len() > 50_000 {
+            break;
+        }
+    }
+
+    let requested_viewports = body
+        .get("viewports")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let reviews = visual
+        .metadata
+        .get("authoringReviews")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let captures = reviews
+        .iter()
+        .filter(|review| {
+            review.get("revision").and_then(Value::as_i64) == Some(visual.current_revision)
+        })
+        .filter_map(|review| {
+            let viewport = review.get("viewport")?;
+            let width = viewport.get("width")?.as_u64()?;
+            let height = viewport.get("height")?.as_u64()?;
+            let requested = requested_viewports.iter().find(|candidate| {
+                candidate.get("width").and_then(Value::as_u64) == Some(width)
+                    && candidate.get("height").and_then(Value::as_u64) == Some(height)
+            });
+            if !requested_viewports.is_empty() && requested.is_none() {
+                return None;
+            }
+            let screenshot_path = review.get("screenshotPath")?.as_str()?;
+            let bytes = fs::read(screenshot_path).ok();
+            let screenshot_sha256 = bytes
+                .as_deref()
+                .map(hex_sha256)
+                .unwrap_or_default();
+            let checks = review.get("checks").cloned().unwrap_or_else(|| json!({}));
+            Some(json!({
+                "viewport": {
+                    "width": width,
+                    "height": height,
+                    "name": requested.and_then(|value| value.get("name")).and_then(Value::as_str).unwrap_or("recorded"),
+                },
+                "screenshotPath": screenshot_path,
+                "screenshotSha256": screenshot_sha256,
+                "findings": {
+                    "noTextCollisions": checks.get("noTextCollisions").cloned().unwrap_or(Value::Null),
+                    "noHorizontalOverflow": checks.get("noOverflow").cloned().unwrap_or(Value::Null),
+                    "falsifiedMissing": checks.get("falsifiedMissing").cloned().unwrap_or(Value::Bool(false)),
+                },
+                "inspected": bytes.is_some() && checks.get("screenshotInspected").and_then(Value::as_bool) == Some(true),
+            }))
+        })
+        .collect::<Vec<_>>();
+    let annotation_ids = active_annotations
+        .iter()
+        .map(|row| Value::String(row.id.clone()))
+        .collect::<Vec<_>>();
+    let trace_digest = visual.trace_id.clone();
+    Ok(json!({
+        "schemaVersion": "synth.visualsbench-export.v1",
+        "sourceRevision": crate::instance::diagnostics().source_revision,
+        "visual": {
+            "id": visual.id,
+            "revision": visual.current_revision,
+            "templateId": current_revision.template_id,
+            "contentDigest": current_revision.content_digest,
+            "bindingsDigest": current_revision.bindings_digest,
+            "bindings": current_revision.bindings.clone().unwrap_or_else(|| visual.bindings.clone()),
+        },
+        "revisions": revisions.iter().map(|row| json!({
+            "visualId": row.visual_id,
+            "revision": row.revision,
+            "contentDigest": row.content_digest,
+            "bindingsDigest": row.bindings_digest,
+        })).collect::<Vec<_>>(),
+        "journal": journal,
+        "annotations": active_annotations,
+        "overlayDigest": overlay_digest,
+        "nextTurnContext": {
+            "visualId": visual_id,
+            "overlayDigest": overlay_digest,
+            "annotationIds": annotation_ids,
+        },
+        "traceDigestBefore": trace_digest,
+        "traceDigestAfter": trace_digest,
+        "captures": captures,
+        "taskGraderRef": visual.metadata.get("taskGraderRef").cloned().unwrap_or(Value::Null),
+    }))
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
@@ -636,12 +778,33 @@ async fn export_session(core: &CoreRuntime, session_id: &str) -> Result<Value> {
         }
     }
     let session = core.sessions().get(session_id.to_string()).await?;
+    let visuals = core
+        .visuals()
+        .list(crate::visuals::VisualQuery {
+            session_id: Some(session_id.to_string()),
+            limit: Some(100),
+            ..Default::default()
+        })
+        .await?;
+    let mut visual_exports = Vec::with_capacity(visuals.len());
+    for visual in visuals {
+        let revisions = core.visuals().revisions(visual.id.clone()).await?;
+        let renditions = core.visuals().list_renditions(visual.id.clone()).await?;
+        let content = core.visuals().visual_source(visual.id.clone()).await.ok();
+        visual_exports.push(json!({
+            "visual": visual,
+            "revisions": revisions,
+            "renditions": renditions,
+            "content": content,
+        }));
+    }
     Ok(json!({
         "schemaVersion": "synth.eval-session-export.v1",
         "sessionId": session_id,
         "session": session,
         "events": events,
         "eventCount": events.len(),
+        "visuals": visual_exports,
         "sourceRevision": crate::instance::diagnostics().source_revision,
     }))
 }

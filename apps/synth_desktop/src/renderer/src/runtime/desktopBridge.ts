@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualTemplateMeta, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
+import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 
@@ -33,7 +33,10 @@ function unwrapRuntimeEvent(payload: AppEvent | OriginTaggedAppEvent): AppEvent 
 }
 
 function appEventToCodexEvent(event: AppEvent): CodexEvent | null {
-	if (!event.sessionId || event.source !== "codex") return null;
+	// Native approval requests for plugin lifecycle and paid compute are
+	// intentionally journaled as system events, but they still belong to the
+	// active Codex session and must render as blocking approval cards.
+	if (!event.sessionId || (event.source !== "codex" && !event.kind.startsWith("approval."))) return null;
 	const params =
 		event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
 			? (event.payload as Record<string, unknown>)
@@ -491,7 +494,7 @@ window.synthWorkspaceScope ??= isTauri
 		}
 		: {
 			status: async () => ({
-				currentVersion: "0.2.0",
+				currentVersion: "0.3.0",
 				channel: "stable",
 				latestVersion: null,
 				updateAvailable: false
@@ -516,6 +519,27 @@ window.synthWorkspaceScope ??= isTauri
 				{ id: "run-live-container-evals", name: "run-live-container-evals", description: "Run live container-backed eval rollouts." },
 				{ id: "author-synth-diagrams", name: "author-synth-diagrams", description: "Author a Mermaid diagram into the right Visual pane." }
 			]
+		};
+	window.synthContext ??= isTauri
+		? {
+			snapshot: (workspace) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_SNAPSHOT, { workspace }),
+			updateWorkspaceAgents: (workspace, content) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_WORKSPACE_AGENTS_UPDATE, { workspace, content }),
+			updateSkill: (workspace, skillId, enabled, content) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_SKILL_UPDATE, { workspace, skillId, enabled, content: content ?? null }),
+			updateMcpGroup: (workspace, groupId, enabled) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_MCP_GROUP_UPDATE, { workspace, groupId, enabled }),
+			installCookbooks: (workspace) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_COOKBOOKS_INSTALL, { workspace }),
+			cancelCookbooks: (workspace) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_COOKBOOKS_CANCEL, { workspace }),
+			setCookbooksEnabled: (workspace, enabled) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_COOKBOOKS_SET_ENABLED, { workspace, enabled }),
+			uninstallCookbooks: (workspace) => invokeCommand<ContextSnapshot>(COMMANDS.CONTEXT_COOKBOOKS_UNINSTALL, { workspace })
+		}
+		: {
+			snapshot: async (workspace) => ({ workshopAgents: { path: "bundled://WORKSHOP_AGENTS.md", content: "Workshop collaboration context", state: "bundled", editable: false, version: "dev" }, workspaceAgents: { path: `${workspace}/AGENTS.md`, content: "", state: "absent", editable: true }, cookbooks: { enabled: false, installed: false, phase: "off" }, skills: [], mcpGroups: [] }),
+			updateWorkspaceAgents: async () => { throw new Error("Context editing requires Synth Desktop"); },
+			updateSkill: async () => { throw new Error("Context editing requires Synth Desktop"); },
+			updateMcpGroup: async () => { throw new Error("Context editing requires Synth Desktop"); },
+			installCookbooks: async () => { throw new Error("Cookbook installation requires Synth Desktop"); },
+			cancelCookbooks: async () => { throw new Error("Cookbook installation requires Synth Desktop"); },
+			setCookbooksEnabled: async () => { throw new Error("Cookbook controls require Synth Desktop"); },
+			uninstallCookbooks: async () => { throw new Error("Cookbook controls require Synth Desktop"); }
 		};
 	if (isTauri) {
 		window.synthCodex ??= {
@@ -574,6 +598,14 @@ window.synthWorkspaceScope ??= isTauri
 			list: (query) => invokeCommand<VisualRecord[]>(COMMANDS.VISUALS_LIST, { query: query ?? null }),
 			get: (visualId) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_GET, { visualId }),
 			revisions: (visualId) => invokeCommand<VisualRevision[]>(COMMANDS.VISUALS_REVISIONS, { visualId }),
+			annotations: (visualId) => invokeCommand<VisualAnnotation[]>(COMMANDS.VISUALS_ANNOTATIONS_LIST, { visualId }),
+			createAnnotation: (visualId, request) => invokeCommand<VisualAnnotation>(COMMANDS.VISUALS_ANNOTATION_CREATE, { visualId, request }),
+			listSeals: (visualId) => invokeCommand<VisualSeal[]>(COMMANDS.VISUALS_SEALS_LIST, { visualId: visualId ?? null }),
+			seal: (visualId, revision) => invokeCommand<VisualSeal>(COMMANDS.VISUALS_SEAL, { visualId, revision }),
+			getSeal: (receiptDigest) => invokeCommand<VisualSealBundle>(COMMANDS.VISUALS_SEAL_GET, { receiptDigest }),
+			uploadStatus: (receiptDigest) => invokeCommand<VisualUpload | null>(COMMANDS.VISUALS_UPLOAD_STATUS, { receiptDigest }),
+			shareSeal: (receiptDigest) => invokeCommand<VisualUpload>(COMMANDS.VISUALS_SHARE_SEAL, { receiptDigest }),
+			openShared: (committedUrl) => invokeCommand<VisualSealBundle>(COMMANDS.VISUALS_OPEN_SHARED, { committedUrl }),
 			create: (request) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_CREATE, { request }),
 			update: (visualId, request) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_UPDATE, { visualId, request }),
 			save: (visualId, tsx) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_SAVE, { visualId, tsx: tsx ?? null }),
@@ -607,6 +639,52 @@ window.synthWorkspaceScope ??= isTauri
 				return () => { disposed = true; unlisten?.(); };
 			}
 		};
+		window.synthPlugins ??= {
+			status: (pluginId) => invokeCommand(COMMANDS.PLUGINS_STATUS, { pluginId: pluginId ?? null }),
+			list: () => invokeCommand(COMMANDS.PLUGINS_LIST),
+			setReleaseChannel: (pluginId, channel) =>
+				invokeCommand(COMMANDS.PLUGINS_SET_RELEASE_CHANNEL, { pluginId, channel })
+		};
+		window.synthReports ??= {
+			list: (query) => invokeCommand(COMMANDS.REPORTS_LIST, { query: query ?? null }),
+			get: (reportId) => invokeCommand(COMMANDS.REPORTS_GET, { reportId }),
+			getRevision: (reportId, revision) =>
+				invokeCommand(COMMANDS.REPORTS_REVISION_GET, { reportId, revision: revision ?? null }),
+			create: (request) => invokeCommand(COMMANDS.REPORTS_CREATE, { request }),
+			update: (reportId, request) => invokeCommand(COMMANDS.REPORTS_UPDATE, { reportId, request }),
+			archive: (reportId) => invokeCommand(COMMANDS.REPORTS_ARCHIVE, { reportId }),
+			restore: (reportId) => invokeCommand(COMMANDS.REPORTS_RESTORE, { reportId }),
+			listVisibilityRequests: (reportId) =>
+				invokeCommand(COMMANDS.REPORTS_VISIBILITY_REQUESTS, { reportId: reportId ?? null }),
+			requestVisibility: (reportId, request) =>
+				invokeCommand(COMMANDS.REPORTS_VISIBILITY_REQUEST, { reportId, request }),
+			decideVisibility: (requestId, approved) =>
+				invokeCommand(COMMANDS.REPORTS_VISIBILITY_DECIDE, { requestId, approved }),
+			seal: (reportId, revision) => invokeCommand(COMMANDS.REPORTS_SEAL, { reportId, revision }),
+			listSeals: (reportId) => invokeCommand(COMMANDS.REPORTS_SEALS_LIST, { reportId: reportId ?? null }),
+			getSeal: (receiptDigest) => invokeCommand(COMMANDS.REPORTS_SEAL_GET, { receiptDigest }),
+			compareSeals: (leftDigest, rightDigest) =>
+				invokeCommand(COMMANDS.REPORTS_SEALS_COMPARE, { leftDigest, rightDigest }),
+			uploadStatus: (receiptDigest) =>
+				invokeCommand(COMMANDS.REPORTS_UPLOAD_STATUS, { receiptDigest }),
+			shareSeal: (receiptDigest) => invokeCommand(COMMANDS.REPORTS_SHARE, { receiptDigest }),
+			promote: (publicationId, slug) => invokeCommand(COMMANDS.REPORTS_PROMOTE, { publicationId, slug }),
+			openShared: (committedUrl) => invokeCommand(COMMANDS.REPORTS_OPEN_SHARED, { committedUrl }),
+			listComments: (reportId, revision) =>
+				invokeCommand(COMMANDS.REPORTS_COMMENTS_LIST, { reportId, revision: revision ?? null }),
+			createComment: (reportId, revision, request) =>
+				invokeCommand(COMMANDS.REPORTS_COMMENT_CREATE, { reportId, revision, request }),
+			listExperiments: (reportId) => invokeCommand(COMMANDS.REPORTS_EXPERIMENTS_LIST, { reportId }),
+			upsertExperiment: (reportId, request) =>
+				invokeCommand(COMMANDS.REPORTS_EXPERIMENT_UPSERT, { reportId, request }),
+			listLog: (reportId) => invokeCommand(COMMANDS.REPORTS_LOG_LIST, { reportId }),
+			appendLog: (reportId, request) => invokeCommand(COMMANDS.REPORTS_LOG_APPEND, { reportId, request }),
+			onEvent(listener) {
+				return listenRuntimeAppEvents((payload) => {
+					if (payload.kind.startsWith("report.")) listener(payload);
+				});
+			}
+		};
 		window.synthOptimizers ??= {
 			listAlgorithms: () => invokeCommand(COMMANDS.OPTIMIZERS_ALGORITHMS_LIST),
 			listRecipes: () => invokeCommand(COMMANDS.OPTIMIZERS_RECIPES_LIST),
@@ -633,6 +711,7 @@ window.synthWorkspaceScope ??= isTauri
 					status: query?.status ?? null,
 					limit: query?.limit ?? null
 				}),
+			recordVisualReady: (request) => invokeCommand(COMMANDS.VISUAL_SUBSCRIPTION_READY, { request }),
 			onEvent(listener) {
 				return listenRuntimeAppEvents((payload) => {
 					if (payload.kind.startsWith("optimizer.")) listener(payload);
@@ -659,6 +738,9 @@ export const bridges = {
 	},
 	get skills() {
 		return window.synthSkills;
+	},
+	get context() {
+		return window.synthContext;
 	},
 	get config() {
 		return window.synthConfig;
@@ -696,8 +778,14 @@ export const bridges = {
 	get updates() {
 		return window.synthUpdates;
 	},
+	get plugins() {
+		return window.synthPlugins;
+	},
 	get visuals() {
 		return window.synthVisuals;
+	},
+	get reports() {
+		return window.synthReports;
 	},
 	get optimizers() {
 		return window.synthOptimizers;

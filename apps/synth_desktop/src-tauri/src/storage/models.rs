@@ -4,7 +4,7 @@ use serde_json::Value;
 
 pub const APP_EVENT_SCHEMA_VERSION: &str = "synth.desktop-app-event.v1";
 /// Matches `storage/migrations.rs` `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 16;
 
 fn default_session_kind() -> String {
     "codex".into()
@@ -46,6 +46,7 @@ pub enum EventSource {
     System,
     Mlx,
     Visual,
+    Report,
 }
 
 impl EventSource {
@@ -58,6 +59,7 @@ impl EventSource {
             Self::System => "system",
             Self::Mlx => "mlx",
             Self::Visual => "visual",
+            Self::Report => "report",
         }
     }
 
@@ -69,6 +71,7 @@ impl EventSource {
             "system" => Self::System,
             "mlx" => Self::Mlx,
             "visual" => Self::Visual,
+            "report" => Self::Report,
             _ => Self::Local,
         }
     }

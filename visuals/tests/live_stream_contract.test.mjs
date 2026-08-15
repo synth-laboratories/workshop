@@ -18,7 +18,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 test("live.harbor_eval.v1 binds slot stream, not jobs", () => {
   const meta = JSON.parse(
-    readFileSync(join(root, "templates/live.harbor_eval.v1/template.json"), "utf8"),
+    readFileSync(join(root, "families/first_class_example_containers/live.harbor_eval.v1/template.json"), "utf8"),
   );
   assert.deepEqual(
     meta.slots.map((slot) => slot.name),
@@ -125,6 +125,12 @@ test("normalized live bindings retain the declared poll endpoint for recovery", 
   assert.equal(result.slots.stream.data.poll_url, binding.poll_url);
 });
 
+test("live stream recovery also runs after EventSource reaches CLOSED", () => {
+  const hook = readFileSync(join(root, "chrome/useLiveEvalStream.ts"), "utf8");
+  assert.match(hook, /es\.onerror = \(\) => \{\s*if \(!abort\.signal\.aborted\)/);
+  assert.doesNotMatch(hook, /readyState !== EventSource\.CLOSED/);
+});
+
 test("ingest de-dupes, ignores heartbeats, and treats stream.subscribed as ready", () => {
   const state = ingestLiveEnvelopes([
     { kind: "stream.subscribed", event_id: "sub", run_id: "run", payload: { ready: true } },
@@ -154,11 +160,11 @@ test("finite fixture replay is ready without a live subscription control", () =>
 });
 
 test("live Craftax resolves persisted fixture references from packaged template assets", () => {
-  const shell = readFileSync(join(root, "templates/live.craftax.v1/shell.tsx"), "utf8");
+  const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
   assert.match(shell, /import\.meta\.glob\("\.\/examples\/\*\.json"/);
   assert.match(shell, /props\.data \?\? props\.stream \?\? bundledFixtureStream\(bindingList\)/);
   const fixture = JSON.parse(
-    readFileSync(join(root, "templates/live.craftax.v1/examples/cua-luna-low-10.json"), "utf8"),
+    readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/examples/cua-luna-low-10.json"), "utf8"),
   );
   assert.equal(fixture.events.length, 284);
   assert.equal(fixture.events.filter((event) => event.kind === "snapshot").length, 274);

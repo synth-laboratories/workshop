@@ -10,7 +10,7 @@ Colocated under `workshop/visuals/` (not cookbooks yet). Accent: Synth orange `#
 visuals/
   chrome/           # shared VisualChrome, scrubber, live hook, tokens.css
   fixtures/         # small JSON samples
-  templates/<id>/   # template.json + shell.tsx + examples + README
+  families/**/<id>/ # recursively discovered template.json + optional shell.tsx
   registry/         # list + resolve + shell importers
   runtime/          # types, bind, save_tsx
   mcp/              # tool schemas + server notes

@@ -15,14 +15,14 @@ use tokio::{
 };
 
 use crate::domain::{RunStatus, SessionStatus, SessionTitleOrigin};
+use crate::session::approval::{ApprovalKind, ApprovalOrigin};
 use crate::session::SessionPersistence;
 use crate::storage::EventSource;
 
 use super::home::persist_records;
 use super::proto::{
-    default_approval_policy, select_approval_decision, AppServer, CodexSessionRecord,
-    CodexSessionStartRequest, CompactWaiters, Pending, PendingApproval, PendingApprovals, Session,
-    STDOUT_CLOSED,
+    default_approval_policy, select_approval_decision, AppServer, CodexResolver,
+    CodexSessionRecord, CodexSessionStartRequest, CompactWaiters, Pending, Session, STDOUT_CLOSED,
 };
 use super::telemetry::{
     finalize_performance_tracker, is_context_compaction_notification, track_performance_event,
@@ -86,6 +86,7 @@ pub(crate) struct EventPumpState {
     pub pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
     pub performance_trackers: PerformanceTrackers,
     pub receipts: Arc<crate::credential_broker::ReceiptStore>,
+    pub approvals: Arc<crate::session::approval::ApprovalBroker>,
     pub attachment_id: uuid::Uuid,
     pub codex_oauth: bool,
 }
@@ -124,12 +125,10 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
     let stdout = child.stdout.take().context("capture app-server stdout")?;
     let stderr = child.stderr.take().context("capture app-server stderr")?;
     let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
-    let approvals: PendingApprovals = Arc::new(Mutex::new(HashMap::new()));
     let server = Arc::new(AppServer {
         child: Mutex::new(child),
         stdin: stdin.clone(),
         pending: pending.clone(),
-        approvals: approvals.clone(),
         next_id: AtomicU64::new(1),
     });
     let sid = session_id.to_owned();
@@ -143,7 +142,6 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
         stdout,
         stdin,
         pending,
-        approvals,
         approval_policy,
         pump.clone(),
     ));
@@ -166,7 +164,6 @@ async fn read_stdout<R: tauri::Runtime>(
     stdout: tokio::process::ChildStdout,
     stdin: Arc<Mutex<tokio::process::ChildStdin>>,
     pending: Pending,
-    approvals: PendingApprovals,
     approval_policy: String,
     persistence: EventPumpState,
 ) {
@@ -231,19 +228,19 @@ async fn read_stdout<R: tauri::Runtime>(
                     let _ = write_message(&stdin, &response).await;
                     continue;
                 }
-                let approval_id = format!("approval-{}", uuid::Uuid::new_v4().simple());
-                approvals.lock().await.insert(
-                    approval_id.clone(),
-                    PendingApproval {
-                        rpc_id,
-                        available_decisions: available_decisions.clone(),
-                    },
-                );
-                let safe =
-                    safe_approval_payload(&approval_id, &method, &params, &available_decisions);
-                persistence
-                    .persistence
-                    .notify_codex_event(&app, session_id.clone(), "approval.requested", safe)
+                let kind = shell_approval_kind(&method, &params, &available_decisions);
+                let resolver = Arc::new(CodexResolver {
+                    stdin: stdin.clone(),
+                    rpc_id,
+                    available_decisions,
+                });
+                let origin = ApprovalOrigin {
+                    session_id: session_id.clone(),
+                    instance_id: persistence.attachment_id.to_string(),
+                };
+                let _ = persistence
+                    .approvals
+                    .request(&app, origin, kind, resolver)
                     .await;
                 continue;
             }
@@ -253,6 +250,15 @@ async fn read_stdout<R: tauri::Runtime>(
                 "error":{"code":-32601,"message":format!("Unsupported server request: {method}")}
             })).await;
             continue;
+        }
+        if matches!(
+            method.as_str(),
+            "turn/completed" | "turn/failed" | "turn/interrupted"
+        ) {
+            let _ = persistence
+                .approvals
+                .expire_session(&app, &session_id, "origin_turn_ended")
+                .await;
         }
         persistence
             .persistence
@@ -434,6 +440,10 @@ async fn read_stdout<R: tauri::Runtime>(
             }
         }
     }
+    let _ = persistence
+        .approvals
+        .expire_session(&app, &session_id, "origin_process_exited")
+        .await;
     // Release failed requests only after the attachment owner has finalized
     // its durable run. Command callers therefore observe authoritative state
     // and do not need a second reconciliation path.
@@ -532,6 +542,10 @@ pub(crate) fn safe_approval_payload(
     params: &Value,
     available: &[String],
 ) -> Value {
+    shell_approval_kind(method, params, available).safe_payload(approval_id)
+}
+
+fn shell_approval_kind(method: &str, params: &Value, available: &[String]) -> ApprovalKind {
     let command = params
         .get("command")
         .and_then(Value::as_str)
@@ -561,14 +575,12 @@ pub(crate) fn safe_approval_payload(
     let always_supported = ["acceptForSession", "allowForSession", "always"]
         .iter()
         .any(|candidate| available.iter().any(|value| value == candidate));
-    json!({
-        "approvalId": approval_id,
-        "requestMethod": method,
-        "kind": kind,
-        "detail": detail,
-        "scope": cwd.or(path),
-        "alwaysSupported": always_supported,
-    })
+    ApprovalKind::ShellCommand {
+        request_method: method.to_owned(),
+        detail,
+        scope: cwd.or(path).map(str::to_owned),
+        always_supported,
+    }
 }
 
 pub(crate) fn is_approval_method(method: &str) -> bool {

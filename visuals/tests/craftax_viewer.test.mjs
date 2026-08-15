@@ -10,7 +10,7 @@ import {
   projectCraftaxViewer,
   scopeCraftaxEvents,
   semanticCheckpointIndexes,
-} from "../templates/live.craftax.v1/projectCraftax.ts";
+} from "../families/first_class_example_containers/live.craftax.v1/projectCraftax.ts";
 
 function event(lane, kind, sequence, payload = {}, second = sequence) {
   return {

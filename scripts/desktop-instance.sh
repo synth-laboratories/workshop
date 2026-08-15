@@ -5,14 +5,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMMAND="${1:-dev}"
 NAME="${2:-${SYNTH_DESKTOP_INSTANCE:-codex}}"
-RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.2}"
-APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.2.0}"
+RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.3}"
+APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.3.0}"
 
-if [[ "$RELEASE_LINE" != "v0.2" ]]; then
-  echo "[desktop:$NAME] invalid release line; this branch only builds v0.2 instances" >&2
+if [[ "$RELEASE_LINE" != "v0.3" ]]; then
+  echo "[desktop:$NAME] invalid release line; this branch only builds v0.3 instances" >&2
   exit 2
 fi
-RELEASE_SLUG="v02"
+RELEASE_SLUG="v03"
 
 usage() {
   cat <<'EOF'
@@ -29,6 +29,10 @@ Usage: ./scripts/desktop-instance.sh <command> [name]
   print [name]     Print the resolved instance contract without launching
 
 Names must match [a-z][a-z0-9-]{0,31}. The default name is "codex".
+
+Optimizer services use the immutable installed plugin runtime by default.
+Set SYNTH_OPTIMIZER_USE_LOCAL_SOURCE=1 only when intentionally testing a
+reviewed local synth-optimizers checkout.
 EOF
 }
 
@@ -374,40 +378,59 @@ status_instance() {
 
 stage_gepa_runtime() {
   local runtime_root="$INSTANCE_ROOT/runtime/gepa"
-  local cookbook_target="$runtime_root/banking77_container"
-  local cookbook_source="${SYNTH_BANKING77_GEPA_COOKBOOK_SOURCE:-$(dirname "$ROOT")/synth-cookbooks-public/cookbooks/optimizers/gepa/banking77_container}"
+  local banking_target="$runtime_root/banking77_container"
+  local banking_source="${SYNTH_BANKING77_GEPA_COOKBOOK_SOURCE:-$(dirname "$ROOT")/synth-cookbooks-public/cookbooks/optimizers/gepa/banking77_container}"
+  local craftax_target="$runtime_root/crafter_container"
+  local craftax_source="${SYNTH_CRAFTAX_GEPA_COOKBOOK_SOURCE:-$(dirname "$ROOT")/synth-cookbooks-public/cookbooks/optimizers/gepa/crafter_container}"
   local optimizer_target="$runtime_root/optimizer-project"
   local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-$(dirname "$ROOT")/optimizers-g1}"
-  local secret_target="$DATA_ROOT/banking77-secret.env"
-  local secret_source="${SYNTH_BANKING77_SECRET_ENV_SOURCE:-$(dirname "$ROOT")/synth-ai/.env}"
+  local use_local_optimizer="${SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0}"
+  local secret_target="$DATA_ROOT/gepa-secret.env"
+  local secret_source="${SYNTH_GEPA_SECRET_ENV_SOURCE:-${SYNTH_BANKING77_SECRET_ENV_SOURCE:-$(dirname "$ROOT")/synth-ai/.env}}"
 
-  if [[ ! -f "$cookbook_source/gepa.toml" || ! -f "$cookbook_source/synth_service_app.py" ]]; then
-    echo "[desktop:$NAME] ERROR GEPA cookbook source is unavailable: $cookbook_source" >&2
+  if [[ ! -f "$banking_source/gepa.toml" || ! -f "$banking_source/synth_service_app.py" ]]; then
+    echo "[desktop:$NAME] ERROR Banking77 GEPA cookbook source is unavailable: $banking_source" >&2
     exit 1
   fi
-  mkdir -p "$cookbook_target"
+  if [[ ! -f "$craftax_source/gepa.toml" || ! -f "$craftax_source/synth_service_app.py" || ! -f "$craftax_source/crafter_text_env.py" || ! -f "$craftax_source/uv.lock" ]]; then
+    echo "[desktop:$NAME] ERROR Craftax GEPA cookbook source is unavailable: $craftax_source" >&2
+    exit 1
+  fi
+  mkdir -p "$banking_target" "$craftax_target"
   rsync -a --delete \
     --exclude '.venv' \
     --exclude '__pycache__' \
     --exclude 'runs' \
-    "$cookbook_source/" "$cookbook_target/"
-  export SYNTH_BANKING77_GEPA_COOKBOOK_ROOT="$cookbook_target"
-
-  if [[ ! -f "$optimizer_source/pyproject.toml" || ! -f "$optimizer_source/rust/crates/synth_gepa/Cargo.toml" ]]; then
-    echo "[desktop:$NAME] ERROR optimizer project source is unavailable: $optimizer_source" >&2
-    exit 1
-  fi
-  mkdir -p "$optimizer_target"
+    "$banking_source/" "$banking_target/"
   rsync -a --delete \
-    --exclude '.git' \
     --exclude '.venv' \
-    --exclude 'target' \
-    --exclude '.out' \
-    --exclude '.pytest_cache' \
-    --exclude '.ruff_cache' \
     --exclude '__pycache__' \
-    "$optimizer_source/" "$optimizer_target/"
-  export SYNTH_OPTIMIZER_PROJECT_ROOT="$optimizer_target"
+    --exclude 'runs' \
+    "$craftax_source/" "$craftax_target/"
+  export SYNTH_BANKING77_GEPA_COOKBOOK_ROOT="$banking_target"
+  export SYNTH_CRAFTAX_GEPA_COOKBOOK_ROOT="$craftax_target"
+
+  if [[ "$use_local_optimizer" == "1" ]]; then
+    if [[ ! -f "$optimizer_source/pyproject.toml" || ! -f "$optimizer_source/rust/crates/synth_gepa/Cargo.toml" ]]; then
+      echo "[desktop:$NAME] ERROR optimizer project source is unavailable: $optimizer_source" >&2
+      exit 1
+    fi
+    mkdir -p "$optimizer_target"
+    rsync -a --delete \
+      --exclude '.git' \
+      --exclude '.venv' \
+      --exclude 'target' \
+      --exclude '.out' \
+      --exclude '.pytest_cache' \
+      --exclude '.ruff_cache' \
+      --exclude '__pycache__' \
+      "$optimizer_source/" "$optimizer_target/"
+    export SYNTH_OPTIMIZER_PROJECT_ROOT="$optimizer_target"
+  elif [[ -n "${SYNTH_OPTIMIZER_PROJECT_ROOT:-}" ]]; then
+    echo "[desktop:$NAME] using caller-provided optimizer project root: $SYNTH_OPTIMIZER_PROJECT_ROOT"
+  else
+    echo "[desktop:$NAME] optimizer runtime=immutable installed plugin"
+  fi
 
   # Finder-launched apps do not inherit shell secrets. Stage only the one
   # allowlisted key inside the mode-0700 instance data root so the app never
@@ -422,6 +445,7 @@ stage_gepa_runtime() {
       rm -f "$secret_tmp"
     fi
   fi
+  export SYNTH_GEPA_SECRET_ENV_FILE="$secret_target"
   export SYNTH_BANKING77_SECRET_ENV_FILE="$secret_target"
 }
 
@@ -594,7 +618,7 @@ PY
         "$dev_signing_keychain"
       codesign --force --deep --sign "$dev_signing_identity" \
         --keychain "$dev_signing_keychain" \
-        --identifier "com.synth.desktop.v02.dev.shared" "$app_bundle"
+        --identifier "com.synth.desktop.v03.dev.shared" "$app_bundle"
     else
       codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$app_bundle"
     fi

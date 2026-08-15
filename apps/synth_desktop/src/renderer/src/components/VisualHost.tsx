@@ -1,7 +1,8 @@
 import { Component, useEffect, useMemo, useState, type ComponentType, type ErrorInfo, type ReactNode } from "react";
 import type { ArtifactRef } from "../types/landing";
 import type { VisualRecord } from "@synth/runtime-protocol";
-import { propsFromBindings } from "@synth/visuals";
+import { bindTemplateSlots, bindingSlots, isVisualBindings, propsFromBindings, resolveTemplate } from "@synth/visuals";
+import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } from "../bridge";
 import { loadVisualShell } from "../runtime/visualsLoader";
 import { bridges } from "../runtime/desktopBridge";
 import { mergeOptimizerEventPage, type OptimizerEventCursorState } from "../runtime/optimizerEventCursor";
@@ -24,6 +25,7 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 		title: visual.title,
 		templateId: visual.templateId,
 		visualId: visual.id,
+		revision: visual.currentRevision,
 		rendererKind: visual.rendererKind,
 		bindings: visual.bindings,
 		metadata: visual.metadata,
@@ -189,11 +191,33 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [optimizerPayload, setOptimizerPayload] = useState<Record<string, unknown> | null>(null);
 	const [optimizerLoadError, setOptimizerLoadError] = useState<string | null>(null);
 	const [comparisonPayload, setComparisonPayload] = useState<Record<string, unknown> | null>(null);
-	const resolved = useMemo(() => propsFromBindings(artifact.bindings), [artifact.bindings]);
+	const traceBindings = useMemo(
+		() => bindingSlots(artifact.bindings).filter((binding) => binding.kind === "trace_v5"),
+		[artifact.bindings]
+	);
+	const synchronouslyResolved = useMemo(() => {
+		if (!isVisualBindings(artifact.bindings) || traceBindings.length === 0) {
+			return propsFromBindings(artifact.bindings);
+		}
+		return propsFromBindings({
+			schemaVersion: "synth.visual-bindings.v1",
+			slots: artifact.bindings.slots.filter((binding) => binding.kind !== "trace_v5")
+		});
+	}, [artifact.bindings, traceBindings.length]);
+	const [traceResolution, setTraceResolution] = useState<{
+		status: "idle" | "loading" | "ready" | "error";
+		props: Record<string, unknown>;
+		error?: string;
+	}>({ status: "idle", props: {} });
+	const [connectionState, setConnectionState] = useState<
+		"loading" | "replaying" | "subscribed" | "stale" | "reconnecting" | "terminal" | "failed"
+	>("loading");
 
 	useEffect(() => {
 		let cancelled = false;
 		const templateId = artifact.templateId;
+		setFailed(false);
+		setShell(null);
 		if (!templateId) {
 			setFailed(true);
 			return;
@@ -212,18 +236,85 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 
 	useEffect(() => {
 		let cancelled = false;
+		if (traceBindings.length === 0 || !isVisualBindings(artifact.bindings)) {
+			setTraceResolution({ status: "idle", props: {} });
+			return () => { cancelled = true; };
+		}
+		const bindings = artifact.bindings;
+		const template = artifact.templateId ? resolveTemplate(artifact.templateId) : undefined;
+		if (!template) {
+			setTraceResolution({ status: "error", props: {}, error: `Template ${artifact.templateId ?? "unknown"} is unavailable` });
+			return () => { cancelled = true; };
+		}
+		if (!bridges.inventory) {
+			setTraceResolution({ status: "error", props: {}, error: "Trace projection resolver is unavailable" });
+			return () => { cancelled = true; };
+		}
+		const unsupportedBinding = traceBindings.find((binding) =>
+			binding.schema && binding.schema !== "synth.trace-projection.rollout-inspector.v1"
+		);
+		if (unsupportedBinding) {
+			setTraceResolution({ status: "error", props: {}, error: `Unsupported trace projection schema: ${unsupportedBinding.schema}` });
+			return () => { cancelled = true; };
+		}
+
+		setTraceResolution({ status: "loading", props: {} });
+		const projectionByDigest = new Map<string, Promise<unknown>>();
+		const loadTraceV5 = (source: string) => {
+			let pending = projectionByDigest.get(source);
+			if (!pending) {
+				pending = bridges.inventory!.resolveTraceProjection(source, "rollout-inspector").then((projection) => {
+					if (projection.traceDigest !== source) {
+						throw new Error(`Trace resolver returned digest ${projection.traceDigest} for ${source}`);
+					}
+					if (projection.projectionKind !== "rollout-inspector") {
+						throw new Error(`Unsupported trace projection kind: ${projection.projectionKind}`);
+					}
+					if (projection.projectionSchema !== "synth.trace-projection.rollout-inspector.v1") {
+						throw new Error(`Unsupported trace projection schema: ${projection.projectionSchema}`);
+					}
+					return projection.payload;
+				});
+				projectionByDigest.set(source, pending);
+			}
+			return pending;
+		};
+		void bindTemplateSlots(template, bindings, { loadTraceV5, skipOptional: true })
+			.then((result) => {
+				if (cancelled) return;
+				if (result.errors.length > 0) {
+					setTraceResolution({ status: "error", props: {}, error: result.errors.join(" · ") });
+					return;
+				}
+				const props = Object.fromEntries(
+					Object.values(result.slots)
+						.filter((slot) => slot.kind === "trace_v5")
+						.map((slot) => [slot.slot, slot.data])
+				);
+				setTraceResolution({ status: "ready", props });
+			})
+			.catch((reason) => {
+				if (!cancelled) setTraceResolution({ status: "error", props: {}, error: reason instanceof Error ? reason.message : String(reason) });
+			});
+		return () => { cancelled = true; };
+	}, [artifact.id, artifact.revision, artifact.templateId, artifact.bindings, traceBindings.length]);
+
+	useEffect(() => {
+		let cancelled = false;
 		const bindings = artifact.bindings as { slots?: Array<{ slot?: string; kind?: string; source?: string }> } | undefined;
 		const slot = bindings?.slots?.find((entry) => entry.slot === "optimizer_run" && entry.kind === "optimizer_run");
 		const optimizerRunId = slot?.source;
 		if (!optimizerRunId || !bridges.optimizers) {
 			setOptimizerPayload(null);
 			setOptimizerLoadError(optimizerRunId ? "Optimizer bridge is unavailable" : null);
+			if (optimizerRunId) setConnectionState("failed");
 			return;
 		}
 		const pageSize = 500;
 		let current: OptimizerEventCursorState = { events: [], cursor: 0, gap: false };
 		let pending = Promise.resolve();
 		let stopPolling = false;
+		let postedReady = false;
 		const terminal = new Set(["completed", "failed", "cancelled", "succeeded"]);
 		const readPersistedEvents = async (after: number) => {
 			let state: OptimizerEventCursorState = {
@@ -241,6 +332,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		};
 		const load = async (snapshot = false) => {
 			try {
+				if (!snapshot) setConnectionState((current) => current === "subscribed" ? "reconnecting" : current);
+				else setConnectionState("replaying");
 				const run = await bridges.optimizers!.get(optimizerRunId);
 				let next = await readPersistedEvents(snapshot ? 0 : current.cursor);
 				const runCursor = typeof run.cursorSeq === "number" ? run.cursorSeq : next.cursor;
@@ -250,20 +343,37 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					next = await readPersistedEvents(0);
 				}
 				if (next.gap || next.cursor < runCursor) {
+					setConnectionState("stale");
 					throw new Error(`Optimizer event history is incomplete at ${next.cursor}/${runCursor}`);
 				}
 				current = next;
-				if (typeof run.status === "string" && terminal.has(run.status)) {
+				const runStatus = typeof run.status === "string" ? run.status : "";
+				if (terminal.has(runStatus)) {
 					stopPolling = true;
 				}
 				if (!cancelled) {
 					setOptimizerPayload({ run, events: current.events });
 					setOptimizerLoadError(null);
+					setConnectionState(terminal.has(runStatus) ? "terminal" : "subscribed");
+					if (!postedReady) {
+						postedReady = true;
+						void bridges.optimizers?.recordVisualReady?.({
+							visualId: artifact.id,
+							optimizerRunId,
+							templateId: artifact.templateId ?? "optimizer.run.v1",
+							replayedThrough: current.cursor,
+							subscribedFrom: current.cursor + 1,
+							templateDigest: typeof artifact.metadata?.templateDigest === "string"
+								? artifact.metadata.templateDigest
+								: undefined
+						}).catch(() => undefined);
+					}
 				}
 			} catch (reason) {
 				if (!cancelled) {
 					setOptimizerPayload(null);
 					setOptimizerLoadError(reason instanceof Error ? reason.message : String(reason));
+					setConnectionState("failed");
 				}
 			}
 		};
@@ -286,7 +396,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			window.clearInterval(poll);
 			unlisten?.();
 		};
-	}, [artifact.bindings]);
+	}, [artifact.bindings, artifact.id, artifact.templateId, artifact.metadata]);
 
 	const boundRun = optimizerPayload?.run as { id?: string; algorithmId?: string } | undefined;
 	const boundRunId = boundRun?.algorithmId === "gepa" ? boundRun.id ?? null : null;
@@ -330,19 +440,33 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	}, [boundRunId]);
 
 	if (failed) return <VisualInvalidState title="Template unavailable" detail={`No bundled shell is registered for ${artifact.templateId ?? "this visual"}.`} />;
-	if (resolved.errors.length > 0) return <VisualInvalidState title="Visual data unavailable" detail={resolved.errors.join(" · ")} />;
+	if (synchronouslyResolved.errors.length > 0) return <VisualInvalidState title="Visual data unavailable" detail={synchronouslyResolved.errors.join(" · ")} />;
+	if (traceResolution.status === "loading") return <p className="visual-loading" role="status">Loading sealed trace…</p>;
+	if (traceResolution.status === "error") {
+		const detail = traceResolution.error ?? "Trace projection resolution failed";
+		const lower = detail.toLowerCase();
+		const title = lower.includes("quarant") ? "Trace is quarantined"
+			: lower.includes("extractor") || lower.includes("projection kind") || lower.includes("not registered") ? "Trace extractor unavailable"
+				: lower.includes("unsupported") || lower.includes("schema") ? "Unsupported trace schema"
+					: lower.includes("not found") || lower.includes("missing") || lower.includes("archive") ? "Sealed trace archive missing"
+						: lower.includes("unavailable") ? "Trace resolver unavailable" : "Trace data unavailable";
+		return <VisualInvalidState title={title} detail={detail} />;
+	}
 	if (!Shell) return <p className="visual-loading">Loading visual shell…</p>;
+	const resolvedProps = { ...synchronouslyResolved.props, ...traceResolution.props };
+	const showConnection = Boolean(optimizerPayload || optimizerLoadError || connectionState !== "loading");
 	return (
-		<div data-testid="visual-template-shell">
+		<div data-testid="visual-template-shell" data-connection-state={showConnection ? connectionState : undefined}>
+			{showConnection ? <p className="visual-connection-state" data-testid="visual-connection-state">{connectionState}</p> : null}
 			<Shell
-				{...(resolved.props as ShellProps)}
+				{...(resolvedProps as ShellProps)}
 				title={artifact.title}
 				lede={artifact.summary}
 				bindings={artifact.bindings}
 				visualMetadata={artifact.metadata}
 				loadError={optimizerLoadError ?? undefined}
 				{...(optimizerPayload ?? {})}
-				data={optimizerPayload ?? resolved.props.optimizer_run}
+				data={optimizerPayload ?? resolvedProps.optimizer_run}
 				comparison={comparisonPayload ?? undefined}
 			/>
 		</div>
@@ -408,6 +532,138 @@ export function VisualHost({ artifact }: { artifact: ArtifactRef }) {
 
 export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClose: () => void }) {
 	const [expanded, setExpanded] = useState(false);
+	const [annotations, setAnnotations] = useState<VisualAnnotation[]>([]);
+	const [seals, setSeals] = useState<VisualSeal[]>([]);
+	const [sealedBundle, setSealedBundle] = useState<VisualSealBundle | null>(null);
+	const [compareBundle, setCompareBundle] = useState<VisualSealBundle | null>(null);
+	const [shareUpload, setShareUpload] = useState<VisualUpload | null>(null);
+	const [sharedUrl, setSharedUrl] = useState("");
+	const [labeling, setLabeling] = useState(false);
+	const [labelPoint, setLabelPoint] = useState<{ x: number; y: number } | null>(null);
+	const [labelBody, setLabelBody] = useState("");
+	const [artifactError, setArtifactError] = useState<string | null>(null);
+	const [busy, setBusy] = useState(false);
+	const visualId = artifact.visualId;
+	const revision = artifact.revision;
+	const qualityGate = artifact.metadata?.qualityGate as { ready?: boolean; revision?: number } | undefined;
+	const sealEligible = Boolean(visualId && revision && qualityGate?.ready && qualityGate.revision === revision);
+
+	useEffect(() => {
+		let cancelled = false;
+		if (!visualId || !bridges.visuals) return;
+		void Promise.all([bridges.visuals.annotations(visualId), bridges.visuals.listSeals(visualId)])
+			.then(([nextAnnotations, nextSeals]) => {
+				if (!cancelled) {
+					setAnnotations(nextAnnotations.filter((row) => !row.tombstoned));
+					setSeals(nextSeals);
+				}
+			})
+			.catch((reason) => { if (!cancelled) setArtifactError(String(reason)); });
+		return () => { cancelled = true; };
+	}, [visualId, revision]);
+
+	async function createLabel() {
+		if (!visualId || !revision || !labelPoint || !bridges.visuals) return;
+		setBusy(true);
+		setArtifactError(null);
+		try {
+			const annotation = await bridges.visuals.createAnnotation(visualId, {
+				visualRevision: revision,
+				selector: { type: "chart_mark", markId: "visual-pane", x: labelPoint.x, y: labelPoint.y },
+				kind: "note",
+				body: labelBody.trim() || null,
+				metadata: { coordinateSpace: "normalized", createdFrom: "visual-pane" }
+			});
+			setAnnotations((current) => [...current, annotation]);
+			setLabeling(false);
+			setLabelPoint(null);
+			setLabelBody("");
+		} catch (reason) {
+			setArtifactError(String(reason));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function sealCurrentRevision() {
+		if (!visualId || !revision || !bridges.visuals) return;
+		setBusy(true);
+		setArtifactError(null);
+		try {
+			const nextSeal = await bridges.visuals.seal(visualId, revision);
+			setSeals((current) => [nextSeal, ...current.filter((row) => row.receiptDigest !== nextSeal.receiptDigest)]);
+			setSealedBundle(await bridges.visuals.getSeal(nextSeal.receiptDigest));
+		} catch (reason) {
+			setArtifactError(String(reason));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function reopenSeal(receiptDigest: string) {
+		if (!bridges.visuals) return;
+		setBusy(true);
+		setArtifactError(null);
+		try {
+			const [bundle, upload] = await Promise.all([
+				bridges.visuals.getSeal(receiptDigest),
+				bridges.visuals.uploadStatus(receiptDigest)
+			]);
+			setSealedBundle(bundle);
+			setCompareBundle(null);
+			setShareUpload(upload);
+		} catch (reason) {
+			setArtifactError(String(reason));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function compareSeal(receiptDigest: string) {
+		if (!bridges.visuals) return;
+		setBusy(true);
+		setArtifactError(null);
+		try {
+			const bundle = await bridges.visuals.getSeal(receiptDigest);
+			if (!sealedBundle) setSealedBundle(bundle);
+			else setCompareBundle(bundle);
+		} catch (reason) {
+			setArtifactError(String(reason));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function openSharedUrl() {
+		if (!bridges.visuals || !sharedUrl.trim()) return;
+		setBusy(true);
+		setArtifactError(null);
+		try {
+			const bundle = await bridges.visuals.openShared(sharedUrl.trim());
+			setSealedBundle(bundle);
+			setCompareBundle(null);
+			setShareUpload(null);
+		} catch (reason) {
+			setArtifactError(String(reason));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function shareCurrentSeal() {
+		if (!sealedBundle || !bridges.visuals) return;
+		setBusy(true);
+		setArtifactError(null);
+		try {
+			const upload = await bridges.visuals.shareSeal(sealedBundle.seal.receiptDigest);
+			setShareUpload(upload);
+			if (upload.committedUrl) await navigator.clipboard?.writeText(upload.committedUrl).catch(() => undefined);
+		} catch (reason) {
+			setArtifactError(String(reason));
+		} finally {
+			setBusy(false);
+		}
+	}
 	const isSubagents = artifact.templateId === "synth.subagents.v1";
 	const isMermaid = artifact.templateId === "diagram.mermaid.v1" || artifact.rendererKind === "mermaid";
 	const isSystemsDynamic = artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
@@ -425,6 +681,33 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					<span className="visual-pane-title">{artifact.title}</span>
 				</div>
 				<div className="visual-pane-head-actions">
+					{sealedBundle ? (
+						<>
+							<button type="button" className="visual-expand" onClick={() => { setSealedBundle(null); setCompareBundle(null); setShareUpload(null); }}>Live revision</button>
+							{compareBundle ? <button type="button" className="visual-expand" onClick={() => setCompareBundle(null)}>Close comparison</button> : null}
+							<button type="button" className="visual-expand" onClick={() => void shareCurrentSeal()} disabled={busy} title="Human Share uploads this sealed digest privately">
+								{shareUpload?.state === "committed" ? "Shared privately" : "Share privately"}
+							</button>
+						</>
+					) : null}
+					<button
+						type="button"
+						className="visual-expand"
+						onClick={() => { setLabeling(true); setLabelPoint(null); }}
+						disabled={!visualId || !revision || busy}
+						title="Place a durable label on this exact revision"
+					>
+						Label{annotations.length ? ` · ${annotations.length}` : ""}
+					</button>
+					<button
+						type="button"
+						className="visual-expand"
+						onClick={() => void sealCurrentRevision()}
+						disabled={!sealEligible || busy}
+						title={sealEligible ? "Seal this exact revision for offline use" : "Pass the E1 visual quality gate before sealing"}
+					>
+						{busy ? "Working…" : "Seal"}
+					</button>
 					<button
 						type="button"
 						className="visual-expand"
@@ -438,8 +721,76 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					<button type="button" className="visual-close" onClick={onClose} aria-label="Close visual">×</button>
 				</div>
 			</header>
-			<div className="visual-pane-body">
-				<VisualHost artifact={artifact} />
+			{artifactError ? <div className="visual-artifact-error" role="alert">{artifactError}</div> : null}
+			{seals.length ? (
+				<div className="visual-seal-strip" aria-label="Sealed revisions">
+					<span>Offline:</span>
+					{seals.map((seal) => (
+						<span key={seal.receiptDigest} className="visual-seal-choice">
+							<button type="button" onClick={() => void reopenSeal(seal.receiptDigest)}>
+								rev {seal.visualRevision} · {seal.receiptDigest.slice(0, 8)}
+							</button>
+							{sealedBundle?.seal.receiptDigest !== seal.receiptDigest ? (
+								<button type="button" onClick={() => void compareSeal(seal.receiptDigest)}>Compare</button>
+							) : null}
+						</span>
+					))}
+				</div>
+			) : null}
+			<form className="visual-shared-open" onSubmit={(event) => { event.preventDefault(); void openSharedUrl(); }}>
+				<input
+					value={sharedUrl}
+					onChange={(event) => setSharedUrl(event.target.value)}
+					placeholder="Paste private artifact URL"
+					aria-label="Private artifact URL"
+				/>
+				<button type="submit" disabled={!sharedUrl.trim() || busy}>Open shared</button>
+			</form>
+			{shareUpload?.committedUrl ? (
+				<div className="visual-share-url">
+					<span>Private permalink</span>
+					<a href={shareUpload.committedUrl} target="_blank" rel="noreferrer">{shareUpload.committedUrl}</a>
+					<button type="button" onClick={() => void navigator.clipboard?.writeText(shareUpload.committedUrl!)}>Copy</button>
+				</div>
+			) : null}
+			{labeling ? (
+				<form className="visual-label-form" onSubmit={(event) => { event.preventDefault(); void createLabel(); }}>
+					<span>{labelPoint ? `Placed at ${Math.round(labelPoint.x * 100)}%, ${Math.round(labelPoint.y * 100)}%` : "Click the visual to place the label."}</span>
+					<input value={labelBody} onChange={(event) => setLabelBody(event.target.value)} placeholder="Label note (optional)" aria-label="Label note" />
+					<button type="submit" disabled={!labelPoint || busy}>Save label</button>
+					<button type="button" onClick={() => { setLabeling(false); setLabelPoint(null); }}>Cancel</button>
+				</form>
+			) : null}
+			<div
+				className={`visual-pane-body${labeling ? " visual-label-target" : ""}`}
+				onClick={labeling ? (event) => {
+					const bounds = event.currentTarget.getBoundingClientRect();
+					setLabelPoint({
+						x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
+						y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height))
+					});
+				} : undefined}
+			>
+				{sealedBundle ? (
+					<div className={compareBundle ? "visual-sealed-compare" : "visual-sealed-single"}>
+						<iframe
+							className="visual-sealed-frame"
+							title={`Sealed ${artifact.title} revision ${sealedBundle.seal.visualRevision}`}
+							sandbox=""
+							srcDoc={sealedBundle.indexHtml}
+							data-receipt-digest={sealedBundle.seal.receiptDigest}
+						/>
+						{compareBundle ? (
+							<iframe
+								className="visual-sealed-frame"
+								title={`Sealed ${artifact.title} revision ${compareBundle.seal.visualRevision}`}
+								sandbox=""
+								srcDoc={compareBundle.indexHtml}
+								data-receipt-digest={compareBundle.seal.receiptDigest}
+							/>
+						) : null}
+					</div>
+				) : <VisualHost artifact={artifact} />}
 			</div>
 		</aside>
 	);

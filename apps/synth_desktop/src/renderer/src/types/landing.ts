@@ -84,9 +84,13 @@ export type ArtifactRef = {
 	rendererKind?: string;
 	/** Runtime visual instance id from `/v1/visuals`. */
 	visualId?: string;
+	/** Durable revision used to invalidate asynchronous binding resolutions. */
+	revision?: number;
 	bindings?: import("@synth/runtime-protocol").VisualBindings | Record<string, unknown>;
 	/** Durable visual metadata, including presentation and authoring review receipts. */
 	metadata?: Record<string, unknown>;
+	/** Durable authoring state projected for transcript and pane chrome. */
+	status?: "draft" | "review" | "ready" | "failed";
 };
 
 /** Inline activity line in a local Laguna transcript (Poolside-style). */
@@ -95,6 +99,14 @@ export type LocalActivityLine = {
 	label: string;
 	/** Correlates a pending approval with its durable grant/rejection event. */
 	approvalId?: string;
+	approvalKind?: "shell_command" | "paid_compute" | "sidecar_lifecycle" | "credential_access" | "permission";
+	approvalPayload?: {
+		operation?: string;
+		parameters?: Record<string, unknown>;
+		estimatedCostUsdMicros?: number;
+		requestedCap?: { maxCostUsdMicros?: number; maxRollouts?: number };
+		requestingAgent?: string;
+	};
 	alwaysAllowSupported?: boolean;
 	/** Expanded raw detail (tool output / thought) when the line is opened. */
 	detail?: string;
@@ -111,6 +123,8 @@ export type LocalActivityLine = {
 	path?: string;
 	/** Sanitized lifecycle status for an allowlisted tool call. */
 	toolStatus?: "running" | "completed" | "failed";
+	/** User-facing visual authoring milestone; never a raw tool operation. */
+	visualStage?: "draft" | "review" | "ready" | "failed";
 	/** Transcript placement relative to the assistant response owning this activity. */
 	placement?: "before" | "after";
 	/** Source event sequence — used by the placement chronology invariant. */
@@ -120,7 +134,7 @@ export type LocalActivityLine = {
 	tokensAfter?: number;
 	/** Latest observed total for the active turn's compact activity tail. */
 	tokenTotal?: number;
-	kind?: "thought" | "search" | "command" | "file_read" | "file_write" | "visual" | "subagent" | "run_summary" | "context_compaction" | "approval" | "working";
+	kind?: "thought" | "search" | "command" | "file_read" | "file_write" | "visual" | "visual_lifecycle" | "subagent" | "run_summary" | "context_compaction" | "approval" | "working";
 };
 
 export type LocalChat = {
@@ -194,6 +208,7 @@ export type LandingState = {
 export const OPENROUTER_LUNA_MODEL = "openai/gpt-5.6-luna";
 export const OPENROUTER_LAGUNA_S_MODEL = "poolside/laguna-s-2.1";
 export const OPENROUTER_MUSE_SPARK_MODEL = "meta/muse-spark-1.2";
+export const OPENROUTER_GEMINI_FLASH_MODEL = "google/gemini-3.7-flash";
 /** Fully qualified — bare `laguna-s-2.1` resolves to a different catalog entry server-side. */
 export const SYNTH_CLOUD_LAGUNA_S_MODEL = "openrouter/poolside/laguna-s-2.1";
 export const SYNTH_CLOUD_MUSE_SPARK_MODEL = "meta/muse-spark-1.2";
@@ -224,6 +239,12 @@ export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 		id: "openrouter-muse-spark",
 		label: "Muse Spark 1.2",
 		description: `OpenRouter · ${OPENROUTER_MUSE_SPARK_MODEL} · usage tracked`,
+		group: "remote"
+	},
+	{
+		id: "openrouter-gemini-flash",
+		label: "Gemini 3.7 Flash",
+		description: `OpenRouter · ${OPENROUTER_GEMINI_FLASH_MODEL} · usage tracked`,
 		group: "remote"
 	},
 	{

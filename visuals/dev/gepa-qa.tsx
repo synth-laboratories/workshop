@@ -2,9 +2,9 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import "../../apps/synth_desktop/src/renderer/src/styles/app.css";
 import "../chrome/tokens.css";
-import { GepaWorkspace } from "../templates/optimizer.run.v1/overlays/gepa/GepaWorkspace.tsx";
-import { projectAtCursor, type OptimizerRun, type ProjectedState } from "../templates/optimizer.run.v1/components/projectEvents.ts";
-import { normalizeOptimizerEvents } from "../templates/optimizer.run.v1/components/normalizeEvents.ts";
+import { GepaWorkspace } from "../families/optimizers/_shared/optimizer.run.v1/overlays/gepa/GepaWorkspace.tsx";
+import { projectAtCursor, type OptimizerRun, type ProjectedState } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
+import { normalizeOptimizerEvents } from "../families/optimizers/_shared/optimizer.run.v1/components/normalizeEvents.ts";
 
 const candidates = [
   { id: "gepa_seed", source: "seed", status: "full_train_evaluated", score: 0.71, train_reward: 0.71, sequence: 12 },

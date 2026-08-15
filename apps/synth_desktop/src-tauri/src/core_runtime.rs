@@ -7,6 +7,8 @@ use crate::contract::events::{origin_for_source_and_kind, tag_event, EventChanne
 use crate::data::{ContainerDeployment, ContainerRegisterRequest, DataStore};
 use crate::domain::{RunService, RunStatus, SessionKind, SessionService, SessionStatus};
 use crate::optimizers::OptimizerService;
+use crate::plugins::PluginService;
+use crate::reports::ReportRegistry;
 use crate::storage::{
     AppEvent, ContentStore, CoreDiagnostics, EventAppend, EventJournal, EventSource, SessionRecord,
     Storage,
@@ -27,8 +29,10 @@ pub struct CoreRuntime {
     journal: EventJournal,
     content: ContentStore,
     visuals: VisualRegistry,
+    reports: ReportRegistry,
     data: DataStore,
     optimizers: OptimizerService,
+    plugins: PluginService,
     intern: Arc<InternRuntime>,
     intern_provider: Arc<InternProviderManager>,
     sessions: SessionService,
@@ -57,6 +61,12 @@ impl CoreRuntime {
         let content = ContentStore::new(storage.content_root());
         let visuals =
             VisualRegistry::new(storage.database().clone(), journal.clone(), content.clone());
+        let reports = ReportRegistry::new(
+            storage.database().clone(),
+            journal.clone(),
+            content.clone(),
+            visuals.clone(),
+        );
         let data = DataStore::new(storage.database().clone(), content.clone());
         let intern_provider = Arc::new(InternProviderManager::new(
             intern.clone(),
@@ -73,13 +83,21 @@ impl CoreRuntime {
             events_tx.clone(),
             optimizer_manager,
         );
+        let plugin_path = storage
+            .content_root()
+            .parent()
+            .unwrap_or_else(|| storage.content_root())
+            .join("plugins/optimizers.json");
+        let plugins = PluginService::new(crate::plugins::PluginRegistry::with_path(plugin_path));
         Self {
             storage,
             journal,
             content,
             visuals,
+            reports,
             data,
             optimizers,
+            plugins,
             intern,
             intern_provider,
             sessions,
@@ -116,12 +134,20 @@ impl CoreRuntime {
         &self.visuals
     }
 
+    pub fn reports(&self) -> &ReportRegistry {
+        &self.reports
+    }
+
     pub fn data(&self) -> &DataStore {
         &self.data
     }
 
     pub fn optimizers(&self) -> &OptimizerService {
         &self.optimizers
+    }
+
+    pub fn plugins(&self) -> &PluginService {
+        &self.plugins
     }
 
     pub fn intern(&self) -> &Arc<InternRuntime> {

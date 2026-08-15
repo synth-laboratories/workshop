@@ -72,6 +72,7 @@ export function useShellLayout(
 				next.sidebarWidth === current.sidebarWidth &&
 				next.outputPaneVisible === current.outputPaneVisible &&
 				next.outputPaneWidth === current.outputPaneWidth &&
+				next.visualsListWidth === current.visualsListWidth &&
 				next.bottomPanelVisible === current.bottomPanelVisible &&
 				next.bottomPanelHeight === current.bottomPanelHeight &&
 				next.selectedConversationId === current.selectedConversationId &&

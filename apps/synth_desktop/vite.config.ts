@@ -97,7 +97,8 @@ export default defineConfig({
 	resolve: {
 		alias: {
 			"@": resolve("src/renderer/src"),
-			"@synth/visuals": resolve("../../visuals/registry/index.ts")
+			"@synth/visuals": resolve("../../visuals/registry/index.ts"),
+			"@synth/visual-templates": resolve("../../visuals/families")
 		}
 	},
 	plugins: [react(), liveGepaQaEvents()],

@@ -27,7 +27,7 @@ function envelope(kind: string, sequence: number | null, payload: Record<string,
 }
 
 test("[v0.2] Craftax live visual replays fixture evidence and keeps missing usage missing", async ({ page }) => {
-	const events = loadEvents("templates/live.craftax.v1/examples/events.json");
+	const events = loadEvents("families/first_class_example_containers/live.craftax.v1/examples/events.json");
 	await installVisuals(page, [liveVisual({
 		id: "vis_v02_craftax",
 		templateId: "live.craftax.v1",
@@ -69,7 +69,7 @@ test("[v0.2] Harbor live visual fails closed when reward.txt is missing", async 
 });
 
 test("[v0.2] dig.bench live visual is text-only and keeps incomplete reward null", async ({ page }) => {
-	const events = loadEvents("templates/live.digbench.v1/examples/events.json");
+	const events = loadEvents("families/first_class_example_containers/live.digbench.v1/examples/events.json");
 	await installVisuals(page, [liveVisual({
 		id: "vis_v02_digbench",
 		templateId: "live.digbench.v1",

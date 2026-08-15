@@ -1,6 +1,6 @@
 [package]
 name = "synth-desktop"
-version = "0.2.0"
+version = "0.3.0"
 description = "Synth Desktop Tauri host"
 edition = "2021"
 default-run = "synth-desktop"
@@ -64,6 +64,10 @@ path = "src/bin/synth_containers_mcp.rs"
 [[bin]]
 name = "synth-optimizers-mcp"
 path = "src/bin/synth_optimizers_mcp.rs"
+
+[[bin]]
+name = "synth-plugins-mcp"
+path = "src/bin/synth_plugins_mcp.rs"
 
 [[bin]]
 name = "synth-session-mcp"

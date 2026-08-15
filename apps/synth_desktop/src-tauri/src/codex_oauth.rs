@@ -251,6 +251,7 @@ fn parse_dev_auth_file(value: &str) -> Result<Credential> {
             .ok_or_else(|| anyhow!("debug Codex OAuth file omitted {name}"))
     };
     let id_token = required("id_token")?;
+    let access_token = required("access_token")?;
     let claims = jwt_claims(&id_token)?;
     let account_id = tokens
         .get("account_id")
@@ -258,9 +259,13 @@ fn parse_dev_auth_file(value: &str) -> Result<Credential> {
         .map(str::to_owned)
         .or_else(|| account_id(&claims))
         .ok_or_else(|| anyhow!("debug Codex OAuth file omitted account_id"))?;
-    let expires_ms = claims
-        .get("exp")
-        .and_then(|value| value.as_i64())
+    // The access token governs API access and can outlive the ID token, which
+    // proves identity. Prefer its expiry while retaining the ID token as a
+    // compatibility fallback for providers that use opaque access tokens.
+    let expires_ms = jwt_claims(&access_token)
+        .ok()
+        .and_then(|claims| claims.get("exp").and_then(|value| value.as_i64()))
+        .or_else(|| claims.get("exp").and_then(|value| value.as_i64()))
         .unwrap_or_else(|| Utc::now().timestamp() + 3600)
         * 1000;
     let last_refresh_ms = auth
@@ -270,7 +275,7 @@ fn parse_dev_auth_file(value: &str) -> Result<Credential> {
         .map(|value| value.timestamp_millis())
         .unwrap_or_else(|| Utc::now().timestamp_millis());
     Ok(Credential {
-        access_token: required("access_token")?,
+        access_token,
         refresh_token: required("refresh_token")?,
         id_token,
         expires_ms,
@@ -1021,10 +1026,16 @@ mod tests {
                 .unwrap()
             )
         );
+        let access_token = format!(
+            "x.{}.y",
+            URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(&serde_json::json!({"exp": 2_100_000_000_i64})).unwrap()
+            )
+        );
         let body = serde_json::json!({
             "auth_mode": "chatgpt",
             "tokens": {
-                "access_token": "file-access",
+                "access_token": access_token,
                 "refresh_token": "file-refresh",
                 "id_token": id_token,
                 "account_id": "file-account"
@@ -1041,7 +1052,7 @@ mod tests {
         let refresh_lock = store.lock_refresh().unwrap();
         drop(refresh_lock);
         let mut loaded = store.load().unwrap().unwrap();
-        assert_eq!(loaded.access_token, "file-access");
+        assert_eq!(loaded.expires_ms, 2_100_000_000_000);
         assert_eq!(loaded.account_id, "file-account");
         loaded.access_token = "instance-access".into();
         store.save(&loaded).unwrap();

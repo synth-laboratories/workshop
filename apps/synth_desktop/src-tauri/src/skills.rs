@@ -36,6 +36,10 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
         content: include_str!("../../skills/use-synth-optimizers/SKILL.md"),
     },
     BundledSkill {
+        id: "use-synth-plugins",
+        content: include_str!("../../skills/use-synth-plugins/SKILL.md"),
+    },
+    BundledSkill {
         id: "use-synth-session",
         content: include_str!("../../skills/use-synth-session/SKILL.md"),
     },
@@ -48,6 +52,13 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
         content: include_str!("../../skills/author-synth-diagrams/SKILL.md"),
     },
 ];
+
+pub(crate) fn bundled_skill_content(id: &str) -> Option<&'static str> {
+    BUNDLED_SKILLS
+        .iter()
+        .find(|skill| skill.id == id)
+        .map(|skill| skill.content)
+}
 
 /// Reads a single `key: value` field out of a SKILL.md's leading `---`
 /// YAML frontmatter block. Deliberately minimal: these files only ever use

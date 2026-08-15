@@ -8,6 +8,7 @@
 import type {
 	CodexBridge,
 	CodexOauthBridge,
+	ContextBridge,
 	CoreBridge,
 	DesktopInstanceDiagnostics,
 	InternBridge,
@@ -15,6 +16,7 @@ import type {
 	LagunaBridge,
 	ModelPerformanceBridge,
 	OptimizersBridge,
+	PluginsBridge,
 	RuntimeBridge,
 	SemanticEvalApi,
 	SkillsBridge,
@@ -25,6 +27,7 @@ import type {
 	UpdatesBridge,
 	UsageBridge,
 	VisualsBridge,
+	ReportsBridge,
 	WhisperBridge,
 	WorkspaceScopeBridge,
 	ComposerImageAttachment
@@ -45,6 +48,7 @@ declare global {
 		synthLaguna?: LagunaBridge;
 		synthWhisper?: WhisperBridge;
 		synthSkills?: SkillsBridge;
+		synthContext?: ContextBridge;
 		synthConfig?: SynthConfigBridge;
 		synthWorkspaceScope?: WorkspaceScopeBridge;
 		synthAccount?: SynthAccountBridge;
@@ -58,6 +62,8 @@ declare global {
 		synthTariffs?: TariffsBridge;
 		synthUpdates?: UpdatesBridge;
 		synthVisuals?: VisualsBridge;
+		synthPlugins?: PluginsBridge;
+		synthReports?: ReportsBridge;
 		synthOptimizers?: OptimizersBridge;
 		synthTerminal: TerminalBridge;
 		/** Dev/test semantic eval API — tree-shaken from packaged production builds. */

@@ -119,6 +119,10 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::optimizers_import_local,
         crate::optimizers_reconcile_cloud,
         crate::optimizers_list_cloud,
+        crate::plugins_status,
+        crate::plugins_list,
+        crate::plugins_set_release_channel,
+        crate::visual_subscription_ready,
         crate::optimizers::manager::optimizer_sidecar_status,
         crate::optimizers::manager::optimizer_sidecar_install,
         crate::optimizers::manager::optimizer_sidecar_start,
@@ -130,6 +134,14 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::visuals_list,
         crate::visuals_get,
         crate::visuals_revisions,
+        crate::visuals_annotations_list,
+        crate::visuals_annotation_create,
+        crate::visuals_seals_list,
+        crate::visuals_seal,
+        crate::visuals_seal_get,
+        crate::visuals_upload_status,
+        crate::visuals_share_seal,
+        crate::visuals_open_shared,
         crate::visuals_create,
         crate::visuals_update,
         crate::visuals_save,
@@ -140,6 +152,30 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::visuals_renditions,
         crate::visuals_rendition,
         crate::visuals_render,
+        crate::reports_list,
+        crate::reports_get,
+        crate::reports_revision_get,
+        crate::reports_create,
+        crate::reports_update,
+        crate::reports_archive,
+        crate::reports_restore,
+        crate::reports_visibility_requests,
+        crate::reports_visibility_request,
+        crate::reports_visibility_decide,
+        crate::reports_seal,
+        crate::reports_seals_list,
+        crate::reports_seal_get,
+        crate::reports_seals_compare,
+        crate::reports_experiments_list,
+        crate::reports_experiment_upsert,
+        crate::reports_log_list,
+        crate::reports_log_append,
+        crate::reports_upload_status,
+        crate::reports_share,
+        crate::reports_promote,
+        crate::reports_open_shared,
+        crate::reports_comments_list,
+        crate::reports_comment_create,
         crate::synth_config_get,
         crate::synth_config_update,
         crate::model_performance_get,
@@ -197,6 +233,14 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::whisper::whisper_transcribe,
         crate::whisper::whisper_transcribe_base64,
         crate::skills::skills_list,
+        crate::context::context_snapshot,
+        crate::context::context_workspace_agents_update,
+        crate::context::context_skill_update,
+        crate::context::context_mcp_group_update,
+        crate::context::context_cookbooks_install,
+        crate::context::context_cookbooks_cancel,
+        crate::context::context_cookbooks_set_enabled,
+        crate::context::context_cookbooks_uninstall,
         crate::workspace_choose_directory,
         crate::codex_session_start,
         crate::codex_turn_start,
@@ -260,10 +304,10 @@ mod tests {
         // The thread name under `cargo test` is the full test path, which
         // contains `::` — an illegal filename character on Windows. Keep only
         // characters that are portable across the platforms we build on.
-        let thread = std::thread::current()
-            .name()
-            .unwrap_or("test")
-            .replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "_");
+        let thread = std::thread::current().name().unwrap_or("test").replace(
+            |c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_',
+            "_",
+        );
         let path = std::env::temp_dir().join(format!(
             "synth-desktop-protocol-{}-{thread}.ts",
             std::process::id()
@@ -286,7 +330,7 @@ mod tests {
         let exported =
             body.matches("__TAURI_INVOKE(").count() + body.matches("__TAURI_INVOKE<").count();
         assert_eq!(
-            exported, 138,
+            exported, 177,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

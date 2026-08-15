@@ -31,6 +31,7 @@ export default function App() {
 						activeChatId={c.view.kind === "chat" ? c.view.chatId : null}
 						inventoryActive={c.view.kind === "inventory"}
 						visualsActive={c.view.kind === "visuals"}
+						reportsActive={c.view.kind === "reports"}
 						optimizersActive={c.view.kind === "optimizers"}
 						workingChatIds={c.workingChatIds}
 						activeLocalDecodeTps={c.inferenceMonitor.snapshot?.active?.decodeTokensPerSecond == null
@@ -70,6 +71,7 @@ export default function App() {
 						}}
 						onOpenInventory={() => c.setView({ kind: "inventory" })}
 						onOpenVisuals={() => c.setView({ kind: "visuals" })}
+						onOpenReports={() => c.setView({ kind: "reports" })}
 						onOpenOptimizers={() => c.setView({ kind: "optimizers" })}
 						onSearch={c.openSearch}
 						onSettings={() => c.setView({ kind: "settings" })}
@@ -104,6 +106,7 @@ export default function App() {
 						tabLabel={c.tabLabel}
 						appVersion={c.appVersion}
 						activeLocalModel={Boolean(c.activeLocalModel)}
+						reserveNativeControls={c.view.kind === "settings" || !c.sidebarVisible}
 						brand={c.view.kind === "settings" && c.view.section === "models" ? "openai" : "synth"}
 						terminalOpen={c.terminalOpen}
 						sidePanelOpen={c.sidePanelOpen}
@@ -156,6 +159,7 @@ export default function App() {
 						setInventoryContainerWidth={c.setInventoryContainerWidth}
 						persistLayoutSnapshot={c.persistLayoutSnapshot}
 						showSidePanel={c.showSidePanel}
+						sidePanelCanSharePane={c.sidePanelCanSharePane}
 						sidePanelTab={c.sidePanelTab}
 						setSidePanelTab={c.setSidePanelTab}
 						setSidePanelOpen={c.setSidePanelOpen}

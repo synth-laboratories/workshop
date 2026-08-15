@@ -11,6 +11,7 @@ import {
 	type ToolActivityMode
 } from "../preferences";
 import { contextCompactionTokenSummary } from "../runtime/sessionView";
+import "./PaidComputeApprovalModal.css";
 
 type Props = {
 	chat: LocalChat;
@@ -162,6 +163,27 @@ function ActivityLine({
 			<div className="run-summary" data-testid={`activity-${line.id}`}>
 				<span aria-hidden>•••</span>
 				<span>{line.label}</span>
+			</div>
+		);
+	}
+
+	if (line.kind === "visual_lifecycle" && line.visualStage) {
+		const stageLabel = line.visualStage === "draft" ? "Draft"
+			: line.visualStage === "review" ? "In review"
+				: line.visualStage === "ready" ? "Ready" : "Needs attention";
+		return (
+			<div className={`visual-lifecycle stage-${line.visualStage}`} data-testid={`activity-${line.id}`}>
+				<span className="visual-lifecycle-mark" aria-hidden><IconVisual /></span>
+				<span className="visual-lifecycle-copy">
+					<strong>{line.label}</strong>
+					<span>Draft <i /> Review <i /> Ready</span>
+				</span>
+				<span className="visual-lifecycle-status">{stageLabel}</span>
+				{onToggleVisual ? (
+					<button type="button" className="visual-lifecycle-open" onClick={onToggleVisual} aria-label={visualOpen ? "Hide visual" : "Open visual"}>
+						{visualOpen ? "Hide" : "Open"}
+					</button>
+				) : null}
 			</div>
 		);
 	}
@@ -319,6 +341,48 @@ function ActivityLine({
 	);
 }
 
+function PaidComputeApprovalModal({ line, onApprove, onReject }: {
+	line: LocalActivityLine;
+	onApprove?: (approvalId: string) => void;
+	onReject?: (approvalId: string) => void;
+}) {
+	const payload = line.approvalPayload;
+	const cap = payload?.requestedCap;
+	const estimated = payload?.estimatedCostUsdMicros;
+	const formatUsd = (micros: number) => `$${(micros / 1_000_000).toFixed(2)}`;
+	const approveRef = useRef<HTMLButtonElement>(null);
+	useEffect(() => {
+		approveRef.current?.focus();
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key === "Escape") {
+				event.preventDefault();
+				onReject?.(line.approvalId!);
+			}
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [line.approvalId, onReject]);
+	return <div className="paid-compute-modal-backdrop" data-testid="paid-compute-approval-modal">
+		<section className="paid-compute-modal" role="dialog" aria-modal="true" aria-labelledby="paid-compute-title">
+			<div className="approval-card-kicker">Paid compute</div>
+			<h2 id="paid-compute-title">Approve this bounded run?</h2>
+			<dl>
+				<div><dt>Requesting agent</dt><dd>{payload?.requestingAgent ?? "Unknown agent"}</dd></div>
+				<div><dt>Operation</dt><dd><code>{payload?.operation ?? "optimizer recipe"}</code></dd></div>
+				{estimated != null ? <div><dt>Predicted spend</dt><dd>{formatUsd(estimated)}</dd></div> : <div><dt>Predicted spend</dt><dd>Not available</dd></div>}
+				{cap?.maxCostUsdMicros != null ? <div><dt>Cost cap</dt><dd>{formatUsd(cap.maxCostUsdMicros)}</dd></div> : null}
+				{cap?.maxRollouts != null ? <div><dt>Rollout cap</dt><dd>{cap.maxRollouts.toLocaleString()}</dd></div> : null}
+			</dl>
+			{payload?.parameters ? <details><summary>Run parameters</summary><pre>{JSON.stringify(payload.parameters, null, 2)}</pre></details> : null}
+			<p className="paid-compute-consent">I approve this run only within the cap shown above.</p>
+			<div className="paid-compute-modal-actions">
+				<button type="button" className="approval-reject" onClick={() => onReject?.(line.approvalId!)}>Reject</button>
+				<button ref={approveRef} type="button" className="approval-approve" onClick={() => onApprove?.(line.approvalId!)}>Approve with cap</button>
+			</div>
+		</section>
+	</div>;
+}
+
 function VisualCard({
 	artifact,
 	active,
@@ -328,6 +392,9 @@ function VisualCard({
 	active: boolean;
 	onToggle: () => void;
 }) {
+	const lifecycle = artifact.status === "review" ? "In review"
+		: artifact.status === "ready" ? "Ready"
+			: artifact.status === "failed" ? "Needs attention" : "Draft";
 	return (
 		<button
 			type="button"
@@ -347,7 +414,7 @@ function VisualCard({
 			<span className="visual-card-body">
 				<span className="visual-card-title">{artifact.title}</span>
 				<span className="visual-card-meta">
-					{artifact.kind.replace(/_/g, " ")}
+					<span className={`visual-card-status status-${artifact.status ?? "draft"}`}>{lifecycle}</span>
 					{active ? " · open" : " · click to open"}
 				</span>
 			</span>
@@ -544,13 +611,14 @@ export function ChatTranscript({
 	// unresolved approvals at the live tail so a turn can never look like an
 	// inert "Working…" state while it is actually waiting for the operator.
 	const pendingApprovals = useMemo(() => {
-		if (!running) return [];
 		const byId = new Map<string, LocalActivityLine>();
 		for (const line of Object.values(activityByMessageId).flat()) {
 			if (line.kind === "approval" && line.approvalId) byId.set(line.approvalId, line);
 		}
 		return [...byId.values()];
-	}, [activityByMessageId, running]);
+	}, [activityByMessageId]);
+	const paidComputeApproval = pendingApprovals.find((line) => line.approvalKind === "paid_compute");
+	const inlineApprovals = pendingApprovals.filter((line) => line.approvalKind !== "paid_compute");
 	const withoutPendingApproval = (line: LocalActivityLine) =>
 		!(line.kind === "approval" && line.approvalId);
 	const presentedActive = useMemo(
@@ -757,7 +825,7 @@ export function ChatTranscript({
 						);
 						})}
 						{renderPresented(presentedActive, [], false, running)}
-						{pendingApprovals.map((line) => renderActivityLine(line, [], false, false))}
+						{inlineApprovals.map((line) => renderActivityLine(line, [], false, false))}
 						{running ? (
 							<div className="model-working" role="status" aria-live="polite" data-testid="model-working">
 								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>
@@ -767,6 +835,7 @@ export function ChatTranscript({
 						) : null}
 					</div>
 			</div>
+			{paidComputeApproval ? <PaidComputeApprovalModal line={paidComputeApproval} onApprove={onApprove} onReject={onReject} /> : null}
 		</div>
 	);
 }

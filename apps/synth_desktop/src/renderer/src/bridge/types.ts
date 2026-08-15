@@ -173,6 +173,22 @@ export type SkillsBridge = {
 	list(): Promise<SkillHit[]>;
 };
 
+export type ContextFile = { path: string; content: string; state: "bundled" | "absent" | "empty" | "overriding"; editable: boolean; version?: string | null };
+export type ContextSkill = { id: string; name: string; description: string; source: "bundled" | "cookbook" | "yours"; enabled: boolean; editable: boolean; content: string; path?: string | null };
+export type McpContextGroup = { id: string; label: string; enabled: boolean; servers: string[]; enabledTools: Record<string, string[]> };
+export type CookbookContext = { enabled: boolean; installed: boolean; phase: string; pin?: string | null; digest?: string | null; path?: string | null; lastFetch?: string | null; detail?: string | null };
+export type ContextSnapshot = { workshopAgents: ContextFile; workspaceAgents: ContextFile; cookbooks: CookbookContext; skills: ContextSkill[]; mcpGroups: McpContextGroup[] };
+export type ContextBridge = {
+	snapshot(workspace: string): Promise<ContextSnapshot>;
+	updateWorkspaceAgents(workspace: string, content: string): Promise<ContextSnapshot>;
+	updateSkill(workspace: string, skillId: string, enabled: boolean, content?: string | null): Promise<ContextSnapshot>;
+	updateMcpGroup(workspace: string, groupId: string, enabled: boolean): Promise<ContextSnapshot>;
+	installCookbooks(workspace: string): Promise<ContextSnapshot>;
+	cancelCookbooks(workspace: string): Promise<ContextSnapshot>;
+	setCookbooksEnabled(workspace: string, enabled: boolean): Promise<ContextSnapshot>;
+	uninstallCookbooks(workspace: string): Promise<ContextSnapshot>;
+};
+
 export type SynthBackendSettings = {
 	configPath: string;
 	envFile: string;
@@ -407,6 +423,56 @@ export type VisualTemplateMeta = {
 	exampleBinding?: Record<string, unknown> | null;
 };
 
+export type VisualAnnotation = {
+	id: string;
+	visualId: string;
+	visualRevision: number;
+	sourceDigest?: string | null;
+	selector: Record<string, unknown>;
+	kind: "note" | "bug" | "highlight" | "reward" | "acceptance";
+	body?: string | null;
+	metadata: Record<string, unknown>;
+	authorId: string;
+	supersedesId?: string | null;
+	tombstoned: boolean;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type VisualSeal = {
+	receiptDigest: string;
+	visualId: string;
+	visualRevision: number;
+	artifactId: string;
+	schemaVersion: "synth.artifact-bundle.v1";
+	compilerName: string;
+	compilerVersion: string;
+	runtimeDigest: string;
+	indexDigest: string;
+	dataDigest: string;
+	receiptSizeBytes: number;
+	totalSizeBytes: number;
+	createdAt: string;
+};
+
+export type VisualSealBundle = {
+	seal: VisualSeal;
+	indexHtml: string;
+	data: Record<string, unknown>;
+	receipt: Record<string, unknown>;
+};
+
+export type VisualUpload = {
+	receiptDigest: string;
+	collectionId?: string | null;
+	publicationId?: string | null;
+	publicationRevision?: number | null;
+	state: "prepared" | "uploading" | "finalizing" | "committed" | "failed";
+	committedUrl?: string | null;
+	error?: string | null;
+	updatedAt: string;
+};
+
 export type VisualsBridge = {
 	listTemplates(genre?: string | null): Promise<VisualTemplateMeta[]>;
 	getTemplate(templateId: string): Promise<VisualTemplateMeta>;
@@ -420,6 +486,23 @@ export type VisualsBridge = {
 	}): Promise<VisualRecord[]>;
 	get(visualId: string): Promise<VisualRecord>;
 	revisions(visualId: string): Promise<VisualRevision[]>;
+	annotations(visualId: string): Promise<VisualAnnotation[]>;
+	createAnnotation(visualId: string, request: {
+		visualRevision: number;
+		sourceDigest?: string | null;
+		selector: Record<string, unknown>;
+		kind: VisualAnnotation["kind"];
+		body?: string | null;
+		metadata?: Record<string, unknown>;
+		authorId?: string;
+		supersedesId?: string | null;
+	}): Promise<VisualAnnotation>;
+	listSeals(visualId?: string | null): Promise<VisualSeal[]>;
+	seal(visualId: string, revision: number): Promise<VisualSeal>;
+	getSeal(receiptDigest: string): Promise<VisualSealBundle>;
+	uploadStatus(receiptDigest: string): Promise<VisualUpload | null>;
+	shareSeal(receiptDigest: string): Promise<VisualUpload>;
+	openShared(committedUrl: string): Promise<VisualSealBundle>;
 	create(request: {
 		templateId: string;
 		title?: string;
@@ -461,6 +544,304 @@ export type VisualsBridge = {
 	render(visualId: string): Promise<VisualRecord>;
 	onEvent(listener: (event: AppEvent) => void): () => void;
 	onShow(listener: (event: AppEvent) => void): () => void;
+};
+
+export type PluginStatus = {
+	schemaVersion: string;
+	pluginId: string;
+	enabled: boolean;
+	phase: string;
+	installedVersion?: string | null;
+	selectedVersion?: string | null;
+	releaseChannel: "official" | "dev";
+	catalogVersion: string;
+	digest?: string | null;
+	service: { phase: string; startedAt?: string | null; activeRuns: number };
+	capabilitiesDigest?: string | null;
+	algorithms: string[];
+	templates: string[];
+	lastActionReceiptId?: string | null;
+	detail?: string | null;
+};
+
+export type PluginsBridge = {
+	status(pluginId?: string | null): Promise<PluginStatus>;
+	list(): Promise<PluginStatus[]>;
+	setReleaseChannel(pluginId: "optimizers", channel: "official" | "dev"): Promise<PluginStatus>;
+};
+
+export type ReportStatus = "draft" | "sealed";
+export type ExperimentStatus =
+	| "planned"
+	| "running"
+	| "completed"
+	| "failed"
+	| "aborted"
+	| "superseded"
+	| "excluded";
+
+export type ReportBlock = {
+	blockId: string;
+	kind: string;
+	anchor: string;
+	title?: string | null;
+	payload: Record<string, unknown>;
+	sourceRevision?: string | null;
+	sourceDigest?: string | null;
+	accessState: string;
+	integrityState: string;
+};
+
+export type ReportSource = {
+	sourceId: string;
+	resourceKind: string;
+	resourceId: string;
+	resourceRevision?: string | null;
+	resourceDigest?: string | null;
+	relation: string;
+	accessState: string;
+	integrityState: string;
+};
+
+export type ReportClaim = {
+	claimId: string;
+	statement: string;
+	status: string;
+	evidenceRefs: string[];
+};
+
+export type ReportLimitation = {
+	limitationId: string;
+	body: string;
+};
+
+export type ReportRecord = {
+	schemaVersion: string;
+	id: string;
+	projectRef?: string | null;
+	currentRevision: number;
+	title: string;
+	summary?: string | null;
+	authors: string[];
+	status: ReportStatus;
+	createdBy: string;
+	createdAt: string;
+	updatedAt: string;
+	archivedAt?: string | null;
+};
+
+export type ReportRevision = {
+	schemaVersion: string;
+	reportId: string;
+	revision: number;
+	title: string;
+	summary?: string | null;
+	authors: string[];
+	status: ReportStatus;
+	blocks: ReportBlock[];
+	sources: ReportSource[];
+	claims: ReportClaim[];
+	limitations: ReportLimitation[];
+	contentDigest?: string | null;
+	compilerName?: string | null;
+	compilerVersion?: string | null;
+	createdBy: string;
+	createdAt: string;
+};
+
+export type ExperimentRecord = {
+	experimentId: string;
+	reportId?: string | null;
+	revision?: number | null;
+	title: string;
+	hypothesis?: string | null;
+	status: ExperimentStatus;
+	protocolDigest?: string | null;
+	arms: unknown;
+	runs: unknown;
+	results: unknown;
+	evaluatorRefs: unknown;
+	traceCollectionRefs: unknown;
+	claimRefs: unknown;
+	researchLogRefs: unknown;
+	limitations: unknown;
+	createdAt: string;
+	createdBy: string;
+};
+
+export type ResearchLogEntry = {
+	entryId: string;
+	reportId?: string | null;
+	sequence: number;
+	occurredAt: string;
+	recordedAt: string;
+	author: string;
+	actorKind: "human" | "agent" | string;
+	entryKind: string;
+	title: string;
+	body: string;
+	tags: string[];
+	links: unknown;
+	claimEffect?: string | null;
+	supersedesEntryId?: string | null;
+	sourceDigest?: string | null;
+};
+
+export type ReportSeal = {
+	receiptDigest: string;
+	reportId: string;
+	reportRevision: number;
+	schemaVersion: string;
+	compilerName: string;
+	compilerVersion: string;
+	runtimeDigest: string;
+	indexDigest: string;
+	dataDigest: string;
+	receiptSizeBytes: number;
+	totalSizeBytes: number;
+	createdAt: string;
+};
+
+export type ReportSealBundle = {
+	seal: ReportSeal;
+	indexHtml: string;
+	data: Record<string, unknown>;
+	receipt: Record<string, unknown>;
+};
+
+export type ReportRevisionCompare = {
+	left: ReportSealBundle;
+	right: ReportSealBundle;
+	sameDigest: boolean;
+};
+
+export type ReportUpload = {
+	receiptDigest: string;
+	collectionId?: string | null;
+	publicationId?: string | null;
+	publicationRevision?: number | null;
+	state: "prepared" | "uploading" | "finalizing" | "committed" | "failed";
+	committedUrl?: string | null;
+	error?: string | null;
+	updatedAt: string;
+};
+
+export type ReportPromotion = {
+	publicationId: string;
+	slug: string;
+	status: "published" | "unpublished";
+	publicUrl: string;
+};
+
+export type ReportVisibilityRequest = {
+	requestId: string;
+	reportId: string;
+	reportRevision: number;
+	receiptDigest: string;
+	target: "private" | "public" | "unpublished";
+	slug?: string | null;
+	reason?: string | null;
+	requestedBy: string;
+	status: "pending" | "approved" | "denied" | "executed" | "failed" | "expired";
+	decisionBy?: string | null;
+	error?: string | null;
+	createdAt: string;
+	updatedAt: string;
+	expiresAt: string;
+};
+
+export type ReportComment = {
+	commentId: string;
+	reportId: string;
+	reportRevision: number;
+	receiptDigest?: string | null;
+	publicationId?: string | null;
+	anchor?: string | null;
+	body: string;
+	authorId: string;
+	createdAt: string;
+};
+
+export type ReportsBridge = {
+	list(query?: { status?: string; search?: string; limit?: number; includeArchived?: boolean }): Promise<ReportRecord[]>;
+	get(reportId: string): Promise<ReportRecord>;
+	getRevision(reportId: string, revision?: number | null): Promise<ReportRevision>;
+	create(request: {
+		title?: string;
+		summary?: string;
+		authors?: string[];
+		projectRef?: string;
+		id?: string;
+		blocks?: ReportBlock[];
+	}): Promise<ReportRecord>;
+	update(reportId: string, request: {
+		expectedRevision?: number;
+		title?: string;
+		summary?: string | null;
+		authors?: string[];
+		projectRef?: string;
+		blocks?: ReportBlock[];
+		sources?: ReportSource[];
+		claims?: ReportClaim[];
+		limitations?: ReportLimitation[];
+	}): Promise<ReportRecord>;
+	archive(reportId: string): Promise<ReportRecord>;
+	restore(reportId: string): Promise<ReportRecord>;
+	listVisibilityRequests(reportId?: string | null): Promise<ReportVisibilityRequest[]>;
+	requestVisibility(reportId: string, request: {
+		receiptDigest: string;
+		target: "private" | "public" | "unpublished";
+		slug?: string;
+		reason?: string;
+		requestedBy?: string;
+	}): Promise<ReportVisibilityRequest>;
+	decideVisibility(requestId: string, approved: boolean): Promise<ReportVisibilityRequest>;
+	seal(reportId: string, revision: number): Promise<ReportSeal>;
+	listSeals(reportId?: string | null): Promise<ReportSeal[]>;
+	getSeal(receiptDigest: string): Promise<ReportSealBundle>;
+	compareSeals(leftDigest: string, rightDigest: string): Promise<ReportRevisionCompare>;
+	uploadStatus(receiptDigest: string): Promise<ReportUpload | null>;
+	shareSeal(receiptDigest: string): Promise<ReportUpload>;
+	promote(publicationId: string, slug: string): Promise<ReportPromotion>;
+	openShared(committedUrl: string): Promise<ReportSealBundle>;
+	listComments(reportId: string, revision?: number | null): Promise<ReportComment[]>;
+	createComment(reportId: string, revision: number, request: {
+		body: string;
+		anchor?: string;
+		authorId?: string;
+		receiptDigest?: string;
+		publicationId?: string;
+	}): Promise<ReportComment>;
+	listExperiments(reportId: string): Promise<ExperimentRecord[]>;
+	upsertExperiment(reportId: string, request: {
+		experimentId?: string;
+		title: string;
+		hypothesis?: string;
+		status?: string;
+		protocolDigest?: string;
+		arms?: unknown;
+		runs?: unknown;
+		results?: unknown;
+		evaluatorRefs?: unknown;
+		traceCollectionRefs?: unknown;
+		claimRefs?: unknown;
+		researchLogRefs?: unknown;
+		limitations?: unknown;
+	}): Promise<ExperimentRecord>;
+	listLog(reportId: string): Promise<ResearchLogEntry[]>;
+	appendLog(reportId: string, request: {
+		occurredAt?: string;
+		author?: string;
+		actorKind?: string;
+		entryKind: string;
+		title: string;
+		body: string;
+		tags?: string[];
+		links?: unknown;
+		claimEffect?: string;
+		supersedesEntryId?: string;
+	}): Promise<ResearchLogEntry>;
+	onEvent?(listener: (event: AppEvent) => void): () => void;
 };
 
 export type OptimizersBridge = {
@@ -508,6 +889,14 @@ export type OptimizersBridge = {
 	importLocal(request: { path: string; sessionRef?: string; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	reconcileCloud(request: { optimizerRunId: string; afterSeq?: number; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	listCloud(query?: { algorithm?: string; status?: string; limit?: number }): Promise<unknown[]>;
+	recordVisualReady?(request: {
+		visualId: string;
+		optimizerRunId: string;
+		templateId: string;
+		replayedThrough: number;
+		subscribedFrom: number;
+		templateDigest?: string;
+	}): Promise<unknown>;
 	onEvent(listener: (event: AppEvent) => void): () => void;
 };
 
