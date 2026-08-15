@@ -385,11 +385,27 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 			event.eventKind === "run.failed" ||
 			event.eventKind === "run.cancelled"
 		) {
+			// A typed final agent item can be the terminal run payload when the
+			// app-server closes immediately after its final answer. Preserve that
+			// authoritative content as an assistant message before deciding that
+			// the provider returned no answer.
+			if (!producedAssistantForTurn && event.eventKind === "run.completed") {
+				const terminalAnswer = eventResultPreview(payload, objectValue(payload.item) ?? {});
+				if (terminalAnswer) {
+					const id = `terminal-answer-${event.sequence}`;
+					order.push(id);
+					byId.set(id, { id, role: "assistant", body: terminalAnswer, at: event.createdAt });
+					producedAssistantForTurn = true;
+				}
+			}
 			if (!producedAssistantForTurn && !compactedDuringTurn) {
 				const detail = terminalTurnDetail(event.payload ?? {});
+				const providerLimitMessage = providerLimitMessageFor(event.payload ?? {});
 				const failureDetail = detail ? `: ${detail.replace(/[.!?]+$/, "")}.` : ".";
 				const message = event.eventKind === "run.failed"
-					? `The provider could not produce a response${failureDetail} Try again.`
+					? providerLimitMessage
+						? providerLimitMessage
+						: `The provider could not produce a response${failureDetail} Try again.`
 					: event.eventKind === "run.cancelled"
 						? "The response was stopped before the provider returned an answer."
 						: "The provider ended the turn without a response. Please try again.";
@@ -435,6 +451,40 @@ function terminalTurnDetail(payload: Record<string, unknown>): string | undefine
 		return "The provider rejected the request";
 	}
 	return message.replace(/\s+/g, " ");
+}
+
+function providerLimitMessageFor(payload: Record<string, unknown>): string | undefined {
+	const turn = payload.turn && typeof payload.turn === "object"
+		? payload.turn as Record<string, unknown>
+		: payload;
+	const error = turn.error && typeof turn.error === "object"
+		? turn.error as Record<string, unknown>
+		: payload.error && typeof payload.error === "object" ? payload.error as Record<string, unknown> : undefined;
+	const code = typeof error?.codexErrorInfo === "string" ? error.codexErrorInfo.toLowerCase() : "";
+	const rawMessage = typeof error?.message === "string" ? error.message.trim() : "";
+	const message = rawMessage.toLowerCase();
+	const provider = typeof payload.provider === "string" ? payload.provider.toLowerCase() : "";
+	if (code === "usagelimitexceeded" || message.includes("hit your usage limit")) {
+		const reset = /try again at\s+(.+?)(?:\.+)?$/i.exec(rawMessage)?.[1]?.trim();
+		return reset
+			? `Your ChatGPT usage limit has been reached. You are still signed in; use another model or try again at ${reset}.`
+			: "Your ChatGPT usage limit has been reached. You are still signed in; use another model or try again after your limit resets.";
+	}
+	if (
+		provider === "openrouter" ||
+		message.includes("openrouter") ||
+		/(insufficient[_ ](?:credits|funds)|credit balance|no credits|payment required)/.test(message)
+	) {
+		return "Your OpenRouter credits are unavailable or exhausted. Add credits or choose another model, then retry.";
+	}
+	if (
+		provider === "synth" || provider === "synth-cloud" ||
+		message.includes("synth cloud") || message.includes("synth allowance") ||
+		/(allowance (?:is )?(?:used up|exhausted)|billing (?:needs attention|limit))/.test(message)
+	) {
+		return "Your Synth Cloud allowance is unavailable. Manage billing or choose a local/API-key model, then retry.";
+	}
+	return undefined;
 }
 
 export function eventsToActivity(

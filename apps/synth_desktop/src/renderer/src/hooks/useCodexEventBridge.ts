@@ -6,7 +6,7 @@ import {
 } from "../runtime/codexTurn";
 import { codexEventToRuntime } from "../runtime/nativeCodex";
 import { dispatchRuntimeEvent } from "../stores/sessionStore";
-import type { CodexBridge } from "../bridge";
+import type { CodexBridge, CodexEvent } from "../bridge";
 import type { DesktopPreferences } from "../preferences";
 
 export type CodexUsageSnapshot = {
@@ -47,6 +47,9 @@ export function useCodexEventBridge(args: {
 	autoCompactTokenLimits: DesktopPreferences["agentContext"]["autoCompactTokenLimits"];
 	localBaseUrl: string | undefined;
 	showToast: (message: string) => void;
+	/** A native event proves that an accepted turn actually began making progress. */
+	onTurnActivity?: (sessionId: string) => void;
+	onRawEvent?: (event: CodexEvent) => void;
 	onOauthReauthRequired?: () => void;
 	onCodexUsage?: (usage: CodexUsageSnapshot) => void;
 }): void {
@@ -60,6 +63,8 @@ export function useCodexEventBridge(args: {
 		autoCompactTokenLimits,
 		localBaseUrl,
 		showToast,
+		onTurnActivity,
+		onRawEvent,
 		onOauthReauthRequired,
 		onCodexUsage
 	} = args;
@@ -67,6 +72,8 @@ export function useCodexEventBridge(args: {
 	useEffect(() => {
 		if (!nativeCodex) return;
 		return nativeCodex.onEvent((event) => {
+			onTurnActivity?.(event.sessionId);
+			onRawEvent?.(event);
 			const usage = codexUsageFromEvent(event);
 			if (usage) onCodexUsage?.(usage);
 			if (event.method === "turn/failed" && event.params.code === "codex_oauth_reauth_required") {
@@ -118,6 +125,8 @@ export function useCodexEventBridge(args: {
 		allocateNativeSequence,
 		autoCompactTokenLimits,
 		localBaseUrl,
+		onTurnActivity,
+		onRawEvent,
 		manualCompactionPendingRef,
 		nativeCodex,
 		onOauthReauthRequired,

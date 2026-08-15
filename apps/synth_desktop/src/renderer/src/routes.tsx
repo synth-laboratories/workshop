@@ -11,9 +11,10 @@ import type { DeviceUsageSummary } from "./components/UsageSheet";
 import type { DesktopPreferences, ToolActivityMode } from "./preferences";
 import { applyPreferencesToDocument } from "./preferences";
 import type { LagunaStatus, ModelPerformanceSummary, PluginStatus, SynthAccountSummary, SynthBackendSettings } from "./bridge";
+import type { ReceivedResponseEvent, ResponseTraceLoadState } from "./components/ResponsesTracePanel";
 import type { InferenceMonitor } from "./components/InferencePanel";
 import type { ApprovalMode, ApprovalPolicy, SandboxMode } from "./runtime/nativeCodex";
-import { ChatTranscript, OutputsPanel, outputContainerIds } from "./components/ChatTranscript";
+import { ChatTranscript, OutputsPanel, outputContainerIds, type TranscriptHistoryState } from "./components/ChatTranscript";
 import { ContainerPane } from "./components/ContainerPane";
 import { ConnectorsPage } from "./components/ConnectorsPage";
 import { InferencePanel } from "./components/InferencePanel";
@@ -26,6 +27,7 @@ import { VisualPane } from "./components/VisualHost";
 import { VisualsPage } from "./components/VisualsPage";
 import { ReportsPage } from "./components/ReportsPage";
 import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
+import { ResponsesTracePanel } from "./components/ResponsesTracePanel";
 import { sessionIsLocalChat, sessionIsSync } from "./runtime/sessionView";
 import { bridges } from "./runtime/desktopBridge";
 
@@ -64,8 +66,12 @@ export type MainRoutesProps = {
 	persistLayoutSnapshot: (patch: Partial<DesktopPreferences["layout"]["last"]>) => void;
 	showSidePanel: boolean;
 	sidePanelCanSharePane: boolean;
-	sidePanelTab: "outputs" | "inference";
-	setSidePanelTab: (tab: "outputs" | "inference") => void;
+	sidePanelTab: "outputs" | "inference" | "trace";
+	setSidePanelTab: (tab: "outputs" | "inference" | "trace") => void;
+	responseTraceBySession: Record<string, ReceivedResponseEvent[]>;
+	responseTraceLoadBySession: Record<string, ResponseTraceLoadState>;
+	transcriptHistoryBySession: Record<string, TranscriptHistoryState>;
+	loadOlderTranscript: () => void;
 	setSidePanelOpen: (open: boolean) => void;
 	inferenceMonitor: InferenceMonitor;
 	persistedPerformanceByTarget: Map<string, ModelPerformanceSummary>;
@@ -96,8 +102,6 @@ export type MainRoutesProps = {
 	toggleContainer: (id: string | null) => Promise<void>;
 	probeOpenContainer: () => Promise<void>;
 	controlActive: (kind: "approve" | "reject" | "cancel", payload?: Record<string, unknown>) => Promise<void>;
-	setQueueAfterStop: (value: boolean) => void;
-	promptsForConversationLength: (chatId: string) => number;
 	onActivityModeChange: (mode: ToolActivityMode) => void;
 };
 
@@ -160,10 +164,12 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		toggleContainer,
 		probeOpenContainer,
 		controlActive,
-		setQueueAfterStop,
-		promptsForConversationLength,
 		onActivityModeChange,
-		activeSessionId
+		activeSessionId,
+		responseTraceBySession,
+		responseTraceLoadBySession,
+		transcriptHistoryBySession,
+		loadOlderTranscript
 	} = props;
 
 	return (
@@ -362,9 +368,9 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						onReject={(approvalId) => void controlActive("reject", { approvalId })}
 						running={activeChatRunning}
 						warmingUp={activeChatWarmingUp}
-						onStop={() => {
-							setQueueAfterStop(promptsForConversationLength(activeChat.id) > 0);
-							void controlActive("cancel");
+						onAdvanced={() => {
+							setSidePanelTab("trace");
+							setSidePanelOpen(true);
 						}}
 						activityMode={preferences.toolActivity.mode}
 						onActivityModeChange={onActivityModeChange}
@@ -376,6 +382,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						}}
 						showMascot={preferences.appearance.showMascot}
 						session={activeChatSession}
+						historyState={transcriptHistoryBySession[activeChat.id]}
+						onLoadOlder={loadOlderTranscript}
 					/>
 					{visualPaneVisible && openArtifact ? (
 						<>
@@ -404,7 +412,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					{showSidePanel ? (
 						<WorkbenchSidePanel
 							activeTabId={sidePanelTab}
-							onTabChange={(tabId) => setSidePanelTab(tabId as "outputs" | "inference")}
+							onTabChange={(tabId) => setSidePanelTab(tabId as "outputs" | "inference" | "trace")}
 							onClose={() => setSidePanelOpen(false)}
 							tabs={[
 								{
@@ -427,6 +435,12 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 											onOpenContainer={(id) => void toggleContainer(id)}
 										/>
 									)
+								},
+								{
+									id: "trace",
+									label: "Advanced",
+									badge: responseTraceBySession[activeChat.id]?.length,
+									content: <ResponsesTracePanel events={responseTraceBySession[activeChat.id] ?? []} running={activeChatRunning} loadState={responseTraceLoadBySession[activeChat.id]} />
 								},
 								...(activeLocalModel
 									? [
