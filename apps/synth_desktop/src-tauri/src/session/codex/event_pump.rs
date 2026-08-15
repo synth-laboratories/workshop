@@ -371,6 +371,11 @@ async fn read_stdout<R: tauri::Runtime>(
                 (terminal_method.to_owned(), params.clone()),
             );
             persistence
+                .early_terminal_turns
+                .lock()
+                .await
+                .insert(session_id.clone(), (terminal_method.to_owned(), params.clone()));
+            persistence
                 .pending_compact_sources
                 .lock()
                 .await
