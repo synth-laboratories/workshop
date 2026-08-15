@@ -54,6 +54,7 @@ export type ComposerDockProps = {
 	showToast: (message: string) => void;
 	setView: (view: MainView) => void;
 	setUsageSheetOpen: (open: boolean) => void;
+	onStopActiveTurn: () => void;
 };
 
 /**
@@ -97,7 +98,8 @@ export function ComposerDock({
 	onSlashCompact,
 	showToast,
 	setView,
-	setUsageSheetOpen
+	setUsageSheetOpen,
+	onStopActiveTurn
 }: ComposerDockProps) {
 	if (!show) return null;
 
@@ -182,7 +184,8 @@ export function ComposerDock({
 					} catch (reason) {
 						setSteerError(reason instanceof Error ? reason.message : String(reason));
 					}
-				}
+				},
+				onStop: onStopActiveTurn
 			}}
 			workspace={{
 				sessionId: activeSessionId,

@@ -14,14 +14,14 @@ export type ShellLayoutState = {
 	viewportWidth: number;
 	inventoryContainerWidth: number;
 	sidePanelOpen: boolean;
-	sidePanelTab: "outputs" | "inference";
+	sidePanelTab: "outputs" | "inference" | "trace";
 	containerPaneExpanded: boolean;
 	setSidebarVisible: (visible: boolean) => void;
 	setSidebarWidth: (width: number) => void;
 	setTerminalOpen: (open: boolean | ((current: boolean) => boolean)) => void;
 	setInventoryContainerWidth: (width: number) => void;
 	setSidePanelOpen: (open: boolean | ((current: boolean) => boolean)) => void;
-	setSidePanelTab: (tab: "outputs" | "inference") => void;
+	setSidePanelTab: (tab: "outputs" | "inference" | "trace") => void;
 	setContainerPaneExpanded: (expanded: boolean) => void;
 	persistLayoutSnapshot: (patch: Partial<DesktopPreferences["layout"]["last"]>) => void;
 };
@@ -41,7 +41,7 @@ export function useShellLayout(
 		}
 		return window.localStorage.getItem("synth.inferenceRailOpen") !== "0";
 	});
-	const [sidePanelTab, setSidePanelTab] = useState<"outputs" | "inference">("inference");
+	const [sidePanelTab, setSidePanelTab] = useState<"outputs" | "inference" | "trace">("inference");
 	const [inventoryContainerWidth, setInventoryContainerWidth] = useState(
 		() => loadPreferences().layout.last.outputPaneWidth
 	);

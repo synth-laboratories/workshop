@@ -57,6 +57,7 @@ export type ComposerTurn = {
 	steerSupported?: boolean;
 	steerError?: string | null;
 	onSteer?: (text: string) => void | Promise<void>;
+	onStop?: () => void;
 	/** Recoverable turn-start failure, rendered above the input inside its dock. */
 	sendFailure?: { message: string; onRetry: () => void } | null;
 };
@@ -321,6 +322,10 @@ function IconSend() {
 			/>
 		</svg>
 	);
+}
+
+function IconStop() {
+	return <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden><rect x="3" y="3" width="8" height="8" rx="1" fill="currentColor" /></svg>;
 }
 
 function IconImage() {
@@ -678,6 +683,7 @@ export function Composer({
 		steerSupported = false,
 		steerError = null,
 		onSteer,
+		onStop,
 		sendFailure = null
 	} = turn;
 	const {
@@ -1326,13 +1332,13 @@ export function Composer({
 						<button
 							type="button"
 							className="send-btn"
-							disabled={!enabled || !value.trim() || submitting}
-							onClick={submit}
-							aria-label={sendLabel}
-							data-testid="composer-send"
+							disabled={!enabled || submitting || (!agentWorking && !value.trim())}
+							onClick={agentWorking ? onStop : submit}
+							aria-label={agentWorking ? "Stop generating" : sendLabel}
+							data-testid={agentWorking ? "composer-stop" : "composer-send"}
 							data-intent={enterAction}
 						>
-							<IconSend />
+							{agentWorking ? <IconStop /> : <IconSend />}
 						</button>
 					</div>
 				</div>
