@@ -35,7 +35,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
 pub const OFFICIAL_SIDECAR_VERSION: &str = "0.2.5";
-pub const DEV_SIDECAR_VERSION: &str = "0.2.7.dev20260814";
+pub const DEV_SIDECAR_VERSION: &str = "0.2.8.dev20260814";
 pub const DEFAULT_SIDECAR_VERSION: &str = OFFICIAL_SIDECAR_VERSION;
 pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.5";
 pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = "gepa.recipe.v1";
@@ -1710,7 +1710,28 @@ fn materialize_uv_runtime(
             spec.version
         );
     }
+    write_relocatable_optimizer_launcher(&runtime)?;
     Ok(artifacts)
+}
+
+#[cfg(unix)]
+fn write_relocatable_optimizer_launcher(runtime: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let launcher = runtime.join("bin/synth-optimizers");
+    fs::write(
+        &launcher,
+        b"#!/bin/sh\nset -eu\nbin_dir=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nexec \"$bin_dir/python\" -m synth_optimizers.cli \"$@\"\n",
+    )
+    .context("write relocatable synth-optimizers launcher")?;
+    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755))
+        .context("mark relocatable synth-optimizers launcher executable")?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_relocatable_optimizer_launcher(_runtime: &Path) -> Result<()> {
+    Ok(())
 }
 
 fn collect_wheel_artifacts(wheels: &Path) -> Result<Vec<WheelArtifact>> {
@@ -2110,6 +2131,36 @@ mod tests {
     fn manager() -> (OptimizerManager, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         (OptimizerManager::with_home(dir.path().to_path_buf()), dir)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn optimizer_launcher_survives_staging_activation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().join(".staging-runtime");
+        let runtime = staging.join("runtime");
+        let bin = runtime.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let python = bin.join("python");
+        fs::write(&python, b"#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        fs::set_permissions(&python, fs::Permissions::from_mode(0o755)).unwrap();
+
+        write_relocatable_optimizer_launcher(&runtime).unwrap();
+        let activated = dir.path().join("0.2.8.dev20260814");
+        fs::rename(&staging, &activated).unwrap();
+        let output = std::process::Command::new(activated.join("runtime/bin/synth-optimizers"))
+            .arg("--help")
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("-m"));
+        assert!(stdout.contains("synth_optimizers.cli"));
+        assert!(stdout.contains("--help"));
+        assert!(!stdout.contains(".staging-runtime"));
     }
 
     async fn seed_run(service: &OptimizerService) -> OptimizerRunRecord {
