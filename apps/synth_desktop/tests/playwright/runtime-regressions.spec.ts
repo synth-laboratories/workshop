@@ -70,6 +70,37 @@ test("native Laguna readiness overrides missing legacy runtime health", async ({
 	await expect(page.getByTestId("runtime-status")).toHaveCount(0);
 });
 
+test("an empty Laguna chat gives the first prompt to atomic sendTurn", async ({ page }) => {
+	await page.addInitScript(() => {
+		const calls = { starts: 0, sends: [] as string[] };
+		(window as typeof window & { __firstLagunaCalls?: typeof calls }).__firstLagunaCalls = calls;
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [],
+			start: async () => {
+				calls.starts += 1;
+				throw new Error("first send must not pre-start a detached session");
+			},
+			startTurn: async () => { throw new Error("sendTurn owns the first send"); },
+			sendTurn: async (request: { sessionId: string }, prompt: string) => {
+				calls.sends.push(prompt);
+				return { sessionId: request.sessionId, threadId: "laguna-first-thread", turnId: "laguna-first-turn" };
+			},
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+	});
+	await installLagunaFixture(page, "ready");
+
+	await page.getByTestId("composer-input").fill("first Laguna message");
+	await page.getByTestId("composer-send").click();
+	await expect.poll(() => page.evaluate(() =>
+		(window as typeof window & { __firstLagunaCalls: { starts: number; sends: string[] } }).__firstLagunaCalls
+	)).toEqual({ starts: 0, sends: ["first Laguna message"] });
+	await expect(page.getByText("first Laguna message")).toBeVisible();
+});
+
 test("new conversation keeps the configured machine permission defaults", async ({ page }) => {
 	await page.evaluate(() => {
 		const adapter = window.__synthPreferences;

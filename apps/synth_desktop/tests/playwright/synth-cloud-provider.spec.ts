@@ -148,9 +148,9 @@ test("configured Luna replaces a stale remembered chat and sends the first messa
 		testWindow.synthCodex = {
 			defaultWorkspace: async () => "/workspaces/default",
 			list: async () => [],
-			start: async (request: { sessionId: string }) => {
+			start: async () => {
 				testWindow.__lunaStarts! += 1;
-				return { sessionId: request.sessionId, threadId: "luna-thread" };
+				throw new Error("first send must be owned by atomic sendTurn");
 			},
 			startTurn: async () => { throw new Error("sendTurn should own the first send"); },
 			sendTurn: async (request: { sessionId: string }, prompt: string) => {
@@ -184,5 +184,5 @@ test("configured Luna replaces a stale remembered chat and sends the first messa
 		const testWindow = window as typeof window & { __lunaStarts?: number; __lunaSends?: string[] };
 		return { starts: testWindow.__lunaStarts, sends: testWindow.__lunaSends };
 	});
-	expect(calls).toEqual({ starts: 1, sends: ["first Luna message"] });
+	expect(calls).toEqual({ starts: 0, sends: ["first Luna message"] });
 });

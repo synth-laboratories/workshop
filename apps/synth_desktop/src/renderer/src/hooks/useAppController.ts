@@ -1217,7 +1217,12 @@ export function useAppController() {
 	}, [showToast]);
 
 	const createConversation = useCallback(
-		async (targetId: string = selectedTargetId, title?: string, objective?: string) => {
+		async (
+			targetId: string = selectedTargetId,
+			title?: string,
+			objective?: string,
+			options?: { deferNativeStart?: boolean }
+		) => {
 			setBusy(true);
 			try {
 				const target = targetIdToExecutionTarget(targetId);
@@ -1234,7 +1239,15 @@ export function useAppController() {
 						approvalPolicy: machinePermissions.approvalPolicy,
 						sandbox: machinePermissions.sandboxMode
 					};
-					await nativeCodex.start(codexStartRequest(id, workspace, target, permissions, preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined, serviceTierForExecutionTarget(target, modelKnobValues) ?? "default"));
+					// A first-message send is owned by sendTurn(), which atomically
+					// attaches/starts the app-server, journals the prompt, and starts
+					// the turn. Eagerly starting here creates a long provisioning gap
+					// before the prompt has durable custody; if the landing composer
+					// is replaced during that gap, the first message can disappear.
+					// Explicit New conversation actions still start eagerly.
+					if (!options?.deferNativeStart) {
+						await nativeCodex.start(codexStartRequest(id, workspace, target, permissions, preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined, serviceTierForExecutionTarget(target, modelKnobValues) ?? "default"));
+					}
 					const session = createCodexSession(id, target, null, workspace, title, permissions);
 					sessionsRef.current = [session, ...sessionsRef.current.filter((item) => item.id !== session.id)];
 					upsertSession(session);
@@ -1279,7 +1292,12 @@ export function useAppController() {
 		if (view.kind !== "landing" && view.kind !== "chat") return null;
 		const target = targetIdToExecutionTarget(selectedTargetId);
 		const objectiveConsumed = target.kind === "intern";
-		const session = await createConversation(selectedTargetId, undefined, objectiveConsumed ? objective : undefined);
+		const session = await createConversation(
+			selectedTargetId,
+			undefined,
+			objectiveConsumed ? objective : undefined,
+			{ deferNativeStart: !objectiveConsumed }
+		);
 		return { sessionId: session.id, objectiveConsumed };
 	}, [activeSessionId, createConversation, selectedTargetId, view.kind]);
 
