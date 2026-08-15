@@ -43,6 +43,143 @@ pub fn provider_class(provider_name: Option<&str>) -> ProviderClass {
     }
 }
 
+/// Bind a local Codex attachment to the daemon-owned serving identity and
+/// capability set. UI aliases and provider speed tiers are presentation state;
+/// the local Responses daemon accepts its canonical model and default tier.
+pub fn apply_local_laguna_provider(request: &mut CodexSessionStartRequest, model: &str) {
+    request.model = model.to_owned();
+    request.service_tier = None;
+    request.local_model_catalog = None;
+}
+
+/// Attach authenticated daemon metadata and derive the transport tier from the
+/// exact selected entry. Renderer or unrelated bundled-model capabilities can
+/// therefore never influence the local provider binding.
+pub fn apply_local_laguna_catalog_metadata(
+    request: &mut CodexSessionStartRequest,
+    envelope: Value,
+) -> Result<()> {
+    let catalog = local_laguna_catalog(envelope.clone(), &request.model)?;
+    request.service_tier = Some(
+        catalog["models"][0]["default_service_tier"]
+            .as_str()
+            .expect("validated local catalog default service tier")
+            .to_owned(),
+    );
+    request.local_model_catalog = Some(envelope);
+    Ok(())
+}
+
+pub(crate) fn local_laguna_catalog(envelope: Value, model: &str) -> Result<Value> {
+    let models = envelope
+        .get("models")
+        .and_then(Value::as_array)
+        .context("Laguna /v1/models omitted its native Codex `models` envelope")?;
+    let matches = models
+        .iter()
+        .filter(|candidate| candidate.get("slug").and_then(Value::as_str) == Some(model))
+        .collect::<Vec<_>>();
+    let [selected] = matches.as_slice() else {
+        anyhow::bail!(
+            "Laguna /v1/models must contain exactly one native Codex entry for `{model}`"
+        );
+    };
+    let selected = selected
+        .as_object()
+        .context("Laguna native Codex model entry was not an object")?;
+    for required in [
+        "slug",
+        "display_name",
+        "description",
+        "base_instructions",
+        "default_reasoning_level",
+        "default_service_tier",
+        "shell_type",
+    ] {
+        selected
+            .get(required)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .with_context(|| format!("Laguna native Codex model omitted required `{required}`"))?;
+    }
+    for required in [
+        "supported_reasoning_levels",
+        "service_tiers",
+        "input_modalities",
+    ] {
+        selected
+            .get(required)
+            .and_then(Value::as_array)
+            .with_context(|| format!("Laguna native Codex model omitted required `{required}`"))?;
+    }
+    for required in ["context_window", "max_context_window"] {
+        selected
+            .get(required)
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+            .with_context(|| {
+                format!("Laguna native Codex model had invalid required `{required}`")
+            })?;
+    }
+    for required in [
+        "supported_in_api",
+        "supports_parallel_tool_calls",
+        "supports_search_tool",
+    ] {
+        selected
+            .get(required)
+            .and_then(Value::as_bool)
+            .with_context(|| format!("Laguna native Codex model omitted required `{required}`"))?;
+    }
+    let supported_reasoning = selected["supported_reasoning_levels"]
+        .as_array()
+        .expect("validated above");
+    let default_reasoning = selected["default_reasoning_level"]
+        .as_str()
+        .expect("validated above");
+    if !supported_reasoning
+        .iter()
+        .any(|level| level.get("effort").and_then(Value::as_str) == Some(default_reasoning))
+    {
+        anyhow::bail!(
+            "Laguna native Codex model default reasoning level is not advertised as supported"
+        );
+    }
+    if selected["input_modalities"]
+        .as_array()
+        .expect("validated above")
+        .is_empty()
+    {
+        anyhow::bail!("Laguna native Codex model advertised no input modalities");
+    }
+    Ok(serde_json::json!({"models": [Value::Object(selected.clone())]}))
+}
+
+/// Install the exact, authenticated metadata owned by the Laguna serving
+/// runtime. Identity, instructions, service tiers and capabilities are
+/// selected and validated as one model-specific unit; no bundled Codex model
+/// is used as a fallback or template.
+pub(crate) fn install_local_laguna_catalog(
+    home: &Path,
+    request: &CodexSessionStartRequest,
+) -> Result<bool> {
+    if provider_class(request.provider_name.as_deref()) != ProviderClass::LocalLaguna {
+        return Ok(false);
+    }
+    let envelope = request
+        .local_model_catalog
+        .clone()
+        .context("authenticated Laguna native Codex model catalog was not prepared")?;
+    let catalog = local_laguna_catalog(envelope, &request.model)?;
+    fs::create_dir_all(home)?;
+    fs::write(
+        home.join("model-catalog.json"),
+        serde_json::to_vec_pretty(&catalog)?,
+    )
+    .context("materialize validated local Laguna model catalog")?;
+    Ok(true)
+}
+
 /// Point a session start request at the Synth Cloud provider.
 ///
 /// `gateway_url` must already be the profile's resolved, fail-closed
@@ -389,6 +526,17 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
     } else {
         ""
     };
+    let model_catalog_config = if provider_class(request.provider_name.as_deref())
+        == ProviderClass::LocalLaguna
+        && home.join("model-catalog.json").is_file()
+    {
+        format!(
+            "model_catalog_json = \"{}\"\n",
+            toml_string(&home.join("model-catalog.json").to_string_lossy())
+        )
+    } else {
+        String::new()
+    };
     // A ChatGPT subscription uses the Codex auth.json file. Pointing this
     // provider at the local Laguna key makes Codex send that loopback secret as
     // a Bearer token instead of the ChatGPT OAuth access token.
@@ -403,8 +551,8 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         responses_base_url(&request.base_url)
     };
     let config = format!(
-        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"{}\"\n{}{}{}\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\n{}wire_api = \"responses\"\nrequires_openai_auth = {}\n# Codex selects provider-hosted compaction for OpenAI/Azure and local summarization otherwise.\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
-        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), toml_string(request.service_tier.as_deref().unwrap_or("default")), auth_config, disable_response_storage_config, compaction_config, workspace_write_config, toml_key(provider), toml_string(title), toml_string(&provider_base_url), env_key_config, oauth, agents_enabled, multi_agent_v1, multi_agent_v2
+        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"{}\"\n{}{}{}{}\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\n{}wire_api = \"responses\"\nrequires_openai_auth = {}\n# Codex selects provider-hosted compaction for OpenAI/Azure and local summarization otherwise.\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
+        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), toml_string(request.service_tier.as_deref().unwrap_or("default")), auth_config, disable_response_storage_config, compaction_config, model_catalog_config, workspace_write_config, toml_key(provider), toml_string(title), toml_string(&provider_base_url), env_key_config, oauth, agents_enabled, multi_agent_v1, multi_agent_v2
     );
     fs::write(home.join("config.toml"), config)?;
     let auth = home.join("auth.json");

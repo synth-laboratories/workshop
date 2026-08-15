@@ -47,6 +47,11 @@ pub struct CodexSessionStartRequest {
     /// discarded by `prepare_codex_start` before launch.
     #[serde(default)]
     pub writable_roots: Vec<String>,
+    /// Authenticated native Codex model envelope returned by the local Laguna
+    /// daemon. Rust populates this after residency preflight; renderer input is
+    /// never accepted, and local startup fails closed when it is absent.
+    #[serde(skip)]
+    pub local_model_catalog: Option<Value>,
     /// Rust-set marker that `api_key` holds a real user credential which must
     /// move into native custody before any child process observes it. Staged
     /// by `prepare_codex_start`, consumed by `CodexManager::start` at spawn
@@ -75,6 +80,10 @@ impl fmt::Debug for CodexSessionStartRequest {
             .field("multi_agent_version", &self.multi_agent_version)
             .field("auto_compact_token_limit", &self.auto_compact_token_limit)
             .field("writable_roots", &self.writable_roots)
+            .field(
+                "local_model_catalog",
+                &self.local_model_catalog.as_ref().map(|_| "<present>"),
+            )
             .field("broker_credential", &self.broker_credential)
             .finish()
     }

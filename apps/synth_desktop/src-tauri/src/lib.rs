@@ -2500,6 +2500,7 @@ async fn prepare_codex_provider(
     oauth: &codex_oauth::Manager,
     mut request: CodexSessionStartRequest,
 ) -> Result<CodexSessionStartRequest, AppError> {
+    request.local_model_catalog = None;
     if request.multi_agent_version.is_none() {
         request.multi_agent_version =
             Some(synth_config::resolve_model_multi_agent(&request.model).map_err(AppError::from)?);
@@ -2512,15 +2513,25 @@ async fn prepare_codex_provider(
     match codex::provider_class(request.provider_name.as_deref()) {
         codex::ProviderClass::LocalLaguna => {
             let root = runtime::workshop_root().map_err(AppError::from)?;
+            let model = laguna.configured_model_id().map_err(AppError::from)?;
+            codex::apply_local_laguna_provider(&mut request, &model);
             request.base_url = laguna
-                .ensure(&root)
+                .ensure_for_turn(&root)
                 .await
                 .map_err(AppError::from)?
                 .ok_or_else(|| AppError::message("Laguna Responses server is unavailable"))?;
             // The Laguna key is this process's loopback service token, not a
             // user credential: the child talks to the local daemon directly
             // and no broker lease is involved.
-            request.api_key = laguna.api_key().unwrap_or_default();
+            request.api_key = laguna.api_key().ok_or_else(|| {
+                AppError::message("Laguna daemon credential is unavailable after ensure")
+            })?;
+            let catalog = laguna
+                .codex_model_catalog(&request.base_url, &request.api_key)
+                .await
+                .map_err(AppError::from)?;
+            codex::apply_local_laguna_catalog_metadata(&mut request, catalog)
+                .map_err(AppError::from)?;
         }
         codex::ProviderClass::OpenRouter => {
             let key = synth_config::openrouter_api_key().map_err(AppError::from)?;

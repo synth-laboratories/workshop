@@ -139,6 +139,56 @@ test("applyTurnAccepted sets running only when a turn id exists", () => {
 	assert.equal(withTurn.sessions[0].status, "running");
 });
 
+test("two turns on one session do not let a fast second terminal resurrect Working", () => {
+	const target = { kind: "local", model: "laguna-xs" };
+	let state = applyRuntimeEvent(emptyState(), event({
+		sequence: 1,
+		eventKind: "message.created",
+		payload: { messageId: "user-1", role: "user", content: "first" }
+	}));
+	state = applyTurnAccepted(state, "sess-1", { target, turnId: "turn-1" });
+	state = applyRuntimeEvent(state, event({
+		sequence: 2,
+		eventKind: "run.completed",
+		payload: { turn: { id: "turn-1", status: "completed" } }
+	}));
+	assert.equal(state.sessions[0].status, "ready");
+
+	state = applyRuntimeEvent(state, event({
+		sequence: 3,
+		eventKind: "message.created",
+		payload: { messageId: "user-2", role: "user", content: "second" }
+	}));
+	state = applyTurnAccepted(state, "sess-1", { target, turnId: "turn-2" });
+	assert.equal(state.sessions[0].status, "running", "the first turn terminal must not fence the second turn");
+	state = applyRuntimeEvent(state, event({
+		sequence: 4,
+		eventKind: "run.completed",
+		payload: { turn: { id: "turn-2", status: "completed" } }
+	}));
+	assert.equal(state.sessions[0].status, "ready");
+
+	// This is the live race: turn/completed arrived while native sendTurn was
+	// still awaiting Rust, then its acceptance callback ran afterward.
+	state = applyTurnAccepted(state, "sess-1", { target, turnId: "turn-2" });
+	assert.equal(state.sessions[0].status, "ready");
+});
+
+test("legacy terminal without an id fences only the turn after the latest user message", () => {
+	const target = { kind: "local", model: "laguna-xs" };
+	let state = applyRuntimeEvent(emptyState(), event({ sequence: 1, eventKind: "run.completed" }));
+	state = applyRuntimeEvent(state, event({
+		sequence: 2,
+		eventKind: "message.created",
+		payload: { messageId: "user-2", role: "user", content: "next" }
+	}));
+	state = applyTurnAccepted(state, "sess-1", { target, turnId: "turn-2" });
+	assert.equal(state.sessions[0].status, "running", "an earlier legacy terminal is not a current-turn fence");
+	state = applyRuntimeEvent(state, event({ sequence: 3, eventKind: "run.completed" }));
+	state = applyTurnAccepted(state, "sess-1", { target, turnId: "turn-2" });
+	assert.equal(state.sessions[0].status, "ready");
+});
+
 test("selectSessionRunning trusts restored session status over stale run.started", () => {
 	const events = [event({ sequence: 1, eventKind: "run.started" })];
 	assert.equal(selectSessionRunning(session({ status: "ready" }), events), false);

@@ -3,13 +3,15 @@ use super::event_pump::{
     safe_approval_payload, CREDENTIAL_ENV_NAMES,
 };
 use super::home::{
-    apply_brokered_credential, apply_openrouter_provider, apply_synth_cloud_provider,
-    auto_compact_token_limit, automatic_thread_title, ensure_home, mcp_enabled_tools,
-    mcp_ipc_env_key, multi_agent_flags, nested_id, normalize_gateway_origin, provider_class,
-    requires_disabled_response_storage, responses_base_url, safe_component,
+    apply_brokered_credential, apply_local_laguna_catalog_metadata, apply_local_laguna_provider,
+    apply_openrouter_provider, apply_synth_cloud_provider, auto_compact_token_limit,
+    automatic_thread_title, ensure_home, install_local_laguna_catalog, local_laguna_catalog,
+    mcp_enabled_tools, mcp_ipc_env_key, multi_agent_flags, nested_id, normalize_gateway_origin,
+    provider_class, requires_disabled_response_storage, responses_base_url, safe_component,
     supports_provider_compaction, toml_string, validate_reasoning_effort, validate_start,
     workspace_write_config, ProviderClass, OPENROUTER_RESPONSES_BASE_URL,
 };
+
 use super::manager::CodexManager;
 use super::proto::{
     is_detached_failure, select_approval_decision, CodexApprovalDecisionRequest,
@@ -42,6 +44,125 @@ use std::{
 use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 use tempfile::tempdir;
 
+fn model_catalog_entry(slug: &str, instructions: &str) -> Value {
+    serde_json::json!({
+        "slug": slug,
+        "display_name": slug,
+        "description": format!("metadata for {slug}"),
+        "base_instructions": instructions,
+        "default_reasoning_level": "high",
+        "supported_reasoning_levels": [
+            {"effort": "none", "description": "no reasoning"},
+            {"effort": "high", "description": "reasoning"}
+        ],
+        "shell_type": "unified_exec",
+        "supported_in_api": true,
+        "service_tiers": [],
+        "default_service_tier": "default",
+        "context_window": 262144,
+        "max_context_window": 262144,
+        "input_modalities": ["text"],
+        "supports_parallel_tool_calls": true,
+        "supports_search_tool": false
+    })
+}
+
+fn local_catalog_envelope() -> Value {
+    serde_json::json!({"models": [model_catalog_entry(
+        "poolside/Laguna-XS-2.1-NVFP4-mlx",
+        "Laguna-owned local instructions."
+    )]})
+}
+
+#[test]
+fn local_laguna_catalog_selects_exact_model_as_a_unit_without_first_entry_leakage() {
+    let mut unrelated = model_catalog_entry("openai/gpt-first", "unrelated bundled instructions");
+    unrelated["service_tiers"] = serde_json::json!([{"id": "priority", "name": "Fast"}]);
+    unrelated["default_service_tier"] = serde_json::json!("priority");
+    unrelated["input_modalities"] = serde_json::json!(["text", "image"]);
+    unrelated["supports_search_tool"] = serde_json::json!(true);
+    let selected = model_catalog_entry(
+        "poolside/Laguna-XS-2.1-NVFP4-mlx",
+        "Laguna-owned local instructions.",
+    );
+    let catalog = local_laguna_catalog(
+        serde_json::json!({"models": [unrelated, selected.clone()]}),
+        "poolside/Laguna-XS-2.1-NVFP4-mlx",
+    )
+    .unwrap();
+
+    assert_eq!(catalog["models"][0], selected);
+    assert_eq!(catalog["models"][0]["service_tiers"], serde_json::json!([]));
+    assert_eq!(
+        catalog["models"][0]["input_modalities"],
+        serde_json::json!(["text"])
+    );
+    assert_eq!(catalog["models"][0]["supports_search_tool"], false);
+}
+
+#[test]
+fn local_laguna_provider_uses_daemon_identity_and_never_advertises_fast_tier() {
+    let temp = tempdir().unwrap();
+    let mut request = test_request(temp.path(), "local-provider-binding");
+    request.model = "laguna-xs-2.1".into();
+    request.service_tier = Some("fast".into());
+
+    apply_local_laguna_provider(&mut request, "poolside/Laguna-XS-2.1-NVFP4-mlx");
+
+    assert_eq!(request.model, "poolside/Laguna-XS-2.1-NVFP4-mlx");
+    assert_eq!(request.service_tier, None);
+    apply_local_laguna_catalog_metadata(&mut request, local_catalog_envelope()).unwrap();
+    assert_eq!(request.service_tier.as_deref(), Some("default"));
+}
+
+#[test]
+fn local_laguna_catalog_rejects_missing_duplicate_or_incomplete_exact_entries() {
+    let exact = model_catalog_entry(
+        "poolside/Laguna-XS-2.1-NVFP4-mlx",
+        "Laguna-owned local instructions.",
+    );
+    let mut incomplete = exact.clone();
+    incomplete
+        .as_object_mut()
+        .unwrap()
+        .remove("base_instructions");
+    for envelope in [
+        serde_json::json!({"models": []}),
+        serde_json::json!({"models": [model_catalog_entry("other", "other")]}),
+        serde_json::json!({"models": [exact.clone(), exact.clone()]}),
+        serde_json::json!({"models": [incomplete]}),
+    ] {
+        assert!(local_laguna_catalog(envelope, "poolside/Laguna-XS-2.1-NVFP4-mlx").is_err());
+    }
+}
+
+#[test]
+fn local_laguna_catalog_installation_fails_closed_without_authenticated_metadata() {
+    let temp = tempdir().unwrap();
+    let mut request = test_request(temp.path(), "catalog-fail-closed");
+    request.local_model_catalog = None;
+    let error = install_local_laguna_catalog(&temp.path().join("home"), &request)
+        .expect_err("local provider must not silently omit its validated catalog");
+    assert!(error
+        .to_string()
+        .contains("authenticated Laguna native Codex model catalog was not prepared"));
+}
+
+#[test]
+fn local_laguna_catalog_installation_materializes_exact_daemon_metadata() {
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    let request = test_request(temp.path(), "catalog-materialized");
+    assert!(install_local_laguna_catalog(&home, &request).unwrap());
+    let catalog: Value =
+        serde_json::from_slice(&fs::read(home.join("model-catalog.json")).unwrap()).unwrap();
+    assert_eq!(catalog["models"][0]["slug"], request.model);
+    assert_eq!(
+        catalog["models"][0]["base_instructions"],
+        "Laguna-owned local instructions."
+    );
+}
+
 fn fixture_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_codex_app_server.py")
 }
@@ -63,6 +184,7 @@ fn test_request(workspace: &Path, session_id: &str) -> CodexSessionStartRequest 
         multi_agent_version: Some(MultiAgentVersion::None),
         auto_compact_token_limit: None,
         writable_roots: Vec::new(),
+        local_model_catalog: Some(local_catalog_envelope()),
         broker_credential: false,
     }
 }
@@ -557,6 +679,12 @@ fn disarm_turn_start_exit(root: &Path, session_id: &str) {
     }
 }
 
+fn arm_terminal_before_turn_start_response(root: &Path, session_id: &str) {
+    let home = session_home(root, session_id);
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("complete-before-turn-start-response"), "1").unwrap();
+}
+
 fn send_request(start: CodexSessionStartRequest, prompt: &str) -> CodexTurnSendRequest {
     CodexTurnSendRequest {
         start,
@@ -602,6 +730,77 @@ async fn turn_send_journals_the_renderer_message_id_once() {
         user_messages[0].payload["content"],
         "one logical submission"
     );
+
+    manager.close(&request.session_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn terminal_before_run_creation_reconciles_the_exact_turn() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let request = test_request(temp.path(), "fast-terminal");
+    arm_terminal_before_turn_start_response(&codex_root, &request.session_id);
+
+    let info = manager
+        .send_turn(
+            app.handle().clone(),
+            send_request(request.clone(), "finish before the start response"),
+        )
+        .await
+        .expect("the fast turn is durably reconciled");
+    let turn_id = info.turn_id.expect("fixture returns a turn id");
+    wait_for_run_status(&core, &turn_id, "completed").await;
+    assert_eq!(
+        manager.records.read().await[&request.session_id].status,
+        SessionStatus::Ready.as_str(),
+        "send_turn must return with the cache reconciled, not briefly stuck running"
+    );
+
+    let session = core
+        .sessions()
+        .get(request.session_id.clone())
+        .await
+        .unwrap()
+        .expect("session remains durable");
+    assert_eq!(session.active_run_id, None);
+    let run = core
+        .runs()
+        .get(turn_id.clone())
+        .await
+        .unwrap()
+        .expect("run remains durable");
+    assert_eq!(run.status, "completed");
+    assert_eq!(run.outcome.unwrap()["turn"]["id"], turn_id);
+    let events = core
+        .journal()
+        .session_events_after(request.session_id.clone(), 0, 200)
+        .await
+        .unwrap();
+    let terminal_index = events
+        .iter()
+        .position(|event| event.kind == "turn/completed")
+        .expect("fixture terminal is journalled");
+    let run_started_index = events
+        .iter()
+        .position(|event| event.kind == "run.started")
+        .expect("run creation is journalled");
+    assert!(
+        terminal_index < run_started_index,
+        "fixture must exercise terminal-before-run creation"
+    );
+    assert!(events.iter().any(|event| {
+        event.kind == "run.status_changed"
+            && event.payload["runId"] == turn_id
+            && event.payload["to"] == "completed"
+    }));
 
     manager.close(&request.session_id).await.unwrap();
 }

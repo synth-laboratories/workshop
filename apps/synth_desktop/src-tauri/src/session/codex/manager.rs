@@ -1,5 +1,5 @@
 //! CodexManager — SessionKind::Codex transport authority over app-server attachments.
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 use std::{collections::HashMap, env, fs, path::PathBuf, sync::Arc, time::Duration};
 use tauri::AppHandle;
@@ -7,17 +7,17 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 
 use crate::credential_broker::{CredentialBroker, ReceiptStore};
 use crate::domain::{
-    PresentationField, RunCreate, RuntimeTarget, SessionCreate, SessionKind, SessionStatus,
-    SessionTitleOrigin,
+    PresentationField, RunCreate, RunStatus, RuntimeTarget, SessionCreate, SessionKind,
+    SessionStatus, SessionTitleOrigin,
 };
 use crate::session::approval::ApprovalBroker;
-use crate::storage::{EventAppend, EventSource};
+use crate::storage::{AppEvent, EventAppend, EventSource};
 
 use super::event_pump::{spawn_server, EventPumpState, SpawnServerRequest};
 use super::home::{
     apply_brokered_credential, auto_compact_token_limit, automatic_thread_title, codex_root,
-    ensure_home, nested_id, responses_base_url, safe_component, session_info,
-    validate_reasoning_effort, validate_start,
+    ensure_home, install_local_laguna_catalog, nested_id, responses_base_url, safe_component,
+    session_info, validate_reasoning_effort, validate_start,
 };
 use super::proto::{
     default_approval_policy, default_sandbox, is_detached_failure, CodexApprovalDecisionRequest,
@@ -171,6 +171,7 @@ impl CodexManager {
             .root
             .join("homes")
             .join(safe_component(&request.session_id));
+        install_local_laguna_catalog(&home, &request)?;
         ensure_home(&home, &request)?;
         let attachment_id = uuid::Uuid::new_v4();
         let server = spawn_server(
@@ -592,7 +593,7 @@ impl CodexManager {
         self.set_automatic_title(&app, &request.session_id, &request.prompt, &session)
             .await;
         let start_run = self.persistence.start_run(RunCreate {
-            id: turn_id,
+            id: turn_id.clone(),
             session_id: request.session_id.clone(),
             mode: "codex_turn".into(),
             model: Some(session.model.clone()),
@@ -600,16 +601,96 @@ impl CodexManager {
             metadata: json!({"threadId": session.thread_id, "effort": effort}),
             source: EventSource::Codex,
         });
-        if let Ok(Ok(Some(mutation))) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), start_run).await
-        {
+        let mutation = match start_run.await {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                // The model turn already exists, but without its durable run the
+                // product cannot represent or reconcile it. Interrupt best-effort
+                // and surface the storage failure instead of claiming Running.
+                let _ = session
+                    .server
+                    .request(
+                        "turn/interrupt",
+                        json!({"threadId": session.thread_id, "turnId": turn_id}),
+                    )
+                    .await;
+                return Err(error.context("persist Codex run before exposing running state"));
+            }
+        };
+        if let Some(mutation) = mutation {
             if let Some(event) = mutation.event {
                 let _ = self.persistence.publish_event(&app, event).await;
             }
         }
+        // Establish Running before reconciliation. If the terminal arrives
+        // before or during this update it is already in the journal and the
+        // reconciliation below restores the exact terminal cache status. If it
+        // arrives afterward, the event pump owns both durable and cache state.
         self.set_status(&request.session_id, SessionStatus::Running)
             .await?;
+        self.reconcile_terminal_before_run_start(&app, &request.session_id, &turn_id)
+            .await?;
         Ok(session_info(&request.session_id, &session).await)
+    }
+
+    /// A fast app-server may emit its terminal notification before the
+    /// `turn/start` response gives us the durable run id. The event pump cannot
+    /// transition a run that does not exist yet, so reconcile that exact turn
+    /// immediately after creation. A later terminal remains owned by the pump.
+    async fn reconcile_terminal_before_run_start<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: &str,
+        turn_id: &str,
+    ) -> Result<bool> {
+        let mut after = 0_i64;
+        loop {
+            let events = self
+                .persistence
+                .session_events_after(session_id.to_owned(), after, 500)
+                .await?;
+            if events.is_empty() {
+                return Ok(false);
+            }
+            for event in &events {
+                after = after.max(event.session_sequence.unwrap_or(event.sequence));
+                let Some((status, outcome)) = terminal_run_for_turn(event, turn_id) else {
+                    continue;
+                };
+                let Some(runs) = self.persistence.runs() else {
+                    self.set_status(session_id, session_status_for_run(status))
+                        .await?;
+                    return Ok(true);
+                };
+                let Some(run) = runs.get(turn_id.to_owned()).await? else {
+                    anyhow::bail!("durable Codex run {turn_id} disappeared during reconciliation");
+                };
+                if run.status == status.as_str() {
+                    self.set_status(session_id, session_status_for_run(status))
+                        .await?;
+                    return Ok(true);
+                }
+                if let Some(session_status) = terminal_session_status(&run.status) {
+                    self.set_status(session_id, session_status).await?;
+                    return Ok(true);
+                }
+                let mutation = runs
+                    .transition(
+                        turn_id.to_owned(),
+                        status,
+                        Some(outcome),
+                        EventSource::Codex,
+                    )
+                    .await
+                    .context("reconcile terminal Codex event received before run creation")?;
+                if let Some(event) = mutation.event {
+                    self.persistence.publish_event(app, event).await?;
+                }
+                self.set_status(session_id, session_status_for_run(status))
+                    .await?;
+                return Ok(true);
+            }
+        }
     }
 
     /// Send-time compact before a model rebind.
@@ -1143,6 +1224,40 @@ impl CodexManager {
 
     async fn persist_records(&self) -> Result<()> {
         super::home::persist_records(&self.records, &self.state_path).await
+    }
+}
+
+fn terminal_run_for_turn(event: &AppEvent, turn_id: &str) -> Option<(RunStatus, Value)> {
+    let status = match event.kind.as_str() {
+        "turn/completed" => RunStatus::Completed,
+        "turn/failed" => RunStatus::Failed,
+        "turn/interrupted" => RunStatus::Interrupted,
+        _ => return None,
+    };
+    let observed_turn_id = event
+        .payload
+        .pointer("/turn/id")
+        .or_else(|| event.payload.get("turnId"))
+        .or_else(|| event.payload.get("turn_id"))
+        .and_then(Value::as_str)?;
+    (observed_turn_id == turn_id).then(|| (status, event.payload.clone()))
+}
+
+fn session_status_for_run(status: RunStatus) -> SessionStatus {
+    match status {
+        RunStatus::Completed => SessionStatus::Ready,
+        RunStatus::Failed => SessionStatus::Failed,
+        RunStatus::Interrupted | RunStatus::Cancelled => SessionStatus::Interrupted,
+        RunStatus::Created | RunStatus::Running => SessionStatus::Running,
+    }
+}
+
+fn terminal_session_status(status: &str) -> Option<SessionStatus> {
+    match status {
+        "completed" => Some(SessionStatus::Ready),
+        "failed" => Some(SessionStatus::Failed),
+        "interrupted" | "cancelled" => Some(SessionStatus::Interrupted),
+        _ => None,
     }
 }
 

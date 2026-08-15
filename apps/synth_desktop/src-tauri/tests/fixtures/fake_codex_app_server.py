@@ -6,6 +6,19 @@ import os
 import pathlib
 import sys
 
+if sys.argv[1:] == ["debug", "models", "--bundled"]:
+    print(json.dumps({
+        "models": [{
+            "slug": "fixture-fallback",
+            "base_instructions": "Fixture bundled model instructions.",
+            "context_window": 272000,
+            "max_context_window": 1000000,
+            "input_modalities": ["text", "image"],
+            "supports_image_detail_original": True,
+        }]
+    }))
+    raise SystemExit(0)
+
 
 home = pathlib.Path(os.environ["CODEX_HOME"])
 home.mkdir(parents=True, exist_ok=True)
@@ -19,6 +32,7 @@ turn_number = 0
 exit_on_turn_start = home / "exit-on-turn-start"
 reject_thread_resume = home / "reject-thread-resume"
 request_approval_on_turn_start = home / "request-approval-on-turn-start"
+complete_before_turn_start_response = home / "complete-before-turn-start-response"
 
 
 def send(message: dict) -> None:
@@ -70,7 +84,18 @@ for raw in sys.stdin:
                 exit_on_turn_start.unlink()
             sys.exit(0)
         turn_number += 1
-        result = {"turn": {"id": f"turn-fixture-{os.getpid()}-{turn_number}"}}
+        turn_id = f"turn-fixture-{os.getpid()}-{turn_number}"
+        if complete_before_turn_start_response.exists():
+            complete_before_turn_start_response.unlink()
+            send({
+                "jsonrpc": "2.0",
+                "method": "turn/completed",
+                "params": {
+                    "threadId": params.get("threadId", "thread-fixture"),
+                    "turn": {"id": turn_id, "status": "completed", "items": []},
+                },
+            })
+        result = {"turn": {"id": turn_id}}
     elif method == "turn/interrupt":
         result = {}
     elif method == "turn/steer":

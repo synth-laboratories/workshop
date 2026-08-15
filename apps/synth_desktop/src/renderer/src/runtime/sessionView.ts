@@ -214,6 +214,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 	let activeAssistantId: string | null = null;
 	let producedAssistantForTurn = false;
 	let compactedDuringTurn = false;
+	let terminalSeenForTurn = false;
 
 	for (const event of events) {
 		const payload = event.payload ?? {};
@@ -227,6 +228,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 			activeAssistantId = null;
 			producedAssistantForTurn = false;
 			compactedDuringTurn = false;
+			terminalSeenForTurn = false;
 		}
 		if (event.eventKind === "thread/compacted") {
 			compactedDuringTurn = true;
@@ -315,6 +317,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 				if (!isInternAgentMessage && role === "user") {
 					activeAssistantId = null;
 					producedAssistantForTurn = false;
+					terminalSeenForTurn = false;
 				}
 				continue;
 		}
@@ -385,6 +388,12 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 			event.eventKind === "run.failed" ||
 			event.eventKind === "run.cancelled"
 		) {
+			// The live app-server event and the durable run.status_changed event
+			// can both project the same turn terminal. Only the first terminal owns
+			// transcript fallback synthesis; replaying it after an assistant answer
+			// must not manufacture a contradictory "no response" message.
+			if (terminalSeenForTurn) continue;
+			terminalSeenForTurn = true;
 			if (!producedAssistantForTurn && !compactedDuringTurn) {
 				const detail = terminalTurnDetail(event.payload ?? {});
 				const failureDetail = detail ? `: ${detail.replace(/[.!?]+$/, "")}.` : ".";
@@ -404,7 +413,6 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 				}
 			}
 			activeAssistantId = null;
-			producedAssistantForTurn = false;
 			compactedDuringTurn = false;
 		}
 	}

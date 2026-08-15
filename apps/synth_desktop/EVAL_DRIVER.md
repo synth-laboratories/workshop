@@ -58,6 +58,10 @@ bearer → `401`.
 | `POST` | `/v1/containers/{id}/rollouts` | Scripted transport-gate rollouts |
 | `POST` | `/v1/containers/{id}/policy_rollouts` | Class-A LLM policy rollouts (`ProviderClass` dispatch) |
 | `POST` | `/v1/policy_preflight` | Fail-closed credential/daemon check before a paid batch |
+| `POST` | `/v1/laguna/ensure` | Ensure the product-managed Laguna runtime and return its status receipt |
+| `GET` | `/v1/laguna/status` | Read the same refreshed Laguna status shown by the UI |
+| `GET` | `/v1/laguna/inference` | Read daemon-backed model residency and inference telemetry |
+| `POST` | `/v1/laguna/model/unload` | Request model unload through the production Laguna manager |
 | `POST` | `/v1/open_visual` | Create + show a visual (dogfood only; never grade from it) |
 | `POST` | `/v1/visuals/{id}/update` | Patch visual bindings/metadata (live → sealed digests) |
 | `POST` | `/v1/traces/ingest` | Generic Trace V5 import via `inventory.ingest_trace_bundle` |
@@ -106,6 +110,25 @@ an unavailable Laguna daemon fail closed before any paid call. Provider secrets
 never leave the host process and must never appear in case files, compose env,
 results, or traces.
 
+The Laguna lifecycle endpoints are authenticated debug-driver projections of
+the production `LagunaManager`; they do not contact a test daemon or synthesize
+readiness. `ensure` also performs the daemon's idempotent production model-load
+operation, matching the pre-turn path used to restore residency after unload.
+Local Codex session preparation then reads the daemon's authenticated
+`/v1/models` native Codex envelope and materializes only the exact configured
+slug. Instructions, reasoning levels, service tiers, modalities, and tool
+capabilities are validated and retained as one daemon-owned unit; Workshop does
+not clone an arbitrary bundled Codex model as a local fallback.
+It returns `{ok, baseUrl, status}` so a runner can distinguish
+an available runtime from an explicit `not_installed`, `unavailable`, or
+`error` prerequisite. The nested `status` retains the UI's product status fields
+and adds stable `outcome` / `code` fields. Runners may skip only
+`unmet_prerequisite` with `weights_unavailable` or `hardware_unsupported`;
+`runtime_unavailable` is a product error. `status`, `inference`, and
+`model/unload` otherwise return the same redacted DTOs used by the UI. Unload
+keeps the production `{released, conflict, detail}` semantics. The daemon API
+key remains in the host process.
+
 Successful policy rollouts also return `traceCorrelation` using
 `synth.trace-correlation.v1`. It is **correlation proof**, not a Trace V5
 substitute: one actual action's observation, action, reward, immutable frame,
@@ -136,3 +159,8 @@ The **evals** repo owns cases, runner, graders, compose, and results under
 `evals/workshop/`. It vendors these protocol types and asserts
 `synth.eval-driver.v1` at connect. No package imports across the two repos.
 Each `run-manifest.json` records the Workshop `sourceRevision` it drove.
+Health instance diagnostics also expose the launcher's validated
+`executableDigest` when it is a qualified SHA-256. Session exports include a
+top-level, typed `providerBinding` with provider, model, endpoint class,
+credential-binding class, brokered status, and `fallbackAllowed: false`; raw
+endpoints and credentials are deliberately excluded.

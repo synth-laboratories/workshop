@@ -100,6 +100,31 @@ test("duplicate provider failures render once and hide raw provider payloads", (
 	assert.equal(system[0].body.includes("metadata"), false);
 });
 
+test("duplicate turn terminals after an assistant answer do not synthesize a false empty response", () => {
+	const messages = eventsToMessages([
+		event({ sequence: 1, eventKind: "run.started" }),
+		event({
+			sequence: 2,
+			eventKind: "message.created",
+			payload: { messageId: "user-8", role: "user", content: "reply with the nonce" }
+		}),
+		event({
+			sequence: 3,
+			eventKind: "message.completed",
+			payload: { messageId: "answer-8", role: "assistant", content: "WORKSHOP_CUA_LAGUNA_OK" }
+		}),
+		event({ sequence: 4, eventKind: "run.completed", payload: { runId: "turn-8" } }),
+		event({ sequence: 5, eventKind: "run.completed", payload: { runId: "turn-8" } })
+	]);
+	assert.deepEqual(
+		messages.map(({ role, body }) => ({ role, body })),
+		[
+			{ role: "user", body: "reply with the nonce" },
+			{ role: "assistant", body: "WORKSHOP_CUA_LAGUNA_OK" }
+		]
+	);
+});
+
 test("replayed terminal envelopes do not duplicate or age a run summary", () => {
 	const activity = eventsToLocalActivity([
 		event({ sequence: 1, eventKind: "run.started", payload: { runId: "turn-1" }, createdAt: "2026-08-12T00:00:00.000Z" }),

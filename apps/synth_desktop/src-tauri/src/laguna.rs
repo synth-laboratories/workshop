@@ -201,6 +201,11 @@ pub struct LagunaUnloadOutcome {
     pub detail: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct LagunaLoadOutcome {
+    resident: bool,
+}
+
 /// One `/v1/synth/settings` exchange. A 404 is an expected answer from a
 /// daemon build that predates the runtime-settings API, and a 400 carries the
 /// daemon's typed validation envelope — both are data for the renderer, not
@@ -324,6 +329,36 @@ impl LagunaManager {
 
     pub fn api_key(&self) -> Option<String> {
         env::var("SYNTH_LAGUNA_API_KEY").ok()
+    }
+
+    /// Model identity owned by the same selection logic used to launch and
+    /// load the daemon. Renderer-friendly aliases must not cross the provider
+    /// boundary as serving model ids.
+    pub fn configured_model_id(&self) -> Result<String> {
+        selected_model_id()
+    }
+
+    /// Read the daemon-owned native Codex model envelope over the same
+    /// authenticated loopback transport used for inference. This is the
+    /// production source for local model instructions and capabilities.
+    pub async fn codex_model_catalog(&self, base_url: &str, api_key: &str) -> Result<Value> {
+        let response = self
+            .client
+            .get(format!("{}/v1/models", base_url.trim_end_matches('/')))
+            .bearer_auth(api_key)
+            .timeout(crate::limits::LAGUNA_HEALTH_TIMEOUT)
+            .send()
+            .await
+            .with_context(|| format!("Laguna model catalog is unreachable at {base_url}"))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .context("Laguna model catalog returned an unreadable payload")?;
+        if !status.is_success() {
+            anyhow::bail!("Laguna model catalog returned status {}", status.as_u16());
+        }
+        serde_json::from_slice(&body).context("Laguna model catalog returned invalid JSON")
     }
 
     pub fn discover_models(&self) -> Result<Vec<LagunaModelHit>> {
@@ -557,6 +592,86 @@ for shard in sorted(shards):
         self.set_error(format!("Timed out waiting for Laguna at {base_url}"))
             .await;
         Ok(None)
+    }
+
+    /// Prepare the production local provider for a model turn. `/health`
+    /// intentionally remains ready while weights are evicted, so daemon
+    /// readiness alone cannot prove that an already-attached Codex session may
+    /// send. The control-plane load operation is idempotent and is the daemon's
+    /// authoritative way to restore residency after manual or idle unload.
+    pub async fn ensure_for_turn(&self, workshop_root: &Path) -> Result<Option<String>> {
+        let Some(base_url) = self.ensure(workshop_root).await? else {
+            return Ok(None);
+        };
+        let api_key = self
+            .api_key()
+            .context("Laguna daemon credential is unavailable after ensure")?;
+        let model = selected_model_id()?;
+        if self.status().await.loaded_model.as_deref() == Some(model.as_str()) {
+            return Ok(Some(base_url));
+        }
+        let mut loading = self.status().await;
+        loading.phase = "loading".into();
+        loading.detail = Some("Loading Laguna weights for the next turn…".into());
+        self.set_status(loading).await;
+        if let Err(error) = self.load_model_at(&base_url, &api_key, &model).await {
+            self.set_error(error.to_string()).await;
+            return Err(error);
+        }
+        // The load response's `resident: true` is authoritative. Publish it
+        // immediately, then enrich timing/memory fields from health when that
+        // follow-up probe is available.
+        let mut ready = self.status().await;
+        ready.phase = "ready".into();
+        ready.loaded_model = Some(model);
+        ready.detail = Some("Laguna XS ready".into());
+        self.set_status(ready).await;
+        self.refresh().await;
+        Ok(Some(base_url))
+    }
+
+    async fn load_model_at(&self, base_url: &str, api_key: &str, model: &str) -> Result<()> {
+        let mut url = reqwest::Url::parse(base_url).context("invalid Laguna base URL")?;
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| anyhow::anyhow!("Laguna base URL cannot carry path segments"))?;
+            segments.pop_if_empty();
+            segments.extend(["v1", "synth", "models"]);
+            segments.extend(model.split('/'));
+            segments.push("load");
+        }
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(api_key)
+            .timeout(crate::limits::LAGUNA_READY_WAIT)
+            .send()
+            .await
+            .with_context(|| format!("Laguna model load is unreachable at {base_url}"))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .context("Laguna model load returned an unreadable payload")?;
+        if !status.is_success() {
+            let code = serde_json::from_slice::<Value>(&body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .pointer("/error/code")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| "load_failed".into());
+            anyhow::bail!("Laguna model load returned {} ({code})", status.as_u16());
+        }
+        let outcome: LagunaLoadOutcome = serde_json::from_slice(&body)
+            .context("Laguna model load returned an unreadable success payload")?;
+        if !outcome.resident {
+            anyhow::bail!("Laguna model load completed without resident weights");
+        }
+        Ok(())
     }
 
     async fn probe(&self, base_url: &str, api_key: &str) -> Option<LagunaStatus> {
@@ -1592,6 +1707,116 @@ fn libc_detach() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn serve_model_load(
+        status: u16,
+        body: &'static str,
+    ) -> (String, String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let credential = uuid::Uuid::new_v4().to_string();
+        let expected_credential = credential.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 16 * 1024];
+            let length = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..length]);
+            assert!(request.starts_with(
+                "POST /v1/synth/models/poolside/Laguna-XS-2.1-NVFP4-mlx/load HTTP/1.1"
+            ));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains(&format!("authorization: bearer {}", expected_credential)));
+            let reason = if status == 200 {
+                "OK"
+            } else {
+                "Service Unavailable"
+            };
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        (format!("http://{address}"), credential, server)
+    }
+
+    async fn serve_model_catalog(
+        body: &'static str,
+    ) -> (String, String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let credential = uuid::Uuid::new_v4().to_string();
+        let expected_credential = credential.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 16 * 1024];
+            let length = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..length]);
+            assert!(request.starts_with("GET /v1/models HTTP/1.1"));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains(&format!("authorization: bearer {}", expected_credential)));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        (format!("http://{address}"), credential, server)
+    }
+
+    #[tokio::test]
+    async fn codex_catalog_uses_authenticated_daemon_native_envelope() {
+        let body = r#"{"models":[{"slug":"poolside/Laguna-XS-2.1-NVFP4-mlx","base_instructions":"daemon-owned"}]}"#;
+        let (base_url, credential, server) = serve_model_catalog(body).await;
+        let catalog = LagunaManager::new()
+            .codex_model_catalog(&base_url, &credential)
+            .await
+            .unwrap();
+        assert_eq!(catalog["models"][0]["base_instructions"], "daemon-owned");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn production_load_control_restores_residency_after_unload() {
+        let (base_url, credential, server) = serve_model_load(
+            200,
+            r#"{"operation_id":"op_test","model":"poolside/Laguna-XS-2.1-NVFP4-mlx","state":"resident_idle","resident":true,"already_resident":false}"#,
+        )
+        .await;
+        LagunaManager::new()
+            .load_model_at(&base_url, &credential, DEFAULT_MODEL)
+            .await
+            .expect("the production load control response restores residency");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn model_load_failure_is_typed_and_does_not_echo_daemon_detail() {
+        let (base_url, credential, server) = serve_model_load(
+            503,
+            r#"{"error":{"code":"insufficient_memory","message":"sensitive daemon detail"}}"#,
+        )
+        .await;
+        let error = LagunaManager::new()
+            .load_model_at(&base_url, &credential, DEFAULT_MODEL)
+            .await
+            .expect_err("a rejected load must fail the turn preflight")
+            .to_string();
+        assert!(error.contains("503 (insufficient_memory)"));
+        assert!(!error.contains("sensitive daemon detail"));
+        assert!(!error.contains(&credential));
+        server.await.unwrap();
+    }
 
     #[test]
     fn parses_portable_df_capacity_for_download_preflight() {

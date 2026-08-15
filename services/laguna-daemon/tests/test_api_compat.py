@@ -145,6 +145,17 @@ class SidecarApiCompatTests(unittest.TestCase):
         self.assertEqual(item["id"], "poolside/Laguna-XS-2.1-NVFP4-mlx")
         self.assertEqual(item["context_length"], 262144)
         self.assertEqual(item["details"]["format"], "safetensors")
+        native = models["models"][0]
+        self.assertEqual(native["slug"], item["id"])
+        self.assertIn("local Synth Laguna", native["base_instructions"])
+        self.assertEqual(native["service_tiers"], [])
+        self.assertEqual(native["default_service_tier"], "default")
+        self.assertEqual(native["input_modalities"], ["text"])
+        self.assertFalse(native["supports_image_detail_original"])
+        self.assertFalse(native["supports_search_tool"])
+        self.assertIsNone(native["multi_agent_version"])
+        self.assertIsNone(native["tool_mode"])
+        self.assertFalse(native["use_responses_lite"])
 
     def test_health_no_longer_advertises_a_second_engine(self) -> None:
         """There is one runtime, so there is no engine to choose or report."""

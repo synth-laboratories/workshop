@@ -230,7 +230,11 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
                 "apply_patch",
             ],
             "input_modalities": ["text"],
+            "supports_image_detail_original": False,
             "supports_search_tool": False,
+            "multi_agent_version": None,
+            "tool_mode": None,
+            "use_responses_lite": False,
             "prefer_websockets": True,
             "base_instructions": "You are Codex, a coding agent running on local Synth Laguna.",
         }
