@@ -1,6 +1,6 @@
 # v0.3 ready?
 
-**Friends ZIP: yes.** Workshop `0.3.0` is packaged from `josh/v03` at `4965ca4` and published as GitHub `v0.3.0`. It is not Apple-notarized.
+**Friends ZIP: yes.** Workshop `0.3.0` is packaged from `origin/dev` at `c146e83` (merge of PR #24) and published as GitHub `v0.3.0`. It is not Apple-notarized.
 
 ## What shipped in the mint
 
@@ -11,11 +11,13 @@
 - Reports (seal / compare / private share / committed publish)
 - Optimizers plugin MCP lifecycle
 - Bounded Craftax GEPA product recipe
+- SYN-3222 Subagents rail, child-thread reads, overlap Playwright
+- SYN-3224 Harbor live SSE backfill, harbor-lite ingest, adapter protocol env (evals #278, containers #11, gamebench #8, cardbench #1)
 
 ## Still not this cut
 
-1. SYN-3222 rail / child reads / overlap Playwright landed on `2dd1cf0`. Live Gemini CUA on the packaged ZIP still outstanding.
-2. SYN-3224 Workshop SSE backfill + harbor-lite ingest landed on `2dd1cf0`. Adapter/protocol PRs are in isolated worktrees; the 3×2×5 matrix has not been executed. Do not close on the Craftax Harbor demo.
+1. Live Gemini CUA on the packaged ZIP is still outstanding (Playwright covers reject + expiry).
+2. The Harbor 3×2×5 matrix has not been executed. Do not close SYN-3224 on the Craftax Harbor demo.
 3. Optimizer DAG live visual (`optimizer.dag.live.v1`) — v0.4.
 4. Intern — v0.4.
 5. Installed-app CUA, Bombadil, and Playwright UI gates were not run on this ZIP.

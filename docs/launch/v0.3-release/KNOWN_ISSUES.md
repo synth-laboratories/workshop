@@ -11,8 +11,7 @@
 
 | Item | Ticket | Notes |
 | --- | --- | --- |
-| Subagents rail incomplete | SYN-3222 | Grouped visual exists. No child workspace, no wall-clock overlap proof. WIP is stashed off this mint. |
-| E4 matrix evidence missing | SYN-3224 | No canonical run IDs / configs / raw evidence package. Do not imply complete. |
+| E4 matrix evidence missing | SYN-3224 | Adapter/protocol PRs merged. No canonical 3×2×5 run IDs / configs / raw evidence package. Do not imply complete. |
 | Linear closure | SYN-3220, SYN-3227, SYN-3222, SYN-3217, SYN-3224 | MCP auth unavailable in this agent environment. |
 
 ## Explicitly deferred (do not claim)

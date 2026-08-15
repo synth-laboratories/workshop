@@ -29,8 +29,8 @@ Do not publish, notarize, or externally distribute from this folder.
 | Typed approvals | SYN-3227 | `4b4e92a` + `b2651fb` | In scope | Yes | Paid compute, sidecar, credentials, `.synth` `never` ≠ Always Ask |
 | VisualsBench / click-to-label | SYN-3218 / SYN-3219 | Earlier on this line | In scope as already-complete | Yes | Not redesigned |
 | Reports | — | `agent/v03-reports-complete` `2157f26`…`6171c47` | In scope product-wise | **No** | Stacked on optimizer plugin MCP (`10ec866`). Cherry-pick would pull an out-of-scope plugin. Port later without the plugin. |
-| Subagents product surface | SYN-3222 | No dedicated branch | In scope | **Partial** | Grouped `synth.subagents.v1` visual exists. No Codex-like rail, child workspace, or wall-clock overlap proof. |
-| E4 Harbor DEO | SYN-3224 | `agent/v03-proofs-e2-e4` `efc92d5` | In scope | **No** | Commit also adds deferred E2/E3/GELO/OHCO surfaces. No canonical run-ID package found. |
+| Subagents product surface | SYN-3222 | `2dd1cf0` | In scope | **Yes** | Dedicated rail, child-thread reads, overlap Playwright. Close after packaged CUA. |
+| E4 Harbor DEO | SYN-3224 | Workshop `2dd1cf0` + adapter PRs | In scope | **Workshop + adapters yes; matrix no** | Do not close on Craftax Harbor demo. |
 | Optimizer plugin MCP | — | `josh/v03-optimizer-plugin-mcp-e2e` | Out of scope | No | Interfaces may exist; plugin is not a v0.3 friends claim |
 | E2 / E3 / E5 | SYN-3221 / SYN-3223 | proofs branch | Explicitly deferred | No | |
 
@@ -49,4 +49,4 @@ None merged. Reports and E4 were **not** merged, by review: foreign history incl
 
 ## Release readiness
 
-**No.** See [READY.md](./READY.md).
+**Friends ZIP published** from `origin/dev` `c146e83`. See [READY.md](./READY.md) and [PACKAGE.md](./PACKAGE.md).
