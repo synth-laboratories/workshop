@@ -1942,6 +1942,29 @@ async fn dispatch_traces(
             let snapshot = core.data().query_snapshot(snapshot_id.to_string()).await?;
             Ok(serde_json::to_value(snapshot)?)
         }
+        ("POST", "/v1/traces/open_query") => {
+            let snapshot_id = body
+                .get("snapshot_id")
+                .or_else(|| body.get("snapshotId"))
+                .and_then(Value::as_str)
+                .context("snapshot_id required")?;
+            let visual = crate::presentation::ensure_query_catalog(core, snapshot_id).await?;
+            let session_id = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
+            let (shown, event) = core.visuals().show(visual.id.clone(), session_id).await?;
+            core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
+            Ok(json!({
+                "opened": true,
+                "snapshotId": snapshot_id,
+                "visualId": shown.id,
+                "templateId": shown.template_id,
+                "visual": shown,
+            }))
+        }
         ("POST", "/v1/traces/open") => {
             let id = trace_id()?;
             let visual = crate::presentation::ensure_trace_inspector(core, &id).await?;

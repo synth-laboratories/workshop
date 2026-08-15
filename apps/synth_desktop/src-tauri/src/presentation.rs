@@ -207,6 +207,64 @@ pub async fn ensure_trace_inspector(core: &CoreRuntime, trace_id: &str) -> Resul
     }
 }
 
+pub const TRACE_CATALOG_TEMPLATE: &str = "trace.catalog.v1";
+
+/// Resolve, or create, the catalog visual for one frozen query snapshot.
+///
+/// Identity is the snapshot id, and a snapshot is immutable, so reopening the
+/// same result set always lands on the same visual and a refreshed query gets
+/// its own. The binding addresses the snapshot rather than the query, which is
+/// what keeps a rendered catalog from silently changing underneath the reader.
+pub async fn ensure_query_catalog(core: &CoreRuntime, snapshot_id: &str) -> Result<VisualRecord> {
+    let snapshot = core.data().query_snapshot(snapshot_id.to_string()).await?;
+    let visual_id = format!("vis_query_{}", snapshot.snapshot_id);
+    let registry = core.visuals();
+    if let Ok(existing) = registry.get(visual_id.clone()).await {
+        return Ok(existing);
+    }
+
+    let title = if snapshot.result_count == 1 {
+        "1 trace matched".to_string()
+    } else {
+        format!("{} traces matched", snapshot.result_count)
+    };
+    let request = VisualCreateRequest {
+        template_id: TRACE_CATALOG_TEMPLATE.into(),
+        title: Some(title),
+        bindings: Some(json!({
+            "schemaVersion": "synth.visual-bindings.v1",
+            "slots": [{
+                "slot": "result",
+                "kind": "query_snapshot",
+                "source": snapshot.snapshot_id,
+                "schema": crate::trace_query::TRACE_QUERY_RESULT_SCHEMA,
+            }]
+        })),
+        id: Some(visual_id.clone()),
+        status: None,
+        renderer_kind: None,
+        session_id: None,
+        message_id: None,
+        run_id: None,
+        trace_id: None,
+        parent_visual_id: None,
+        source_agent_id: None,
+        source_model: None,
+        content: None,
+        metadata: Some(json!({
+            "querySnapshotId": snapshot.snapshot_id,
+            "resultDigest": snapshot.result_digest,
+            "resultCount": snapshot.result_count,
+            "queriedAt": snapshot.queried_at,
+            "truncated": snapshot.truncated,
+        })),
+    };
+    match registry.create(request).await {
+        Ok((visual, _event)) => Ok(visual),
+        Err(error) => registry.get(visual_id).await.map_err(|_| error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -79,7 +79,7 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
 
 fn tools() -> Value {
     json!({"tools":[
-        {"name":"trace_manage","description":"Inspect sealed Trace V5 archives, run typed read-only queries over the trace index, and open a trace in the Desktop right panel. Archives are never mutated and no SQL is accepted. Load the use-synth-traces skill.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list","get","open","query","snapshot"]},"arguments":{"type":"object","properties":{"trace_id":{"type":"string"},"snapshot_id":{"type":"string"},"query":{"type":"object","description":"Typed trace query. Fields are allow-listed and compile to a parameterized statement; a hard row cap applies."}},"additionalProperties":false}},"required":["operation"],"additionalProperties":false}}
+        {"name":"trace_manage","description":"Inspect sealed Trace V5 archives, run typed read-only queries over the trace index, and open a trace in the Desktop right panel. Archives are never mutated and no SQL is accepted. Load the use-synth-traces skill.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list","get","open","query","snapshot","open_query"]},"arguments":{"type":"object","properties":{"trace_id":{"type":"string"},"snapshot_id":{"type":"string"},"query":{"type":"object","description":"Typed trace query. Fields are allow-listed and compile to a parameterized statement; a hard row cap applies."}},"additionalProperties":false}},"required":["operation"],"additionalProperties":false}}
     ]})
 }
 
@@ -110,6 +110,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         "open" => request("POST", "/v1/traces/open", Some(nested)),
         "query" => request("POST", "/v1/traces/query", Some(nested)),
         "snapshot" => request("POST", "/v1/traces/snapshot", Some(nested)),
+        "open_query" => request("POST", "/v1/traces/open_query", Some(nested)),
         other => Err(format!("unknown trace operation `{other}`")),
     }
 }
