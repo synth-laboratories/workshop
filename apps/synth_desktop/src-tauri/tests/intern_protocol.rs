@@ -1,6 +1,9 @@
 use serde_json::{json, Map};
 use std::{sync::Arc, time::Duration};
-use synth_desktop_lib::intern_protocol_test_support::{
+// Link the library crate rather than `#[path]`-including its sources: the
+// re-included modules referenced `crate::domain`/`http`/`visuals`, which do not
+// exist in a test crate, so the whole Rust suite stopped compiling.
+use synth_desktop_lib::cloud::intern::{
     normalize_event, AsyncCommandRequest, AsyncEnsureRequest, CommandReceipt, InternClient,
     InternEvent, InternRuntime, RuntimeBinding, RuntimeKind, SyncCommandRequest, SyncCreateRequest,
 };

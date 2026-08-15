@@ -11,6 +11,8 @@ impl Commands {
     pub const CORE_DIAGNOSTICS: &'static str = "core_diagnostics";
     pub const CORE_EVENTS_AFTER: &'static str = "core_events_after";
     pub const CORE_SESSION_EVENTS_AFTER: &'static str = "core_session_events_after";
+    pub const CORE_SESSION_EVENTS_TAIL: &'static str = "core_session_events_tail";
+    pub const CORE_SESSION_EVENTS_BEFORE: &'static str = "core_session_events_before";
     pub const INTERN_SESSIONS_LIST: &'static str = "intern_sessions_list";
     pub const INTERN_SESSION_CREATE: &'static str = "intern_session_create";
     pub const INTERN_SESSION_SEND: &'static str = "intern_session_send";
@@ -170,6 +172,7 @@ impl Commands {
     pub const OPTIMIZERS_LIST_CLOUD: &'static str = "optimizers_list_cloud";
     pub const PLUGINS_STATUS: &'static str = "plugins_status";
     pub const PLUGINS_LIST: &'static str = "plugins_list";
+    pub const PLUGINS_MANAGE: &'static str = "plugins_manage";
     pub const PLUGINS_SET_RELEASE_CHANNEL: &'static str = "plugins_set_release_channel";
     pub const VISUAL_SUBSCRIPTION_READY: &'static str = "visual_subscription_ready";
     pub const OPTIMIZER_SIDECAR_STATUS: &'static str = "optimizer_sidecar_status";

@@ -1,6 +1,6 @@
 mod account;
 mod account_cloud;
-mod cloud;
+pub mod cloud;
 
 /// Narrow public seam for the standalone Intern wire-contract integration
 /// test. Re-exporting the protocol types keeps that test on the real crate
@@ -34,6 +34,7 @@ mod laguna;
 mod limits;
 mod optimizers;
 mod plugins;
+pub mod presentation;
 mod reports;
 mod runtime;
 mod services;
@@ -44,6 +45,7 @@ mod synth_config;
 mod tariffs;
 mod terminal;
 pub mod trace_ingest;
+pub mod trace_query;
 mod update_check;
 mod visuals;
 mod visuals_ipc;
@@ -166,6 +168,42 @@ async fn core_session_events_after(
             session_id,
             after_sequence.0,
             limit.map(|value| value.0).unwrap_or(500).clamp(1, 2000),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn core_session_events_tail(
+    state: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<Vec<AppEvent>, AppError> {
+    state
+        .journal()
+        .session_events_tail(
+            session_id,
+            limit.map(|value| value.0).unwrap_or(250).clamp(1, 2000),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn core_session_events_before(
+    state: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+    before_sequence: contract::specta::OpaqueInteger<i64>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<Vec<AppEvent>, AppError> {
+    state
+        .journal()
+        .session_events_before(
+            session_id,
+            before_sequence.0,
+            limit.map(|value| value.0).unwrap_or(1000).clamp(1, 2000),
         )
         .await
         .map_err(AppError::from)
@@ -1035,8 +1073,53 @@ async fn plugins_status(
     state: State<'_, Arc<CoreRuntime>>,
     plugin_id: Option<String>,
 ) -> Result<PluginStatus, AppError> {
-    let _ = plugin_id;
+    // Validate rather than discard: returning the optimizers status for any id
+    // asked about let the caller believe a plugin existed that does not.
+    if let Some(plugin_id) = plugin_id.as_deref() {
+        if plugin_id != plugins::OPTIMIZERS_PLUGIN_ID {
+            return Err(AppError::from(anyhow::anyhow!(
+                "unknown plugin_id `{plugin_id}`"
+            )));
+        }
+    }
     Ok(state.plugins().status(&state).await)
+}
+
+/// Human-triggered plugin lifecycle.
+///
+/// Delegates to the same `PluginService::manage` the agent-facing
+/// `plugin_manage` MCP tool reaches over loopback IPC, so approval policy,
+/// active-run guards, retention classes, and receipts are enforced once. Until
+/// this existed an agent could install, update, disable, and remove the
+/// Optimizers plugin while the UI had no way to do any of it.
+#[tauri::command]
+#[specta::specta]
+async fn plugins_manage(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    approvals: State<'_, Arc<crate::session::approval::ApprovalBroker>>,
+    operation: String,
+    plugin_id: String,
+    version: Option<String>,
+    session_id: Option<String>,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let arguments = serde_json::json!({
+        "plugin_id": plugin_id,
+        "version": version,
+    });
+    state
+        .plugins()
+        .manage(
+            &state,
+            approvals.inner(),
+            &app,
+            session_id.as_deref(),
+            &operation,
+            &arguments,
+        )
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -2749,10 +2832,16 @@ async fn codex_approval_resolve(
             .map_err(AppError::from)?;
         return Ok(());
     }
-    state
-        .resolve_approval(app, request)
-        .await
-        .map_err(AppError::from)
+    match state.resolve_approval(app, request).await {
+        Ok(()) => Ok(()),
+        Err(error) if crate::session::codex::is_detached_failure(&error) => Err(AppError {
+            code: crate::session::codex::CODEX_SESSION_UNHEALTHY.into(),
+            message: "This task's local agent is no longer running. Start a new turn to reconnect."
+                .into(),
+            detail: format!("{error:?}"),
+        }),
+        Err(error) => Err(AppError::from(error)),
+    }
 }
 
 #[tauri::command]

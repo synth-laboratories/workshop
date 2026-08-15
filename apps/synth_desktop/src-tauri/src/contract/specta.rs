@@ -81,6 +81,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::core_diagnostics,
         crate::core_events_after,
         crate::core_session_events_after,
+        crate::core_session_events_tail,
+        crate::core_session_events_before,
         crate::intern_sessions_list,
         crate::intern_session_create,
         crate::intern_session_send,
@@ -121,6 +123,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::optimizers_list_cloud,
         crate::plugins_status,
         crate::plugins_list,
+        crate::plugins_manage,
         crate::plugins_set_release_channel,
         crate::visual_subscription_ready,
         crate::optimizers::manager::optimizer_sidecar_status,
@@ -331,8 +334,11 @@ mod tests {
         );
         let exported =
             body.matches("__TAURI_INVOKE(").count() + body.matches("__TAURI_INVOKE<").count();
+        // Hand-maintained on purpose: the exporter dropping commands must fail
+        // here rather than pass quietly. Bump it only alongside a reviewed
+        // `collect_commands!` change.
         assert_eq!(
-            exported, 184,
+            exported, 187,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

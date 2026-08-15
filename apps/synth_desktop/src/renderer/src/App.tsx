@@ -69,6 +69,7 @@ export default function App() {
 								c.setView({ kind: "landing" });
 							}
 						}}
+						pluginStatuses={c.pluginStatuses}
 						onOpenInventory={() => c.setView({ kind: "inventory" })}
 						onOpenVisuals={() => c.setView({ kind: "visuals" })}
 						onOpenReports={() => c.setView({ kind: "reports" })}
@@ -136,6 +137,8 @@ export default function App() {
 					<MainRoutes
 						view={c.view}
 						setView={c.setView}
+						pluginStatuses={c.pluginStatuses}
+						refreshPluginStatuses={c.refreshPluginStatuses}
 						state={c.state}
 						sessions={c.sessions}
 						selectedTargetId={c.selectedTargetId}
@@ -159,6 +162,10 @@ export default function App() {
 						sidePanelTab={c.sidePanelTab}
 						setSidePanelTab={c.setSidePanelTab}
 						setSidePanelOpen={c.setSidePanelOpen}
+						responseTraceBySession={c.responseTraceBySession}
+						responseTraceLoadBySession={c.responseTraceLoadBySession}
+						transcriptHistoryBySession={c.transcriptHistoryBySession}
+						loadOlderTranscript={c.loadOlderTranscript}
 						inferenceMonitor={c.inferenceMonitor}
 						persistedPerformanceByTarget={c.persistedPerformanceByTarget}
 						preferences={c.preferences}
@@ -193,8 +200,6 @@ export default function App() {
 						toggleContainer={c.toggleContainer}
 						probeOpenContainer={c.probeOpenContainer}
 						controlActive={c.controlActive}
-						setQueueAfterStop={c.setQueueAfterStop}
-						promptsForConversationLength={(chatId) => promptsForConversation(chatId).length}
 						onActivityModeChange={(mode) => c.setPreferences(setToolActivityMode(mode))}
 					/>
 
@@ -237,6 +242,10 @@ export default function App() {
 						showToast={c.showToast}
 						setView={c.setView}
 						setUsageSheetOpen={c.setUsageSheetOpen}
+						onStopActiveTurn={() => {
+							c.setQueueAfterStop(c.activeChat ? promptsForConversation(c.activeChat.id).length > 0 : false);
+							void c.controlActive("cancel");
+						}}
 					/>
 
 					<TerminalPanel

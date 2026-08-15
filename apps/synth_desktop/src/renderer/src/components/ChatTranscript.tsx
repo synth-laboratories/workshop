@@ -26,12 +26,21 @@ type Props = {
 	running?: boolean;
 	warmingUp?: boolean;
 	onStop?: () => void;
+	onAdvanced?: () => void;
 	activityMode?: ToolActivityMode;
 	onActivityModeChange?: (mode: ToolActivityMode) => void;
 	outputsOpen?: boolean;
 	onToggleOutputs?: () => void;
 	showMascot?: boolean;
 	session?: Session;
+	historyState?: TranscriptHistoryState;
+	onLoadOlder?: () => void;
+};
+
+export type TranscriptHistoryState = {
+	state: "idle" | "loading" | "loaded" | "error";
+	hasMore: boolean;
+	error?: string;
 };
 
 export function outputContainerIds(chat: LocalChat): string[] {
@@ -600,18 +609,23 @@ export function ChatTranscript({
 	running = false,
 	warmingUp = false,
 	onStop,
+	onAdvanced,
 	activityMode = "grouped",
 	onActivityModeChange,
 	outputsOpen = false,
 	onToggleOutputs,
 	showMascot = false,
-	session
+	session,
+	historyState,
+	onLoadOlder
 }: Props) {
 	const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
 	const [modeMenuOpen, setModeMenuOpen] = useState(false);
 	const modeMenuRef = useRef<HTMLDivElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const followsTailRef = useRef(true);
+	const historyAnchorRef = useRef<{ chatId: string; scrollHeight: number } | null>(null);
+	const historyRequestPendingRef = useRef(false);
 	const previousChatIdRef = useRef(chat.id);
 	const previousActiveRef = useRef<LocalActivityLine[] | undefined>(undefined);
 	const [liveAnnouncement, setLiveAnnouncement] = useState("");
@@ -619,6 +633,12 @@ export function ChatTranscript({
 	const artifacts = chat.artifacts ?? [];
 	const containerIds = outputContainerIds(chat);
 	const hasResources = containerIds.length > 0 || artifacts.length > 0;
+	const finalAssistantMessageId = useMemo(() => {
+		for (let index = chat.messages.length - 1; index >= 0; index -= 1) {
+			if (chat.messages[index]?.role === "assistant") return chat.messages[index]!.id;
+		}
+		return null;
+	}, [chat.messages]);
 	const activeLines = activityByMessageId.__active__ ?? [];
 	// A pending approval is a turn-level blocking condition, not ordinary
 	// message activity. Message-id rotation and replay ordering can attach it to
@@ -650,9 +670,15 @@ export function ChatTranscript({
 	useEffect(() => {
 		if (previousChatIdRef.current !== chat.id) {
 			followsTailRef.current = true;
+			historyAnchorRef.current = null;
+			historyRequestPendingRef.current = false;
 		}
 		previousChatIdRef.current = chat.id;
 	}, [chat.id]);
+
+	useEffect(() => {
+		if (historyState?.state !== "loading") historyRequestPendingRef.current = false;
+	}, [historyState?.state]);
 
 	/*
 	 * --composer-clearance is published by Composer.tsx onto .main-pane and
@@ -663,6 +689,14 @@ export function ChatTranscript({
 	 */
 
 	useLayoutEffect(() => {
+		const anchor = historyAnchorRef.current;
+		const scroller = scrollRef.current;
+		if (!anchor || !scroller || anchor.chatId !== chat.id || historyState?.state === "loading") return;
+		scroller.scrollTop += scroller.scrollHeight - anchor.scrollHeight;
+		historyAnchorRef.current = null;
+	}, [chat.id, historyState?.state, transcriptContentKey]);
+
+	useLayoutEffect(() => {
 		if (!followsTailRef.current) return;
 		const scroller = scrollRef.current;
 		if (!scroller) return;
@@ -671,6 +705,14 @@ export function ChatTranscript({
 		});
 		return () => cancelAnimationFrame(frame);
 	}, [transcriptContentKey]);
+
+	const requestOlderHistory = () => {
+		const scroller = scrollRef.current;
+		if (!scroller || !onLoadOlder || !historyState?.hasMore || historyState.state === "loading" || historyRequestPendingRef.current) return;
+		historyRequestPendingRef.current = true;
+		historyAnchorRef.current = { chatId: chat.id, scrollHeight: scroller.scrollHeight };
+		onLoadOlder();
+	};
 
 	useEffect(() => {
 		const announcement = activityStatusAnnouncement(previousActiveRef.current, activeLines, running);
@@ -795,11 +837,21 @@ export function ChatTranscript({
 				ref={scrollRef}
 				onScroll={(event) => {
 					const node = event.currentTarget;
-					followsTailRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 96;
+					const followsTail = node.scrollHeight - node.scrollTop - node.clientHeight <= 96;
+					followsTailRef.current = followsTail;
+					if (node.scrollTop <= 96 && !followsTail) requestOlderHistory();
 				}}
 			>
 				<div className="chat-transcript-inner">
+					{historyState?.state === "loading" ? (
+						<div className="transcript-history-status" role="status">Loading conversation history…</div>
+					) : historyState?.state === "error" ? (
+						<div className="transcript-history-status transcript-history-error" role="alert">History unavailable: {historyState.error ?? "Unknown error"}</div>
+					) : historyState?.hasMore ? (
+						<button type="button" className="transcript-history-load" onClick={requestOlderHistory}>Load earlier history</button>
+					) : null}
 						{chat.messages.map((m) => {
+						const showAdvancedAtMessage = !running && onAdvanced && m.id === finalAssistantMessageId;
 						const messageArtifacts = artifacts.filter((a) => a.messageId === m.id);
 						const primaryArtifact = messageArtifacts[0];
 						const primaryOpen = primaryArtifact
@@ -822,8 +874,11 @@ export function ChatTranscript({
 								) : m.role === "system" ? (
 									<div className="local-system"><p>{m.body}</p><div className="message-actions"><CopyMessageButton body={m.body} /></div></div>
 								) : (
-									<div className="local-assistant">
-										<p>{m.body}</p>
+									<div className={`local-assistant${showAdvancedAtMessage ? " local-assistant-with-advanced" : ""}`}>
+										<div className="local-assistant-content">
+											<p>{m.body}</p>
+											{showAdvancedAtMessage ? <button type="button" className="message-advanced" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
+										</div>
 										<div className="message-actions"><CopyMessageButton body={m.body} /></div>
 									</div>
 								)}
@@ -845,7 +900,8 @@ export function ChatTranscript({
 							<div className="model-working" role="status" aria-live="polite" data-testid="model-working">
 								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>
 								<span>{warmingUp ? "Warming up…" : "Working…"}</span>
-								<button type="button" onClick={onStop} aria-label="Stop generating">Stop</button>
+								{onStop ? <button type="button" onClick={onStop} aria-label="Stop generating">Stop</button> : null}
+								{onAdvanced ? <button type="button" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
 							</div>
 						) : null}
 					</div>

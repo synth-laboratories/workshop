@@ -20,6 +20,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_15,
     MIGRATION_16,
     MIGRATION_17,
+    MIGRATION_18,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1073,8 +1074,38 @@ CREATE INDEX IF NOT EXISTS report_visibility_requests_report
 ON report_visibility_requests(report_id, created_at DESC);
 "#;
 
+/// Immutable query snapshots.
+///
+/// A visual must never bind to a live query string: it would silently return
+/// different rows on every render and the app could not state what the user is
+/// looking at. A snapshot freezes the normalized query, the matching record
+/// ids, the facets needed to render, and when it was taken. Refreshing mints a
+/// new snapshot; nothing here is ever updated in place, which is why there is
+/// no `updated_at` and why the table carries no UPDATE path.
+const MIGRATION_18: &str = r#"
+CREATE TABLE IF NOT EXISTS query_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    domain TEXT NOT NULL CHECK(domain IN ('traces','optimizer_runs','containers','usage','plugins')),
+    query_schema_version TEXT NOT NULL,
+    query_ast TEXT NOT NULL,
+    result_ids TEXT NOT NULL,
+    result_count INTEGER NOT NULL,
+    facets TEXT NOT NULL DEFAULT '{}',
+    result_digest TEXT NOT NULL,
+    queried_at TEXT NOT NULL,
+    truncated INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS query_snapshots_domain_time
+ON query_snapshots(domain, queried_at DESC);
+"#;
+
 #[cfg(test)]
 mod tests {
+    /// Derived, not pinned: adding a migration should not mean editing
+    /// every test that asserts the database reached the newest version.
+    const LATEST_VERSION: i64 = super::MIGRATIONS.len() as i64;
+
     use super::*;
 
     /// A database stamped `version` with migrations 1..=version applied, as a
@@ -1122,7 +1153,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 17);
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
         let updated_at: String = conn
             .query_row(
                 "SELECT updated_at FROM runs WHERE id = 'run-1'",
@@ -1195,7 +1226,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 17);
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
 
         let ledger_tables: i64 = conn
             .query_row(
@@ -1254,7 +1285,7 @@ mod tests {
         .unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 11);
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 17);
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
         let old_binary_sum = |conn: &Connection| -> f64 {
             conn.query_row(
                 "SELECT
@@ -1293,7 +1324,7 @@ mod tests {
 
         // Relaunching v12 folds and clears staging. The union remains exactly
         // the same, proving neither data loss nor a transient double charge.
-        assert_eq!(apply_migrations(&conn).unwrap(), 17);
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
         assert!((old_binary_sum(&conn) - 0.75).abs() < 1e-9);
         assert_eq!(old_inventory_count(&conn), 2);
         let old_inventory_ids: Vec<String> = {
@@ -1357,7 +1388,7 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 17);
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
 
         let imported: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
@@ -1419,7 +1450,7 @@ mod tests {
         conn.execute_batch(partial).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 7);
 
-        assert_eq!(apply_migrations(&conn).unwrap(), 17);
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
         let (copies, leftovers): (i64, i64) = conn
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM usage_records WHERE request_id='req-1'),
@@ -1446,7 +1477,7 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(apply_migrations(&conn).unwrap(), 17);
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
         let kinds: Vec<(String, String)> = {
             let mut stmt = conn
                 .prepare("SELECT id, kind FROM sessions ORDER BY id")
@@ -1483,7 +1514,7 @@ mod tests {
         assert_eq!(probe, 0, "the failed migration's table must roll back");
         assert_eq!(version, 7);
         // The connection stays usable and the real migration still applies.
-        assert_eq!(apply_migrations(&conn).unwrap(), 17);
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
     }
 
     #[test]
@@ -1495,7 +1526,7 @@ mod tests {
             [r#"{"kind":"remote","provider":"synth-cloud","model":"openrouter/poolside/laguna-s-2.1","adapter":null}"#],
         )
         .unwrap();
-        assert_eq!(apply_migrations(&conn).unwrap(), 17);
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
         let (kind, target): (String, String) = conn
             .query_row(
                 "SELECT runtime_target_kind, target_json FROM sessions WHERE id='cloud-1'",
@@ -1518,7 +1549,7 @@ mod tests {
     #[test]
     fn migration_14_never_allows_a_partial_upload_permalink() {
         let conn = seed_at_version(13);
-        assert_eq!(apply_migrations(&conn).unwrap(), 17);
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
         conn.execute(
             "INSERT INTO visuals(id,current_revision,title,template_id,status,renderer_kind,bindings_json,metadata_json,created_at,updated_at)
              VALUES ('vis-1',1,'Visual','template.v1','saved','template','{}','{}','now','now')",

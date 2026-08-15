@@ -113,6 +113,8 @@ function browserCoreBridge() {
 		},
 		async eventsAfter(): Promise<AppEvent[]> { return []; },
 		async sessionEventsAfter(): Promise<AppEvent[]> { return []; },
+		async sessionEventsTail(): Promise<AppEvent[]> { return []; },
+		async sessionEventsBefore(): Promise<AppEvent[]> { return []; },
 		onEvent(): () => void { return () => undefined; }
 	};
 }
@@ -300,6 +302,10 @@ export function installDesktopBridge(): void {
 				invokeCommand<AppEvent[]>(COMMANDS.CORE_EVENTS_AFTER, { afterSequence, limit }),
 			sessionEventsAfter: (sessionId, afterSequence = 0, limit) =>
 				invokeCommand<AppEvent[]>(COMMANDS.CORE_SESSION_EVENTS_AFTER, { sessionId, afterSequence, limit }),
+			sessionEventsTail: (sessionId, limit) =>
+				invokeCommand<AppEvent[]>(COMMANDS.CORE_SESSION_EVENTS_TAIL, { sessionId, limit }),
+			sessionEventsBefore: (sessionId, beforeSequence, limit) =>
+				invokeCommand<AppEvent[]>(COMMANDS.CORE_SESSION_EVENTS_BEFORE, { sessionId, beforeSequence, limit }),
 			onEvent(listener) {
 				return listenRuntimeAppEvents(listener);
 			}
@@ -652,7 +658,27 @@ window.synthWorkspaceScope ??= isTauri
 			status: (pluginId) => invokeCommand(COMMANDS.PLUGINS_STATUS, { pluginId: pluginId ?? null }),
 			list: () => invokeCommand(COMMANDS.PLUGINS_LIST),
 			setReleaseChannel: (pluginId, channel) =>
-				invokeCommand(COMMANDS.PLUGINS_SET_RELEASE_CHANNEL, { pluginId, channel })
+				invokeCommand(COMMANDS.PLUGINS_SET_RELEASE_CHANNEL, { pluginId, channel }),
+			manage: (operation, pluginId, version) =>
+				invokeCommand(COMMANDS.PLUGINS_MANAGE, {
+					operation,
+					pluginId,
+					version: version ?? null,
+					sessionId: null
+				}),
+			// `optimizer:status` has been emitted since the sidecar manager
+			// landed and had no subscriber, which is why the Optimizers page
+			// polled the registry every 750 ms — and every poll re-probed the
+			// live sidecar.
+			onStatusChanged(listener) {
+				let disposed = false;
+				let unlisten: (() => void) | undefined;
+				void listen(EVENT_CHANNELS.OPTIMIZER_STATUS, () => listener()).then((next) => {
+					if (disposed) next();
+					else unlisten = next;
+				});
+				return () => { disposed = true; unlisten?.(); };
+			}
 		};
 		window.synthReports ??= {
 			list: (query) => invokeCommand(COMMANDS.REPORTS_LIST, { query: query ?? null }),

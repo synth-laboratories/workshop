@@ -1,6 +1,8 @@
 import { expect, test } from "./browser.fixture";
 
-test("plugin phases remain visible and Optimizers nav hides when disabled", async ({ page }) => {
+// The sidebar and the Optimizers page both read the registry listing now, so
+// the fake must answer `list()` — `status()` alone no longer drives the UI.
+test("plugin phases stay visible as the install progresses", async ({ page }) => {
 	await page.addInitScript(() => {
 		let phase = "downloading";
 		let releaseChannel = "official";
@@ -20,7 +22,7 @@ test("plugin phases remain visible and Optimizers nav hides when disabled", asyn
 		});
 		(window as any).synthPlugins = {
 			status: async () => pluginStatus(),
-			list: async () => [],
+			list: async () => [pluginStatus()],
 			setReleaseChannel: async (_pluginId: string, next: string) => {
 				releaseChannel = next;
 				return pluginStatus();
@@ -62,27 +64,61 @@ test("plugin phases remain visible and Optimizers nav hides when disabled", asyn
 	await expect(page.getByTestId("optimizer-plugin-status")).toContainText("0.2.9.dev20260814");
 });
 
-test("disabled Optimizers plugin removes navigation", async ({ page }) => {
-	await page.addInitScript(() => {
+const disabledPlugin = {
+	schemaVersion: "synth.plugin-status.v1",
+	pluginId: "optimizers",
+	enabled: false,
+	phase: "disabled",
+	releaseChannel: "official",
+	catalogVersion: "0.2.5",
+	service: { phase: "stopped", activeRuns: 0 },
+	algorithms: [],
+	templates: []
+};
+
+// A disabled plugin used to vanish from the sidebar, which left the user with
+// no way to find out where it went or turn it back on. It stays, says why, and
+// still opens its page.
+test("disabled Optimizers plugin stays navigable and says why", async ({ page }) => {
+	await page.addInitScript((plugin) => {
 		(window as any).synthPlugins = {
-			status: async () => ({
-				schemaVersion: "synth.plugin-status.v1",
-				pluginId: "optimizers",
-				enabled: false,
-				phase: "disabled",
-				releaseChannel: "official",
-				catalogVersion: "0.2.5",
-				service: { phase: "stopped", activeRuns: 0 },
-				algorithms: [],
-				templates: []
-			}),
-			list: async () => [],
+			status: async () => plugin,
+			list: async () => [plugin],
 			setReleaseChannel: async () => { throw new Error("unused"); }
 		};
-	});
+	}, disabledPlugin);
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
-	await expect(page.getByTestId("open-optimizers")).toHaveCount(0);
+
+	const row = page.getByTestId("open-optimizers");
+	await expect(row).toHaveCount(1);
+	await expect(page.getByTestId("plugin-status-optimizers")).toContainText("Disabled");
+
+	await row.click();
+	await expect(page.getByTestId("optimizers-page")).toBeVisible();
+});
+
+test("a disabled plugin holding live runs does not imply they stopped", async ({ page }) => {
+	await page.addInitScript((plugin) => {
+		const busy = { ...plugin, service: { phase: "ready", activeRuns: 2 } };
+		(window as any).synthPlugins = {
+			status: async () => busy,
+			list: async () => [busy],
+			setReleaseChannel: async () => { throw new Error("unused"); }
+		};
+	}, disabledPlugin);
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+	await expect(page.getByTestId("plugin-status-optimizers")).toContainText("2 running");
+});
+
+test("the Plugins section replaces the Research and Data groupings", async ({ page }) => {
+	await expect(page.getByTestId("plugins-nav")).toHaveCount(1);
+	await expect(page.getByTestId("research-nav")).toHaveCount(0);
+	await expect(page.getByTestId("inventory-nav")).toHaveCount(0);
+	for (const testId of ["open-visuals", "open-reports", "open-optimizers", "open-inventory"]) {
+		await expect(page.getByTestId(testId)).toHaveCount(1);
+	}
 });
 
 test("optimizer visual posts a subscription receipt after replay", async ({ page }) => {

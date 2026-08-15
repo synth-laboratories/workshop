@@ -302,6 +302,11 @@ pub fn validate_bindings(bindings: &Value) -> anyhow::Result<()> {
                 | "live_sse"
                 | "fixture"
                 | "optimizer_run"
+                // An immutable result set, addressed by snapshot id. A visual
+                // must never bind to a live query: it would return different
+                // rows on every render and the page could not state what the
+                // reader is looking at.
+                | "query_snapshot"
         ) {
             anyhow::bail!("unsupported visual binding kind: {kind}");
         }

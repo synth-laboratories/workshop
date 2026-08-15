@@ -9,6 +9,7 @@ import desktopPackage from "../../../../package.json";
 import type {
 	CodexActivityEvent,
 	ContainerDeployment,
+	AppEvent,
 	RuntimeControlKind,
 	RuntimeEvent,
 	RuntimeHealth,
@@ -20,6 +21,7 @@ import {
 	dispatchLocalSessionStatus,
 	dispatchRuntimeEvent,
 	dispatchTurnAccepted,
+	evictSessionEvents,
 	mergeInternSessions,
 	mergeSessionReplay,
 	patchSessionMetadata,
@@ -38,6 +40,7 @@ import type { ArtifactRef } from "../types/landing";
 import { useInferenceMonitor } from "../components/InferencePanel";
 import { artifactFromVisualRecord } from "../components/VisualHost";
 import { useAccountShell } from "./useAccountShell";
+import { usePluginStatuses } from "./usePluginStatuses";
 import { useShellLayout } from "./useShellLayout";
 import { useCodexEventBridge, type CodexUsageSnapshot } from "./useCodexEventBridge";
 import { useForeignSessionEventBridge } from "./useForeignSessionEventBridge";
@@ -67,11 +70,13 @@ import {
 } from "../runtime/modelSwitchPlan";
 import type {
 	CodexSessionInfo,
+	CodexEvent,
 	CodexOauthStatus,
 	ComposerImageAttachment,
 	ConversationWorkspaceScope,
 	LagunaStatus
 } from "../bridge";
+import type { ReceivedResponseEvent } from "../components/ResponsesTracePanel";
 import {
 	applyPreferencesToDocument,
 	loadPreferences,
@@ -88,6 +93,7 @@ import { browserRuntimeClient } from "../runtime/browserRuntimeClient";
 import {
 	codexResumeRequest,
 	codexTurnFailure,
+	CODEX_SESSION_UNHEALTHY,
 	desktopBootError,
 	turnFailureMessage,
 	type FailedSend
@@ -97,6 +103,67 @@ import { createSemanticEvalApi } from "../runtime/evalApi";
 import { drainPromptQueues, removeQueuedPrompt } from "../runtime/promptQueue";
 import { bridges } from "../runtime/desktopBridge";
 import type { MainView } from "../routes";
+
+// `turn/start` only proves the app-server accepted the request. It does not
+// prove the provider stream is alive, so never leave the operator at Working…
+// forever if no event follows.
+const TURN_FIRST_ACTIVITY_TIMEOUT_MS = 45_000;
+const TURN_ACTIVITY_IDLE_TIMEOUT_MS = 45_000;
+const TURN_START_TIMEOUT_MESSAGE =
+	"This task did not begin producing activity. Check your ChatGPT connection and retry.";
+const TURN_ACTIVITY_STALLED_MESSAGE =
+	"This task stopped receiving provider activity. Check the Advanced trace and retry.";
+const TRANSCRIPT_PAGE_SIZE = 1000;
+const TRANSCRIPT_CACHE_LIMIT = 5;
+
+type TranscriptHydrationEntry = {
+	initialized: boolean;
+	state: "idle" | "loading" | "loaded" | "error";
+	hasMore: boolean;
+	earliestSequence?: number;
+	error?: string;
+	generation: number;
+};
+
+type TranscriptHistoryState = Pick<TranscriptHydrationEntry, "state" | "hasMore" | "error">;
+
+function responseTraceEventFromJournal(sessionId: string, event: AppEvent): ReceivedResponseEvent {
+	const payload = event.payload;
+	return {
+		sessionId,
+		method: event.kind,
+		params: payload && typeof payload === "object" && !Array.isArray(payload)
+			? payload as Record<string, unknown>
+			: { payload },
+		receivedAt: event.createdAt
+	};
+}
+
+function responseTraceContentKey(event: ReceivedResponseEvent): string {
+	return `${event.method}\u001f${JSON.stringify(event.params)}`;
+}
+
+function mergeHydratedResponseTrace(
+	hydrated: ReceivedResponseEvent[],
+	live: ReceivedResponseEvent[]
+): ReceivedResponseEvent[] {
+	const hydratedCounts = new Map<string, number>();
+	for (const event of hydrated) {
+		const key = responseTraceContentKey(event);
+		hydratedCounts.set(key, (hydratedCounts.get(key) ?? 0) + 1);
+	}
+	const liveCounts = new Map<string, number>();
+	const liveOnly: ReceivedResponseEvent[] = [];
+	for (const event of live) {
+		const key = responseTraceContentKey(event);
+		const count = (liveCounts.get(key) ?? 0) + 1;
+		liveCounts.set(key, count);
+		if (count > (hydratedCounts.get(key) ?? 0)) liveOnly.push(event);
+	}
+	return [...hydrated, ...liveOnly]
+		.sort((left, right) => Date.parse(left.receivedAt) - Date.parse(right.receivedAt))
+		.slice(-250);
+}
 
 export function useAppController() {
 	const isDesktop = window.location.protocol === "tauri:" || "__TAURI_INTERNALS__" in window;
@@ -119,6 +186,14 @@ export function useAppController() {
 	const sessionsRef = useRef<Session[]>(sessions);
 	const eventsBySession = useEventsBySession();
 	const [codexActivityBySession, setCodexActivityBySession] = useState<Record<string, CodexActivityEvent[]>>({});
+	const [responseTraceBySession, setResponseTraceBySession] = useState<Record<string, ReceivedResponseEvent[]>>({});
+	const [responseTraceLoadBySession, setResponseTraceLoadBySession] = useState<Record<string, { state: "loading" | "loaded" | "error"; message?: string }>>({});
+	const transcriptHydrationRef = useRef(new Map<string, TranscriptHydrationEntry>());
+	const transcriptHydrationGenerationRef = useRef(0);
+	const transcriptLruRef = useRef(new Map<string, true>());
+	const activeChatIdRef = useRef<string | null>(null);
+	const [transcriptHistoryBySession, setTranscriptHistoryBySession] = useState<Record<string, TranscriptHistoryState>>({});
+	const responseTraceHydrationRef = useRef(new Set<string>());
 	const [selectedTargetId, setSelectedTargetId] = useState("local-laguna");
 	useEffect(() => {
 		// v0.1 pickers hide Intern; never leave a hidden target selected.
@@ -173,6 +248,7 @@ export function useAppController() {
 	} = useModelPerformanceLabels(selectedTargetId, inferenceMonitor);
 	const [busy, setBusy] = useState(false);
 	const [bootError, setBootError] = useState<string | null>(null);
+	const [runtimeBootReady, setRuntimeBootReady] = useState(false);
 	const [steerError, setSteerError] = useState<string | null>(null);
 	const [composerSkills, setComposerSkills] = useState<Array<{ id: string; name: string; description: string }>>([]);
 	const [queueAfterStop, setQueueAfterStop] = useState(false);
@@ -186,6 +262,9 @@ export function useAppController() {
 	const [codexOauthStatus, setCodexOauthStatus] = useState<CodexOauthStatus | undefined>();
 	const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
 	const staleRunFenceRef = useRef(new Set<string>());
+	const turnStartWatchdogsRef = useRef(new Map<string, number>());
+	const turnActivityWatchdogsRef = useRef(new Map<string, number>());
+	const turnWatchdogInputsRef = useRef(new Map<string, { text: string; messageId: string }>());
 	const manualCompactionPendingRef = useRef(new Set<string>());
 	const queuedCompactionRef = useRef(new Set<string>());
 	const sendToSessionRef = useRef<(sessionId: string, text: string, options?: { messageId?: string }) => Promise<boolean>>(async () => false);
@@ -204,6 +283,74 @@ export function useAppController() {
 		window.setTimeout(() => setToast(null), 2200);
 	}, []);
 
+	const clearTurnStartWatchdog = useCallback((sessionId: string) => {
+		const timer = turnStartWatchdogsRef.current.get(sessionId);
+		if (timer !== undefined) window.clearTimeout(timer);
+		turnStartWatchdogsRef.current.delete(sessionId);
+	}, []);
+	const clearTurnActivityWatchdog = useCallback((sessionId: string) => {
+		const timer = turnActivityWatchdogsRef.current.get(sessionId);
+		if (timer !== undefined) window.clearTimeout(timer);
+		turnActivityWatchdogsRef.current.delete(sessionId);
+	}, []);
+
+	const armTurnActivityWatchdog = useCallback((sessionId: string, text: string, messageId: string) => {
+		clearTurnActivityWatchdog(sessionId);
+		turnWatchdogInputsRef.current.set(sessionId, { text, messageId });
+		const timer = window.setTimeout(() => {
+			turnActivityWatchdogsRef.current.delete(sessionId);
+			turnWatchdogInputsRef.current.delete(sessionId);
+			const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
+			if (session?.status !== "running") return;
+			staleRunFenceRef.current.add(sessionId);
+			void nativeCodex?.interrupt(sessionId).catch(() => undefined);
+			dispatchLocalSessionStatus(sessionId, "failed", { onlyIf: "running" });
+			const sequence = allocateNativeSequence(sessionId);
+			dispatchRuntimeEvent({
+				schemaVersion: "synth.desktop-runtime-event.v1", sessionId, sequence,
+				eventKind: "session/unhealthy",
+				payload: { reason: "turn_activity_stalled", message: TURN_ACTIVITY_STALLED_MESSAGE },
+				createdAt: new Date().toISOString(), source: "local"
+			}, { updateStatus: false });
+			setFailedSend({ sessionId, text, messageId, message: TURN_ACTIVITY_STALLED_MESSAGE });
+			showToast(TURN_ACTIVITY_STALLED_MESSAGE);
+		}, TURN_ACTIVITY_IDLE_TIMEOUT_MS);
+		turnActivityWatchdogsRef.current.set(sessionId, timer);
+	}, [allocateNativeSequence, clearTurnActivityWatchdog, nativeCodex, showToast]);
+
+	const armTurnStartWatchdog = useCallback((sessionId: string, text: string, messageId: string) => {
+		clearTurnStartWatchdog(sessionId);
+		const timer = window.setTimeout(() => {
+			turnStartWatchdogsRef.current.delete(sessionId);
+			const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
+			if (session?.status !== "running") return;
+			// Fence a delayed run.started event, stop the provider best-effort, and
+			// make the transcript retryable rather than leaving a permanent spinner.
+			staleRunFenceRef.current.add(sessionId);
+			void nativeCodex?.interrupt(sessionId).catch(() => undefined);
+			dispatchLocalSessionStatus(sessionId, "failed", { onlyIf: "running" });
+			const sequence = allocateNativeSequence(sessionId);
+			dispatchRuntimeEvent({
+				schemaVersion: "synth.desktop-runtime-event.v1", sessionId, sequence,
+				eventKind: "session/unhealthy",
+				payload: { reason: "turn_first_activity_timeout", message: TURN_START_TIMEOUT_MESSAGE },
+				createdAt: new Date().toISOString(), source: "local"
+			}, { updateStatus: false });
+			setFailedSend({ sessionId, text, messageId, message: TURN_START_TIMEOUT_MESSAGE });
+			showToast(TURN_START_TIMEOUT_MESSAGE);
+		}, TURN_FIRST_ACTIVITY_TIMEOUT_MS);
+		turnStartWatchdogsRef.current.set(sessionId, timer);
+		armTurnActivityWatchdog(sessionId, text, messageId);
+	}, [allocateNativeSequence, armTurnActivityWatchdog, clearTurnStartWatchdog, nativeCodex, showToast]);
+
+	useEffect(() => () => {
+		for (const timer of turnStartWatchdogsRef.current.values()) window.clearTimeout(timer);
+		turnStartWatchdogsRef.current.clear();
+		for (const timer of turnActivityWatchdogsRef.current.values()) window.clearTimeout(timer);
+		turnActivityWatchdogsRef.current.clear();
+		turnWatchdogInputsRef.current.clear();
+	}, []);
+
 	const {
 		apiKeyConfigured,
 		setApiKeyConfigured,
@@ -218,6 +365,9 @@ export function useAppController() {
 		accountView,
 		openBilling
 	} = useAccountShell(showToast);
+
+	// One owner for plugin registry status; Sidebar and OptimizersPage read it.
+	const { pluginStatuses, refreshPluginStatuses } = usePluginStatuses();
 
 	useEffect(() => subscribePreferences((next) => {
 		setPreferences(next);
@@ -413,38 +563,19 @@ export function useAppController() {
 	useEffect(() => {
 		let disposed = false;
 		const boot = nativeCodex
-			? Promise.all([nativeCodex.list(), nativeIntern?.listSessions() ?? Promise.resolve([]), refreshHealth()]).then(async ([persisted, internSessions]) => {
+			? Promise.all([nativeCodex.list(), nativeIntern?.listSessions() ?? Promise.resolve([]), refreshHealth()]).then(([persisted, internSessions]) => {
 				const restored = persisted.filter((session) => session.status !== "closed").map(restoreCodexSession);
 				const combined = [...restored, ...internSessions];
 				sessionsRef.current = combined;
 				replaceSessions(combined);
-				const core = bridges.core;
-				if (!core) return;
-				const replay = await Promise.all(combined.map(async (session) => {
-					const rows: Awaited<ReturnType<typeof core.sessionEventsAfter>> = [];
-					let after = 0;
-					for (;;) {
-						const page = await core.sessionEventsAfter(session.id, after, 2000);
-						if (page.length === 0) break;
-						rows.push(...page);
-						for (const event of page) {
-							after = Math.max(after, event.sessionSequence ?? event.sequence);
-						}
-						if (page.length < 2000) break;
-					}
-					return [session.id, rows.map(session.target.kind === "intern" ? appEventToRuntimeEvent : coreEventToRuntime).filter((event): event is RuntimeEvent => event !== null)] as const;
-				}));
-				if (disposed) return;
-				mergeSessionReplay(replay);
-				for (const [sessionId, events] of replay) {
-					const head = events.at(-1)?.sequence ?? 0;
-					nativeSequencesRef.current.set(sessionId, head);
-				}
 			})
 			: Promise.all([refreshHealth(), refreshSessions()]);
 		boot
 			.then(() => {
-				if (!disposed) setBootError(null);
+				if (!disposed) {
+					setBootError(null);
+					setRuntimeBootReady(true);
+				}
 			})
 			.catch((reason: unknown) => {
 				if (!disposed) {
@@ -466,8 +597,26 @@ export function useAppController() {
 		autoCompactTokenLimits: preferences.agentContext.autoCompactTokenLimits,
 		localBaseUrl: laguna?.baseUrl ?? undefined,
 		showToast,
+		onTurnActivity: (sessionId) => {
+			clearTurnStartWatchdog(sessionId);
+			const input = turnWatchdogInputsRef.current.get(sessionId);
+			if (input) {
+				armTurnActivityWatchdog(sessionId, input.text, input.messageId);
+			}
+		},
+		onRawEvent: (event: CodexEvent) => {
+			const receivedAt = new Date().toISOString();
+			setResponseTraceBySession((current) => ({
+				...current,
+				[event.sessionId]: [...(current[event.sessionId] ?? []), { ...event, receivedAt }].slice(-250)
+			}));
+		},
 		onOauthReauthRequired: () => {
 			setCodexOauthConfigured(false);
+			setCodexOauthStatus({
+				state: "expired", action: "reauthenticate", canUseModels: false, configured: true,
+				guidance: "Please sign in with ChatGPT to continue using this model."
+			});
 			setCodexUsage(null);
 		},
 		onCodexUsage: setCodexUsage
@@ -681,6 +830,222 @@ export function useAppController() {
 	const activeChatTargetId = activeChatSession
 		? executionTargetToUiId(activeChatSession.target)
 		: undefined;
+	activeChatIdRef.current = activeChat?.id ?? null;
+	const touchTranscriptCache = useCallback((sessionId: string) => {
+		const lru = transcriptLruRef.current;
+		lru.delete(sessionId);
+		lru.set(sessionId, true);
+		const evicted: string[] = [];
+		while (lru.size > TRANSCRIPT_CACHE_LIMIT) {
+			const candidate = [...lru.keys()].find((id) => {
+				if (id === sessionId) return false;
+				const session = sessionsRef.current.find((item) => item.id === id);
+				return session?.status !== "running" && session?.status !== "waiting_for_input";
+			});
+			if (!candidate) break;
+			lru.delete(candidate);
+			const hydration = transcriptHydrationRef.current.get(candidate);
+			if (hydration) hydration.generation = ++transcriptHydrationGenerationRef.current;
+			transcriptHydrationRef.current.delete(candidate);
+			responseTraceHydrationRef.current.delete(candidate);
+			evicted.push(candidate);
+		}
+		if (evicted.length === 0) return;
+		evictSessionEvents(evicted);
+		setTranscriptHistoryBySession((current) => Object.fromEntries(
+			Object.entries(current).filter(([id]) => !evicted.includes(id))
+		));
+		setResponseTraceBySession((current) => Object.fromEntries(
+			Object.entries(current).filter(([id]) => !evicted.includes(id))
+		));
+		setResponseTraceLoadBySession((current) => Object.fromEntries(
+			Object.entries(current).filter(([id]) => !evicted.includes(id))
+		));
+	}, []);
+	useEffect(() => {
+		const sessionId = activeChat?.id;
+		const targetKind = activeChatSession?.target.kind;
+		const core = bridges.core;
+		if (!runtimeBootReady || !sessionId || !targetKind || !core) return;
+		touchTranscriptCache(sessionId);
+		const cached = transcriptHydrationRef.current.get(sessionId);
+		if (cached?.initialized) {
+			setTranscriptHistoryBySession((current) => ({
+				...current,
+				[sessionId]: { state: cached.state, hasMore: cached.hasMore, error: cached.error }
+			}));
+			return () => {
+				const current = transcriptHydrationRef.current.get(sessionId);
+				if (current?.state !== "loading") return;
+				current.generation = ++transcriptHydrationGenerationRef.current;
+				current.state = "loaded";
+				setTranscriptHistoryBySession((history) => ({
+					...history,
+					[sessionId]: { state: "loaded", hasMore: current.hasMore }
+				}));
+			};
+		}
+		const generation = ++transcriptHydrationGenerationRef.current;
+		transcriptHydrationRef.current.set(sessionId, {
+			initialized: false,
+			state: "loading",
+			hasMore: false,
+			generation
+		});
+		setTranscriptHistoryBySession((current) => ({
+			...current,
+			[sessionId]: { state: "loading", hasMore: false }
+		}));
+		let cancelled = false;
+		void (async () => {
+			const fetched = await core.sessionEventsTail(sessionId, TRANSCRIPT_PAGE_SIZE + 1);
+			const hasMore = fetched.length > TRANSCRIPT_PAGE_SIZE;
+			const rows = hasMore ? fetched.slice(1) : fetched;
+			if (cancelled || activeChatIdRef.current !== sessionId || transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
+			const hydrated = rows
+				.map(targetKind === "intern" ? appEventToRuntimeEvent : coreEventToRuntime)
+				.filter((event): event is RuntimeEvent => event !== null);
+			mergeSessionReplay([[sessionId, hydrated]]);
+			const hydratedHead = hydrated.at(-1)?.sequence ?? 0;
+			nativeSequencesRef.current.set(sessionId, Math.max(
+				nativeSequencesRef.current.get(sessionId) ?? 0,
+				eventsBySessionRef.current[sessionId]?.at(-1)?.sequence ?? 0,
+				hydratedHead
+			));
+			const entry: TranscriptHydrationEntry = {
+				initialized: true,
+				state: "loaded",
+				hasMore,
+				earliestSequence: rows[0]?.sessionSequence ?? undefined,
+				generation
+			};
+			transcriptHydrationRef.current.set(sessionId, entry);
+			setTranscriptHistoryBySession((current) => ({
+				...current,
+				[sessionId]: { state: "loaded", hasMore }
+			}));
+		})().catch((reason: unknown) => {
+			if (cancelled || activeChatIdRef.current !== sessionId || transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
+			const message = desktopBootError(reason);
+			transcriptHydrationRef.current.set(sessionId, {
+				initialized: false,
+				state: "error",
+				hasMore: false,
+				error: message,
+				generation
+			});
+			setTranscriptHistoryBySession((current) => ({
+				...current,
+				[sessionId]: { state: "error", hasMore: false, error: message }
+			}));
+			mergeSessionReplay([[sessionId, [{
+				schemaVersion: "synth.desktop-runtime-event.v1",
+				sessionId,
+				sequence: 1,
+				eventKind: "session/unhealthy",
+				payload: {
+					reason: "session_replay_failed",
+					message: `This conversation could not be restored: ${desktopBootError(reason)}`
+				},
+				createdAt: new Date().toISOString(),
+				source: "local"
+			}]]]);
+		});
+		return () => {
+			cancelled = true;
+			const current = transcriptHydrationRef.current.get(sessionId);
+			if (current?.state !== "loading") return;
+			current.generation = ++transcriptHydrationGenerationRef.current;
+			current.state = current.initialized ? "loaded" : "idle";
+			setTranscriptHistoryBySession((history) => ({
+				...history,
+				[sessionId]: { state: current.state, hasMore: current.hasMore }
+			}));
+		};
+	}, [activeChat?.id, activeChatSession?.target.kind, runtimeBootReady, touchTranscriptCache]);
+	const loadOlderTranscript = useCallback(() => {
+		const sessionId = activeChatIdRef.current;
+		const targetKind = activeChatSession?.target.kind;
+		const core = bridges.core;
+		if (!sessionId || !targetKind || !core) return;
+		const prior = transcriptHydrationRef.current.get(sessionId);
+		if (!prior?.initialized || prior.state === "loading" || !prior.hasMore || prior.earliestSequence == null) return;
+		const generation = ++transcriptHydrationGenerationRef.current;
+		const beforeSequence = prior.earliestSequence;
+		transcriptHydrationRef.current.set(sessionId, { ...prior, state: "loading", error: undefined, generation });
+		setTranscriptHistoryBySession((current) => ({
+			...current,
+			[sessionId]: { state: "loading", hasMore: true }
+		}));
+		void (async () => {
+			const fetched = await core.sessionEventsBefore(sessionId, beforeSequence, TRANSCRIPT_PAGE_SIZE + 1);
+			const hasMore = fetched.length > TRANSCRIPT_PAGE_SIZE;
+			const rows = hasMore ? fetched.slice(1) : fetched;
+			if (activeChatIdRef.current !== sessionId || transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
+			const hydrated = rows
+				.map(targetKind === "intern" ? appEventToRuntimeEvent : coreEventToRuntime)
+				.filter((event): event is RuntimeEvent => event !== null);
+			mergeSessionReplay([[sessionId, hydrated]]);
+			const entry: TranscriptHydrationEntry = {
+				initialized: true,
+				state: "loaded",
+				hasMore,
+				earliestSequence: rows[0]?.sessionSequence ?? beforeSequence,
+				generation
+			};
+			transcriptHydrationRef.current.set(sessionId, entry);
+			setTranscriptHistoryBySession((current) => ({
+				...current,
+				[sessionId]: { state: "loaded", hasMore }
+			}));
+			touchTranscriptCache(sessionId);
+		})().catch((reason: unknown) => {
+			if (activeChatIdRef.current !== sessionId || transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
+			const message = desktopBootError(reason);
+			transcriptHydrationRef.current.set(sessionId, { ...prior, state: "error", error: message, generation });
+			setTranscriptHistoryBySession((current) => ({
+				...current,
+				[sessionId]: { state: "error", hasMore: prior.hasMore, error: message }
+			}));
+		});
+	}, [activeChatSession?.target.kind, touchTranscriptCache]);
+	useEffect(() => {
+		const sessionId = activeChat?.id;
+		const core = bridges.core;
+		if (!runtimeBootReady || !sessionId || !core || responseTraceHydrationRef.current.has(sessionId)) return;
+		responseTraceHydrationRef.current.add(sessionId);
+		let cancelled = false;
+		let completed = false;
+		setResponseTraceLoadBySession((current) => ({
+			...current,
+			[sessionId]: { state: "loading" }
+		}));
+		void (async () => {
+			const rows = await core.sessionEventsTail(sessionId, 250);
+			if (cancelled || activeChatIdRef.current !== sessionId) return;
+			const hydrated = rows.map((event) => responseTraceEventFromJournal(sessionId, event));
+			setResponseTraceBySession((current) => ({
+				...current,
+				[sessionId]: mergeHydratedResponseTrace(hydrated, current[sessionId] ?? [])
+			}));
+			setResponseTraceLoadBySession((current) => ({
+				...current,
+				[sessionId]: { state: "loaded" }
+			}));
+			completed = true;
+		})().catch((reason: unknown) => {
+			if (cancelled) return;
+			responseTraceHydrationRef.current.delete(sessionId);
+			setResponseTraceLoadBySession((current) => ({
+				...current,
+				[sessionId]: { state: "error", message: desktopBootError(reason) }
+			}));
+		});
+		return () => {
+			cancelled = true;
+			if (!completed) responseTraceHydrationRef.current.delete(sessionId);
+		};
+	}, [activeChat?.id, runtimeBootReady]);
 	// Restored layout state opens a chat without going through openChat(). Keep
 	// the composer bound to the conversation's persisted execution target so a
 	// Gemini thread never silently presents (or submits through) Laguna.
@@ -700,7 +1065,7 @@ export function useAppController() {
 	const workbenchWidth = viewportWidth - (sidebarVisible ? sidebarWidth : 0);
 	const sidePanelFits = workbenchWidth >= 368 + 300;
 	const sidePanelCanSharePane = workbenchWidth >= 380 + 7 + 260 + 300;
-	const showSidePanel = sidePanelOpen && sidePanelFits && (sidePanelTab === "outputs" || activeLocalModel);
+	const showSidePanel = sidePanelOpen && sidePanelFits && (sidePanelTab === "outputs" || sidePanelTab === "trace" || activeLocalModel);
 	const activeSync =
 		view.kind === "sync"
 			? (state.syncSessions.find((s) => s.id === view.sessionId) ?? null)
@@ -971,6 +1336,9 @@ export function useAppController() {
 					});
 						const effort = turnStartEffortForExecutionTarget(executionTarget, modelKnobValues);
 						let started: CodexSessionInfo;
+						// Arm before awaiting. The app-server may emit run.started before
+						// its RPC reply reaches us; arming afterwards would miss that event.
+						armTurnStartWatchdog(sessionId, text, messageId);
 						// A fence from an earlier completed Stop must never apply to this
 						// new operator message. A Stop during the async start handshake
 						// re-adds it and is handled immediately after sendTurn resolves.
@@ -997,6 +1365,7 @@ export function useAppController() {
 								return nativeCodex.startTurn(sessionId, text, effort, { clientMessageId: messageId });
 							})();
 						} catch (reason) {
+							clearTurnStartWatchdog(sessionId);
 							failTurnStart(sessionId, text, messageId, reason);
 							return false;
 						}
@@ -1035,7 +1404,7 @@ export function useAppController() {
 				setBusy(false);
 			}
 		},
-		[allocateNativeSequence, approvalPolicy, ensureCodexOauthReady, ensureOpenRouterReady, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, sandboxMode, selectedTargetId, showToast]
+		[allocateNativeSequence, approvalPolicy, armTurnStartWatchdog, clearTurnStartWatchdog, ensureCodexOauthReady, ensureOpenRouterReady, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, sandboxMode, selectedTargetId, showToast]
 	);
 	sendToSessionRef.current = sendToSession;
 
@@ -1103,9 +1472,25 @@ export function useAppController() {
 				}
 				await refreshSessions();
 			} catch (reason) {
-				const message = reason instanceof Error
-					? reason.message
-					: turnFailureMessage(codexTurnFailure(activeSessionId, reason));
+				const failure = codexTurnFailure(activeSessionId, reason);
+				const message = turnFailureMessage(failure);
+				// A persisted approval card can outlive the in-memory app-server
+				// attachment after an app restart. Treat that as an unhealthy
+				// session, rather than showing the opaque `Codex session <UUID>`
+				// context string in a toast while the transcript still says Working.
+				if ((kind === "approve" || kind === "reject") && failure.code === CODEX_SESSION_UNHEALTHY) {
+					dispatchLocalSessionStatus(activeSessionId, "interrupted", { onlyIf: "running" });
+					const sequence = allocateNativeSequence(activeSessionId);
+					dispatchRuntimeEvent({
+						schemaVersion: "synth.desktop-runtime-event.v1",
+						sessionId: activeSessionId,
+						sequence,
+						eventKind: "session/unhealthy",
+						payload: { reason: failure.code, message },
+						createdAt: new Date().toISOString(),
+						source: "local"
+					}, { updateStatus: false });
+				}
 				showToast(message);
 			} finally {
 				setBusy(false);
@@ -1328,6 +1713,10 @@ export function useAppController() {
 		appVersion,
 		sessions,
 		eventsBySession,
+		responseTraceBySession,
+		responseTraceLoadBySession,
+		transcriptHistoryBySession,
+		loadOlderTranscript,
 		health,
 		laguna,
 		bootError,
@@ -1373,6 +1762,8 @@ export function useAppController() {
 		refreshAccountSummary,
 		accountView,
 		openBilling,
+		pluginStatuses,
+		refreshPluginStatuses,
 		view,
 		setView,
 		toast,

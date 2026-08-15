@@ -73,6 +73,10 @@ path = "src/bin/synth_plugins_mcp.rs"
 name = "synth-session-mcp"
 path = "src/bin/synth_session_mcp.rs"
 
+[[bin]]
+name = "synth-traces-mcp"
+path = "src/bin/synth_traces_mcp.rs"
+
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
 tempfile = "3"

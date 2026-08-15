@@ -39,6 +39,9 @@ pub struct CodexManager {
     /// UI source label (`manual` or `model_switch`). Auto token-threshold
     /// compaction leaves this empty and renders as "automatically compacted".
     pub(crate) pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
+    /// Terminal protocol notifications that arrive before `turn/start` has
+    /// returned its id and the durable run can be created.
+    pub(crate) early_terminal_turns: Arc<Mutex<HashMap<String, (String, Value)>>>,
     pub(crate) performance_trackers: PerformanceTrackers,
     pub(crate) root: PathBuf,
     pub(crate) state_path: PathBuf,
@@ -95,6 +98,7 @@ impl CodexManager {
             turn_locks: Mutex::new(HashMap::new()),
             compact_waiters: Arc::new(Mutex::new(HashMap::new())),
             pending_compact_sources: Arc::new(Mutex::new(HashMap::new())),
+            early_terminal_turns: Arc::new(Mutex::new(HashMap::new())),
             performance_trackers: Arc::new(Mutex::new(HashMap::new())),
             root,
             state_path,
@@ -189,6 +193,7 @@ impl CodexManager {
                 sessions: self.sessions.clone(),
                 compact_waiters: self.compact_waiters.clone(),
                 pending_compact_sources: self.pending_compact_sources.clone(),
+                early_terminal_turns: self.early_terminal_turns.clone(),
                 performance_trackers: self.performance_trackers.clone(),
                 receipts: self.receipts(),
                 approvals: self.approvals.clone(),
@@ -590,6 +595,16 @@ impl CodexManager {
             }
         }
         *session.turn_id.write().await = Some(turn_id.clone());
+        // Mark the session running before any queued terminal notification can
+        // be observed. A fast app-server may emit its final answer in the same
+        // stdout read cycle as the `turn/start` response.
+        self.set_status(&request.session_id, SessionStatus::Running)
+            .await?;
+        let mut early_terminal = self
+            .early_terminal_turns
+            .lock()
+            .await
+            .remove(&request.session_id);
         self.set_automatic_title(&app, &request.session_id, &request.prompt, &session)
             .await;
         let start_run = self.persistence.start_run(RunCreate {
@@ -617,17 +632,47 @@ impl CodexManager {
                 return Err(error.context("persist Codex run before exposing running state"));
             }
         };
-        if let Some(mutation) = mutation {
-            if let Some(event) = mutation.event {
-                let _ = self.persistence.publish_event(&app, event).await;
+        if early_terminal.is_none() {
+            early_terminal = self
+                .early_terminal_turns
+                .lock()
+                .await
+                .remove(&request.session_id);
+        }
+        if early_terminal.is_none() {
+            if let Some(mutation) = mutation {
+                if let Some(event) = mutation.event {
+                    self.persistence.publish_event(&app, event).await?;
+                }
             }
         }
-        // Establish Running before reconciliation. If the terminal arrives
-        // before or during this update it is already in the journal and the
-        // reconciliation below restores the exact terminal cache status. If it
-        // arrives afterward, the event pump owns both durable and cache state.
-        self.set_status(&request.session_id, SessionStatus::Running)
-            .await?;
+        if let Some((terminal_method, params)) = early_terminal {
+            let run_status = match terminal_method.as_str() {
+                "turn/completed" => RunStatus::Completed,
+                "turn/failed" => RunStatus::Failed,
+                _ => RunStatus::Interrupted,
+            };
+            let session_status = session_status_for_run(run_status);
+            if let Some(runs) = self.persistence.runs() {
+                let mutation = runs
+                    .transition(
+                        turn_id.clone(),
+                        run_status,
+                        Some(params),
+                        EventSource::Codex,
+                    )
+                    .await
+                    .context("reconcile typed terminal received before run creation")?;
+                if let Some(event) = mutation.event {
+                    self.persistence.publish_event(&app, event).await?;
+                }
+            }
+            self.set_status(&request.session_id, session_status).await?;
+            return Ok(session_info(&request.session_id, &session).await);
+        }
+        // If the terminal arrived outside the narrow typed-final window, its
+        // durable journal row restores the exact terminal state. A later
+        // terminal remains owned by the event pump.
         self.reconcile_terminal_before_run_start(&app, &request.session_id, &turn_id)
             .await?;
         Ok(session_info(&request.session_id, &session).await)
