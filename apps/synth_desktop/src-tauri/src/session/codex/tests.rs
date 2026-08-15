@@ -1454,10 +1454,15 @@ async fn app_server_approval_is_journaled_and_resumes_after_one_approval() {
     .await
     .expect("approval should be journaled");
     let approval_id = approval.payload["approvalId"].as_str().unwrap().to_owned();
+    // The fixture requests approval for the isolated child-home parent. The
+    // journal must describe that exact requested scope; substituting a generic
+    // workspace would misrepresent where the approved command can run.
+    let requested_scope = home.parent().unwrap().display().to_string();
     assert_eq!(
         approval.payload["detail"],
-        "Run a shell command in /workspace"
+        format!("Run a shell command in {requested_scope}")
     );
+    assert_eq!(approval.payload["scope"], requested_scope);
     assert!(!approval.payload.to_string().contains("hidden-command"));
 
     manager
