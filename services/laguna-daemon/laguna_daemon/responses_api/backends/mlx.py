@@ -138,12 +138,52 @@ def _model_weight_bytes(model_path: Path) -> int | None:
         }
         if not shards:
             return None
-        total = sum((model_path / shard).stat().st_size for shard in shards)
-        if isinstance(declared, int) and declared > 0 and total != declared:
+        payload_bytes = sum(
+            _safetensors_payload_bytes(model_path / shard) for shard in shards
+        )
+        if isinstance(declared, int) and declared > 0 and payload_bytes != declared:
             return None
-        return total if total > 0 else None
+        return payload_bytes if payload_bytes > 0 else None
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return None
+
+
+def _safetensors_payload_bytes(path: Path) -> int:
+    file_size = path.stat().st_size
+    with path.open("rb") as file:
+        encoded_header_size = file.read(8)
+        if len(encoded_header_size) != 8:
+            raise ValueError("truncated safetensors header size")
+        header_size = int.from_bytes(encoded_header_size, "little")
+        if header_size <= 0 or 8 + header_size > file_size:
+            raise ValueError("invalid safetensors header size")
+        header = json.loads(file.read(header_size))
+
+    ranges: list[tuple[int, int]] = []
+    for name, tensor in header.items():
+        if name == "__metadata__":
+            continue
+        offsets = tensor.get("data_offsets") if isinstance(tensor, dict) else None
+        if (
+            not isinstance(offsets, list)
+            or len(offsets) != 2
+            or not all(isinstance(offset, int) for offset in offsets)
+            or offsets[0] < 0
+            or offsets[1] <= offsets[0]
+        ):
+            raise ValueError("invalid safetensors tensor offsets")
+        ranges.append((offsets[0], offsets[1]))
+    if not ranges:
+        raise ValueError("safetensors shard has no tensors")
+    ranges.sort()
+    cursor = 0
+    for start, end in ranges:
+        if start != cursor:
+            raise ValueError("non-contiguous safetensors tensor offsets")
+        cursor = end
+    if 8 + header_size + cursor != file_size:
+        raise ValueError("safetensors payload length does not match file size")
+    return cursor
 
 
 def _required_system_memory_bytes(model_path: Path) -> int:

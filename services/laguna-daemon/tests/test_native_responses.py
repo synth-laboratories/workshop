@@ -19,6 +19,7 @@ from laguna_daemon.responses_api.backends.mlx import (
     NativeMlxBackend,
     _ActivatedCustomGrammarProcessor,
     _envelope_event,
+    _model_weight_bytes,
     _rehydrate_tool_calls,
     _split_reasoning,
     _TurnStateMachine,
@@ -523,6 +524,48 @@ class NativeResponsesWebSocketTests(unittest.TestCase):
 
 
 class NativeBackendContractTests(unittest.TestCase):
+    @staticmethod
+    def write_safetensors(path: Path, payload: bytes) -> None:
+        header = json.dumps(
+            {
+                "weight": {
+                    "dtype": "U8",
+                    "shape": [len(payload)],
+                    "data_offsets": [0, len(payload)],
+                }
+            },
+            separators=(",", ":"),
+        ).encode()
+        path.write_bytes(len(header).to_bytes(8, "little") + header + payload)
+
+    def test_model_weight_validation_counts_payload_not_safetensors_headers(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="laguna-native-complete-") as tmp:
+            model_path = Path(tmp)
+            self.write_safetensors(
+                model_path / "model-00001-of-00002.safetensors", b"abc"
+            )
+            self.write_safetensors(
+                model_path / "model-00002-of-00002.safetensors", b"defgh"
+            )
+            (model_path / "model.safetensors.index.json").write_text(
+                json.dumps(
+                    {
+                        "metadata": {"total_size": 8},
+                        "weight_map": {
+                            "a": "model-00001-of-00002.safetensors",
+                            "b": "model-00002-of-00002.safetensors",
+                        },
+                    }
+                )
+            )
+            self.assertEqual(_model_weight_bytes(model_path), 8)
+
+            with (model_path / "model-00002-of-00002.safetensors").open("r+b") as shard:
+                shard.truncate(shard.seek(0, 2) - 1)
+            self.assertIsNone(_model_weight_bytes(model_path))
+
     def test_native_backend_rejects_insufficient_memory_before_loading(self) -> None:
         with tempfile.TemporaryDirectory(prefix="laguna-native-low-memory-") as tmp:
             backend = NativeMlxBackend(
