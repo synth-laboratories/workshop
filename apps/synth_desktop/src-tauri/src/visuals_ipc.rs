@@ -141,7 +141,7 @@ async fn dispatch_request(
         return resize_review_window(app, &json_body);
     }
     if path.starts_with("/v1/optimizers") {
-        return dispatch_optimizer(method, path, json_body, core).await;
+        return dispatch_optimizer(method, path, json_body, core, app).await;
     }
     dispatch(method, path, json_body, core).await
 }
@@ -1346,6 +1346,7 @@ async fn dispatch_optimizer(
     path: &str,
     body: Value,
     core: &CoreRuntime,
+    app: &AppHandle,
 ) -> Result<Value> {
     let optimizers = core.optimizers();
     match (method, path) {
@@ -1356,8 +1357,11 @@ async fn dispatch_optimizer(
         ("POST", "/v1/optimizers/recipes/run") => {
             let request: crate::optimizers::OptimizerRecipeRunRequest =
                 serde_json::from_value(body)?;
-            let (run, event) = optimizers.start_recipe(request).await?;
-            Ok(json!({ "run": run, "event": event }))
+            let codex = app.state::<Arc<crate::codex::CodexManager>>();
+            let run = crate::authorize_optimizer_recipe_start(app, core, &codex, request)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            Ok(json!({ "run": run }))
         }
         ("GET", "/v1/optimizers/runs") => {
             let query: crate::optimizers::OptimizerQuery =

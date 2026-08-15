@@ -593,6 +593,15 @@ async fn optimizers_recipe_start(
     codex: State<'_, Arc<CodexManager>>,
     request: OptimizerRecipeRunRequest,
 ) -> Result<OptimizerRunRecord, AppError> {
+    authorize_optimizer_recipe_start(&app, &state, &codex, request).await
+}
+
+pub(crate) async fn authorize_optimizer_recipe_start(
+    app: &tauri::AppHandle,
+    state: &CoreRuntime,
+    codex: &CodexManager,
+    request: OptimizerRecipeRunRequest,
+) -> Result<OptimizerRunRecord, AppError> {
     let recipe = state
         .optimizers()
         .list_recipes()
@@ -650,13 +659,13 @@ async fn optimizers_recipe_start(
         requested_cap: paid_cap.clone(),
         requesting_agent,
     };
-    let paid_approval_id = codex.approvals.authorize_host(&app, session_id, paid)
+    let paid_approval_id = codex.approvals.authorize_host(app, session_id, paid)
         .await
         .map_err(AppError::from)?;
 
     for provider in optimizer_recipe_credentials(&request.recipe_id) {
         codex.approvals.authorize_host(
-            &app,
+            app,
             session_id,
             session::approval::ApprovalKind::CredentialAccess {
                 provider: (*provider).into(),
@@ -675,7 +684,7 @@ async fn optimizers_recipe_start(
             "start"
         };
         codex.approvals.authorize_host(
-            &app,
+            app,
             session_id,
             session::approval::ApprovalKind::SidecarLifecycle {
                 sidecar: "optimizers".into(),
@@ -691,7 +700,7 @@ async fn optimizers_recipe_start(
         .start_recipe(request)
         .await
         .map_err(AppError::from)?;
-    publish_optimizer_event(&app, &state, event).await?;
+    publish_optimizer_event(app, state, event).await?;
     state
         .optimizers()
         .attach_paid_compute_approval(
