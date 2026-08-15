@@ -119,7 +119,7 @@ fn main() {
     run_stdio_server(
         McpServerInfo {
             name: "synth-plugins-mcp",
-            version: "0.3.0",
+            version: "0.4.0",
         },
         tools,
         call_tool,

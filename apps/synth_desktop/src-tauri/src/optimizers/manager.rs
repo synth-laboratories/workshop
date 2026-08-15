@@ -1667,7 +1667,7 @@ fn materialize_verified_distribution(
         "publisher": "Synth Laboratories",
         "networkHost": "pypi.org",
         "platform": std::env::consts::OS,
-        "workshopCompat": "0.3.0",
+        "workshopCompat": "0.4.0",
     });
     fs::write(staging.join(PAYLOAD_FILE), &payload)?;
     fs::write(

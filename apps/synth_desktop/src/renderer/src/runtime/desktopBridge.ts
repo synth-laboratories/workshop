@@ -501,7 +501,7 @@ window.synthWorkspaceScope ??= isTauri
 		}
 		: {
 			status: async () => ({
-				currentVersion: "0.3.0",
+				currentVersion: "0.4.0",
 				channel: "stable",
 				latestVersion: null,
 				updateAvailable: false

@@ -48,6 +48,7 @@ fn laguna_base_url() -> String {
         .unwrap_or_else(|_| format!("http://127.0.0.1:{}", laguna_port()))
 }
 const MODEL_INDEX: &str = "model.safetensors.index.json";
+const MAX_SAFETENSORS_HEADER_BYTES: u64 = 100_000_000;
 const SELECTED_MODEL_FILE: &str = "selected_model_path";
 /// The daemon at `DEFAULT_PORT` is the only local runtime: it owns the weights,
 /// the admission slot, the prompt caches, and every telemetry number below.
@@ -1269,6 +1270,7 @@ fn validate_model_dir(model_dir: &Path) -> Result<LagunaModelHit> {
         ));
     }
     let mut total_bytes = 0;
+    let mut payload_bytes = 0;
     for shard in &shards {
         if !shard.ends_with(".safetensors") || shard.contains('/') || shard.contains('\\') {
             return Err(anyhow::anyhow!(
@@ -1280,15 +1282,16 @@ fn validate_model_dir(model_dir: &Path) -> Result<LagunaModelHit> {
         total_bytes += fs::metadata(&path)
             .with_context(|| format!("Referenced model shard is missing: {}", path.display()))?
             .len();
+        payload_bytes += safetensors_payload_bytes(&path)?;
     }
     if let Some(declared) = index
         .get("metadata")
         .and_then(|metadata| metadata.get("total_size"))
         .and_then(Value::as_u64)
     {
-        if total_bytes != declared {
+        if payload_bytes != declared {
             return Err(anyhow::anyhow!(
-                "Model shard bytes do not match {}: expected {declared}, found {total_bytes}",
+                "Model tensor payload bytes do not match {}: expected {declared}, found {payload_bytes}",
                 index_path.display()
             ));
         }
@@ -1331,6 +1334,89 @@ fn validate_model_dir(model_dir: &Path) -> Result<LagunaModelHit> {
         runtime_ready: true,
         companion_bytes: 0,
     })
+}
+
+fn safetensors_payload_bytes(path: &Path) -> Result<u64> {
+    let file_size = fs::metadata(path)
+        .with_context(|| format!("Read safetensors metadata: {}", path.display()))?
+        .len();
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("Open safetensors shard: {}", path.display()))?;
+    let mut encoded_header_size = [0u8; 8];
+    file.read_exact(&mut encoded_header_size)
+        .with_context(|| format!("Read safetensors header size: {}", path.display()))?;
+    let header_size = u64::from_le_bytes(encoded_header_size);
+    if header_size == 0
+        || header_size > MAX_SAFETENSORS_HEADER_BYTES
+        || 8u64.saturating_add(header_size) > file_size
+    {
+        return Err(anyhow::anyhow!(
+            "Invalid safetensors header size in {}",
+            path.display()
+        ));
+    }
+    let mut encoded_header = vec![0u8; header_size as usize];
+    file.read_exact(&mut encoded_header)
+        .with_context(|| format!("Read safetensors header: {}", path.display()))?;
+    let header: Value = serde_json::from_slice(&encoded_header)
+        .with_context(|| format!("Invalid safetensors header JSON: {}", path.display()))?;
+    let object = header.as_object().ok_or_else(|| {
+        anyhow::anyhow!("Safetensors header is not an object: {}", path.display())
+    })?;
+    let mut ranges = Vec::new();
+    for (name, tensor) in object {
+        if name == "__metadata__" {
+            continue;
+        }
+        let offsets = tensor
+            .get("data_offsets")
+            .and_then(Value::as_array)
+            .filter(|offsets| offsets.len() == 2)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Invalid safetensors tensor offsets in {}", path.display())
+            })?;
+        let start = offsets[0].as_u64().ok_or_else(|| {
+            anyhow::anyhow!("Invalid safetensors tensor offset in {}", path.display())
+        })?;
+        let end = offsets[1].as_u64().ok_or_else(|| {
+            anyhow::anyhow!("Invalid safetensors tensor offset in {}", path.display())
+        })?;
+        if end < start {
+            return Err(anyhow::anyhow!(
+                "Invalid safetensors tensor range in {}",
+                path.display()
+            ));
+        }
+        ranges.push((start, end));
+    }
+    if ranges.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Safetensors shard contains no tensors: {}",
+            path.display()
+        ));
+    }
+    ranges.sort_unstable();
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        if start != cursor {
+            return Err(anyhow::anyhow!(
+                "Safetensors tensor data is not contiguous in {}",
+                path.display()
+            ));
+        }
+        cursor = end;
+    }
+    if 8u64
+        .saturating_add(header_size)
+        .saturating_add(cursor)
+        != file_size
+    {
+        return Err(anyhow::anyhow!(
+            "Safetensors payload length does not match file size: {}",
+            path.display()
+        ));
+    }
+    Ok(cursor)
 }
 
 fn discover_models() -> Result<Vec<LagunaModelHit>> {
@@ -1832,14 +1918,30 @@ mod tests {
         let model = root.join(DEFAULT_MODEL);
         fs::create_dir_all(&model).unwrap();
         fs::write(model.join("config.json"), r#"{"model_type":"laguna"}"#).unwrap();
-        fs::write(model.join("a.safetensors"), b"abc").unwrap();
-        fs::write(model.join("b.safetensors"), b"12345").unwrap();
+        write_safetensors(&model.join("a.safetensors"), b"abc");
+        write_safetensors(&model.join("b.safetensors"), b"12345");
         fs::write(
             model.join(MODEL_INDEX),
-            r#"{"weight_map":{"a":"a.safetensors","b":"b.safetensors","c":"a.safetensors"}}"#,
+            r#"{"metadata":{"total_size":8},"weight_map":{"a":"a.safetensors","b":"b.safetensors","c":"a.safetensors"}}"#,
         )
         .unwrap();
         root
+    }
+
+    fn write_safetensors(path: &Path, payload: &[u8]) {
+        let header = serde_json::to_vec(&serde_json::json!({
+            "weight": {
+                "dtype": "U8",
+                "shape": [payload.len()],
+                "data_offsets": [0, payload.len()]
+            }
+        }))
+        .unwrap();
+        let mut bytes = Vec::with_capacity(8 + header.len() + payload.len());
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&header);
+        bytes.extend_from_slice(payload);
+        fs::write(path, bytes).unwrap();
     }
     #[test]
     fn settings_exchange_marks_missing_endpoint_as_unsupported() {
@@ -1891,7 +1993,10 @@ mod tests {
         let parent = validate_model_input(&root).unwrap();
         assert_eq!(direct, parent);
         assert_eq!(direct.shard_count, 2);
-        assert_eq!(direct.total_bytes, 8);
+        let model = root.join(DEFAULT_MODEL);
+        let on_disk = fs::metadata(model.join("a.safetensors")).unwrap().len()
+            + fs::metadata(model.join("b.safetensors")).unwrap().len();
+        assert_eq!(direct.total_bytes, on_disk);
         assert_eq!(Path::new(&direct.models_root), root.canonicalize().unwrap());
         fs::remove_dir_all(root).unwrap();
     }
