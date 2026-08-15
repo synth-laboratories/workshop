@@ -160,7 +160,9 @@ The **evals** repo owns cases, runner, graders, compose, and results under
 `synth.eval-driver.v1` at connect. No package imports across the two repos.
 Each `run-manifest.json` records the Workshop `sourceRevision` it drove.
 Health instance diagnostics also expose the launcher's validated
-`executableDigest` when it is a qualified SHA-256. Session exports include a
+`executableDigest` when it is a qualified SHA-256. If a development launcher
+starts before the binary exists, the running app hashes its own executable as
+the provenance fallback. Session exports include a
 top-level, typed `providerBinding` with provider, model, endpoint class,
 credential-binding class, brokered status, and `fallbackAllowed: false`; raw
 endpoints and credentials are deliberately excluded.

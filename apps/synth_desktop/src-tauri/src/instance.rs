@@ -1,6 +1,7 @@
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use specta::Type;
-use std::{env, fs, path::PathBuf};
+use std::{env, fs, io, path::PathBuf};
 
 pub const INSTANCE_ENV: &str = "SYNTH_DESKTOP_INSTANCE";
 pub const DATA_ROOT_ENV: &str = "SYNTH_DESKTOP_DATA_ROOT";
@@ -95,7 +96,7 @@ pub fn diagnostics() -> InstanceDiagnostics {
             .unwrap_or_else(|_| build_revision.into()),
         build_revision: build_revision.into(),
         build_timestamp: build_timestamp.into(),
-        executable_digest: manifest_executable_digest(),
+        executable_digest: executable_digest(),
         process_id: std::process::id(),
         executable: env::current_exe()
             .map(|path| path.display().to_string())
@@ -104,6 +105,10 @@ pub fn diagnostics() -> InstanceDiagnostics {
         vite_url: env::var("SYNTH_DESKTOP_VITE_URL").ok(),
         manifest: env::var(MANIFEST_ENV).ok(),
     }
+}
+
+fn executable_digest() -> Option<String> {
+    manifest_executable_digest().or_else(current_executable_digest)
 }
 
 fn manifest_executable_digest() -> Option<String> {
@@ -121,6 +126,24 @@ fn valid_sha256_digest(value: &str) -> bool {
     value.len() == 71
         && value.starts_with("sha256:")
         && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn current_executable_digest() -> Option<String> {
+    let executable = fs::File::open(env::current_exe().ok()?).ok()?;
+    sha256_digest(executable).ok()
+}
+
+fn sha256_digest(mut reader: impl io::Read) -> io::Result<String> {
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
 /// Best-effort runtime receipt for exact CUA/process targeting. The launcher
@@ -155,7 +178,7 @@ pub fn mark_manifest_running() {
 
 #[cfg(test)]
 mod tests {
-    use super::{valid_sha256_digest, validate_name};
+    use super::{sha256_digest, valid_sha256_digest, validate_name};
 
     #[test]
     fn accepts_safe_instance_names() {
@@ -186,5 +209,13 @@ mod tests {
         assert!(!valid_sha256_digest(&"a".repeat(64)));
         assert!(!valid_sha256_digest(&format!("sha256:{}", "g".repeat(64))));
         assert!(!valid_sha256_digest("sha256:short"));
+    }
+
+    #[test]
+    fn executable_provenance_hashes_runtime_bytes() {
+        assert_eq!(
+            sha256_digest(std::io::Cursor::new(b"abc")).unwrap(),
+            "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }
