@@ -48,9 +48,11 @@ test("optimizer MCP recipe starts cannot bypass the typed approval broker", () =
 	assert.match(commands, /ApprovalKind::CredentialAccess/);
 	assert.match(commands, /ApprovalKind::SidecarLifecycle/);
 	// The invariant is that approval events reach the transcript even though
-	// they are journaled as system rather than codex events. The predicate was
-	// once a named `isApprovalBoundary`; it is now an inline kind check.
-	assert.match(bridge, /event\.source !== "codex" && !event\.kind\.startsWith\("approval\."\)/);
+	// they are journaled as system rather than codex events. Assert both the
+	// boundary definition and its use so a renamed helper cannot become a
+	// decorative, disconnected check.
+	assert.match(bridge, /const isApprovalBoundary = event\.kind\.startsWith\("approval\."\)/);
+	assert.match(bridge, /event\.source !== "codex" && !isApprovalBoundary/);
 });
 
 test("hosted SFT uses only the public synth-optimizers control plane", () => {
