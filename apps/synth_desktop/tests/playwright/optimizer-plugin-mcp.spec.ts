@@ -1,6 +1,8 @@
 import { expect, test } from "./browser.fixture";
 
-test("plugin phases remain visible and Optimizers nav hides when disabled", async ({ page }) => {
+// The sidebar and the Optimizers page both read the registry listing now, so
+// the fake must answer `list()` — `status()` alone no longer drives the UI.
+test("plugin phases stay visible as the install progresses", async ({ page }) => {
 	await page.addInitScript(() => {
 		let phase = "downloading";
 		let releaseChannel = "official";
@@ -20,7 +22,7 @@ test("plugin phases remain visible and Optimizers nav hides when disabled", asyn
 		});
 		(window as any).synthPlugins = {
 			status: async () => pluginStatus(),
-			list: async () => [],
+			list: async () => [pluginStatus()],
 			setReleaseChannel: async (_pluginId: string, next: string) => {
 				releaseChannel = next;
 				return pluginStatus();
