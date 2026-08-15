@@ -62,6 +62,7 @@ test("hosted SFT uses only the public synth-optimizers control plane", () => {
 	assert.match(sftClient, /Workshop never contacts Optimizers-beta directly/);
 	assert.doesNotMatch(privateGeloClient, /\bsubmit_toml\b|fn optimizer_events_after/);
 	assert.match(service, /SftOptimizerClient::from_env\(\)\?\s*\.cancel\(&id\)/s);
+	assert.match(service, /binding\.kind == "synth_optimizers_sft"[\s\S]*"optimizer\.sft\.live\.v1"/);
 	assert.match(commands, /"sft\.hosted\.fixture\.v1"[\s\S]*SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN/);
 	assert.match(commands, /request\.recipe_id == "sft\.hosted\.fixture\.v1"[\s\S]*start_recipe\(request\)[\s\S]*return Ok\(run\)/);
 });

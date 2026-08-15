@@ -659,8 +659,19 @@ impl OptimizerService {
             .iter()
             .find(|r| r.kind == "visual")
             .map(|r| r.id.clone());
-        let template_id =
-            negotiate_visual_template(&run.algorithm_id, &self.manager.advertised_capabilities())?;
+        let public_sft = run.algorithm_id == "sft"
+            && run
+                .execution_bindings
+                .iter()
+                .any(|binding| binding.kind == "synth_optimizers_sft");
+        let template_id = if public_sft {
+            // Hosted SFT is controlled by the public service and its visual is
+            // bundled with Workshop. It must not depend on the private optimizer
+            // plugin being installed or advertising capabilities.
+            "optimizer.sft.live.v1".to_owned()
+        } else {
+            negotiate_visual_template(&run.algorithm_id, &self.manager.advertised_capabilities())?
+        };
         let template_digest = self.manager.status().await.digest;
         let visual = if let Some(visual_id) = existing {
             self.visuals.get(visual_id).await?
