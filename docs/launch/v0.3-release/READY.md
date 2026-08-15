@@ -1,6 +1,6 @@
 # v0.3 ready?
 
-**Friends ZIP: yes.** Workshop `0.3.0` is packaged from `josh/v03` at `7f5d90f`. It is not notarized and not published.
+**Friends ZIP: yes.** Workshop `0.3.0` is packaged from `josh/v03` at `20466f6` and published as GitHub `v0.3.0`. It is not Apple-notarized.
 
 ## What shipped in the mint
 

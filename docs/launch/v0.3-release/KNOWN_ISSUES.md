@@ -5,7 +5,7 @@
 | Item | Why |
 | --- | --- |
 | CUA not run | Installed-app acceptance across 1440–480 widths was not executed on the minted ZIP. |
-| Unnotarized | Adhoc signature only. Do not GitHub-publish or externally distribute. |
+| Unnotarized | Adhoc signature only. GitHub `v0.3.0` is the friends ZIP, not an Apple-notarized build. |
 
 ## Product gaps (do not claim)
 
@@ -23,7 +23,7 @@
 - E5 ResearchAssistantBench / Nemotron (themes freeze)
 - GELO iteration + OHCO (SYN-3225)
 - Intern (v0.4)
-- Publishing, notarizing, or external distribution
+- Publishing an Apple-notarized build; this friends ZIP is adhoc-signed on GitHub `v0.3.0`
 
 ## Can defer (polish)
 
