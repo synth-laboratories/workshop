@@ -843,7 +843,7 @@ export function ChatTranscript({
 				}}
 			>
 				<div className="chat-transcript-inner">
-					{historyState?.state === "loading" ? (
+					{historyState?.state === "loading" && chat.messages.length === 0 ? (
 						<div className="transcript-history-status" role="status">Loading conversation history…</div>
 					) : historyState?.state === "error" ? (
 						<div className="transcript-history-status transcript-history-error" role="alert">History unavailable: {historyState.error ?? "Unknown error"}</div>

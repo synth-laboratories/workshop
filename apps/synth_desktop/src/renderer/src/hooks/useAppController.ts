@@ -113,6 +113,7 @@ const TURN_START_TIMEOUT_MESSAGE =
 	"This task did not begin producing activity. Check your ChatGPT connection and retry.";
 const TURN_ACTIVITY_STALLED_MESSAGE =
 	"This task stopped receiving provider activity. Check the Advanced trace and retry.";
+const TRANSCRIPT_INITIAL_PAGE_SIZE = 250;
 const TRANSCRIPT_PAGE_SIZE = 1000;
 const TRANSCRIPT_CACHE_LIMIT = 5;
 
@@ -193,7 +194,6 @@ export function useAppController() {
 	const transcriptLruRef = useRef(new Map<string, true>());
 	const activeChatIdRef = useRef<string | null>(null);
 	const [transcriptHistoryBySession, setTranscriptHistoryBySession] = useState<Record<string, TranscriptHistoryState>>({});
-	const responseTraceHydrationRef = useRef(new Set<string>());
 	const [selectedTargetId, setSelectedTargetId] = useState("local-laguna");
 	useEffect(() => {
 		// v0.1 pickers hide Intern; never leave a hidden target selected.
@@ -847,7 +847,6 @@ export function useAppController() {
 			const hydration = transcriptHydrationRef.current.get(candidate);
 			if (hydration) hydration.generation = ++transcriptHydrationGenerationRef.current;
 			transcriptHydrationRef.current.delete(candidate);
-			responseTraceHydrationRef.current.delete(candidate);
 			evicted.push(candidate);
 		}
 		if (evicted.length === 0) return;
@@ -862,29 +861,11 @@ export function useAppController() {
 			Object.entries(current).filter(([id]) => !evicted.includes(id))
 		));
 	}, []);
-	useEffect(() => {
-		const sessionId = activeChat?.id;
-		const targetKind = activeChatSession?.target.kind;
+	const hydrateTranscript = useCallback((sessionId: string, targetKind: Session["target"]["kind"]) => {
 		const core = bridges.core;
-		if (!runtimeBootReady || !sessionId || !targetKind || !core) return;
-		touchTranscriptCache(sessionId);
+		if (!core) return;
 		const cached = transcriptHydrationRef.current.get(sessionId);
-		if (cached?.initialized) {
-			setTranscriptHistoryBySession((current) => ({
-				...current,
-				[sessionId]: { state: cached.state, hasMore: cached.hasMore, error: cached.error }
-			}));
-			return () => {
-				const current = transcriptHydrationRef.current.get(sessionId);
-				if (current?.state !== "loading") return;
-				current.generation = ++transcriptHydrationGenerationRef.current;
-				current.state = "loaded";
-				setTranscriptHistoryBySession((history) => ({
-					...history,
-					[sessionId]: { state: "loaded", hasMore: current.hasMore }
-				}));
-			};
-		}
+		if (cached?.initialized || cached?.state === "loading") return;
 		const generation = ++transcriptHydrationGenerationRef.current;
 		transcriptHydrationRef.current.set(sessionId, {
 			initialized: false,
@@ -896,12 +877,18 @@ export function useAppController() {
 			...current,
 			[sessionId]: { state: "loading", hasMore: false }
 		}));
-		let cancelled = false;
-		void (async () => {
-			const fetched = await core.sessionEventsTail(sessionId, TRANSCRIPT_PAGE_SIZE + 1);
-			const hasMore = fetched.length > TRANSCRIPT_PAGE_SIZE;
+		setResponseTraceLoadBySession((current) => ({
+			...current,
+			[sessionId]: { state: "loading" }
+		}));
+		void core.sessionEventsTail(sessionId, TRANSCRIPT_INITIAL_PAGE_SIZE + 1).then((fetched) => {
+			// Hydration belongs to the session cache, not to the currently mounted
+			// chat view. Navigation, target attachment and StrictMode effect replay
+			// must not throw away a completed journal read. A generation changes only
+			// when the cache entry itself is evicted or explicitly superseded.
+			if (transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
+			const hasMore = fetched.length > TRANSCRIPT_INITIAL_PAGE_SIZE;
 			const rows = hasMore ? fetched.slice(1) : fetched;
-			if (cancelled || activeChatIdRef.current !== sessionId || transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
 			const hydrated = rows
 				.map(targetKind === "intern" ? appEventToRuntimeEvent : coreEventToRuntime)
 				.filter((event): event is RuntimeEvent => event !== null);
@@ -912,20 +899,28 @@ export function useAppController() {
 				eventsBySessionRef.current[sessionId]?.at(-1)?.sequence ?? 0,
 				hydratedHead
 			));
-			const entry: TranscriptHydrationEntry = {
+			transcriptHydrationRef.current.set(sessionId, {
 				initialized: true,
 				state: "loaded",
 				hasMore,
 				earliestSequence: rows[0]?.sessionSequence ?? undefined,
 				generation
-			};
-			transcriptHydrationRef.current.set(sessionId, entry);
+			});
 			setTranscriptHistoryBySession((current) => ({
 				...current,
 				[sessionId]: { state: "loaded", hasMore }
 			}));
-		})().catch((reason: unknown) => {
-			if (cancelled || activeChatIdRef.current !== sessionId || transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
+			const trace = rows.slice(-250).map((event) => responseTraceEventFromJournal(sessionId, event));
+			setResponseTraceBySession((current) => ({
+				...current,
+				[sessionId]: mergeHydratedResponseTrace(trace, current[sessionId] ?? [])
+			}));
+			setResponseTraceLoadBySession((current) => ({
+				...current,
+				[sessionId]: { state: "loaded" }
+			}));
+		}).catch((reason: unknown) => {
+			if (transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
 			const message = desktopBootError(reason);
 			transcriptHydrationRef.current.set(sessionId, {
 				initialized: false,
@@ -938,6 +933,10 @@ export function useAppController() {
 				...current,
 				[sessionId]: { state: "error", hasMore: false, error: message }
 			}));
+			setResponseTraceLoadBySession((current) => ({
+				...current,
+				[sessionId]: { state: "error", message }
+			}));
 			mergeSessionReplay([[sessionId, [{
 				schemaVersion: "synth.desktop-runtime-event.v1",
 				sessionId,
@@ -945,24 +944,27 @@ export function useAppController() {
 				eventKind: "session/unhealthy",
 				payload: {
 					reason: "session_replay_failed",
-					message: `This conversation could not be restored: ${desktopBootError(reason)}`
+					message: `This conversation could not be restored: ${message}`
 				},
 				createdAt: new Date().toISOString(),
 				source: "local"
 			}]]]);
 		});
-		return () => {
-			cancelled = true;
-			const current = transcriptHydrationRef.current.get(sessionId);
-			if (current?.state !== "loading") return;
-			current.generation = ++transcriptHydrationGenerationRef.current;
-			current.state = current.initialized ? "loaded" : "idle";
-			setTranscriptHistoryBySession((history) => ({
-				...history,
-				[sessionId]: { state: current.state, hasMore: current.hasMore }
+	}, []);
+	useEffect(() => {
+		const sessionId = activeChat?.id;
+		const targetKind = activeChatSession?.target.kind;
+		if (!runtimeBootReady || !sessionId || !targetKind) return;
+		touchTranscriptCache(sessionId);
+		const cached = transcriptHydrationRef.current.get(sessionId);
+		if (cached) {
+			setTranscriptHistoryBySession((current) => ({
+				...current,
+				[sessionId]: { state: cached.state, hasMore: cached.hasMore, error: cached.error }
 			}));
-		};
-	}, [activeChat?.id, activeChatSession?.target.kind, runtimeBootReady, touchTranscriptCache]);
+		}
+		hydrateTranscript(sessionId, targetKind);
+	}, [activeChat?.id, activeChatSession?.target.kind, hydrateTranscript, runtimeBootReady, touchTranscriptCache]);
 	const loadOlderTranscript = useCallback(() => {
 		const sessionId = activeChatIdRef.current;
 		const targetKind = activeChatSession?.target.kind;
@@ -1009,43 +1011,6 @@ export function useAppController() {
 			}));
 		});
 	}, [activeChatSession?.target.kind, touchTranscriptCache]);
-	useEffect(() => {
-		const sessionId = activeChat?.id;
-		const core = bridges.core;
-		if (!runtimeBootReady || !sessionId || !core || responseTraceHydrationRef.current.has(sessionId)) return;
-		responseTraceHydrationRef.current.add(sessionId);
-		let cancelled = false;
-		let completed = false;
-		setResponseTraceLoadBySession((current) => ({
-			...current,
-			[sessionId]: { state: "loading" }
-		}));
-		void (async () => {
-			const rows = await core.sessionEventsTail(sessionId, 250);
-			if (cancelled || activeChatIdRef.current !== sessionId) return;
-			const hydrated = rows.map((event) => responseTraceEventFromJournal(sessionId, event));
-			setResponseTraceBySession((current) => ({
-				...current,
-				[sessionId]: mergeHydratedResponseTrace(hydrated, current[sessionId] ?? [])
-			}));
-			setResponseTraceLoadBySession((current) => ({
-				...current,
-				[sessionId]: { state: "loaded" }
-			}));
-			completed = true;
-		})().catch((reason: unknown) => {
-			if (cancelled) return;
-			responseTraceHydrationRef.current.delete(sessionId);
-			setResponseTraceLoadBySession((current) => ({
-				...current,
-				[sessionId]: { state: "error", message: desktopBootError(reason) }
-			}));
-		});
-		return () => {
-			cancelled = true;
-			if (!completed) responseTraceHydrationRef.current.delete(sessionId);
-		};
-	}, [activeChat?.id, runtimeBootReady]);
 	// Restored layout state opens a chat without going through openChat(). Keep
 	// the composer bound to the conversation's persisted execution target so a
 	// Gemini thread never silently presents (or submits through) Laguna.
@@ -1251,6 +1216,24 @@ export function useAppController() {
 					const session = createCodexSession(id, target, null, workspace, title, permissions);
 					sessionsRef.current = [session, ...sessionsRef.current.filter((item) => item.id !== session.id)];
 					upsertSession(session);
+					// This process owns the new session from its first optimistic event onward.
+					// There is no persisted history to replay, so do not put first-message UX
+					// behind a journal read (or make Advanced start a competing one).
+					const generation = ++transcriptHydrationGenerationRef.current;
+					transcriptHydrationRef.current.set(id, {
+						initialized: true,
+						state: "loaded",
+						hasMore: false,
+						generation
+					});
+					setTranscriptHistoryBySession((current) => ({
+						...current,
+						[id]: { state: "loaded", hasMore: false }
+					}));
+					setResponseTraceLoadBySession((current) => ({
+						...current,
+						[id]: { state: "loaded" }
+					}));
 					setView({ kind: "chat", chatId: session.id });
 					return session;
 				}

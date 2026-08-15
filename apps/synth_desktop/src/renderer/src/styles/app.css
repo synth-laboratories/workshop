@@ -2777,16 +2777,19 @@ html.sidebar-hidden .titlebar {
 .model-working button:hover { background: #fff; }
 
 .responses-trace { display: grid; gap: 12px; padding: 14px; color: var(--color-text-muted); font: 400 var(--code-font-size)/1.2 var(--font-sans); }
-.responses-trace header, .responses-trace header div, .responses-trace li > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.responses-trace header, .responses-trace header div, .responses-trace summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .responses-trace header strong { color: var(--color-text); font: 650 var(--chat-font-size)/1.2 var(--font-sans); }
 .responses-trace header div { justify-content: flex-start; }
 .responses-trace header span { font: 400 var(--code-font-size)/1.2 var(--font-sans); }
 .responses-trace ol { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
 .responses-trace li { border: 1px solid var(--color-border); background: rgba(255,255,255,.52); overflow: hidden; }
-.responses-trace li > div { padding: 8px 10px; }
+.responses-trace summary { padding: 8px 10px; cursor: pointer; list-style-position: inside; }
+.responses-trace summary::marker { color: var(--color-text-muted); }
 .responses-trace code { color: var(--color-text); font: 400 var(--code-font-size)/1.2 var(--code-font-family); }
 .responses-trace time { white-space: nowrap; font: 400 var(--code-font-size)/1.2 var(--font-sans); }
 .responses-trace pre { max-height: 230px; overflow: auto; margin: 0; padding: 9px 10px; border-top: 1px solid var(--color-border); background: rgba(20, 25, 35, .035); color: var(--color-text); font: 10px/1.45 var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
+.responses-trace-earlier { justify-self: start; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--color-border); border-radius:var(--radius-sm); background: var(--color-card); color: var(--color-text-muted); font: var(--fw-medium) var(--code-font-size)/var(--lh-tight) var(--font-sans); }
+.responses-trace-earlier:hover { background: var(--color-bg); color: var(--color-text); }
 .responses-trace-empty { margin: 0; padding: 18px 8px; text-align: center; }
 @keyframes working-pulse { 0%, 70%, 100% { opacity: 0.3; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-2px); } }
 @media (prefers-reduced-motion: reduce) { .model-working-dots i { animation: none; opacity: 0.75; } }

@@ -99,6 +99,96 @@ test("an empty Laguna chat gives the first prompt to atomic sendTurn", async ({ 
 		(window as typeof window & { __firstLagunaCalls: { starts: number; sends: string[] } }).__firstLagunaCalls
 	)).toEqual({ starts: 0, sends: ["first Laguna message"] });
 	await expect(page.getByText("first Laguna message")).toBeVisible();
+	await expect(page.getByText("Loading conversation history…")).toHaveCount(0);
+});
+
+test("transcript and Advanced share one durable journal hydration", async ({ page }) => {
+	await page.addInitScript(() => {
+		const sessionId = "shared-hydration-session";
+		const testWindow = window as typeof window & {
+			__tailHydrationCalls?: number;
+			__tailHydrationLimits?: number[];
+			__releaseTailHydration?: () => void;
+			synthLaguna?: unknown;
+			synthCodex?: unknown;
+			synthCore?: unknown;
+		};
+		testWindow.__tailHydrationCalls = 0;
+		testWindow.__tailHydrationLimits = [];
+		const pendingTailReads: Array<() => void> = [];
+		testWindow.__releaseTailHydration = () => pendingTailReads.splice(0).forEach((resolve) => resolve());
+		testWindow.synthLaguna = {
+			getStatus: async () => ({ phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm", loadedModel: "poolside/Laguna-XS-2.1-NVFP4-mlx", detail: "Laguna XS ready", memoryBytes: null, updatedAt: Date.now() }),
+			onStatus: () => () => undefined,
+			listModels: async () => []
+		};
+		testWindow.synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "shared-hydration-thread", workspace: "/workspaces/default",
+				model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
+				providerTitle: "Laguna XS", baseUrl: "http://127.0.0.1:7333/v1", status: "ready",
+				title: "Shared hydration fixture"
+			}],
+			start: async () => ({ sessionId, threadId: "shared-hydration-thread" }),
+			startTurn: async () => ({ sessionId, threadId: "shared-hydration-thread", turnId: "turn-shared" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		const rows = [
+			{ sequence: 1, sessionSequence: 1, kind: "message.created", payload: { messageId: "shared-user", role: "user", content: "hydrate this once" } },
+			{ sequence: 2, sessionSequence: 2, kind: "message.created", payload: { messageId: "shared-assistant", role: "assistant", content: "hydrated without interference" } }
+		].map((row) => ({
+			schemaVersion: "synth.desktop-app-event.v1" as const,
+			eventId: `shared-event-${row.sequence}`,
+			sessionId,
+			source: "codex" as const,
+			createdAt: `2026-08-15T17:12:2${row.sequence}.000Z`,
+			...row
+		}));
+		testWindow.synthCore = {
+			diagnostics: async () => ({ databasePath: "/tmp/core.sqlite3", schemaVersion: 1, integrityOk: true, contentStorePath: "/tmp/content", journalHead: 2, sessionCount: 1, runCount: 0, visualCount: 0, migrationComplete: true }),
+			eventsAfter: async () => [],
+			sessionEventsAfter: async () => rows,
+			sessionEventsTail: async (_sessionId: string, limit: number) => {
+				testWindow.__tailHydrationCalls! += 1;
+				testWindow.__tailHydrationLimits!.push(limit);
+				await new Promise<void>((resolve) => pendingTailReads.push(resolve));
+				return rows;
+			},
+			sessionEventsBefore: async () => [],
+			onEvent: () => () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-shared-hydration-session").click();
+
+	await expect(page.getByText("Loading conversation history…")).toBeVisible();
+	// Leave while the read is pending. View lifecycle cleanup must not cancel a
+	// session-owned journal hydration or force a competing Advanced replay.
+	await openSettings(page);
+	await page.evaluate(() =>
+		(window as typeof window & { __releaseTailHydration: () => void }).__releaseTailHydration()
+	);
+	await page.getByRole("button", { name: "← Back" }).click();
+	await page.getByRole("button", { name: "Shared hydration fixture", exact: true }).click();
+	await expect(page.getByText("hydrated without interference")).toBeVisible();
+	await expect(page.getByText("Loading conversation history…")).toHaveCount(0);
+	await expect.poll(() => page.evaluate(() =>
+		({
+			calls: (window as typeof window & { __tailHydrationCalls: number }).__tailHydrationCalls,
+			limits: (window as typeof window & { __tailHydrationLimits: number[] }).__tailHydrationLimits
+		})
+	)).toEqual({ calls: 1, limits: [251] });
+
+	await page.getByRole("button", { name: "Open advanced trace" }).click();
+	const advanced = page.getByTestId("workbench-side-panel");
+	await expect(advanced).toContainText("message.created");
+	await expect(advanced).not.toContainText(/loading/i);
+	await expect(advanced).not.toContainText("hydrate this once");
+	await advanced.locator("summary").first().click();
+	await expect(advanced).toContainText("hydrate this once");
 });
 
 test("new conversation keeps the configured machine permission defaults", async ({ page }) => {
