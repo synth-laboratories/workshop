@@ -35,6 +35,7 @@ _MODEL_MEMORY_HEADROOM_BYTES = 8 * 1024**3
 _MIN_AVAILABLE_MEMORY_BYTES = 24 * 1024**3
 _RESIDENT_MEMORY_FLOOR_BYTES = 4 * 1024**3
 _EMERGENCY_MEMORY_FLOOR_BYTES = 2 * 1024**3
+_MAX_SAFETENSORS_HEADER_BYTES = 100_000_000
 
 
 def _physical_memory_bytes() -> int | None:
@@ -155,7 +156,11 @@ def _safetensors_payload_bytes(path: Path) -> int:
         if len(encoded_header_size) != 8:
             raise ValueError("truncated safetensors header size")
         header_size = int.from_bytes(encoded_header_size, "little")
-        if header_size <= 0 or 8 + header_size > file_size:
+        if (
+            header_size <= 0
+            or header_size > _MAX_SAFETENSORS_HEADER_BYTES
+            or 8 + header_size > file_size
+        ):
             raise ValueError("invalid safetensors header size")
         header = json.loads(file.read(header_size))
 
@@ -169,7 +174,7 @@ def _safetensors_payload_bytes(path: Path) -> int:
             or len(offsets) != 2
             or not all(isinstance(offset, int) for offset in offsets)
             or offsets[0] < 0
-            or offsets[1] <= offsets[0]
+            or offsets[1] < offsets[0]
         ):
             raise ValueError("invalid safetensors tensor offsets")
         ranges.append((offsets[0], offsets[1]))

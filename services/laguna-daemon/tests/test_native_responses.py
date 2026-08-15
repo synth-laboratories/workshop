@@ -566,6 +566,40 @@ class NativeBackendContractTests(unittest.TestCase):
                 shard.truncate(shard.seek(0, 2) - 1)
             self.assertIsNone(_model_weight_bytes(model_path))
 
+    def test_model_weight_validation_allows_empty_tensors(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="laguna-native-empty-tensor-") as tmp:
+            model_path = Path(tmp)
+            payload = b"abc"
+            header = json.dumps(
+                {
+                    "empty": {
+                        "dtype": "F32",
+                        "shape": [0],
+                        "data_offsets": [0, 0],
+                    },
+                    "weight": {
+                        "dtype": "U8",
+                        "shape": [len(payload)],
+                        "data_offsets": [0, len(payload)],
+                    },
+                },
+                separators=(",", ":"),
+            ).encode()
+            shard = model_path / "model-00001-of-00001.safetensors"
+            shard.write_bytes(len(header).to_bytes(8, "little") + header + payload)
+            (model_path / "model.safetensors.index.json").write_text(
+                json.dumps(
+                    {
+                        "metadata": {"total_size": len(payload)},
+                        "weight_map": {
+                            "empty": shard.name,
+                            "weight": shard.name,
+                        },
+                    }
+                )
+            )
+            self.assertEqual(_model_weight_bytes(model_path), len(payload))
+
     def test_native_backend_rejects_insufficient_memory_before_loading(self) -> None:
         with tempfile.TemporaryDirectory(prefix="laguna-native-low-memory-") as tmp:
             backend = NativeMlxBackend(
