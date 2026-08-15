@@ -53,6 +53,15 @@ test("batch ingest preserves lane-local identity, gaps, controls, and duplicate 
   assert.equal(healed.lastSequenceByScope.get("a"), 3);
 });
 
+test("stream_id plus sequence is the Harbor live identity", () => {
+  const first = ingestLiveEnvelopeBatch(undefinedState(), [
+    { stream_id: "stream-a", sequence: 1, kind: "trial.planned" },
+    { stream_id: "stream-a", sequence: 1, kind: "trial.planned" },
+    { stream_id: "stream-b", sequence: 1, kind: "trial.planned" },
+  ]);
+  assert.equal(first.events.length, 2);
+});
+
 function undefinedState() {
   return ingestLiveEnvelopes([]);
 }

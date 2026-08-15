@@ -284,6 +284,8 @@ export const commands = {
 	codexTurnSend: (request: CodexTurnSendRequest) => typedError<CodexSessionInfo, CodexTurnFailure>(__TAURI_INVOKE("codex_turn_send", { request })),
 	codexTurnInterrupt: (request: CodexSessionRequest) => typedError<null, AppError>(__TAURI_INVOKE("codex_turn_interrupt", { request })),
 	codexThreadCompact: (request: CodexSessionStartRequest) => typedError<null, AppError>(__TAURI_INVOKE("codex_thread_compact", { request })),
+	codexThreadRead: (request: CodexThreadReadRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("codex_thread_read", { request })),
+	codexThreadItemsList: (request: CodexThreadItemsRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("codex_thread_items_list", { request })),
 	codexTurnSteer: (request: CodexSteerRequest) => typedError<null, AppError>(__TAURI_INVOKE("codex_turn_steer", { request })),
 	codexApprovalResolve: (request: CodexApprovalDecisionRequest) => typedError<null, AppError>(__TAURI_INVOKE("codex_approval_resolve", { request })),
 	codexSessionClose: (request: CodexSessionRequest) => typedError<null, AppError>(__TAURI_INVOKE("codex_session_close", { request })),
@@ -533,6 +535,19 @@ export type CodexSessionRecord = {
 
 export type CodexSessionRequest = {
 	sessionId: string,
+};
+
+export type CodexThreadReadRequest = {
+	sessionId: string,
+	threadId: string,
+	includeTurns?: boolean,
+};
+
+export type CodexThreadItemsRequest = {
+	sessionId: string,
+	threadId: string,
+	cursor?: string | null,
+	limit?: number | null,
 };
 
 export type CodexSessionStartRequest = {

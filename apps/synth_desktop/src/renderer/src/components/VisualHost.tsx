@@ -69,31 +69,91 @@ function subagentMarker(id: string): string {
 function SubagentsVisual({ artifact }: { artifact: ArtifactRef }) {
 	const resolved = propsFromBindings(artifact.bindings);
 	const agents = Array.isArray(resolved.props.agents) ? resolved.props.agents as SubagentState[] : [];
+	const sessionId = typeof resolved.props.sessionId === "string" ? resolved.props.sessionId : undefined;
 	const [now, setNow] = useState(Date.now());
+	const [selectedId, setSelectedId] = useState<string | null>(null);
+	const [detail, setDetail] = useState<unknown>(null);
+	const [detailError, setDetailError] = useState<string | null>(null);
 	useEffect(() => {
 		const timer = window.setInterval(() => setNow(Date.now()), 1_000);
 		return () => window.clearInterval(timer);
 	}, []);
+	useEffect(() => {
+		if (!selectedId || !sessionId || !bridges.codex?.readThread) {
+			setDetail(null);
+			setDetailError(null);
+			return;
+		}
+		let cancelled = false;
+		void bridges.codex.readThread(sessionId, selectedId, true).then(
+			(payload) => {
+				if (!cancelled) {
+					setDetail(payload);
+					setDetailError(null);
+				}
+			},
+			(reason) => {
+				if (!cancelled) {
+					setDetail(null);
+					setDetailError(reason instanceof Error ? reason.message : String(reason));
+				}
+			}
+		);
+		return () => {
+			cancelled = true;
+		};
+	}, [selectedId, sessionId]);
 	const groups = [
 		{ label: "Working", agents: agents.filter((agent) => agent.status === "starting" || agent.status === "working") },
 		{ label: "Needs attention", agents: agents.filter((agent) => agent.status === "interrupted" || agent.status === "failed" || agent.status === "stopped" || agent.status === "unavailable") },
 		{ label: "Completed", agents: agents.filter((agent) => agent.status === "completed") }
 	];
+	const selected = agents.find((agent) => agent.id === selectedId) ?? null;
+	const working = groups[0].agents.length;
+	const attention = groups[1].agents.length;
+	const completed = groups[2].agents.length;
+	if (selected) {
+		return (
+			<div className="subagents-visual" data-testid="visual-subagents">
+				<button type="button" className="subagents-back" data-testid="subagents-back" onClick={() => setSelectedId(null)}>
+					← {selected.title}
+				</button>
+				<p className="subagents-workspace-summary" data-testid="subagents-workspace-summary">
+					{subagentStatusLabel(selected.status)} · {selected.status === "starting" || selected.status === "working" ? elapsedLabel(selected.startedAt, now) : elapsedLabel(selected.updatedAt, now)}
+				</p>
+				<div className="subagents-detail" data-testid="subagents-detail">
+					{selected.summary ? <p>{selected.summary}</p> : <p>No result yet</p>}
+					{detailError ? <p className="subagents-empty">{detailError}</p> : null}
+					{detail ? <pre>{JSON.stringify(detail, null, 2)}</pre> : null}
+				</div>
+			</div>
+		);
+	}
 	return (
 		<div className="subagents-visual" data-testid="visual-subagents">
+			<p className="subagents-workspace-summary" data-testid="subagents-workspace-summary">
+				{working} working · {attention} need attention · {completed} completed
+			</p>
 			{groups.map((group) => (
 				<section key={group.label} className="subagents-group">
 					<h3>{group.label} · {group.agents.length}</h3>
 					{group.agents.length === 0 ? <p className="subagents-empty">No {group.label.toLowerCase()} subagents</p> : null}
 					{group.agents.map((agent) => (
-						<div className="subagent-row" key={agent.id} data-status={agent.status}>
+						<button
+							type="button"
+							className="subagent-row"
+							key={agent.id}
+							data-status={agent.status}
+							data-testid={`subagent-row-${agent.id}`}
+							onClick={() => setSelectedId(agent.id)}
+						>
 							<span className={`subagent-mark mark-${agent.status}`} aria-hidden>{subagentMarker(agent.id)}</span>
 							<div className="subagent-copy">
 								<div className="subagent-title-row"><strong>{agent.title}</strong><span className={`subagent-state state-${agent.status}`}>{subagentStatusLabel(agent.status)}</span></div>
 								{agent.summary ? <p>{agent.summary}</p> : null}
 							</div>
 							<time dateTime={agent.updatedAt}>{agent.status === "starting" || agent.status === "working" ? elapsedLabel(agent.startedAt, now) : elapsedLabel(agent.updatedAt, now) + " ago"}</time>
-						</div>
+						</button>
 					))}
 				</section>
 			))}
@@ -681,7 +741,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					<span className="visual-pane-title">{artifact.title}</span>
 				</div>
 				<div className="visual-pane-head-actions">
-					{sealedBundle ? (
+					{isSubagents ? null : sealedBundle ? (
 						<>
 							<button type="button" className="visual-expand" onClick={() => { setSealedBundle(null); setCompareBundle(null); setShareUpload(null); }}>Live revision</button>
 							{compareBundle ? <button type="button" className="visual-expand" onClick={() => setCompareBundle(null)}>Close comparison</button> : null}
@@ -690,6 +750,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 							</button>
 						</>
 					) : null}
+					{isSubagents ? null : (
 					<button
 						type="button"
 						className="visual-expand"
@@ -699,6 +760,8 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					>
 						Label{annotations.length ? ` · ${annotations.length}` : ""}
 					</button>
+					)}
+					{isSubagents ? null : (
 					<button
 						type="button"
 						className="visual-expand"
@@ -708,6 +771,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					>
 						{busy ? "Working…" : "Seal"}
 					</button>
+					)}
 					<button
 						type="button"
 						className="visual-expand"

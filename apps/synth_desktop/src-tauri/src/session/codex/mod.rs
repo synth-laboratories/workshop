@@ -16,6 +16,7 @@ pub use home::{
 pub use manager::CodexManager;
 pub use proto::{
     CodexApprovalDecisionRequest, CodexSessionInfo, CodexSessionRecord, CodexSessionRequest,
-    CodexSessionStartRequest, CodexSteerRequest, CodexTurnFailure, CodexTurnSendRequest,
-    CodexTurnStartRequest, ProviderTransport, CODEX_SESSION_DETACHED, CODEX_TURN_START_FAILED,
+    CodexSessionStartRequest, CodexSteerRequest, CodexThreadItemsRequest, CodexThreadReadRequest,
+    CodexTurnFailure, CodexTurnSendRequest, CodexTurnStartRequest, ProviderTransport,
+    CODEX_SESSION_DETACHED, CODEX_TURN_START_FAILED,
 };

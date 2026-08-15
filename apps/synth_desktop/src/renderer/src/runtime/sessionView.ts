@@ -1575,7 +1575,7 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			summary: `${agents.filter((agent) => agent.status === "starting" || agent.status === "working").length} working · ${agents.filter((agent) => agent.status === "interrupted" || agent.status === "failed" || agent.status === "stopped" || agent.status === "unavailable").length} need attention · ${agents.filter((agent) => agent.status === "completed").length} completed`,
 			shownByAgent: true,
 			templateId: "synth.subagents.v1",
-			bindings: { agents },
+			bindings: { agents, sessionId: events[0]?.sessionId },
 			preview: { variant: "generic" }
 		});
 	}

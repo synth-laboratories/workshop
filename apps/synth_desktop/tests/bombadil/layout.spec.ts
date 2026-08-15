@@ -60,8 +60,9 @@ const layout = extract((state: any) => {
 			!/(Laguna·|\bOR\b|Intern|\d+\/\d+)/.test(runtimeStatus.textContent ?? "")
 		),
 		subagentsValid: !subagents || (
-			subagentGroups.length === 2 &&
-			[...subagentRows].every((row) => ["active", "done", "failed"].includes(row.dataset.status ?? ""))
+			subagentGroups.length >= 2 &&
+			subagentGroups.length <= 3 &&
+			[...subagentRows].every((row) => ["starting", "working", "completed", "interrupted", "failed", "stopped", "unavailable", "active", "done"].includes(row.dataset.status ?? ""))
 		),
 		chatIndicatorsValid: [...chatRows].every((row) =>
 			row.querySelectorAll(".chat-working-indicator, .chat-unread-indicator").length <= 1

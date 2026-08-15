@@ -97,6 +97,12 @@ export function useLiveEvalStream(options: {
               const highWater = cursor?.high_water;
               const hasMore = cursor?.has_more ?? (highWater != null && next < highWater);
               if (next < after) throw new Error(`poll recovery cursor regressed from ${after} to ${next}`);
+              if (cursor?.closed) {
+                setLive(false);
+                es?.close();
+                abort.abort();
+                break;
+              }
               if (!hasMore) break;
               if (next === after) throw new Error(`poll recovery made no progress after sequence ${after}`);
               after = next;
@@ -123,7 +129,7 @@ export function useLiveEvalStream(options: {
           if (kind === "run_finished" || kind === "eval.stream.terminal" || kind === "eval.run.terminal") {
             setLive(false);
             es?.close();
-            abort.abort();
+            void backfill().finally(() => abort.abort());
           }
         } catch (e) {
           setError(e instanceof Error ? e.message : "SSE parse error");
@@ -132,7 +138,7 @@ export function useLiveEvalStream(options: {
       try {
         es = new EventSource(sseUrl);
         es.onmessage = receive;
-        for (const kind of ["snapshot", "eval.run.terminal", "rollout.progress", "rollout.frame", "stream.subscribed"]) {
+        for (const kind of ["snapshot", "eval.run.terminal", "rollout.progress", "rollout.frame", "stream.subscribed", "trial.planned", "trial.launched", "verifier", "tools", "status", "stdout", "stderr"]) {
           es.addEventListener(kind, receive as EventListener);
         }
         es.onerror = () => {

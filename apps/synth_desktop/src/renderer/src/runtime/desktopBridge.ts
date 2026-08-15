@@ -567,6 +567,14 @@ window.synthWorkspaceScope ??= isTauri
 				}),
 			interrupt: (sessionId) => invokeCommand<void>(COMMANDS.CODEX_TURN_INTERRUPT, { request: { sessionId } }),
 			compact: (request) => invokeCommand<void>(COMMANDS.CODEX_THREAD_COMPACT, { request }),
+			readThread: (sessionId, threadId, includeTurns = true) =>
+				invokeCommand<unknown>(COMMANDS.CODEX_THREAD_READ, {
+					request: { sessionId, threadId, includeTurns }
+				}),
+			listThreadItems: (sessionId, threadId, cursor, limit) =>
+				invokeCommand<unknown>(COMMANDS.CODEX_THREAD_ITEMS_LIST, {
+					request: { sessionId, threadId, cursor, limit }
+				}),
 			steerTurn: (sessionId, text) =>
 				invokeCommand<void>(COMMANDS.CODEX_TURN_STEER, { request: { sessionId, text } }),
 			resolveApproval: (sessionId, approvalId, decision) => invokeCommand<void>(COMMANDS.CODEX_APPROVAL_RESOLVE, { request: { sessionId, approvalId, decision } }),

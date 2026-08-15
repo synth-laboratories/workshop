@@ -40,6 +40,8 @@ export function outputContainerIds(chat: LocalChat): string[] {
 
 export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContainerId = null, onOpenContainer }: Pick<Props, "chat" | "openArtifactId" | "onOpenArtifact" | "openContainerId" | "onOpenContainer">) {
 	const artifacts = chat.artifacts ?? [];
+	const subagents = artifacts.filter((artifact) => artifact.templateId === "synth.subagents.v1");
+	const visuals = artifacts.filter((artifact) => artifact.templateId !== "synth.subagents.v1");
 	const containerIds = outputContainerIds(chat);
 	const hasResources = containerIds.length > 0 || artifacts.length > 0;
 	return <div id="chat-resource-shelf" className="resource-shelf resource-shelf-docked" aria-label="Outputs" data-testid="resource-shelf">
@@ -54,10 +56,16 @@ export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContain
 				<span className="resource-shelf-icon"><ContainerIcon /></span><span><strong>Container</strong><code>{id}</code></span><span aria-hidden>›</span>
 			</button>
 		))}</section> : null}
-		{artifacts.length > 0 ? <section className="visuals-rail" data-testid="visuals-rail"><h3>Visuals</h3>{artifacts.map((artifact) => {
+		{subagents.length > 0 ? <section className="subagents-rail" data-testid="subagents-rail"><h3>Subagents</h3>{subagents.map((artifact) => {
+			const active = openArtifactId === artifact.id;
+			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${artifact.title}` : `Show ${artifact.title}`} aria-pressed={active} aria-label={active ? `Hide subagents ${artifact.title}` : `Show subagents ${artifact.title}`} data-testid={`visuals-icon-${artifact.id}`}>
+				<span className="resource-shelf-icon"><IconSubagents /></span><span><strong>{artifact.title}</strong><code>{artifact.summary ?? artifact.templateId}</code></span><span aria-hidden>›</span>
+			</button>;
+		})}</section> : null}
+		{visuals.length > 0 ? <section className="visuals-rail" data-testid="visuals-rail"><h3>Visuals</h3>{visuals.map((artifact) => {
 			const active = openArtifactId === artifact.id;
 			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${artifact.title}` : `Show ${artifact.title}`} aria-pressed={active} aria-label={active ? `Hide visual ${artifact.title}` : `Show visual ${artifact.title}`} data-testid={`visuals-icon-${artifact.id}`}>
-				<span className="resource-shelf-icon">{artifact.templateId === "synth.subagents.v1" ? <IconSubagents /> : <IconVisual />}</span><span><strong>{artifact.title}</strong><code>{artifact.templateId ?? artifact.kind}</code></span><span aria-hidden>›</span>
+				<span className="resource-shelf-icon"><IconVisual /></span><span><strong>{artifact.title}</strong><code>{artifact.templateId ?? artifact.kind}</code></span><span aria-hidden>›</span>
 			</button>;
 		})}</section> : null}
 	</div>;

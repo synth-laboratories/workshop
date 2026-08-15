@@ -325,6 +325,10 @@ export type CodexBridge = {
 	interrupt(sessionId: string): Promise<void>;
 	/** Atomically attaches/resumes a Codex thread and starts ad-hoc compaction. */
 	compact?(request: CodexSessionStart): Promise<void>;
+	/** Ownership-checked child thread read. Optional on browser fixtures. */
+	readThread?(sessionId: string, threadId: string, includeTurns?: boolean): Promise<unknown>;
+	/** Paginated child thread items. Optional on browser fixtures. */
+	listThreadItems?(sessionId: string, threadId: string, cursor?: string, limit?: number): Promise<unknown>;
 	/** Mid-turn user input via Codex `turn/steer`. Optional on browser fixtures without a native runtime. */
 	steerTurn?(sessionId: string, text: string): Promise<void>;
 	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject"): Promise<void>;
