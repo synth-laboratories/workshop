@@ -50,6 +50,11 @@ export const commands = {
 	optimizersAlgorithmsList: () => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_algorithms_list")),
 	optimizersRecipesList: () => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_recipes_list")),
 	optimizersRecipeStart: (request: OptimizerRecipeRunRequest) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_recipe_start", { request })),
+	/**
+	 *  Freeze policy files from the session's workspace into one immutable
+	 *  candidate set. Its id is the only policy input `optimizers_recipe_start`
+	 *  accepts for an `eval.*` recipe.
+	 */
 	optimizersStageEvalCandidates: (request: EvalStageCandidatesRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("optimizers_stage_eval_candidates", { request })),
 	optimizersList: (query: {
 	status: string | null,
@@ -763,6 +768,10 @@ export type EntityCount = {
 	skipped: unknown,
 };
 
+/**
+ *  One staged policy. `path` is relative to the session's workspace: absolute
+ *  paths and parent traversal are refused rather than sanitized.
+ */
 export type EvalCandidateSource = {
 	label: string,
 	path: string,
@@ -1311,6 +1320,11 @@ export type OptimizerRecipeRunRequest = {
 	 *  `limits.datasetShards`. Selecting a shard is not supplying a path.
 	 */
 	datasetShard?: string | null,
+	/**
+	 *  Immutable candidate set staged before the run. Required by `eval.*`
+	 *  recipes and ignored elsewhere. This is an id, never a path: policy
+	 *  source is content-addressed at staging time, not at launch.
+	 */
 	candidateSetId?: string | null,
 };
 
