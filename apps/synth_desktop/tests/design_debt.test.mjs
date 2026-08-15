@@ -118,7 +118,8 @@ test("intended design: Inventory Attach defaults to GameBench Craftax :8098", ()
 	const inventory = read("components/DataPage.tsx");
 	assert.match(inventory, /127\.0\.0\.1:8098/);
 	assert.match(inventory, /data-testid="attach-container"/);
-	assert.match(inventory, /data-testid="import-trace-v5"/);
+	assert.match(inventory, /open-trace-\$\{t\.id\}/);
+	assert.ok(!inventory.includes("data-testid=\"import-trace-v5\""), "v0.3 inspects sealed traces; it does not ship a catalog import control");
 	assert.ok(!inventory.includes("127.0.0.1:8100"), "demo :8100 placeholder should not be the Attach default");
 });
 

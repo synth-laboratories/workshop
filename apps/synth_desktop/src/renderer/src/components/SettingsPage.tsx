@@ -136,6 +136,37 @@ const MULTI_AGENT_OPTIONS: Array<{ value: MultiAgentVersion; label: string }> = 
 
 const CHANGELOG = [
 	{
+		version: "0.3.0",
+		date: "August 14, 2026",
+		groups: [
+			{
+				label: "New",
+				items: [
+					"Gemini 3.7 Flash is available through OpenRouter for live collaboration turns.",
+					"Settings → Context shows agent limits, skills, MCP groups, cookbooks, and subagent compatibility in one place.",
+					"Visual templates now live in families (containers, optimizers, diagrams, analysis) without changing template IDs.",
+					"Data → Traces can inspect any compatible sealed Trace V5 archive in the generic rollout viewer.",
+					"Typed approvals cover paid compute, sidecar lifecycle, and credential access. Permissive policy stays auditable and does not silently revert to Always Ask."
+				]
+			},
+			{
+				label: "Improved",
+				items: [
+					"Native Mermaid and systems diagrams use the packaged Rust renderer and work offline.",
+					"Chat/visual and Visuals list/preview splitters drag and persist independently, then stack at compact widths.",
+					"Subagent activity is grouped in the visual pane with working, needs-attention, and completed states."
+				]
+			},
+			{
+				label: "Fixed",
+				items: [
+					"Cookbook pin progress stays current, and Context command errors are shown instead of failing silently.",
+					"Pending approvals survive restart as real history or expire cleanly — they no longer render as live cards with dead buttons."
+				]
+			}
+		]
+	},
+	{
 		version: "0.2.0",
 		date: "August 12, 2026",
 		groups: [

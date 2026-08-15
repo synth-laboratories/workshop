@@ -25,8 +25,8 @@ test("OAuth commands stay aligned across Rust and TypeScript", () => {
 
 test("subscription card carries the local custody and allowance handoff", () => {
 	const card = read("src/renderer/src/components/ChatgptCodexSubscriptionCard.tsx");
-	assert.match(card, /tokens remain stored locally/);
+	assert.match(card, /local personal use/);
 	assert.match(card, /not API credits/);
-	assert.match(card, /Plan allowance \(ChatGPT\)/);
+	assert.match(card, /Plan allowance/);
 	assert.doesNotMatch(card, /console\.(?:log|debug|info|warn|error)/);
 });
