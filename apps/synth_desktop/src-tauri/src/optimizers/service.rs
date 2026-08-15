@@ -73,6 +73,7 @@ impl OptimizerService {
             json!({"id":"gepa","title":"GEPA","availability":"available","description":"Genetic-Pareto prompt optimization"}),
             json!({"id":"go-ex","title":"GELO / Go-Ex","availability":"available","description":"Hosted exploration with optional local slot binding"}),
             json!({"id":"sft","title":"SFT","availability":"available","description":"Hosted fine-tuning through the public Optimizers SFT service, streamed live into optimizer.sft visuals"}),
+            super::eval_recipes::algorithm_entry(),
         ]
     }
 
@@ -81,6 +82,7 @@ impl OptimizerService {
         recipes.push(super::hosted_gelo::recipe_catalog());
         recipes.push(super::sft_recipes::recipe_catalog());
         recipes.extend(super::hosted_sft::recipe_catalog());
+        recipes.extend(super::eval_recipes::recipe_catalog());
         recipes
     }
 
@@ -106,8 +108,20 @@ impl OptimizerService {
             | super::hosted_sft::HOSTED_SFT_BANKING77_RECIPE => {
                 super::hosted_sft::start(self, request).await
             }
+            id if super::eval_recipes::is_eval_recipe(id) => {
+                super::eval_recipes::start(self, request).await
+            }
             _ => bail!("unknown optimizer recipe: {}", request.recipe_id),
         }
+    }
+
+    /// Freeze workspace policy source into an immutable content-addressed set
+    /// before any local eval recipe can start.
+    pub async fn stage_eval_candidates(
+        &self,
+        request: super::eval_candidates::EvalStageCandidatesRequest,
+    ) -> Result<Value> {
+        super::eval_candidates::stage(&self.db, request).await
     }
 
     pub async fn prepare_recipe(
@@ -1120,6 +1134,7 @@ fn algorithm_label(algorithm_id: &str) -> &'static str {
         "gepa" => "GEPA",
         "go-ex" => "GELO",
         "sft" => "SFT",
+        "eval" => "Eval",
         id if id == "dag" || id.starts_with("dag.") => "DAG",
         _ => "Optimizer",
     }
@@ -1737,6 +1752,22 @@ fn project_from_events(
     let mut compute = json!({ "provider": null });
     let mut examples = Vec::new();
     let mut checkpoint_evals = Vec::new();
+    let mut eval_trials: BTreeMap<String, Value> = BTreeMap::new();
+    let mut eval_scorecards: BTreeMap<String, Value> = BTreeMap::new();
+    let mut eval_runtime = json!({
+        "parallelism": Value::Null,
+        "globalCapacity": Value::Null,
+        "cancelling": false,
+        "plannedTrials": 0
+    });
+    let mut eval_evidence = json!({
+        "manifestDigest": Value::Null,
+        "candidateSetId": Value::Null,
+        "seedLedger": Value::Null,
+        "selection": Value::Null,
+        "evidenceDir": Value::Null,
+        "artifacts": []
+    });
     let mut usage = OptimizerUsageSummary::default();
 
     for event in events {
@@ -1989,8 +2020,121 @@ fn project_from_events(
                     artifacts.push(item.clone());
                 }
             }
+            "eval.run.planned" => {
+                if let Some(snapshot) = &event.snapshot {
+                    for (from, to) in [
+                        ("parallelism", "parallelism"),
+                        ("global_capacity", "globalCapacity"),
+                        ("planned_trials", "plannedTrials"),
+                    ] {
+                        if let (Some(value), Some(target)) =
+                            (snapshot.get(from), eval_runtime.as_object_mut())
+                        {
+                            target.insert(to.into(), value.clone());
+                        }
+                    }
+                    if let Some(target) = eval_evidence.as_object_mut() {
+                        if let Some(value) = snapshot.get("manifest_digest") {
+                            target.insert("manifestDigest".into(), value.clone());
+                        }
+                        if let Some(value) = snapshot.get("candidate_set_id") {
+                            target.insert("candidateSetId".into(), value.clone());
+                        }
+                        if let Some(value) = snapshot.get("candidates") {
+                            target.insert("candidates".into(), value.clone());
+                        }
+                    }
+                }
+            }
+            "eval.seed_ledger.sealed" => {
+                if let (Some(snapshot), Some(target)) =
+                    (&event.snapshot, eval_evidence.as_object_mut())
+                {
+                    if let Some(value) = snapshot.get("seedLedger") {
+                        target.insert("seedLedger".into(), value.clone());
+                    }
+                }
+            }
+            "eval.trial.queued" | "eval.trial.started" => {
+                if let Some(id) = event.delta.get("trial_id").and_then(Value::as_str) {
+                    let row = eval_trials
+                        .entry(id.to_string())
+                        .or_insert_with(|| json!({"id": id}));
+                    if let Some(object) = row.as_object_mut() {
+                        for key in ["candidate_id", "seed", "scenario", "stage"] {
+                            if let Some(value) = event.delta.get(key) {
+                                object.insert(key.into(), value.clone());
+                            }
+                        }
+                        object.insert(
+                            "status".into(),
+                            json!(if event.event_type.ends_with("started") {
+                                "running"
+                            } else {
+                                "queued"
+                            }),
+                        );
+                    }
+                }
+            }
+            "eval.trial.terminal" => {
+                if let Some(item) = &event.item {
+                    if let Some(id) = item.get("id").and_then(Value::as_str) {
+                        eval_trials.insert(id.to_string(), item.clone());
+                    }
+                }
+            }
+            "eval.candidate.scored" => {
+                if let Some(item) = &event.item {
+                    let candidate = item.get("id").and_then(Value::as_str).unwrap_or("");
+                    let stage = item.get("stage").and_then(Value::as_str).unwrap_or("");
+                    eval_scorecards.insert(format!("{stage}:{candidate}"), item.clone());
+                }
+            }
+            "eval.selection.completed" => {
+                if let (Some(snapshot), Some(target)) =
+                    (&event.snapshot, eval_evidence.as_object_mut())
+                {
+                    if let Some(value) = snapshot.get("selection") {
+                        target.insert("selection".into(), value.clone());
+                    }
+                }
+            }
             _ => {}
         }
+    }
+
+    if let Some(target) = eval_evidence.as_object_mut() {
+        if let Some(dir) = events
+            .iter()
+            .rev()
+            .find_map(|event| event.delta.get("evidenceDir").cloned())
+        {
+            target.insert("evidenceDir".into(), dir);
+        }
+        target.insert("artifacts".into(), json!(artifacts));
+    }
+    if let Some(target) = eval_runtime.as_object_mut() {
+        let counts = |status: &str| {
+            eval_trials
+                .values()
+                .filter(|row| row.get("status").and_then(Value::as_str) == Some(status))
+                .count()
+        };
+        target.insert("queued".into(), json!(counts("queued")));
+        target.insert("running".into(), json!(counts("running")));
+        target.insert("evaluated".into(), json!(counts("evaluated")));
+        target.insert(
+            "failed".into(),
+            json!(eval_trials.len() - counts("queued") - counts("running") - counts("evaluated")),
+        );
+        target.insert("leasesHeld".into(), json!(counts("running")));
+        target.insert(
+            "cancelling".into(),
+            json!(events
+                .iter()
+                .any(|event| event.event_type == "optimizer.run.cancelled")),
+        );
     }
 
     let mut projected_run = run.clone();
@@ -2106,6 +2250,20 @@ fn project_from_events(
                 "sft.examples.v1",
                 json!({ "examples": examples }),
             ));
+        }
+        "eval" => {
+            slices.push(mk("eval.runtime", "eval.runtime.v1", eval_runtime));
+            slices.push(mk(
+                "eval.trials",
+                "eval.trials.v1",
+                json!({ "trials": eval_trials.values().cloned().collect::<Vec<_>>() }),
+            ));
+            slices.push(mk(
+                "eval.scorecard",
+                "eval.scorecard.v1",
+                json!({ "candidates": eval_scorecards.values().cloned().collect::<Vec<_>>() }),
+            ));
+            slices.push(mk("eval.evidence", "eval.evidence.v1", eval_evidence));
         }
         _ => {}
     }
@@ -3241,6 +3399,7 @@ mod tests {
                 open_visual: Some(false),
                 base_model: Some("nvidia/nemotron-3-nano-30b-a3b".into()),
                 dataset_shard: None,
+                candidate_set_id: None,
             })
             .await
             .unwrap_err()

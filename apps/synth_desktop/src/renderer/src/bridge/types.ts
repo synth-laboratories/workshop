@@ -892,17 +892,38 @@ export type ReportsBridge = {
 	onEvent?(listener: (event: AppEvent) => void): () => void;
 };
 
+export type OptimizerRecipeInfo = {
+	id: string;
+	title: string;
+	algorithmId: string;
+	task?: string;
+	availability: string;
+	availabilityReason?: string | null;
+	description?: string;
+	limits?: Record<string, unknown>;
+	prerequisites?: string[];
+};
+
 export type OptimizersBridge = {
 	listAlgorithms(): Promise<OptimizerAlgorithmInfo[]>;
-	listRecipes(): Promise<Array<{
-		id: string;
-		title: string;
-		algorithmId: string;
-		task: string;
-		availability: string;
-		limits: Record<string, number>;
-	}>>;
-	startRecipe(request: { recipeId: string; sessionRef?: string; openVisual?: boolean; baseModel?: string }): Promise<OptimizerRunRecord>;
+	listRecipes(): Promise<OptimizerRecipeInfo[]>;
+	startRecipe(request: {
+		recipeId: string;
+		sessionRef?: string;
+		openVisual?: boolean;
+		baseModel?: string;
+		candidateSetId?: string;
+	}): Promise<OptimizerRunRecord>;
+	stageEvalCandidates(request: {
+		sessionRef: string;
+		candidates: Array<{
+			label: string;
+			path: string;
+			entrypoint?: string;
+			kind?: string;
+			baseline?: boolean;
+		}>;
+	}): Promise<{ id: string; candidates: Array<{ id: string; label: string }> }>;
 	list(query?: {
 		status?: string;
 		algorithmId?: string;

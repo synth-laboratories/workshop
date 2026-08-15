@@ -106,6 +106,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::optimizers_algorithms_list,
         crate::optimizers_recipes_list,
         crate::optimizers_recipe_start,
+        crate::optimizers_stage_eval_candidates,
         crate::optimizers_list,
         crate::optimizers_get,
         crate::optimizers_create,
@@ -338,7 +339,7 @@ mod tests {
         // here rather than pass quietly. Bump it only alongside a reviewed
         // `collect_commands!` change.
         assert_eq!(
-            exported, 187,
+            exported, 188,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

@@ -1635,6 +1635,12 @@ async fn dispatch_optimizer(
             Ok(json!({ "algorithms": optimizers.list_algorithms() }))
         }
         ("GET", "/v1/optimizers/recipes") => Ok(json!({ "recipes": optimizers.list_recipes() })),
+        ("POST", "/v1/optimizers/eval/candidates") => {
+            let request: crate::optimizers::EvalStageCandidatesRequest =
+                serde_json::from_value(body)?;
+            let manifest = optimizers.stage_eval_candidates(request).await?;
+            Ok(json!({ "candidateSet": manifest }))
+        }
         ("POST", "/v1/optimizers/recipes/prepare") => {
             let request: crate::optimizers::OptimizerRecipeRunRequest =
                 serde_json::from_value(body)?;

@@ -2502,6 +2502,7 @@ namespace = "base"
                 open_visual: Some(true),
                 base_model: None,
                 dataset_shard: None,
+                candidate_set_id: None,
             }),
             service.start_recipe(OptimizerRecipeRunRequest {
                 recipe_id: BANKING77_GEPA_SOL_RECIPE.into(),
@@ -2509,6 +2510,7 @@ namespace = "base"
                 open_visual: Some(true),
                 base_model: None,
                 dataset_shard: None,
+                candidate_set_id: None,
             })
         );
         let luna = luna.unwrap().0;

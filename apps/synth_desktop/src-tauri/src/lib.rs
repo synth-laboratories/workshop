@@ -646,6 +646,23 @@ async fn optimizers_recipes_list(
         .collect())
 }
 
+/// Freeze policy files from the session's workspace into one immutable
+/// candidate set. Its id is the only policy input `optimizers_recipe_start`
+/// accepts for an `eval.*` recipe.
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_stage_eval_candidates(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: optimizers::EvalStageCandidatesRequest,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .optimizers()
+        .stage_eval_candidates(request)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn optimizers_recipe_start(
@@ -674,11 +691,14 @@ pub(crate) async fn authorize_optimizer_recipe_start(
                 request.recipe_id
             ))
         })?;
-    // This product-owned fixture is deterministic and cannot incur provider
-    // charges. The click itself is the operator's explicit instruction; do not
-    // route it through paid-compute or plugin-sidecar approval because its
-    // canonical run lives on the public SFT service.
-    if request.recipe_id == "sft.hosted.fixture.v1" {
+    // These product-owned fixtures are deterministic and cannot incur provider
+    // charges. The click itself is the operator's explicit instruction. The
+    // hosted SFT fixture uses the public service; the eval fixture uses only
+    // the pinned local container runtime. Neither depends on plugin lifecycle.
+    if matches!(
+        request.recipe_id.as_str(),
+        "sft.hosted.fixture.v1" | "eval.fixture.policy-smoke.v1"
+    ) {
         let (run, event) = state
             .optimizers()
             .start_recipe(request)

@@ -66,6 +66,16 @@ impl OptimizerCapabilities {
                 local_slot_binding: true,
                 ..Self::default()
             },
+            // Local `eval` can be cancelled and streams events, candidates,
+            // and state. It has no checkpoints and no inference endpoint, and
+            // must not claim them: a scorecard is not a model.
+            "eval" => Self {
+                cancel: true,
+                stream_events: true,
+                state_slices: true,
+                candidates: true,
+                ..Self::default()
+            },
             _ => Self {
                 stream_events: true,
                 state_slices: true,
@@ -333,4 +343,9 @@ pub struct OptimizerRecipeRunRequest {
     /// `limits.datasetShards`. Selecting a shard is not supplying a path.
     #[serde(default)]
     pub dataset_shard: Option<String>,
+    /// Immutable candidate set staged before the run. Required by `eval.*`
+    /// recipes and ignored elsewhere. This is an id, never a path: policy
+    /// source is content-addressed at staging time, not at launch.
+    #[serde(default)]
+    pub candidate_set_id: Option<String>,
 }

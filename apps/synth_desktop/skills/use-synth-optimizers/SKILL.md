@@ -1,6 +1,6 @@
 ---
 name: use-synth-optimizers
-description: Start, inspect, follow, reconcile, cancel, and visualize first-class Synth optimizer runs through CoreRuntime. Use for GEPA prompt optimization, GELO/Go-Ex exploration, SFT/fine-tuning, Banking77, Craftax GPT-OSS, optimizer recipes, candidates, frontiers, checkpoints, evaluations, artifacts, usage, diagnostics, or optimizer state slices.
+description: Start, inspect, follow, reconcile, cancel, and visualize first-class Synth optimizer runs through CoreRuntime. Use for GEPA prompt optimization, GELO/Go-Ex exploration, SFT/fine-tuning, local eval scoring of policy candidates, Banking77, Craftax GPT-OSS, GameBench/Harbor, optimizer recipes, candidates, scorecards, frontiers, checkpoints, evaluations, artifacts, usage, diagnostics, or optimizer state slices.
 ---
 
 # Use Synth Optimizers
@@ -13,13 +13,15 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 2. Choose the algorithm from the user's objective:
    - GEPA: improve prompts or other candidate values. The pinned smokes are `gepa.banking77.smoke.v1` and `gepa.craftax.smoke.v1`; read [references/gepa.md](references/gepa.md).
    - GELO / Go-Ex: explore a hosted search space or reconcile an existing hosted run. Read [references/gelo.md](references/gelo.md).
+   - Eval: score several policy variants against a pinned evaluation container and pick a winner. Stage candidates first; `start_recipe` takes a `candidate_set_id`, never a path. Read [references/eval.md](references/eval.md).
    - SFT: train and compare model weights/checkpoints. All hosted SFT recipes, including `sft.hosted.fixture.v1` and `sft.craftax.nemotron-nano.tinker.v1`, use the public `synth-optimizers` SFT service; Workshop never contacts the private training executor. The separate local Tinker smoke is `sft.craftax.gpt-oss.smoke.v1`. Student ids: `docs/sft_tinker_base_models.toml`. Read [references/sft.md](references/sft.md).
 3. For a local recipe, report its availability, exact fixed inputs, hard limits, prerequisite services, credential names, and whether its cost is dollar-capped or only compute-bounded.
 4. Enforced connect-before-start: `prepare` → `open_visual` → `await_ready` → `start`. `start` requires a visual readiness receipt and a separate compute approval bound to the prepared run. Listing, importing, reconciling, inspecting, and visualizing do not require compute approval.
+   - Local `eval.*` recipes are the explicit exception: stage candidates, then call `start_recipe` with the returned `candidate_set_id`. They do not install or depend on the Optimizers plugin, and the pinned target plus fixed recipe owns the compute bounds.
    - `open_visual` owns and configures the product visual. Do not call `authoring_context`, `capture_review`, `review`, `update`, or `mark_ready` for it.
    - If the first `await_ready` reports that no receipt was posted, call `mcp__synth_visuals__visual_manage` once with `operation: "show"` and the run's primary visual ID, then retry `await_ready`. Do not inspect processes, environment variables, source files, databases, or IPC files to manufacture readiness.
    - Preserve the exact `preparationDigest` returned by `prepare` and pass it as `preparation_digest` with `optimizer_run_id` on the first `start` call. Never request approval with a missing or reconstructed digest.
-5. Pass only `recipe_id` to `prepare`. The Rust host owns commands, paths, hyperparameters, and credential resolution. Retrieve the winner with `get_result` — never read `best_candidate.json` by filesystem path.
+5. Pass only `recipe_id` to `prepare`; for `eval.*`, pass only `recipe_id` plus the `candidate_set_id` returned by `stage_eval_candidates`. The Rust host owns commands, paths, hyperparameters, and credential resolution. Retrieve the winner with `get_result` — never read result files by filesystem path.
 
 ## Follow every run
 
@@ -42,5 +44,5 @@ Show the visual before a chat-started run and whenever the user asks to inspect 
 - artifact titles and visual ID;
 - bounded failure diagnostic and log filename when failed.
 
-Distinguish measurement-only held-out evaluations from evidence used for selection or promotion.
+Distinguish measurement-only held-out evaluations from evidence used for selection or promotion. For `eval`, report the run status and selection status separately: a completed run that promoted nothing is a result, not a failure.
 For GEPA, do not stop at `get_result`: retrieve both `gepa.candidates` and `gepa.frontier`, then explain the selected candidate against the seed and other proposals using the available train, minibatch, held-out, frontier, and rejection evidence.

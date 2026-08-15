@@ -724,6 +724,8 @@ window.synthWorkspaceScope ??= isTauri
 			listAlgorithms: () => invokeCommand(COMMANDS.OPTIMIZERS_ALGORITHMS_LIST),
 			listRecipes: () => invokeCommand(COMMANDS.OPTIMIZERS_RECIPES_LIST),
 			startRecipe: (request) => invokeCommand(COMMANDS.OPTIMIZERS_RECIPE_START, { request }),
+			stageEvalCandidates: (request) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_STAGE_EVAL_CANDIDATES, { request }),
 			list: (query) => invokeCommand(COMMANDS.OPTIMIZERS_LIST, { query: query ?? null }),
 			get: (optimizerRunId) => invokeCommand(COMMANDS.OPTIMIZERS_GET, { optimizerRunId }),
 			create: (request) => invokeCommand(COMMANDS.OPTIMIZERS_CREATE, { request }),

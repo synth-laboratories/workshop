@@ -185,6 +185,7 @@ export const COMMANDS = {
 	OPTIMIZERS_ALGORITHMS_LIST: "optimizers_algorithms_list",
 	OPTIMIZERS_RECIPES_LIST: "optimizers_recipes_list",
 	OPTIMIZERS_RECIPE_START: "optimizers_recipe_start",
+	OPTIMIZERS_STAGE_EVAL_CANDIDATES: "optimizers_stage_eval_candidates",
 	OPTIMIZERS_LIST: "optimizers_list",
 	OPTIMIZERS_GET: "optimizers_get",
 	OPTIMIZERS_CREATE: "optimizers_create",

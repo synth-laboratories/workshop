@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { OptimizerAlgorithmInfo, OptimizerRunRecord } from "@synth/runtime-protocol";
-import type { PluginActionReceipt, PluginLifecycleOperation, PluginStatus } from "../bridge/types";
+import type { OptimizerRecipeInfo, PluginActionReceipt, PluginLifecycleOperation, PluginStatus } from "../bridge/types";
 import { bridges } from "../runtime/desktopBridge";
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
 
 type OptimizerGuide = {
-	id: "gepa" | "go-ex" | "sft";
+	id: "gepa" | "go-ex" | "sft" | "eval";
 	label: string;
 	name: string;
 	description: string;
@@ -61,7 +61,48 @@ function algorithmLabel(id: string): string {
 	if (id === "gepa") return "GEPA";
 	if (id === "go-ex") return "GELO";
 	if (id === "sft") return "SFT";
+	if (id === "eval") return "Eval";
 	return id;
+}
+
+type EvalScorecard = {
+	id: string;
+	label: string;
+	stage: string;
+	isBaseline: boolean;
+	trials?: { total: number; valid: number; failed: number };
+	metrics?: Array<{ metric: string; mean: number | null; count: number }>;
+	pairedLift?: number | null;
+};
+
+type EvalSelection = {
+	status: string;
+	winner_id: string | null;
+	primary_metric: string;
+	lift: number | null;
+	min_lift: number;
+	reason: string;
+};
+
+type EvalState = {
+	scorecards: EvalScorecard[];
+	selection: EvalSelection | null;
+	runtime: Record<string, unknown>;
+	evidenceDir: string | null;
+};
+
+function sliceData(slice: unknown): Record<string, unknown> {
+	const data = (slice as { data?: unknown })?.data;
+	return (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+}
+
+function formatMetric(value: number | null | undefined): string {
+	return value == null ? "—" : value.toFixed(3);
+}
+
+function formatLift(value: number | null | undefined): string {
+	if (value == null) return "—";
+	return `${value > 0 ? "+" : ""}${value.toFixed(3)}`;
 }
 
 type OptimizerDiagnostic = {
@@ -203,6 +244,8 @@ export function OptimizersPage({
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [startingAgent, setStartingAgent] = useState<OptimizerGuide["id"] | null>(null);
 	const [startingSftFixture, setStartingSftFixture] = useState(false);
+	const [evalRecipes, setEvalRecipes] = useState<OptimizerRecipeInfo[]>([]);
+	const [evalState, setEvalState] = useState<EvalState | null>(null);
 	// Set only by setReleaseChannel, which returns a fresh status; otherwise the
 	// app controller's listing is the source of truth.
 	const [pluginOverride, setPluginOverride] = useState<PluginStatus | null>(null);
@@ -244,17 +287,19 @@ export function OptimizersPage({
 			return;
 		}
 		setError(null);
-		const [nextRuns, nextAlgorithms] = await Promise.all([
+		const [nextRuns, nextAlgorithms, nextRecipes] = await Promise.all([
 			bridges.optimizers.list({
 				search: search.trim() || undefined,
 				status: status === "all" ? undefined : status,
 				algorithmId: algorithm === "all" ? undefined : algorithm,
 				source: source === "all" ? undefined : source
 			}),
-			bridges.optimizers.listAlgorithms()
+			bridges.optimizers.listAlgorithms(),
+			bridges.optimizers.listRecipes().catch(() => [] as OptimizerRecipeInfo[])
 		]);
 		setRuns(nextRuns);
 		setAlgorithms(nextAlgorithms);
+		setEvalRecipes(nextRecipes.filter((recipe) => recipe.algorithmId === "eval"));
 		if (!selectedId && nextRuns[0]) setSelectedId(nextRuns[0].id);
 	}, [algorithm, search, selectedId, source, status]);
 
@@ -274,6 +319,33 @@ export function OptimizersPage({
 		() => runs.find((run) => run.id === selectedId) ?? null,
 		[runs, selectedId]
 	);
+
+	useEffect(() => {
+		if (!selected || selected.algorithmId !== "eval" || !bridges.optimizers) {
+			setEvalState(null);
+			return;
+		}
+		let live = true;
+		void bridges.optimizers
+			.getStateBatch(selected.id, ["eval.scorecard", "eval.evidence", "eval.runtime"])
+			.then((slices) => {
+				if (!live) return;
+				const byId = new Map(
+					(slices as Array<{ sliceId?: string }>).map((slice) => [slice?.sliceId, slice])
+				);
+				const evidence = sliceData(byId.get("eval.evidence"));
+				setEvalState({
+					scorecards: (sliceData(byId.get("eval.scorecard")).candidates ?? []) as EvalScorecard[],
+					selection: (evidence.selection ?? null) as EvalSelection | null,
+					runtime: sliceData(byId.get("eval.runtime")),
+					evidenceDir: (evidence.evidenceDir ?? null) as string | null
+				});
+			})
+			.catch(() => undefined);
+		return () => {
+			live = false;
+		};
+	}, [selected]);
 	const setReleaseChannel = async (channel: "official" | "dev") => {
 		if (!bridges.plugins) return;
 		setChangingReleaseChannel(true);
@@ -552,6 +624,58 @@ export function OptimizersPage({
 				</div>
 			</section>
 
+			{evalRecipes.length > 0 ? (
+				<section className="optimizer-recipes optimizer-eval-catalog" aria-labelledby="optimizer-eval-title">
+					<div className="optimizer-recipes-head">
+						<div><span className="optimizer-eyebrow">Eval · local</span><h2 id="optimizer-eval-title">Score staged policies</h2></div>
+						<p>Fixed recipes run against pinned local container targets and do not install the Optimizers plugin.</p>
+					</div>
+					<div className="optimizer-recipe-grid">
+						{evalRecipes.map((recipe) => {
+							const limits = recipe.limits ?? {};
+							const screening = (limits.screeningSeeds as number[] | undefined) ?? [];
+							const confirmation = (limits.confirmationSeeds as number[] | undefined) ?? [];
+							const selection = (limits.selection as Record<string, unknown> | undefined) ?? {};
+							const available = recipe.availability === "available";
+							return (
+								<article className="optimizer-recipe-card" aria-labelledby={`optimizer-eval-${recipe.id}`} data-testid={`optimizer-eval-recipe-${recipe.id}`} key={recipe.id}>
+									<div className="optimizer-recipe-top">
+										<span className="optimizer-recipe-mark">EV</span>
+										<span className={`optimizer-status ${available ? "completed" : "failed"}`}>{recipe.availability}</span>
+									</div>
+									<h3 id={`optimizer-eval-${recipe.id}`}>{recipe.title}</h3>
+									<code className="optimizer-eval-id">{recipe.id}</code>
+									<dl className="optimizer-eval-limits">
+										<dt>Screen</dt><dd>{screening.join(", ") || "—"}</dd>
+										<dt>Confirm</dt><dd>{confirmation.join(", ") || "—"}</dd>
+										<dt>Primary</dt><dd>{String(selection.primary_metric ?? "—")}</dd>
+										<dt>Decision</dt><dd>{String(selection.decision_mode ?? "—")}</dd>
+										<dt>Parallel</dt><dd>{String(limits.max_parallel_trials ?? "—")}</dd>
+									</dl>
+									{recipe.availabilityReason ? <small data-testid={`optimizer-eval-blocked-${recipe.id}`}>{recipe.availabilityReason}</small> : null}
+									<button
+										className="secondary-button"
+										type="button"
+										disabled={!available || startingAgent !== null}
+										data-testid={`start-eval-${recipe.id}`}
+										onClick={() => void startAgent({
+											id: "eval",
+											label: "EV",
+											name: recipe.title,
+											description: recipe.description ?? "",
+											flow: ["Stage", "Score", "Select"],
+											prompt: `Run the Workshop eval recipe ${recipe.id} on policy variants in this project. Stage the policy files with optimizer_stage_eval_candidates using workspace-relative paths, kind python-code.v1, entrypoint policy:Policy, one labelled candidate each, marking the baseline; then call optimizer_start_recipe with the recipe id and returned candidate_set_id. Report the run status and selection status separately, the per-candidate scorecard, and the evidence directory.`
+										})}
+									>
+										{startingAgent === "eval" ? "Opening agent…" : "Set up run"}
+									</button>
+								</article>
+							);
+						})}
+					</div>
+				</section>
+			) : null}
+
 			<div className="optimizer-toolbar" data-testid="optimizer-toolbar">
 				<div className="optimizer-filters">
 					<label className="optimizer-search">
@@ -626,6 +750,38 @@ export function OptimizersPage({
 									<code>{selectedRunDirectory}</code>
 									<ul><li>workshop.stdout.log</li><li>workshop.stderr.log</li><li>events.jsonl</li><li>result_manifest.json</li></ul>
 								</details>
+							) : null}
+							{evalState ? (
+								<section className="optimizer-eval-scorecard" data-testid="optimizer-eval-scorecard">
+									<span className="optimizer-eyebrow">Scorecard</span>
+									<table>
+										<thead><tr><th>Candidate</th><th>Stage</th><th>Valid</th><th>Failed</th><th>Primary</th><th>Lift</th></tr></thead>
+										<tbody>
+											{evalState.scorecards.map((card) => {
+												const primary = evalState.selection?.primary_metric;
+												const metric = card.metrics?.find((entry) => entry.metric === primary);
+												return (
+													<tr key={`${card.stage}:${card.id}`} data-testid={`eval-scorecard-row-${card.id}-${card.stage}`}>
+														<td>{card.label}{card.isBaseline ? " · baseline" : ""}</td>
+														<td>{card.stage}</td>
+														<td>{card.trials?.valid ?? 0}</td>
+														<td>{card.trials?.failed ?? 0}</td>
+														<td>{formatMetric(metric?.mean)}</td>
+														<td>{formatLift(card.pairedLift)}</td>
+													</tr>
+												);
+											})}
+										</tbody>
+									</table>
+									{evalState.selection ? (
+										<dl className="optimizer-eval-selection" data-testid="optimizer-eval-selection">
+											<dt>Selection</dt><dd>{evalState.selection.status}</dd>
+											<dt>Lift</dt><dd>{formatLift(evalState.selection.lift)} / {evalState.selection.min_lift}</dd>
+											<dt>Why</dt><dd>{evalState.selection.reason}</dd>
+										</dl>
+									) : null}
+									{evalState.evidenceDir ? <code className="optimizer-eval-evidence" data-testid="optimizer-eval-evidence">{evalState.evidenceDir}</code> : null}
+								</section>
 							) : null}
 							<div className="optimizer-inspector-actions">
 								<button className="primary-button" type="button" disabled={busy} onClick={() => void openSelectedVisual()} data-testid="open-optimizer-visual">Open visual</button>

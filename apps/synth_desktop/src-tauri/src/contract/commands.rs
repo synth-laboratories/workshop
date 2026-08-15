@@ -156,6 +156,7 @@ impl Commands {
     pub const OPTIMIZERS_ALGORITHMS_LIST: &'static str = "optimizers_algorithms_list";
     pub const OPTIMIZERS_RECIPES_LIST: &'static str = "optimizers_recipes_list";
     pub const OPTIMIZERS_RECIPE_START: &'static str = "optimizers_recipe_start";
+    pub const OPTIMIZERS_STAGE_EVAL_CANDIDATES: &'static str = "optimizers_stage_eval_candidates";
     pub const OPTIMIZERS_LIST: &'static str = "optimizers_list";
     pub const OPTIMIZERS_GET: &'static str = "optimizers_get";
     pub const OPTIMIZERS_CREATE: &'static str = "optimizers_create";

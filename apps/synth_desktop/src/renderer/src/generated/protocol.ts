@@ -50,6 +50,7 @@ export const commands = {
 	optimizersAlgorithmsList: () => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_algorithms_list")),
 	optimizersRecipesList: () => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_recipes_list")),
 	optimizersRecipeStart: (request: OptimizerRecipeRunRequest) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_recipe_start", { request })),
+	optimizersStageEvalCandidates: (request: EvalStageCandidatesRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("optimizers_stage_eval_candidates", { request })),
 	optimizersList: (query: {
 	status: string | null,
 	algorithmId: string | null,
@@ -762,6 +763,19 @@ export type EntityCount = {
 	skipped: unknown,
 };
 
+export type EvalCandidateSource = {
+	label: string,
+	path: string,
+	entrypoint?: string | null,
+	kind?: string | null,
+	baseline?: boolean | null,
+};
+
+export type EvalStageCandidatesRequest = {
+	sessionRef: string,
+	candidates: EvalCandidateSource[],
+};
+
 export type EventSource = "local" | "remote" | "intern" | "codex" | "system" | "mlx" | "visual" | "report";
 
 export type ExperimentRecord = ExperimentRecord_Serialize | ExperimentRecord_Deserialize;
@@ -1297,6 +1311,7 @@ export type OptimizerRecipeRunRequest = {
 	 *  `limits.datasetShards`. Selecting a shard is not supplying a path.
 	 */
 	datasetShard?: string | null,
+	candidateSetId?: string | null,
 };
 
 export type OptimizerReconcileRequest = {
@@ -2390,4 +2405,3 @@ async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; dat
         return { status: "error", error: e as any };
     }
 }
-
