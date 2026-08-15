@@ -1,6 +1,6 @@
 mod account;
 mod account_cloud;
-mod cloud;
+pub mod cloud;
 mod codex;
 mod codex_oauth;
 mod container_stream;
@@ -2644,8 +2644,12 @@ async fn codex_thread_compact(
 async fn codex_thread_read(
     state: State<'_, Arc<CodexManager>>,
     request: CodexThreadReadRequest,
-) -> Result<Value, AppError> {
-    state.read_thread(request).await.map_err(AppError::from)
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .read_thread(request)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -2653,10 +2657,11 @@ async fn codex_thread_read(
 async fn codex_thread_items_list(
     state: State<'_, Arc<CodexManager>>,
     request: CodexThreadItemsRequest,
-) -> Result<Value, AppError> {
+) -> Result<contract::specta::OpaqueJson, AppError> {
     state
         .list_thread_items(request)
         .await
+        .map(contract::specta::OpaqueJson)
         .map_err(AppError::from)
 }
 

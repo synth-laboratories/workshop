@@ -529,25 +529,14 @@ export type CodexSessionRecord = {
 	status: string,
 	title?: string | null,
 	titleOrigin?: string | null,
+	presentationEmotion?: string | null,
+	presentationSummary?: string | null,
 	approvalPolicy?: string,
 	sandbox?: string,
 };
 
 export type CodexSessionRequest = {
 	sessionId: string,
-};
-
-export type CodexThreadReadRequest = {
-	sessionId: string,
-	threadId: string,
-	includeTurns?: boolean,
-};
-
-export type CodexThreadItemsRequest = {
-	sessionId: string,
-	threadId: string,
-	cursor?: string | null,
-	limit?: number | null,
 };
 
 export type CodexSessionStartRequest = {
@@ -575,6 +564,19 @@ export type CodexSessionStartRequest = {
 export type CodexSteerRequest = {
 	sessionId: string,
 	text: string,
+};
+
+export type CodexThreadItemsRequest = {
+	sessionId: string,
+	threadId: string,
+	cursor?: string | null,
+	limit?: number | null,
+};
+
+export type CodexThreadReadRequest = {
+	sessionId: string,
+	threadId: string,
+	includeTurns?: boolean,
 };
 
 /**

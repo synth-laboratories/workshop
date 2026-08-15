@@ -1,13 +1,7 @@
-#[path = "../src/cloud/mod.rs"]
-mod cloud;
-#[path = "../src/instance.rs"]
-mod instance;
-// The cloud module now includes the durable Intern ingestion adapter, which is
-// intentionally built against the same storage module as the application.
-#[path = "../src/storage/mod.rs"]
-mod storage;
-
-use cloud::intern::{
+// Link the library crate rather than `#[path]`-including its sources: the
+// re-included modules referenced `crate::domain`/`http`/`visuals`, which do not
+// exist in a test crate, so the whole Rust suite stopped compiling.
+use synth_desktop_lib::cloud::intern::{
     normalize_event, AsyncCommandRequest, AsyncEnsureRequest, CommandReceipt, InternClient,
     InternEvent, InternRuntime, RuntimeBinding, RuntimeKind, SyncCommandRequest, SyncCreateRequest,
 };

@@ -331,8 +331,11 @@ mod tests {
         );
         let exported =
             body.matches("__TAURI_INVOKE(").count() + body.matches("__TAURI_INVOKE<").count();
+        // Hand-maintained on purpose: the exporter dropping commands must fail
+        // here rather than pass quietly. Bump it only alongside a reviewed
+        // `collect_commands!` change.
         assert_eq!(
-            exported, 177,
+            exported, 184,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(
