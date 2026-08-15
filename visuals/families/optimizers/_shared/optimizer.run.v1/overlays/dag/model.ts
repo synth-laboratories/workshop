@@ -1,6 +1,6 @@
 /** Pure DAG workspace derivations, importable from node tests. */
 
-import { formatMissingUsd } from "../../../../runtime/liveStream.ts";
+import { formatMissingUsd } from "../../../../../../runtime/liveStream.ts";
 import type { DagNodeState, DagState } from "../../components/projectEvents.ts";
 import type { WorkspaceStage } from "../../components/workspace/WorkspaceChrome.tsx";
 
