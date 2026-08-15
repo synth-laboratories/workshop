@@ -754,8 +754,15 @@ fn optimizer_recipe_credentials(recipe_id: &str) -> &'static [&'static str] {
         &["OPENAI_API_KEY"]
     } else if recipe_id == "sft.craftax.gpt-oss.smoke.v1" {
         &["GROQ_API_KEY", "TINKER_API_KEY"]
-    } else if recipe_id.starts_with("hosted.") {
+    } else if recipe_id == "gelo.craftax.hosted.v1" {
         &["OPTIMIZERS_BETA_SERVICE_TOKEN"]
+    } else if matches!(
+        recipe_id,
+        "sft.hosted.fixture.v1"
+            | "sft.craftax.nemotron-nano.tinker.v1"
+            | "sft.banking77.nemotron-lightning.tinker.v1"
+    ) {
+        &["SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN"]
     } else {
         &[]
     }

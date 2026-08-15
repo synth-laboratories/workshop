@@ -647,61 +647,6 @@ async fn run_hosted_worker(
     }
 }
 
-fn validate_config_against_producer_contract(config_toml: &str, contract: &Value) -> Result<()> {
-    const CONTRACT_SCHEMA: &str = "optimizers-beta.sft-config-contract.v1";
-    let schema = contract
-        .get("schema_version")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if schema != CONTRACT_SCHEMA {
-        bail!("unsupported optimizers-beta SFT config contract {schema:?}");
-    }
-    if contract.get("algorithm").and_then(Value::as_str) != Some("sft") {
-        bail!("optimizers-beta SFT config contract names the wrong algorithm");
-    }
-    let config: toml::Value =
-        toml::from_str(config_toml).context("parse generated hosted SFT TOML")?;
-    let table = config
-        .as_table()
-        .context("generated hosted SFT config must be a TOML table")?;
-    let backend = table
-        .get("backend")
-        .and_then(toml::Value::as_str)
-        .context("generated hosted SFT config must name backend")?;
-    let mut required = contract
-        .pointer(&format!("/required_by_backend/{backend}"))
-        .and_then(Value::as_array)
-        .with_context(|| format!("SFT config contract does not describe backend {backend}"))?
-        .iter()
-        .filter_map(Value::as_str)
-        .collect::<Vec<_>>();
-    let checkpoint_evaluation = table
-        .get("container_url")
-        .and_then(toml::Value::as_str)
-        .is_some_and(|value| !value.trim().is_empty());
-    if checkpoint_evaluation {
-        required.extend(
-            contract
-                .get("required_when_checkpoint_evaluation")
-                .and_then(Value::as_array)
-                .context("SFT config contract omits checkpoint-evaluation requirements")?
-                .iter()
-                .filter_map(Value::as_str),
-        );
-    }
-    let missing = required
-        .into_iter()
-        .filter(|field| !table.contains_key(*field))
-        .collect::<Vec<_>>();
-    if !missing.is_empty() {
-        bail!(
-            "generated hosted SFT config violates optimizers-beta contract; missing {}",
-            missing.join(", ")
-        );
-    }
-    Ok(())
-}
-
 fn fixture_config_toml(run_id: &str, training_file: &str) -> String {
     format!(
         r#"run_id = "{run_id}"
@@ -876,64 +821,6 @@ async fn persist_remote_terminal(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn producer_contract() -> Value {
-        json!({
-            "schema_version": "optimizers-beta.sft-config-contract.v1",
-            "algorithm": "sft",
-            "required_by_backend": {
-                "fixture": [],
-                "openai": [],
-                "tinker": ["training_steps", "max_seq_len", "max_dropped_fraction"],
-            },
-            "required_when_checkpoint_evaluation": [
-                "checkpoint_evaluation_timeout_s",
-                "checkpoint_evaluation_policy_harness",
-                "checkpoint_evaluation_policy",
-            ],
-        })
-    }
-
-    #[test]
-    fn tinker_recipes_satisfy_the_producer_contract() {
-        for config in [
-            &banking77_config_toml(
-                "sft_banking77_train_a_ab12cd34",
-                "file_train_banking77_train_a_ab12cd34",
-                "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
-                "http://127.0.0.1:8110",
-                "/tmp/train_a.jsonl",
-            ),
-            &craftax_nemotron_config_toml(
-                "sft_craftax_ab12cd34",
-                "file_train_ab12cd34",
-                "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
-                "http://127.0.0.1:8098",
-                Some("/tmp/craftax.jsonl"),
-            ),
-        ] {
-            validate_config_against_producer_contract(config, &producer_contract()).unwrap();
-        }
-
-        let mut changed = producer_contract();
-        changed["required_by_backend"]["tinker"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!("new_required_field"));
-        let error = validate_config_against_producer_contract(
-            &craftax_nemotron_config_toml(
-                "sft_craftax_ab12cd34",
-                "file_train_ab12cd34",
-                "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
-                "http://127.0.0.1:8098",
-                Some("/tmp/craftax.jsonl"),
-            ),
-            &changed,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("new_required_field"), "{error}");
-    }
 
     #[test]
     fn training_length_is_never_left_to_the_checkpoint_list() {

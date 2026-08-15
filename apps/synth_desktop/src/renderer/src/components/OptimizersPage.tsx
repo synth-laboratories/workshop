@@ -128,6 +128,7 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 	const [busy, setBusy] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [startingAgent, setStartingAgent] = useState<OptimizerGuide["id"] | null>(null);
+	const [startingSftFixture, setStartingSftFixture] = useState(false);
 	const [plugin, setPlugin] = useState<PluginStatus | null>(null);
 	const [changingReleaseChannel, setChangingReleaseChannel] = useState(false);
 
@@ -219,6 +220,26 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 		}
 	};
 
+	const startSftFixture = async () => {
+		if (!bridges.optimizers) return;
+		setStartingSftFixture(true);
+		setError(null);
+		try {
+			const run = await bridges.optimizers.startRecipe({
+				recipeId: "sft.hosted.fixture.v1",
+				openVisual: true
+			});
+			setSelectedId(run.id);
+			await refresh();
+			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
+			if (visualId) onOpenVisual(visualId);
+		} catch (reason) {
+			setError(reason instanceof Error ? reason.message : String(reason));
+		} finally {
+			setStartingSftFixture(false);
+		}
+	};
+
 	const openSelectedVisual = async () => {
 		if (!selected || !bridges.optimizers) return;
 		setBusy(true);
@@ -237,7 +258,7 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 	const importLocal = async () => {
 		if (!bridges.optimizers) return;
 		const path = window.prompt(
-			"Local OSS GEPA or optimizers-beta run path (workspace, run dir, or events.jsonl)"
+			"Local OSS GEPA or legacy optimizer run path (workspace, run dir, or events.jsonl)"
 		);
 		if (!path?.trim()) return;
 		setBusy(true);
@@ -292,7 +313,7 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 		? selected.executionBindings.length > 0
 			? selected.executionBindings.map((binding) => binding.label ?? binding.kind).join(" · ")
 			: selected.source === "hosted"
-				? "optimizers-beta"
+				? "Hosted service"
 				: selected.source === "cloud"
 					? "Cloud managed"
 					: "Local process"
@@ -399,6 +420,14 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 							<button className="secondary-button" type="button" disabled={startingAgent !== null} onClick={() => void startAgent(guide)} data-testid={`start-${guide.id}-agent`}>
 								{startingAgent === guide.id ? "Opening agent…" : "Plan with agent"}
 							</button>
+							{guide.id === "sft" ? (
+								<>
+									<button className="secondary-button" type="button" disabled={startingSftFixture} onClick={() => void startSftFixture()} data-testid="start-sft-fixture">
+										{startingSftFixture ? "Starting fixture…" : "Run free fixture"}
+									</button>
+									<small>Public Optimizers fixture · no provider charges</small>
+								</>
+							) : null}
 						</article>
 					))}
 				</div>

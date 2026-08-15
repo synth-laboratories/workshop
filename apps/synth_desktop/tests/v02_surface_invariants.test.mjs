@@ -50,6 +50,21 @@ test("optimizer MCP recipe starts cannot bypass the typed approval broker", () =
 	assert.match(bridge, /event\.source !== "codex" && !isApprovalBoundary/);
 });
 
+test("hosted SFT uses only the public synth-optimizers control plane", () => {
+	const hostedSft = readTauri("optimizers/hosted_sft.rs");
+	const sftClient = readTauri("optimizers/sft_client.rs");
+	const privateGeloClient = readTauri("optimizers/hosted_client.rs");
+	const service = readTauri("optimizers/service.rs");
+	const commands = readTauri("lib.rs");
+	assert.match(hostedSft, /SftOptimizerClient/);
+	assert.doesNotMatch(hostedSft, /HostedOptimizerClient/);
+	assert.doesNotMatch(hostedSft, /OPTIMIZERS_BETA|SYNTH_OPTIMIZERS_BETA/);
+	assert.match(sftClient, /Workshop never contacts Optimizers-beta directly/);
+	assert.doesNotMatch(privateGeloClient, /\bsubmit_toml\b|fn optimizer_events_after/);
+	assert.match(service, /SftOptimizerClient::from_env\(\)\?\s*\.cancel\(&id\)/s);
+	assert.match(commands, /HOSTED_SFT_FIXTURE_RECIPE[\s\S]*SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN/);
+});
+
 test("v0.2 grouped activity keeps visual and container MCP calls out of used-tools summaries", () => {
 	const source = read("preferences/activityPresentation.ts");
 	assert.match(source, /export function isAuthoredEvidence/);
