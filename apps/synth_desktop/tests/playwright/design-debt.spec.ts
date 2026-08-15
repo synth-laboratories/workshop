@@ -50,6 +50,7 @@ test.describe("design locks (must pass)", () => {
 		await page.getByRole("button", { name: "About", exact: true }).click();
 		const changelog = page.getByTestId("about-changelog");
 		await expect(changelog).toBeVisible();
+		await expect(changelog).toContainText("Version 0.3.0");
 		await expect(changelog).toContainText("Version 0.1.0");
 		await expect(changelog).toContainText("New");
 		await expect(changelog).toContainText("Improved");

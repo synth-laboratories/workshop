@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -40,7 +41,7 @@ pub fn visuals_root() -> PathBuf {
     if let Ok(executable) = std::env::current_exe() {
         if let Some(macos_dir) = executable.parent() {
             let bundled = macos_dir.join("../Resources/visuals");
-            if bundled.join("templates").is_dir() {
+            if bundled.join("families").is_dir() {
                 return bundled;
             }
         }
@@ -52,14 +53,63 @@ pub fn visuals_root() -> PathBuf {
 
 pub fn list_templates(genre: Option<&str>) -> anyhow::Result<Vec<TemplateMeta>> {
     let mut out = Vec::new();
-    // Public templates are authoritative. An optional build-time internal
-    // overlay may add IDs, but can never shadow a distributed template.
-    for root in ["templates", "templates-internal"] {
-        let root = visuals_root().join(root);
-        if !root.exists() {
+    for (_, meta) in build_template_index(&visuals_root())? {
+        if let Some(filter) = genre {
+            let matches = meta
+                .genre
+                .as_deref()
+                .map(|value| value.eq_ignore_ascii_case(filter))
+                .unwrap_or(false)
+                || meta.id.to_lowercase().contains(&filter.to_lowercase());
+            if !matches {
+                continue;
+            }
+        }
+        out.push(meta);
+    }
+    Ok(out)
+}
+
+pub fn resolve_template(template_id: &str) -> anyhow::Result<TemplateMeta> {
+    let id = template_id.trim();
+    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+        anyhow::bail!("invalid template id");
+    }
+    build_template_index(&visuals_root())?
+        .remove(id)
+        .ok_or_else(|| anyhow::anyhow!("unknown visual template: {id}"))
+}
+
+fn build_template_index(visuals_root: &Path) -> anyhow::Result<BTreeMap<String, TemplateMeta>> {
+    let families_root = visuals_root.join("families");
+    if !families_root.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let canonical_root = fs::canonicalize(&families_root)?;
+    let mut directories = Vec::new();
+    discover_template_directories(&families_root, &canonical_root, &mut directories)?;
+    directories.sort();
+
+    let mut templates: BTreeMap<String, TemplateMeta> = BTreeMap::new();
+    for directory in directories {
+        let mut meta = load_template_meta(&directory)?;
+        if let Some(existing) = templates.get(&meta.id) {
+            anyhow::bail!(
+                "duplicate visual template id {:?} in {} and {}",
+                meta.id,
+                existing.path.as_deref().unwrap_or("<unknown>"),
+                directory.display()
+            );
+        }
+        meta.path = Some(directory.display().to_string());
+        templates.insert(meta.id.clone(), meta);
+    }
+    for extra_root_name in ["templates", "templates-internal"] {
+        let extra_root = visuals_root.join(extra_root_name);
+        if !extra_root.exists() {
             continue;
         }
-        let mut entries: Vec<_> = fs::read_dir(&root)?
+        let mut entries: Vec<_> = fs::read_dir(&extra_root)?
             .filter_map(|entry| entry.ok())
             .collect();
         entries.sort_by_key(|entry| entry.file_name());
@@ -69,45 +119,64 @@ pub fn list_templates(genre: Option<&str>) -> anyhow::Result<Vec<TemplateMeta>> 
                 continue;
             }
             let mut meta = load_template_meta(&path)?;
-            if out
-                .iter()
-                .any(|existing: &TemplateMeta| existing.id == meta.id)
-            {
+            if templates.contains_key(&meta.id) {
                 continue;
             }
-            if let Some(filter) = genre {
-                let matches = meta
-                    .genre
-                    .as_deref()
-                    .map(|value| value.eq_ignore_ascii_case(filter))
-                    .unwrap_or(false)
-                    || meta.id.to_lowercase().contains(&filter.to_lowercase());
-                if !matches {
-                    continue;
-                }
-            }
             meta.path = Some(path.display().to_string());
-            out.push(meta);
+            templates.insert(meta.id.clone(), meta);
         }
     }
-    out.sort_by(|left, right| left.id.cmp(&right.id));
-    Ok(out)
+    Ok(templates)
 }
 
-pub fn resolve_template(template_id: &str) -> anyhow::Result<TemplateMeta> {
-    let id = template_id.trim();
-    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
-        anyhow::bail!("invalid template id");
+fn discover_template_directories(
+    directory: &Path,
+    canonical_root: &Path,
+    out: &mut Vec<PathBuf>,
+) -> anyhow::Result<()> {
+    let metadata = fs::symlink_metadata(directory)?;
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!(
+            "visual template registry refuses symlink: {}",
+            directory.display()
+        );
     }
-    let root = visuals_root();
-    let path = ["templates", "templates-internal"]
-        .into_iter()
-        .map(|dir| root.join(dir).join(id))
-        .find(|candidate| candidate.join("template.json").exists())
-        .ok_or_else(|| anyhow::anyhow!("unknown visual template: {id}"))?;
-    let mut meta = load_template_meta(&path)?;
-    meta.path = Some(path.display().to_string());
-    Ok(meta)
+    let canonical = fs::canonicalize(directory)?;
+    if !canonical.starts_with(canonical_root) {
+        anyhow::bail!(
+            "visual template path escapes family root: {}",
+            directory.display()
+        );
+    }
+
+    let manifest = directory.join("template.json");
+    if manifest.exists() {
+        let manifest_metadata = fs::symlink_metadata(&manifest)?;
+        if manifest_metadata.file_type().is_symlink() {
+            anyhow::bail!(
+                "visual template registry refuses symlink: {}",
+                manifest.display()
+            );
+        }
+        out.push(directory.to_path_buf());
+        return Ok(());
+    }
+
+    let mut entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            anyhow::bail!(
+                "visual template registry refuses symlink: {}",
+                entry.path().display()
+            );
+        }
+        if file_type.is_dir() {
+            discover_template_directories(&entry.path(), canonical_root, out)?;
+        }
+    }
+    Ok(())
 }
 
 fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
@@ -187,8 +256,65 @@ mod tests {
     #[test]
     fn lists_bundled_templates_when_present() {
         let templates = list_templates(None).unwrap();
-        if visuals_root().join("templates").exists() {
+        if visuals_root().join("families").exists() {
             assert!(!templates.is_empty());
         }
+    }
+
+    fn write_template(path: &Path, id: &str) {
+        fs::create_dir_all(path).unwrap();
+        fs::write(
+            path.join("template.json"),
+            format!(
+                r#"{{"schemaVersion":"synth.visual-template.v1","id":"{id}","version":"1.0.0"}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn recursively_indexes_templates_by_manifest_id() {
+        let temp = tempfile::tempdir().unwrap();
+        write_template(
+            &temp.path().join("families/analysis/example.v1"),
+            "example.v1",
+        );
+        let indexed = build_template_index(temp.path()).unwrap();
+        assert_eq!(indexed.keys().collect::<Vec<_>>(), vec!["example.v1"]);
+        assert!(indexed["example.v1"]
+            .path
+            .as_deref()
+            .unwrap()
+            .contains("families/analysis/example.v1"));
+    }
+
+    #[test]
+    fn duplicate_ids_fail_with_both_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        write_template(
+            &temp.path().join("families/one/duplicate.v1"),
+            "duplicate.v1",
+        );
+        write_template(
+            &temp.path().join("families/two/duplicate.v1"),
+            "duplicate.v1",
+        );
+        let error = build_template_index(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("duplicate visual template id"));
+        assert!(error.contains("families/one/duplicate.v1"));
+        assert!(error.contains("families/two/duplicate.v1"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_family_paths_fail_closed() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        write_template(&outside.path().join("escaped.v1"), "escaped.v1");
+        fs::create_dir_all(temp.path().join("families")).unwrap();
+        symlink(outside.path(), temp.path().join("families/escaped")).unwrap();
+        let error = build_template_index(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("refuses symlink"));
     }
 }

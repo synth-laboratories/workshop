@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { bridges } from "../runtime/desktopBridge";
-import TraceInspector from "@synth/visual-templates/trace.rollout_inspector.v1/shell";
+import TraceInspector from "@synth/visual-templates/analysis/trace.rollout_inspector.v1/shell";
 import type {
 	ExperimentRecord,
 	ReportBlock,

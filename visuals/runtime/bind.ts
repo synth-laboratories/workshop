@@ -78,10 +78,13 @@ async function resolveBinding(
       return dig(await ctx.loadFixture(binding.source!), binding.path);
     }
     case "trace_v5": {
+      if (!binding.source) {
+        throw new Error(`Trace V5 binding for slot "${binding.slot}" requires a sealed trace digest`);
+      }
       if (!ctx.loadTraceV5) {
         throw new Error(`No Trace V5 loader for slot "${binding.slot}"`);
       }
-      return dig(await ctx.loadTraceV5(binding.source!), binding.path);
+      return dig(await ctx.loadTraceV5(binding.source), binding.path);
     }
     case "local_cas": {
       if (!ctx.loadLocalCas) {

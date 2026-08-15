@@ -10,6 +10,12 @@ function Toggle({ checked, disabled, label, onChange }: { checked: boolean; disa
 
 type EditorTarget = { kind: "workspace" } | { kind: "workshop" } | { kind: "skill"; skillId: string };
 
+function contextErrorMessage(reason: unknown): string {
+	if (reason instanceof Error) return reason.message;
+	if (reason && typeof reason === "object" && "message" in reason && typeof reason.message === "string") return reason.message;
+	return typeof reason === "string" ? reason : "Context operation failed";
+}
+
 function ContextEditorDialog({ open, label, path, value, readOnly, dirty, busy, onChange, onClose, onSave, onCopy }: { open: boolean; label: string; path: string; value: string; readOnly?: boolean; dirty?: boolean; busy?: boolean; onChange?: (value: string) => void; onClose: () => void; onSave?: () => void; onCopy?: () => void }) {
 	const dialog = useRef<HTMLDialogElement>(null);
 	useEffect(() => {
@@ -42,7 +48,7 @@ export function ContextSettings({ subagents }: { subagents: ReactNode }) {
 				setWorkspace(path);
 				const next = await bridges.context!.snapshot(path);
 				if (!cancelled) accept(next);
-			} catch (reason) { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); }
+			} catch (reason) { if (!cancelled) setError(contextErrorMessage(reason)); }
 		})();
 		return () => { cancelled = true; };
 	}, []);
@@ -50,7 +56,10 @@ export function ContextSettings({ subagents }: { subagents: ReactNode }) {
 	const run = async (id: string, operation: () => Promise<ContextSnapshot | undefined>) => {
 		setBusy(id); setError(null);
 		try { const next = await operation(); if (next) accept(next); }
-		catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+		catch (reason) {
+			const message = contextErrorMessage(reason);
+			if (!message.toLowerCase().includes("cancelled")) setError(message);
+		}
 		finally { setBusy(null); }
 	};
 
@@ -67,6 +76,12 @@ export function ContextSettings({ subagents }: { subagents: ReactNode }) {
 	const editorValue = editor?.kind === "workspace" ? workspaceDraft : editor?.kind === "workshop" ? snapshot.workshopAgents.content : skillDraft;
 	const editorDirty = editor?.kind === "workspace" ? workspaceDraft !== snapshot.workspaceAgents.content : Boolean(activeSkill && skillDraft !== activeSkill.content);
 	const cookbookBusy = busy === "cookbooks";
+	const cancelCookbooks = () => {
+		setError(null);
+		void bridges.context!.cancelCookbooks(workspace).then(accept).catch((reason) => {
+			setError(contextErrorMessage(reason));
+		});
+	};
 
 	const openSkill = (skill: ContextSkill) => { setSkillDraft(skill.content); setEditor({ kind: "skill", skillId: skill.id }); };
 	const saveEditor = editor?.kind === "workspace"
@@ -97,8 +112,8 @@ export function ContextSettings({ subagents }: { subagents: ReactNode }) {
 			<div className="context-capability-section"><h4>MCP groups</h4><div className="context-capability-list">{snapshot.mcpGroups.map((group) => { const configured = group.servers.length > 0; return <article key={group.id} className={!configured ? "disabled" : ""}><div><strong>{group.label}</strong><span>{configured ? group.servers.join(" · ") : "Not configured"}</span></div>{configured ? <Toggle checked={group.enabled} label={group.enabled ? "On" : "Off"} onChange={(enabled) => void run(`mcp:${group.id}`, () => bridges.context!.updateMcpGroup(workspace, group.id, enabled))} /> : <span className="context-not-configured">Unavailable</span>}</article>; })}</div></div>
 		</SettingsCard>
 
-		<SettingsCard title="Cookbooks" description="Pinned public recipes; runs/ is never checked out." testId="context-cookbooks" actions={<span className="context-quiet-count">{snapshot.cookbooks.enabled ? "Included" : snapshot.cookbooks.installed ? "Excluded" : "Not installed"}</span>} className="context-compact-card">
-			<div className="context-cookbook-row"><div><strong>{snapshot.cookbooks.pin ? `Public cookbook · ${snapshot.cookbooks.pin.slice(0, 12)}` : "Public cookbook"}</strong><span>{snapshot.cookbooks.installed ? snapshot.cookbooks.digest : "Install a pinned checkout without runs/ or private overlays."}</span>{cookbookSkill && !snapshot.cookbooks.installed ? <small>The cookbook skill becomes available after installation.</small> : null}</div><div className="context-capability-actions">{snapshot.cookbooks.installed ? <Toggle checked={snapshot.cookbooks.enabled} disabled={cookbookBusy} label={snapshot.cookbooks.enabled ? "Included" : "Excluded"} onChange={(enabled) => void run("cookbooks", () => bridges.context!.setCookbooksEnabled(workspace, enabled))} /> : null}<button type="button" disabled={cookbookBusy} onClick={() => void run("cookbooks", () => bridges.context!.installCookbooks(workspace))}>{cookbookBusy ? "Installing…" : snapshot.cookbooks.installed ? "Update" : "Install"}</button>{snapshot.cookbooks.installed ? <button type="button" className="danger" disabled={cookbookBusy} onClick={() => void run("cookbooks", () => bridges.context!.uninstallCookbooks(workspace))}>Uninstall</button> : null}</div></div>
+		<SettingsCard title="Cookbooks" description="Pinned public recipes; runs/ is never checked out." testId="context-cookbooks" actions={<span className="context-quiet-count">{cookbookBusy ? "Installing" : snapshot.cookbooks.enabled ? "Included" : snapshot.cookbooks.installed ? "Excluded" : "Not installed"}</span>} className="context-compact-card">
+			<div className="context-cookbook-row"><div><strong>{snapshot.cookbooks.pin ? `Public cookbook · ${snapshot.cookbooks.pin.slice(0, 12)}` : "Public cookbook"}</strong><span>{cookbookBusy ? "Fetching the public cookbook pin" : snapshot.cookbooks.installed ? snapshot.cookbooks.digest : "Install a pinned checkout without runs/ or private overlays."}</span>{cookbookSkill && !snapshot.cookbooks.installed ? <small>The cookbook skill becomes available after installation.</small> : null}</div><div className="context-capability-actions">{snapshot.cookbooks.installed ? <Toggle checked={snapshot.cookbooks.enabled} disabled={cookbookBusy} label={snapshot.cookbooks.enabled ? "Included" : "Excluded"} onChange={(enabled) => void run("cookbooks", () => bridges.context!.setCookbooksEnabled(workspace, enabled))} /> : null}{cookbookBusy ? <button type="button" onClick={cancelCookbooks}>Cancel</button> : <button type="button" onClick={() => void run("cookbooks", () => bridges.context!.installCookbooks(workspace))}>{snapshot.cookbooks.installed ? "Update" : "Install"}</button>}{snapshot.cookbooks.installed ? <button type="button" className="danger" disabled={cookbookBusy} onClick={() => void run("cookbooks", () => bridges.context!.uninstallCookbooks(workspace))}>Uninstall</button> : null}</div></div>
 		</SettingsCard>
 
 		<details className="context-advanced" data-testid="context-advanced"><summary><div><strong>Advanced</strong><span>Subagent compatibility and generated model settings</span></div><span aria-hidden>›</span></summary><div className="context-advanced-body">{subagents}</div></details>

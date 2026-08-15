@@ -5,6 +5,7 @@ const visualsLayout = extract((state: any) => {
 	const page = document.querySelector<HTMLElement>('[data-testid="visuals-page"]');
 	const grid = document.querySelector<HTMLElement>('[data-testid="visuals-grid"]');
 	const preview = document.querySelector<HTMLElement>('[data-testid="visuals-preview"]');
+	const splitter = document.querySelector<HTMLElement>('[data-testid="visuals-resize-handle"]');
 	const open = document.querySelector<HTMLElement>('[data-testid="open-visuals"]');
 	const cards = [...document.querySelectorAll<HTMLElement>('[data-testid^="visuals-card-"]')];
 	const shortCard = cards.find((card) => card.textContent?.includes("Laguna Prompt Trim Preinstall"));
@@ -15,6 +16,7 @@ const visualsLayout = extract((state: any) => {
 	const pageRect = rect(page);
 	const gridRect = rect(grid);
 	const previewRect = rect(preview);
+	const splitterRect = rect(splitter);
 	const openRect = rect(open);
 	const shortCardRect = rect(shortCard ?? null);
 	const longCardRect = rect(longCard ?? null);
@@ -33,6 +35,10 @@ const visualsLayout = extract((state: any) => {
 				|| gridRect.bottom <= previewRect.top - 12
 			)
 		),
+		stackedUsable: !gridRect || !previewRect || (
+			gridRect.width >= 360 && previewRect.width >= 360 && gridRect.bottom <= previewRect.top - 12
+		),
+		separatorVisible: Boolean(splitterRect && splitterRect.width > 0 && splitterRect.height > 0),
 		contained: !pageRect || !gridRect || !previewRect || (
 			gridRect.left >= pageRect.left && previewRect.right <= pageRect.right + 1
 			&& previewRect.right <= state.window.innerWidth - 8
@@ -65,9 +71,10 @@ export const visual_cards_do_not_stretch_short_metadata_into_a_blank_gap = alway
 );
 
 /** CUA 2026-08-10: the preview was crushed into a narrow, clipped right rail. */
-export const visual_library_keeps_two_usable_non_overlapping_columns = always(() =>
+export const visual_library_keeps_usable_non_overlapping_panes = always(() =>
 	!visualsLayout.current.visible || (
-		visualsLayout.current.columnsUsable
+		(visualsLayout.current.columnsUsable
+			|| (visualsLayout.current.stackedUsable && !visualsLayout.current.separatorVisible))
 		&& visualsLayout.current.contained
 		&& visualsLayout.current.noHorizontalOverflow
 	)

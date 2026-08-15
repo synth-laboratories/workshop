@@ -65,6 +65,33 @@ function formatDuration(durationMs: number): string {
 	return `${Math.floor(durationMs / 60_000)}m ${Math.round((durationMs % 60_000) / 1_000)}s`;
 }
 
+const TRACE_INSPECTOR_TEMPLATE = "trace.rollout_inspector.v1";
+const TRACE_PROJECTION_SCHEMA = "synth.trace-projection.rollout-inspector.v1";
+
+function traceInspectability(trace: TraceV5Record): { eligible: boolean; label: string } {
+	const metadata = trace.metadata ?? {};
+	const compatibility = typeof metadata.compatibilityLevel === "string" ? metadata.compatibilityLevel.toLowerCase() : null;
+	const validation = typeof metadata.validationStatus === "string" ? metadata.validationStatus.toLowerCase() : null;
+	if (metadata.quarantined === true || metadata.trusted === false || validation === "invalid" || validation === "quarantined") {
+		return { eligible: false, label: "Quarantined" };
+	}
+	if (metadata.selfContained === false) return { eligible: false, label: "Archive incomplete" };
+	if (compatibility === "invalid" || compatibility === "opaque") return { eligible: false, label: "Unsupported" };
+	return { eligible: true, label: "Inspect" };
+}
+
+function traceDigestBinding(visual: VisualRecord): string | null {
+	if (visual.templateId !== TRACE_INSPECTOR_TEMPLATE) return null;
+	const bindings = visual.bindings as { slots?: Array<{ slot?: string; kind?: string; source?: string }> };
+	const projection = bindings?.slots?.find((slot) => slot.slot === "projection" && slot.kind === "trace_v5");
+	return typeof projection?.source === "string" ? projection.source : null;
+}
+
+function traceInspectorVisualId(trace: TraceV5Record): string {
+	const digest = trace.digest.replace(/^sha256:/, "").replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 64);
+	return `vis_trace_${digest || trace.id.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 64)}`;
+}
+
 export function DataPage({
 	initialTab = "containers",
 	onOpenVisual,
@@ -272,6 +299,68 @@ export function DataPage({
 		} finally { setBusyId(null); }
 	};
 
+	const inspectTrace = async (trace: TraceV5Record) => {
+		if (!bridges.visuals) {
+			setError("Visual registry is unavailable");
+			return;
+		}
+		const busyKey = `trace:${trace.id}`;
+		setBusyId(busyKey);
+		setError(null);
+		try {
+			// Re-read the durable registry so reopening after a restart reuses the
+			// digest-bound visual even when this page's initial catalog is stale.
+			const registered = await bridges.visuals.list({ templateId: TRACE_INSPECTOR_TEMPLATE, limit: 500 });
+			let visual = registered.find((candidate) =>
+				candidate.traceId === trace.id
+				|| candidate.metadata?.traceRecordId === trace.id
+				|| candidate.metadata?.traceDigest === trace.digest
+				|| traceDigestBinding(candidate) === trace.digest
+			);
+			if (!visual) {
+				const visualId = traceInspectorVisualId(trace);
+				try {
+					visual = await bridges.visuals.create({
+						id: visualId,
+						templateId: TRACE_INSPECTOR_TEMPLATE,
+						title: trace.title,
+						traceId: trace.id,
+						bindings: {
+							schemaVersion: "synth.visual-bindings.v1",
+							slots: [{
+								slot: "projection",
+								kind: "trace_v5",
+								source: trace.digest,
+								schema: TRACE_PROJECTION_SCHEMA
+							}]
+						},
+						metadata: {
+							traceRecordId: trace.id,
+							traceDigest: trace.digest,
+							projectionSchema: TRACE_PROJECTION_SCHEMA
+						}
+					});
+				} catch (createError) {
+					// Another window may have created the deterministic identity after
+					// our list. Reuse it only if it is bound to this exact sealed digest.
+					const raced = await bridges.visuals.get(visualId).catch(() => null);
+					if (!raced || traceDigestBinding(raced) !== trace.digest) throw createError;
+					visual = raced;
+				}
+			}
+			const shown = await bridges.visuals.show(visual.id).catch(() => visual!);
+			setVisuals((current) => {
+				const without = current.filter((candidate) => candidate.id !== shown.id);
+				return [shown, ...without];
+			});
+			onOpenVisual(shown);
+		} catch (reason) {
+			setError(reason instanceof Error ? reason.message : String(reason));
+		} finally {
+			setBusyId(null);
+		}
+	};
+
 	return (
 		<div className="ws-page" data-testid="inventory-page">
 			<header className="ws-page-head">
@@ -387,7 +476,7 @@ export function DataPage({
 						<div className="ws-card-body">
 							<span className="ws-eyebrow">TRACE V5 CATALOG</span>
 							<h2 className="ws-card-title">Recorded run catalog</h2>
-							<p className="ws-card-text">v0.2 lists locally recorded trace identity and metadata. Trace import and inspection are not included in the friends build.</p>
+							<p className="ws-card-text">Inspect compatible sealed traces without mutating or expanding their archived payloads.</p>
 						</div>
 						<div className="ws-metrics">
 							<div className="ws-metric"><strong>{traces.length}</strong><span>traces</span></div>
@@ -407,7 +496,7 @@ export function DataPage({
 								data-testid="filter-traces"
 							/>
 						</label>
-						<span className="ws-tag" data-testid="trace-catalog-read-only">Catalog only in v0.2</span>
+						<span className="ws-tag" data-testid="trace-catalog-read-only">Sealed · read-only</span>
 					</div>
 					<div className="ws-toolbar ws-toolbar-wrap" aria-label="Trace filters">
 						<label className="ws-field"><span>Container</span><select className="ws-select" aria-label="Related container" value={traceContainer} onChange={(event) => setTraceContainer(event.target.value)} data-testid="filter-traces-container"><option value="all">All containers</option>{traceContainerOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></label>
@@ -428,6 +517,8 @@ export function DataPage({
 						<ul className="ws-list">
 							{filteredTraces.map((t) => {
 								const meta = traceMeta(t);
+								const inspectability = traceInspectability(t);
+								const inspectBusy = busyId === `trace:${t.id}`;
 								const containerName = t.containerId ? containers.find((container) => container.id === t.containerId)?.name ?? t.containerId : null;
 								return <li key={t.id} className="ws-item ws-item-table" data-testid={`inventory-trace-${t.id}`}>
 									<div className="ws-item-main">
@@ -448,7 +539,16 @@ export function DataPage({
 										{meta.costUsd != null ? <span><strong>${meta.costUsd.toFixed(4)}</strong></span> : null}
 									</div>
 									<time className="ws-item-meta ws-table-optional">{formatWhen(t.createdAt)}</time>
-									<span className="ws-item-meta ws-table-optional">Read-only</span>
+									<button
+										type="button"
+										className="ws-btn ws-btn-secondary ws-btn-small"
+										disabled={!inspectability.eligible || inspectBusy}
+										title={inspectability.eligible ? "Open the sealed trace inspector" : inspectability.label}
+										onClick={() => void inspectTrace(t)}
+										data-testid={`open-trace-${t.id}`}
+									>
+										{inspectBusy ? "Opening…" : inspectability.label}
+									</button>
 								</li>;
 							})}
 						</ul>

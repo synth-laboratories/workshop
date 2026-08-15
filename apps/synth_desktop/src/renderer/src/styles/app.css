@@ -1250,6 +1250,8 @@ a,
 	min-width: 0;
 	background: var(--color-bg);
 	position: relative;
+	container-type: inline-size;
+	container-name: main-workbench;
 }
 
 .titlebar {
@@ -4502,7 +4504,153 @@ html.sidebar-hidden .titlebar {
 		border-top: 1px solid var(--color-border);
 		max-height: 48%;
 	}
+	.workbench.with-visual > .pane-resize-handle,
+	.workbench.with-container > .pane-resize-handle { display: none; }
 
+}
+
+.systems-visual,
+.systems-dynamic {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	min-height: 360px;
+	height: 100%;
+	gap: 12px;
+}
+
+.systems-visual-toolbar,
+.systems-dynamic-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.systems-visual-status,
+.systems-dynamic-status {
+	color: var(--color-text-faint);
+	font-size: var(--font-size-xs, 11px);
+	letter-spacing: .04em;
+}
+
+.systems-visual-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.systems-visual-actions button {
+	padding: 5px 9px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	background: var(--color-surface);
+	color: var(--color-text);
+	font: inherit;
+	font-size: var(--font-size-xs, 11px);
+}
+
+.systems-icon-button {
+	width: 28px;
+	padding-inline: 0;
+}
+
+.systems-visual-stage,
+.systems-dynamic-stage {
+	display: flex;
+	flex: 1;
+	align-items: center;
+	justify-content: center;
+	min-width: 0;
+	min-height: 280px;
+	overflow: hidden;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-lg);
+	background: var(--color-surface);
+}
+
+.systems-visual-stage { cursor: grab; }
+
+.systems-visual-stage img,
+.systems-dynamic-stage img,
+.systems-dynamic-stage svg {
+	display: block;
+	width: 100%;
+	height: 100%;
+	max-width: 100%;
+	max-height: 100%;
+	object-fit: contain;
+	transform-origin: center;
+	user-select: none;
+}
+
+.systems-visual-stage img { pointer-events: none; }
+
+.systems-visual-source {
+	min-height: 240px;
+	margin: 0;
+	padding: 12px;
+	overflow: auto;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--color-surface-muted, var(--color-bg));
+	color: var(--color-text);
+	font-size: var(--font-size-sm, 12px);
+	line-height: 1.45;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.systems-visual-notice,
+.systems-dynamic-caption {
+	margin: 0;
+	color: var(--color-text-muted);
+	font-size: var(--font-size-sm, 12px);
+}
+
+.systems-dynamic[data-theme="dark"] .systems-dynamic-stage {
+	background: var(--color-text);
+	color: var(--color-bg);
+}
+
+.systems-dynamic-stage svg { color: var(--color-text); }
+.systems-dynamic-node,
+.systems-dynamic-note { fill: var(--color-surface); stroke: currentColor; }
+.systems-dynamic-group { fill: transparent; stroke: currentColor; stroke-dasharray: 6 4; }
+.systems-dynamic-edge { fill: none; stroke: currentColor; }
+.systems-dynamic-stage marker path { fill: currentColor; }
+.systems-dynamic-node-label,
+.systems-dynamic-note-label,
+.systems-dynamic-group-label,
+.systems-dynamic-edge-label { fill: currentColor; font-size: var(--font-size-sm, 12px); }
+.systems-dynamic .is-emphasized { color: var(--color-accent); }
+.systems-dynamic .style-warning,
+.systems-dynamic .style-missing { color: var(--color-danger, var(--color-accent)); }
+.systems-dynamic .style-success { color: var(--color-success, var(--color-accent)); }
+.systems-dynamic .style-muted,
+.systems-dynamic .style-unproven { opacity: .65; }
+.systems-dynamic .style-dashed .systems-dynamic-edge { stroke-dasharray: 6 4; }
+
+.systems-dynamic-timeline {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-width: 0;
+}
+
+.systems-dynamic-timeline input { flex: 1; min-width: 80px; }
+.systems-dynamic-timeline span { flex: none; color: var(--color-text-muted); font-size: var(--font-size-xs, 11px); }
+.systems-dynamic-caption { display: grid; gap: 3px; }
+
+@media (max-width: 480px) {
+	.mermaid-visual-toolbar,
+	.systems-visual-toolbar,
+	.systems-dynamic-toolbar { align-items: flex-start; }
+	.mermaid-visual-actions,
+	.systems-visual-actions { width: 100%; }
+	.mermaid-visual-actions button,
+	.systems-visual-actions button { flex: 1 1 auto; }
 }
 
 /* ── Settings · Finetunes / LoRAs ── */
@@ -5694,8 +5842,8 @@ html.sidebar-hidden .titlebar {
 }
 
 .inventory-workbench.with-visual .visual-pane {
-	flex: 0 0 min(var(--visual-pane-width, 420px), calc(100% - 360px));
-	min-width: 340px;
+	flex: 0 1 min(var(--visual-pane-width, 420px), calc(100% - 367px));
+	min-width: 0;
 	border-left: 1px solid var(--color-border);
 }
 
@@ -5766,7 +5914,21 @@ html.sidebar-hidden .titlebar {
 .inventory-workbench.with-visual .trace-card-created { display: none; }
 
 @media (max-width: 900px) {
-	.inventory-workbench.with-container { flex-direction: column; }
+	.inventory-workbench.with-container,
+	.inventory-workbench.with-visual { flex-direction: column; }
+	.inventory-workbench.with-visual .inventory-page,
+	.inventory-workbench.with-visual .visuals-page {
+		flex: 1 1 52%;
+		width: 100%;
+		min-width: 0;
+	}
+	.inventory-workbench.with-visual .visual-pane {
+		flex: 0 0 48%;
+		width: 100%;
+		max-height: 48%;
+		border-top: 1px solid var(--color-border);
+		border-left: 0;
+	}
 	.inventory-workbench.with-container .container-pane {
 		flex: 0 0 48%;
 		min-width: 0;
@@ -5774,7 +5936,8 @@ html.sidebar-hidden .titlebar {
 		border-top: 1px solid var(--color-border);
 		border-left: 0;
 	}
-	.inventory-workbench.with-container .pane-resize-handle { display: none; }
+	.inventory-workbench.with-container .pane-resize-handle,
+	.inventory-workbench.with-visual > .pane-resize-handle { display: none; }
 }
 
 .inventory-page {
@@ -6202,6 +6365,10 @@ html.sidebar-hidden .titlebar {
 	padding: 20px 24px 32px;
 	min-height: 0;
 	overflow: auto;
+	min-width: 0;
+	width: 100%;
+	container-type: inline-size;
+	container-name: visuals-library;
 }
 
 .visuals-page-head {
@@ -6258,9 +6425,29 @@ html.sidebar-hidden .titlebar {
 
 .visuals-layout {
 	display: grid;
-	grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
-	gap: 16px;
+	/* Reserve a genuinely usable preview column (360px plus its inset) when
+	   clamping a persisted list width against this content box. */
+	grid-template-columns: minmax(280px, min(var(--visuals-list-width, 560px), calc(100% - 379px))) 7px minmax(0, 1fr);
+	gap: 0;
 	min-height: 420px;
+	min-width: 0;
+}
+
+.visuals-layout > .visuals-grid {
+	min-width: 0;
+	margin-right: 12px;
+}
+
+.visuals-layout > .visuals-preview {
+	min-width: 0;
+	margin-left: 12px;
+}
+
+.primary-resize-handle {
+	width: 7px;
+	height: 100%;
+	min-height: 420px;
+	margin: 0;
 }
 
 .visuals-layout.focus {
@@ -6289,6 +6476,7 @@ html.sidebar-hidden .titlebar {
 	border-radius: 12px;
 	background: var(--color-surface);
 	overflow: hidden;
+	align-self: start;
 }
 
 .visuals-card.active {
@@ -6352,6 +6540,7 @@ html.sidebar-hidden .titlebar {
 	border: 0;
 	border-radius: 0;
 	background: transparent;
+	margin-left: 0;
 }
 
 .visuals-layout.focus .visuals-preview > header {
@@ -6438,10 +6627,22 @@ html.sidebar-hidden .titlebar {
 	}
 }
 
-@media (max-width: 1040px) {
+@media (max-width: 900px) {
 	.visuals-layout {
 		grid-template-columns: 1fr;
 	}
+	.visuals-layout > .primary-resize-handle { display: none; }
+	.visuals-layout > .visuals-grid,
+	.visuals-layout > .visuals-preview { margin-inline: 0; }
+	.visuals-layout > .visuals-preview { margin-top: 12px; }
+}
+
+@container visuals-library (max-width: 800px) {
+	.visuals-layout { grid-template-columns: minmax(0, 1fr); }
+	.visuals-layout > .primary-resize-handle { display: none; }
+	.visuals-layout > .visuals-grid,
+	.visuals-layout > .visuals-preview { margin-inline: 0; }
+	.visuals-layout > .visuals-preview { margin-top: 12px; }
 }
 
 /* ---------------------------------------------------------------- inference
@@ -7555,6 +7756,19 @@ html.sidebar-hidden .sidebar {
 	 * once the workbench cannot host it. A hidden-but-present rail keeps a
 	 * zero-sized rect, which reads as a rail whose panel has lost its inset.
 	 */
+}
+
+@container main-workbench (max-width: 900px) {
+	.workbench.with-visual,
+	.workbench.with-container,
+	.workbench.with-container.container-expanded,
+	.workbench.with-side-panel,
+	.workbench.with-side-panel.with-visual,
+	.workbench.with-side-panel.with-container { grid-template-columns: minmax(0, 1fr); }
+	.workbench.with-visual > .pane-resize-handle,
+	.workbench.with-container > .pane-resize-handle { display: none; }
+	.workbench.with-visual .visual-pane,
+	.workbench.with-container .container-pane { max-height: 48%; border-top: 1px solid var(--color-border); }
 }
 
 /* ── Final composition pass: queue tray + inference inspector ───────────── */

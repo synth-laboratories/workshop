@@ -91,7 +91,8 @@ impl OptimizerService {
         match request.recipe_id.as_str() {
             super::recipes::BANKING77_GEPA_SMOKE_RECIPE
             | super::recipes::BANKING77_GEPA_LUNA_RECIPE
-            | super::recipes::BANKING77_GEPA_SOL_RECIPE => {
+            | super::recipes::BANKING77_GEPA_SOL_RECIPE
+            | super::recipes::CRAFTAX_GEPA_SMOKE_RECIPE => {
                 super::recipes::start(self, request).await
             }
             super::sft_recipes::CRAFTAX_SFT_SMOKE_RECIPE => {
@@ -116,11 +117,12 @@ impl OptimizerService {
         match request.recipe_id.as_str() {
             super::recipes::BANKING77_GEPA_SMOKE_RECIPE
             | super::recipes::BANKING77_GEPA_LUNA_RECIPE
-            | super::recipes::BANKING77_GEPA_SOL_RECIPE => {
+            | super::recipes::BANKING77_GEPA_SOL_RECIPE
+            | super::recipes::CRAFTAX_GEPA_SMOKE_RECIPE => {
                 super::recipes::prepare(self, request).await
             }
             _ => bail!(
-                "prepare is only implemented for bounded Banking77 GEPA recipes; got {}",
+                "prepare is only implemented for bounded product-owned GEPA recipes; got {}",
                 request.recipe_id
             ),
         }
@@ -231,6 +233,27 @@ impl OptimizerService {
             Ok(stored)
         })
         .await
+    }
+
+    pub(crate) async fn attach_paid_compute_approval(
+        &self,
+        mut run: OptimizerRunRecord,
+        approval_id: &str,
+        max_cost_usd_micros: Option<u64>,
+        max_rollouts: Option<u64>,
+    ) -> Result<OptimizerRunRecord> {
+        run.usage.extra.insert(
+            "paidComputeApproval".into(),
+            json!({
+                "approvalId": approval_id,
+                "cap": {
+                    "maxCostUsdMicros": max_cost_usd_micros,
+                    "maxRollouts": max_rollouts,
+                },
+                "receiptViolation": false,
+            }),
+        );
+        self.persist_run(run).await
     }
 
     pub async fn list(&self, query: OptimizerQuery) -> Result<Vec<OptimizerRunRecord>> {
@@ -1163,6 +1186,10 @@ async fn materialize_optimizer_result(
             .or_else(|| value.pointer("/values/stage2_system"))
             .or_else(|| value.pointer("/payload/stage2_system"))
             .or_else(|| value.pointer("/lever_bundle/values/stage2_system"))
+            .or_else(|| value.get("react_system_prompt"))
+            .or_else(|| value.pointer("/values/react_system_prompt"))
+            .or_else(|| value.pointer("/payload/react_system_prompt"))
+            .or_else(|| value.pointer("/lever_bundle/values/react_system_prompt"))
             .and_then(Value::as_str)
             .map(str::to_owned)
     });
@@ -1193,7 +1220,7 @@ async fn materialize_optimizer_result(
             .filter(|value| !value.is_empty())
             .is_none()
     {
-        bail!("completed Banking77 result omitted a materialized prompt");
+        bail!("completed GEPA result omitted a materialized prompt");
     }
     let mut selected_candidate = json!({});
     if let Some(id) = candidate_id {
@@ -1507,6 +1534,7 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
             run.usage.wall_time_ms += v;
         }
     }
+    update_paid_compute_violation(run);
     if let Some(snapshot) = &event.snapshot {
         if let Some(summary) = snapshot.get("summary") {
             run.summary = summary.clone();
@@ -1524,6 +1552,42 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
     }
     if let Some(error) = &event.error {
         run.error = Some(error.clone());
+    }
+}
+
+fn update_paid_compute_violation(run: &mut OptimizerRunRecord) {
+    let Some(approval) = run.usage.extra.get("paidComputeApproval").cloned() else {
+        return;
+    };
+    let max_rollouts = approval.pointer("/cap/maxRollouts").and_then(Value::as_u64);
+    let max_cost_micros = approval
+        .pointer("/cap/maxCostUsdMicros")
+        .and_then(Value::as_u64);
+    let rollouts_exceeded = max_rollouts.is_some_and(|cap| run.usage.rollouts > cap);
+    let cost_exceeded = match (max_cost_micros, run.usage.cost_usd) {
+        (Some(cap), Some(cost)) => cost * 1_000_000.0 > cap as f64,
+        _ => false,
+    };
+    if rollouts_exceeded || cost_exceeded {
+        if let Some(object) = run
+            .usage
+            .extra
+            .get_mut("paidComputeApproval")
+            .and_then(Value::as_object_mut)
+        {
+            object.insert("receiptViolation".into(), Value::Bool(true));
+            object.insert(
+                "violationReason".into(),
+                Value::String(
+                    if rollouts_exceeded {
+                        "rollout_cap_exceeded"
+                    } else {
+                        "cost_cap_exceeded"
+                    }
+                    .into(),
+                ),
+            );
+        }
     }
 }
 
@@ -2963,6 +3027,60 @@ mod tests {
         assert_eq!(usage.data.get("costUsd"), Some(&Value::Null));
     }
 
+    #[tokio::test]
+    async fn exceeding_an_approved_cap_is_a_durable_receipt_violation() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "gepa_cap_probe",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let run = svc
+            .attach_paid_compute_approval(run, "approval-paid", Some(500_000), Some(4))
+            .await
+            .unwrap();
+        let event = OptimizerEventEnvelope {
+            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+            event_id: Some("gepa_cap_probe:1".into()),
+            event_type: "optimizer.usage".into(),
+            sequence_number: 1,
+            occurred_at: chrono::Utc::now().to_rfc3339(),
+            optimizer_run_id: run.id.clone(),
+            algorithm_id: "gepa".into(),
+            level: Some("info".into()),
+            item: None,
+            delta: Map::new(),
+            snapshot: None,
+            usage_delta: Some(
+                json!({"rollouts":5,"cost_usd":0.25})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            artifact_refs: vec![],
+            error: None,
+            raw: json!({}),
+        };
+        svc.append_events(run.id.clone(), vec![event])
+            .await
+            .unwrap();
+        let stored = svc.get(run.id).await.unwrap();
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["receiptViolation"],
+            true
+        );
+        assert_eq!(
+            stored.usage.extra["paidComputeApproval"]["violationReason"],
+            "rollout_cap_exceeded"
+        );
+    }
+
     #[test]
     fn mixed_cost_receipts_never_project_a_partial_sum() {
         let mut usage = OptimizerUsageSummary::default();
@@ -3415,6 +3533,60 @@ mod tests {
         assert!(!encoded.contains("runDirectory"));
         assert!(!encoded.contains(&run_dir.display().to_string()));
         assert!(!result["artifactRefs"][0]["id"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn craftax_result_materializes_react_prompt_without_filesystem_paths() {
+        let (svc, dir, _) = service().await;
+        let run_dir = dir.path().join("craftax_result");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("best_candidate.json"),
+            r#"{
+                "candidate_id": "craftax_winner",
+                "parent_id": "seed",
+                "lever_bundle": {
+                    "values": {
+                        "react_system_prompt": "Observe carefully, choose one valid Craftax action, then reassess."
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "craftax_result_run",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = run.clone();
+        stored.status = "completed".into();
+        stored.summary = json!({
+            "recipeId": "gepa.craftax.smoke.v1",
+            "runDirectory": run_dir.display().to_string(),
+            "selection": {"score": 0.4},
+            "heldout": {"score": 0.3}
+        });
+        svc.persist_run(stored).await.unwrap();
+        let result = svc.get_result(run.id).await.unwrap();
+        assert_eq!(result["schemaVersion"], json!("optimizer_result.v1"));
+        assert_eq!(
+            result["selectedCandidate"]["materializedValues"]["prompt"],
+            json!("Observe carefully, choose one valid Craftax action, then reassess.")
+        );
+        assert!(result["selectedCandidate"]["materializedDigest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        let encoded = result.to_string();
+        assert!(!encoded.contains("best_candidate.json"));
+        assert!(!encoded.contains("runDirectory"));
+        assert!(!encoded.contains(&run_dir.display().to_string()));
     }
 
     #[tokio::test]

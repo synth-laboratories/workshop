@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import { artifactFromVisualRecord, VisualHost } from "./VisualHost";
 import { bridges } from "../runtime/desktopBridge";
+import { getPreferences, updatePreferences } from "../preferences";
+import { PaneResizeHandle } from "./PaneResizeHandle";
 import type { VisualSeal, VisualSealBundle } from "../bridge";
 
 type Tab = "all" | "recent" | "live" | "sealed" | "templates";
@@ -25,6 +27,14 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [focusVisualId, setFocusVisualId] = useState<string | null>(null);
+	const [listWidth, setListWidth] = useState(() => getPreferences().layout.last.visualsListWidth);
+	const updateListWidth = (width: number) => {
+		setListWidth(width);
+		updatePreferences((current) => ({
+			...current,
+			layout: { ...current.layout, last: { ...current.layout.last, visualsListWidth: width } }
+		}));
+	};
 	const [seals, setSeals] = useState<VisualSeal[]>([]);
 	const [sealedBundle, setSealedBundle] = useState<VisualSealBundle | null>(null);
 	const [compareBundle, setCompareBundle] = useState<VisualSealBundle | null>(null);
@@ -152,7 +162,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 			{error ? <p className="visuals-error">{error}</p> : null}
 			{loading ? <p className="visuals-loading">Loading visuals…</p> : null}
 
-			<div className={`visuals-layout${focusVisualId ? " focus" : ""}`}>
+			<div className={`visuals-layout${focusVisualId ? " focus" : ""}`} style={focusVisualId ? undefined : { "--visuals-list-width": `${listWidth}px` } as CSSProperties}>
 				<div className="visuals-grid" data-testid="visuals-grid" hidden={Boolean(focusVisualId)}>
 					{filtered.length === 0 && !loading ? (
 						<p className="visuals-empty">No visuals yet. Create one from chat, MCP, or New visual.</p>
@@ -178,6 +188,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 						</article>
 					))}
 				</div>
+				{selected && !focusVisualId ? <PaneResizeHandle value={listWidth} onChange={updateListWidth} minPrimary={280} minSecondary={320} ariaLabel="Resize visual list and preview" direction="primary" resetValue={560} /> : null}
 				{selected ? (
 					<div className="visuals-preview" data-testid="visuals-preview">
 						<header>

@@ -10,7 +10,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     future::Future,
     pin::Pin,
     sync::{
@@ -66,7 +66,7 @@ pub(crate) struct PaidComputeCap {
 }
 
 impl PaidComputeCap {
-    fn is_bounded(&self) -> bool {
+    pub(crate) fn is_bounded(&self) -> bool {
         self.max_cost_usd_micros.is_some_and(|value| value > 0)
             || self.max_rollouts.is_some_and(|value| value > 0)
     }
@@ -135,8 +135,10 @@ pub(crate) enum ApprovalKind {
     },
     PaidCompute {
         operation: String,
+        parameters: Value,
         estimated_cost_usd_micros: Option<u64>,
         requested_cap: PaidComputeCap,
+        requesting_agent: String,
         recipe_id: Option<String>,
         dataset: Option<String>,
         proposer_model: Option<String>,
@@ -180,10 +182,11 @@ impl ApprovalKind {
     }
 
     fn source(&self) -> EventSource {
-        match self {
-            Self::ShellCommand { .. } => EventSource::Codex,
-            _ => EventSource::System,
-        }
+        // These receipts belong to the agent session whose mutation is being
+        // gated. Keeping every typed kind on the Codex session stream makes
+        // the request, decision, and restart terminalization observable by
+        // the same live UI path as shell approvals.
+        EventSource::Codex
     }
 
     pub(crate) fn validate_decision(&self, decision: &ApprovalDecision) -> Result<()> {
@@ -254,8 +257,10 @@ impl ApprovalKind {
             }),
             Self::PaidCompute {
                 operation,
+                parameters,
                 estimated_cost_usd_micros,
                 requested_cap,
+                requesting_agent,
                 recipe_id,
                 dataset,
                 proposer_model,
@@ -267,8 +272,10 @@ impl ApprovalKind {
                 "approvalId": approval_id,
                 "kind": self.name(),
                 "operation": operation,
+                "parameters": parameters,
                 "estimatedCostUsdMicros": estimated_cost_usd_micros,
                 "requestedCap": requested_cap,
+                "requestingAgent": requesting_agent,
                 "recipeId": recipe_id,
                 "dataset": dataset,
                 "proposerModel": proposer_model,
@@ -345,6 +352,7 @@ struct PendingApproval {
 
 pub(crate) struct ApprovalBroker {
     pending: Mutex<HashMap<String, Arc<PendingApproval>>>,
+    session_grants: Mutex<HashSet<(String, String)>>,
     persistence: SessionPersistence,
     restore_started: AtomicBool,
 }
@@ -353,6 +361,7 @@ impl ApprovalBroker {
     pub(crate) fn new(persistence: SessionPersistence) -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),
+            session_grants: Mutex::new(HashSet::new()),
             persistence,
             restore_started: AtomicBool::new(false),
         }
@@ -395,19 +404,22 @@ impl ApprovalBroker {
         Ok(approval_id)
     }
 
-    /// Persist a policy auto-decision as a durable `approval.granted` receipt.
-    /// Maximally permissive `.synth` settings must not skip the receipt.
+    /// Persist a policy-authorized request as a receipt even though no modal
+    /// needs to be shown. Permissive policy must never mean unaudited work.
     pub(crate) async fn record_auto<R: tauri::Runtime>(
         &self,
         app: &AppHandle<R>,
         session_id: &str,
         kind: &ApprovalKind,
         decision: &ApprovalDecision,
+        policy: &str,
     ) -> Result<String> {
+        kind.validate_decision(decision)?;
         let approval_id = format!("approval-auto-{}", uuid::Uuid::new_v4().simple());
         let mut payload = kind.safe_payload(&approval_id);
         payload["decision"] = json!(decision.event_value());
         payload["policyAuto"] = json!(true);
+        payload["approvalPolicy"] = json!(policy);
         if let ApprovalDecision::ApproveWithCap { cap } = decision {
             payload["cap"] = serde_json::to_value(cap)?;
         }
@@ -452,6 +464,19 @@ impl ApprovalBroker {
             return Err(anyhow!("approval is no longer pending: {approval_id}"));
         }
         let delivery = pending.resolver.resolve(&decision).await?;
+        if matches!(
+            decision,
+            ApprovalDecision::Approve {
+                scope: ApprovalScope::Session
+            }
+        ) {
+            if let Some(key) = remembered_key(&pending.kind) {
+                self.session_grants
+                    .lock()
+                    .await
+                    .insert((session_id.to_owned(), key));
+            }
+        }
         *settled = true;
         drop(settled);
         self.pending.lock().await.remove(approval_id);
@@ -534,6 +559,30 @@ impl ApprovalBroker {
                     payload,
                 )
                 .await?;
+        }
+        Ok(count)
+    }
+
+    /// Drain every origin attached to a session. Interrupt and terminal turn
+    /// events use this so Workshop-owned waiters cannot outlive the agent turn
+    /// merely because their origin generation is not the Codex attachment id.
+    pub(crate) async fn expire_session<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: &str,
+        reason: &str,
+    ) -> Result<usize> {
+        let origins = self
+            .pending
+            .lock()
+            .await
+            .values()
+            .filter(|pending| pending.origin.session_id == session_id)
+            .map(|pending| pending.origin.clone())
+            .collect::<HashSet<_>>();
+        let mut count = 0;
+        for origin in origins {
+            count += self.expire_origin(app, &origin, reason).await?;
         }
         Ok(count)
     }
@@ -628,6 +677,66 @@ impl ApprovalBroker {
         Ok(count)
     }
 
+    /// Gate a Workshop-owned mutation. Permissive policy and remembered
+    /// session grants stay auditable; otherwise the UI must settle the card.
+    pub(crate) async fn authorize_host<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: Option<&str>,
+        kind: ApprovalKind,
+    ) -> Result<String> {
+        let policy = crate::synth_config::desktop_permission_settings()?.approval_policy;
+        if let Some(session_id) = session_id {
+            if let Some(decision) = self.session_decision(session_id, &kind).await {
+                return self
+                    .record_auto(app, session_id, &kind, &decision, "remembered-session")
+                    .await;
+            }
+        }
+        if let Some(decision) = super::approval_policy::auto_decision(&policy, &kind)? {
+            return self
+                .record_auto(
+                    app,
+                    session_id.unwrap_or("policy-auto"),
+                    &kind,
+                    &decision,
+                    &policy,
+                )
+                .await;
+        }
+        if let Some(session_id) = session_id {
+            let (resolver, receiver) = HostDecisionResolver::pair();
+            let approval_id = self
+                .request(
+                    app,
+                    ApprovalOrigin {
+                        session_id: session_id.to_owned(),
+                        instance_id: format!("host-{}", std::process::id()),
+                    },
+                    kind,
+                    resolver,
+                )
+                .await?;
+            let decision = receiver
+                .await
+                .map_err(|_| anyhow!("approval waiter closed"))?
+                .map_err(|reason| anyhow!("approval expired: {reason}"))?;
+            if matches!(decision, ApprovalDecision::Reject) {
+                return Err(anyhow!("approval rejected"));
+            }
+            return Ok(approval_id);
+        }
+        if matches!(kind, ApprovalKind::SidecarLifecycle { .. }) {
+            let decision = super::approval_policy::operator_decision(&kind);
+            return self
+                .record_auto(app, "operator", &kind, &decision, "operator-command")
+                .await;
+        }
+        Err(anyhow!(
+            "this mutation requires an agent session for approval"
+        ))
+    }
+
     pub(crate) async fn is_pending(&self, approval_id: &str) -> bool {
         self.pending.lock().await.contains_key(approval_id)
     }
@@ -640,8 +749,21 @@ impl ApprovalBroker {
             .map(|pending| pending.kind.clone())
     }
 
-    /// Translate a shell/UI decision into the typed decision the pending kind
-    /// actually accepts. Paid compute maps Approve once onto the requested cap.
+    pub(crate) async fn session_decision(
+        &self,
+        session_id: &str,
+        kind: &ApprovalKind,
+    ) -> Option<ApprovalDecision> {
+        let key = remembered_key(kind)?;
+        self.session_grants
+            .lock()
+            .await
+            .contains(&(session_id.to_owned(), key))
+            .then_some(ApprovalDecision::Approve {
+                scope: ApprovalScope::Session,
+            })
+    }
+
     pub(crate) async fn decision_from_shell(
         &self,
         approval_id: &str,
@@ -652,10 +774,13 @@ impl ApprovalBroker {
             .await
             .ok_or_else(|| anyhow!("approval is no longer pending: {approval_id}"))?;
         match (&kind, requested) {
-            (ApprovalKind::PaidCompute { requested_cap, .. }, "once" | "always") => {
+            (ApprovalKind::PaidCompute { requested_cap, .. }, "once") => {
                 Ok(ApprovalDecision::ApproveWithCap {
                     cap: requested_cap.clone(),
                 })
+            }
+            (ApprovalKind::PaidCompute { .. }, "always") => {
+                Err(anyhow!("paid_compute approvals cannot be remembered"))
             }
             _ => ApprovalDecision::from_shell_wire(requested),
         }
@@ -667,8 +792,17 @@ impl ApprovalBroker {
     }
 }
 
-/// Delivers a host-originated approval (plugin lifecycle, paid compute) to the
-/// MCP/request waiter that submitted it. Codex JSON-RPC is a separate resolver.
+fn remembered_key(kind: &ApprovalKind) -> Option<String> {
+    match kind {
+        ApprovalKind::SidecarLifecycle { sidecar, action } => {
+            Some(format!("sidecar:{sidecar}:{action}"))
+        }
+        _ => None,
+    }
+}
+
+/// Resolves a Workshop-owned mutation without coupling the broker to a JSON-RPC
+/// transport. The waiter dies on restart, so restore expires its durable card.
 pub(crate) struct HostDecisionResolver {
     tx: Mutex<Option<tokio::sync::oneshot::Sender<Result<ApprovalDecision, String>>>>,
 }
@@ -886,11 +1020,13 @@ mod tests {
     fn paid_compute_cannot_be_remembered_and_approval_carries_a_cap() {
         let kind = ApprovalKind::PaidCompute {
             operation: "gepa.banking77.smoke.v1".into(),
+            parameters: json!({"recipeId":"gepa.banking77.smoke.v1"}),
             estimated_cost_usd_micros: None,
             requested_cap: PaidComputeCap {
                 max_cost_usd_micros: Some(500_000),
                 max_rollouts: Some(4),
             },
+            requesting_agent: "agent:planner".into(),
             recipe_id: Some("gepa.banking77.smoke.v1".into()),
             dataset: Some("banking77".into()),
             proposer_model: Some("gpt-5.6-luna".into()),
@@ -922,6 +1058,15 @@ mod tests {
         assert_eq!(payload["estimatedCostUsdMicros"], Value::Null);
         assert_eq!(payload["requestedCap"]["maxCostUsdMicros"], 500_000);
         assert_eq!(payload["requestedCap"]["maxRollouts"], 4);
+    }
+
+    #[test]
+    fn typed_host_approvals_stay_on_the_owning_codex_session_stream() {
+        let kind = ApprovalKind::SidecarLifecycle {
+            sidecar: "optimizers".into(),
+            action: "start".into(),
+        };
+        assert_eq!(kind.source(), EventSource::Codex);
     }
 
     #[test]

@@ -6,7 +6,7 @@
  */
 
 export const PREFERENCES_STORAGE_KEY = "synth.preferences.v1";
-export const PREFERENCES_SCHEMA_VERSION = 4 as const;
+export const PREFERENCES_SCHEMA_VERSION = 5 as const;
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ToolActivityMode = "detailed" | "grouped" | "compact";
@@ -27,6 +27,7 @@ export type LayoutSnapshot = {
 	sidebarWidth: number;
 	outputPaneVisible: boolean;
 	outputPaneWidth: number;
+	visualsListWidth: number;
 	bottomPanelVisible: boolean;
 	bottomPanelHeight: number;
 	selectedConversationId: string | null;
@@ -88,6 +89,7 @@ export const DEFAULT_LAYOUT: LayoutSnapshot = {
 	sidebarWidth: 260,
 	outputPaneVisible: false,
 	outputPaneWidth: 420,
+	visualsListWidth: 560,
 	bottomPanelVisible: false,
 	bottomPanelHeight: 220,
 	selectedConversationId: null,
@@ -167,6 +169,10 @@ export function normalizeLayoutSnapshot(
 	const maxSidebar = Math.max(minSidebar, Math.min(420, viewportWidth - 480));
 	const minOutput = 280;
 	const maxOutput = Math.max(minOutput, Math.min(720, viewportWidth - 520));
+	const minVisualsList = 280;
+	// Preserve the desktop preference while compact layouts are stacked; the
+	// live separator clamps against its actual parent content box.
+	const maxVisualsList = 960;
 	const minBottom = 120;
 	const maxBottom = Math.max(minBottom, Math.min(480, viewportHeight - 280));
 	return {
@@ -174,6 +180,7 @@ export function normalizeLayoutSnapshot(
 		sidebarWidth: clampNumber(source.sidebarWidth, minSidebar, maxSidebar, DEFAULT_LAYOUT.sidebarWidth),
 		outputPaneVisible: source.outputPaneVisible === true,
 		outputPaneWidth: clampNumber(source.outputPaneWidth, minOutput, maxOutput, DEFAULT_LAYOUT.outputPaneWidth),
+		visualsListWidth: clampNumber(source.visualsListWidth, minVisualsList, maxVisualsList, DEFAULT_LAYOUT.visualsListWidth),
 		bottomPanelVisible: source.bottomPanelVisible === true,
 		bottomPanelHeight: clampNumber(source.bottomPanelHeight, minBottom, maxBottom, DEFAULT_LAYOUT.bottomPanelHeight),
 		selectedConversationId: typeof source.selectedConversationId === "string" ? source.selectedConversationId : null,
@@ -356,6 +363,19 @@ export function migrateLegacyPreferences(storage: Storage): DesktopPreferences {
 	if (Number.isFinite(inventoryWidth) && inventoryWidth >= 280 && (!parsed || typeof parsed !== "object")) {
 		base.layout.last.outputPaneWidth = clampNumber(inventoryWidth, 280, 720, base.layout.last.outputPaneWidth);
 		base.layout.default.outputPaneWidth = base.layout.last.outputPaneWidth;
+	}
+
+	const legacyVisualsListWidth = Number(storage.getItem("synth.visuals.list-width"));
+	const parsedLast = parsed && typeof parsed === "object"
+		&& (parsed as Record<string, unknown>).layout
+		&& typeof (parsed as Record<string, unknown>).layout === "object"
+		? ((parsed as Record<string, unknown>).layout as Record<string, unknown>).last
+		: null;
+	const hasCanonicalVisualsWidth = parsedLast && typeof parsedLast === "object"
+		&& "visualsListWidth" in (parsedLast as Record<string, unknown>);
+	if (!hasCanonicalVisualsWidth && Number.isFinite(legacyVisualsListWidth) && legacyVisualsListWidth > 0) {
+		base.layout.last.visualsListWidth = clampNumber(legacyVisualsListWidth, 280, 960, base.layout.last.visualsListWidth);
+		base.layout.default.visualsListWidth = base.layout.last.visualsListWidth;
 	}
 
 	return normalizePreferences(base);

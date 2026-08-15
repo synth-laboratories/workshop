@@ -1,0 +1,9 @@
+{
+  "bindings": [
+    {
+      "slot": "stream",
+      "kind": "fixture",
+      "source": "families/first_class_example_containers/live.craftax.v1/examples/events.json"
+    }
+  ]
+}

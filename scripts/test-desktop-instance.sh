@@ -85,7 +85,7 @@ if "$ROOT/scripts/desktop-instance.sh" print '../unsafe' >/dev/null 2>&1; then
   echo "unsafe instance name was accepted" >&2
   exit 1
 fi
-if SYNTH_DESKTOP_RELEASE_LINE=v0.2 "$ROOT/scripts/desktop-instance.sh" print alpha >/dev/null 2>&1; then
+if SYNTH_DESKTOP_RELEASE_LINE=v0.1 "$ROOT/scripts/desktop-instance.sh" print alpha >/dev/null 2>&1; then
   echo "non-v0.3 release line was accepted by the v0.3 launcher" >&2
   exit 1
 fi

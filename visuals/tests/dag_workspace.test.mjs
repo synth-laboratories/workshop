@@ -3,16 +3,16 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { projectAtCursor } from "../templates/optimizer.run.v1/components/projectEvents.ts";
+import { projectAtCursor } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
 import {
   dagStages,
   formatKnownSpend,
   formatNodeCost
-} from "../templates/optimizer.run.v1/overlays/dag/model.ts";
+} from "../families/optimizers/_shared/optimizer.run.v1/overlays/dag/model.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE = JSON.parse(
-  readFileSync(join(root, "templates/optimizer.dag.live.v1/examples/events.json"), "utf8")
+  readFileSync(join(root, "tests/fixtures/optimizer.dag.events.json"), "utf8")
 );
 const RUN = FIXTURE.run;
 const base = { occurredAt: "2026-08-14T18:00:00Z", optimizerRunId: "opt_dag_cost", algorithmId: "dag" };

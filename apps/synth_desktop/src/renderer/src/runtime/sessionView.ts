@@ -1078,7 +1078,9 @@ export function eventsToLocalActivity(
 			pendingApprovals.push({ sequence: event.sequence, key: approvalKey(event) });
 			continue;
 		}
-		if (event.eventKind !== "approval.granted" && event.eventKind !== "approval.rejected") continue;
+		if (event.eventKind !== "approval.granted"
+			&& event.eventKind !== "approval.rejected"
+			&& event.eventKind !== "approval.expired") continue;
 		const key = approvalKey(event);
 		let index = pendingApprovals.length - 1;
 		if (key) {
@@ -1380,10 +1382,21 @@ export function eventsToLocalActivity(
 		}
 		if (!event.eventKind.startsWith("approval.")) continue;
 		const path = typeof payload.path === "string" ? payload.path : undefined;
-		const label = event.eventKind === "approval.requested" ? "Approval requested"
+		const approvalKind = typeof payload.kind === "string" ? payload.kind : "permission";
+		const label = event.eventKind === "approval.requested" && approvalKind === "paid_compute" ? "Paid compute approval"
+			: event.eventKind === "approval.requested" && approvalKind === "credential_access" ? "Credential access"
+				: event.eventKind === "approval.requested" && approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
+			: event.eventKind === "approval.requested" && approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
+			: event.eventKind === "approval.requested" ? "Approval requested"
 			: event.eventKind === "approval.granted" ? "Approval granted"
-				: event.eventKind === "approval.rejected" ? "Approval rejected" : "Approval updated";
+				: event.eventKind === "approval.rejected" ? "Approval rejected"
+					: event.eventKind === "approval.expired" ? "Approval expired" : "Approval updated";
 		const command = typeof payload.command === "string" ? payload.command : undefined;
+		const typedDetail = approvalKind === "credential_access"
+			? [payload.provider, payload.purpose].filter((value): value is string => typeof value === "string").join(" · ")
+			: approvalKind === "sidecar_lifecycle"
+				? [payload.sidecar, payload.action].filter((value): value is string => typeof value === "string").join(" · ")
+				: undefined;
 		const pluginDetail = payload.kind === "plugin_lifecycle"
 			? [
 				payload.action,
@@ -1410,10 +1423,11 @@ export function eventsToLocalActivity(
 				: undefined;
 		const safeKind = payload.kind === "shell_command" || payload.kind === "file_change" || payload.kind === "permission"
 			|| payload.kind === "plugin_lifecycle" || payload.kind === "paid_compute";
-		const detail = pluginDetail
+		const detail = typedDetail
+			?? pluginDetail
 			?? (safeKind && typeof payload.detail === "string"
-			? payload.detail.slice(0, 500)
-			: command ? redactCommand(command) : path);
+				? payload.detail.slice(0, 500)
+				: command ? redactCommand(command) : path);
 		(byMessage[current] ??= []).push({
 			id: `activity-${event.sequence}`,
 			label,
@@ -1422,6 +1436,17 @@ export function eventsToLocalActivity(
 			approvalId: event.eventKind === "approval.requested"
 				? approvalKey(event) ?? `approval-${event.sequence}`
 				: undefined,
+			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle"
+				? approvalKind : "permission",
+			approvalPayload: event.eventKind === "approval.requested" && approvalKind === "paid_compute" ? {
+				operation: typeof payload.operation === "string" ? payload.operation : undefined,
+				parameters: payload.parameters && typeof payload.parameters === "object" && !Array.isArray(payload.parameters) ? payload.parameters as Record<string, unknown> : undefined,
+				estimatedCostUsdMicros: typeof payload.estimatedCostUsdMicros === "number" ? payload.estimatedCostUsdMicros : undefined,
+				requestedCap: payload.requestedCap && typeof payload.requestedCap === "object" && !Array.isArray(payload.requestedCap)
+					? payload.requestedCap as { maxCostUsdMicros?: number; maxRollouts?: number }
+					: undefined,
+				requestingAgent: typeof payload.requestingAgent === "string" ? payload.requestingAgent : undefined
+			} : undefined,
 			alwaysAllowSupported: event.eventKind === "approval.requested" && payload.alwaysSupported === true,
 			detail,
 			path,

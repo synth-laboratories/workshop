@@ -318,7 +318,7 @@ impl PluginService {
                 .filter(|value| !value.is_empty())
                 .unwrap_or("policy-auto");
             let approval_id = broker
-                .record_auto(app, session_id, &kind, &decision)
+                .record_auto(app, session_id, &kind, &decision, &policy)
                 .await?;
             return Ok(Authorization {
                 approval_id,

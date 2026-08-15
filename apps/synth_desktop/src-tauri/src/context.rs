@@ -430,9 +430,27 @@ pub async fn context_cookbooks_install(
     .await
     .map_err(|error| crate::error::AppError::from(anyhow!(error.to_string())))?;
     if let Err(error) = result {
+        let staging = instance::state_root().join("cookbooks").join("installing");
+        if staging.is_dir() {
+            let _ = fs::remove_dir_all(staging);
+        }
         let mut current = settings();
-        current.cookbooks.phase = "error".into();
-        current.cookbooks.detail = Some(error.to_string());
+        let cancelled = error.to_string() == "Cookbook installation cancelled";
+        current.cookbooks.phase = if cancelled {
+            if current.cookbooks.installed {
+                "installed"
+            } else {
+                "off"
+            }
+        } else {
+            "error"
+        }
+        .into();
+        current.cookbooks.detail = Some(if cancelled {
+            "Cookbook installation cancelled".into()
+        } else {
+            error.to_string()
+        });
         let _ = save(&current);
         return Err(crate::error::AppError::from(error));
     }

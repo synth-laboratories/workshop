@@ -1,9 +1,0 @@
-{
-  "bindings": [
-    {
-      "slot": "stream",
-      "kind": "fixture",
-      "source": "templates/live.digbench.v1/examples/events.json"
-    }
-  ]
-}

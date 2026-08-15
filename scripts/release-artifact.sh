@@ -6,11 +6,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMMAND="${1:-help}"
-OUTPUT="${2:-${SYNTH_RELEASE_ROOT:-${TMPDIR:-/tmp}/synth-desktop-v0.2-release}}"
+OUTPUT="${2:-${SYNTH_RELEASE_ROOT:-${TMPDIR:-/tmp}/synth-desktop-v0.3-release}}"
 APP_NAME="Synth Desktop.app"
 STAGE_ROOT="$OUTPUT/stage"
 STAGED_APP="$STAGE_ROOT/$APP_NAME"
-ZIP_PATH="$OUTPUT/Synth-Desktop-v0.2.0-macOS-arm64-UNNOTARIZED.zip"
+ZIP_PATH="$OUTPUT/Synth-Desktop-v0.3.0-macOS-arm64-UNNOTARIZED.zip"
 PROVENANCE="$OUTPUT/PROVENANCE.json"
 BUILT_APP="$ROOT/apps/synth_desktop/src-tauri/target/release/bundle/macos/$APP_NAME"
 INSTALLED_APP="${SYNTH_RELEASE_INSTALL_APP:-/Applications/$APP_NAME}"
@@ -45,7 +45,7 @@ require_clean_source() {
 
 verify_resource_hygiene() {
   local path
-  for path in visuals/templates visuals/chrome visuals/components visuals/runtime \
+  for path in visuals/families visuals/chrome visuals/components visuals/runtime \
     visuals/ambient.d.ts visuals/package.json visuals/tsconfig.json; do
     git -C "$ROOT" ls-files --error-unmatch "$path" >/dev/null 2>&1 \
       || git -C "$ROOT" ls-files "$path/**" | grep -q . \

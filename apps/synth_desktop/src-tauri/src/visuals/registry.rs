@@ -946,22 +946,29 @@ fn default_tsx_stub(visual: &VisualRecord) -> String {
     format!(
         r#"/** Auto-saved Synth visual instance.
  * visualId: {id}
- * templateId: {template}
+ * templateId: {template_json}
  * title: {title}
  */
-import Shell from "../templates/{template}/shell";
+import {{ lazy, Suspense }} from "react";
+import {{ getShellImporter }} from "@synth/visuals/registry";
 
 export const visualId = {id_json};
 export const templateId = {template_json};
 export const title = {title_json};
 export const bindings = {bindings} as const;
 
+const Shell = lazy(async () => {{
+  const importer = getShellImporter(templateId);
+  if (!importer) throw new Error(`Template ${{templateId}} has no TSX shell`);
+  const module = await importer();
+  return {{ default: module.Shell ?? module.default }};
+}});
+
 export default function VisualInstance(props: Record<string, unknown>) {{
-  return <Shell title={{title}} bindings={{bindings}} {{...props}} />;
+  return <Suspense fallback={{<div role="status">Loading visual…</div>}}><Shell title={{title}} bindings={{bindings}} {{...props}} /></Suspense>;
 }}
 "#,
         id = visual.id,
-        template = visual.template_id,
         title = visual.title,
         id_json = serde_json::to_string(&visual.id).unwrap_or_else(|_| "\"\"".into()),
         template_json =

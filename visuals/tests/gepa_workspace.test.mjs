@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { projectAtCursor } from "../templates/optimizer.run.v1/components/projectEvents.ts";
-import { candidatePalette, elapsedLabel, generationPalette, incumbentCandidateIds, orderedScoredCandidates } from "../templates/optimizer.run.v1/overlays/gepa/model.ts";
+import { projectAtCursor } from "../families/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
+import { candidatePalette, elapsedLabel, generationPalette, incumbentCandidateIds, orderedScoredCandidates } from "../families/optimizers/_shared/optimizer.run.v1/overlays/gepa/model.ts";
 
 // Condensed from the real banking77_gepa_sol_med_45856f25 run: same event
 // types, field names, and decision values, with the 140 per-rollout events

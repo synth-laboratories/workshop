@@ -1,93 +1,117 @@
 /**
  * Visual template registry — list + resolve by id.
  *
- * Two roots, one catalog:
- *
- *   templates/           public, versioned, ships in the release
- *   templates-internal/  private, gitignored, staged from ~/.synth at build time
- *
- * Both globs are resolved by the bundler at build time, so the renderer never
- * loads template code at runtime and `arbitraryTsxExecuted` stays false. A
- * public release simply builds with an empty internal root and therefore
- * contains no internal template — there is no runtime flag to get wrong.
+ * Families are the v0.3 public catalog. `templates/` and `templates-internal/`
+ * may add private overlays but never shadow a family id. `optimizer.dag.live.v1`
+ * is a v0.4 surface and is not in this catalog.
  */
 
 import type { VisualTemplate, VisualTemplateMeta } from "../runtime/types.ts";
+
+const familyManifests = import.meta.glob("../families/**/template.json", { eager: true, import: "default" }) as Record<string, VisualTemplateMeta>;
+const publicManifests = import.meta.glob("../templates/*/template.json", { eager: true, import: "default" }) as Record<string, VisualTemplateMeta>;
+const internalManifests = import.meta.glob("../templates-internal/*/template.json", { eager: true, import: "default" }) as Record<string, VisualTemplateMeta>;
+
+type RegistryEntry = {
+  meta: VisualTemplateMeta;
+  root: string;
+  manifestPath: string;
+};
+
+function templateRoot(manifestPath: string): string {
+  const root = manifestPath.replace(/^\.\.\//, "").replace(/\/template\.json$/, "");
+  if (
+    !(root.startsWith("families/") || root.startsWith("templates/") || root.startsWith("templates-internal/"))
+    || root.includes("..")
+    || root.startsWith("/")
+  ) {
+    throw new Error(`Unsafe visual template path: ${manifestPath}`);
+  }
+  return root;
+}
+
+const familyEntries: RegistryEntry[] = Object.entries(familyManifests)
+  .sort(([left], [right]) => left.localeCompare(right))
+  .map(([manifestPath, meta]) => ({ meta, root: templateRoot(manifestPath), manifestPath }));
+
+const BY_ID = new Map<string, RegistryEntry>();
+for (const entry of familyEntries) {
+  const directoryId = entry.root.slice(entry.root.lastIndexOf("/") + 1);
+  if (!entry.meta.id || entry.meta.id !== directoryId) {
+    throw new Error(`Visual template id ${JSON.stringify(entry.meta.id)} does not match directory ${entry.root}`);
+  }
+  const existing = BY_ID.get(entry.meta.id);
+  if (existing) {
+    throw new Error(
+      `Duplicate visual template id ${JSON.stringify(entry.meta.id)} in ${existing.manifestPath} and ${entry.manifestPath}`,
+    );
+  }
+  BY_ID.set(entry.meta.id, entry);
+}
+
+function overlay(manifests: Record<string, VisualTemplateMeta>, kind: "templates" | "templates-internal") {
+  for (const [manifestPath, meta] of Object.entries(manifests).sort(([left], [right]) => left.localeCompare(right))) {
+    const root = templateRoot(manifestPath);
+    const directoryId = root.slice(root.lastIndexOf("/") + 1);
+    if (!meta.id || meta.id !== directoryId) {
+      throw new Error(`Visual template id ${JSON.stringify(meta.id)} does not match directory ${root}`);
+    }
+    if (BY_ID.has(meta.id)) continue;
+    BY_ID.set(meta.id, { meta, root, manifestPath });
+  }
+  void kind;
+}
+
+overlay(publicManifests, "templates");
+overlay(internalManifests, "templates-internal");
+
+const ORDERED_ENTRIES = [...BY_ID.values()].sort((left, right) => left.meta.id.localeCompare(right.meta.id));
+const INTERNAL_IDS = new Set(Object.values(internalManifests).map((meta) => meta.id));
 
 type ShellModule = {
   Shell: (props: Record<string, unknown>) => unknown;
   default: (props: Record<string, unknown>) => unknown;
 };
 
-const publicManifests = import.meta.glob("../templates/*/template.json", { eager: true, import: "default" }) as Record<string, VisualTemplateMeta>;
-const internalManifests = import.meta.glob("../templates-internal/*/template.json", { eager: true, import: "default" }) as Record<string, VisualTemplateMeta>;
-
-const INTERNAL_IDS = new Set(Object.values(internalManifests).map((meta) => meta.id));
-
-function rootFor(id: string): string {
-  return INTERNAL_IDS.has(id) ? `templates-internal/${id}` : `templates/${id}`;
-}
-
-/** A private template is never silently public: the flag is derived from its root. */
-function withDistribution(meta: VisualTemplateMeta): VisualTemplate {
-  const internal = INTERNAL_IDS.has(meta.id);
-  return {
-    ...meta,
-    distribution: internal ? "internal" : "public",
-    root: rootFor(meta.id)
-  } as VisualTemplate;
-}
-
-// A public id and an internal id must not collide; the public one wins so a
-// private drop-in can never shadow a reviewed, shipped template.
-const METAS = [
-  ...Object.values(publicManifests),
-  ...Object.values(internalManifests).filter(
-    (meta) => !Object.values(publicManifests).some((pub) => pub.id === meta.id)
-  )
-].sort((a, b) => a.id.localeCompare(b.id));
-
-/** Dynamic shell importers for Desktop bundlers that support import(). */
+const familyShells = import.meta.glob("../families/**/shell.tsx") as Record<string, () => Promise<ShellModule>>;
 const publicShells = import.meta.glob("../templates/*/shell.tsx") as Record<string, () => Promise<ShellModule>>;
 const internalShells = import.meta.glob("../templates-internal/*/shell.tsx") as Record<string, () => Promise<ShellModule>>;
 
-function importersFrom(
-  modules: Record<string, () => Promise<ShellModule>>,
-  dir: string
-): Record<string, () => Promise<ShellModule>> {
-  const pattern = new RegExp(`${dir}/([^/]+)/shell\\.tsx$`);
-  return Object.fromEntries(
-    Object.entries(modules)
-      .map(([path, importer]) => [path.match(pattern)?.[1], importer] as const)
-      .filter(([id]) => Boolean(id))
-  ) as Record<string, () => Promise<ShellModule>>;
+export const shellImporters = Object.fromEntries(ORDERED_ENTRIES.flatMap((entry) => {
+  const importer = familyShells[`../${entry.root}/shell.tsx`]
+    ?? publicShells[`../${entry.root}/shell.tsx`]
+    ?? internalShells[`../${entry.root}/shell.tsx`];
+  return importer ? [[entry.meta.id, importer] as const] : [];
+})) as Record<string, () => Promise<ShellModule>>;
+
+function withDistribution(entry: RegistryEntry): VisualTemplate {
+  const internal = entry.root.startsWith("templates-internal/");
+  return {
+    ...entry.meta,
+    distribution: internal ? "internal" : "public",
+    root: entry.root,
+  } as VisualTemplate;
 }
 
-export const shellImporters = {
-  ...importersFrom(internalShells, "templates-internal"),
-  ...importersFrom(publicShells, "templates")
-} as Record<string, () => Promise<ShellModule>>;
-
 export function listTemplates(): VisualTemplate[] {
-  return METAS.map(withDistribution);
+  return ORDERED_ENTRIES.map(withDistribution);
 }
 
 export function resolveTemplate(id: string): VisualTemplate | undefined {
-  const meta = METAS.find((t) => t.id === id);
-  if (!meta) return undefined;
-  return withDistribution(meta);
+  const entry = BY_ID.get(id);
+  if (!entry) return undefined;
+  return withDistribution(entry);
 }
 
 export function getShellImporter(id: string) {
   return shellImporters[id];
 }
 
-/** True when the id resolves to a private template staged from ~/.synth. */
 export function isInternalTemplate(id: string): boolean {
   return INTERNAL_IDS.has(id);
 }
 
-export const TEMPLATE_IDS = METAS.map((t) => t.id);
+export const TEMPLATE_IDS = ORDERED_ENTRIES.map((entry) => entry.meta.id);
 export const INTERNAL_TEMPLATE_IDS = [...INTERNAL_IDS].sort();
 
 export type { VisualTemplate, VisualTemplateMeta, VisualInstance, VisualBinding } from "../runtime/types.ts";

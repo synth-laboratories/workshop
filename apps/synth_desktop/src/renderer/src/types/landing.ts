@@ -84,7 +84,7 @@ export type ArtifactRef = {
 	rendererKind?: string;
 	/** Runtime visual instance id from `/v1/visuals`. */
 	visualId?: string;
-	/** Immutable registry revision represented by this artifact. */
+	/** Durable revision used to invalidate asynchronous binding resolutions. */
 	revision?: number;
 	bindings?: import("@synth/runtime-protocol").VisualBindings | Record<string, unknown>;
 	/** Durable visual metadata, including presentation and authoring review receipts. */
@@ -99,6 +99,14 @@ export type LocalActivityLine = {
 	label: string;
 	/** Correlates a pending approval with its durable grant/rejection event. */
 	approvalId?: string;
+	approvalKind?: "shell_command" | "paid_compute" | "sidecar_lifecycle" | "credential_access" | "permission";
+	approvalPayload?: {
+		operation?: string;
+		parameters?: Record<string, unknown>;
+		estimatedCostUsdMicros?: number;
+		requestedCap?: { maxCostUsdMicros?: number; maxRollouts?: number };
+		requestingAgent?: string;
+	};
 	alwaysAllowSupported?: boolean;
 	/** Expanded raw detail (tool output / thought) when the line is opened. */
 	detail?: string;

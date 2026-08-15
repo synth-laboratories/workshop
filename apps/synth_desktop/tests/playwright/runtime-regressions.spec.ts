@@ -1417,6 +1417,35 @@ test("approval modes configure new native sessions and pending requests resolve 
 	expect(await page.evaluate(() => (window as typeof window & { __approvalDecisions: () => unknown[] }).__approvalDecisions())).toEqual([
 		{ sessionId, approvalId: "approval-1", decision: "once" }
 	]);
+
+	await page.evaluate((id) => {
+		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({
+			sessionId: id,
+			method: "approval.requested",
+			params: {
+				approvalId: "approval-paid-1",
+				kind: "paid_compute",
+				operation: "optimizer.recipe.start",
+				requestingAgent: "Agent session approval-test",
+				estimatedCostUsdMicros: 2450000,
+				requestedCap: { maxCostUsdMicros: 2450000, maxRollouts: 240 },
+				parameters: { recipeId: "gepa.banking77.luna.v1", task: "banking77" },
+				alwaysSupported: false
+			}
+		});
+	}, sessionId);
+	const modal = page.getByTestId("paid-compute-approval-modal");
+	await expect(modal).toBeVisible();
+	await expect(modal).toContainText("Agent session approval-test");
+	await expect(modal).toContainText("$2.45");
+	await expect(modal).toContainText("240");
+	await expect(page.locator(".approval-card")).toHaveCount(0);
+	await modal.getByRole("button", { name: "Approve with cap" }).click();
+	await expect(modal).toBeHidden();
+	expect(await page.evaluate(() => (window as typeof window & { __approvalDecisions: () => unknown[] }).__approvalDecisions())).toEqual([
+		{ sessionId, approvalId: "approval-1", decision: "once" },
+		{ sessionId, approvalId: "approval-paid-1", decision: "once" }
+	]);
 });
 
 test("a recent folder can create and attach to a conversation from the landing composer", async ({ page }) => {

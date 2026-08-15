@@ -61,7 +61,7 @@ function toolCategory(line: LocalActivityLine): string | null {
 	if (line.kind === "search") return "searched";
 	if (line.toolStatus) {
 		const label = (line.label ?? "").toLowerCase();
-		if (label.includes("visual")) return "used visuals";
+		if (label.includes("synth_visuals") || label.includes("visual")) return "used visuals";
 		if (label.includes("container")) return "used containers";
 		return "used tools";
 	}
