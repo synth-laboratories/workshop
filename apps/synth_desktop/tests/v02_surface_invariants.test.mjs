@@ -62,7 +62,8 @@ test("hosted SFT uses only the public synth-optimizers control plane", () => {
 	assert.match(sftClient, /Workshop never contacts Optimizers-beta directly/);
 	assert.doesNotMatch(privateGeloClient, /\bsubmit_toml\b|fn optimizer_events_after/);
 	assert.match(service, /SftOptimizerClient::from_env\(\)\?\s*\.cancel\(&id\)/s);
-	assert.match(commands, /HOSTED_SFT_FIXTURE_RECIPE[\s\S]*SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN/);
+	assert.match(commands, /"sft\.hosted\.fixture\.v1"[\s\S]*SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN/);
+	assert.match(commands, /request\.recipe_id == "sft\.hosted\.fixture\.v1"[\s\S]*start_recipe\(request\)[\s\S]*return Ok\(run\)/);
 });
 
 test("v0.2 grouped activity keeps visual and container MCP calls out of used-tools summaries", () => {

@@ -636,6 +636,19 @@ pub(crate) async fn authorize_optimizer_recipe_start(
                 request.recipe_id
             ))
         })?;
+    // This product-owned fixture is deterministic and cannot incur provider
+    // charges. The click itself is the operator's explicit instruction; do not
+    // route it through paid-compute or plugin-sidecar approval because its
+    // canonical run lives on the public SFT service.
+    if request.recipe_id == "sft.hosted.fixture.v1" {
+        let (run, event) = state
+            .optimizers()
+            .start_recipe(request)
+            .await
+            .map_err(AppError::from)?;
+        publish_optimizer_event(app, state, event).await?;
+        return Ok(run);
+    }
     let session_id = request
         .session_ref
         .as_deref()
