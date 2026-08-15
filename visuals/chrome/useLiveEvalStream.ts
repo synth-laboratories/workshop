@@ -76,7 +76,10 @@ export function useLiveEvalStream(options: {
           setRecovering(true);
           try {
             const before = ingest.current.events.length;
-            let after = [...ingest.current.lastSequenceByScope.values()].reduce((max, value) => Math.max(max, value), 0);
+            // Poll cursors are not comparable across rollout/lane scopes. A
+            // global max can skip a slower lane forever, so replay from the
+            // durable origin and rely on envelope identity de-duplication.
+            let after = 0;
             for (let pageNumber = 0; pageNumber < 1000; pageNumber++) {
               const url = new URL(pollUrl, sseUrl);
               url.searchParams.set("after", String(after));

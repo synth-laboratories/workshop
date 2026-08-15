@@ -615,6 +615,7 @@ impl ReportRegistry {
         &self,
         report_id: String,
         request: ReportAttachTrace,
+        projection_verified: bool,
     ) -> Result<(ReportRecord, Value)> {
         const PROJECTION_SCHEMA: &str = "synth.trace-projection.rollout-inspector.v1";
         if request.trace_digest.trim().is_empty() {
@@ -691,9 +692,12 @@ impl ReportRegistry {
                 .unwrap_or(false);
             block.payload = payload;
             block.source_digest = Some(request.trace_digest.clone());
-            if has_projection {
+            if has_projection && projection_verified {
                 block.access_state = "accessible".into();
                 block.integrity_state = "verified".into();
+            } else if has_projection {
+                block.access_state = "accessible".into();
+                block.integrity_state = "unknown".into();
             } else {
                 block.access_state = "missing".into();
                 block.integrity_state = "unknown".into();
@@ -1699,7 +1703,10 @@ fn scan_forbidden(value: &Value) -> Result<()> {
 }
 
 fn build_index_html(data: &Value, runtime_digest: &str) -> Result<String> {
-    let inline = serde_json::to_string(data)?.replace("</script", "<\\/script");
+    // HTML recognizes script end tags case-insensitively, even for
+    // application/json. Escaping every '<' as a JSON Unicode escape prevents
+    // any report-authored string from becoming markup or a script terminator.
+    let inline = serde_json::to_string(data)?.replace('<', "\\u003c");
     let css = REPORT_READER_CSS.replace("</style", "<\\/style");
     let runtime = FROZEN_RUNTIME.replace("</script", "<\\/script");
     Ok(format!(
@@ -2068,6 +2075,7 @@ mod tests {
                     collection_id: Some("golden_a".into()),
                     projection: Some(projection),
                 },
+                true,
             )
             .await
             .unwrap();
@@ -2114,6 +2122,7 @@ mod tests {
                     collection_id: None,
                     projection: None,
                 },
+                false,
             )
             .await
             .unwrap();
@@ -2388,5 +2397,20 @@ mod tests {
         );
         assert_eq!(request.trace_id.as_deref(), Some("trace_demo"));
         assert_eq!(request.collection_id.as_deref(), Some("golden_a"));
+    }
+
+    #[test]
+    fn sealed_report_json_cannot_terminate_its_script_element() {
+        let payload = json!({
+            "title": "</SCRIPT><img src=x onerror=location='https://attacker.invalid'>",
+            "mixed": "before</ScRiPt>after",
+        });
+        let html = build_index_html(&payload, "runtime-digest").unwrap();
+
+        assert!(!html.contains("</SCRIPT>"));
+        assert!(!html.contains("</ScRiPt>"));
+        assert!(!html.contains("<img src=x"));
+        assert!(html.contains("\\u003c/SCRIPT>"));
+        assert!(html.contains("\\u003c/ScRiPt>"));
     }
 }

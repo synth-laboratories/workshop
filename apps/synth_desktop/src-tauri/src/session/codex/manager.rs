@@ -54,14 +54,16 @@ impl CodexManager {
     pub fn new(
         core: Option<Arc<crate::core_runtime::CoreRuntime>>,
         broker: Arc<CredentialBroker>,
+        approvals: Arc<ApprovalBroker>,
     ) -> Self {
         let root = codex_root();
         let binary = PathBuf::from(env::var("SYNTH_CODEX_BIN").unwrap_or_else(|_| "codex".into()));
-        Self::with_paths(
+        Self::with_paths_and_approvals(
             crate::session::SessionPersistence::from_core(core),
             root,
             binary,
             broker,
+            approvals,
         )
     }
 
@@ -71,12 +73,22 @@ impl CodexManager {
         binary: PathBuf,
         broker: Arc<CredentialBroker>,
     ) -> Self {
+        let approvals = Arc::new(ApprovalBroker::new(persistence.clone()));
+        Self::with_paths_and_approvals(persistence, root, binary, broker, approvals)
+    }
+
+    fn with_paths_and_approvals(
+        persistence: crate::session::SessionPersistence,
+        root: PathBuf,
+        binary: PathBuf,
+        broker: Arc<CredentialBroker>,
+        approvals: Arc<ApprovalBroker>,
+    ) -> Self {
         let state_path = root.join("threads.json");
         let records = fs::read_to_string(&state_path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default();
-        let approvals = Arc::new(ApprovalBroker::new(persistence.clone()));
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::new(RwLock::new(records)),

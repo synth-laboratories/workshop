@@ -53,6 +53,26 @@ test("batch ingest preserves lane-local identity, gaps, controls, and duplicate 
   assert.equal(healed.lastSequenceByScope.get("a"), 3);
 });
 
+test("numeric string sequences preserve lane-local gaps and recovery", () => {
+  const initial = ingestLiveEnvelopeBatch(undefinedState(), [
+    { lane: "a", sequence: "1", kind: "observation" },
+    { lane: "b", sequence: "1", kind: "observation" },
+    { lane: "a", sequence: "3", kind: "observation" },
+  ]);
+  assert.deepEqual(initial.gaps, [{ scope: "a", after: 1, before: 3 }]);
+  const healed = ingestLiveEnvelopeBatch(initial, [
+    { lane: "a", sequence: "2", kind: "observation" },
+  ]);
+  assert.deepEqual(healed.gaps, []);
+  assert.equal(healed.lastSequenceByScope.get("a"), 3);
+});
+
+test("poll recovery replays from the durable origin instead of a cross-lane max", () => {
+  const hook = readFileSync(join(root, "chrome/useLiveEvalStream.ts"), "utf8");
+  assert.match(hook, /let after = 0;/);
+  assert.doesNotMatch(hook, /lastSequenceByScope\.values\(\).*reduce/);
+});
+
 test("stream_id plus sequence is the Harbor live identity", () => {
   const first = ingestLiveEnvelopeBatch(undefinedState(), [
     { stream_id: "stream-a", sequence: 1, kind: "trial.planned" },

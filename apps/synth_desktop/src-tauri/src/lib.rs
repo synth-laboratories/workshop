@@ -1761,50 +1761,25 @@ async fn reports_upload_status(
 #[tauri::command]
 #[specta::specta]
 async fn reports_share(
-    app: tauri::AppHandle,
-    state: State<'_, Arc<CoreRuntime>>,
-    receipt_digest: String,
+    _app: tauri::AppHandle,
+    _state: State<'_, Arc<CoreRuntime>>,
+    _receipt_digest: String,
 ) -> Result<ReportUpload, AppError> {
-    let backend = synth_config::resolve().map_err(AppError::from)?;
-    let api_key = backend.api_key.ok_or_else(|| {
-        AppError::from(anyhow::anyhow!("Share requires a signed-in Synth account"))
-    })?;
-    let (upload, event) = state
-        .reports()
-        .share_seal(receipt_digest, backend.backend_url, api_key)
-        .await
-        .map_err(AppError::from)?;
-    if event.get("schemaVersion").is_some() {
-        publish_visual_event(&app, &state, event).await?;
-    }
-    Ok(upload)
+    Err(AppError::message(
+        "Direct Report sharing is disabled; create and approve a revision-bound visibility request",
+    ))
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn reports_promote(
-    state: State<'_, Arc<CoreRuntime>>,
-    publication_id: String,
-    slug: String,
+    _state: State<'_, Arc<CoreRuntime>>,
+    _publication_id: String,
+    _slug: String,
 ) -> Result<reports::ReportPromotion, AppError> {
-    let backend = synth_config::resolve().map_err(AppError::from)?;
-    let api_key = backend.api_key.ok_or_else(|| {
-        AppError::from(anyhow::anyhow!(
-            "Publishing a Report requires a signed-in Synth account"
-        ))
-    })?;
-    state
-        .reports()
-        .promote_publication(
-            publication_id,
-            slug,
-            backend.backend_url,
-            api_key,
-            None,
-            None,
-        )
-        .await
-        .map_err(AppError::from)
+    Err(AppError::message(
+        "Direct Report promotion is disabled; create and approve a revision-bound public visibility request",
+    ))
 }
 
 #[tauri::command]
@@ -2159,6 +2134,12 @@ async fn account_open_billing(
         )
         .await
         .map_err(AppError::from)?;
+    let url = account_cloud::validate_billing_url(
+        &url,
+        &resolved.backend_url,
+        synth_config::development_routing_enabled(),
+    )
+    .map_err(AppError::from)?;
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_url(url.clone(), None::<String>)
@@ -2887,7 +2868,11 @@ pub fn run() {
                 crate::session::SessionPersistence::from_core(Some(core.clone())),
             ));
             let whisper = Arc::new(whisper::WhisperManager::new());
-            let codex = Arc::new(CodexManager::new(Some(core.clone()), broker.clone()));
+            let codex = Arc::new(CodexManager::new(
+                Some(core.clone()),
+                broker.clone(),
+                approvals.clone(),
+            ));
             let supervisor = Arc::new(services::ServiceSupervisor::new());
             supervisor.register(laguna.clone());
             supervisor.register(optimizer_manager.clone());

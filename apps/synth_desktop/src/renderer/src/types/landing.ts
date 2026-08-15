@@ -99,7 +99,7 @@ export type LocalActivityLine = {
 	label: string;
 	/** Correlates a pending approval with its durable grant/rejection event. */
 	approvalId?: string;
-	approvalKind?: "shell_command" | "paid_compute" | "sidecar_lifecycle" | "credential_access" | "permission";
+	approvalKind?: "shell_command" | "paid_compute" | "sidecar_lifecycle" | "credential_access" | "plugin_lifecycle" | "permission";
 	approvalPayload?: {
 		operation?: string;
 		parameters?: Record<string, unknown>;

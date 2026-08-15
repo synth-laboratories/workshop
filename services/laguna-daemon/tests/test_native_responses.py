@@ -537,6 +537,34 @@ class NativeBackendContractTests(unittest.TestCase):
             self.assertFalse(backend.residency(900)["loaded"])
             asyncio.run(backend.close())
 
+    def test_native_backend_rejects_low_available_memory_on_a_large_mac(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="laguna-native-pressure-") as tmp:
+            backend = NativeMlxBackend(
+                model_path=Path(tmp),
+                system_memory_bytes=64 * 1024**3,
+                available_memory_bytes=8 * 1024**3,
+            )
+            with self.assertRaises(ResponsesError) as raised:
+                asyncio.run(backend._ensure_loaded())
+            self.assertEqual(raised.exception.code, "insufficient_system_memory")
+            self.assertIn("8.0 GiB", raised.exception.message)
+            asyncio.run(backend.close())
+
+    def test_native_backend_rejects_partial_model_artifacts_before_importing_mlx(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="laguna-native-partial-") as tmp:
+            model_path = Path(tmp)
+            (model_path / "config.json").write_text("{}")
+            backend = NativeMlxBackend(
+                model_path=model_path,
+                system_memory_bytes=64 * 1024**3,
+                available_memory_bytes=64 * 1024**3,
+            )
+            with self.assertRaises(ResponsesError) as raised:
+                asyncio.run(backend._ensure_loaded())
+            self.assertEqual(raised.exception.code, "model_not_found")
+            self.assertIn("incomplete or invalid", raised.exception.message)
+            asyncio.run(backend.close())
+
     def test_custom_grammar_activation_decodes_only_a_bounded_suffix(self) -> None:
         class Tokenizer:
             def __init__(self) -> None:

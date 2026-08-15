@@ -389,7 +389,11 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
             "tokens": {
                 "id_token": credential.id_token,
                 "access_token": credential.access_token,
-                "refresh_token": credential.refresh_token,
+                // The child receives only the already-refreshed, bounded
+                // session credential. Long-lived refresh authority remains in
+                // the native store and is never materialized in a shell-enabled
+                // Codex home.
+                "refresh_token": "synth-desktop-does-not-delegate-refresh",
                 "account_id": credential.account_id,
             },
             "last_refresh": chrono::DateTime::from_timestamp_millis(credential.last_refresh_ms)

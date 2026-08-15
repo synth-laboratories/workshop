@@ -332,7 +332,15 @@ impl OptimizerManager {
                 self.set_status(probed).await;
                 return self.status().await;
             }
-            self.abort_runtime().await;
+            // Status is a read path. A transient missed probe must not SIGTERM
+            // a live paid run merely because the renderer polls this method.
+            // Explicit start/stop and process-exit reconciliation own teardown.
+            let mut current = self.status().await;
+            current.detail = Some(
+                "Optimizer health probe was missed; retaining the managed runtime".into(),
+            );
+            self.set_status(current).await;
+            return self.status().await;
         }
         let phase = if selected.is_some() {
             "stopped"

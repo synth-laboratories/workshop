@@ -134,6 +134,7 @@ class ControlApiTestCase(unittest.TestCase):
         self.control: SynthControl = self.client.app.state.synth_control
         # Real machine RAM must not decide test outcomes.
         self.control.system_memory_bytes = 64 * GIB
+        self.control.available_memory_bytes = 64 * GIB
 
     def status(self) -> dict:
         response = self.client.get("/v1/synth/status")
@@ -361,6 +362,14 @@ class LifecycleTests(ControlApiTestCase):
         status = self.status()
         self.assertEqual(status["state"], "blocked_memory")
         self.assertEqual(status["memory"]["admission"], "blocked")
+
+    def test_load_blocks_when_capacity_is_sufficient_but_available_memory_is_not(self) -> None:
+        self.control.system_memory_bytes = 64 * GIB
+        self.control.available_memory_bytes = 8 * GIB
+        response = self.client.post(f"/v1/synth/models/{MODEL}/load")
+        body = self.assert_error(response, 503, "insufficient_memory")
+        self.assertEqual(body["error"]["details"]["available_bytes"], 8 * GIB)
+        self.assertEqual(self.status()["state"], "blocked_memory")
 
     def test_load_of_an_unknown_model_is_invalid_model(self) -> None:
         response = self.client.post("/v1/synth/models/other/model/load")
@@ -818,6 +827,7 @@ class SettingsTests(ControlApiTestCase):
             ({"default_max_output_tokens": 40000}, "default_max_output_tokens"),
             ({"idle_unload_after_seconds": -1}, "idle_unload_after_seconds"),
             ({"prompt_cache_slots": 0}, "prompt_cache_slots"),
+            ({"prompt_cache_slots": 3}, "prompt_cache_slots"),
             ({"queue_capacity": 33}, "queue_capacity"),
             ({"nonsense_knob": 1}, "nonsense_knob"),
         ):

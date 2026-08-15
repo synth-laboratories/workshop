@@ -27,6 +27,39 @@ const CREDITS_UNKNOWN_PATH: &str = "/api/v1/billing/credits-unknown";
 const CACHE_TTL_SECONDS: i64 = 60;
 pub const SCHEMA_VERSION: &str = "synth.desktop-account.v1";
 
+/// Billing destinations are security-sensitive even though the backend issues
+/// them: opening an arbitrary origin would turn a compromised backend response
+/// into a trusted-looking payment prompt. Production accepts only Synth web
+/// properties and Stripe-hosted checkout. Named debug instances may also open
+/// the configured development backend's own origin.
+pub(crate) fn validate_billing_url(
+    value: &str,
+    backend_url: &str,
+    allow_development_origin: bool,
+) -> Result<String> {
+    let url = reqwest::Url::parse(value).map_err(|_| anyhow!("Synth Cloud returned an invalid billing URL."))?;
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return Err(anyhow!("Synth Cloud returned an untrusted billing URL."));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("Synth Cloud returned an untrusted billing URL."))?;
+    let source_owned = host == "usesynth.ai"
+        || host.ends_with(".usesynth.ai")
+        || host == "stripe.com"
+        || host.ends_with(".stripe.com");
+    let development_owned = allow_development_origin
+        && reqwest::Url::parse(backend_url)
+            .ok()
+            .and_then(|backend| backend.host_str().map(str::to_owned))
+            .as_deref()
+            == Some(host);
+    if !source_owned && !development_owned {
+        return Err(anyhow!("Synth Cloud returned an untrusted billing URL."));
+    }
+    Ok(url.to_string())
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudAccount {
     pub id: String,
@@ -582,6 +615,56 @@ mod tests {
         DateTime::parse_from_rfc3339("2026-08-10T12:00:00+00:00")
             .unwrap()
             .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn billing_urls_are_limited_to_source_owned_origins() {
+        assert!(validate_billing_url(
+            "https://checkout.stripe.com/c/pay/cs_test_1",
+            "https://api.usesynth.ai",
+            false,
+        )
+        .is_ok());
+        assert!(validate_billing_url(
+            "https://www.usesynth.ai/account/billing",
+            "https://api.usesynth.ai",
+            false,
+        )
+        .is_ok());
+        assert!(validate_billing_url(
+            "https://checkout.attacker.test/looks-real",
+            "https://api.usesynth.ai",
+            false,
+        )
+        .is_err());
+        assert!(validate_billing_url(
+            "http://checkout.stripe.com/c/pay/cs_test_1",
+            "https://api.usesynth.ai",
+            false,
+        )
+        .is_err());
+        assert!(validate_billing_url(
+            "https://user:secret@checkout.stripe.com/c/pay/cs_test_1",
+            "https://api.usesynth.ai",
+            false,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn named_debug_instances_may_open_their_backend_origin_only() {
+        assert!(validate_billing_url(
+            "https://billing.dev.test/session/1",
+            "https://billing.dev.test",
+            true,
+        )
+        .is_ok());
+        assert!(validate_billing_url(
+            "https://billing.dev.test/session/1",
+            "https://billing.dev.test",
+            false,
+        )
+        .is_err());
     }
 
     #[tokio::test]

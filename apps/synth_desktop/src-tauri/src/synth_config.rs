@@ -50,6 +50,45 @@ fn lookup_default(table: &[(&str, &str)], profile: &str) -> Option<String> {
         .map(|(_, url)| (*url).to_owned())
 }
 
+fn source_owned_backend_url(profile: &str) -> Option<String> {
+    lookup_default(DEFAULT_ENDPOINTS, profile).or_else(|| {
+        match profile {
+            "prod" => Some("https://api.usesynth.ai"),
+            "local" => Some("http://127.0.0.1:8000"),
+            _ => None,
+        }
+        .map(str::to_owned)
+    })
+}
+
+/// Mutable routing exists only for named debug instances. A data-root alone
+/// is not an authority signal: release apps also have one, and must never
+/// forward credentials to an endpoint selected by their launch environment.
+pub(crate) fn development_routing_enabled() -> bool {
+    cfg!(debug_assertions) && crate::instance::name().is_some()
+}
+
+fn select_backend_url(
+    profile: &str,
+    allow_development_override: bool,
+    environment_override: Option<String>,
+    configured_override: Option<String>,
+) -> Result<String> {
+    if allow_development_override {
+        environment_override
+            .filter(|value| !value.trim().is_empty())
+            .or(configured_override)
+            .or_else(|| source_owned_backend_url(profile))
+            .ok_or_else(|| anyhow!("unknown Desktop backend profile `{profile}`"))
+    } else {
+        source_owned_backend_url(profile).ok_or_else(|| {
+            anyhow!(
+                "Desktop profile `{profile}` has no source-owned backend route; network access is blocked"
+            )
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "lowercase")]
 pub enum MultiAgentVersion {
@@ -594,27 +633,23 @@ pub fn resolve() -> Result<ResolvedBackend> {
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| DEFAULT_PROFILE.into());
-    let endpoint = env::var("SYNTH_BACKEND_URL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| {
-            intern
-                .and_then(|v| v.get("endpoints"))
-                .and_then(toml::Value::as_table)
-                .and_then(|v| v.get(&profile))
-                .and_then(toml::Value::as_str)
-                .map(str::to_owned)
-        })
-        .or_else(|| lookup_default(DEFAULT_ENDPOINTS, &profile))
-        .unwrap_or_else(|| match profile.as_str() {
-            "staging" => "https://api-dev.usesynth.ai".into(),
-            "local" => "http://127.0.0.1:8000".into(),
-            _ => "https://api.usesynth.ai".into(),
-        });
+    let allow_development_override = development_routing_enabled();
+    let configured_endpoint = intern
+        .and_then(|v| v.get("endpoints"))
+        .and_then(toml::Value::as_table)
+        .and_then(|v| v.get(&profile))
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned);
+    let endpoint = select_backend_url(
+        &profile,
+        allow_development_override,
+        env::var("SYNTH_BACKEND_URL").ok(),
+        configured_endpoint,
+    )?;
     // Named development instances may point their isolated cloud lane at a
     // disposable local Responses backend. Canonical apps retain source-owned
     // routing and deliberately ignore this process override.
-    let responses_gateway_url = if env::var_os(crate::instance::DATA_ROOT_ENV).is_some() {
+    let responses_gateway_url = if allow_development_override {
         env::var("SYNTH_RESPONSES_GATEWAY_URL")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -844,10 +879,22 @@ fn remove_env_secret(path: &Path, key: &str) -> Result<()> {
 
 fn validate_url(value: &str) -> Result<String> {
     let value = value.trim().trim_end_matches('/');
-    if !(value.starts_with("http://") || value.starts_with("https://"))
-        || value.contains(char::is_whitespace)
-    {
-        return Err(anyhow!("backend URL must be an http:// or https:// URL"));
+    let parsed = reqwest::Url::parse(value)
+        .map_err(|_| anyhow!("backend URL must be a valid http:// or https:// URL"))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(anyhow!("backend URL must not contain credentials"));
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("backend URL must include a host"))?;
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback) {
+        return Err(anyhow!(
+            "backend URL must use https (http is allowed only for loopback development)"
+        ));
     }
     Ok(value.to_owned())
 }
@@ -1246,6 +1293,40 @@ mod tests {
         assert_eq!(
             lookup_default(DEFAULT_ENDPOINTS, "production").as_deref(),
             Some("https://mcp.usesynth.ai")
+        );
+    }
+
+    #[test]
+    fn canonical_routing_ignores_environment_and_configured_endpoints() {
+        let selected = select_backend_url(
+            "prod",
+            false,
+            Some("https://environment.attacker.invalid".into()),
+            Some("https://config.attacker.invalid".into()),
+        )
+        .unwrap();
+        assert_eq!(selected, "https://api.usesynth.ai");
+        assert!(select_backend_url(
+            "attacker-profile",
+            false,
+            Some("https://environment.attacker.invalid".into()),
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn backend_urls_require_https_except_for_loopback_development() {
+        assert_eq!(
+            validate_url("http://127.0.0.1:41109/").unwrap(),
+            "http://127.0.0.1:41109"
+        );
+        assert!(validate_url("http://api.usesynth.ai").is_err());
+        assert!(validate_url("https://user:secret@api.usesynth.ai").is_err());
+        assert!(validate_url("file:///tmp/backend").is_err());
+        assert_eq!(
+            validate_url("https://api.usesynth.ai/").unwrap(),
+            "https://api.usesynth.ai"
         );
     }
 

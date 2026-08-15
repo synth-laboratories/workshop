@@ -32,7 +32,9 @@ from .responses_api.ids import new_id
 from .settings import SETTINGS_SCHEMA_VERSION, SettingsError, SettingsStore
 from .responses_api.backends.mlx import (
     _MIN_SYSTEM_MEMORY_BYTES,
+    _available_memory_bytes,
     _physical_memory_bytes,
+    _required_available_memory_bytes,
     _required_system_memory_bytes,
 )
 
@@ -258,6 +260,7 @@ class SynthControl:
         *,
         downloader: Downloader | None = None,
         system_memory_bytes: int | None = None,
+        available_memory_bytes: int | None = None,
         settings: SettingsStore | None = None,
     ) -> None:
         self.config = config
@@ -272,6 +275,7 @@ class SynthControl:
             if system_memory_bytes is not None
             else _physical_memory_bytes()
         )
+        self.available_memory_bytes = available_memory_bytes
         self._state = "starting"
         self._state_since = time.time()
         self._load_lock = asyncio.Lock()
@@ -321,22 +325,30 @@ class SynthControl:
         return _required_system_memory_bytes(path)
 
     def _free_memory_bytes(self) -> int | None:
-        # Unified memory: total capacity is the stable admission fact; macOS
-        # "free pages" exclude reclaimable cache and mislead. Capacity minus
-        # the daemon's own measured allocation is honest; anything unmeasured
-        # stays null.
+        available = (
+            self.available_memory_bytes
+            if self.available_memory_bytes is not None
+            else _available_memory_bytes()
+        )
+        if available is None:
+            return self.system_memory_bytes
         if self.system_memory_bytes is None:
-            return None
-        measured = self.service.memory_bytes()
-        if measured is None:
-            return None
-        return max(0, self.system_memory_bytes - measured)
+            return available
+        return min(available, self.system_memory_bytes)
 
     def _admission_allowed(self) -> bool:
-        # Mirrors the backend's real gate: unknown capacity does not block.
-        if self.system_memory_bytes is None:
-            return True
-        return self.system_memory_bytes >= self._required_bytes()
+        capacity_ok = (
+            self.system_memory_bytes is None
+            or self.system_memory_bytes >= self._required_bytes()
+        )
+        available = self._free_memory_bytes()
+        path = self._model_path()
+        available_ok = (
+            path is None
+            or available is None
+            or available >= _required_available_memory_bytes(path)
+        )
+        return capacity_ok and available_ok
 
     # -- canonical state -------------------------------------------------------
 
@@ -692,7 +704,8 @@ class SynthControl:
                     "resident": True,
                     "already_resident": True,
                 }
-            if self._model_path() is None:
+            model_path = self._model_path()
+            if model_path is None:
                 raise ControlError(
                     "model_not_found",
                     f"No weights for {canonical!r} on disk; download them first.",
@@ -716,7 +729,10 @@ class SynthControl:
                     503,
                     details={
                         "required_bytes": self._required_bytes(),
-                        "available_bytes": self.system_memory_bytes,
+                        "required_available_bytes": _required_available_memory_bytes(
+                            model_path
+                        ),
+                        "available_bytes": self._free_memory_bytes(),
                     },
                 )
             self._set_state("loading", operation_id)
@@ -731,7 +747,10 @@ class SynthControl:
                         503,
                         details={
                             "required_bytes": self._required_bytes(),
-                            "available_bytes": self.system_memory_bytes,
+                            "required_available_bytes": _required_available_memory_bytes(
+                                model_path
+                            ),
+                            "available_bytes": self._free_memory_bytes(),
                         },
                     ) from error
                 self._last_error = {"code": error.code, "message": error.message}

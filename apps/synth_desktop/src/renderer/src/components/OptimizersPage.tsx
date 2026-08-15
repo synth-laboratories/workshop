@@ -166,7 +166,7 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 		});
 		const timer = window.setInterval(() => {
 			void refreshPlugin().catch(() => undefined);
-		}, 750);
+		}, 5_000);
 		return () => {
 			unlisten?.();
 			window.clearInterval(timer);

@@ -425,7 +425,17 @@ export function useAppController() {
 				const core = bridges.core;
 				if (!core) return;
 				const replay = await Promise.all(combined.map(async (session) => {
-					const rows = await core.sessionEventsAfter(session.id, 0, 2000);
+					const rows: Awaited<ReturnType<typeof core.sessionEventsAfter>> = [];
+					let after = 0;
+					for (;;) {
+						const page = await core.sessionEventsAfter(session.id, after, 2000);
+						if (page.length === 0) break;
+						rows.push(...page);
+						for (const event of page) {
+							after = Math.max(after, event.sessionSequence ?? event.sequence);
+						}
+						if (page.length < 2000) break;
+					}
 					return [session.id, rows.map(session.target.kind === "intern" ? appEventToRuntimeEvent : coreEventToRuntime).filter((event): event is RuntimeEvent => event !== null)] as const;
 				}));
 				if (disposed) return;

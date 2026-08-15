@@ -1387,6 +1387,8 @@ fn codex_oauth_materializes_private_chatgpt_auth_without_child_env() {
     let auth = fs::read_to_string(home.join("auth.json")).unwrap();
     assert!(auth.contains("\"auth_mode\": \"chatgpt\""));
     assert!(auth.contains("access-secret"));
+    assert!(!auth.contains("refresh-secret"));
+    assert!(auth.contains("synth-desktop-does-not-delegate-refresh"));
     assert_eq!(provider_child_env(&request).unwrap(), None);
     #[cfg(unix)]
     {

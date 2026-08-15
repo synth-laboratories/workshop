@@ -734,22 +734,30 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .trim_start_matches("/v1/reports/")
                 .trim_end_matches("/traces");
             let mut request: ReportAttachTrace = serde_json::from_value(body)?;
-            if request.projection.is_none() {
-                if let Ok(resolved) = core
-                    .data()
-                    .resolve_trace_projection(
-                        request.trace_digest.clone(),
-                        "rollout-inspector".into(),
-                    )
-                    .await
-                {
-                    request.projection = Some(resolved.payload);
-                    if request.trace_id.is_none() {
-                        request.trace_id = Some(resolved.trace_digest);
-                    }
+            // Never trust an MCP caller's projection bytes. Resolve the
+            // projection from a validated, self-contained Trace V5 bundle or
+            // keep the evidence explicitly unverified when no trusted bundle
+            // is available.
+            request.projection = None;
+            let projection_verified = if let Ok(resolved) = core
+                .data()
+                .resolve_trace_projection(
+                    request.trace_digest.clone(),
+                    "rollout-inspector".into(),
+                )
+                .await
+            {
+                request.projection = Some(resolved.payload);
+                if request.trace_id.is_none() {
+                    request.trace_id = Some(resolved.trace_digest);
                 }
-            }
-            let (report, event) = reports.attach_trace(id.to_string(), request).await?;
+                true
+            } else {
+                false
+            };
+            let (report, event) = reports
+                .attach_trace(id.to_string(), request, projection_verified)
+                .await?;
             Ok(json!({"report": report, "event": event}))
         }
         ("POST", path) if path.starts_with("/v1/reports/") && path.ends_with("/seal") => {

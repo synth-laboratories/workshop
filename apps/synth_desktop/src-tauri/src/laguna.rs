@@ -1116,6 +1116,12 @@ fn validate_model_dir(model_dir: &Path) -> Result<LagunaModelHit> {
         .get("weight_map")
         .and_then(Value::as_object)
         .ok_or_else(|| anyhow::anyhow!("{} has no weight_map object", index_path.display()))?;
+    if weight_map.values().any(|value| !value.is_string()) {
+        return Err(anyhow::anyhow!(
+            "{} contains a non-string shard reference",
+            index_path.display()
+        ));
+    }
     let shards: HashSet<&str> = weight_map.values().filter_map(Value::as_str).collect();
     if shards.is_empty() {
         return Err(anyhow::anyhow!(
@@ -1135,6 +1141,18 @@ fn validate_model_dir(model_dir: &Path) -> Result<LagunaModelHit> {
         total_bytes += fs::metadata(&path)
             .with_context(|| format!("Referenced model shard is missing: {}", path.display()))?
             .len();
+    }
+    if let Some(declared) = index
+        .get("metadata")
+        .and_then(|metadata| metadata.get("total_size"))
+        .and_then(Value::as_u64)
+    {
+        if total_bytes != declared {
+            return Err(anyhow::anyhow!(
+                "Model shard bytes do not match {}: expected {declared}, found {total_bytes}",
+                index_path.display()
+            ));
+        }
     }
     let canonical = model_dir
         .canonicalize()
@@ -1406,16 +1424,56 @@ fn stop_managed_sidecar() -> Result<bool> {
             let _ = fs::remove_file(path);
             return Ok(false);
         }
+        // The daemon is a session/process-group leader. Signal the whole group
+        // so an MLX worker cannot survive its parent, then verify termination
+        // and escalate after a bounded grace period.
+        let process_group = format!("-{pid}");
         let status = Command::new("/bin/kill")
-            .args(["-TERM", &pid.to_string()])
+            .args(["-TERM", "--", process_group.as_str()])
             .status()
             .context("stop stale Synth-managed Laguna sidecar")?;
-        if status.success() {
-            let _ = fs::remove_file(path);
-            return Ok(true);
+        if !status.success() {
+            return Ok(false);
         }
+        for _ in 0..100 {
+            if !process_is_alive(pid) {
+                let _ = fs::remove_file(path);
+                return Ok(true);
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let killed = Command::new("/bin/kill")
+            .args(["-KILL", "--", process_group.as_str()])
+            .status()
+            .context("force-stop unresponsive Synth-managed Laguna sidecar")?;
+        if !killed.success() {
+            return Ok(false);
+        }
+        for _ in 0..40 {
+            if !process_is_alive(pid) {
+                let _ = fs::remove_file(path);
+                return Ok(true);
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        anyhow::bail!("Synth-managed Laguna sidecar {pid} did not terminate after SIGKILL");
     }
-    Ok(false)
+    #[cfg(not(unix))]
+    {
+        Ok(false)
+    }
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    Command::new("/bin/kill")
+        .args(["-0", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn validate_python(python: &Path) -> Result<()> {

@@ -27,6 +27,7 @@ const RETAIN_AFTER_REMOVE: &str =
     "Removes the installed runtime only. Mirrored runs, results, artifacts, and retained templates stay.";
 const ENABLE_RETENTION: &str =
     "Does not start, stop, install, or delete the optimizer service or retained data.";
+const PLUGIN_APPROVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 #[derive(Clone)]
 pub struct PluginService {
@@ -330,19 +331,22 @@ impl PluginService {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow!("plugin mutations require a session to request approval"))?;
         let (resolver, rx) = HostDecisionResolver::pair();
+        let origin = ApprovalOrigin {
+            session_id: session_id.into(),
+            instance_id: format!("desktop-{}", std::process::id()),
+        };
         let approval_id = broker
-            .request(
-                app,
-                ApprovalOrigin {
-                    session_id: session_id.into(),
-                    instance_id: format!("desktop-{}", std::process::id()),
-                },
-                kind,
-                resolver,
-            )
+            .request(app, origin.clone(), kind, resolver)
             .await?;
-        let decision = rx
-            .await
+        let decision = match tokio::time::timeout(PLUGIN_APPROVAL_TIMEOUT, rx).await {
+            Ok(result) => result,
+            Err(_) => {
+                broker
+                    .expire_origin(app, &origin, "approval_timed_out")
+                    .await?;
+                bail!("plugin approval timed out");
+            }
+        }
             .map_err(|_| anyhow!("plugin approval waiter closed"))?
             .map_err(|reason| anyhow!("plugin approval expired: {reason}"))?;
         Ok(Authorization {
