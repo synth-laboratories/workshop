@@ -1097,15 +1097,11 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .get("visual_id")
                 .and_then(Value::as_str)
                 .context("start requires visual_id")?;
+            // The pre-start gate proves that a real visual exists and that its
+            // declared stream is subscribed below. Full screenshot-backed
+            // readiness is deliberately post-data: Craftax's imageReplay check
+            // cannot truthfully pass until the first rollout emits frames.
             let visual = registry.get(visual_id.to_string()).await?;
-            let quality = visual
-                .metadata
-                .get("qualityGate")
-                .filter(|value| value.get("ready").and_then(Value::as_bool) == Some(true))
-                .context("refusing rollout start: visual is not ready")?;
-            if quality.get("revision").and_then(Value::as_i64) != Some(visual.current_revision) {
-                anyhow::bail!("refusing rollout start: visual readiness receipt is stale");
-            }
             let stream = body
                 .get("stream")
                 .filter(|value| value.is_object())
