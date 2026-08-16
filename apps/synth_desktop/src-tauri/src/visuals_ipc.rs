@@ -190,13 +190,13 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
         .context("review capture requires the main Desktop window")?;
     let width = body
         .get("width")
-        .and_then(Value::as_u64)
+        .and_then(Value::as_f64)
         .context("review window width is required")?;
     let height = body
         .get("height")
-        .and_then(Value::as_u64)
+        .and_then(Value::as_f64)
         .context("review window height is required")?;
-    if !(320..=2400).contains(&width) || !(400..=1800).contains(&height) {
+    if !(320.0..=2400.0).contains(&width) || !(400.0..=1800.0).contains(&height) {
         anyhow::bail!("review window must be within 320x400 and 2400x1800");
     }
     // A review viewport is a CSS viewport, so every size on this endpoint is
@@ -212,7 +212,7 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
         .context("read review window size")?
         .to_logical::<f64>(scale);
     window
-        .set_size(Size::Logical(LogicalSize::new(width as f64, height as f64)))
+        .set_size(Size::Logical(LogicalSize::new(width, height)))
         .context("resize review window")?;
     // Report what the window manager actually gave us; it may clamp.
     let current = window
@@ -220,8 +220,8 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
         .context("read resized review window size")?
         .to_logical::<f64>(scale);
     Ok(json!({
-        "previous": {"width": previous.width.round(), "height": previous.height.round()},
-        "current": {"width": current.width.round(), "height": current.height.round()}
+        "previous": {"width": previous.width.round() as u64, "height": previous.height.round() as u64},
+        "current": {"width": current.width.round() as u64, "height": current.height.round() as u64}
     }))
 }
 
