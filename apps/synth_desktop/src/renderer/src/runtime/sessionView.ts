@@ -602,6 +602,9 @@ function redactCommand(command: string): string {
 function safeToolStatus(item: Record<string, unknown>, eventKind = ""): LocalActivityLine["toolStatus"] {
 	const status = (stringField(item, "status") ?? "").toLowerCase();
 	const lifecycle = `${status} ${eventKind}`.toLowerCase();
+	// An MCP result carrying isError is a failed call even when the provider
+	// reported the turn item itself as completed.
+	if (objectValue(item.result)?.isError === true) return "failed";
 	if (/failed|error|cancelled|rejected/.test(lifecycle)) return "failed";
 	if (/completed|success|done/.test(lifecycle)) return "completed";
 	return "running";
@@ -612,8 +615,14 @@ function safeToolFailure(item: Record<string, unknown>): string | undefined {
 	const direct = error ? stringField(error, "message", "detail", "code") : typeof item.error === "string" ? item.error : undefined;
 	const result = objectValue(item.result);
 	const structured = result && objectValue(result.structuredContent);
+	// A structured application failure keeps its stable code and remediation so
+	// the transcript says what to do next, not just that something failed.
+	const coded = structured ? objectValue(structured.structuredError) : undefined;
+	const codedMessage = coded
+		? [stringField(coded, "code"), stringField(coded, "remediation")].filter(Boolean).join(" · ")
+		: undefined;
 	const structuredError = structured ? stringField(structured, "error", "message", "detail", "code") : undefined;
-	const message = direct ?? structuredError;
+	const message = codedMessage || direct || structuredError;
 	return message ? redactCommand(message).slice(0, 320) : undefined;
 }
 

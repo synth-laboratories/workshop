@@ -14,6 +14,12 @@ pub const CONTAINER_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Re-fetch task catalogs / metadata when older than this.
 pub const CONTAINER_METADATA_REFRESH: Duration = Duration::from_secs(300);
 
+/// Maximum accepted age of a container health + capability observation before
+/// `rollouts.prepare` refuses and asks for `container_probe`. Deliberately
+/// wider than `CONTAINER_METADATA_REFRESH` so a record that is merely due for
+/// its next `/info` refresh is not reported as stale.
+pub const CONTAINER_CAPABILITY_MAX_AGE: Duration = Duration::from_secs(900);
+
 /// Short visuals IPC hop to a registered loopback container.
 pub const VISUALS_IPC_HOP_TIMEOUT: Duration = Duration::from_secs(3);
 

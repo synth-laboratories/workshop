@@ -16,6 +16,7 @@ pub mod intern_protocol_test_support {
 }
 mod codex;
 mod codex_oauth;
+pub mod container_capabilities;
 mod container_stream;
 mod context;
 pub mod contract;
@@ -48,7 +49,7 @@ pub mod trace_ingest;
 pub mod trace_query;
 mod update_check;
 mod visuals;
-mod visuals_ipc;
+pub mod visuals_ipc;
 mod whisper;
 mod workspace_scope;
 
@@ -374,9 +375,15 @@ async fn hydrate_container(
             "health-only"
         }),
     );
-    metadata.insert(
-        "healthCheckedAt".into(),
-        serde_json::json!(chrono::Utc::now().to_rfc3339()),
+    // One writer for the typed capability surface: `container_list`,
+    // `container_get`, and `container_probe` must never disagree about what a
+    // record can do. Reusing a cached `/info` body keeps the earlier
+    // observation time so a health-only refresh cannot launder a stale one.
+    crate::container_capabilities::write_capability_metadata(
+        &mut metadata,
+        info.as_ref(),
+        refresh_metadata,
+        chrono::Utc::now(),
     );
     if refresh_metadata {
         metadata.insert(

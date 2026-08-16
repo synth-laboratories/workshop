@@ -154,6 +154,17 @@ async fn route_request(
         Err(error) if crate::error::error_is::<crate::error::Unauthorized>(&error) => {
             JsonHttpResponse::error(StatusCode::UNAUTHORIZED, error.to_string())
         }
+        Err(error)
+            if crate::error::error_is::<crate::container_capabilities::ContainerPreflightError>(
+                &error,
+            ) =>
+        {
+            JsonHttpResponse {
+                status: StatusCode::CONFLICT,
+                body: crate::container_capabilities::preflight_error_body(&error),
+                extra_headers: Vec::new(),
+            }
+        }
         Err(error) if crate::error::error_is::<crate::error::ProtocolMismatch>(&error) => {
             JsonHttpResponse::error(StatusCode::UPGRADE_REQUIRED, error.to_string())
         }
@@ -1267,6 +1278,9 @@ async fn run_policy_rollout(
 ) -> Result<Value> {
     let core = &deps.core;
     let container = core.data().get_container(container_id.to_string()).await?;
+    // Same gate as the direct IPC prepare route: reject unhealthy, stale, or
+    // capability-incompatible records before any mutating call.
+    crate::container_capabilities::preflight_prepare_request(&container, &body)?;
     let base = container
         .base_url
         .as_deref()

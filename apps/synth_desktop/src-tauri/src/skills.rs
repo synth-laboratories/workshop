@@ -98,6 +98,39 @@ pub fn skills_list() -> Vec<SkillHit> {
 mod tests {
     use super::*;
 
+    /// Contract drift guard: the container skills are the only place the agent
+    /// is told to stop instead of wandering to a raw engine, another port, or
+    /// an old rollout stream. Softening this text silently re-opens the
+    /// twenty-minute failure it replaced.
+    #[test]
+    fn container_skills_keep_the_fail_fast_and_no_prior_evidence_language() {
+        const REQUIRED: [&str; 12] = [
+            "compatible_runtime_unavailable",
+            "container_unhealthy",
+            "container_capabilities_stale",
+            "container_capability_mismatch",
+            "do not try raw engines, alternate ports, archived rollouts, or prior traces.",
+            "evidence must match the current invocation's rollout ids and requested seeds.",
+            "missing sealed trace v5 means the requested task is incomplete.",
+            "proves liveness, not workflow compatibility",
+            "sse support does not imply prepared-rollout support",
+            "never fall back from a selected policy pool to raw gold",
+            "do not perform shell or repository archaeology",
+            "prior evidence may be reported as prior evidence only",
+        ];
+        for id in ["use-synth-containers", "run-live-container-evals"] {
+            let content = bundled_skill_content(id).expect("bundled skill");
+            let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
+            let normalized = normalized.to_ascii_lowercase();
+            for phrase in REQUIRED {
+                assert!(
+                    normalized.contains(phrase),
+                    "{id} lost required capability-gating language: {phrase}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn parses_name_and_description_from_every_bundled_skill() {
         let hits = list_skills();

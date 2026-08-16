@@ -116,6 +116,17 @@ async fn route_request(
         Err(error) if crate::error::error_is::<crate::error::Unauthorized>(&error) => {
             JsonHttpResponse::error(StatusCode::UNAUTHORIZED, error.to_string())
         }
+        Err(error)
+            if crate::error::error_is::<crate::container_capabilities::ContainerPreflightError>(
+                &error,
+            ) =>
+        {
+            JsonHttpResponse {
+                status: StatusCode::CONFLICT,
+                body: crate::container_capabilities::preflight_error_body(&error),
+                extra_headers: Vec::new(),
+            }
+        }
         Err(error) if crate::error::error_is::<crate::plugins::PluginNotReady>(&error) => {
             let body = error
                 .downcast_ref::<crate::plugins::PluginNotReady>()
@@ -617,6 +628,12 @@ async fn register_hydrated_container(
             )?,
         );
     }
+    crate::container_capabilities::write_capability_metadata(
+        &mut metadata,
+        info.as_ref(),
+        true,
+        chrono::Utc::now(),
+    );
     if let Some(value) = info {
         metadata.insert("info".into(), value);
     }
@@ -831,14 +848,30 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 }
                 Err(error) => ("unhealthy", json!({"ok":false,"error":error.to_string()})),
             };
-            let info = match client.get(format!("{base}/info")).send().await {
-                Ok(response) if response.status().is_success() => {
-                    response.json::<Value>().await.ok()
+            // Same discovery order as register/hydrate: `/info` first, then the
+            // `/metadata` fallback, so a probe cannot see fewer capabilities
+            // than registration did.
+            let mut info = None;
+            for route in ["info", "metadata"] {
+                if let Ok(response) = client.get(format!("{base}/{route}")).send().await {
+                    if response.status().is_success() {
+                        info = response.json::<Value>().await.ok();
+                        if info.is_some() {
+                            break;
+                        }
+                    }
                 }
-                _ => None,
-            };
+            }
             let mut metadata = container.metadata.as_object().cloned().unwrap_or_default();
             metadata.insert("hydratedAt".into(), json!(chrono::Utc::now().to_rfc3339()));
+            // A probe refreshes the typed capability projection without
+            // mutating the remote workload: `/health` and `/info` only.
+            crate::container_capabilities::write_capability_metadata(
+                &mut metadata,
+                info.as_ref(),
+                true,
+                chrono::Utc::now(),
+            );
             if let Some(value) = info.clone() {
                 metadata.insert("info".into(), value);
             }
@@ -902,6 +935,10 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .trim_end_matches("/rollouts/prepare")
                 .trim_end_matches('/');
             let container = core.data().get_container(id.to_string()).await?;
+            // Preflight before the request is even constructed: an unhealthy,
+            // stale, or capability-incompatible record must fail here, not by
+            // discovering a 405 after a mutating call.
+            crate::container_capabilities::preflight_prepare_request(&container, &body)?;
             let base = validated_loopback_rollout_base(
                 container
                     .base_url

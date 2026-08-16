@@ -59,12 +59,49 @@ fn normalize_error(error: &str) -> String {
     normalized
 }
 
+/// A structured application failure (`{"code": …, "remediation": …}`) keeps its
+/// shape under `structuredContent.structuredError` so the transcript can render
+/// the code and the remediation instead of a JSON blob, while `error` stays a
+/// one-line human summary for clients that only read text.
 fn tool_error_result(error: String, terminal: bool) -> Value {
+    let structured_error = serde_json::from_str::<Value>(&error)
+        .ok()
+        .filter(|value| value.get("code").and_then(Value::as_str).is_some());
+    let summary = structured_error
+        .as_ref()
+        .map(structured_error_summary)
+        .unwrap_or_else(|| error.clone());
+    let mut structured = json!({"error": summary, "terminal": terminal});
+    if let Some(detail) = &structured_error {
+        structured["structuredError"] = detail.clone();
+    }
+    let text = structured_error
+        .as_ref()
+        .and_then(|detail| serde_json::to_string_pretty(detail).ok())
+        .unwrap_or(error);
     json!({
-        "content": [{"type":"text","text":error}],
-        "structuredContent": {"error": error, "terminal": terminal},
+        "content": [{"type":"text","text":text}],
+        "structuredContent": structured,
         "isError": true
     })
+}
+
+fn structured_error_summary(detail: &Value) -> String {
+    let mut summary = detail
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("error")
+        .to_string();
+    if let Some(missing) = detail.get("missing").and_then(Value::as_array) {
+        let names: Vec<&str> = missing.iter().filter_map(Value::as_str).collect();
+        if !names.is_empty() {
+            summary.push_str(&format!(": missing {}", names.join(", ")));
+        }
+    }
+    if let Some(remediation) = detail.get("remediation").and_then(Value::as_str) {
+        summary.push_str(&format!(" — {remediation}"));
+    }
+    summary
 }
 
 /// Drive the NDJSON MCP stdio loop. `tools` returns the `tools/list` payload
@@ -184,5 +221,36 @@ mod tests {
         let result = tool_error_result("denied".into(), true);
         assert_eq!(result["isError"], true);
         assert_eq!(result["structuredContent"]["terminal"], true);
+        assert_eq!(result["structuredContent"]["error"], "denied");
+        assert!(result["structuredContent"].get("structuredError").is_none());
+    }
+
+    #[test]
+    fn container_capability_failure_crosses_the_mcp_boundary_as_an_error() {
+        let detail = json!({
+            "code": "container_capability_mismatch",
+            "container_id": "ctr_33d6ee47de1e430ab80b1403ba04e555",
+            "missing": ["rollouts.prepare", "trace_v5.capture"],
+            "retryable": false,
+            "remediation": "Select a normalized live-policy pool; this record is a raw environment engine."
+        });
+        let result = tool_error_result(serde_json::to_string(&detail).unwrap(), false);
+        assert_eq!(result["isError"], true);
+        assert_eq!(
+            result["structuredContent"]["structuredError"]["code"],
+            "container_capability_mismatch"
+        );
+        assert_eq!(
+            result["structuredContent"]["structuredError"]["retryable"],
+            false
+        );
+        let summary = result["structuredContent"]["error"].as_str().unwrap();
+        assert!(summary.contains("container_capability_mismatch"));
+        assert!(summary.contains("rollouts.prepare"));
+        assert!(summary.contains("normalized live-policy pool"));
+        assert!(result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("remediation"));
     }
 }

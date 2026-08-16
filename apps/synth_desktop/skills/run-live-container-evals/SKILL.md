@@ -14,11 +14,25 @@ This is one bind for Craftax, Harbor, and dig.bench. Skipping a step is a
 closed failure, not a retry.
 
 1. **Discover the provider.** Call `container_list`, then `container_probe`.
-   Read advertised `runtime_family`, transports, and `metadata.liveEval`.
-   Never guess `http://127.0.0.1:…/events` or `/rollouts/{id}/stream`.
-2. **Inspect capabilities.** Confirm the declared poll/SSE/WS URLs, slot
-   `stream` (never `live` or `jobs`), and `live_frames`. Harbor and dig.bench
-   are `live_frames=unsupported`. `live_frames=native` on those families is a
+   Read advertised `runtime_family`, transports, `metadata.capabilities`, and
+   `metadata.liveEval`. Never guess `http://127.0.0.1:…/events` or
+   `/rollouts/{id}/stream`.
+2. **Inspect capabilities.** Select only a currently healthy container
+   advertising the normalized prepared-rollout protocol and the exact requested
+   policy ref. If none exists, stop and report `compatible_runtime_unavailable`.
+   Do not try raw engines, alternate ports, archived rollouts, or prior traces.
+   Evidence must match the current invocation's rollout IDs and requested seeds.
+   Missing sealed Trace V5 means the requested task is incomplete.
+
+   `metadata.capabilities.operations` is tri-state; `unknown` is not
+   `supported`. `health` proves liveness, not workflow compatibility, and SSE
+   support does not imply prepared-rollout support. Never fall back from a
+   selected policy pool to raw Gold. After a preflight failure, do not perform
+   shell or repository archaeology as a substitute for execution; prior
+   evidence may be reported as prior evidence only and cannot satisfy a new
+   live request. Then confirm the declared poll/SSE/WS URLs, slot `stream`
+   (never `live` or `jobs`), and `live_frames`. Harbor and dig.bench are
+   `live_frames=unsupported`. `live_frames=native` on those families is a
    stop. dig.bench has no frames.
 3. **Create and review the visual first.** `live.craftax.v1`,
    `live.harbor_eval.v1`, or `live.digbench.v1` from the classified family.
@@ -64,6 +78,12 @@ Do not claim a paid Luna 10× run from this skill.
 4. Allocate or preserve one stable `rollout_id`, then call
    `container_prepare_rollout` for every rollout without starting it. Preserve the returned rollout ID,
    stream ID, transport URL, retention, and policy/environment/task pins.
+   Prepare fails locally, before any request reaches the container, with
+   `container_unhealthy` (repair the pool, then probe), `container_capabilities_stale`
+   (probe first), or `container_capability_mismatch` (read `missing` and
+   `available_policy_refs`, then select a compatible registered target or stop
+   and report `compatible_runtime_unavailable`). None of these is a reason to
+   probe another port, register a new record, or switch to a raw engine.
 5. Create the task-family visual through `synth_visuals.visual_manage`:
    `live.craftax.v1` for native Craftax, `live.harbor_eval.v1` for a Harbor
    attempt, or `live.digbench.v1` for dig.bench. Bind slot `stream` (never
