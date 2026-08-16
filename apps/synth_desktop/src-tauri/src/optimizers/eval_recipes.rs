@@ -124,13 +124,43 @@ fn run_cli(python: &Path, args: &[&str]) -> Result<Value> {
         .stdin(Stdio::null())
         .output()
         .context("run the local eval CLI")?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(stdout.trim()).map_err(|error| {
+    decode_cli_output(
+        output.status.success(),
+        &output.status.to_string(),
+        &output.stdout,
+        &output.stderr,
+    )
+}
+
+fn decode_cli_output(success: bool, status: &str, stdout: &[u8], stderr: &[u8]) -> Result<Value> {
+    let stdout = bounded_cli_text(stdout);
+    let stderr = bounded_cli_text(stderr);
+    let parsed: Value = serde_json::from_str(stdout.trim()).map_err(|error| {
         anyhow!(
-            "eval CLI returned unreadable output ({error}): {}",
-            String::from_utf8_lossy(&output.stderr)
+            "eval_cli_unparseable_stdout: status={status}; parse={error}; stdout={stdout:?}; stderr={stderr:?}"
         )
-    })
+    })?;
+    if parsed.get("ready").and_then(Value::as_bool) == Some(false) {
+        bail!(
+            "eval_cli_not_ready: valid readiness report from {status}; stdout={stdout:?}; stderr={stderr:?}"
+        );
+    }
+    if !success {
+        bail!(
+            "eval_cli_non_zero_exit: status={status}; stdout={stdout:?}; stderr={stderr:?}"
+        );
+    }
+    Ok(parsed)
+}
+
+fn bounded_cli_text(bytes: &[u8]) -> String {
+    const MAX_CHARS: usize = 2_000;
+    let text = String::from_utf8_lossy(bytes);
+    let mut bounded = text.chars().take(MAX_CHARS).collect::<String>();
+    if text.chars().count() > MAX_CHARS {
+        bounded.push_str("… (truncated)");
+    }
+    bounded
 }
 
 /// One cached preflight report and when it was taken.
@@ -1104,6 +1134,35 @@ mod tests {
         assert!(is_eval_recipe(EVAL_CRAFTAX_SMOKE_RECIPE));
         assert!(!is_eval_recipe("eval.anything.else.v1"));
         assert!(!is_eval_recipe("sft.craftax.gpt-oss.smoke.v1"));
+    }
+
+    #[test]
+    fn eval_cli_errors_keep_process_parse_and_readiness_failures_distinct() {
+        let not_ready = decode_cli_output(
+            false,
+            "exit status: 1",
+            br#"{"ready":false,"containerRuntimeAvailable":false}"#,
+            b"",
+        )
+        .unwrap_err();
+        assert!(not_ready.to_string().contains("eval_cli_not_ready"));
+
+        let crashed = decode_cli_output(
+            false,
+            "signal: 9",
+            br#"{"ready":true,"phase":"starting"}"#,
+            b"traceback from worker",
+        )
+        .unwrap_err();
+        let crashed = crashed.to_string();
+        assert!(crashed.contains("eval_cli_non_zero_exit"));
+        assert!(crashed.contains("traceback from worker"));
+
+        let malformed = decode_cli_output(true, "exit status: 0", b"not-json", b"")
+            .unwrap_err()
+            .to_string();
+        assert!(malformed.contains("eval_cli_unparseable_stdout"));
+        assert!(malformed.contains("\"not-json\""));
     }
 
     #[test]
