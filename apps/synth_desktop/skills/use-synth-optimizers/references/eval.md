@@ -84,8 +84,9 @@ recipes call a paid provider: state the recipe's `budget` (`max_llm_calls`,
 Slices are `eval.runtime`, `eval.trials`, `eval.scorecard`, `eval.evidence`.
 
 - `eval.scorecard` — one row per candidate per stage: valid/failed trial counts,
-  per-metric means, paired lift against the baseline, cost, and any elimination
-  reason. Present candidates as rows. Never collapse them into one aggregate.
+  per-metric means, paired lift against the baseline, cost, coverage, and any
+  elimination reason. Present candidates as rows. Never collapse them into one
+  aggregate.
 - `eval.trials` — one row per `candidate x seed x scenario`.
 - `eval.evidence` — sealed manifest digest, the seed ledger, the selection, and
   the evidence directory.
@@ -94,6 +95,11 @@ Slices are `eval.runtime`, `eval.trials`, `eval.scorecard`, `eval.evidence`.
 Rules when reporting:
 
 - A failed trial is failed evidence. Never describe a missing metric as `0`.
+- Read `policy_step_fraction` before quoting a score. An LLM policy that spends
+  its per-trial budget does not end the episode — a fallback plays out the rest
+  — so a candidate at 4% coverage earned 4% of what its mean describes. Say so
+  when reporting, and say `budget_exhausted` trials by count. A code policy has
+  no budget to exhaust and reports no coverage; that is absence, not 0%.
 - Quote the selection `reason` verbatim; it names the rule that decided.
 - Every trial writes a `trace`. Point at the evidence directory rather than
   pasting rollouts.

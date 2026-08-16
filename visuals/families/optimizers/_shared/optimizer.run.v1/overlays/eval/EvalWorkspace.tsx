@@ -167,6 +167,7 @@ function ComparisonPanel({ state }: { state: EvalState }) {
                 <th scope="col">Lift</th>
                 <th scope="col">Valid</th>
                 <th scope="col">Failed</th>
+                <th scope="col">Played</th>
                 <th scope="col">Cost</th>
               </tr>
             </thead>
@@ -199,6 +200,34 @@ function ComparisonPanel({ state }: { state: EvalState }) {
                     </td>
                     <td className="sv-mono">{row.valid}</td>
                     <td className="sv-mono" data-tone={row.failed > 0 ? "bad" : undefined}>{row.failed}</td>
+                    {/*
+                      Share of the scored episodes the candidate's own policy
+                      chose. Anything short of 100% means a fallback finished
+                      the episode and part of the score above is not the
+                      candidate's, so it is flagged rather than left to the
+                      reader to infer from the call count.
+                    */}
+                    <td
+                      className="sv-mono"
+                      data-tone={
+                        row.policyStepFraction != null && row.policyStepFraction < 1
+                          ? "warn"
+                          : undefined
+                      }
+                    >
+                      {row.policyStepFraction == null
+                        ? "—"
+                        : `${Math.round(row.policyStepFraction * 100)}%`}
+                      {row.budgetExhaustedTrials > 0 ? (
+                        <span
+                          className="sv-tag"
+                          data-tone="warn"
+                          title={`${row.budgetExhaustedTrials} of ${row.valid} scored trials ran out of budget; a fallback policy finished the episode`}
+                        >
+                          {row.budgetExhaustedTrials} capped
+                        </span>
+                      ) : null}
+                    </td>
                     <td className="sv-mono">{usd(row.costUsd)}</td>
                   </tr>
                 ))}

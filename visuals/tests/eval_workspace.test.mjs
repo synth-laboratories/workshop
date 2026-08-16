@@ -113,3 +113,23 @@ test("every trial carries its evidence directory", () => {
     assert.deepEqual(trial.missingArtifacts, []);
   }
 });
+
+test("a budget-exhausted candidate says how much of the episode it actually played", () => {
+  // A policy that spends its budget keeps emitting actions — a fallback finishes
+  // the episode — so the row must distinguish a score the model earned from one
+  // it coasted to. Absent coverage stays absent; it is never read as 0%.
+  const capped = JSON.parse(JSON.stringify(example));
+  const scored = capped.events.filter((event) => event.item?.kind === "candidate");
+  assert.ok(scored.length >= 2, "the example should score both candidates");
+  scored[0].item.policyStepFraction = 0.04;
+  scored[0].item.budgetExhaustedTrials = 1;
+
+  const rows = evalComparison(projectAtCursor(capped.run, capped.events).eval);
+  const cappedRow = rows.find((row) => row.candidateId === scored[0].item.id);
+  const untouched = rows.find((row) => row.candidateId !== scored[0].item.id);
+
+  assert.equal(cappedRow.policyStepFraction, 0.04);
+  assert.equal(cappedRow.budgetExhaustedTrials, 1);
+  assert.equal(untouched.policyStepFraction, null, "no coverage reported is null, not zero");
+  assert.equal(untouched.budgetExhaustedTrials, 0);
+});

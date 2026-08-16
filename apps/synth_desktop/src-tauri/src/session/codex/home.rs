@@ -436,14 +436,29 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
     )?;
     let optimizers_references = optimizers_skill.join("references");
     fs::create_dir_all(&optimizers_references)?;
-    fs::write(
-        optimizers_references.join("gepa.md"),
-        include_str!("../../../../skills/use-synth-optimizers/references/gepa.md"),
-    )?;
-    fs::write(
-        optimizers_references.join("eval.md"),
-        include_str!("../../../../skills/use-synth-optimizers/references/eval.md"),
-    )?;
+    // Install every reference SKILL.md links. A link the skill tells an agent to
+    // read, that is absent from the home, leaves it improvising a contract it
+    // was told exists — which is exactly how the first live eval session failed.
+    for (name, body) in [
+        (
+            "gepa.md",
+            include_str!("../../../../skills/use-synth-optimizers/references/gepa.md"),
+        ),
+        (
+            "gelo.md",
+            include_str!("../../../../skills/use-synth-optimizers/references/gelo.md"),
+        ),
+        (
+            "eval.md",
+            include_str!("../../../../skills/use-synth-optimizers/references/eval.md"),
+        ),
+        (
+            "sft.md",
+            include_str!("../../../../skills/use-synth-optimizers/references/sft.md"),
+        ),
+    ] {
+        fs::write(optimizers_references.join(name), body)?;
+    }
     let plugins_skill = home.join("skills/use-synth-plugins");
     fs::create_dir_all(&plugins_skill)?;
     fs::write(

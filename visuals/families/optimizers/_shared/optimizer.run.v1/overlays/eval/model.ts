@@ -176,6 +176,9 @@ export type EvalComparisonRow = {
   costUsd: number | null;
   eliminationReason: string | null;
   isWinner: boolean;
+  /** Null when nothing reported coverage; never coerced to 0. */
+  policyStepFraction: number | null;
+  budgetExhaustedTrials: number;
 };
 
 export function evalComparison(state: EvalState | undefined): EvalComparisonRow[] {
@@ -196,6 +199,8 @@ export function evalComparison(state: EvalState | undefined): EvalComparisonRow[
     valid: card.trials.valid,
     failed: card.trials.failed,
     costUsd: card.costUsd,
+    policyStepFraction: card.policyStepFraction,
+    budgetExhaustedTrials: card.budgetExhaustedTrials,
     eliminationReason: card.eliminationReason,
     isWinner: winner !== null && card.candidateId === winner
   }));

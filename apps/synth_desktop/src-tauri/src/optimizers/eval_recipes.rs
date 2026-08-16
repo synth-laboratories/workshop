@@ -886,6 +886,14 @@ fn canonicalize(raw: &Value) -> Option<Canonical> {
                 "eliminatedAt": card.get("eliminated_at"),
                 "eliminationReason": card.get("elimination_reason"),
                 "costUsd": card.get("cost_usd"),
+                // How much of the scored episodes the candidate's own policy
+                // chose. A budget-exhausted policy is replaced by a fallback
+                // for the rest of the episode, so a mean read without this can
+                // be mostly the fallback's score wearing the candidate's name.
+                "policyStepFraction": card.get("policy_step_fraction"),
+                "budgetExhaustedTrials": card
+                    .get("trials")
+                    .and_then(|trials| trials.get("budget_exhausted")),
                 "raw": card
             }));
             delta.insert(

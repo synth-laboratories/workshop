@@ -1744,6 +1744,20 @@ fn synth_cloud_provider_writes_expected_config() {
     let optimizer_skill =
         fs::read_to_string(home.join("skills/use-synth-optimizers/SKILL.md")).unwrap();
     assert!(optimizer_skill.contains("optimizer_manage"));
+    // Every reference the skill links must exist in the home, or an agent is
+    // told to read a file it cannot open.
+    for name in ["gepa.md", "gelo.md", "eval.md", "sft.md"] {
+        assert!(
+            optimizer_skill.contains(&format!("references/{name}")),
+            "SKILL.md should link {name}"
+        );
+        assert!(
+            home.join("skills/use-synth-optimizers/references")
+                .join(name)
+                .is_file(),
+            "{name} should be installed beside SKILL.md"
+        );
+    }
     assert!(optimizer_skill.contains("If the first `await_ready` reports"));
     assert!(optimizer_skill.contains("Do not inspect processes"));
     assert!(optimizer_skill.contains("on the first `start` call"));

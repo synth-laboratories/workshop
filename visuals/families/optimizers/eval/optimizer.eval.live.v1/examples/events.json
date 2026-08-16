@@ -2248,6 +2248,7 @@
       },
       "eventId": "opt_eval_example:eval:27",
       "item": {
+        "budgetExhaustedTrials": null,
         "costUsd": 0.019202,
         "eliminatedAt": null,
         "eliminationReason": null,
@@ -2274,6 +2275,7 @@
         ],
         "pairedLift": null,
         "pairedTrials": 0,
+        "policyStepFraction": null,
         "raw": {
           "candidate_id": "policy_e8d067b11684",
           "cost_usd": 0.019202,
@@ -2370,6 +2372,7 @@
       },
       "eventId": "opt_eval_example:eval:28",
       "item": {
+        "budgetExhaustedTrials": null,
         "costUsd": 0.030177,
         "eliminatedAt": null,
         "eliminationReason": null,
@@ -2396,6 +2399,7 @@
         ],
         "pairedLift": -0.45,
         "pairedTrials": 2,
+        "policyStepFraction": null,
         "raw": {
           "candidate_id": "policy_30d2c7e911d3",
           "cost_usd": 0.030177,

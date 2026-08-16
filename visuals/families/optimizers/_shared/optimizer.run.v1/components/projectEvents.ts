@@ -330,6 +330,15 @@ export type EvalScorecard = {
   eliminatedAt: string | null;
   eliminationReason: string | null;
   costUsd: number | null;
+  /**
+   * Share of the scored episodes this candidate's own policy chose. A policy
+   * that spends its budget is replaced by a fallback for the rest of the
+   * episode, so a mean read without this can be mostly the fallback's score
+   * under the candidate's name. `null` when nothing reported coverage — a code
+   * policy has no budget to exhaust, which is absence, not zero.
+   */
+  policyStepFraction: number | null;
+  budgetExhaustedTrials: number;
 };
 
 export type EvalSelection = {
@@ -1135,6 +1144,11 @@ export function projectAtCursor(
           gateFailures: numberRecord(item.gateFailures),
           pairedLift: numberOrNull(item.pairedLift),
           pairedTrials: optionalNumber(item.pairedTrials) ?? 0,
+          policyStepFraction: numberOrNull(item.policyStepFraction),
+          budgetExhaustedTrials:
+            optionalNumber(trials.budget_exhausted)
+            ?? optionalNumber(item.budgetExhaustedTrials)
+            ?? 0,
           eliminatedAt: optionalString(item.eliminatedAt) ?? null,
           eliminationReason: optionalString(item.eliminationReason) ?? null,
           costUsd: numberOrNull(item.costUsd)
