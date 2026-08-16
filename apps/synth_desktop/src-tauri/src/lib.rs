@@ -570,7 +570,7 @@ async fn usage_summary(
     let offset_seconds = chrono::Local::now().offset().local_minus_utc();
     let since_ms = storage::window_start_ms(&window, now, offset_seconds);
     storage::UsageRecordsRepository::new(state.storage().database().clone())
-        .summary(window, since_ms)
+        .summary(window, since_ms, offset_seconds)
         .await
         .map_err(AppError::from)
 }

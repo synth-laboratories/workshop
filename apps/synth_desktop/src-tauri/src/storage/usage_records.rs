@@ -126,13 +126,35 @@ pub struct UsageBreakdown {
     pub perf_sample_count: i64,
 }
 
+/// One local calendar day for one provider. Reduced from the same ledger rows
+/// as `totals`, by the same `Bucket`, so a daily chart can never disagree with
+/// the headline it sits under. The provider rides on `totals.provider`.
+#[derive(Clone, Debug, Serialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageDayPoint {
+    pub day: String,
+    pub totals: UsageBreakdown,
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSummary {
     pub window: String,
     pub totals: UsageBreakdown,
     pub models: Vec<UsageBreakdown>,
+    /// Ascending by day, then provider. Days with no requests are absent
+    /// rather than zero-filled — the caller owns the calendar it draws.
+    pub days: Vec<UsageDayPoint>,
     pub generated_at: String,
+}
+
+/// The local calendar day a request completed on, as `YYYY-MM-DD`. The offset
+/// is applied to the instant before the date is read, so an 11pm local request
+/// never lands on tomorrow's bar. `None` for a timestamp chrono cannot express;
+/// such a row still counts in the totals, it just has no day to sit on.
+fn local_day(completed_at_ms: i64, local_offset_seconds: i32) -> Option<String> {
+    let shifted = completed_at_ms.checked_add(i64::from(local_offset_seconds) * 1_000)?;
+    DateTime::from_timestamp_millis(shifted).map(|stamp| stamp.format("%Y-%m-%d").to_string())
 }
 
 /// Start of the requested window in unix ms, or `None` for all time.
@@ -203,10 +225,18 @@ impl UsageRecordsRepository {
     }
 
     /// Aggregate every request completed at or after `since_ms` (all time when
-    /// `None`) into a device total plus per-(provider, model) slices.
-    pub async fn summary(&self, window: String, since_ms: Option<i64>) -> Result<UsageSummary> {
+    /// `None`) into a device total, per-(provider, model) slices, and a
+    /// per-(local day, provider) series. `local_offset_seconds` decides which
+    /// calendar day a request falls on; it is passed in rather than read from
+    /// the process timezone so the boundary stays testable.
+    pub async fn summary(
+        &self,
+        window: String,
+        since_ms: Option<i64>,
+        local_offset_seconds: i32,
+    ) -> Result<UsageSummary> {
         self.db
-            .run(move |conn| summarize(conn, &window, since_ms))
+            .run(move |conn| summarize(conn, &window, since_ms, local_offset_seconds))
             .await
     }
 }
@@ -419,6 +449,7 @@ pub(crate) fn percentile(values: &mut [f64], q: f64) -> Option<f64> {
 struct SummaryRow {
     provider: String,
     model_id: String,
+    completed_at_ms: i64,
     input: Option<i64>,
     cached: Option<i64>,
     cache_writes: Option<i64>,
@@ -433,11 +464,16 @@ struct SummaryRow {
     cost_source: CostSource,
 }
 
-fn summarize(conn: &Connection, window: &str, since_ms: Option<i64>) -> Result<UsageSummary> {
+fn summarize(
+    conn: &Connection,
+    window: &str,
+    since_ms: Option<i64>,
+    local_offset_seconds: i32,
+) -> Result<UsageSummary> {
     // Failed and interrupted requests stay in: their tokens were consumed and
     // any charge for them is real. The window is judged on completion time.
     let mut statement = conn.prepare(
-        "SELECT provider,model_id,input_tokens,cached_input_tokens,cache_write_tokens,reasoning_tokens,output_tokens,total_tokens,ttft_ms,observed_output_tps,end_to_end_output_tps,billed_cost_usd,estimated_cost_usd,cost_source
+        "SELECT provider,model_id,input_tokens,cached_input_tokens,cache_write_tokens,reasoning_tokens,output_tokens,total_tokens,ttft_ms,observed_output_tps,end_to_end_output_tps,billed_cost_usd,estimated_cost_usd,cost_source,completed_at_ms
          FROM usage_records
          WHERE completed_at_ms >= ?1",
     )?;
@@ -457,11 +493,15 @@ fn summarize(conn: &Connection, window: &str, since_ms: Option<i64>) -> Result<U
             billed: row.get(11)?,
             estimated: row.get(12)?,
             cost_source: CostSource::parse(&row.get::<_, String>(13)?),
+            completed_at_ms: row.get(14)?,
         })
     })?;
 
     let mut totals = Bucket::default();
     let mut groups: BTreeMap<(String, String), Bucket> = BTreeMap::new();
+    // Keyed (day, provider) so the BTreeMap already yields the ascending
+    // day-then-provider order the chart draws in.
+    let mut daily: BTreeMap<(String, String), Bucket> = BTreeMap::new();
     for row in rows {
         let row = row?;
         totals.fold(&row);
@@ -469,16 +509,30 @@ fn summarize(conn: &Connection, window: &str, since_ms: Option<i64>) -> Result<U
             .entry((row.provider.clone(), row.model_id.clone()))
             .or_default()
             .fold(&row);
+        if let Some(day) = local_day(row.completed_at_ms, local_offset_seconds) {
+            daily
+                .entry((day, row.provider.clone()))
+                .or_default()
+                .fold(&row);
+        }
     }
     let mut models: Vec<UsageBreakdown> = groups
         .into_iter()
         .map(|((provider, model_id), bucket)| bucket.into_breakdown(provider, model_id))
         .collect();
     models.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
+    let days: Vec<UsageDayPoint> = daily
+        .into_iter()
+        .map(|((day, provider), bucket)| UsageDayPoint {
+            day,
+            totals: bucket.into_breakdown(provider, "all".into()),
+        })
+        .collect();
     Ok(UsageSummary {
         window: window.to_owned(),
         totals: totals.into_breakdown("all".into(), "all".into()),
         models,
+        days,
         generated_at: Utc::now().to_rfc3339(),
     })
 }
@@ -527,7 +581,7 @@ mod tests {
     }
 
     async fn all_time(repository: &UsageRecordsRepository) -> UsageSummary {
-        repository.summary("all".into(), None).await.unwrap()
+        repository.summary("all".into(), None, 0).await.unwrap()
     }
 
     #[tokio::test]
@@ -718,7 +772,7 @@ mod tests {
         repository.record(before).await.unwrap();
 
         let windowed = repository
-            .summary("custom".into(), Some(5_000))
+            .summary("custom".into(), Some(5_000), 0)
             .await
             .unwrap();
         assert_eq!(windowed.totals.requests, 2);
@@ -755,6 +809,89 @@ mod tests {
             Some(now.timestamp_millis() - 30 * day_ms)
         );
         assert_eq!(window_start_ms("all", now, 0), None);
+    }
+
+    #[tokio::test]
+    async fn the_daily_series_buckets_on_the_local_calendar_day() {
+        let (_t, repository) = open();
+        // 2026-08-10T02:30Z is still the 9th at UTC-4 and already the 10th at
+        // UTC+2. The same row must move between bars with the offset.
+        let mut late = record("openrouter", "openai/gpt-5.6-luna", "late");
+        late.completed_at_ms = Utc
+            .with_ymd_and_hms(2026, 8, 10, 2, 30, 0)
+            .unwrap()
+            .timestamp_millis();
+        repository.record(late).await.unwrap();
+
+        let eastern = repository
+            .summary("all".into(), None, -4 * 3600)
+            .await
+            .unwrap();
+        assert_eq!(
+            eastern.days.iter().map(|d| d.day.as_str()).collect::<Vec<_>>(),
+            vec!["2026-08-09"]
+        );
+
+        let berlin = repository
+            .summary("all".into(), None, 2 * 3600)
+            .await
+            .unwrap();
+        assert_eq!(
+            berlin.days.iter().map(|d| d.day.as_str()).collect::<Vec<_>>(),
+            vec!["2026-08-10"]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_daily_series_splits_providers_and_reconciles_with_the_totals() {
+        let (_t, repository) = open();
+        let day_ms = 24 * 60 * 60 * 1_000;
+        let base = Utc
+            .with_ymd_and_hms(2026, 8, 10, 12, 0, 0)
+            .unwrap()
+            .timestamp_millis();
+
+        for (provider, model, request, offset_days) in [
+            ("openrouter", "openai/gpt-5.6-luna", "a", 0),
+            ("openrouter", "openai/gpt-5.6-luna", "b", 0),
+            ("synth-cloud", "openrouter/poolside/laguna-s-2.1", "c", 0),
+            ("openrouter", "openai/gpt-5.6-luna", "d", 1),
+        ] {
+            let mut r = record(provider, model, request);
+            r.id = format!("perf:{provider}:{request}");
+            r.completed_at_ms = base + offset_days * day_ms;
+            r.billed_cost_usd = Some(0.01);
+            r.cost_source = CostSource::ProviderReported;
+            repository.record(r).await.unwrap();
+        }
+
+        let summary = repository.summary("all".into(), None, 0).await.unwrap();
+        // Ascending by day, then provider — the order the chart draws in.
+        assert_eq!(
+            summary
+                .days
+                .iter()
+                .map(|d| (d.day.as_str(), d.totals.provider.as_str(), d.totals.requests))
+                .collect::<Vec<_>>(),
+            vec![
+                ("2026-08-10", "openrouter", 2),
+                ("2026-08-10", "synth-cloud", 1),
+                ("2026-08-11", "openrouter", 1),
+            ]
+        );
+
+        // The series is a partition of the same rows the headline reduces, so
+        // it must add back up to it exactly.
+        let charted: i64 = summary.days.iter().map(|d| d.totals.requests).sum();
+        assert_eq!(charted, summary.totals.requests);
+        let charted_tokens: i64 = summary.days.iter().map(|d| d.totals.total_tokens).sum();
+        assert_eq!(charted_tokens, summary.totals.total_tokens);
+        let charted_billed: f64 = summary
+            .days
+            .iter()
+            .filter_map(|d| d.totals.billed_cost_usd)
+            .sum();
+        assert!((charted_billed - summary.totals.billed_cost_usd.unwrap()).abs() < 1e-9);
     }
 
     #[tokio::test]
