@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Identifier } from "../../../chrome/Identifier.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
+import { useLiveEvalStreams } from "../../../chrome/useLiveEvalStreams.ts";
 import { formatMissingNumber, formatMissingUsd } from "../../../runtime/liveStream.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../../runtime/types.ts";
 import {
@@ -208,12 +209,24 @@ function truthNumber(value: number | undefined, terminal: boolean, format: (valu
 export function Shell(props: ShellProps) {
   const bindingList = Array.isArray(props.bindings) ? props.bindings : props.bindings?.slots ?? [];
   const stream = asStream(props.data ?? props.stream ?? bundledFixtureStream(bindingList));
-  const liveBinding = bindingList.find((binding) => binding.slot === "stream" && binding.kind === "live_sse");
+  const liveBindings = bindingList.filter((binding) => binding.slot === "stream" && binding.kind === "live_sse");
+  const liveBinding = liveBindings[0];
   const sseUrl = props.sseUrl ?? stream.transports?.sse?.url ?? stream.sse_url ?? liveBinding?.source;
   const pollUrl = stream.transports?.poll?.url ?? stream.poll_url ?? liveBinding?.poll_url;
   const scope = stream.scope;
   const fixtureEvents = useMemo(() => sseUrl ? undefined : stream.events, [sseUrl, stream.events]);
-  const { events, live, error, ready, recovering, recovered } = useLiveEvalStream({ sseUrl, pollUrl, fixtureEvents, replayMs: stream.replay_ms });
+  const single = useLiveEvalStream({
+    sseUrl: liveBindings.length <= 1 ? sseUrl : undefined,
+    pollUrl: liveBindings.length <= 1 ? pollUrl : undefined,
+    fixtureEvents,
+    replayMs: stream.replay_ms
+  });
+  const multiplexed = useLiveEvalStreams(liveBindings.length > 1
+    ? liveBindings.flatMap((binding) => binding.poll_url
+      ? [{ sseUrl: binding.source, pollUrl: binding.poll_url }]
+      : [])
+    : []);
+  const { events, live, error, ready, recovering, recovered } = liveBindings.length > 1 ? multiplexed : single;
   const config = { ...DEFAULT_CONFIG, ...props.visualMetadata?.visualConfig };
   const scopedEvents = useMemo(() => {
     // A visual bound to specific rollouts must never silently import every

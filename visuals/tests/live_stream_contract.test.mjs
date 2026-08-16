@@ -73,6 +73,17 @@ test("poll recovery replays from the durable origin instead of a cross-lane max"
   assert.doesNotMatch(hook, /lastSequenceByScope\.values\(\).*reduce/);
 });
 
+test("multi-rollout Craftax visuals replay each declared poll authority", () => {
+  const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
+  const hook = readFileSync(join(root, "chrome/useLiveEvalStreams.ts"), "utf8");
+  assert.match(shell, /liveBindings\.length > 1 \? multiplexed : single/);
+  assert.match(shell, /binding\.poll_url/);
+  assert.match(hook, /Promise\.all\(streams\.filter/);
+  assert.match(hook, /cursor\?\.closed/);
+  assert.match(hook, /ingestLiveEnvelopeBatch/);
+  assert.doesNotMatch(hook, /trace_v5|synth\.trace\.v5/);
+});
+
 test("stream_id plus sequence is the Harbor live identity", () => {
   const first = ingestLiveEnvelopeBatch(undefinedState(), [
     { stream_id: "stream-a", sequence: 1, kind: "trial.planned" },

@@ -34,14 +34,17 @@ closed failure, not a retry.
    (never `live` or `jobs`), and `live_frames`. Harbor and dig.bench are
    `live_frames=unsupported`. `live_frames=native` on those families is a
    stop. dig.bench has no frames.
-3. **Create and review the visual first.** `live.craftax.v1`,
+3. **Create and subscribe the visual first.** `live.craftax.v1`,
    `live.harbor_eval.v1`, or `live.digbench.v1` from the classified family.
-   Bind slot `stream` only after prepare returns a descriptor. Obtain
-   `visual.ready` before any mutating start.
+   Bind slot `stream` only after prepare returns a descriptor. Pre-start
+   readiness means the visual exists, the exact prepared descriptor is bound,
+   and the stream has acknowledged subscription. Do not require screenshot,
+   frame-replay, or post-data quality review before start: those artifacts
+   cannot exist until a rollout emits data.
 4. **Wait for `stream.subscribed`.** HTTP 200 on GET is not ready. Heartbeats
    do not count. `ready: true` on the control envelope is required.
 5. **Refuse start** if the visuals MCP is down, declared poll returns 503, the
-   stream URL was guessed, the visual is not ready, or `stream.subscribed` is
+   stream URL was guessed, the visual is absent or incorrectly bound, or `stream.subscribed` is
    missing. Do not invent a replacement URL.
 6. **Never fabricate evidence.** Missing reward/usage/frames stay missing.
    Incomplete dig.bench `/reward` is null, not 0. Do not draw dungeon frames.
@@ -63,8 +66,10 @@ dig.bench opens `live.digbench.v1` before `start_session`. Two `policy_ref`s on
 the same game: basic (`react_legal_actions`) and agentic (`codex` +
 `mcp_bind: digbench-mcp`). Token starts at `start_session`.
 
-Craftax 10-lane pins are seeds 0–9 with `environment_ref` / `policy_ref` /
-`task_world`. The headless twin is containers `examples/craftax_ten_seeds.py`.
+Craftax's default 10-lane benchmark pins are seeds 0–9 with `environment_ref` /
+`policy_ref` / `task_world`, but an explicit seed set in the user's request
+always overrides this default. Never silently replace requested seeds with
+0–9. The headless twin is containers `examples/craftax_ten_seeds.py`.
 Do not claim a paid Luna 10× run from this skill.
 
 ## Workflow
@@ -94,13 +99,17 @@ Do not claim a paid Luna 10× run from this skill.
    advance the evidence sequence. Refuse the paid/mutating start if it is
    missing. The first Luna call must not happen while the pane is still on
    empty inline bindings.
-7. Iterate on the viewer at least twice, record wide and compact quality reviews,
-   and obtain a current `visual.ready` receipt. Then start each rollout with
+7. Once subscription is acknowledged, start each rollout with
    `container_start_prepared_rollout`. Pass the prepared identity, exact stream
    descriptor, visual id, `task_instance_id` or `seed`, and an explicit
    `policy_ref`. The host does not pick `luna_med` or a default harness.
    `container_run_rollouts` is scripted engine acceptance only — never use it
    as a ReAct or model eval.
+
+   Registration records identity and location; it does not add endpoints or
+   upgrade an incompatible runtime. If capability preflight rejects a record,
+   re-registering the same URL cannot repair it. Select a healthy record that
+   already advertises the exact contract, or report the structured blocker.
 
 The agent names the pin. Example (not a host default):
 
@@ -127,7 +136,11 @@ The agent names the pin. Example (not a host default):
    provider streamed non-empty chunks — empty Luna reasoning stays blank.
    ReAct history uses `compact_every=16`; a compact is a mechanical summary,
    not a model-authored rewrite.
-9. Keep the stream open through authoritative terminal `status`. Report failures
+9. After current-run data exists, iterate on the viewer, record wide and compact
+   screenshot-backed quality reviews, and obtain a current `visual.ready`
+   receipt. A template that requires `imageReplay` must be reviewed here, never
+   used as a pre-start gate.
+10. Keep the stream open through authoritative terminal `status`. Report failures
    by lane. Preserve the final sealed/reconciled Trace V5 identity and verify the
    persisted journal can reopen with the container gone.
 
