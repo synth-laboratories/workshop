@@ -172,7 +172,12 @@ impl VictoriaLogsSidecar {
     /// a status, not a failure the caller has to handle.
     pub async fn start(self: &Arc<Self>) -> SidecarState {
         if std::env::var(DISABLE_ENV).as_deref() == Ok("0") {
-            return self.set_state(SidecarState::Degraded("disabled_by_environment".into()), None).await;
+            return self
+                .set_state(
+                    SidecarState::Degraded("disabled_by_environment".into()),
+                    None,
+                )
+                .await;
         }
         {
             let inner = self.inner.lock().await;
@@ -212,7 +217,10 @@ impl VictoriaLogsSidecar {
             Ok(child) => child,
             Err(error) => {
                 return self
-                    .set_state(SidecarState::Degraded(format!("spawn_failed: {error}")), None)
+                    .set_state(
+                        SidecarState::Degraded(format!("spawn_failed: {error}")),
+                        None,
+                    )
                     .await
             }
         };
@@ -227,7 +235,10 @@ impl VictoriaLogsSidecar {
             Ok(client) => client,
             Err(error) => {
                 return self
-                    .set_state(SidecarState::Degraded(format!("client_failed: {error}")), None)
+                    .set_state(
+                        SidecarState::Degraded(format!("client_failed: {error}")),
+                        None,
+                    )
                     .await
             }
         };
@@ -262,7 +273,10 @@ impl VictoriaLogsSidecar {
         };
         let Some(delay) = RESTART_BACKOFF.get(attempt - 1) else {
             return self
-                .set_state(SidecarState::Degraded("restart_budget_exhausted".into()), None)
+                .set_state(
+                    SidecarState::Degraded("restart_budget_exhausted".into()),
+                    None,
+                )
                 .await;
         };
         tokio::time::sleep(*delay).await;
@@ -322,7 +336,10 @@ impl VictoriaLogsSidecar {
         let mut command = Command::new(binary);
         isolate_process_group(&mut command);
         command
-            .arg(format!("-storageDataPath={}", self.config.data_dir().display()))
+            .arg(format!(
+                "-storageDataPath={}",
+                self.config.data_dir().display()
+            ))
             .arg(format!("-httpListenAddr=127.0.0.1:{port}"))
             .arg(format!("-retentionPeriod={}d", self.config.retention_days))
             .arg(format!(
@@ -418,7 +435,11 @@ impl VictoriaLogsSidecar {
 /// `url()` is async; the descriptor writer is not. Read the cached value
 /// without awaiting by going through the try-lock.
 fn futures_url(sidecar: &VictoriaLogsSidecar) -> Option<String> {
-    sidecar.inner.try_lock().ok().and_then(|inner| inner.url.clone())
+    sidecar
+        .inner
+        .try_lock()
+        .ok()
+        .and_then(|inner| inner.url.clone())
 }
 
 impl crate::services::ManagedService for VictoriaLogsSidecar {
@@ -465,7 +486,11 @@ fn resource_roots() -> Vec<PathBuf> {
     }
     // Development checkout: src-tauri -> synth_desktop -> apps -> workshop.
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if let Some(workshop) = manifest.parent().and_then(Path::parent).and_then(Path::parent) {
+    if let Some(workshop) = manifest
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+    {
         roots.push(workshop.to_owned());
     }
     roots
@@ -678,6 +703,9 @@ mod tests {
 
     #[test]
     fn index_size_reports_zero_for_a_missing_directory() {
-        assert_eq!(directory_size(Path::new("/nonexistent-diagnostics-path")), 0);
+        assert_eq!(
+            directory_size(Path::new("/nonexistent-diagnostics-path")),
+            0
+        );
     }
 }

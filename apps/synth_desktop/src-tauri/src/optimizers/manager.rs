@@ -2718,7 +2718,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(fs::metadata(&env_path).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                fs::metadata(&env_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
         let (pinned, pin) = mgr
             .pin_run(&svc, &run.id, "gepa.banking77.smoke.v1")
@@ -3110,7 +3113,10 @@ mod tests {
         let key = "synth-opt-0123456789abcdef0123456789abcdef";
         env::set_var("SYNTH_OPTIMIZER_API_KEY", key);
         let detail = truncate_detail(&format!("unauthorized for bearer {key} on /health"));
-        assert!(!detail.contains(key), "token leaked into a diagnostic: {detail}");
+        assert!(
+            !detail.contains(key),
+            "token leaked into a diagnostic: {detail}"
+        );
         assert!(detail.contains("[redacted]"));
         env::remove_var("SYNTH_OPTIMIZER_API_KEY");
 

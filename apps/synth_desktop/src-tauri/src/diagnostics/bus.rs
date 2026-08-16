@@ -214,7 +214,11 @@ mod tests {
             ));
         }
         assert_eq!(
-            bus.enqueue(event(Severity::Error, "visual-host", "2026-08-16T00:01:00Z")),
+            bus.enqueue(event(
+                Severity::Error,
+                "visual-host",
+                "2026-08-16T00:01:00Z"
+            )),
             Enqueued::Accepted
         );
         let drained = bus.drain(64);
@@ -247,7 +251,10 @@ mod tests {
         assert_eq!(report.dropped, 2);
         assert_eq!(report.by_severity_component["info/renderer"], 1);
         assert_eq!(report.by_severity_component["warn/containers"], 1);
-        assert!(bus.take_saturation().is_none(), "report must be consumed once");
+        assert!(
+            bus.take_saturation().is_none(),
+            "report must be consumed once"
+        );
     }
 
     #[test]

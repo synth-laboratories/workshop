@@ -14,7 +14,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use synth_desktop_lib::container_stream::{wait_for_stream_subscribed, StreamDiagnostics};
 use synth_desktop_lib::core_runtime::CoreRuntime;
-use synth_desktop_lib::diagnostics::{codes, Correlation, DiagnosticInput, DiagnosticQuery, Severity};
+use synth_desktop_lib::diagnostics::{
+    codes, Correlation, DiagnosticInput, DiagnosticQuery, Severity,
+};
 use tempfile::tempdir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -81,7 +83,10 @@ async fn a_stream_that_never_subscribes_is_explained_from_the_visual_id_alone() 
         &diagnostics,
     )
     .await;
-    assert!(refused.is_err(), "a never-subscribed stream must refuse to start");
+    assert!(
+        refused.is_err(),
+        "a never-subscribed stream must refuse to start"
+    );
 
     // The renderer notices second, and knows less: only the visual.
     core.diagnostics_service().emit({
@@ -193,8 +198,8 @@ async fn a_subscribed_stream_records_the_transition_that_bounds_the_search() {
             tokio::spawn(async move {
                 let mut buffer = [0_u8; 2048];
                 let _ = stream.read(&mut buffer).await;
-                let body =
-                    json!({ "events": [{ "kind": "stream.subscribed", "ready": true }] }).to_string();
+                let body = json!({ "events": [{ "kind": "stream.subscribed", "ready": true }] })
+                    .to_string();
                 let response = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()

@@ -1406,11 +1406,7 @@ fn safetensors_payload_bytes(path: &Path) -> Result<u64> {
         }
         cursor = end;
     }
-    if 8u64
-        .saturating_add(header_size)
-        .saturating_add(cursor)
-        != file_size
-    {
+    if 8u64.saturating_add(header_size).saturating_add(cursor) != file_size {
         return Err(anyhow::anyhow!(
             "Safetensors payload length does not match file size: {}",
             path.display()

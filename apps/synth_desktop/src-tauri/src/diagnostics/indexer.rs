@@ -105,7 +105,10 @@ impl Indexer {
             .map(|record| record.event.to_index_line(record.sequence))
             .collect();
         client.ingest(&lines).await?;
-        let advanced = records.last().map(|record| record.sequence).unwrap_or(cursor);
+        let advanced = records
+            .last()
+            .map(|record| record.sequence)
+            .unwrap_or(cursor);
         self.save_cursor(advanced);
         let head = self.store.head_sequence().await.unwrap_or(advanced);
         Ok(IndexProgress {
@@ -235,7 +238,11 @@ mod tests {
         // Nothing is listening on this port, so ingestion fails.
         let client = VictoriaLogsClient::new("http://127.0.0.1:1").unwrap();
         assert!(indexer.index_once(&client).await.is_err());
-        assert_eq!(indexer.load_cursor(), 0, "cursor advanced past unindexed rows");
+        assert_eq!(
+            indexer.load_cursor(),
+            0,
+            "cursor advanced past unindexed rows"
+        );
     }
 
     #[tokio::test]

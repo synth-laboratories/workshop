@@ -674,9 +674,13 @@ mod tests {
         }))
         .is_err());
         assert!(canonicalize_bindings(&json!([])).is_err());
-        assert!(canonicalize_bindings(&json!({"schemaVersion": "synth.visual-bindings.v2"})).is_err());
-        assert!(canonicalize_bindings(&json!({"schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION}))
-            .is_err());
+        assert!(
+            canonicalize_bindings(&json!({"schemaVersion": "synth.visual-bindings.v2"})).is_err()
+        );
+        assert!(
+            canonicalize_bindings(&json!({"schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION}))
+                .is_err()
+        );
     }
 
     #[test]

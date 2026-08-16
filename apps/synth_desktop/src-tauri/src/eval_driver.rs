@@ -1436,8 +1436,13 @@ async fn run_policy_rollout(
             ..Default::default()
         },
     );
-    wait_for_stream_subscribed(&client, &poll_url, SUBSCRIBE_READY_TIMEOUT, &stream_diagnostics)
-        .await?;
+    wait_for_stream_subscribed(
+        &client,
+        &poll_url,
+        SUBSCRIBE_READY_TIMEOUT,
+        &stream_diagnostics,
+    )
+    .await?;
 
     let mut start_body = json!({
         "rollout_id": rollout_id,

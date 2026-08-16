@@ -553,9 +553,14 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             // ten rollout streams on one `stream` slot is the documented case.
             // Replace-only could not express it, which is what pushed authors
             // onto hand-built binding objects the renderer could not read.
-            let mode = args.get("mode").and_then(Value::as_str).unwrap_or("replace");
+            let mode = args
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("replace");
             if !matches!(mode, "replace" | "append") {
-                return Err(format!("unsupported bind mode {mode:?}; use replace or append"));
+                return Err(format!(
+                    "unsupported bind mode {mode:?}; use replace or append"
+                ));
             }
             let authored: Vec<Value> = match args.get("bindings") {
                 Some(Value::Array(items)) if !items.is_empty() => items.clone(),
@@ -973,14 +978,10 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         "desktop-window"
     };
     let observation = if capture_mode == "desktop-window" {
-        let value = request(
-            "GET",
-            &format!("/v1/review-observations/{id}"),
-            None,
-        )?
-        .get("observation")
-        .cloned()
-        .ok_or("review observation response is missing observation")?;
+        let value = request("GET", &format!("/v1/review-observations/{id}"), None)?
+            .get("observation")
+            .cloned()
+            .ok_or("review observation response is missing observation")?;
         if value.get("renderedRevision").and_then(Value::as_i64) != Some(revision) {
             return Err(format!(
                 "captured pane rendered revision {:?}, but durable revision is {revision}",
@@ -1446,7 +1447,11 @@ print("\(best.number)\t\(Int(best.width))\t\(Int(best.height))")
     if selected.is_empty() {
         let identity = format!(
             "expected app `{app_name}` bundle `{}` pid `{}`",
-            if bundle_id.is_empty() { "unavailable" } else { &bundle_id },
+            if bundle_id.is_empty() {
+                "unavailable"
+            } else {
+                &bundle_id
+            },
             receipt
                 .process_id
                 .map(|pid| pid.to_string())
@@ -1471,8 +1476,14 @@ print("\(best.number)\t\(Int(best.width))\t\(Int(best.height))")
     let window_id = fields.next().unwrap_or_default().to_string();
     let chosen = SelectedWindow {
         window_number: window_id.parse().unwrap_or_default(),
-        width: fields.next().and_then(|value| value.parse().ok()).unwrap_or_default(),
-        height: fields.next().and_then(|value| value.parse().ok()).unwrap_or_default(),
+        width: fields
+            .next()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_default(),
+        height: fields
+            .next()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_default(),
     };
     if note_kind == "BOUNDS_DRIFT" {
         // Not fatal: the capture is still of the identified window, and the

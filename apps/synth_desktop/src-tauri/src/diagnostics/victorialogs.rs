@@ -101,10 +101,7 @@ impl VictoriaLogsClient {
         let response = self
             .http
             .post(format!("{}/select/logsql/query", self.base_url))
-            .form(&[
-                ("query", logsql.to_owned()),
-                ("limit", limit.to_string()),
-            ])
+            .form(&[("query", logsql.to_owned()), ("limit", limit.to_string())])
             .timeout(QUERY_TIMEOUT)
             .send()
             .await
@@ -112,7 +109,10 @@ impl VictoriaLogsClient {
         if !response.status().is_success() {
             bail!("VictoriaLogs query failed with {}", response.status());
         }
-        let body = response.text().await.context("read VictoriaLogs response")?;
+        let body = response
+            .text()
+            .await
+            .context("read VictoriaLogs response")?;
         Ok(parse_sequences(&body))
     }
 }
@@ -141,9 +141,7 @@ pub fn compile(query: &DiagnosticQuery, now: chrono::DateTime<chrono::Utc>) -> R
     let mut filters: Vec<String> = Vec::new();
 
     let start = query.start_timestamp(now);
-    let end = query
-        .end_timestamp(now)
-        .unwrap_or_else(|| now.to_rfc3339());
+    let end = query.end_timestamp(now).unwrap_or_else(|| now.to_rfc3339());
     filters.push(format!(
         "_time:[{}, {}]",
         quote_time(&start)?,
@@ -202,7 +200,8 @@ fn quote_identity(value: &str) -> Result<String> {
         bail!("diagnostic filter value has an unusable length");
     }
     if !value.bytes().all(|byte| {
-        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':' | b'/' | b'@' | b'+')
+        byte.is_ascii_alphanumeric()
+            || matches!(byte, b'_' | b'-' | b'.' | b':' | b'/' | b'@' | b'+')
     }) {
         bail!("diagnostic filter value `{value}` is not an identity");
     }
@@ -243,11 +242,25 @@ mod tests {
             ..Default::default()
         };
         let logsql = compile(&query, now()).unwrap();
-        assert!(logsql.contains("_time:[2026-08-16T11:40:00+00:00, 2026-08-16T12:00:00+00:00]"), "{logsql}");
-        assert!(logsql.contains("component:in(\"visual-host\",\"containers\")"), "{logsql}");
-        assert!(logsql.contains("severity:in(\"error\",\"warn\")"), "{logsql}");
+        assert!(
+            logsql.contains("_time:[2026-08-16T11:40:00+00:00, 2026-08-16T12:00:00+00:00]"),
+            "{logsql}"
+        );
+        assert!(
+            logsql.contains("component:in(\"visual-host\",\"containers\")"),
+            "{logsql}"
+        );
+        assert!(
+            logsql.contains("severity:in(\"error\",\"warn\")"),
+            "{logsql}"
+        );
         assert!(logsql.contains("visual_id:=\"vis_9\""), "{logsql}");
-        assert!(logsql.ends_with("| fields journal_sequence | sort by (journal_sequence) desc | limit 400"), "{logsql}");
+        assert!(
+            logsql.ends_with(
+                "| fields journal_sequence | sort by (journal_sequence) desc | limit 400"
+            ),
+            "{logsql}"
+        );
     }
 
     #[test]

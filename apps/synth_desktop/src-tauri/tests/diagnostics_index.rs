@@ -150,9 +150,9 @@ async fn ingests_and_answers_a_typed_query_through_the_real_index() {
         records[0].event.details["received_schema"],
         json!("synth.trace.v5")
     );
-    assert!(written.iter().all(|row| records
+    assert!(written
         .iter()
-        .any(|record| record.sequence == row.sequence)));
+        .all(|row| records.iter().any(|record| record.sequence == row.sequence)));
 
     sidecar.stop().await.expect("stop");
 }
@@ -195,7 +195,10 @@ async fn a_restart_catches_up_without_duplicating_logical_events() {
     let url = restarted.url().await.expect("url");
     let client = VictoriaLogsClient::new(&url).expect("client");
     let progress = indexer.index_once(&client).await.expect("catch up");
-    assert_eq!(progress.indexed, 1, "catch-up re-shipped already-indexed rows");
+    assert_eq!(
+        progress.indexed, 1,
+        "catch-up re-shipped already-indexed rows"
+    );
     assert_eq!(progress.lag, 0);
 
     // Re-indexing from zero must not change what a query answers, because the
@@ -267,7 +270,11 @@ async fn queries_fall_back_to_the_journal_when_the_index_dies_mid_run() {
         .query(DiagnosticQuery::default())
         .await
         .expect("query after index death");
-    assert_eq!(after["count"], json!(1), "an index outage changed an answer");
+    assert_eq!(
+        after["count"],
+        json!(1),
+        "an index outage changed an answer"
+    );
     assert_eq!(after["source"], json!("journal"));
 }
 
@@ -588,7 +595,10 @@ async fn a_tiny_quota_never_costs_an_authoritative_event() {
         .index_once(&client)
         .await
         .expect("offer batch to tiny-quota index");
-    assert_eq!(progress.indexed, 50, "batch never reached the constrained index");
+    assert_eq!(
+        progress.indexed, 50,
+        "batch never reached the constrained index"
+    );
 
     let result = harness
         .service
@@ -599,7 +609,11 @@ async fn a_tiny_quota_never_costs_an_authoritative_event() {
         })
         .await
         .expect("query");
-    assert_eq!(result["count"], json!(50), "a quota cost authoritative events");
+    assert_eq!(
+        result["count"],
+        json!(50),
+        "a quota cost authoritative events"
+    );
     sidecar.stop().await.expect("stop");
 }
 
@@ -621,10 +635,7 @@ fn the_bundled_binary_is_found_through_the_packaged_resource_layout() {
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     }
 
-    std::env::set_var(
-        synth_desktop_lib::diagnostics::sidecar::BINARY_ENV,
-        &binary,
-    );
+    std::env::set_var(synth_desktop_lib::diagnostics::sidecar::BINARY_ENV, &binary);
     let located = locate_binary();
     std::env::remove_var(synth_desktop_lib::diagnostics::sidecar::BINARY_ENV);
     assert_eq!(located.as_deref(), Some(binary.as_path()));
@@ -752,8 +763,16 @@ async fn emission_cost_is_unchanged_across_every_index_state() {
     // The states must not differ from each other by an order of magnitude
     // either: a uniform-but-slow path would pass the bound above and still mean
     // emission had acquired a dependency.
-    let slowest = timings.iter().map(|(_, cost)| *cost).max().expect("timings");
-    let fastest = timings.iter().map(|(_, cost)| *cost).min().expect("timings");
+    let slowest = timings
+        .iter()
+        .map(|(_, cost)| *cost)
+        .max()
+        .expect("timings");
+    let fastest = timings
+        .iter()
+        .map(|(_, cost)| *cost)
+        .min()
+        .expect("timings");
     assert!(
         slowest < fastest * 10 + Duration::from_micros(50),
         "index state changed emission cost: {timings:?}"

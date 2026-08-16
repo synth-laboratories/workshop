@@ -3909,8 +3909,11 @@ pub(in crate::optimizers) mod tests {
                     .unwrap()
                     .insert("digest".into(), json!(digest));
             }
-            std::fs::write(home.join("capabilities.json"), serde_json::to_vec(&caps).unwrap())
-                .unwrap();
+            std::fs::write(
+                home.join("capabilities.json"),
+                serde_json::to_vec(&caps).unwrap(),
+            )
+            .unwrap();
         };
 
         // The run was prepared against a proven handshake, but the sidecar is no

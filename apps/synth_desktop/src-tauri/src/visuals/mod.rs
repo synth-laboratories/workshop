@@ -10,6 +10,7 @@ mod renditions;
 pub mod systems;
 mod templates;
 
+pub use backfill::{canonicalize_persisted_bindings, BindingsBackfill};
 pub use live_eval::{
     assert_declared_stream_source, assert_digbench_live_frames, assert_live_eval_slot,
     assert_no_live_secrets, assert_template_matches_family, classify_live_eval_family,
@@ -26,7 +27,6 @@ pub use models::{
     VisualRevision, VisualSeal, VisualSealBundle, VisualStatus, VisualUpdateRequest, VisualUpload,
     VISUAL_BINDINGS_SCHEMA_VERSION, VISUAL_BINDING_KINDS, VISUAL_SCHEMA_VERSION,
 };
-pub use backfill::{canonicalize_persisted_bindings, BindingsBackfill};
 pub use registry::VisualRegistry;
 pub use renditions::{VisualAsset, VisualRendition};
 pub use templates::{

@@ -2719,7 +2719,10 @@ namespace = "base"
         let deadline = tokio::time::Instant::now() + Duration::from_secs(1_800);
         let terminal = loop {
             let current = service.get(run.id.clone()).await.unwrap();
-            if matches!(current.status.as_str(), "completed" | "failed" | "cancelled") {
+            if matches!(
+                current.status.as_str(),
+                "completed" | "failed" | "cancelled"
+            ) {
                 break current;
             }
             assert!(

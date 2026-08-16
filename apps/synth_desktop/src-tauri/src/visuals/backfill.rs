@@ -184,9 +184,11 @@ mod tests {
 
     fn bindings_of(conn: &Connection, id: &str) -> Value {
         let raw: String = conn
-            .query_row("SELECT bindings_json FROM visuals WHERE id = ?1", [id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT bindings_json FROM visuals WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
             .unwrap();
         serde_json::from_str(&raw).unwrap()
     }
@@ -277,6 +279,8 @@ mod tests {
 
         assert_eq!(report.refused, 1);
         assert_eq!(report.upgraded, 0);
-        assert!(bindings_of(&conn, "vis_mixed").get("schemaVersion").is_none());
+        assert!(bindings_of(&conn, "vis_mixed")
+            .get("schemaVersion")
+            .is_none());
     }
 }

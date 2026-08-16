@@ -26,8 +26,7 @@ pub struct VisualRegistry {
     /// `visual.render_failed` already lands in the journal as a domain event,
     /// but a domain event is scoped to the visual. The diagnostic is what puts
     /// that failure next to the rollout, stream, and container it belongs to.
-    pub(super) diagnostics:
-        Arc<std::sync::OnceLock<Arc<crate::diagnostics::DiagnosticsService>>>,
+    pub(super) diagnostics: Arc<std::sync::OnceLock<Arc<crate::diagnostics::DiagnosticsService>>>,
 }
 
 impl VisualRegistry {
@@ -129,9 +128,7 @@ impl VisualRegistry {
         input.details.insert("form".into(), json!(form.as_str()));
         // Slot names come from a template contract, not from free text, so the
         // cardinality here is bounded by the template's declared slots.
-        input
-            .details
-            .insert("slots".into(), json!(upgraded_slots));
+        input.details.insert("slots".into(), json!(upgraded_slots));
         service.emit(input);
     }
 

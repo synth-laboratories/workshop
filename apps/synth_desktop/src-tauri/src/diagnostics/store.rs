@@ -54,7 +54,10 @@ impl DiagnosticStore {
     /// and one naming a stale session would fabricate a session and shift the
     /// cursors the transcript pages on. Observing a failure must never mutate
     /// the state being observed.
-    pub async fn append_batch(&self, events: Vec<DiagnosticEvent>) -> Result<Vec<DiagnosticRecord>> {
+    pub async fn append_batch(
+        &self,
+        events: Vec<DiagnosticEvent>,
+    ) -> Result<Vec<DiagnosticRecord>> {
         if events.is_empty() {
             return Ok(Vec::new());
         }
@@ -115,7 +118,11 @@ impl DiagnosticStore {
     }
 
     /// Sequence-ordered feed for the indexer.
-    pub async fn records_after(&self, after_sequence: i64, limit: i64) -> Result<Vec<DiagnosticRecord>> {
+    pub async fn records_after(
+        &self,
+        after_sequence: i64,
+        limit: i64,
+    ) -> Result<Vec<DiagnosticRecord>> {
         let events = self
             .journal
             .events_of_kinds_after(after_sequence, vec![JOURNAL_KIND.into()], limit)
@@ -233,9 +240,9 @@ fn compile_sql(
     }
 
     let in_clause = |params: &mut Vec<SqlValue>,
-                         clauses: &mut Vec<String>,
-                         field: &str,
-                         values: Vec<String>| {
+                     clauses: &mut Vec<String>,
+                     field: &str,
+                     values: Vec<String>| {
         if values.is_empty() {
             return;
         }
@@ -293,7 +300,11 @@ fn compile_sql(
     (sql, params)
 }
 
-fn run_records(conn: &Connection, sql: &str, params: Vec<SqlValue>) -> Result<Vec<DiagnosticRecord>> {
+fn run_records(
+    conn: &Connection,
+    sql: &str,
+    params: Vec<SqlValue>,
+) -> Result<Vec<DiagnosticRecord>> {
     let mut statement = conn.prepare(sql)?;
     let rows = statement.query_map(rusqlite::params_from_iter(params), |row| {
         Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
@@ -340,7 +351,8 @@ pub fn group_by_code(records: &[DiagnosticRecord]) -> Vec<Value> {
     order
         .into_iter()
         .map(|code| {
-            let (count, severity, component, message, first_seen) = groups.remove(&code).expect("group");
+            let (count, severity, component, message, first_seen) =
+                groups.remove(&code).expect("group");
             serde_json::json!({
                 "code": code,
                 "count": count,
@@ -519,7 +531,10 @@ mod tests {
         );
         old.timestamp = Some("2020-01-01T00:00:00Z".into());
         store
-            .append_batch(vec![validate(old).unwrap(), sample("renderer", "recent_code", Severity::Error)])
+            .append_batch(vec![
+                validate(old).unwrap(),
+                sample("renderer", "recent_code", Severity::Error),
+            ])
             .await
             .unwrap();
 
@@ -600,12 +615,13 @@ mod tests {
             .unwrap();
         assert_eq!(removed, 1);
 
-        let remaining = store.search(DiagnosticQuery {
-            since: std::time::Duration::from_secs(7 * 86_400),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+        let remaining = store
+            .search(DiagnosticQuery {
+                since: std::time::Duration::from_secs(7 * 86_400),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].event.code, "fresh_code");
 
@@ -630,7 +646,10 @@ mod tests {
             .await
             .unwrap();
         // Everything is recent, so only the ceiling can act.
-        let removed = store.trim(std::time::Duration::from_secs(86_400), 5).await.unwrap();
+        let removed = store
+            .trim(std::time::Duration::from_secs(86_400), 5)
+            .await
+            .unwrap();
         assert_eq!(removed, 15);
         assert_eq!(store.summary().await.unwrap().0, 5);
     }

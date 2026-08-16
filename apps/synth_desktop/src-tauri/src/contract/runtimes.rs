@@ -347,7 +347,11 @@ mod tests {
         ids.sort_unstable();
         let count = ids.len();
         ids.dedup();
-        assert_eq!(ids.len(), count, "duplicate runtime_id in the contract table");
+        assert_eq!(
+            ids.len(),
+            count,
+            "duplicate runtime_id in the contract table"
+        );
 
         for entry in ALL {
             if entry.provisioned_by_desktop {
@@ -364,7 +368,11 @@ mod tests {
                     entry.runtime_id
                 );
             }
-            assert!(!entry.algorithms.is_empty(), "{} serves nothing", entry.runtime_id);
+            assert!(
+                !entry.algorithms.is_empty(),
+                "{} serves nothing",
+                entry.runtime_id
+            );
         }
     }
 }

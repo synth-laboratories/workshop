@@ -6,7 +6,9 @@
 //! refused here — once, at the edge — so no backend has to be trusted to
 //! enforce them.
 
-use super::event::{is_known_component, scope_components, Correlation, Severity, CORRELATION_FIELDS};
+use super::event::{
+    is_known_component, scope_components, Correlation, Severity, CORRELATION_FIELDS,
+};
 use anyhow::{bail, Result};
 use serde_json::Value;
 use std::time::Duration;
@@ -68,14 +70,14 @@ impl Default for DiagnosticQuery {
 impl DiagnosticQuery {
     /// Absolute lower bound of the query window.
     pub fn start_timestamp(&self, now: chrono::DateTime<chrono::Utc>) -> String {
-        (now - chrono::Duration::from_std(self.since).unwrap_or_else(|_| chrono::Duration::hours(1)))
-            .to_rfc3339()
+        (now - chrono::Duration::from_std(self.since)
+            .unwrap_or_else(|_| chrono::Duration::hours(1)))
+        .to_rfc3339()
     }
 
     pub fn end_timestamp(&self, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
-        self.until.map(|until| {
-            (now - chrono::Duration::from_std(until).unwrap_or_default()).to_rfc3339()
-        })
+        self.until
+            .map(|until| (now - chrono::Duration::from_std(until).unwrap_or_default()).to_rfc3339())
     }
 }
 
@@ -128,7 +130,9 @@ pub fn parse(value: &Value) -> Result<DiagnosticQuery> {
                 .as_str()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .ok_or_else(|| anyhow::anyhow!("diagnostic query field `{field}` must be a non-empty string"))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!("diagnostic query field `{field}` must be a non-empty string")
+                })?;
             if identity.len() > super::event::MAX_IDENTIFIER_CHARS {
                 bail!("diagnostic query field `{field}` is too long");
             }
@@ -192,9 +196,9 @@ fn string_list(value: Option<&Value>, field: &str) -> Result<Vec<String>> {
         Value::Array(items) => items
             .iter()
             .map(|item| {
-                item.as_str()
-                    .map(|value| value.to_owned())
-                    .ok_or_else(|| anyhow::anyhow!("diagnostic query `{field}` must contain strings"))
+                item.as_str().map(|value| value.to_owned()).ok_or_else(|| {
+                    anyhow::anyhow!("diagnostic query `{field}` must contain strings")
+                })
             })
             .collect::<Result<Vec<_>>>()?,
         _ => bail!("diagnostic query `{field}` must be a string or array of strings"),
@@ -285,15 +289,23 @@ mod tests {
     #[test]
     fn refuses_raw_query_languages_and_filesystem_reach() {
         for field in ["logsql", "sql", "path", "url", "query", "file"] {
-            let error = parse(&json!({ field: "anything" })).unwrap_err().to_string();
+            let error = parse(&json!({ field: "anything" }))
+                .unwrap_err()
+                .to_string();
             assert!(error.contains("unknown field"), "{field}: {error}");
         }
     }
 
     #[test]
     fn refuses_ranges_and_limits_beyond_the_contract() {
-        assert!(parse(&json!({"since": "30d"})).unwrap_err().to_string().contains("maximum"));
-        assert!(parse(&json!({"limit": 5_000})).unwrap_err().to_string().contains("maximum"));
+        assert!(parse(&json!({"since": "30d"}))
+            .unwrap_err()
+            .to_string()
+            .contains("maximum"));
+        assert!(parse(&json!({"limit": 5_000}))
+            .unwrap_err()
+            .to_string()
+            .contains("maximum"));
         assert!(parse(&json!({"limit": 0})).is_err());
         assert!(parse(&json!({"since": "20m", "until": "2h"})).is_err());
     }
@@ -324,10 +336,22 @@ mod tests {
 
     #[test]
     fn duration_grammar_covers_the_documented_units() {
-        assert_eq!(parse_duration(&json!("90s")).unwrap(), Duration::from_secs(90));
-        assert_eq!(parse_duration(&json!("20m")).unwrap(), Duration::from_secs(1_200));
-        assert_eq!(parse_duration(&json!("2h")).unwrap(), Duration::from_secs(7_200));
-        assert_eq!(parse_duration(&json!("7d")).unwrap(), Duration::from_secs(604_800));
+        assert_eq!(
+            parse_duration(&json!("90s")).unwrap(),
+            Duration::from_secs(90)
+        );
+        assert_eq!(
+            parse_duration(&json!("20m")).unwrap(),
+            Duration::from_secs(1_200)
+        );
+        assert_eq!(
+            parse_duration(&json!("2h")).unwrap(),
+            Duration::from_secs(7_200)
+        );
+        assert_eq!(
+            parse_duration(&json!("7d")).unwrap(),
+            Duration::from_secs(604_800)
+        );
         assert_eq!(parse_duration(&json!(45)).unwrap(), Duration::from_secs(45));
         assert!(parse_duration(&json!("fortnight")).is_err());
         assert!(parse_duration(&json!("")).is_err());

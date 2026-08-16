@@ -53,8 +53,8 @@ impl StreamDiagnostics {
         let Some(service) = self.service.as_ref() else {
             return;
         };
-        let mut input =
-            DiagnosticInput::new(severity, "container-stream", event, code, message).retryable(retryable);
+        let mut input = DiagnosticInput::new(severity, "container-stream", event, code, message)
+            .retryable(retryable);
         input.correlation = self.correlation.clone();
         if let Some(object) = details.as_object() {
             input.details = object.clone();

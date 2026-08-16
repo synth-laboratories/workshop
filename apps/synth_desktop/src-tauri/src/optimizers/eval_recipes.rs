@@ -146,9 +146,7 @@ fn decode_cli_output(success: bool, status: &str, stdout: &[u8], stderr: &[u8]) 
         );
     }
     if !success {
-        bail!(
-            "eval_cli_non_zero_exit: status={status}; stdout={stdout:?}; stderr={stderr:?}"
-        );
+        bail!("eval_cli_non_zero_exit: status={status}; stdout={stdout:?}; stderr={stderr:?}");
     }
     Ok(parsed)
 }

@@ -64,15 +64,14 @@ struct VisualCaptureObservationReceipt {
 
 fn capture_observation_receipt(screenshot: &str) -> Result<VisualCaptureObservationReceipt> {
     let path = std::path::Path::new(screenshot).with_extension("observations.json");
-    let receipt: VisualCaptureObservationReceipt = serde_json::from_slice(
-        &fs::read(&path).with_context(|| {
+    let receipt: VisualCaptureObservationReceipt =
+        serde_json::from_slice(&fs::read(&path).with_context(|| {
             format!(
                 "visual review requires capture observations beside {}",
                 path.display()
             )
-        })?,
-    )
-    .context("visual capture observation receipt is invalid")?;
+        })?)
+        .context("visual capture observation receipt is invalid")?;
     if receipt.schema_version != "synth.visual-capture-observation.v1"
         || receipt.screenshot_path != screenshot
     {
@@ -131,7 +130,11 @@ fn validate_readiness_observation(
             observation.transport_state
         );
     }
-    if observation.error.as_deref().is_some_and(|error| !error.is_empty()) {
+    if observation
+        .error
+        .as_deref()
+        .is_some_and(|error| !error.is_empty())
+    {
         anyhow::bail!("visual readiness rejects a rendered error state");
     }
     if observation.rollout_count < readiness.minimum_rollout_count {
@@ -201,7 +204,8 @@ pub fn record_rendered_observation(observation: RenderedVisualObservation) -> Re
     if observation.visual_id.trim().is_empty() || observation.rendered_revision < 1 {
         anyhow::bail!("rendered visual observation requires visual identity and revision");
     }
-    if observation.bindings_digest.trim().is_empty() || observation.transport_state.trim().is_empty()
+    if observation.bindings_digest.trim().is_empty()
+        || observation.transport_state.trim().is_empty()
     {
         anyhow::bail!("rendered visual observation requires bindings and transport authority");
     }
@@ -407,10 +411,14 @@ fn record_ipc_failure(
         .details
         .insert("duration_ms".into(), json!(elapsed.as_millis() as u64));
     if let Some(remediation) = response.body.get("remediation") {
-        input.details.insert("remediation".into(), remediation.clone());
+        input
+            .details
+            .insert("remediation".into(), remediation.clone());
     }
     if let Some(missing) = response.body.get("missingOperations") {
-        input.details.insert("missing_operations".into(), missing.clone());
+        input
+            .details
+            .insert("missing_operations".into(), missing.clone());
     }
     core.diagnostics_service().emit(input);
 }
@@ -790,8 +798,13 @@ async fn run_one_scripted_rollout(
         .context("prepare omitted stream descriptor; refusing to guess /events")?;
     let poll_url = resolve_declared_url(base, &declared_poll_url(&prepared_stream)?)?;
     let rollout_diagnostics = diagnostics.clone().with_rollout(&rollout_id);
-    wait_for_stream_subscribed(client, &poll_url, SUBSCRIBE_READY_TIMEOUT, &rollout_diagnostics)
-        .await?;
+    wait_for_stream_subscribed(
+        client,
+        &poll_url,
+        SUBSCRIBE_READY_TIMEOUT,
+        &rollout_diagnostics,
+    )
+    .await?;
 
     let mut state = client
         .post(format!("{base}/rollouts"))
@@ -1835,13 +1848,17 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 }
                 let receipt = capture_observation_receipt(screenshot)?;
                 if receipt.visual_id != id || receipt.revision != revision {
-                    anyhow::bail!("visual capture observations do not match the reviewed visual revision");
+                    anyhow::bail!(
+                        "visual capture observations do not match the reviewed visual revision"
+                    );
                 }
                 receipt
             };
             let template = registry.get_template(&current.template_id)?;
             if template.observation_contract.is_some() && capture_receipt.observation.is_none() {
-                anyhow::bail!("this template requires mechanically harvested rendered observations");
+                anyhow::bail!(
+                    "this template requires mechanically harvested rendered observations"
+                );
             }
             let mut metadata = current.metadata.as_object().cloned().unwrap_or_default();
             let mut reviews = metadata
@@ -2366,16 +2383,24 @@ async fn dispatch_diagnostics(
             Ok(service.status().await)
         }
         ("POST", "/v1/diagnostics/query") => {
-            service.query(crate::diagnostics::query::parse(&request)?).await
+            service
+                .query(crate::diagnostics::query::parse(&request)?)
+                .await
         }
         ("POST", "/v1/diagnostics/tail") => {
-            service.tail(crate::diagnostics::query::parse(&request)?).await
+            service
+                .tail(crate::diagnostics::query::parse(&request)?)
+                .await
         }
         ("POST", "/v1/diagnostics/explain") => {
-            service.explain(crate::diagnostics::query::parse(&request)?).await
+            service
+                .explain(crate::diagnostics::query::parse(&request)?)
+                .await
         }
         ("POST", "/v1/diagnostics/bundle") => {
-            service.bundle(crate::diagnostics::query::parse(&request)?).await
+            service
+                .bundle(crate::diagnostics::query::parse(&request)?)
+                .await
         }
         ("POST", "/v1/diagnostics/clear-index") => service.clear_index().await,
         (method, path) => anyhow::bail!("unknown diagnostics route {method} {path}"),
@@ -2673,10 +2698,7 @@ mod diagnostics_tests {
             .collect();
         assert_eq!(by_code["renderer exploded"]["severity"], json!("error"));
         assert_eq!(by_code["renderer exploded"]["retryable"], json!(true));
-        assert_eq!(
-            by_code["templateId is required"]["severity"],
-            json!("warn")
-        );
+        assert_eq!(by_code["templateId is required"]["severity"], json!("warn"));
         assert_eq!(by_code["templateId is required"]["retryable"], json!(false));
     }
 
@@ -2797,7 +2819,11 @@ mod tests {
         let mut observation = rendered_observation();
         observation.transport_state = "connecting".into();
         assert!(validate_readiness_observation(
-            &live_contract(), "vis_1", 14, "bindings-14", &observation
+            &live_contract(),
+            "vis_1",
+            14,
+            "bindings-14",
+            &observation
         )
         .unwrap_err()
         .to_string()
@@ -2805,7 +2831,11 @@ mod tests {
         observation.transport_state = "terminal".into();
         observation.rendered_frame_count = 0;
         assert!(validate_readiness_observation(
-            &live_contract(), "vis_1", 14, "bindings-14", &observation
+            &live_contract(),
+            "vis_1",
+            14,
+            "bindings-14",
+            &observation
         )
         .unwrap_err()
         .to_string()
@@ -2817,21 +2847,40 @@ mod tests {
     /// showing evidence gets marked ready.
     #[test]
     fn readiness_rejects_every_transport_state_that_is_not_settled_evidence() {
-        for state in ["idle", "declared", "replaying", "connecting", "reconnecting", "error", "surprise"] {
+        for state in [
+            "idle",
+            "declared",
+            "replaying",
+            "connecting",
+            "reconnecting",
+            "error",
+            "surprise",
+        ] {
             let mut observation = rendered_observation();
             observation.transport_state = state.into();
             let error = validate_readiness_observation(
-                &live_contract(), "vis_1", 14, "bindings-14", &observation
+                &live_contract(),
+                "vis_1",
+                14,
+                "bindings-14",
+                &observation,
             )
             .unwrap_err()
             .to_string();
-            assert!(error.contains("transport state"), "{state} must be rejected: {error}");
+            assert!(
+                error.contains("transport state"),
+                "{state} must be rejected: {error}"
+            );
         }
         for state in ["live", "terminal"] {
             let mut observation = rendered_observation();
             observation.transport_state = state.into();
             validate_readiness_observation(
-                &live_contract(), "vis_1", 14, "bindings-14", &observation
+                &live_contract(),
+                "vis_1",
+                14,
+                "bindings-14",
+                &observation,
             )
             .unwrap_or_else(|error| panic!("{state} must be able to carry evidence: {error}"));
         }
@@ -2841,11 +2890,19 @@ mod tests {
     fn readiness_rejects_stale_revision_and_mismatched_bindings() {
         let observation = rendered_observation();
         assert!(validate_readiness_observation(
-            &live_contract(), "vis_1", 15, "bindings-14", &observation
+            &live_contract(),
+            "vis_1",
+            15,
+            "bindings-14",
+            &observation
         )
         .is_err());
         assert!(validate_readiness_observation(
-            &live_contract(), "vis_1", 14, "bindings-15", &observation
+            &live_contract(),
+            "vis_1",
+            14,
+            "bindings-15",
+            &observation
         )
         .unwrap_err()
         .to_string()
@@ -3029,17 +3086,16 @@ mod tests {
         })
         .await;
         let client = test_client();
-        let outcome =
-            run_one_scripted_rollout(
-                &client,
-                &base,
-                1,
-                &["do".into()],
-                Some("r1".into()),
-                &crate::container_stream::StreamDiagnostics::none(),
-            )
-                .await
-                .unwrap();
+        let outcome = run_one_scripted_rollout(
+            &client,
+            &base,
+            1,
+            &["do".into()],
+            Some("r1".into()),
+            &crate::container_stream::StreamDiagnostics::none(),
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.rollout_id, "r1");
         assert_eq!(outcome.stream_id.as_deref(), Some("stream:r1"));
         assert!(started.load(std::sync::atomic::Ordering::SeqCst));
@@ -3091,8 +3147,8 @@ mod tests {
             Some("r1".into()),
             &crate::container_stream::StreamDiagnostics::none(),
         )
-            .await
-            .unwrap_err();
+        .await
+        .unwrap_err();
         assert!(error
             .to_string()
             .contains("must be folded inside Containers"));
@@ -3137,8 +3193,8 @@ mod tests {
             Some("r1".into()),
             &crate::container_stream::StreamDiagnostics::none(),
         )
-            .await
-            .unwrap_err();
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("stream.subscribed"));
         assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
         task.abort();

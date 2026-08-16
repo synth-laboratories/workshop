@@ -957,7 +957,13 @@ pub(crate) fn mcp_ipc_env_key(server: &str) -> &'static str {
     }
 }
 
-pub(crate) fn mcp_env_config(server: &str, ipc: &Path, session_id: &str, app_name: &str, bundle_id: &str) -> String {
+pub(crate) fn mcp_env_config(
+    server: &str,
+    ipc: &Path,
+    session_id: &str,
+    app_name: &str,
+    bundle_id: &str,
+) -> String {
     format!(
         "env = {{ {} = \"{}\", SYNTH_SESSION_ID = \"{}\", SYNTH_DESKTOP_APP_NAME = \"{}\", SYNTH_DESKTOP_BUNDLE_ID = \"{}\" }}\n",
         mcp_ipc_env_key(server),

@@ -324,7 +324,10 @@ impl DiagnosticsService {
         self.query(request).await
     }
 
-    async fn search(&self, request: &DiagnosticQuery) -> Result<(Vec<DiagnosticRecord>, &'static str)> {
+    async fn search(
+        &self,
+        request: &DiagnosticQuery,
+    ) -> Result<(Vec<DiagnosticRecord>, &'static str)> {
         if matches!(self.sidecar.state().await, SidecarState::Ready) {
             if let Some(url) = self.sidecar.url().await {
                 match self.search_index(&url, request).await {
@@ -340,7 +343,11 @@ impl DiagnosticsService {
         Ok((self.store.search(request.clone()).await?, "journal"))
     }
 
-    async fn search_index(&self, url: &str, request: &DiagnosticQuery) -> Result<Vec<DiagnosticRecord>> {
+    async fn search_index(
+        &self,
+        url: &str,
+        request: &DiagnosticQuery,
+    ) -> Result<Vec<DiagnosticRecord>> {
         let client = VictoriaLogsClient::new(url)?;
         let logsql = super::victorialogs::compile(request, chrono::Utc::now())?;
         let sequences = tokio::time::timeout(
@@ -515,7 +522,10 @@ mod tests {
         assert_eq!(result["source"], json!("journal"));
         assert_eq!(result["count"], json!(1));
         let event = &result["events"][0];
-        assert_eq!(event["code"], json!(codes::UNSUPPORTED_TRACE_PROJECTION_SCHEMA));
+        assert_eq!(
+            event["code"],
+            json!(codes::UNSUPPORTED_TRACE_PROJECTION_SCHEMA)
+        );
         assert_eq!(event["details"]["received_schema"], json!("synth.trace.v5"));
         assert_eq!(event["visual_id"], json!("vis_9"));
         assert_eq!(event["trace_id"], json!("trace_1"));
@@ -629,7 +639,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(saturation["count"], json!(1));
-        assert!(saturation["events"][0]["details"]["dropped"].as_u64().unwrap() >= 10);
+        assert!(
+            saturation["events"][0]["details"]["dropped"]
+                .as_u64()
+                .unwrap()
+                >= 10
+        );
     }
 
     #[tokio::test]
@@ -676,7 +691,10 @@ mod tests {
         assert_eq!(receipt["uploaded"], json!(false));
         let path = receipt["path"].as_str().unwrap();
         let body = std::fs::read_to_string(path).unwrap();
-        assert!(!body.contains("sk-abcdefghijklmnop"), "bundle leaked a token");
+        assert!(
+            !body.contains("sk-abcdefghijklmnop"),
+            "bundle leaked a token"
+        );
         assert!(body.contains("synth.diagnostics-bundle.v1"));
         #[cfg(unix)]
         {

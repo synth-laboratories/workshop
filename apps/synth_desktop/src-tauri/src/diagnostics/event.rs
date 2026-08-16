@@ -399,9 +399,9 @@ impl DiagnosticEvent {
 fn is_dotted_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 96
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-'))
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
         && !value.starts_with('.')
         && !value.ends_with('.')
 }
@@ -484,7 +484,9 @@ mod tests {
         source.correlation.visual_id = Some("vis_1".into());
         source.correlation.trace_id = Some("trace_1".into());
         source.correlation.visual_revision = Some(14);
-        source.details.insert("received_schema".into(), json!("synth.trace.v5"));
+        source
+            .details
+            .insert("received_schema".into(), json!("synth.trace.v5"));
         let event = validate(source).unwrap();
         let restored = DiagnosticEvent::from_payload(&event.to_payload()).unwrap();
         assert_eq!(restored, event);
@@ -519,7 +521,10 @@ mod tests {
             correlation.set(field, Some(format!("value-{field}")));
         }
         for field in CORRELATION_FIELDS {
-            assert_eq!(correlation.get(field), Some(format!("value-{field}").as_str()));
+            assert_eq!(
+                correlation.get(field),
+                Some(format!("value-{field}").as_str())
+            );
         }
         assert_eq!(correlation.present().len(), CORRELATION_FIELDS.len());
     }

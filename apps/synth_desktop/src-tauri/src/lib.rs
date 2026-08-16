@@ -1492,14 +1492,9 @@ async fn visual_stream_poll(
                        message: String,
                        retryable: bool,
                        details: serde_json::Value| {
-        let mut input = diagnostics::DiagnosticInput::new(
-            severity,
-            "container-stream",
-            event,
-            code,
-            message,
-        )
-        .retryable(retryable);
+        let mut input =
+            diagnostics::DiagnosticInput::new(severity, "container-stream", event, code, message)
+                .retryable(retryable);
         input.correlation.visual_id = Some(visual.id.clone());
         input.correlation.visual_revision = Some(visual.current_revision);
         input.correlation.session_id = visual.session_id.clone();
@@ -1542,7 +1537,10 @@ async fn visual_stream_poll(
             .timeout(std::time::Duration::from_secs(10))
             .build()?
             .get(&request.poll_url)
-            .query(&[("after", request.after.to_string()), ("limit", limit.to_string())])
+            .query(&[
+                ("after", request.after.to_string()),
+                ("limit", limit.to_string()),
+            ])
             .send()
             .await?
             .error_for_status()?

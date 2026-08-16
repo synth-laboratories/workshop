@@ -36,7 +36,10 @@ impl IdentitySet {
     }
 
     pub fn insert(&mut self, field: &str, value: String) {
-        self.values.entry(field.to_owned()).or_default().insert(value);
+        self.values
+            .entry(field.to_owned())
+            .or_default()
+            .insert(value);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -236,7 +239,10 @@ mod tests {
             ),
         ];
         let explained = build(&records, &IdentitySet::default());
-        assert_eq!(explained["cause"]["timestamp"], json!("2026-08-16T00:00:00+00:00"));
+        assert_eq!(
+            explained["cause"]["timestamp"],
+            json!("2026-08-16T00:00:00+00:00")
+        );
     }
 
     #[test]

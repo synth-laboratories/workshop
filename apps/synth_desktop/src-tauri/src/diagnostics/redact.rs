@@ -332,13 +332,15 @@ mod tests {
     fn scrubs_url_userinfo_and_private_key_blocks() {
         let url = redact_text("connecting to https://user:hunter2@containers.local/health");
         assert!(!url.contains("hunter2"), "{url}");
-        let pem = redact_text("-----BEGIN PRIVATE KEY-----\nMIIBVgIBADAN\n-----END PRIVATE KEY-----\n");
+        let pem =
+            redact_text("-----BEGIN PRIVATE KEY-----\nMIIBVgIBADAN\n-----END PRIVATE KEY-----\n");
         assert!(!pem.contains("MIIBVgIBADAN"), "{pem}");
     }
 
     #[test]
     fn leaves_ordinary_diagnostic_text_alone() {
-        let text = "Unsupported trace projection schema: synth.trace.v5 (visual vis_9, revision 14)";
+        let text =
+            "Unsupported trace projection schema: synth.trace.v5 (visual vis_9, revision 14)";
         assert_eq!(redact_text(text), text);
     }
 
@@ -351,7 +353,10 @@ mod tests {
             ("refresh_token", json!("rt")),
             ("cookie", json!("session=1")),
             ("SYNTH_API_KEY", json!("plain")),
-            ("expected_schemas", json!(["synth.trace-projection.rollout-inspector.v1"])),
+            (
+                "expected_schemas",
+                json!(["synth.trace-projection.rollout-inspector.v1"]),
+            ),
         ]));
         for key in [
             "apiKey",
@@ -376,7 +381,9 @@ mod tests {
         assert_eq!(prompt["length"], json!(24));
         assert_eq!(prompt["redacted"], json!("prompt_content"));
         assert!(prompt["digest"].as_str().unwrap().starts_with("sha256:"));
-        assert!(!Value::Object(redacted).to_string().contains("solve the maze"));
+        assert!(!Value::Object(redacted)
+            .to_string()
+            .contains("solve the maze"));
     }
 
     #[test]
