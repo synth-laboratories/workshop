@@ -1531,6 +1531,52 @@ export type OptimizerUsageSummary = {
 	extra?: unknown,
 };
 
+/**
+ *  One row in the permission list: what the OS was asked for, what it said, and
+ *  where the operator goes to change it.
+ */
+export type PluginPermission = PluginPermission_Serialize | PluginPermission_Deserialize;
+
+/**
+ *  One row in the permission list: what the OS was asked for, what it said, and
+ *  where the operator goes to change it.
+ */
+export type PluginPermission_Deserialize = {
+	/**  Stable identifier, e.g. `accessibility`, `screen_recording`. */
+	id: string,
+	/**
+	 *  What macOS itself calls this in System Settings. Matching its wording is
+	 *  what makes the row findable; our own name for it would not be.
+	 */
+	label: string,
+	/**  One of [`PLUGIN_PERMISSION_STATES`]. */
+	state: string,
+	/**  Deep link to the exact Privacy & Security pane, where one exists. */
+	settingsUrl?: string | null,
+	/**  Why the plugin needs it, in one line. A reason, not a pitch. */
+	detail?: string | null,
+};
+
+/**
+ *  One row in the permission list: what the OS was asked for, what it said, and
+ *  where the operator goes to change it.
+ */
+export type PluginPermission_Serialize = {
+	/**  Stable identifier, e.g. `accessibility`, `screen_recording`. */
+	id: string,
+	/**
+	 *  What macOS itself calls this in System Settings. Matching its wording is
+	 *  what makes the row findable; our own name for it would not be.
+	 */
+	label: string,
+	/**  One of [`PLUGIN_PERMISSION_STATES`]. */
+	state: string,
+	/**  Deep link to the exact Privacy & Security pane, where one exists. */
+	settingsUrl?: string | null,
+	/**  Why the plugin needs it, in one line. A reason, not a pitch. */
+	detail?: string | null,
+};
+
 export type PluginServiceStatus = PluginServiceStatus_Serialize | PluginServiceStatus_Deserialize;
 
 export type PluginServiceStatus_Deserialize = {
@@ -1561,6 +1607,11 @@ export type PluginStatus_Deserialize = {
 	capabilitiesDigest?: string | null,
 	algorithms?: string[],
 	templates?: string[],
+	/**
+	 *  OS grants this plugin holds. Empty for plugins that need none, which is
+	 *  most of them — hence a list rather than an `Option`.
+	 */
+	permissions?: PluginPermission_Deserialize[],
 	lastActionReceiptId?: string | null,
 	detail?: string | null,
 };
@@ -1579,6 +1630,11 @@ export type PluginStatus_Serialize = {
 	capabilitiesDigest?: string | null,
 	algorithms: string[],
 	templates: string[],
+	/**
+	 *  OS grants this plugin holds. Empty for plugins that need none, which is
+	 *  most of them — hence a list rather than an `Option`.
+	 */
+	permissions?: PluginPermission_Serialize[],
 	lastActionReceiptId?: string | null,
 	detail?: string | null,
 };

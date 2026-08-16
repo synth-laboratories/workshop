@@ -1,8 +1,13 @@
-//! Built-in product-plugin registry. Only `optimizers` is registered in this cut.
+//! Built-in product-plugin registry.
+//!
+//! State is one JSON file per plugin, named for it. `optimizers` is the only
+//! plugin with a catalog today, but the file layout, the registry handle, and
+//! the catalog lookup are all keyed by plugin id, so a second one adds a
+//! catalog arm rather than a second registry.
 
 use super::types::{
-    CatalogEntry, PluginActionReceipt, PluginStatus, DEV_RELEASE_CHANNEL, OFFICIAL_RELEASE_CHANNEL,
-    OPTIMIZERS_PLUGIN_ID, PLUGIN_PUBLISHER,
+    CatalogEntry, CatalogPayload, PluginActionReceipt, PluginStatus, DEV_RELEASE_CHANNEL,
+    OFFICIAL_RELEASE_CHANNEL, OPTIMIZERS_PLUGIN_ID, PLUGIN_PUBLISHER,
 };
 use crate::contract::runtimes::OPTIMIZERS as CONTRACT;
 use crate::optimizers::manager::{
@@ -29,10 +34,10 @@ struct RegistryState {
     receipts: Vec<PluginActionReceipt>,
 }
 
-impl Default for RegistryState {
-    fn default() -> Self {
+impl RegistryState {
+    fn empty(plugin_id: &str) -> Self {
         Self {
-            plugin_id: OPTIMIZERS_PLUGIN_ID.into(),
+            plugin_id: plugin_id.to_owned(),
             enabled: true,
             release_channel: default_release_channel(),
             last_action_receipt_id: None,
@@ -42,21 +47,47 @@ impl Default for RegistryState {
 }
 
 pub struct PluginRegistry {
+    plugin_id: String,
     path: PathBuf,
 }
 
 impl PluginRegistry {
-    pub fn open_default() -> Self {
+    /// One file per plugin, named for it. A shared file would make each
+    /// plugin's write a chance to clobber another's enabled flag.
+    pub fn for_plugin(plugin_id: &str) -> Self {
         Self {
-            path: crate::storage::app_data_root().join("plugins/optimizers.json"),
+            plugin_id: plugin_id.to_owned(),
+            path: crate::storage::app_data_root().join(format!("plugins/{plugin_id}.json")),
         }
     }
 
-    pub fn with_path(path: PathBuf) -> Self {
-        Self { path }
+    pub fn open_default() -> Self {
+        Self::for_plugin(OPTIMIZERS_PLUGIN_ID)
     }
 
-    pub fn catalog_entry(version: Option<&str>) -> Result<CatalogEntry> {
+    pub fn with_path(path: PathBuf) -> Self {
+        Self::for_plugin_at(OPTIMIZERS_PLUGIN_ID, path)
+    }
+
+    pub fn for_plugin_at(plugin_id: &str, path: PathBuf) -> Self {
+        Self {
+            plugin_id: plugin_id.to_owned(),
+            path,
+        }
+    }
+
+    pub fn plugin_id(&self) -> &str {
+        &self.plugin_id
+    }
+
+    pub fn catalog_entry(plugin_id: &str, version: Option<&str>) -> Result<CatalogEntry> {
+        match plugin_id {
+            OPTIMIZERS_PLUGIN_ID => Self::optimizers_catalog_entry(version),
+            other => bail!("no catalog is registered for plugin `{other}`"),
+        }
+    }
+
+    fn optimizers_catalog_entry(version: Option<&str>) -> Result<CatalogEntry> {
         let version = version.unwrap_or(DEFAULT_SIDECAR_VERSION);
         let release_channel = match version {
             OFFICIAL_SIDECAR_VERSION => OFFICIAL_RELEASE_CHANNEL,
@@ -74,10 +105,12 @@ impl PluginRegistry {
             network_host: "pypi.org".into(),
             download_size_bytes: 12_000_000,
             workshop_compat: CONTRACT.workshop_compat.into(),
-            algorithms: owned(CONTRACT.algorithms),
-            templates: owned(CONTRACT.templates),
-            recipe_schema_version: CONTRACT.recipe_schema.into(),
-            bounded_recipes: owned(CONTRACT.bounded_recipes),
+            payload: CatalogPayload::Optimizers {
+                algorithms: owned(CONTRACT.algorithms),
+                templates: owned(CONTRACT.templates),
+                recipe_schema_version: CONTRACT.recipe_schema.into(),
+                bounded_recipes: owned(CONTRACT.bounded_recipes),
+            },
         })
     }
 
@@ -87,7 +120,7 @@ impl PluginRegistry {
             DEV_RELEASE_CHANNEL => DEV_SIDECAR_VERSION,
             _ => OFFICIAL_SIDECAR_VERSION,
         });
-        let entry = Self::catalog_entry(Some(version))?;
+        let entry = Self::catalog_entry(&self.plugin_id, Some(version))?;
         if version != entry.version {
             bail!("optimizer catalog selection is inconsistent");
         }
@@ -154,8 +187,12 @@ impl PluginRegistry {
     fn load(&self) -> RegistryState {
         fs::read_to_string(&self.path)
             .ok()
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default()
+            .and_then(|raw| serde_json::from_str::<RegistryState>(&raw).ok())
+            // A file recording a different plugin is another plugin's state at
+            // our path. Treat it as absent rather than adopting its enabled
+            // flag and its receipts.
+            .filter(|state| state.plugin_id == self.plugin_id)
+            .unwrap_or_else(|| RegistryState::empty(&self.plugin_id))
     }
 
     fn store(&self, state: &RegistryState) -> Result<()> {
@@ -192,4 +229,52 @@ fn normalize_release_channel_strict(channel: &str) -> Result<&'static str> {
 
 pub fn optimizers_plugin_enabled() -> bool {
     PluginRegistry::open_default().is_enabled()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn plugins_do_not_share_an_enabled_flag() {
+        let dir = tempdir().unwrap();
+        let optimizers = PluginRegistry::for_plugin_at(
+            OPTIMIZERS_PLUGIN_ID,
+            dir.path().join("plugins/optimizers.json"),
+        );
+        let second =
+            PluginRegistry::for_plugin_at("computer-use", dir.path().join("plugins/computer-use.json"));
+        optimizers.set_enabled(false).unwrap();
+        assert!(!optimizers.is_enabled());
+        assert!(second.is_enabled());
+    }
+
+    /// The file name is a convention, not a guarantee. State that records a
+    /// different plugin must not lend this one its enabled flag or receipts.
+    #[test]
+    fn state_recorded_for_another_plugin_is_not_adopted() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("plugins/shared.json");
+        PluginRegistry::for_plugin_at(OPTIMIZERS_PLUGIN_ID, path.clone())
+            .set_enabled(false)
+            .unwrap();
+        assert!(PluginRegistry::for_plugin_at("computer-use", path).is_enabled());
+    }
+
+    #[test]
+    fn a_plugin_without_a_catalog_is_refused_by_name() {
+        let error = PluginRegistry::catalog_entry("computer-use", None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("computer-use"), "{error}");
+    }
+
+    #[test]
+    fn the_optimizers_catalog_still_carries_its_own_payload() {
+        let entry = PluginRegistry::catalog_entry(OPTIMIZERS_PLUGIN_ID, None).unwrap();
+        assert_eq!(entry.plugin_id, OPTIMIZERS_PLUGIN_ID);
+        let CatalogPayload::Optimizers { algorithms, .. } = entry.payload;
+        assert!(!algorithms.is_empty());
+    }
 }

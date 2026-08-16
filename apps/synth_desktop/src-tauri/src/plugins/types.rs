@@ -132,23 +132,43 @@ pub struct PluginNotReady {
     pub plugin_id: String,
     pub phase: String,
     pub suggested_operation: String,
+    /// Permission ids the caller is missing, when `phase` is
+    /// `needs_permissions`. Naming them is what separates a refusal an agent
+    /// can act on from one it can only relay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_permissions: Vec<String>,
 }
 
 impl PluginNotReady {
-    pub fn new(phase: impl Into<String>, suggested: impl Into<String>) -> Self {
+    pub fn for_plugin(
+        plugin_id: impl Into<String>,
+        phase: impl Into<String>,
+        suggested: impl Into<String>,
+    ) -> Self {
         Self {
             code: PLUGIN_NOT_READY_CODE.into(),
-            plugin_id: OPTIMIZERS_PLUGIN_ID.into(),
+            plugin_id: plugin_id.into(),
             phase: phase.into(),
             suggested_operation: suggested.into(),
+            missing_permissions: Vec::new(),
         }
+    }
+
+    pub fn new(phase: impl Into<String>, suggested: impl Into<String>) -> Self {
+        Self::for_plugin(OPTIMIZERS_PLUGIN_ID, phase, suggested)
+    }
+
+    /// G4: refuse with the exact grant that is missing, not with "not ready".
+    pub fn missing(mut self, permissions: impl IntoIterator<Item = String>) -> Self {
+        self.missing_permissions = permissions.into_iter().collect();
+        self
     }
 
     pub fn to_json(&self) -> Value {
         serde_json::to_value(self).unwrap_or_else(|_| {
             serde_json::json!({
                 "code": PLUGIN_NOT_READY_CODE,
-                "pluginId": OPTIMIZERS_PLUGIN_ID,
+                "pluginId": self.plugin_id,
             })
         })
     }
@@ -166,6 +186,24 @@ impl std::fmt::Display for PluginNotReady {
 
 impl std::error::Error for PluginNotReady {}
 
+/// Catalog fields that mean something to exactly one plugin.
+///
+/// These were columns on [`CatalogEntry`]. Nothing reads them — the approval
+/// card is built from publisher, version, digest, size, and host — so leaving
+/// them as columns would only have forced plugin #2 to describe itself with
+/// four empty optimizer fields.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CatalogPayload {
+    #[serde(rename_all = "camelCase")]
+    Optimizers {
+        algorithms: Vec<String>,
+        templates: Vec<String>,
+        recipe_schema_version: String,
+        bounded_recipes: Vec<String>,
+    },
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogEntry {
@@ -177,10 +215,7 @@ pub struct CatalogEntry {
     pub network_host: String,
     pub download_size_bytes: u64,
     pub workshop_compat: String,
-    pub algorithms: Vec<String>,
-    pub templates: Vec<String>,
-    pub recipe_schema_version: String,
-    pub bounded_recipes: Vec<String>,
+    pub payload: CatalogPayload,
 }
 
 pub fn digest_ref(hex: &str) -> String {
