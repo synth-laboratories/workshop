@@ -719,7 +719,7 @@ export function Composer({
 	const [modelMenuOpen, setModelMenuOpen] = useState(false);
 	const [armedQueuedPromptId, setArmedQueuedPromptId] = useState<string | null>(null);
 	const [promotingQueuedPromptId, setPromotingQueuedPromptId] = useState<string | null>(null);
-	const queuedEnterRef = useRef<{ id: string; at: number } | null>(null);
+	const queuedEnterRef = useRef<{ id: string; text: string; at: number } | null>(null);
 	const queuedEnterTimerRef = useRef<number | null>(null);
 	const [workspaceMenuSignal, setWorkspaceMenuSignal] = useState(0);
 	const dockRef = useRef<HTMLDivElement>(null);
@@ -1024,7 +1024,7 @@ export function Composer({
 				const queuedId = onEnqueue?.(text);
 				setValue("");
 				setSkillChip(null);
-				if (queuedId && agentWorking && steerSupported) armQueuedPrompt(queuedId);
+				if (queuedId && agentWorking && steerSupported) armQueuedPrompt(queuedId, text);
 				return;
 			}
 			if (intent === "steer") {
@@ -1100,9 +1100,9 @@ export function Composer({
 			.finally(() => setPromotingQueuedPromptId(null));
 	};
 
-	const armQueuedPrompt = (id: string) => {
+	const armQueuedPrompt = (id: string, text: string) => {
 		const now = Date.now();
-		queuedEnterRef.current = { id, at: now };
+		queuedEnterRef.current = { id, text, at: now };
 		setArmedQueuedPromptId(id);
 		if (queuedEnterTimerRef.current !== null) window.clearTimeout(queuedEnterTimerRef.current);
 		queuedEnterTimerRef.current = window.setTimeout(() => {
@@ -1118,16 +1118,20 @@ export function Composer({
 			promoteQueuedPrompt(id, text);
 			return;
 		}
-		armQueuedPrompt(id);
+		armQueuedPrompt(id, text);
 	};
 
-	const promoteComposerQueueOnSecondReturn = (): boolean => {
-		if (!agentWorking || activeEnterAction !== "enqueue" || !steerSupported || value.trim() || promotingQueuedPromptId) return false;
+	const promoteComposerQueueOnSecondReturn = (composerValue: string): boolean => {
+		if (!agentWorking || activeEnterAction !== "enqueue" || !steerSupported || promotingQueuedPromptId) return false;
 		const armed = queuedEnterRef.current;
 		if (!armed || Date.now() - armed.at > 700) return false;
+		// React may not have committed setValue("") before a physical double Return.
+		// Accept the pre-commit DOM value only when it is the exact prompt we armed;
+		// newly typed text must remain a distinct queued prompt.
+		const currentText = composerValue.trim();
+		if (currentText && currentText !== armed.text) return false;
 		const queued = queuedPrompts.find((item) => item.id === armed.id);
-		if (!queued) return false;
-		promoteQueuedPrompt(queued.id, queued.text);
+		promoteQueuedPrompt(armed.id, queued?.text ?? armed.text);
 		return true;
 	};
 
@@ -1255,7 +1259,7 @@ export function Composer({
 						}
 						if (e.key !== "Enter" || e.shiftKey) return;
 						e.preventDefault();
-						if (!e.metaKey && !e.ctrlKey && promoteComposerQueueOnSecondReturn()) return;
+						if (!e.metaKey && !e.ctrlKey && promoteComposerQueueOnSecondReturn(e.currentTarget.value)) return;
 						if (e.metaKey || e.ctrlKey) submitAlternate();
 						else submit();
 					}}
