@@ -100,6 +100,31 @@ test("duplicate provider failures render once and hide raw provider payloads", (
 	assert.equal(system[0].body.includes("metadata"), false);
 });
 
+test("duplicate turn terminals after an assistant answer do not synthesize a false empty response", () => {
+	const messages = eventsToMessages([
+		event({ sequence: 1, eventKind: "run.started" }),
+		event({
+			sequence: 2,
+			eventKind: "message.created",
+			payload: { messageId: "user-8", role: "user", content: "reply with the nonce" }
+		}),
+		event({
+			sequence: 3,
+			eventKind: "message.completed",
+			payload: { messageId: "answer-8", role: "assistant", content: "WORKSHOP_CUA_LAGUNA_OK" }
+		}),
+		event({ sequence: 4, eventKind: "run.completed", payload: { runId: "turn-8" } }),
+		event({ sequence: 5, eventKind: "run.completed", payload: { runId: "turn-8" } })
+	]);
+	assert.deepEqual(
+		messages.map(({ role, body }) => ({ role, body })),
+		[
+			{ role: "user", body: "reply with the nonce" },
+			{ role: "assistant", body: "WORKSHOP_CUA_LAGUNA_OK" }
+		]
+	);
+});
+
 test("replayed terminal envelopes do not duplicate or age a run summary", () => {
 	const activity = eventsToLocalActivity([
 		event({ sequence: 1, eventKind: "run.started", payload: { runId: "turn-1" }, createdAt: "2026-08-12T00:00:00.000Z" }),
@@ -125,6 +150,25 @@ test("provider duration wins over a synthesized terminal timestamp", () => {
 	const summary = Object.values(activity).flat().find((line) => line.kind === "run_summary");
 	assert.match(summary.label, /20s/);
 	assert.doesNotMatch(summary.label, /19m/);
+});
+
+test("completed tool lifecycle preserves provider duration and terminal status", () => {
+	const activity = eventsToLocalActivity([
+		event({
+			sequence: 1,
+			eventKind: "item/started",
+			payload: { item: { type: "commandExecution", id: "cmd-slow", command: "npm test" } }
+		}),
+		event({
+			sequence: 2,
+			eventKind: "item/completed",
+			payload: { item: { type: "commandExecution", id: "cmd-slow", command: "npm test", durationMs: 16_400 } }
+		})
+	], []);
+	const commands = Object.values(activity).flat().filter((line) => line.kind === "command");
+	assert.equal(commands.length, 1);
+	assert.equal(commands[0].toolStatus, "completed");
+	assert.equal(commands[0].durationMs, 16_400);
 });
 
 test("visual tool operations project as lifecycle milestones", () => {

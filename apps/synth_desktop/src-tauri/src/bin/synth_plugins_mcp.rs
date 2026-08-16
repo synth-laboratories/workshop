@@ -9,7 +9,13 @@ use std::{
     env, fs,
     io::{self, Write},
     path::PathBuf,
+    time::Duration,
 };
+
+// Starting a cold local sidecar is allowed to take up to the Desktop's
+// readiness ceiling. The MCP adapter must still finish with a diagnostic
+// instead of waiting indefinitely for a half-closed IPC connection.
+const IPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(75);
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,7 +64,14 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
         .unwrap_or_default()
         .parse::<std::net::SocketAddr>()
         .map_err(|error| error.to_string())?;
-    let mut stream = std::net::TcpStream::connect(addr).map_err(|error| error.to_string())?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, IPC_REQUEST_TIMEOUT)
+        .map_err(|error| format!("plugin IPC connect failed: {error}"))?;
+    stream
+        .set_read_timeout(Some(IPC_REQUEST_TIMEOUT))
+        .map_err(|error| format!("plugin IPC read-timeout setup failed: {error}"))?;
+    stream
+        .set_write_timeout(Some(IPC_REQUEST_TIMEOUT))
+        .map_err(|error| format!("plugin IPC write-timeout setup failed: {error}"))?;
     let wire = format!(
         "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         connection.token,
@@ -67,14 +80,35 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
     stream
         .write_all(wire.as_bytes())
         .and_then(|_| stream.write_all(&payload))
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("plugin IPC request failed: {error}"))?;
     let mut response = String::new();
-    io::Read::read_to_string(&mut stream, &mut response).map_err(|error| error.to_string())?;
-    let body = response
-        .split("\r\n\r\n")
-        .nth(1)
-        .ok_or_else(|| "empty IPC response".to_string())?;
-    serde_json::from_str(body).map_err(|error| error.to_string())
+    io::Read::read_to_string(&mut stream, &mut response)
+        .map_err(|error| format!("plugin IPC response failed: {error}"))?;
+    let (headers, body) = response.split_once("\r\n\r\n").ok_or_else(|| {
+        if response.trim().is_empty() {
+            "plugin IPC returned an empty HTTP response".to_string()
+        } else {
+            format!(
+                "plugin IPC returned a malformed HTTP response: {}",
+                response.trim()
+            )
+        }
+    })?;
+    let status = headers.lines().next().unwrap_or("HTTP status unavailable");
+    if !status.contains(" 2") {
+        let body = body.trim();
+        return Err(if body.is_empty() {
+            format!("plugin IPC returned {status} with an empty response body")
+        } else {
+            format!("plugin IPC returned {status}: {body}")
+        });
+    }
+    serde_json::from_str(body).map_err(|error| {
+        format!(
+            "plugin IPC returned invalid JSON ({status}): {error}; body: {}",
+            body.trim()
+        )
+    })
 }
 
 fn tools() -> Value {
@@ -119,7 +153,7 @@ fn main() {
     run_stdio_server(
         McpServerInfo {
             name: "synth-plugins-mcp",
-            version: "0.3.0",
+            version: env!("CARGO_PKG_VERSION"),
         },
         tools,
         call_tool,

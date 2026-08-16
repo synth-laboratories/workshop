@@ -8,6 +8,18 @@ import {
 	removeQueuedPrompt,
 	updateQueuedPrompt
 } from "../preferences";
+
+/**
+ * One user-facing sentence for a composer failure.
+ *
+ * Every path goes through {@link normalizeSteerFailure}, so an internal session
+ * UUID, a transport body, or a bare object can never be interpolated into the
+ * composer — the structured original stays in `detail` for diagnostics.
+ */
+export function composerErrorMessage(reason: unknown): string {
+	return normalizeSteerFailure(reason).message;
+}
+import { normalizeSteerFailure, STEER_UNSUPPORTED } from "../runtime/steering";
 import { nextQueuedPrompt } from "../runtime/promptQueue";
 import type { ApprovalPolicy, SandboxMode } from "../runtime/nativeCodex";
 import type { ModelKnobTransportValue } from "../runtime/modelCapabilities";
@@ -54,6 +66,7 @@ export type ComposerDockProps = {
 	showToast: (message: string) => void;
 	setView: (view: MainView) => void;
 	setUsageSheetOpen: (open: boolean) => void;
+	onStopActiveTurn: () => void;
 };
 
 /**
@@ -97,7 +110,8 @@ export function ComposerDock({
 	onSlashCompact,
 	showToast,
 	setView,
-	setUsageSheetOpen
+	setUsageSheetOpen,
+	onStopActiveTurn
 }: ComposerDockProps) {
 	if (!show) return null;
 
@@ -126,31 +140,29 @@ export function ComposerDock({
 					const conversationId = activeSessionId;
 					if (!conversationId) {
 						showToast("No active conversation to queue into");
-						return;
+						return undefined;
 					}
 					setSteerError(null);
-					setPreferences(enqueuePrompt(conversationId, text));
+					const next = enqueuePrompt(conversationId, text);
+					setPreferences(next);
+					return next.promptQueue.at(-1)?.id;
 				},
 				onEdit: (id, text) => {
 					try {
 						setPreferences(updateQueuedPrompt(id, text));
 					} catch (reason) {
-						showToast(reason instanceof Error ? reason.message : String(reason));
+						showToast(composerErrorMessage(reason));
 					}
 				},
 				onRemove: (id) => setPreferences(removeQueuedPrompt(id)),
+				// Rejections propagate: the composer's steering state machine owns
+				// the failure, so a prompt is retired only once the backend has
+				// acknowledged the steer it was promoted into.
 				onPromote: async (id, text) => {
-					if (!activeSessionId || !nativeCodex?.steerTurn) {
-						setSteerError("Steer is not supported by the current runtime. Keep the prompt queued or wait for the turn to finish.");
-						return;
-					}
-					try {
-						await nativeCodex.steerTurn(activeSessionId, text);
-						setPreferences(removeQueuedPrompt(id));
-						setSteerError(null);
-					} catch (reason) {
-						setSteerError(reason instanceof Error ? reason.message : String(reason));
-					}
+					if (!activeSessionId || !nativeCodex?.steerTurn) throw STEER_UNSUPPORTED;
+					setSteerError(null);
+					await nativeCodex.steerTurn(activeSessionId, text);
+					setPreferences(removeQueuedPrompt(id));
 				},
 				afterStop: queueAfterStop,
 				onKeep: () => setQueueAfterStop(false),
@@ -173,16 +185,19 @@ export function ComposerDock({
 					: null,
 				onSteer: async (text) => {
 					if (!activeSessionId || !nativeCodex?.steerTurn) {
-						setSteerError("Steer is not supported by the current runtime. Queue the prompt or wait for the turn to finish.");
+						setSteerError(STEER_UNSUPPORTED.message);
 						return;
 					}
 					try {
 						await nativeCodex.steerTurn(activeSessionId, text);
 						setSteerError(null);
 					} catch (reason) {
-						setSteerError(reason instanceof Error ? reason.message : String(reason));
+						const failure = normalizeSteerFailure(reason);
+						console.error("[steer] direct steer rejected", failure.code, failure.detail);
+						setSteerError(failure.message);
 					}
-				}
+				},
+				onStop: onStopActiveTurn
 			}}
 			workspace={{
 				sessionId: activeSessionId,

@@ -59,6 +59,9 @@
 
 .synth-visual-root {
   box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   color: var(--sv-text);
   background: var(--sv-surface);
   font-family: var(--sv-font);
@@ -72,6 +75,7 @@
 .synth-visual-root *::before,
 .synth-visual-root *::after {
   box-sizing: border-box;
+  min-width: 0;
 }
 
 .sv-kicker {
@@ -753,3 +757,113 @@
 }
 
 .sv-stack-tight { gap: var(--sv-sp-2); }
+
+/* ── Eval: candidate comparison and the trial matrix ─────────────────────── */
+
+/* Stage heading inside a panel that carries more than one stage. */
+.sv-subhead {
+  margin: var(--sv-sp-3) 0 var(--sv-sp-2);
+  font-size: var(--sv-fs-micro);
+  font-weight: 650;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--sv-text-faint);
+}
+.sv-subhead:first-child { margin-top: 0; }
+
+/* Inline qualifier on a candidate: baseline, winner, eliminated. */
+.sv-tag {
+  display: inline-block;
+  margin-left: var(--sv-sp-2);
+  padding: 0 var(--sv-sp-2);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-muted);
+  color: var(--sv-text-muted);
+  font-family: var(--sv-mono);
+  font-size: var(--sv-fs-micro);
+  font-weight: 500;
+  vertical-align: middle;
+}
+.sv-tag[data-tone="ok"] {
+  border-color: var(--sv-ok-edge);
+  background: var(--sv-ok-bg);
+  color: var(--sv-ok-fg);
+}
+.sv-tag[data-tone="warn"] {
+  border-color: var(--sv-warn-edge);
+  background: var(--sv-warn-bg);
+  color: var(--sv-warn-fg);
+}
+
+/* Parenthetical detail that must not compete with the number beside it. */
+.sv-hint { color: var(--sv-text-faint); font-size: var(--sv-fs-micro); }
+
+/* A statement about the evidence, not a decoration. */
+.sv-note {
+  margin: var(--sv-sp-3) 0 0;
+  padding: var(--sv-sp-2) var(--sv-sp-3);
+  border-left: 2px solid var(--sv-border-strong);
+  color: var(--sv-text-muted);
+  font-size: var(--sv-fs-meta);
+}
+.sv-note[data-tone="bad"] {
+  border-left-color: var(--sv-bad-edge);
+  background: var(--sv-bad-bg);
+  color: var(--sv-bad-fg);
+}
+
+/* One candidate's seeds across a stage. */
+.sv-matrix-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-sp-3);
+  padding: var(--sv-sp-1) 0;
+  min-width: 0;
+}
+.sv-matrix-label {
+  flex: 0 0 auto;
+  min-width: 8rem;
+  font-size: var(--sv-fs-meta);
+  color: var(--sv-text);
+}
+.sv-matrix-cells { display: flex; flex-wrap: wrap; gap: var(--sv-sp-1); min-width: 0; }
+
+/* Status is carried by form as well as colour: a failed trial is outlined,
+   an unfinished one is faint, so the matrix reads without relying on hue. */
+.sv-matrix-cell {
+  display: inline-grid;
+  place-items: center;
+  min-width: 2.25rem;
+  padding: 0 var(--sv-sp-1);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-muted);
+  color: var(--sv-text-muted);
+  font-family: var(--sv-mono);
+  font-size: var(--sv-fs-micro);
+  font-variant-numeric: tabular-nums;
+}
+.sv-matrix-cell[data-valid="true"] {
+  border-color: var(--sv-ok-edge);
+  background: var(--sv-ok-bg);
+  color: var(--sv-ok-fg);
+}
+.sv-matrix-cell[data-status="failed"],
+.sv-matrix-cell[data-status="timeout"] {
+  border-color: var(--sv-bad-edge);
+  border-style: dashed;
+  background: var(--sv-bad-bg);
+  color: var(--sv-bad-fg);
+}
+.sv-matrix-cell[data-status="running"] {
+  border-color: var(--sv-accent);
+  color: var(--sv-accent);
+}
+.sv-matrix-cell[data-status="cancelled"] { color: var(--sv-text-faint); }
+
+/* Lift direction, so a sign survives a greyscale screenshot. */
+.sv-table td[data-direction="up"] { color: var(--sv-ok-fg); }
+.sv-table td[data-direction="down"] { color: var(--sv-bad-fg); }
+.sv-table tr[data-winner="true"] th { font-weight: 700; }
+.sv-table tr[data-eliminated="true"] { color: var(--sv-text-faint); }

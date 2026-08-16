@@ -1,5 +1,5 @@
 //! CodexManager — SessionKind::Codex transport authority over app-server attachments.
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 use std::{collections::HashMap, env, fs, path::PathBuf, sync::Arc, time::Duration};
 use tauri::AppHandle;
@@ -7,23 +7,24 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 
 use crate::credential_broker::{CredentialBroker, ReceiptStore};
 use crate::domain::{
-    PresentationField, RunCreate, RuntimeTarget, SessionCreate, SessionKind, SessionStatus,
-    SessionTitleOrigin,
+    PresentationField, RunCreate, RunStatus, RuntimeTarget, SessionCreate, SessionKind,
+    SessionStatus, SessionTitleOrigin,
 };
 use crate::session::approval::ApprovalBroker;
-use crate::storage::{EventAppend, EventSource};
+use crate::storage::{AppEvent, EventAppend, EventSource};
 
 use super::event_pump::{spawn_server, EventPumpState, SpawnServerRequest};
 use super::home::{
     apply_brokered_credential, auto_compact_token_limit, automatic_thread_title, codex_root,
-    ensure_home, nested_id, responses_base_url, safe_component, session_info,
-    validate_reasoning_effort, validate_start,
+    ensure_home, install_local_laguna_catalog, nested_id, responses_base_url, safe_component,
+    session_info, validate_reasoning_effort, validate_start,
 };
 use super::proto::{
     default_approval_policy, default_sandbox, is_detached_failure, CodexApprovalDecisionRequest,
     CodexSessionInfo, CodexSessionRecord, CodexSessionRequest, CodexSessionStartRequest,
-    CodexSteerRequest, CodexTurnFailure, CodexTurnSendRequest, CodexTurnStartRequest,
-    CompactWaiters, ProviderTransport, Session, SessionDetached, COMPACT_PROMPT, DETACHED_MESSAGE,
+    CodexSteerRequest, CodexThreadItemsRequest, CodexThreadReadRequest, CodexTurnFailure,
+    CodexTurnSendRequest, CodexTurnStartRequest, CompactWaiters, ProviderTransport, Session,
+    SessionDetached, COMPACT_PROMPT, DETACHED_MESSAGE,
 };
 use super::telemetry::{PerformanceTrackers, TurnPerformanceTracker, TurnTokenUsage};
 
@@ -38,6 +39,9 @@ pub struct CodexManager {
     /// UI source label (`manual` or `model_switch`). Auto token-threshold
     /// compaction leaves this empty and renders as "automatically compacted".
     pub(crate) pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
+    /// Terminal protocol notifications that arrive before `turn/start` has
+    /// returned its id and the durable run can be created.
+    pub(crate) early_terminal_turns: Arc<Mutex<HashMap<String, (String, Value)>>>,
     pub(crate) performance_trackers: PerformanceTrackers,
     pub(crate) root: PathBuf,
     pub(crate) state_path: PathBuf,
@@ -53,14 +57,16 @@ impl CodexManager {
     pub fn new(
         core: Option<Arc<crate::core_runtime::CoreRuntime>>,
         broker: Arc<CredentialBroker>,
+        approvals: Arc<ApprovalBroker>,
     ) -> Self {
         let root = codex_root();
         let binary = PathBuf::from(env::var("SYNTH_CODEX_BIN").unwrap_or_else(|_| "codex".into()));
-        Self::with_paths(
+        Self::with_paths_and_approvals(
             crate::session::SessionPersistence::from_core(core),
             root,
             binary,
             broker,
+            approvals,
         )
     }
 
@@ -70,18 +76,29 @@ impl CodexManager {
         binary: PathBuf,
         broker: Arc<CredentialBroker>,
     ) -> Self {
+        let approvals = Arc::new(ApprovalBroker::new(persistence.clone()));
+        Self::with_paths_and_approvals(persistence, root, binary, broker, approvals)
+    }
+
+    fn with_paths_and_approvals(
+        persistence: crate::session::SessionPersistence,
+        root: PathBuf,
+        binary: PathBuf,
+        broker: Arc<CredentialBroker>,
+        approvals: Arc<ApprovalBroker>,
+    ) -> Self {
         let state_path = root.join("threads.json");
         let records = fs::read_to_string(&state_path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default();
-        let approvals = Arc::new(ApprovalBroker::new(persistence.clone()));
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::new(RwLock::new(records)),
             turn_locks: Mutex::new(HashMap::new()),
             compact_waiters: Arc::new(Mutex::new(HashMap::new())),
             pending_compact_sources: Arc::new(Mutex::new(HashMap::new())),
+            early_terminal_turns: Arc::new(Mutex::new(HashMap::new())),
             performance_trackers: Arc::new(Mutex::new(HashMap::new())),
             root,
             state_path,
@@ -158,6 +175,7 @@ impl CodexManager {
             .root
             .join("homes")
             .join(safe_component(&request.session_id));
+        install_local_laguna_catalog(&home, &request)?;
         ensure_home(&home, &request)?;
         let attachment_id = uuid::Uuid::new_v4();
         let server = spawn_server(
@@ -175,6 +193,7 @@ impl CodexManager {
                 sessions: self.sessions.clone(),
                 compact_waiters: self.compact_waiters.clone(),
                 pending_compact_sources: self.pending_compact_sources.clone(),
+                early_terminal_turns: self.early_terminal_turns.clone(),
                 performance_trackers: self.performance_trackers.clone(),
                 receipts: self.receipts(),
                 approvals: self.approvals.clone(),
@@ -270,6 +289,18 @@ impl CodexManager {
             upstream_credential,
             provider_name: requested_provider.clone(),
         });
+        // A desktop crash can leave CoreRuntime's last run marked active even
+        // though this fresh manager owns no process or turn for it. Reattaching a
+        // thread is the authoritative proof that the old attachment is gone. Close
+        // that orphan before publishing Ready or accepting another turn; otherwise
+        // start_run rejects the new turn after the model has already started it.
+        if let Some(event) = self
+            .persistence
+            .interrupt_active_run(&request.session_id, "desktop_reattached")
+            .await?
+        {
+            self.persistence.publish_event(&app, event).await?;
+        }
         self.sessions
             .write()
             .await
@@ -528,15 +559,19 @@ impl CodexManager {
             .map(|record| record.provider_name.clone())
             .unwrap_or_else(|| "custom".into());
         let pending_turn_id = format!("pending-{}", uuid::Uuid::new_v4().simple());
+        let receipt_scope = uuid::Uuid::new_v4().simple().to_string();
+        self.broker.begin_turn(&request.session_id, &receipt_scope);
         self.performance_trackers.lock().await.insert(
             request.session_id.clone(),
             TurnPerformanceTracker {
                 provider,
                 model_id: session.model.clone(),
                 turn_id: pending_turn_id.clone(),
+                receipt_scope,
                 started_at_ms,
                 first_output_at_ms: None,
                 last_output_at_ms: None,
+                generation_active_ms: 0,
                 usage: TurnTokenUsage::default(),
             },
         );
@@ -570,13 +605,32 @@ impl CodexManager {
         {
             if tracker.turn_id == pending_turn_id {
                 tracker.turn_id = turn_id.clone();
+                // Acceptance, rather than queue/send time, owns elapsed-work timing.
+                tracker.started_at_ms = chrono::Utc::now().timestamp_millis();
             }
         }
+        self.record_turn_accepted(
+            &app,
+            &request.session_id,
+            &turn_id,
+            request.client_message_id.as_deref(),
+        )
+        .await;
         *session.turn_id.write().await = Some(turn_id.clone());
+        // Mark the session running before any queued terminal notification can
+        // be observed. A fast app-server may emit its final answer in the same
+        // stdout read cycle as the `turn/start` response.
+        self.set_status(&request.session_id, SessionStatus::Running)
+            .await?;
+        let mut early_terminal = self
+            .early_terminal_turns
+            .lock()
+            .await
+            .remove(&request.session_id);
         self.set_automatic_title(&app, &request.session_id, &request.prompt, &session)
             .await;
         let start_run = self.persistence.start_run(RunCreate {
-            id: turn_id,
+            id: turn_id.clone(),
             session_id: request.session_id.clone(),
             mode: "codex_turn".into(),
             model: Some(session.model.clone()),
@@ -584,16 +638,126 @@ impl CodexManager {
             metadata: json!({"threadId": session.thread_id, "effort": effort}),
             source: EventSource::Codex,
         });
-        if let Ok(Ok(Some(mutation))) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), start_run).await
-        {
-            if let Some(event) = mutation.event {
-                let _ = self.persistence.publish_event(&app, event).await;
+        let mutation = match start_run.await {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                // The model turn already exists, but without its durable run the
+                // product cannot represent or reconcile it. Interrupt best-effort
+                // and surface the storage failure instead of claiming Running.
+                let _ = session
+                    .server
+                    .request(
+                        "turn/interrupt",
+                        json!({"threadId": session.thread_id, "turnId": turn_id}),
+                    )
+                    .await;
+                return Err(error.context("persist Codex run before exposing running state"));
+            }
+        };
+        if early_terminal.is_none() {
+            early_terminal = self
+                .early_terminal_turns
+                .lock()
+                .await
+                .remove(&request.session_id);
+        }
+        if early_terminal.is_none() {
+            if let Some(mutation) = mutation {
+                if let Some(event) = mutation.event {
+                    self.persistence.publish_event(&app, event).await?;
+                }
             }
         }
-        self.set_status(&request.session_id, SessionStatus::Running)
+        if let Some((terminal_method, params)) = early_terminal {
+            let run_status = match terminal_method.as_str() {
+                "turn/completed" => RunStatus::Completed,
+                "turn/failed" => RunStatus::Failed,
+                _ => RunStatus::Interrupted,
+            };
+            let session_status = session_status_for_run(run_status);
+            if let Some(runs) = self.persistence.runs() {
+                let mutation = runs
+                    .transition(
+                        turn_id.clone(),
+                        run_status,
+                        Some(params),
+                        EventSource::Codex,
+                    )
+                    .await
+                    .context("reconcile typed terminal received before run creation")?;
+                if let Some(event) = mutation.event {
+                    self.persistence.publish_event(&app, event).await?;
+                }
+            }
+            self.set_status(&request.session_id, session_status).await?;
+            return Ok(session_info(&request.session_id, &session).await);
+        }
+        // If the terminal arrived outside the narrow typed-final window, its
+        // durable journal row restores the exact terminal state. A later
+        // terminal remains owned by the event pump.
+        self.reconcile_terminal_before_run_start(&app, &request.session_id, &turn_id)
             .await?;
         Ok(session_info(&request.session_id, &session).await)
+    }
+
+    /// A fast app-server may emit its terminal notification before the
+    /// `turn/start` response gives us the durable run id. The event pump cannot
+    /// transition a run that does not exist yet, so reconcile that exact turn
+    /// immediately after creation. A later terminal remains owned by the pump.
+    async fn reconcile_terminal_before_run_start<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: &str,
+        turn_id: &str,
+    ) -> Result<bool> {
+        let mut after = 0_i64;
+        loop {
+            let events = self
+                .persistence
+                .session_events_after(session_id.to_owned(), after, 500)
+                .await?;
+            if events.is_empty() {
+                return Ok(false);
+            }
+            for event in &events {
+                after = after.max(event.session_sequence.unwrap_or(event.sequence));
+                let Some((status, outcome)) = terminal_run_for_turn(event, turn_id) else {
+                    continue;
+                };
+                let Some(runs) = self.persistence.runs() else {
+                    self.set_status(session_id, session_status_for_run(status))
+                        .await?;
+                    return Ok(true);
+                };
+                let Some(run) = runs.get(turn_id.to_owned()).await? else {
+                    anyhow::bail!("durable Codex run {turn_id} disappeared during reconciliation");
+                };
+                if run.status == status.as_str() {
+                    self.set_status(session_id, session_status_for_run(status))
+                        .await?;
+                    return Ok(true);
+                }
+                if let Some(session_status) = terminal_session_status(&run.status) {
+                    self.set_status(session_id, session_status).await?;
+                    return Ok(true);
+                }
+                let mutation = runs
+                    .transition(
+                        turn_id.to_owned(),
+                        status,
+                        Some(outcome),
+                        EventSource::Codex,
+                    )
+                    .await
+                    .context("reconcile terminal Codex event received before run creation")?;
+                if let Some(event) = mutation.event {
+                    self.persistence.publish_event(app, event).await?;
+                }
+                self.set_status(session_id, session_status_for_run(status))
+                    .await?;
+                return Ok(true);
+            }
+        }
     }
 
     /// Send-time compact before a model rebind.
@@ -782,6 +946,10 @@ impl CodexManager {
                 }),
             )
             .await?;
+        // Steering text is queued/journalled before the provider responds, but it
+        // resets the work clock only after the active turn accepts it.
+        self.record_turn_accepted(&app, &request.session_id, &turn_id, None)
+            .await;
         Ok(())
     }
 
@@ -824,6 +992,60 @@ impl CodexManager {
         records
     }
 
+    pub async fn read_thread(&self, request: CodexThreadReadRequest) -> Result<Value> {
+        let session = self
+            .assert_thread_readable(&request.session_id, &request.thread_id)
+            .await?;
+        session
+            .server
+            .request(
+                "thread/read",
+                json!({
+                    "threadId": request.thread_id,
+                    "includeTurns": request.include_turns,
+                }),
+            )
+            .await
+    }
+
+    pub async fn list_thread_items(&self, request: CodexThreadItemsRequest) -> Result<Value> {
+        let session = self
+            .assert_thread_readable(&request.session_id, &request.thread_id)
+            .await?;
+        let mut params = json!({ "threadId": request.thread_id });
+        if let Some(cursor) = request.cursor {
+            params["cursor"] = Value::String(cursor);
+        }
+        if let Some(limit) = request.limit {
+            params["limit"] = json!(limit);
+        }
+        session.server.request("thread/items/list", params).await
+    }
+
+    async fn assert_thread_readable(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<Arc<Session>> {
+        let session = self.session(session_id).await?;
+        if session.thread_id == thread_id {
+            return Ok(session);
+        }
+        let events = self
+            .persistence
+            .session_events_after(session_id.to_owned(), 0, 10_000)
+            .await?;
+        let owned = events.iter().any(|event| {
+            payload_mentions_thread(&event.payload, thread_id)
+                || event.payload.get("threadId").and_then(Value::as_str) == Some(thread_id)
+                || event.payload.get("thread_id").and_then(Value::as_str) == Some(thread_id)
+        });
+        if !owned {
+            anyhow::bail!("thread {thread_id} is not owned by session {session_id}");
+        }
+        Ok(session)
+    }
+
     async fn session(&self, id: &str) -> Result<Arc<Session>> {
         self.sessions
             .read()
@@ -864,6 +1086,27 @@ impl CodexManager {
                     "role": "user",
                     "content": prompt,
                 }),
+            ),
+        );
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), persist).await;
+    }
+
+    /// Durable clock boundary for an accepted active turn. User bubbles may be
+    /// journalled optimistically before provider acceptance; they intentionally
+    /// do not own elapsed-work timing.
+    async fn record_turn_accepted<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: &str,
+        turn_id: &str,
+        client_message_id: Option<&str>,
+    ) {
+        let persist = self.persistence.append_and_emit(
+            app,
+            EventAppend::codex(
+                session_id.to_owned(),
+                "turn/accepted",
+                json!({ "turnId": turn_id, "userMessageId": client_message_id }),
             ),
         );
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), persist).await;
@@ -998,11 +1241,7 @@ impl CodexManager {
         let _ = self.persist_records().await;
         if let Ok(Some(mutation)) = self
             .persistence
-            .set_title(
-                session_id.to_owned(),
-                title,
-                SessionTitleOrigin::Manual,
-            )
+            .set_title(session_id.to_owned(), title, SessionTitleOrigin::Manual)
             .await
         {
             if let Some(event) = mutation.event {
@@ -1063,12 +1302,7 @@ impl CodexManager {
         }
         let _ = self.persist_records().await;
         let record = mutation.map(|item| item.value);
-        let fallback = self
-            .records
-            .read()
-            .await
-            .get(session_id)
-            .cloned();
+        let fallback = self.records.read().await.get(session_id).cloned();
         Ok(json!({
             "sessionId": session_id,
             "title": record.as_ref().map(|item| item.title.clone())
@@ -1083,4 +1317,71 @@ impl CodexManager {
     async fn persist_records(&self) -> Result<()> {
         super::home::persist_records(&self.records, &self.state_path).await
     }
+}
+
+fn terminal_run_for_turn(event: &AppEvent, turn_id: &str) -> Option<(RunStatus, Value)> {
+    let status = match event.kind.as_str() {
+        "turn/completed" => RunStatus::Completed,
+        "turn/failed" => RunStatus::Failed,
+        "turn/interrupted" => RunStatus::Interrupted,
+        _ => return None,
+    };
+    let observed_turn_id = event
+        .payload
+        .pointer("/turn/id")
+        .or_else(|| event.payload.get("turnId"))
+        .or_else(|| event.payload.get("turn_id"))
+        .and_then(Value::as_str)?;
+    (observed_turn_id == turn_id).then(|| (status, event.payload.clone()))
+}
+
+fn session_status_for_run(status: RunStatus) -> SessionStatus {
+    match status {
+        RunStatus::Completed => SessionStatus::Ready,
+        RunStatus::Failed => SessionStatus::Failed,
+        RunStatus::Interrupted | RunStatus::Cancelled => SessionStatus::Interrupted,
+        RunStatus::Created | RunStatus::Running => SessionStatus::Running,
+    }
+}
+
+fn terminal_session_status(status: &str) -> Option<SessionStatus> {
+    match status {
+        "completed" => Some(SessionStatus::Ready),
+        "failed" => Some(SessionStatus::Failed),
+        "interrupted" | "cancelled" => Some(SessionStatus::Interrupted),
+        _ => None,
+    }
+}
+
+fn payload_mentions_thread(payload: &Value, thread_id: &str) -> bool {
+    fn walk(value: &Value, thread_id: &str) -> bool {
+        match value {
+            Value::String(text) => text == thread_id,
+            Value::Array(items) => items.iter().any(|item| walk(item, thread_id)),
+            Value::Object(map) => {
+                for (key, nested) in map {
+                    if matches!(
+                        key.as_str(),
+                        "threadId"
+                            | "thread_id"
+                            | "agentThreadId"
+                            | "agent_thread_id"
+                            | "receiverThreadIds"
+                            | "receiver_thread_ids"
+                    ) && walk(nested, thread_id)
+                    {
+                        return true;
+                    }
+                    if walk(nested, thread_id)
+                        && matches!(key.as_str(), "item" | "params" | "payload")
+                    {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+    walk(payload, thread_id)
 }

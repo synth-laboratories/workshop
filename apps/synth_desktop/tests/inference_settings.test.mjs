@@ -59,7 +59,7 @@ const daemonSettings = {
 	default_reasoning_effort: "none",
 	default_max_output_tokens: 4096,
 	idle_unload_after_seconds: 300,
-	prompt_cache_slots: 4,
+	prompt_cache_slots: 2,
 	queue_capacity: 8
 };
 
@@ -179,7 +179,7 @@ test("the calibrated preset is one atomic patch and preserves the output-token l
 		default_top_k: 20,
 		default_reasoning_effort: "high",
 		idle_unload_after_seconds: 900,
-		prompt_cache_slots: 4,
+		prompt_cache_slots: 2,
 		queue_capacity: 9
 	});
 	assert.equal("default_max_output_tokens" in CALIBRATED_LOCAL_CODING_SETTINGS, false);
@@ -196,7 +196,7 @@ test("the ready form renders every settings group with the daemon's values", () 
 	assert.match(html, /data-testid="inference-settings"/);
 	assert.match(html, /data-testid="inference-apply-calibrated-preset"/);
 	assert.match(html, /Use calibrated defaults/);
-	assert.match(html, /unload after 15 minutes · 4 cache slots · queue 9/);
+	assert.match(html, /unload after 15 minutes · 2 cache slots · queue 9/);
 	assert.match(html, /Sampling defaults/);
 	assert.match(html, /Used only when a request does not specify its own value\./);
 	assert.match(html, /temperature 1\.0 · top_k 20 · top_p 1\.0/);
@@ -210,7 +210,7 @@ test("the ready form renders every settings group with the daemon's values", () 
 	// idle_unload_after_seconds is surfaced in minutes.
 	assert.match(html, /data-testid="inference-idle-unload-minutes"[^>]*value="5"/);
 	assert.match(html, /0 = never unload/);
-	assert.match(html, /data-testid="inference-prompt-cache-slots"[^>]*value="4"/);
+	assert.match(html, /data-testid="inference-prompt-cache-slots"[^>]*value="2"/);
 	assert.match(html, /data-testid="inference-queue-capacity"[^>]*value="8"/);
 	// Reasoning maps none/high onto an Off/On segmented control.
 	assert.match(html, /aria-checked="true"[^>]*data-testid="inference-reasoning-none"/);

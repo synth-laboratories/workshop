@@ -63,7 +63,10 @@ export function ContextSettings({ subagents }: { subagents: ReactNode }) {
 		finally { setBusy(null); }
 	};
 
-	if (!workspace || !snapshot) return <div className="settings-sections" data-testid="settings-context"><p className="settings-runtime-copy">{error ?? "Loading context…"}</p></div>;
+	if (!workspace || !snapshot) return <div className="settings-sections" data-testid="settings-context">
+		<p className="settings-runtime-copy">{error ?? "Loading context…"}</p>
+		{subagents}
+	</div>;
 
 	const cookbookSkill = snapshot.skills.find((skill) => skill.source === "cookbook");
 	const editableSkills = snapshot.skills.filter((skill) => skill.source !== "cookbook");

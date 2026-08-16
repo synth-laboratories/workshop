@@ -108,6 +108,7 @@ async function stubCloudAccount(page: import("@playwright/test").Page, options: 
 						window: usageWindow,
 						totals: breakdown({ provider: "all", modelId: "all", requests: 1, inputTokens: 4000, outputTokens: 1000, totalTokens: 5000 }),
 						models: [breakdown({ modelId: "openai/gpt-5.6-luna", requests: 1, inputTokens: 4000, outputTokens: 1000, totalTokens: 5000, estimatedCostUsd: 0.01, costSource: "tariff_estimate" })],
+						days: [],
 						generatedAt: "2026-08-10T12:00:00+00:00"
 					};
 				}
@@ -142,6 +143,7 @@ async function stubCloudAccount(page: import("@playwright/test").Page, options: 
 							decodeTpsP50: 26, decodeTpsP95: 27, ttftMsP50: 350, ttftMsP95: 500, perfSampleCount: 3
 						})
 					],
+					days: [],
 					generatedAt: "2026-08-10T12:00:00+00:00"
 				};
 			}

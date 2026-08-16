@@ -65,8 +65,11 @@
     "npm": ">=10"
   },
   "allowScripts": {
-    "electron@37.10.3": true,
-    "electron@35.7.5": true
+    "electron@41.10.5": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.2": true,
+    "fsevents@2.3.3": true
   },
   "devDependencies": {
     "turbo": "^2.10.9"

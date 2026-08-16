@@ -36,7 +36,7 @@ export function HillClimbPanel({ gepa, onSelect }: { gepa: GepaState; onSelect?:
         <span className="sv-mono">{points.length} train-scored · {incumbents.length} incumbent{incumbents.length === 1 ? "" : "s"} · best {Math.max(...incumbents.map((point) => point.score), ...scores).toFixed(3)}</span>
       </div>
       <div style={{ border: "1px solid var(--sv-border)", borderRadius: 9, padding: "8px 10px" }}>
-        <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Candidate score and best score through the GEPA search" style={{ display: "block", maxWidth: 650, margin: "0 auto" }}>
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="group" aria-label="Candidate score and best score through the GEPA search" style={{ display: "block", maxWidth: 650, margin: "0 auto" }}>
           {[0, 0.5, 1].map((fraction) => {
             const score = min + (max - min) * fraction;
             return <g key={fraction}>

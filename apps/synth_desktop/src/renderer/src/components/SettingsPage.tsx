@@ -18,6 +18,7 @@ import { ModelObservabilitySettings } from "./ModelObservabilitySettings";
 import { AccountPage } from "./AccountPage";
 import { GeneralPreferencesSettings } from "./GeneralPreferencesSettings";
 import { SettingsCard } from "./SettingsCard";
+import { RuntimeContractRows } from "./RuntimeContractRows";
 import type { DesktopPreferences } from "../preferences";
 import { ProviderMark } from "./ProviderMark";
 import { bridges } from "../runtime/desktopBridge";
@@ -135,6 +136,37 @@ const MULTI_AGENT_OPTIONS: Array<{ value: MultiAgentVersion; label: string }> = 
 ];
 
 const CHANGELOG = [
+	{
+		version: "0.4.0",
+		date: "August 16, 2026",
+		groups: [
+			{
+				label: "New",
+				items: [
+					"Product-owned GEPA workflows prepare and run bounded Banking77 and Craftax optimization with digest-bound paid-compute approval.",
+					"Craftax opens in a transcript-first full-trace viewer with model-call input, reasoning, output, tool evidence, and raw envelopes.",
+					"Programmatic eval lanes and container capability checks fail closed when a selected runtime cannot satisfy a recipe.",
+					"Local diagnostics correlate optimizer runs, containers, streams, visuals, and terminal outcomes."
+				]
+			},
+			{
+				label: "Improved",
+				items: [
+					"Live visuals use one canonical binding envelope and durable replay through declared poll transports.",
+					"Generation-speed labels stay frozen at their historical cutoff, and completed turns show durable elapsed work time.",
+					"Review captures use a dedicated window identity so capture sizing does not mutate the product window."
+				]
+			},
+			{
+				label: "Fixed",
+				items: [
+					"Reconnect and restart replay preserve rollout-local identity without inventing transport URLs or rewriting earlier evidence.",
+					"Already-open visual panes reconcile committed revisions without a close and reopen cycle.",
+					"Missing usage and timing remain unavailable instead of being displayed as zero."
+				]
+			}
+		]
+	},
 	{
 		version: "0.3.0",
 		date: "August 14, 2026",
@@ -517,6 +549,7 @@ export function SettingsPage({
 										</button>
 									) : null}
 									<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? "Local-first research workbench"}</code>
+									<RuntimeContractRows />
 								</div>
 								<p className="settings-runtime-copy">
 									Synth Desktop is a local-first research workbench.

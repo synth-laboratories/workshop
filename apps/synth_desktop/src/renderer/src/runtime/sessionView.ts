@@ -214,6 +214,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 	let activeAssistantId: string | null = null;
 	let producedAssistantForTurn = false;
 	let compactedDuringTurn = false;
+	let terminalSeenForTurn = false;
 
 	for (const event of events) {
 		const payload = event.payload ?? {};
@@ -227,6 +228,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 			activeAssistantId = null;
 			producedAssistantForTurn = false;
 			compactedDuringTurn = false;
+			terminalSeenForTurn = false;
 		}
 		if (event.eventKind === "thread/compacted") {
 			compactedDuringTurn = true;
@@ -315,6 +317,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 				if (!isInternAgentMessage && role === "user") {
 					activeAssistantId = null;
 					producedAssistantForTurn = false;
+					terminalSeenForTurn = false;
 				}
 				continue;
 		}
@@ -385,11 +388,33 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 			event.eventKind === "run.failed" ||
 			event.eventKind === "run.cancelled"
 		) {
+			// The live app-server event and the durable run.status_changed event
+			// can both project the same turn terminal. Only the first terminal owns
+			// transcript fallback synthesis; replaying it after an assistant answer
+			// must not manufacture a contradictory "no response" message.
+			if (terminalSeenForTurn) continue;
+			terminalSeenForTurn = true;
+			// A typed final agent item can be the terminal run payload when the
+			// app-server closes immediately after its final answer. Preserve that
+			// authoritative content as an assistant message before deciding that
+			// the provider returned no answer.
+			if (!producedAssistantForTurn && event.eventKind === "run.completed") {
+				const terminalAnswer = eventResultPreview(payload, objectValue(payload.item) ?? {});
+				if (terminalAnswer) {
+					const id = `terminal-answer-${event.sequence}`;
+					order.push(id);
+					byId.set(id, { id, role: "assistant", body: terminalAnswer, at: event.createdAt });
+					producedAssistantForTurn = true;
+				}
+			}
 			if (!producedAssistantForTurn && !compactedDuringTurn) {
 				const detail = terminalTurnDetail(event.payload ?? {});
+				const providerLimitMessage = providerLimitMessageFor(event.payload ?? {});
 				const failureDetail = detail ? `: ${detail.replace(/[.!?]+$/, "")}.` : ".";
 				const message = event.eventKind === "run.failed"
-					? `The provider could not produce a response${failureDetail} Try again.`
+					? providerLimitMessage
+						? providerLimitMessage
+						: `The provider could not produce a response${failureDetail} Try again.`
 					: event.eventKind === "run.cancelled"
 						? "The response was stopped before the provider returned an answer."
 						: "The provider ended the turn without a response. Please try again.";
@@ -404,7 +429,6 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 				}
 			}
 			activeAssistantId = null;
-			producedAssistantForTurn = false;
 			compactedDuringTurn = false;
 		}
 	}
@@ -435,6 +459,40 @@ function terminalTurnDetail(payload: Record<string, unknown>): string | undefine
 		return "The provider rejected the request";
 	}
 	return message.replace(/\s+/g, " ");
+}
+
+function providerLimitMessageFor(payload: Record<string, unknown>): string | undefined {
+	const turn = payload.turn && typeof payload.turn === "object"
+		? payload.turn as Record<string, unknown>
+		: payload;
+	const error = turn.error && typeof turn.error === "object"
+		? turn.error as Record<string, unknown>
+		: payload.error && typeof payload.error === "object" ? payload.error as Record<string, unknown> : undefined;
+	const code = typeof error?.codexErrorInfo === "string" ? error.codexErrorInfo.toLowerCase() : "";
+	const rawMessage = typeof error?.message === "string" ? error.message.trim() : "";
+	const message = rawMessage.toLowerCase();
+	const provider = typeof payload.provider === "string" ? payload.provider.toLowerCase() : "";
+	if (code === "usagelimitexceeded" || message.includes("hit your usage limit")) {
+		const reset = /try again at\s+(.+?)(?:\.+)?$/i.exec(rawMessage)?.[1]?.trim();
+		return reset
+			? `Your ChatGPT usage limit has been reached. You are still signed in; use another model or try again at ${reset}.`
+			: "Your ChatGPT usage limit has been reached. You are still signed in; use another model or try again after your limit resets.";
+	}
+	if (
+		provider === "openrouter" ||
+		message.includes("openrouter") ||
+		/(insufficient[_ ](?:credits|funds)|credit balance|no credits|payment required)/.test(message)
+	) {
+		return "Your OpenRouter credits are unavailable or exhausted. Add credits or choose another model, then retry.";
+	}
+	if (
+		provider === "synth" || provider === "synth-cloud" ||
+		message.includes("synth cloud") || message.includes("synth allowance") ||
+		/(allowance (?:is )?(?:used up|exhausted)|billing (?:needs attention|limit))/.test(message)
+	) {
+		return "Your Synth Cloud allowance is unavailable. Manage billing or choose a local/API-key model, then retry.";
+	}
+	return undefined;
 }
 
 export function eventsToActivity(
@@ -509,7 +567,7 @@ function activityKind(eventKind: string): LocalActivityLine["kind"] {
 	return "working";
 }
 
-type SafeToolActivity = Pick<LocalActivityLine, "label" | "detail" | "path" | "kind" | "toolStatus" | "visualStage" | "artifactId" | "containerId"> & { key: string };
+type SafeToolActivity = Pick<LocalActivityLine, "label" | "detail" | "path" | "kind" | "toolStatus" | "durationMs" | "visualStage" | "artifactId" | "containerId"> & { key: string };
 
 const VISUAL_MUTATION_TOOLS = new Set([
 	"visual_manage",
@@ -541,11 +599,32 @@ function redactCommand(command: string): string {
 		.slice(0, 800);
 }
 
-function safeToolStatus(item: Record<string, unknown>): LocalActivityLine["toolStatus"] {
+function safeToolStatus(item: Record<string, unknown>, eventKind = ""): LocalActivityLine["toolStatus"] {
 	const status = (stringField(item, "status") ?? "").toLowerCase();
-	if (/failed|error|cancelled|rejected/.test(status)) return "failed";
-	if (/completed|success|done/.test(status)) return "completed";
+	const lifecycle = `${status} ${eventKind}`.toLowerCase();
+	// An MCP result carrying isError is a failed call even when the provider
+	// reported the turn item itself as completed.
+	if (objectValue(item.result)?.isError === true) return "failed";
+	if (/failed|error|cancelled|rejected/.test(lifecycle)) return "failed";
+	if (/completed|success|done/.test(lifecycle)) return "completed";
 	return "running";
+}
+
+function safeToolFailure(item: Record<string, unknown>): string | undefined {
+	const result = objectValue(item.result);
+	const structured = result && objectValue(result.structuredContent);
+	// A structured application failure keeps its stable code and remediation so
+	// the transcript says what to do next, not just that something failed.
+	const coded = structured ? objectValue(structured.structuredError) : undefined;
+	const codedMessage = coded
+		? [stringField(coded, "code"), stringField(coded, "remediation")].filter(Boolean).join(" · ")
+		: undefined;
+	const structuredError = structured ? stringField(structured, "error", "message", "detail", "code") : undefined;
+	// Provider error text is not a trusted transcript surface: it can contain
+	// prompts, credentials, or arbitrary tool output. Only the structured,
+	// application-owned failure envelope is safe to render.
+	const message = codedMessage || structuredError;
+	return message ? redactCommand(message).slice(0, 320) : undefined;
 }
 
 function compactToolArgs(args: Record<string, unknown>, fields: string[]): string | undefined {
@@ -640,7 +719,8 @@ function mcpToolActivity(
 	args: Record<string, unknown>,
 	id: string,
 	itemType: string,
-	tool: string
+	tool: string,
+	eventKind: string
 ): SafeToolActivity | undefined {
 	if (!["mcptoolcall", "dynamictoolcall", "toolcall"].includes(itemType)) return undefined;
 	const server = (stringField(item, "server", "pluginId", "plugin_id") ?? "").toLowerCase();
@@ -678,8 +758,8 @@ function mcpToolActivity(
 		"status",
 		"limit"
 	];
-	const duration = typeof item.durationMs === "number" && Number.isFinite(item.durationMs)
-		? `${Math.max(0, Math.round(item.durationMs))}ms`
+	const durationMs = typeof item.durationMs === "number" && Number.isFinite(item.durationMs)
+		? Math.max(0, item.durationMs)
 		: undefined;
 	const nestedArgs = objectValue(args.arguments) ?? {};
 	const argsLabel = [compactToolArgs(args, fields), compactToolArgs(nestedArgs, fields)]
@@ -690,7 +770,8 @@ function mcpToolActivity(
 	const visualOperation = server === "synth_visuals"
 		? (tool === "visual_manage" ? stringField(args, "operation") : tool.replace(/^visual_/, ""))
 		: undefined;
-	const toolStatus = safeToolStatus(item);
+	const toolStatus = safeToolStatus(item, eventKind);
+	const failure = toolStatus === "failed" ? safeToolFailure(item) : undefined;
 	const visualStage: LocalActivityLine["visualStage"] = toolStatus === "failed" && visualOperation
 		? "failed"
 		: visualOperation === "create"
@@ -709,14 +790,16 @@ function mcpToolActivity(
 				: visualStage === "failed"
 					? "Visual update failed"
 					: undefined;
+	const visualDuration = visualStage && durationMs != null ? `${durationMs}ms` : undefined;
 	return {
 		key: `mcp:${id}`,
 		label: lifecycleLabel ?? ([server, tool].filter(Boolean).join(".") || "Tool call"),
-		detail: [argsLabel, duration].filter(Boolean).join(" · ") || undefined,
+		detail: [argsLabel, failure, visualDuration].filter(Boolean).join(" · ") || undefined,
 		kind: visualStage ? "visual_lifecycle" : artifactId ? "visual" : "working",
 		artifactId,
 		containerId,
 		toolStatus,
+		durationMs,
 		visualStage
 	};
 }
@@ -729,35 +812,42 @@ function safeToolActivity(event: RuntimeEvent): SafeToolActivity | undefined {
 	const tool = (stringField(item, "tool", "name", "toolName", "tool_name") ?? "").toLowerCase();
 	const args = nestedObject(item, "arguments", "args", "input") ?? nestedObject(payload, "arguments", "args", "input") ?? {};
 	const id = stringField(item, "id", "callId", "call_id") ?? `${event.eventKind}-${event.sequence}`;
+	const toolStatus = safeToolStatus(item, event.eventKind);
+	const durationMs = typeof item.durationMs === "number" && Number.isFinite(item.durationMs)
+		? Math.max(0, item.durationMs)
+		: typeof payload.durationMs === "number" && Number.isFinite(payload.durationMs)
+			? Math.max(0, payload.durationMs)
+			: undefined;
+	const lifecycle = { toolStatus, durationMs };
 
 	if (event.eventKind === "command.execution" || itemType === "commandexecution") {
 		const raw = stringField(item, "command", "cmd") ?? stringField(payload, "command", "cmd");
 		if (!raw) return undefined;
-		return { key: `command:${id}`, label: "Run Shell Command", detail: redactCommand(raw), kind: "command" };
+		return { key: `command:${id}`, label: "Run Shell Command", detail: redactCommand(raw), kind: "command", ...lifecycle };
 	}
 
 	if (event.eventKind === "file.change" || itemType === "filechange") {
 		const path = stringField(item, "path", "filePath", "file_path") ?? stringField(payload, "path", "filePath", "file_path");
-		return path ? { key: `write:${id}:${path}`, label: "Wrote", path, kind: "file_write" } : undefined;
+		return path ? { key: `write:${id}:${path}`, label: "Wrote", path, kind: "file_write", ...lifecycle } : undefined;
 	}
 
 	const path = stringField(args, "path", "file", "filePath", "file_path")
 		?? stringField(item, "path", "file", "filePath", "file_path");
 	if (["read", "read_file", "readfile", "read_text_file", "filesystem.read_text_file"].includes(tool)) {
-		return path ? { key: `read:${id}:${path}`, label: "Read", path, kind: "file_read" } : undefined;
+		return path ? { key: `read:${id}:${path}`, label: "Read", path, kind: "file_read", ...lifecycle } : undefined;
 	}
 	if (["search", "search_files", "grep", "find", "find_files", "list_directory", "list_files"].includes(tool)) {
 		const query = stringField(args, "query", "pattern", "glob");
-		return { key: `search:${id}`, label: tool.startsWith("list") ? "Listed files" : "Searched files", detail: query?.slice(0, 300), kind: "search" };
+		return { key: `search:${id}`, label: tool.startsWith("list") ? "Listed files" : "Searched files", detail: query?.slice(0, 300), kind: "search", ...lifecycle };
 	}
 	if (["web_search", "websearch", "search_web"].includes(tool) || itemType === "websearch") {
 		const query = stringField(args, "query") ?? stringField(item, "query");
-		return { key: `search:${id}`, label: "Searched the web", detail: query?.slice(0, 300), kind: "search" };
+		return { key: `search:${id}`, label: "Searched the web", detail: query?.slice(0, 300), kind: "search", ...lifecycle };
 	}
 	if (["view_image", "viewimage"].includes(tool)) {
-		return { key: `view:${id}`, label: "Viewed image", path, kind: "working" };
+		return { key: `view:${id}`, label: "Viewed image", path, kind: "working", ...lifecycle };
 	}
-	return mcpToolActivity(item, args, id, itemType, tool);
+	return mcpToolActivity(item, args, id, itemType, tool, event.eventKind);
 }
 
 function compactDuration(start: string | undefined, end: string): string {
@@ -1249,11 +1339,11 @@ export function eventsToLocalActivity(
 			if (messageText) lastContentSequenceByMessageId.set(resolvedAssistant, event.sequence);
 		}
 		if (event.eventKind === "message.created" && payload.role === "user") {
-			const userIndex = messages.findIndex((message) => message.id === explicit);
-			const followingAssistant = userIndex >= 0
-				? messages.slice(userIndex + 1).find((message) => message.role === "assistant")
-				: undefined;
-			current = followingAssistant?.id ?? "__active__";
+			// `messages` is the projection of the complete event slice, so it may
+			// already contain a future assistant message. Do not attach activity
+			// following this user event to that future bubble until its own event is
+			// encountered; otherwise pre-answer tools render below the answer.
+			current = "__active__";
 			shownToolLines.clear();
 			openCompactionLine = undefined;
 			continue;
@@ -1354,6 +1444,7 @@ export function eventsToLocalActivity(
 				existing.kind = safeTool.kind;
 				existing.visualStage = safeTool.visualStage;
 				existing.toolStatus = safeTool.toolStatus;
+				existing.durationMs = safeTool.durationMs;
 				existing.artifactId = safeTool.artifactId;
 				existing.containerId = safeTool.containerId;
 			} else {
@@ -1361,7 +1452,10 @@ export function eventsToLocalActivity(
 				if (safeTool.kind === "file_read") runActions.reads += 1;
 				if (safeTool.kind === "file_write") runActions.writes += 1;
 				if (safeTool.kind === "search") runActions.searches += 1;
-				if (safeTool.toolStatus) runActions.tools += 1;
+				if (
+					safeTool.toolStatus
+					&& !["command", "file_read", "file_write", "search"].includes(safeTool.kind ?? "")
+				) runActions.tools += 1;
 				const line: LocalActivityLine = {
 					id: `activity-${event.sequence}`,
 					label: safeTool.label,
@@ -1373,7 +1467,8 @@ export function eventsToLocalActivity(
 					visualStage: safeTool.visualStage,
 					artifactId: safeTool.artifactId,
 					containerId: safeTool.containerId,
-					toolStatus: safeTool.toolStatus
+					toolStatus: safeTool.toolStatus,
+					durationMs: safeTool.durationMs
 				};
 				shownToolLines.set(safeTool.key, line);
 				(byMessage[current] ??= []).push(line);
@@ -1575,7 +1670,7 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			summary: `${agents.filter((agent) => agent.status === "starting" || agent.status === "working").length} working · ${agents.filter((agent) => agent.status === "interrupted" || agent.status === "failed" || agent.status === "stopped" || agent.status === "unavailable").length} need attention · ${agents.filter((agent) => agent.status === "completed").length} completed`,
 			shownByAgent: true,
 			templateId: "synth.subagents.v1",
-			bindings: { agents },
+			bindings: { agents, sessionId: events[0]?.sessionId },
 			preview: { variant: "generic" }
 		});
 	}

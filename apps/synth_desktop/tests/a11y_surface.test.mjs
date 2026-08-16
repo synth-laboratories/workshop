@@ -22,6 +22,9 @@ test("stable accessibility testids remain on core surfaces", () => {
     "components/VisualsPage.tsx",
     "components/DataPage.tsx",
     "components/CloudDesk.tsx",
+    // The Plugins section's test ids are declared once as data and rendered
+    // through `data-testid={entry.testId}`, so the declaration is the surface.
+    "runtime/pluginNav.ts",
   ];
   const blob = files
     .filter((f) => existsSync(join(renderer, f)))
@@ -40,7 +43,12 @@ test("stable accessibility testids remain on core surfaces", () => {
     "visuals-page",
     "open-visuals",
   ]) {
-    assert.ok(blob.includes(`data-testid="${id}"`) || blob.includes(`'${id}'`), id);
+    // Accept a declared id as well as an inline attribute: ids rendered from
+    // data still have to exist, and quote style is not the invariant.
+    assert.ok(
+      blob.includes(`data-testid="${id}"`) || blob.includes(`'${id}'`) || blob.includes(`"${id}"`),
+      id
+    );
   }
 });
 
@@ -50,6 +58,14 @@ test("installed desktop authorizes its declared window drag regions", () => {
   const permissions = readFileSync(join(appRoot, "src-tauri/capabilities/default.json"), "utf8");
   assert.match(`${app}\n${sidebar}`, /data-tauri-drag-region/);
   assert.match(permissions, /core:window:allow-start-dragging/);
+});
+
+test("plugin navigation announces the active page and hides impossible pre-install actions", () => {
+  const sidebar = read("components/Sidebar.tsx");
+  const optimizers = read("components/OptimizersPage.tsx");
+  assert.match(sidebar, /aria-current=\{active \? "page" : undefined\}/);
+  assert.match(optimizers, /operation: "enable"[\s\S]*status\.phase !== "not_installed" && !status\.enabled/);
+  assert.match(optimizers, /operation: "disable"[\s\S]*status\.phase !== "not_installed" && status\.enabled/);
 });
 
 test("execution targets include Laguna local + OpenRouter Luna/Laguna + Synth Cloud + Intern", () => {

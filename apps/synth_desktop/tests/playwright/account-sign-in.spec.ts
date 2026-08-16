@@ -109,9 +109,8 @@ test("browser sign-in pairs the device and flips the account to authenticated", 
 	await expect(signedInSettings.getByTestId("sign-in-status")).toContainText("creates your Synth account");
 });
 
-test("account offers a top-level write-only Synth API key path", async ({ page }) => {
+test("account acquires credentials through native browser pairing, never renderer input", async ({ page }) => {
 	await page.addInitScript(() => {
-		let configured = false;
 		const base = {
 			configPath: "/tmp/config.toml",
 			envFile: "/tmp/.env",
@@ -126,15 +125,11 @@ test("account offers a top-level write-only Synth API key path", async ({ page }
 			pollSignIn: async () => ({ status: "pending" as const }),
 			cancelSignIn: async () => undefined,
 			signOut: async () => ({ ...base, apiKeyConfigured: false }),
-			getSummary: async () => ({ signedIn: configured, state: configured ? "active" as const : "signed_out" as const, environment: "prod" as const })
+			getSummary: async () => ({ signedIn: false, state: "signed_out" as const, environment: "prod" as const })
 		};
 		window.synthConfig = {
-			get: async () => ({ ...base, apiKeyConfigured: configured }),
-			update: async (request) => {
-				if (request.apiKey !== "sk_test_manual") throw new Error("API key was not forwarded");
-				configured = true;
-				return { ...base, apiKeyConfigured: true, apiKeyFingerprint: "sha256:abc1234", apiKeySource: "/tmp/.env" };
-			},
+			get: async () => ({ ...base, apiKeyConfigured: false }),
+			update: async () => ({ ...base, apiKeyConfigured: false }),
 			listModelMultiAgent: async () => [],
 			updateModelMultiAgent: async () => [],
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
@@ -149,12 +144,7 @@ test("account offers a top-level write-only Synth API key path", async ({ page }
 	const profile = page.getByTestId("account-page-profile");
 	const signIn = profile.getByTestId("account-sign-in");
 	await expect(signIn.getByTestId("sign-in-begin")).toBeVisible();
-	await expect(signIn.getByTestId("api-key-toggle")).toBeVisible();
-	await signIn.getByTestId("api-key-toggle").click();
-	await signIn.getByLabel("Synth API key").fill("sk_test_manual");
-	await signIn.getByRole("button", { name: "Connect", exact: true }).click();
-
-	await expect(signIn.getByTestId("account-sign-in-note")).toContainText("API key connected");
+	await expect(signIn.getByTestId("api-key-toggle")).toHaveCount(0);
 	await expect(signIn.getByLabel("Synth API key")).toHaveCount(0);
 });
 

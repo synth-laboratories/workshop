@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
+import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 
@@ -36,7 +36,8 @@ function appEventToCodexEvent(event: AppEvent): CodexEvent | null {
 	// Native approval requests for plugin lifecycle and paid compute are
 	// intentionally journaled as system events, but they still belong to the
 	// active Codex session and must render as blocking approval cards.
-	if (!event.sessionId || (event.source !== "codex" && !event.kind.startsWith("approval."))) return null;
+	const isApprovalBoundary = event.kind.startsWith("approval.");
+	if (!event.sessionId || (event.source !== "codex" && !isApprovalBoundary)) return null;
 	const params =
 		event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
 			? (event.payload as Record<string, unknown>)
@@ -44,14 +45,17 @@ function appEventToCodexEvent(event: AppEvent): CodexEvent | null {
 	return { sessionId: event.sessionId, method: event.kind, params };
 }
 
-function listenRuntimeAppEvents(listener: (event: AppEvent) => void): () => void {
+function listenRuntimeAppEvents(listener: (event: AppEvent) => void, onAttached?: () => void): () => void {
 	let disposed = false;
 	let unlisten: (() => void) | undefined;
 	void listen<AppEvent | OriginTaggedAppEvent>(EVENT_CHANNELS.RUNTIME, ({ payload }) => {
 		listener(unwrapRuntimeEvent(payload));
 	}).then((next) => {
 		if (disposed) next();
-		else unlisten = next;
+		else {
+			unlisten = next;
+			onAttached?.();
+		}
 	});
 	return () => {
 		disposed = true;
@@ -112,6 +116,8 @@ function browserCoreBridge() {
 		},
 		async eventsAfter(): Promise<AppEvent[]> { return []; },
 		async sessionEventsAfter(): Promise<AppEvent[]> { return []; },
+		async sessionEventsTail(): Promise<AppEvent[]> { return []; },
+		async sessionEventsBefore(): Promise<AppEvent[]> { return []; },
 		onEvent(): () => void { return () => undefined; }
 	};
 }
@@ -193,7 +199,7 @@ export function installDesktopBridge(): void {
 			: Promise.resolve({
 				mode: "development", name: "browser", displayName: "Synth Desktop · browser",
 				appVersion: desktopPackage.version, sourceRevision: "vite", buildRevision: "vite",
-				buildTimestamp: "0", processId: 0, executable: "browser",
+				buildTimestamp: "0", executableDigest: null, processId: 0, executable: "browser",
 				dataRoot: "browser-memory://", viteUrl: window.location.origin, manifest: null
 			}),
 		chooseWorkspaceDirectory: async () => {
@@ -299,6 +305,10 @@ export function installDesktopBridge(): void {
 				invokeCommand<AppEvent[]>(COMMANDS.CORE_EVENTS_AFTER, { afterSequence, limit }),
 			sessionEventsAfter: (sessionId, afterSequence = 0, limit) =>
 				invokeCommand<AppEvent[]>(COMMANDS.CORE_SESSION_EVENTS_AFTER, { sessionId, afterSequence, limit }),
+			sessionEventsTail: (sessionId, limit) =>
+				invokeCommand<AppEvent[]>(COMMANDS.CORE_SESSION_EVENTS_TAIL, { sessionId, limit }),
+			sessionEventsBefore: (sessionId, beforeSequence, limit) =>
+				invokeCommand<AppEvent[]>(COMMANDS.CORE_SESSION_EVENTS_BEFORE, { sessionId, beforeSequence, limit }),
 			onEvent(listener) {
 				return listenRuntimeAppEvents(listener);
 			}
@@ -485,8 +495,11 @@ window.synthWorkspaceScope ??= isTauri
 			}
 		};
 	window.synthModelPerformance ??= isTauri
-		? { summaries: () => invokeCommand<ModelPerformanceSummary[]>(COMMANDS.MODEL_PERFORMANCE_SUMMARY) }
-		: { summaries: async () => [] };
+		? {
+			summaries: () => invokeCommand<ModelPerformanceSummary[]>(COMMANDS.MODEL_PERFORMANCE_SUMMARY),
+			turnSamples: (sessionId) => invokeCommand<ModelPerformanceTurnSample[]>(COMMANDS.MODEL_PERFORMANCE_TURN_SAMPLES, { sessionId })
+		}
+		: { summaries: async () => [], turnSamples: async () => [] };
 	window.synthUpdates ??= isTauri
 		? {
 			status: () => invokeCommand<UpdateStatus>(COMMANDS.UPDATE_STATUS),
@@ -494,7 +507,7 @@ window.synthWorkspaceScope ??= isTauri
 		}
 		: {
 			status: async () => ({
-				currentVersion: "0.3.0",
+				currentVersion: "0.4.0",
 				channel: "stable",
 				latestVersion: null,
 				updateAvailable: false
@@ -567,6 +580,14 @@ window.synthWorkspaceScope ??= isTauri
 				}),
 			interrupt: (sessionId) => invokeCommand<void>(COMMANDS.CODEX_TURN_INTERRUPT, { request: { sessionId } }),
 			compact: (request) => invokeCommand<void>(COMMANDS.CODEX_THREAD_COMPACT, { request }),
+			readThread: (sessionId, threadId, includeTurns = true) =>
+				invokeCommand<unknown>(COMMANDS.CODEX_THREAD_READ, {
+					request: { sessionId, threadId, includeTurns }
+				}),
+			listThreadItems: (sessionId, threadId, cursor, limit) =>
+				invokeCommand<unknown>(COMMANDS.CODEX_THREAD_ITEMS_LIST, {
+					request: { sessionId, threadId, cursor, limit }
+				}),
 			steerTurn: (sessionId, text) =>
 				invokeCommand<void>(COMMANDS.CODEX_TURN_STEER, { request: { sessionId, text } }),
 			resolveApproval: (sessionId, approvalId, decision) => invokeCommand<void>(COMMANDS.CODEX_APPROVAL_RESOLVE, { request: { sessionId, approvalId, decision } }),
@@ -597,6 +618,7 @@ window.synthWorkspaceScope ??= isTauri
 			getTemplate: (templateId) => invokeCommand<VisualTemplateMeta>(COMMANDS.VISUALS_TEMPLATES_GET, { templateId }),
 			list: (query) => invokeCommand<VisualRecord[]>(COMMANDS.VISUALS_LIST, { query: query ?? null }),
 			get: (visualId) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_GET, { visualId }),
+			reportObservation: (observation) => invokeCommand<void>(COMMANDS.VISUALS_OBSERVATION_REPORT, { observation }),
 			revisions: (visualId) => invokeCommand<VisualRevision[]>(COMMANDS.VISUALS_REVISIONS, { visualId }),
 			annotations: (visualId) => invokeCommand<VisualAnnotation[]>(COMMANDS.VISUALS_ANNOTATIONS_LIST, { visualId }),
 			createAnnotation: (visualId, request) => invokeCommand<VisualAnnotation>(COMMANDS.VISUALS_ANNOTATION_CREATE, { visualId, request }),
@@ -624,10 +646,11 @@ window.synthWorkspaceScope ??= isTauri
 					sizeClass: sizeClass ?? null
 				}),
 			render: (visualId) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_RENDER, { visualId }),
-			onEvent(listener) {
+			pollStream: (request) => invokeCommand(COMMANDS.VISUAL_STREAM_POLL, { request }),
+			onEvent(listener, onAttached) {
 				return listenRuntimeAppEvents((payload) => {
 					if (payload.kind.startsWith("visual.")) listener(payload);
-				});
+				}, onAttached);
 			},
 			onShow(listener) {
 				let disposed = false;
@@ -643,7 +666,27 @@ window.synthWorkspaceScope ??= isTauri
 			status: (pluginId) => invokeCommand(COMMANDS.PLUGINS_STATUS, { pluginId: pluginId ?? null }),
 			list: () => invokeCommand(COMMANDS.PLUGINS_LIST),
 			setReleaseChannel: (pluginId, channel) =>
-				invokeCommand(COMMANDS.PLUGINS_SET_RELEASE_CHANNEL, { pluginId, channel })
+				invokeCommand(COMMANDS.PLUGINS_SET_RELEASE_CHANNEL, { pluginId, channel }),
+			manage: (operation, pluginId, version) =>
+				invokeCommand(COMMANDS.PLUGINS_MANAGE, {
+					operation,
+					pluginId,
+					version: version ?? null,
+					sessionId: null
+				}),
+			// `optimizer:status` has been emitted since the sidecar manager
+			// landed and had no subscriber, which is why the Optimizers page
+			// polled the registry every 750 ms — and every poll re-probed the
+			// live sidecar.
+			onStatusChanged(listener) {
+				let disposed = false;
+				let unlisten: (() => void) | undefined;
+				void listen(EVENT_CHANNELS.OPTIMIZER_STATUS, () => listener()).then((next) => {
+					if (disposed) next();
+					else unlisten = next;
+				});
+				return () => { disposed = true; unlisten?.(); };
+			}
 		};
 		window.synthReports ??= {
 			list: (query) => invokeCommand(COMMANDS.REPORTS_LIST, { query: query ?? null }),
@@ -689,6 +732,8 @@ window.synthWorkspaceScope ??= isTauri
 			listAlgorithms: () => invokeCommand(COMMANDS.OPTIMIZERS_ALGORITHMS_LIST),
 			listRecipes: () => invokeCommand(COMMANDS.OPTIMIZERS_RECIPES_LIST),
 			startRecipe: (request) => invokeCommand(COMMANDS.OPTIMIZERS_RECIPE_START, { request }),
+			stageEvalCandidates: (request) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_STAGE_EVAL_CANDIDATES, { request }),
 			list: (query) => invokeCommand(COMMANDS.OPTIMIZERS_LIST, { query: query ?? null }),
 			get: (optimizerRunId) => invokeCommand(COMMANDS.OPTIMIZERS_GET, { optimizerRunId }),
 			create: (request) => invokeCommand(COMMANDS.OPTIMIZERS_CREATE, { request }),

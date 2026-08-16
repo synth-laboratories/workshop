@@ -67,6 +67,26 @@ impl EventJournal {
             .await
     }
 
+    /// Append many events inside one transaction.
+    ///
+    /// The diagnostic writer batches on count or a short timer; one transaction
+    /// per event would put a durable fsync between every queued diagnostic and
+    /// turn a bounded background drain into a visible disk load.
+    pub async fn append_batch(&self, inputs: Vec<EventAppend>) -> Result<Vec<AppEvent>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            let mut appended = Vec::with_capacity(inputs.len());
+            for input in inputs {
+                appended.push(append_event(conn, input)?);
+            }
+            Ok(appended)
+        })
+        .await
+    }
+
     pub async fn events_after(&self, after_sequence: i64, limit: i64) -> Result<Vec<AppEvent>> {
         let db = self.db.clone();
         db.run(move |conn| list_events_after(conn, after_sequence, limit))
@@ -99,6 +119,29 @@ impl EventJournal {
         let db = self.db.clone();
         db.run(move |conn| {
             list_session_events_after(conn, &session_id, after_session_sequence, limit)
+        })
+        .await
+    }
+
+    pub async fn session_events_tail(
+        &self,
+        session_id: String,
+        limit: i64,
+    ) -> Result<Vec<AppEvent>> {
+        let db = self.db.clone();
+        db.run(move |conn| list_session_events_tail(conn, &session_id, limit))
+            .await
+    }
+
+    pub async fn session_events_before(
+        &self,
+        session_id: String,
+        before_session_sequence: i64,
+        limit: i64,
+    ) -> Result<Vec<AppEvent>> {
+        let db = self.db.clone();
+        db.run(move |conn| {
+            list_session_events_before(conn, &session_id, before_session_sequence, limit)
         })
         .await
     }
@@ -464,6 +507,89 @@ fn list_session_events_after(
     Ok(events)
 }
 
+fn list_session_events_tail(
+    conn: &Connection,
+    session_id: &str,
+    limit: i64,
+) -> Result<Vec<AppEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                payload_json, remote_sequence, command_id, created_at
+         FROM (
+             SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                    payload_json, remote_sequence, command_id, created_at
+             FROM events
+             WHERE session_id = ?1 AND session_sequence IS NOT NULL
+             ORDER BY session_sequence DESC
+             LIMIT ?2
+         )
+         ORDER BY session_sequence ASC",
+    )?;
+    let rows = stmt.query_map(params![session_id, limit], |row| {
+        Ok(AppEvent {
+            schema_version: APP_EVENT_SCHEMA_VERSION.to_string(),
+            sequence: row.get(0)?,
+            event_id: row.get(1)?,
+            session_id: row.get(2)?,
+            session_sequence: row.get(3)?,
+            run_id: row.get(4)?,
+            source: EventSource::parse(&row.get::<_, String>(5)?),
+            kind: row.get(6)?,
+            payload: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or(Value::Null),
+            remote_sequence: row.get(8)?,
+            command_id: row.get(9)?,
+            created_at: row.get(10)?,
+        })
+    })?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row?);
+    }
+    Ok(events)
+}
+
+fn list_session_events_before(
+    conn: &Connection,
+    session_id: &str,
+    before_session_sequence: i64,
+    limit: i64,
+) -> Result<Vec<AppEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                payload_json, remote_sequence, command_id, created_at
+         FROM (
+             SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                    payload_json, remote_sequence, command_id, created_at
+             FROM events
+             WHERE session_id = ?1 AND session_sequence IS NOT NULL AND session_sequence < ?2
+             ORDER BY session_sequence DESC
+             LIMIT ?3
+         )
+         ORDER BY session_sequence ASC",
+    )?;
+    let rows = stmt.query_map(params![session_id, before_session_sequence, limit], |row| {
+        Ok(AppEvent {
+            schema_version: APP_EVENT_SCHEMA_VERSION.to_string(),
+            sequence: row.get(0)?,
+            event_id: row.get(1)?,
+            session_id: row.get(2)?,
+            session_sequence: row.get(3)?,
+            run_id: row.get(4)?,
+            source: EventSource::parse(&row.get::<_, String>(5)?),
+            kind: row.get(6)?,
+            payload: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or(Value::Null),
+            remote_sequence: row.get(8)?,
+            command_id: row.get(9)?,
+            created_at: row.get(10)?,
+        })
+    })?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row?);
+    }
+    Ok(events)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,6 +696,54 @@ mod tests {
         assert_eq!(second.session_sequence, Some(2));
         let page = journal.events_after(0, 10).await.unwrap();
         assert_eq!(page.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn session_tail_returns_latest_events_in_ascending_order() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let journal = EventJournal::new(storage.database().clone());
+        journal
+            .upsert_codex_session(
+                "sess_tail".into(),
+                "thread_tail".into(),
+                "Tail".into(),
+                "laguna-xs-2.1".into(),
+                "/tmp/ws".into(),
+                "ready".into(),
+            )
+            .await
+            .unwrap();
+        for index in 1..=5 {
+            journal
+                .append(EventAppend::codex(
+                    "sess_tail",
+                    "message.delta",
+                    json!({"index": index}),
+                ))
+                .await
+                .unwrap();
+        }
+
+        let tail = journal
+            .session_events_tail("sess_tail".into(), 3)
+            .await
+            .unwrap();
+        let indexes = tail
+            .iter()
+            .map(|event| event.payload["index"].as_i64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(indexes, vec![3, 4, 5]);
+
+        let before = journal
+            .session_events_before("sess_tail".into(), 4, 2)
+            .await
+            .unwrap();
+        let before_indexes = before
+            .iter()
+            .map(|event| event.payload["index"].as_i64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(before_indexes, vec![2, 3]);
     }
 
     #[tokio::test]

@@ -7,6 +7,7 @@
 
 pub mod commands;
 pub mod events;
+pub mod runtimes;
 pub mod specta;
 
 pub use commands::COMMANDS;

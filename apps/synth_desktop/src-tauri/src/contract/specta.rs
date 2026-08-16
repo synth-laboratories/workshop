@@ -79,8 +79,11 @@ pub fn builder() -> Builder<tauri::Wry> {
         desktop_instance_diagnostics,
         crate::desktop_image_preview,
         crate::core_diagnostics,
+        crate::runtime_contracts,
         crate::core_events_after,
         crate::core_session_events_after,
+        crate::core_session_events_tail,
+        crate::core_session_events_before,
         crate::intern_sessions_list,
         crate::intern_session_create,
         crate::intern_session_send,
@@ -96,6 +99,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::data_trace_projection_resolve,
         crate::data_usage_list,
         crate::model_performance_summary,
+        crate::model_performance_turn_samples,
         crate::usage_summary,
         crate::tariff_catalog,
         crate::update_status,
@@ -104,6 +108,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::optimizers_algorithms_list,
         crate::optimizers_recipes_list,
         crate::optimizers_recipe_start,
+        crate::optimizers_stage_eval_candidates,
         crate::optimizers_list,
         crate::optimizers_get,
         crate::optimizers_create,
@@ -121,8 +126,16 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::optimizers_list_cloud,
         crate::plugins_status,
         crate::plugins_list,
+        crate::plugins_manage,
         crate::plugins_set_release_channel,
         crate::visual_subscription_ready,
+        crate::visual_stream_poll,
+        crate::diagnostics_report,
+        crate::diagnostics_status,
+        crate::diagnostics_query,
+        crate::diagnostics_explain,
+        crate::diagnostics_bundle,
+        crate::diagnostics_clear_index,
         crate::optimizers::manager::optimizer_sidecar_status,
         crate::optimizers::manager::optimizer_sidecar_install,
         crate::optimizers::manager::optimizer_sidecar_start,
@@ -133,6 +146,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::visuals_templates_get,
         crate::visuals_list,
         crate::visuals_get,
+        crate::visuals_observation_report,
         crate::visuals_revisions,
         crate::visuals_annotations_list,
         crate::visuals_annotation_create,
@@ -247,6 +261,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::codex_turn_send,
         crate::codex_turn_interrupt,
         crate::codex_thread_compact,
+        crate::codex_thread_read,
+        crate::codex_thread_items_list,
         crate::codex_turn_steer,
         crate::codex_approval_resolve,
         crate::codex_session_close,
@@ -289,6 +305,8 @@ fn export_typescript_bindings_to(path: &std::path::Path) -> Result<(), String> {
         .map(str::trim_end)
         .collect::<Vec<_>>()
         .join("\n")
+        .trim_end_matches('\n')
+        .to_owned()
         + "\n";
     std::fs::write(&path, normalized).map_err(|error| error.to_string())
 }
@@ -329,8 +347,14 @@ mod tests {
         );
         let exported =
             body.matches("__TAURI_INVOKE(").count() + body.matches("__TAURI_INVOKE<").count();
+        // Hand-maintained on purpose: the exporter dropping commands must fail
+        // here rather than pass quietly. Bump it only alongside a reviewed
+        // `collect_commands!` change.
+        // 190 → 197: `runtime_contracts` backs the Settings → About runtime
+        // version rows, and the six diagnostics commands expose the local
+        // diagnostics boundary.
         assert_eq!(
-            exported, 177,
+            exported, 198,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

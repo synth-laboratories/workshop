@@ -3,7 +3,7 @@
  * Owns remaining App orchestration (boot, permissions, sessions, overlays,
  * eval host) so App.tsx stays shell + wiring only.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { appEventToRuntimeEvent } from "@synth/runtime-protocol";
 import desktopPackage from "../../../../package.json";
 import type {
@@ -20,6 +20,7 @@ import {
 	dispatchLocalSessionStatus,
 	dispatchRuntimeEvent,
 	dispatchTurnAccepted,
+	evictSessionEvents,
 	mergeInternSessions,
 	mergeSessionReplay,
 	patchSessionMetadata,
@@ -34,10 +35,10 @@ import {
 	EXECUTION_TARGETS,
 	isInternTargetId
 } from "../types/landing";
-import type { ArtifactRef } from "../types/landing";
 import { useInferenceMonitor } from "../components/InferencePanel";
 import { artifactFromVisualRecord } from "../components/VisualHost";
 import { useAccountShell } from "./useAccountShell";
+import { usePluginStatuses } from "./usePluginStatuses";
 import { useShellLayout } from "./useShellLayout";
 import { useCodexEventBridge, type CodexUsageSnapshot } from "./useCodexEventBridge";
 import { useForeignSessionEventBridge } from "./useForeignSessionEventBridge";
@@ -67,6 +68,7 @@ import {
 } from "../runtime/modelSwitchPlan";
 import type {
 	CodexSessionInfo,
+	CodexEvent,
 	CodexOauthStatus,
 	ComposerImageAttachment,
 	ConversationWorkspaceScope,
@@ -88,6 +90,7 @@ import { browserRuntimeClient } from "../runtime/browserRuntimeClient";
 import {
 	codexResumeRequest,
 	codexTurnFailure,
+	CODEX_SESSION_UNHEALTHY,
 	desktopBootError,
 	turnFailureMessage,
 	type FailedSend
@@ -96,7 +99,41 @@ import { loadDeviceUsage } from "../runtime/deviceUsage";
 import { createSemanticEvalApi } from "../runtime/evalApi";
 import { drainPromptQueues, removeQueuedPrompt } from "../runtime/promptQueue";
 import { bridges } from "../runtime/desktopBridge";
+import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
+import { responseTraceStore } from "../runtime/responseTraceStore";
+import {
+	EMPTY_VISUAL_REVISION_STATE,
+	newestVisualArtifact,
+	visualRevisionReducer
+} from "../runtime/visualRevisionState";
 import type { MainView } from "../routes";
+
+// `turn/start` only proves the app-server accepted the request. It does not
+// prove the provider stream is alive, so never leave the operator at Working…
+// forever if no event follows.
+const TURN_FIRST_ACTIVITY_TIMEOUT_MS = 45_000;
+// XHigh reasoning can legitimately emit no transport events for several
+// minutes. This is a last-resort dead-connection fence, not a latency budget;
+// the separate first-activity watchdog still catches turns that never start.
+const TURN_ACTIVITY_IDLE_TIMEOUT_MS = 10 * 60_000;
+const TURN_START_TIMEOUT_MESSAGE =
+	"This task did not begin producing activity. Check your ChatGPT connection and retry.";
+const TURN_ACTIVITY_STALLED_MESSAGE =
+	"This task stopped receiving provider activity. Check the Advanced trace and retry.";
+const TRANSCRIPT_INITIAL_PAGE_SIZE = 250;
+const TRANSCRIPT_PAGE_SIZE = 1000;
+const TRANSCRIPT_CACHE_LIMIT = 5;
+
+type TranscriptHydrationEntry = {
+	initialized: boolean;
+	state: "idle" | "loading" | "loaded" | "error";
+	hasMore: boolean;
+	earliestSequence?: number;
+	error?: string;
+	generation: number;
+};
+
+type TranscriptHistoryState = Pick<TranscriptHydrationEntry, "state" | "hasMore" | "error">;
 
 export function useAppController() {
 	const isDesktop = window.location.protocol === "tauri:" || "__TAURI_INTERNALS__" in window;
@@ -119,6 +156,11 @@ export function useAppController() {
 	const sessionsRef = useRef<Session[]>(sessions);
 	const eventsBySession = useEventsBySession();
 	const [codexActivityBySession, setCodexActivityBySession] = useState<Record<string, CodexActivityEvent[]>>({});
+	const transcriptHydrationRef = useRef(new Map<string, TranscriptHydrationEntry>());
+	const transcriptHydrationGenerationRef = useRef(0);
+	const transcriptLruRef = useRef(new Map<string, true>());
+	const activeChatIdRef = useRef<string | null>(null);
+	const [transcriptHistoryBySession, setTranscriptHistoryBySession] = useState<Record<string, TranscriptHistoryState>>({});
 	const [selectedTargetId, setSelectedTargetId] = useState("local-laguna");
 	useEffect(() => {
 		// v0.1 pickers hide Intern; never leave a hidden target selected.
@@ -163,7 +205,14 @@ export function useAppController() {
 	const [unreadChatIds, setUnreadChatIds] = useState<Set<string>>(() => new Set(loadPreferences().unreadCompletedChats));
 	const previousSessionStatusesRef = useRef(new Map<string, Session["status"]>());
 	const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
-	const [standaloneVisual, setStandaloneVisual] = useState<ArtifactRef | null>(null);
+	const [visualRevisionState, dispatchVisualRevision] = useReducer(
+		visualRevisionReducer,
+		EMPTY_VISUAL_REVISION_STATE
+	);
+	const openArtifactIdRef = useRef<string | null>(null);
+	const visualRequestGenerationRef = useRef(0);
+	const pendingVisualRefreshRef = useRef<{ id: string; minimumRevision: number; generation: number } | null>(null);
+	const acceptedVisualRevisionRef = useRef<{ id: string | null; revision: number }>({ id: null, revision: -1 });
 	const [openContainer, setOpenContainer] = useState<ContainerDeployment | null>(null);
 	const inferenceMonitor = useInferenceMonitor({ visible: selectedTargetId === "local-laguna" });
 	const {
@@ -173,6 +222,7 @@ export function useAppController() {
 	} = useModelPerformanceLabels(selectedTargetId, inferenceMonitor);
 	const [busy, setBusy] = useState(false);
 	const [bootError, setBootError] = useState<string | null>(null);
+	const [runtimeBootReady, setRuntimeBootReady] = useState(false);
 	const [steerError, setSteerError] = useState<string | null>(null);
 	const [composerSkills, setComposerSkills] = useState<Array<{ id: string; name: string; description: string }>>([]);
 	const [queueAfterStop, setQueueAfterStop] = useState(false);
@@ -186,6 +236,9 @@ export function useAppController() {
 	const [codexOauthStatus, setCodexOauthStatus] = useState<CodexOauthStatus | undefined>();
 	const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
 	const staleRunFenceRef = useRef(new Set<string>());
+	const turnStartWatchdogsRef = useRef(new Map<string, number>());
+	const turnActivityWatchdogsRef = useRef(new Map<string, number>());
+	const turnWatchdogInputsRef = useRef(new Map<string, { text: string; messageId: string }>());
 	const manualCompactionPendingRef = useRef(new Set<string>());
 	const queuedCompactionRef = useRef(new Set<string>());
 	const sendToSessionRef = useRef<(sessionId: string, text: string, options?: { messageId?: string }) => Promise<boolean>>(async () => false);
@@ -204,6 +257,94 @@ export function useAppController() {
 		window.setTimeout(() => setToast(null), 2200);
 	}, []);
 
+	const clearTurnStartWatchdog = useCallback((sessionId: string) => {
+		const timer = turnStartWatchdogsRef.current.get(sessionId);
+		if (timer !== undefined) window.clearTimeout(timer);
+		turnStartWatchdogsRef.current.delete(sessionId);
+	}, []);
+	const clearTurnActivityWatchdog = useCallback((sessionId: string) => {
+		const timer = turnActivityWatchdogsRef.current.get(sessionId);
+		if (timer !== undefined) window.clearTimeout(timer);
+		turnActivityWatchdogsRef.current.delete(sessionId);
+	}, []);
+
+	const armTurnActivityWatchdog = useCallback((sessionId: string, text: string, messageId: string) => {
+		clearTurnActivityWatchdog(sessionId);
+		turnWatchdogInputsRef.current.set(sessionId, { text, messageId });
+		const timer = window.setTimeout(() => {
+			turnActivityWatchdogsRef.current.delete(sessionId);
+			turnWatchdogInputsRef.current.delete(sessionId);
+			const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
+			if (session?.status !== "running") return;
+			staleRunFenceRef.current.add(sessionId);
+			void nativeCodex?.interrupt(sessionId).catch(() => undefined);
+			dispatchLocalSessionStatus(sessionId, "failed", { onlyIf: "running" });
+			const sequence = allocateNativeSequence(sessionId);
+			dispatchRuntimeEvent({
+				schemaVersion: "synth.desktop-runtime-event.v1", sessionId, sequence,
+				eventKind: "session/unhealthy",
+				payload: { reason: "turn_activity_stalled", message: TURN_ACTIVITY_STALLED_MESSAGE },
+				createdAt: new Date().toISOString(), source: "local"
+			}, { updateStatus: false });
+			setFailedSend({ sessionId, text, messageId, message: TURN_ACTIVITY_STALLED_MESSAGE });
+			showToast(TURN_ACTIVITY_STALLED_MESSAGE);
+			reportDiagnostic({
+				sessionId,
+				severity: "error",
+				component: "renderer",
+				event: "provider.activity.stalled",
+				code: DIAGNOSTIC_CODES.providerStalled,
+				message: TURN_ACTIVITY_STALLED_MESSAGE,
+				retryable: true,
+				details: { reason: "turn_activity_stalled", idleTimeoutMs: TURN_ACTIVITY_IDLE_TIMEOUT_MS }
+			});
+		}, TURN_ACTIVITY_IDLE_TIMEOUT_MS);
+		turnActivityWatchdogsRef.current.set(sessionId, timer);
+	}, [allocateNativeSequence, clearTurnActivityWatchdog, nativeCodex, showToast]);
+
+	const armTurnStartWatchdog = useCallback((sessionId: string, text: string, messageId: string) => {
+		clearTurnStartWatchdog(sessionId);
+		const timer = window.setTimeout(() => {
+			turnStartWatchdogsRef.current.delete(sessionId);
+			const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
+			if (session?.status !== "running") return;
+			// Fence a delayed run.started event, stop the provider best-effort, and
+			// make the transcript retryable rather than leaving a permanent spinner.
+			staleRunFenceRef.current.add(sessionId);
+			void nativeCodex?.interrupt(sessionId).catch(() => undefined);
+			dispatchLocalSessionStatus(sessionId, "failed", { onlyIf: "running" });
+			const sequence = allocateNativeSequence(sessionId);
+			dispatchRuntimeEvent({
+				schemaVersion: "synth.desktop-runtime-event.v1", sessionId, sequence,
+				eventKind: "session/unhealthy",
+				payload: { reason: "turn_first_activity_timeout", message: TURN_START_TIMEOUT_MESSAGE },
+				createdAt: new Date().toISOString(), source: "local"
+			}, { updateStatus: false });
+			setFailedSend({ sessionId, text, messageId, message: TURN_START_TIMEOUT_MESSAGE });
+			showToast(TURN_START_TIMEOUT_MESSAGE);
+			reportDiagnostic({
+				sessionId,
+				severity: "error",
+				component: "renderer",
+				event: "provider.first_activity.timeout",
+				code: DIAGNOSTIC_CODES.providerDisconnected,
+				message: TURN_START_TIMEOUT_MESSAGE,
+				retryable: true,
+				details: { reason: "turn_first_activity_timeout", timeoutMs: TURN_FIRST_ACTIVITY_TIMEOUT_MS }
+			});
+		}, TURN_FIRST_ACTIVITY_TIMEOUT_MS);
+		turnStartWatchdogsRef.current.set(sessionId, timer);
+		armTurnActivityWatchdog(sessionId, text, messageId);
+	}, [allocateNativeSequence, armTurnActivityWatchdog, clearTurnStartWatchdog, nativeCodex, showToast]);
+
+	useEffect(() => () => {
+		for (const timer of turnStartWatchdogsRef.current.values()) window.clearTimeout(timer);
+		turnStartWatchdogsRef.current.clear();
+		for (const timer of turnActivityWatchdogsRef.current.values()) window.clearTimeout(timer);
+		turnActivityWatchdogsRef.current.clear();
+		turnWatchdogInputsRef.current.clear();
+	}, []);
+
 	const {
 		apiKeyConfigured,
 		setApiKeyConfigured,
@@ -218,6 +359,9 @@ export function useAppController() {
 		accountView,
 		openBilling
 	} = useAccountShell(showToast);
+
+	// One owner for plugin registry status; Sidebar and OptimizersPage read it.
+	const { pluginStatuses, refreshPluginStatuses } = usePluginStatuses();
 
 	useEffect(() => subscribePreferences((next) => {
 		setPreferences(next);
@@ -396,11 +540,7 @@ export function useAppController() {
 			if (!(event.metaKey || event.ctrlKey)) return;
 			if (event.key.toLowerCase() === "j" && !event.shiftKey) {
 				event.preventDefault();
-				setTerminalOpen((current) => {
-					const next = !current;
-					persistLayoutSnapshot({ bottomPanelVisible: next });
-					return next;
-				});
+				persistLayoutSnapshot({ bottomPanelVisible: !terminalOpen });
 			}
 			if (event.key.toLowerCase() === "t" && event.shiftKey) {
 				event.preventDefault();
@@ -412,33 +552,24 @@ export function useAppController() {
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	}, []);
+	}, [persistLayoutSnapshot, terminalOpen]);
 
 	useEffect(() => {
 		let disposed = false;
 		const boot = nativeCodex
-			? Promise.all([nativeCodex.list(), nativeIntern?.listSessions() ?? Promise.resolve([]), refreshHealth()]).then(async ([persisted, internSessions]) => {
+			? Promise.all([nativeCodex.list(), nativeIntern?.listSessions() ?? Promise.resolve([]), refreshHealth()]).then(([persisted, internSessions]) => {
 				const restored = persisted.filter((session) => session.status !== "closed").map(restoreCodexSession);
 				const combined = [...restored, ...internSessions];
 				sessionsRef.current = combined;
 				replaceSessions(combined);
-				const core = bridges.core;
-				if (!core) return;
-				const replay = await Promise.all(combined.map(async (session) => {
-					const rows = await core.sessionEventsAfter(session.id, 0, 2000);
-					return [session.id, rows.map(session.target.kind === "intern" ? appEventToRuntimeEvent : coreEventToRuntime).filter((event): event is RuntimeEvent => event !== null)] as const;
-				}));
-				if (disposed) return;
-				mergeSessionReplay(replay);
-				for (const [sessionId, events] of replay) {
-					const head = events.at(-1)?.sequence ?? 0;
-					nativeSequencesRef.current.set(sessionId, head);
-				}
 			})
 			: Promise.all([refreshHealth(), refreshSessions()]);
 		boot
 			.then(() => {
-				if (!disposed) setBootError(null);
+				if (!disposed) {
+					setBootError(null);
+					setRuntimeBootReady(true);
+				}
 			})
 			.catch((reason: unknown) => {
 				if (!disposed) {
@@ -460,8 +591,20 @@ export function useAppController() {
 		autoCompactTokenLimits: preferences.agentContext.autoCompactTokenLimits,
 		localBaseUrl: laguna?.baseUrl ?? undefined,
 		showToast,
+		onTurnActivity: (sessionId) => {
+			clearTurnStartWatchdog(sessionId);
+			const input = turnWatchdogInputsRef.current.get(sessionId);
+			if (input) {
+				armTurnActivityWatchdog(sessionId, input.text, input.messageId);
+			}
+		},
+		onRawEvent: (event: CodexEvent) => responseTraceStore.appendLive(event),
 		onOauthReauthRequired: () => {
 			setCodexOauthConfigured(false);
+			setCodexOauthStatus({
+				state: "expired", action: "reauthenticate", canUseModels: false, configured: true,
+				guidance: "Please sign in with ChatGPT to continue using this model."
+			});
 			setCodexUsage(null);
 		},
 		onCodexUsage: setCodexUsage
@@ -675,6 +818,168 @@ export function useAppController() {
 	const activeChatTargetId = activeChatSession
 		? executionTargetToUiId(activeChatSession.target)
 		: undefined;
+	activeChatIdRef.current = activeChat?.id ?? null;
+	const touchTranscriptCache = useCallback((sessionId: string) => {
+		const lru = transcriptLruRef.current;
+		lru.delete(sessionId);
+		lru.set(sessionId, true);
+		const evicted: string[] = [];
+		while (lru.size > TRANSCRIPT_CACHE_LIMIT) {
+			const candidate = [...lru.keys()].find((id) => {
+				if (id === sessionId) return false;
+				const session = sessionsRef.current.find((item) => item.id === id);
+				return session?.status !== "running" && session?.status !== "waiting_for_input";
+			});
+			if (!candidate) break;
+			lru.delete(candidate);
+			const hydration = transcriptHydrationRef.current.get(candidate);
+			if (hydration) hydration.generation = ++transcriptHydrationGenerationRef.current;
+			transcriptHydrationRef.current.delete(candidate);
+			evicted.push(candidate);
+		}
+		if (evicted.length === 0) return;
+		evictSessionEvents(evicted);
+		setTranscriptHistoryBySession((current) => Object.fromEntries(
+			Object.entries(current).filter(([id]) => !evicted.includes(id))
+		));
+		for (const id of evicted) responseTraceStore.evict(id);
+	}, []);
+	const hydrateTranscript = useCallback((sessionId: string, targetKind: Session["target"]["kind"]) => {
+		const core = bridges.core;
+		if (!core) return;
+		const cached = transcriptHydrationRef.current.get(sessionId);
+		if (cached?.initialized || cached?.state === "loading") return;
+		const generation = ++transcriptHydrationGenerationRef.current;
+		transcriptHydrationRef.current.set(sessionId, {
+			initialized: false,
+			state: "loading",
+			hasMore: false,
+			generation
+		});
+		setTranscriptHistoryBySession((current) => ({
+			...current,
+			[sessionId]: { state: "loading", hasMore: false }
+		}));
+		responseTraceStore.setLoading(sessionId);
+		void core.sessionEventsTail(sessionId, TRANSCRIPT_INITIAL_PAGE_SIZE + 1).then((fetched) => {
+			// Hydration belongs to the session cache, not to the currently mounted
+			// chat view. Navigation, target attachment and StrictMode effect replay
+			// must not throw away a completed journal read. A generation changes only
+			// when the cache entry itself is evicted or explicitly superseded.
+			if (transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
+			const hasMore = fetched.length > TRANSCRIPT_INITIAL_PAGE_SIZE;
+			const rows = hasMore ? fetched.slice(1) : fetched;
+			const hydrated = rows
+				.map(targetKind === "intern" ? appEventToRuntimeEvent : coreEventToRuntime)
+				.filter((event): event is RuntimeEvent => event !== null);
+			mergeSessionReplay([[sessionId, hydrated]]);
+			const hydratedHead = hydrated.at(-1)?.sequence ?? 0;
+			nativeSequencesRef.current.set(sessionId, Math.max(
+				nativeSequencesRef.current.get(sessionId) ?? 0,
+				eventsBySessionRef.current[sessionId]?.at(-1)?.sequence ?? 0,
+				hydratedHead
+			));
+			transcriptHydrationRef.current.set(sessionId, {
+				initialized: true,
+				state: "loaded",
+				hasMore,
+				earliestSequence: rows[0]?.sessionSequence ?? undefined,
+				generation
+			});
+			setTranscriptHistoryBySession((current) => ({
+				...current,
+				[sessionId]: { state: "loaded", hasMore }
+			}));
+			responseTraceStore.setJournal(sessionId, rows);
+		}).catch((reason: unknown) => {
+			if (transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
+			const message = desktopBootError(reason);
+			transcriptHydrationRef.current.set(sessionId, {
+				initialized: false,
+				state: "error",
+				hasMore: false,
+				error: message,
+				generation
+			});
+			setTranscriptHistoryBySession((current) => ({
+				...current,
+				[sessionId]: { state: "error", hasMore: false, error: message }
+			}));
+			responseTraceStore.setError(sessionId, message);
+			mergeSessionReplay([[sessionId, [{
+				schemaVersion: "synth.desktop-runtime-event.v1",
+				sessionId,
+				sequence: 1,
+				eventKind: "session/unhealthy",
+				payload: {
+					reason: "session_replay_failed",
+					message: `This conversation could not be restored: ${message}`
+				},
+				createdAt: new Date().toISOString(),
+				source: "local"
+			}]]]);
+		});
+	}, []);
+	useEffect(() => {
+		const sessionId = activeChat?.id;
+		const targetKind = activeChatSession?.target.kind;
+		if (!runtimeBootReady || !sessionId || !targetKind) return;
+		touchTranscriptCache(sessionId);
+		const cached = transcriptHydrationRef.current.get(sessionId);
+		if (cached) {
+			setTranscriptHistoryBySession((current) => ({
+				...current,
+				[sessionId]: { state: cached.state, hasMore: cached.hasMore, error: cached.error }
+			}));
+		}
+		hydrateTranscript(sessionId, targetKind);
+	}, [activeChat?.id, activeChatSession?.target.kind, hydrateTranscript, runtimeBootReady, touchTranscriptCache]);
+	const loadOlderTranscript = useCallback(() => {
+		const sessionId = activeChatIdRef.current;
+		const targetKind = activeChatSession?.target.kind;
+		const core = bridges.core;
+		if (!sessionId || !targetKind || !core) return;
+		const prior = transcriptHydrationRef.current.get(sessionId);
+		if (!prior?.initialized || prior.state === "loading" || !prior.hasMore || prior.earliestSequence == null) return;
+		const generation = ++transcriptHydrationGenerationRef.current;
+		const beforeSequence = prior.earliestSequence;
+		transcriptHydrationRef.current.set(sessionId, { ...prior, state: "loading", error: undefined, generation });
+		setTranscriptHistoryBySession((current) => ({
+			...current,
+			[sessionId]: { state: "loading", hasMore: true }
+		}));
+		void (async () => {
+			const fetched = await core.sessionEventsBefore(sessionId, beforeSequence, TRANSCRIPT_PAGE_SIZE + 1);
+			const hasMore = fetched.length > TRANSCRIPT_PAGE_SIZE;
+			const rows = hasMore ? fetched.slice(1) : fetched;
+			if (activeChatIdRef.current !== sessionId || transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
+			const hydrated = rows
+				.map(targetKind === "intern" ? appEventToRuntimeEvent : coreEventToRuntime)
+				.filter((event): event is RuntimeEvent => event !== null);
+			mergeSessionReplay([[sessionId, hydrated]]);
+			const entry: TranscriptHydrationEntry = {
+				initialized: true,
+				state: "loaded",
+				hasMore,
+				earliestSequence: rows[0]?.sessionSequence ?? beforeSequence,
+				generation
+			};
+			transcriptHydrationRef.current.set(sessionId, entry);
+			setTranscriptHistoryBySession((current) => ({
+				...current,
+				[sessionId]: { state: "loaded", hasMore }
+			}));
+			touchTranscriptCache(sessionId);
+		})().catch((reason: unknown) => {
+			if (activeChatIdRef.current !== sessionId || transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
+			const message = desktopBootError(reason);
+			transcriptHydrationRef.current.set(sessionId, { ...prior, state: "error", error: message, generation });
+			setTranscriptHistoryBySession((current) => ({
+				...current,
+				[sessionId]: { state: "error", hasMore: prior.hasMore, error: message }
+			}));
+		});
+	}, [activeChatSession?.target.kind, touchTranscriptCache]);
 	// Restored layout state opens a chat without going through openChat(). Keep
 	// the composer bound to the conversation's persisted execution target so a
 	// Gemini thread never silently presents (or submits through) Laguna.
@@ -694,20 +999,46 @@ export function useAppController() {
 	const workbenchWidth = viewportWidth - (sidebarVisible ? sidebarWidth : 0);
 	const sidePanelFits = workbenchWidth >= 368 + 300;
 	const sidePanelCanSharePane = workbenchWidth >= 380 + 7 + 260 + 300;
-	const showSidePanel = sidePanelOpen && sidePanelFits && (sidePanelTab === "outputs" || activeLocalModel);
+	const showSidePanel = sidePanelOpen && sidePanelFits && (sidePanelTab === "outputs" || sidePanelTab === "trace" || activeLocalModel);
 	const activeSync =
 		view.kind === "sync"
 			? (state.syncSessions.find((s) => s.id === view.sessionId) ?? null)
 			: null;
 
-	const openArtifact =
-		standaloneVisual && openArtifactId === standaloneVisual.id
-			? standaloneVisual
-			: view.kind === "chat" && activeChat
-				? (activeChat.artifacts?.find((a) => a.id === openArtifactId) ?? null)
-				: view.kind === "sync" && activeSync
-					? (activeSync.artifacts?.find((a) => a.id === openArtifactId) ?? null)
-					: null;
+	const contextualArtifact = view.kind === "chat" && activeChat
+		? (activeChat.artifacts?.find((a) => a.id === openArtifactId) ?? null)
+		: view.kind === "sync" && activeSync
+			? (activeSync.artifacts?.find((a) => a.id === openArtifactId) ?? null)
+			: null;
+	const selectedOpenArtifact = newestVisualArtifact(
+		openArtifactId,
+		visualRevisionState.artifact,
+		contextualArtifact
+	) ?? contextualArtifact;
+	const openArtifact = selectedOpenArtifact && visualRevisionState.id === openArtifactId
+		? {
+			...selectedOpenArtifact,
+			metadata: {
+				...selectedOpenArtifact.metadata,
+				revisionSync: {
+					loading: visualRevisionState.loading,
+					requestedRevision: visualRevisionState.requestedRevision,
+					acceptedRevision: visualRevisionState.acceptedRevision,
+					error: visualRevisionState.error
+				}
+			}
+		}
+		: selectedOpenArtifact;
+	openArtifactIdRef.current = openArtifactId;
+	acceptedVisualRevisionRef.current = {
+		id: openArtifactId,
+		revision: typeof openArtifact?.revision === "number" ? openArtifact.revision : -1
+	};
+
+	useEffect(() => {
+		if (!openArtifactId || !contextualArtifact?.visualId) return;
+		dispatchVisualRevision({ type: "select", id: openArtifactId, artifact: contextualArtifact });
+	}, [contextualArtifact, openArtifactId]);
 
 	const viewKey =
 		view.kind === "chat"
@@ -720,7 +1051,10 @@ export function useAppController() {
 
 	useEffect(() => {
 		setOpenArtifactId(null);
-		setStandaloneVisual(null);
+		openArtifactIdRef.current = null;
+		visualRequestGenerationRef.current += 1;
+		pendingVisualRefreshRef.current = null;
+		dispatchVisualRevision({ type: "close" });
 		setOpenContainer(null);
 		setContainerPaneExpanded(false);
 	}, [viewKey]);
@@ -731,7 +1065,6 @@ export function useAppController() {
 		const subagents = surface?.artifacts?.find((artifact) => artifact.templateId === "synth.subagents.v1");
 		if (!surface || !subagents || autoOpenedSubagentsRef.current.has(surface.id)) return;
 		autoOpenedSubagentsRef.current.add(surface.id);
-		setStandaloneVisual(null);
 		setOpenArtifactId(subagents.id);
 	}, [activeChat, activeSync, openArtifactId, openContainer]);
 
@@ -740,7 +1073,10 @@ export function useAppController() {
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key === "Escape") {
 				setOpenArtifactId(null);
-				setStandaloneVisual(null);
+				openArtifactIdRef.current = null;
+				visualRequestGenerationRef.current += 1;
+				pendingVisualRefreshRef.current = null;
+				dispatchVisualRevision({ type: "close" });
 				setOpenContainer(null);
 				setContainerPaneExpanded(false);
 			}
@@ -752,12 +1088,21 @@ export function useAppController() {
 	const toggleArtifact = useCallback((id: string | null) => {
 		if (id == null) {
 			setOpenArtifactId(null);
-			setStandaloneVisual(null);
+			openArtifactIdRef.current = null;
+			visualRequestGenerationRef.current += 1;
+			pendingVisualRefreshRef.current = null;
+			dispatchVisualRevision({ type: "close" });
 			return;
 		}
-		setStandaloneVisual(null);
 		setOpenContainer(null);
-		setOpenArtifactId((current) => (current === id ? null : id));
+		setOpenArtifactId((current) => {
+			const next = current === id ? null : id;
+			openArtifactIdRef.current = next;
+			visualRequestGenerationRef.current += 1;
+			pendingVisualRefreshRef.current = null;
+			dispatchVisualRevision(next ? { type: "select", id: next } : { type: "close" });
+			return next;
+		});
 	}, []);
 
 	const toggleContainer = useCallback(async (id: string | null) => {
@@ -773,7 +1118,10 @@ export function useAppController() {
 			try {
 			const container = await bridges.inventory.getContainer(id);
 			setOpenArtifactId(null);
-			setStandaloneVisual(null);
+			openArtifactIdRef.current = null;
+			visualRequestGenerationRef.current += 1;
+			pendingVisualRefreshRef.current = null;
+			dispatchVisualRevision({ type: "close" });
 			setOpenContainer(container);
 		} catch (reason) {
 			showToast(reason instanceof Error ? reason.message : String(reason));
@@ -796,27 +1144,89 @@ export function useAppController() {
 			"schemaVersion" in visual && visual.schemaVersion === "synth.desktop-visual.v1"
 				? artifactFromVisualRecord(visual as VisualRecord)
 				: visualRecordToArtifact(visual as VisualInstanceRecord);
-		setStandaloneVisual(artifact);
+		openArtifactIdRef.current = artifact.id;
+		acceptedVisualRevisionRef.current = { id: artifact.id, revision: artifact.revision ?? -1 };
+		visualRequestGenerationRef.current += 1;
+		pendingVisualRefreshRef.current = null;
+		dispatchVisualRevision({ type: "select", id: artifact.id, artifact });
 		setOpenArtifactId(artifact.id);
 		// Opening an artifact is a side-pane action. Navigation remains explicit so
 		// traces stay beside their catalog and chat-created visuals stay beside chat.
 	}, []);
 
+	const reconcileOpenVisual = useCallback((visualId: string, minimumRevision = -1, open = false) => {
+		if (!bridges.visuals) return;
+		const wasOpen = openArtifactIdRef.current === visualId;
+		if (open) {
+			if (openArtifactIdRef.current !== visualId) {
+				visualRequestGenerationRef.current += 1;
+				pendingVisualRefreshRef.current = null;
+			}
+			openArtifactIdRef.current = visualId;
+			setOpenArtifactId(visualId);
+			dispatchVisualRevision({ type: "select", id: visualId });
+		} else if (openArtifactIdRef.current !== visualId) {
+			return;
+		}
+		if (
+			minimumRevision >= 0 &&
+			acceptedVisualRevisionRef.current.id === visualId &&
+			acceptedVisualRevisionRef.current.revision >= minimumRevision &&
+			(!open || wasOpen)
+		) return;
+		const pending = pendingVisualRefreshRef.current;
+		if (pending?.id === visualId && pending.minimumRevision >= minimumRevision) return;
+		const generation = ++visualRequestGenerationRef.current;
+		pendingVisualRefreshRef.current = { id: visualId, minimumRevision, generation };
+		dispatchVisualRevision({ type: "request", id: visualId, minimumRevision, generation });
+		void bridges.visuals.get(visualId).then(
+			(visual) => {
+				if (openArtifactIdRef.current !== visualId || visualRequestGenerationRef.current !== generation) return;
+				const artifact = artifactFromVisualRecord(visual);
+				acceptedVisualRevisionRef.current = { id: visualId, revision: artifact.revision ?? -1 };
+				dispatchVisualRevision({ type: "resolve", id: visualId, artifact, generation });
+				if (pendingVisualRefreshRef.current?.generation === generation) pendingVisualRefreshRef.current = null;
+			},
+			(reason) => {
+				if (openArtifactIdRef.current !== visualId || visualRequestGenerationRef.current !== generation) return;
+				dispatchVisualRevision({ type: "fail", id: visualId, generation, error: String(reason) });
+				if (pendingVisualRefreshRef.current?.generation === generation) pendingVisualRefreshRef.current = null;
+			}
+		);
+	}, []);
+
 	useEffect(() => {
-		const unlisten = bridges.visuals?.onShow?.(async (event) => {
+		if (openArtifactId && contextualArtifact?.visualId === openArtifactId) {
+			reconcileOpenVisual(openArtifactId, contextualArtifact.revision ?? -1);
+		}
+	}, [contextualArtifact?.visualId, openArtifactId, reconcileOpenVisual]);
+
+	useEffect(() => {
+		if (!bridges.visuals) return;
+		const reconcileSelected = () => {
+			const visualId = openArtifactIdRef.current;
+			if (visualId) reconcileOpenVisual(visualId);
+		};
+		const unlisten = bridges.visuals.onEvent((event) => {
 			const visualId =
 				typeof event.payload?.visualId === "string" ? event.payload.visualId : null;
-			if (!visualId || !bridges.visuals) return;
-			try {
-				const visual = await bridges.visuals.get(visualId);
-				openVisualRecord(visual);
-				showToast(`Opened visual · ${visual.title}`);
-			} catch (reason) {
-				showToast(`Visual show failed · ${String(reason)}`);
+			if (!visualId) return;
+			const eventRevision = typeof event.payload?.revision === "number" ? event.payload.revision : -1;
+			if (event.kind === "visual.show") reconcileOpenVisual(visualId, eventRevision, true);
+			else if (event.kind === "visual.updated" && openArtifactIdRef.current === visualId) {
+				reconcileOpenVisual(visualId, eventRevision);
 			}
-		});
-		return () => unlisten?.();
-	}, [openVisualRecord, showToast]);
+		}, reconcileSelected);
+		window.addEventListener("focus", reconcileSelected);
+		// Covers browser fixtures whose listener is synchronous and older bridges
+		// without an attachment callback. The callback repeats this fetch after the
+		// real Tauri listener promise resolves, closing the attach gap.
+		reconcileSelected();
+		return () => {
+			unlisten();
+			window.removeEventListener("focus", reconcileSelected);
+		};
+	}, [reconcileOpenVisual]);
 
 	const ensureOpenRouterReady = useCallback(async (targetId: string): Promise<boolean> => {
 		if (!targetId.startsWith("openrouter-")) return true;
@@ -846,7 +1256,12 @@ export function useAppController() {
 	}, [showToast]);
 
 	const createConversation = useCallback(
-		async (targetId: string = selectedTargetId, title?: string, objective?: string) => {
+		async (
+			targetId: string = selectedTargetId,
+			title?: string,
+			objective?: string,
+			options?: { deferNativeStart?: boolean }
+		) => {
 			setBusy(true);
 			try {
 				const target = targetIdToExecutionTarget(targetId);
@@ -863,10 +1278,33 @@ export function useAppController() {
 						approvalPolicy: machinePermissions.approvalPolicy,
 						sandbox: machinePermissions.sandboxMode
 					};
-					await nativeCodex.start(codexStartRequest(id, workspace, target, permissions, preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined, serviceTierForExecutionTarget(target, modelKnobValues) ?? "default"));
+					// A first-message send is owned by sendTurn(), which atomically
+					// attaches/starts the app-server, journals the prompt, and starts
+					// the turn. Eagerly starting here creates a long provisioning gap
+					// before the prompt has durable custody; if the landing composer
+					// is replaced during that gap, the first message can disappear.
+					// Explicit New conversation actions still start eagerly.
+					if (!options?.deferNativeStart) {
+						await nativeCodex.start(codexStartRequest(id, workspace, target, permissions, preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined, serviceTierForExecutionTarget(target, modelKnobValues) ?? "default"));
+					}
 					const session = createCodexSession(id, target, null, workspace, title, permissions);
 					sessionsRef.current = [session, ...sessionsRef.current.filter((item) => item.id !== session.id)];
 					upsertSession(session);
+					// This process owns the new session from its first optimistic event onward.
+					// There is no persisted history to replay, so do not put first-message UX
+					// behind a journal read (or make Advanced start a competing one).
+					const generation = ++transcriptHydrationGenerationRef.current;
+					transcriptHydrationRef.current.set(id, {
+						initialized: true,
+						state: "loaded",
+						hasMore: false,
+						generation
+					});
+					setTranscriptHistoryBySession((current) => ({
+						...current,
+						[id]: { state: "loaded", hasMore: false }
+					}));
+					responseTraceStore.markLoaded(id);
 					setView({ kind: "chat", chatId: session.id });
 					return session;
 				}
@@ -908,18 +1346,38 @@ export function useAppController() {
 		if (view.kind !== "landing" && view.kind !== "chat") return null;
 		const target = targetIdToExecutionTarget(selectedTargetId);
 		const objectiveConsumed = target.kind === "intern";
-		const session = await createConversation(selectedTargetId, undefined, objectiveConsumed ? objective : undefined);
+		const session = await createConversation(
+			selectedTargetId,
+			undefined,
+			objectiveConsumed ? objective : undefined,
+			{ deferNativeStart: !objectiveConsumed }
+		);
 		return { sessionId: session.id, objectiveConsumed };
 	}, [activeSessionId, createConversation, selectedTargetId, view.kind]);
 
 	const sendToSession = useCallback(
-		async (sessionId: string, text: string, options?: { messageId?: string; images?: ComposerImageAttachment[] }) => {
+		async (
+			sessionId: string,
+			text: string,
+			options?: {
+				messageId?: string;
+				images?: ComposerImageAttachment[];
+				readinessVerified?: boolean;
+			}
+		) => {
 			try {
 				const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
 				const sessionTargetId = session ? executionTargetToUiId(session.target) : selectedTargetId;
 				const pendingTargetId = isInternTargetId(selectedTargetId) ? sessionTargetId : selectedTargetId;
-				if (!await ensureOpenRouterReady(pendingTargetId)) return false;
-				if (!await ensureCodexOauthReady(pendingTargetId)) return false;
+				// The landing composer verifies provider readiness before creating the
+				// session. Repeating an OAuth probe after createConversation has changed
+				// routes leaves the new session visible but the first prompt unjournaled
+				// when that second probe stalls. Direct/session-specific sends still own
+				// their readiness check.
+				if (!options?.readinessVerified) {
+					if (!await ensureOpenRouterReady(pendingTargetId)) return false;
+					if (!await ensureCodexOauthReady(pendingTargetId)) return false;
+				}
 				setBusy(true);
 				if (nativeCodex && (!session || session.target.kind !== "intern")) {
 					if (!session) throw new Error(`Native Codex session is not registered: ${sessionId}`);
@@ -965,6 +1423,9 @@ export function useAppController() {
 					});
 						const effort = turnStartEffortForExecutionTarget(executionTarget, modelKnobValues);
 						let started: CodexSessionInfo;
+						// Arm before awaiting. The app-server may emit run.started before
+						// its RPC reply reaches us; arming afterwards would miss that event.
+						armTurnStartWatchdog(sessionId, text, messageId);
 						// A fence from an earlier completed Stop must never apply to this
 						// new operator message. A Stop during the async start handshake
 						// re-adds it and is handled immediately after sendTurn resolves.
@@ -991,6 +1452,7 @@ export function useAppController() {
 								return nativeCodex.startTurn(sessionId, text, effort, { clientMessageId: messageId });
 							})();
 						} catch (reason) {
+							clearTurnStartWatchdog(sessionId);
 							failTurnStart(sessionId, text, messageId, reason);
 							return false;
 						}
@@ -1029,7 +1491,7 @@ export function useAppController() {
 				setBusy(false);
 			}
 		},
-		[allocateNativeSequence, approvalPolicy, ensureCodexOauthReady, ensureOpenRouterReady, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, sandboxMode, selectedTargetId, showToast]
+		[allocateNativeSequence, approvalPolicy, armTurnStartWatchdog, clearTurnStartWatchdog, ensureCodexOauthReady, ensureOpenRouterReady, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, sandboxMode, selectedTargetId, showToast]
 	);
 	sendToSessionRef.current = sendToSession;
 
@@ -1053,7 +1515,7 @@ export function useAppController() {
 				// Intern creation itself starts the objective. Sending the same text
 				// again would issue a duplicate operator command.
 				if (!ensured.objectiveConsumed) {
-					await sendToSession(ensured.sessionId, text, { images });
+					await sendToSession(ensured.sessionId, text, { images, readinessVerified: true });
 				}
 			} catch {
 				/* toast already shown */
@@ -1097,9 +1559,25 @@ export function useAppController() {
 				}
 				await refreshSessions();
 			} catch (reason) {
-				const message = reason instanceof Error
-					? reason.message
-					: turnFailureMessage(codexTurnFailure(activeSessionId, reason));
+				const failure = codexTurnFailure(activeSessionId, reason);
+				const message = turnFailureMessage(failure);
+				// A persisted approval card can outlive the in-memory app-server
+				// attachment after an app restart. Treat that as an unhealthy
+				// session, rather than showing the opaque `Codex session <UUID>`
+				// context string in a toast while the transcript still says Working.
+				if ((kind === "approve" || kind === "reject") && failure.code === CODEX_SESSION_UNHEALTHY) {
+					dispatchLocalSessionStatus(activeSessionId, "interrupted", { onlyIf: "running" });
+					const sequence = allocateNativeSequence(activeSessionId);
+					dispatchRuntimeEvent({
+						schemaVersion: "synth.desktop-runtime-event.v1",
+						sessionId: activeSessionId,
+						sequence,
+						eventKind: "session/unhealthy",
+						payload: { reason: failure.code, message },
+						createdAt: new Date().toISOString(),
+						source: "local"
+					}, { updateStatus: false });
+				}
 				showToast(message);
 			} finally {
 				setBusy(false);
@@ -1119,10 +1597,13 @@ export function useAppController() {
 	const onNewConversation = useCallback(() => {
 		void loadMachinePermissions()
 			.catch((reason) => showToast(`Could not load machine permissions: ${reason instanceof Error ? reason.message : String(reason)}`))
-			.finally(() => {
-				setView({ kind: "landing" });
-				setOpenArtifactId(null);
-				setStandaloneVisual(null);
+				.finally(() => {
+					setView({ kind: "landing" });
+					setOpenArtifactId(null);
+					openArtifactIdRef.current = null;
+					visualRequestGenerationRef.current += 1;
+					pendingVisualRefreshRef.current = null;
+					dispatchVisualRevision({ type: "close" });
 			});
 	}, [loadMachinePermissions, showToast]);
 
@@ -1322,6 +1803,8 @@ export function useAppController() {
 		appVersion,
 		sessions,
 		eventsBySession,
+		transcriptHistoryBySession,
+		loadOlderTranscript,
 		health,
 		laguna,
 		bootError,
@@ -1367,6 +1850,8 @@ export function useAppController() {
 		refreshAccountSummary,
 		accountView,
 		openBilling,
+		pluginStatuses,
+		refreshPluginStatuses,
 		view,
 		setView,
 		toast,
@@ -1387,7 +1872,7 @@ export function useAppController() {
 		openArtifactId,
 		openArtifact,
 		openContainer,
-		standaloneVisual,
+		standaloneVisual: visualRevisionState.artifact,
 		toggleArtifact,
 		toggleContainer,
 		probeOpenContainer,

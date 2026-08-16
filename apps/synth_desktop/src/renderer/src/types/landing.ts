@@ -99,7 +99,8 @@ export type LocalActivityLine = {
 	label: string;
 	/** Correlates a pending approval with its durable grant/rejection event. */
 	approvalId?: string;
-	approvalKind?: "shell_command" | "paid_compute" | "sidecar_lifecycle" | "credential_access" | "permission";
+	// Mirrors `ApprovalKind::as_str` in src-tauri/src/session/approval.rs.
+	approvalKind?: "shell_command" | "paid_compute" | "sidecar_lifecycle" | "credential_access" | "plugin_lifecycle" | "permission";
 	approvalPayload?: {
 		operation?: string;
 		parameters?: Record<string, unknown>;
@@ -123,6 +124,8 @@ export type LocalActivityLine = {
 	path?: string;
 	/** Sanitized lifecycle status for an allowlisted tool call. */
 	toolStatus?: "running" | "completed" | "failed";
+	/** Provider-reported wall duration for a finished tool call. */
+	durationMs?: number;
 	/** User-facing visual authoring milestone; never a raw tool operation. */
 	visualStage?: "draft" | "review" | "ready" | "failed";
 	/** Transcript placement relative to the assistant response owning this activity. */

@@ -1,11 +1,12 @@
 //! Authenticated loopback IPC so the visual MCP adapter never opens SQLite.
 
+use crate::codex::CodexManager;
 use crate::container_stream::{
     authoritative_poll_telemetry, declared_poll_url, declared_sse_url, declared_stream_descriptor,
-    refuse_auto_transport, require_caller_policy_ref, require_task_instance, resolve_declared_url,
-    wait_for_stream_subscribed, SUBSCRIBE_READY_TIMEOUT,
+    normalized_rollout_telemetry, refuse_auto_transport, require_caller_policy_ref,
+    require_task_instance, resolve_declared_url, wait_for_stream_subscribed,
+    SUBSCRIBE_READY_TIMEOUT,
 };
-use crate::codex::CodexManager;
 use crate::core_runtime::CoreRuntime;
 use crate::data::ContainerRegisterRequest;
 use crate::domain::{PresentationField, SessionTitleOrigin};
@@ -20,6 +21,7 @@ use crate::visuals::{
     require_visualsbench_start_policy, VisualAnnotationCreate, VisualCreateRequest, VisualQuery,
     VisualStatus, VisualUpdateRequest, LIVE_EVAL_SLOT,
 };
+use crate::visuals::{TemplateMeta, TemplateObservationContract};
 use base64::Engine;
 
 const MAX_SCRIPTED_ROLLOUTS: u64 = 10;
@@ -32,24 +34,135 @@ const BASE_AUTHORING_CHECKS: [&str; 6] = [
     "realEvidence",
 ];
 
-fn required_authoring_checks(template_id: &str) -> Vec<&'static str> {
+fn required_authoring_checks(template: &TemplateMeta) -> Vec<&'static str> {
     let mut checks = BASE_AUTHORING_CHECKS.to_vec();
     checks.push("screenshotInspected");
-    if template_id.starts_with("diagram.") {
+    if template.id.starts_with("diagram.") {
         checks.push("noTextCollisions");
         checks.push("focalDensity");
     }
-    if template_id == "live.craftax.v1" {
+    if template
+        .observation_contract
+        .as_ref()
+        .is_some_and(|contract| contract.readiness.minimum_rendered_frame_count > 0)
+    {
         checks.push("imageReplay");
     }
     checks
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VisualCaptureObservationReceipt {
+    schema_version: String,
+    visual_id: String,
+    revision: i64,
+    screenshot_path: String,
+    capture_time: String,
+    observation: Option<RenderedVisualObservation>,
+}
+
+fn capture_observation_receipt(screenshot: &str) -> Result<VisualCaptureObservationReceipt> {
+    let path = std::path::Path::new(screenshot).with_extension("observations.json");
+    let receipt: VisualCaptureObservationReceipt =
+        serde_json::from_slice(&fs::read(&path).with_context(|| {
+            format!(
+                "visual review requires capture observations beside {}",
+                path.display()
+            )
+        })?)
+        .context("visual capture observation receipt is invalid")?;
+    if receipt.schema_version != "synth.visual-capture-observation.v1"
+        || receipt.screenshot_path != screenshot
+    {
+        anyhow::bail!("visual capture observation receipt does not match screenshot");
+    }
+    Ok(receipt)
+}
+
+/// Rendered transport states that can carry evidence.
+///
+/// `live` is caught up with at least one stream open; `terminal` is every
+/// declared stream closed. Every other state — including `connecting` from the
+/// pre-state-machine vocabulary — means the pane is not showing a settled
+/// answer, whether or not a template's own contract remembered to list it.
+///
+/// See: docs/contracts/visual_replay_transport.md.
+const READY_TRANSPORT_STATES: &[&str] = &["live", "terminal"];
+
+fn validate_readiness_observation(
+    contract: &TemplateObservationContract,
+    visual_id: &str,
+    revision: i64,
+    bindings_digest: &str,
+    observation: &RenderedVisualObservation,
+) -> Result<()> {
+    if observation.visual_id != visual_id || observation.rendered_revision != revision {
+        anyhow::bail!(
+            "captured rendered revision {} for {}, expected revision {revision} for {visual_id}",
+            observation.rendered_revision,
+            observation.visual_id
+        );
+    }
+    if observation.bindings_digest != bindings_digest {
+        anyhow::bail!("captured bindings do not match the current durable revision");
+    }
+    let readiness = &contract.readiness;
+    // Readiness is decided by an allowlist, not a denylist. A denylist accepts
+    // every state nobody thought to list, including a state a future template
+    // invents — and "unknown" is exactly the case where a pane is least likely
+    // to be showing real evidence.
+    if !READY_TRANSPORT_STATES.contains(&observation.transport_state.as_str()) {
+        anyhow::bail!(
+            "visual readiness rejects rendered transport state {}; \
+             a ready visual is one of {}",
+            observation.transport_state,
+            READY_TRANSPORT_STATES.join(", ")
+        );
+    }
+    if readiness
+        .reject_transport_states
+        .iter()
+        .any(|state| state == &observation.transport_state)
+    {
+        anyhow::bail!(
+            "visual readiness rejects rendered transport state {}",
+            observation.transport_state
+        );
+    }
+    if observation
+        .error
+        .as_deref()
+        .is_some_and(|error| !error.is_empty())
+    {
+        anyhow::bail!("visual readiness rejects a rendered error state");
+    }
+    if observation.rollout_count < readiness.minimum_rollout_count {
+        anyhow::bail!("visual readiness has zero or insufficient rendered rollouts");
+    }
+    if observation.rendered_frame_count < readiness.minimum_rendered_frame_count {
+        anyhow::bail!("visual readiness has zero or insufficient rendered frame evidence");
+    }
+    if observation.semantic_event_count < readiness.minimum_semantic_event_count {
+        anyhow::bail!("visual readiness has zero or insufficient semantic event evidence");
+    }
+    if readiness.require_terminal && !observation.terminal {
+        anyhow::bail!("visual readiness requires rendered terminal evidence");
+    }
+    Ok(())
 }
 
 use anyhow::{Context, Result};
 use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fs,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Mutex, OnceLock},
+};
 use tauri::{AppHandle, LogicalSize, Manager, Size};
 use uuid::Uuid;
 
@@ -59,6 +172,59 @@ pub struct VisualsIpcConnection {
     pub url: String,
     pub token: String,
     pub path: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderedVisualObservation {
+    pub schema_version: String,
+    pub visual_id: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub rendered_revision: i64,
+    pub bindings_digest: String,
+    pub transport_state: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub rollout_count: u64,
+    #[specta(type = specta_typescript::Unknown)]
+    pub rendered_frame_count: u64,
+    #[specta(type = specta_typescript::Unknown)]
+    pub semantic_event_count: u64,
+    pub terminal: bool,
+    pub error: Option<String>,
+    pub observed_at: String,
+}
+
+static RENDERED_OBSERVATIONS: OnceLock<Mutex<BTreeMap<String, RenderedVisualObservation>>> =
+    OnceLock::new();
+
+pub fn record_rendered_observation(observation: RenderedVisualObservation) -> Result<()> {
+    if observation.schema_version != "synth.rendered-visual-observation.v1" {
+        anyhow::bail!("unsupported rendered visual observation schema");
+    }
+    if observation.visual_id.trim().is_empty() || observation.rendered_revision < 1 {
+        anyhow::bail!("rendered visual observation requires visual identity and revision");
+    }
+    if observation.bindings_digest.trim().is_empty()
+        || observation.transport_state.trim().is_empty()
+    {
+        anyhow::bail!("rendered visual observation requires bindings and transport authority");
+    }
+    RENDERED_OBSERVATIONS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("rendered observation store is unavailable"))?
+        .insert(observation.visual_id.clone(), observation);
+    Ok(())
+}
+
+fn rendered_observation(visual_id: &str) -> Result<RenderedVisualObservation> {
+    RENDERED_OBSERVATIONS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("rendered observation store is unavailable"))?
+        .get(visual_id)
+        .cloned()
+        .with_context(|| format!("no rendered observation is available for visual {visual_id}"))
 }
 
 pub fn connection_path(root: &std::path::Path) -> PathBuf {
@@ -111,10 +277,173 @@ async fn route_request(
     app: &AppHandle,
     token: &str,
 ) -> JsonHttpResponse {
+    // Every MCP adapter call arrives here, so this is the one place that has to
+    // instrument them. Operation name, duration, status, and correlated
+    // identities only — never the arguments, which carry policy refs, prompts,
+    // and whatever else a caller decided to send.
+    let started = std::time::Instant::now();
+    let operation = redacted_operation(&request.path);
+    let correlation = correlation_from_ipc_body(&request.body);
+    let response = route_request_inner(request, core, app, token).await;
+    let elapsed = started.elapsed();
+    if !response.status.is_success() {
+        record_ipc_failure(core, &operation, &response, correlation, elapsed);
+    } else if elapsed >= SLOW_CALL_THRESHOLD {
+        // Thresholded, never sampled: a sampled latency record answers no
+        // specific question, while "this call took 40 seconds" answers one.
+        record_slow_call(core, &operation, correlation, elapsed);
+    }
+    response
+}
+
+/// A successful call slower than this is worth one record.
+const SLOW_CALL_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn record_slow_call(
+    core: &CoreRuntime,
+    operation: &str,
+    correlation: crate::diagnostics::Correlation,
+    elapsed: std::time::Duration,
+) {
+    let mut input = crate::diagnostics::DiagnosticInput::new(
+        crate::diagnostics::Severity::Info,
+        "mcp",
+        "mcp.request.slow",
+        "mcp_request_slow",
+        format!("{operation} took {}ms", elapsed.as_millis()),
+    );
+    input.correlation = correlation;
+    input.details.insert("operation".into(), json!(operation));
+    input
+        .details
+        .insert("duration_ms".into(), json!(elapsed.as_millis() as u64));
+    core.diagnostics_service().emit(input);
+}
+
+/// Operation name for a diagnostic label: the route with its identities
+/// stripped, so `/v1/containers/ctr_9/rollouts/start` stays one low-cardinality
+/// label instead of one label per container.
+fn redacted_operation(path: &str) -> String {
+    let path = path.split('?').next().unwrap_or(path);
+    path.split('/')
+        .map(|segment| {
+            if segment.len() > 12 && segment.contains('_') {
+                "{id}"
+            } else {
+                segment
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Pull whatever identities the request body already names. An MCP failure
+/// that knows its rollout is worth far more than one that only knows its path.
+fn correlation_from_ipc_body(body: &Value) -> crate::diagnostics::Correlation {
+    let mut correlation = crate::diagnostics::Correlation::default();
+    let Some(object) = body.as_object() else {
+        return correlation;
+    };
+    for (camel, snake, field) in [
+        ("sessionRef", "session_id", "session_id"),
+        ("visualId", "visual_id", "visual_id"),
+        ("containerId", "container_id", "container_id"),
+        ("rolloutId", "rollout_id", "rollout_id"),
+        ("streamId", "stream_id", "stream_id"),
+        ("optimizerRunId", "optimizer_run_id", "optimizer_run_id"),
+        ("traceId", "trace_id", "trace_id"),
+        ("commandId", "command_id", "command_id"),
+    ] {
+        if let Some(value) = object
+            .get(camel)
+            .or_else(|| object.get(snake))
+            .and_then(Value::as_str)
+        {
+            correlation.set(field, Some(value.to_owned()));
+        }
+    }
+    correlation
+}
+
+fn record_ipc_failure(
+    core: &CoreRuntime,
+    operation: &str,
+    response: &JsonHttpResponse,
+    correlation: crate::diagnostics::Correlation,
+    elapsed: std::time::Duration,
+) {
+    let status = response.status.as_u16();
+    // A stable code from the responding subsystem beats a generic one; a
+    // capability rejection must stay queryable as itself.
+    let code = response
+        .body
+        .get("code")
+        .and_then(Value::as_str)
+        .filter(|code| {
+            code.bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        })
+        .unwrap_or(crate::diagnostics::codes::MCP_REQUEST_FAILED)
+        .to_owned();
+    let message = response
+        .body
+        .get("message")
+        .or_else(|| response.body.get("error"))
+        .and_then(Value::as_str)
+        .unwrap_or("IPC request failed")
+        .to_owned();
+    let mut input = crate::diagnostics::DiagnosticInput::new(
+        if status >= 500 {
+            crate::diagnostics::Severity::Error
+        } else {
+            crate::diagnostics::Severity::Warn
+        },
+        "mcp",
+        "mcp.request.failed",
+        &code,
+        message,
+    )
+    .retryable(status == 429 || status >= 500);
+    input.correlation = correlation;
+    input.details.insert("operation".into(), json!(operation));
+    input.details.insert("status".into(), json!(status));
+    input
+        .details
+        .insert("duration_ms".into(), json!(elapsed.as_millis() as u64));
+    if let Some(remediation) = response.body.get("remediation") {
+        input
+            .details
+            .insert("remediation".into(), remediation.clone());
+    }
+    if let Some(missing) = response.body.get("missingOperations") {
+        input
+            .details
+            .insert("missing_operations".into(), missing.clone());
+    }
+    core.diagnostics_service().emit(input);
+}
+
+async fn route_request_inner(
+    request: JsonHttpRequest,
+    core: &CoreRuntime,
+    app: &AppHandle,
+    token: &str,
+) -> JsonHttpResponse {
     match dispatch_request(request, core, app, token).await {
         Ok(value) => JsonHttpResponse::ok(value),
         Err(error) if crate::error::error_is::<crate::error::Unauthorized>(&error) => {
             JsonHttpResponse::error(StatusCode::UNAUTHORIZED, error.to_string())
+        }
+        Err(error)
+            if crate::error::error_is::<crate::container_capabilities::ContainerPreflightError>(
+                &error,
+            ) =>
+        {
+            JsonHttpResponse {
+                status: StatusCode::CONFLICT,
+                body: crate::container_capabilities::preflight_error_body(&error),
+                extra_headers: Vec::new(),
+            }
         }
         Err(error) if crate::error::error_is::<crate::plugins::PluginNotReady>(&error) => {
             let body = error
@@ -154,6 +483,13 @@ async fn dispatch_request(
         request.body
     };
     let method = request.method.as_str();
+    if method == "GET" && path.starts_with("/v1/review-observations/") {
+        let visual_id = path.trim_start_matches("/v1/review-observations/");
+        if visual_id.is_empty() || visual_id.contains('/') {
+            anyhow::bail!("invalid review observation visual id");
+        }
+        return Ok(json!({"observation": rendered_observation(visual_id)?}));
+    }
     if method == "POST" && path == "/v1/review-window/resize" {
         return resize_review_window(app, &json_body);
     }
@@ -166,6 +502,12 @@ async fn dispatch_request(
     if path.starts_with("/v1/optimizers") {
         return dispatch_optimizer(method, path, json_body, core, app).await;
     }
+    if path.starts_with("/v1/traces") {
+        return dispatch_traces(method, path, json_body, core).await;
+    }
+    if path.starts_with("/v1/diagnostics") {
+        return dispatch_diagnostics(method, path, json_body, core).await;
+    }
     dispatch(method, path, json_body, core).await
 }
 
@@ -175,13 +517,13 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
         .context("review capture requires the main Desktop window")?;
     let width = body
         .get("width")
-        .and_then(Value::as_u64)
+        .and_then(Value::as_f64)
         .context("review window width is required")?;
     let height = body
         .get("height")
-        .and_then(Value::as_u64)
+        .and_then(Value::as_f64)
         .context("review window height is required")?;
-    if !(320..=2400).contains(&width) || !(400..=1800).contains(&height) {
+    if !(320.0..=2400.0).contains(&width) || !(400.0..=1800.0).contains(&height) {
         anyhow::bail!("review window must be within 320x400 and 2400x1800");
     }
     // A review viewport is a CSS viewport, so every size on this endpoint is
@@ -197,7 +539,7 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
         .context("read review window size")?
         .to_logical::<f64>(scale);
     window
-        .set_size(Size::Logical(LogicalSize::new(width as f64, height as f64)))
+        .set_size(Size::Logical(LogicalSize::new(width, height)))
         .context("resize review window")?;
     // Report what the window manager actually gave us; it may clamp.
     let current = window
@@ -205,8 +547,16 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
         .context("read resized review window size")?
         .to_logical::<f64>(scale);
     Ok(json!({
-        "previous": {"width": previous.width.round(), "height": previous.height.round()},
-        "current": {"width": current.width.round(), "height": current.height.round()}
+        "previous": {"width": previous.width.round() as u64, "height": previous.height.round() as u64},
+        "current": {"width": current.width.round() as u64, "height": current.height.round() as u64},
+        // Identity of the window this call actually resized. Capture verifies
+        // it instead of re-resolving one by name and size, which is how a
+        // compact review lost its own window to a minimum-size filter. The
+        // process id is exact and free: several named instances of this app run
+        // at once and share a bundle prefix, so a name is not an identity.
+        "scaleFactor": scale,
+        "windowLabel": window.label(),
+        "processId": std::process::id(),
     }))
 }
 
@@ -417,6 +767,7 @@ async fn run_one_scripted_rollout(
     seed: i64,
     actions: &[String],
     requested_rollout_id: Option<String>,
+    diagnostics: &crate::container_stream::StreamDiagnostics,
 ) -> Result<ScriptedRollout> {
     let telemetry = authoritative_poll_telemetry();
     refuse_auto_transport(&telemetry)?;
@@ -446,7 +797,14 @@ async fn run_one_scripted_rollout(
     let prepared_stream = declared_stream_descriptor(&prepared)?
         .context("prepare omitted stream descriptor; refusing to guess /events")?;
     let poll_url = resolve_declared_url(base, &declared_poll_url(&prepared_stream)?)?;
-    wait_for_stream_subscribed(client, &poll_url, SUBSCRIBE_READY_TIMEOUT).await?;
+    let rollout_diagnostics = diagnostics.clone().with_rollout(&rollout_id);
+    wait_for_stream_subscribed(
+        client,
+        &poll_url,
+        SUBSCRIBE_READY_TIMEOUT,
+        &rollout_diagnostics,
+    )
+    .await?;
 
     let mut state = client
         .post(format!("{base}/rollouts"))
@@ -538,6 +896,28 @@ fn require_scripted_stream_slot(body: &Value) -> Result<()> {
     Ok(())
 }
 
+/// One health interpretation for every registry write. HTTP success alone is
+/// not readiness: a service answering `200 {"ok": false}` must be recorded as
+/// unhealthy, or it passes the health half of the prepare preflight.
+async fn probe_health(client: &reqwest::Client, base: &str) -> (&'static str, Value) {
+    use crate::container_capabilities::{observed_status, READY_STATUS, UNHEALTHY_STATUS};
+    match client.get(format!("{base}/health")).send().await {
+        Ok(response) => {
+            let code = response.status();
+            let payload = response.json::<Value>().await.unwrap_or(json!({}));
+            let status = observed_status(code.as_u16(), &payload);
+            (
+                status,
+                json!({"ok": status == READY_STATUS, "status": code.as_u16(), "payload": payload}),
+            )
+        }
+        Err(error) => (
+            UNHEALTHY_STATUS,
+            json!({"ok": false, "error": error.to_string()}),
+        ),
+    }
+}
+
 async fn register_hydrated_container(
     core: &CoreRuntime,
     request: ContainerRegisterRequest,
@@ -547,22 +927,7 @@ async fn register_hydrated_container(
     }
     let base = request.base_url.trim_end_matches('/');
     let client = crate::http::http_client_with_timeout(limits::CONTAINER_PROBE_TIMEOUT);
-    let health_response = client.get(format!("{base}/health")).send().await;
-    let (status, health) = match health_response {
-        Ok(response) => {
-            let code = response.status();
-            let payload = response.json::<Value>().await.unwrap_or(json!({}));
-            (
-                if code.is_success() {
-                    "ready"
-                } else {
-                    "unhealthy"
-                },
-                json!({"ok":code.is_success(),"status":code.as_u16(),"payload":payload}),
-            )
-        }
-        Err(error) => ("unhealthy", json!({"ok":false,"error":error.to_string()})),
-    };
+    let (status, health) = probe_health(&client, base).await;
     let mut info = None;
     for route in ["info", "metadata"] {
         if let Ok(response) = client.get(format!("{base}/{route}")).send().await {
@@ -614,6 +979,14 @@ async fn register_hydrated_container(
             )?,
         );
     }
+    let declared = crate::synth_config::container_capability_declaration(base).unwrap_or_default();
+    crate::container_capabilities::write_capability_metadata(
+        &mut metadata,
+        info.as_ref(),
+        declared.as_ref(),
+        true,
+        chrono::Utc::now(),
+    );
     if let Some(value) = info {
         metadata.insert("info".into(), value);
     }
@@ -734,22 +1107,27 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .trim_start_matches("/v1/reports/")
                 .trim_end_matches("/traces");
             let mut request: ReportAttachTrace = serde_json::from_value(body)?;
-            if request.projection.is_none() {
-                if let Ok(resolved) = core
-                    .data()
-                    .resolve_trace_projection(
-                        request.trace_digest.clone(),
-                        "rollout-inspector".into(),
-                    )
-                    .await
-                {
-                    request.projection = Some(resolved.payload);
-                    if request.trace_id.is_none() {
-                        request.trace_id = Some(resolved.trace_digest);
-                    }
+            // Never trust an MCP caller's projection bytes. Resolve the
+            // projection from a validated, self-contained Trace V5 bundle or
+            // keep the evidence explicitly unverified when no trusted bundle
+            // is available.
+            request.projection = None;
+            let projection_verified = if let Ok(resolved) = core
+                .data()
+                .resolve_trace_projection(request.trace_digest.clone(), "rollout-inspector".into())
+                .await
+            {
+                request.projection = Some(resolved.payload);
+                if request.trace_id.is_none() {
+                    request.trace_id = Some(resolved.trace_digest);
                 }
-            }
-            let (report, event) = reports.attach_trace(id.to_string(), request).await?;
+                true
+            } else {
+                false
+            };
+            let (report, event) = reports
+                .attach_trace(id.to_string(), request, projection_verified)
+                .await?;
             Ok(json!({"report": report, "event": event}))
         }
         ("POST", path) if path.starts_with("/v1/reports/") && path.ends_with("/seal") => {
@@ -807,30 +1185,34 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(limits::CONTAINER_PROBE_TIMEOUT)
                 .build()?;
-            let health_response = client.get(format!("{base}/health")).send().await;
-            let (status, health) = match health_response {
-                Ok(response) => {
-                    let code = response.status();
-                    let payload = response.json::<Value>().await.unwrap_or(json!({}));
-                    (
-                        if code.is_success() {
-                            "ready"
-                        } else {
-                            "unhealthy"
-                        },
-                        json!({"ok":code.is_success(),"status":code.as_u16(),"payload":payload}),
-                    )
+            let (status, health) = probe_health(&client, base).await;
+            // Same discovery order as register/hydrate: `/info` first, then the
+            // `/metadata` fallback, so a probe cannot see fewer capabilities
+            // than registration did.
+            let mut info = None;
+            for route in ["info", "metadata"] {
+                if let Ok(response) = client.get(format!("{base}/{route}")).send().await {
+                    if response.status().is_success() {
+                        info = response.json::<Value>().await.ok();
+                        if info.is_some() {
+                            break;
+                        }
+                    }
                 }
-                Err(error) => ("unhealthy", json!({"ok":false,"error":error.to_string()})),
-            };
-            let info = match client.get(format!("{base}/info")).send().await {
-                Ok(response) if response.status().is_success() => {
-                    response.json::<Value>().await.ok()
-                }
-                _ => None,
-            };
+            }
             let mut metadata = container.metadata.as_object().cloned().unwrap_or_default();
             metadata.insert("hydratedAt".into(), json!(chrono::Utc::now().to_rfc3339()));
+            // A probe refreshes the typed capability projection without
+            // mutating the remote workload: `/health` and `/info` only.
+            let declared =
+                crate::synth_config::container_capability_declaration(base).unwrap_or_default();
+            crate::container_capabilities::write_capability_metadata(
+                &mut metadata,
+                info.as_ref(),
+                declared.as_ref(),
+                true,
+                chrono::Utc::now(),
+            );
             if let Some(value) = info.clone() {
                 metadata.insert("info".into(), value);
             }
@@ -894,14 +1276,17 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .trim_end_matches("/rollouts/prepare")
                 .trim_end_matches('/');
             let container = core.data().get_container(id.to_string()).await?;
+            // Preflight before the request is even constructed: an unhealthy,
+            // stale, or capability-incompatible record must fail here, not by
+            // discovering a 405 after a mutating call.
+            crate::container_capabilities::preflight_prepare_request(&container, &body)?;
             let base = validated_loopback_rollout_base(
                 container
                     .base_url
                     .as_deref()
                     .context("container has no base URL")?,
             )?;
-            let telemetry = body.get("telemetry").cloned().unwrap_or_else(|| json!({"enabled":true,"transport":"sse","detail":"standard","frame":{"enabled":true,"format":"png","every_n_steps":1}}));
-            refuse_auto_transport(&telemetry)?;
+            let telemetry = normalized_rollout_telemetry(body.get("telemetry"))?;
             let rollout_id = body
                 .get("rollout_id")
                 .and_then(Value::as_str)
@@ -931,7 +1316,13 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             ) {
                 anyhow::bail!("container has no normalized prepare endpoint; native benchmark routes must be folded inside Containers");
             }
-            let prepared = response.error_for_status()?.json::<Value>().await?;
+            let status = response.status();
+            let response_body = response.text().await?;
+            if !status.is_success() {
+                anyhow::bail!("container prepare failed ({status}): {response_body}");
+            }
+            let prepared = serde_json::from_str::<Value>(&response_body)
+                .context("decode container prepare response")?;
             let returned_rollout_id = prepared
                 .get("rollout_id")
                 .and_then(Value::as_str)
@@ -1049,15 +1440,11 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .get("visual_id")
                 .and_then(Value::as_str)
                 .context("start requires visual_id")?;
+            // The pre-start gate proves that a real visual exists and that its
+            // declared stream is subscribed below. Full screenshot-backed
+            // readiness is deliberately post-data: Craftax's imageReplay check
+            // cannot truthfully pass until the first rollout emits frames.
             let visual = registry.get(visual_id.to_string()).await?;
-            let quality = visual
-                .metadata
-                .get("qualityGate")
-                .filter(|value| value.get("ready").and_then(Value::as_bool) == Some(true))
-                .context("refusing rollout start: visual is not ready")?;
-            if quality.get("revision").and_then(Value::as_i64) != Some(visual.current_revision) {
-                anyhow::bail!("refusing rollout start: visual readiness receipt is stale");
-            }
             let stream = body
                 .get("stream")
                 .filter(|value| value.is_object())
@@ -1075,8 +1462,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             }
             let task_instance_id = require_task_instance(&body)?;
             let poll_url = resolve_declared_url(&base, &declared_poll_url(stream)?)?;
-            let telemetry = body.get("telemetry").cloned().unwrap_or_else(|| json!({"enabled":true,"transport":"sse","detail":"standard","frame":{"enabled":true,"format":"png","every_n_steps":1}}));
-            refuse_auto_transport(&telemetry)?;
+            let telemetry = normalized_rollout_telemetry(body.get("telemetry"))?;
             let client = crate::http::http_client_builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT)
@@ -1085,8 +1471,31 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
                 .build()?;
-            let subscription =
-                wait_for_stream_subscribed(&client, &poll_url, SUBSCRIBE_READY_TIMEOUT).await?;
+            let stream_diagnostics = crate::container_stream::StreamDiagnostics::new(
+                Some(core.diagnostics_service().clone()),
+                crate::diagnostics::Correlation {
+                    container_id: Some(id.to_string()),
+                    rollout_id: Some(rollout_id.to_string()),
+                    visual_id: Some(visual_id.to_string()),
+                    visual_revision: Some(visual.current_revision),
+                    stream_id: stream
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .or_else(|| Some(rollout_id.to_string())),
+                    session_id: json_field(&body, "sessionRef", "session_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    ..Default::default()
+                },
+            );
+            let subscription = wait_for_stream_subscribed(
+                &client,
+                &poll_url,
+                SUBSCRIBE_READY_TIMEOUT,
+                &stream_diagnostics,
+            )
+            .await?;
             let mut start_body = json!({
                 "rollout_id": rollout_id, "seed": body.get("seed"), "task_instance_id": task_instance_id,
                 "policy_ref": policy_ref, "telemetry": telemetry, "slot": LIVE_EVAL_SLOT
@@ -1188,7 +1597,21 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     state,
                     events,
                     stream_id,
-                } = run_one_scripted_rollout(&client, &base, seed, &actions, None).await?;
+                } = run_one_scripted_rollout(
+                    &client,
+                    &base,
+                    seed,
+                    &actions,
+                    None,
+                    &crate::container_stream::StreamDiagnostics::new(
+                        Some(core.diagnostics_service().clone()),
+                        crate::diagnostics::Correlation {
+                            container_id: Some(id.to_string()),
+                            ..Default::default()
+                        },
+                    ),
+                )
+                .await?;
                 let spool = crate::storage::persist_live_envelopes(
                     core.content(),
                     stream_id.as_deref(),
@@ -1259,7 +1682,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .trim_end_matches('/');
             let visual = registry.get(id.to_string()).await?;
             let template = registry.get_template(&visual.template_id)?;
-            let required_checks = required_authoring_checks(&visual.template_id);
+            let required_checks = required_authoring_checks(&template);
             let reviews = visual
                 .metadata
                 .get("authoringReviews")
@@ -1402,7 +1825,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             if findings.iter().any(|value| !value.is_string()) {
                 anyhow::bail!("review findings must be strings");
             }
-            {
+            let capture_receipt = {
                 let screenshot = body
                     .get("screenshot_path")
                     .and_then(Value::as_str)
@@ -1423,6 +1846,19 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                         "visual review screenshot_path must be an existing absolute file"
                     );
                 }
+                let receipt = capture_observation_receipt(screenshot)?;
+                if receipt.visual_id != id || receipt.revision != revision {
+                    anyhow::bail!(
+                        "visual capture observations do not match the reviewed visual revision"
+                    );
+                }
+                receipt
+            };
+            let template = registry.get_template(&current.template_id)?;
+            if template.observation_contract.is_some() && capture_receipt.observation.is_none() {
+                anyhow::bail!(
+                    "this template requires mechanically harvested rendered observations"
+                );
             }
             let mut metadata = current.metadata.as_object().cloned().unwrap_or_default();
             let mut reviews = metadata
@@ -1436,6 +1872,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "checks": checks,
                 "findings": findings,
                 "screenshotPath": body.get("screenshot_path").cloned().unwrap_or(Value::Null),
+                "captureTime": capture_receipt.capture_time,
+                "observations": capture_receipt.observation,
                 "reviewedAt": chrono::Utc::now().to_rfc3339(),
             }));
             metadata.insert("authoringReviews".into(), Value::Array(reviews.clone()));
@@ -1490,7 +1928,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     "visual readiness requires at least two reviews of revision {revision}"
                 );
             }
-            let required = required_authoring_checks(&current.template_id);
+            let template = registry.get_template(&current.template_id)?;
+            let required = required_authoring_checks(&template);
             for review in &current_reviews {
                 for check in &required {
                     if review
@@ -1500,6 +1939,34 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     {
                         anyhow::bail!("visual review is not passing required check {check}");
                     }
+                }
+            }
+            if let Some(contract) = template.observation_contract.as_ref() {
+                let durable = registry
+                    .revisions(id.to_string())
+                    .await?
+                    .into_iter()
+                    .find(|candidate| candidate.revision == revision)
+                    .context("current visual revision record is missing")?;
+                let bindings_digest = durable
+                    .bindings_digest
+                    .as_deref()
+                    .context("current visual revision is missing bindings digest")?;
+                for review in &current_reviews {
+                    let observation: RenderedVisualObservation = serde_json::from_value(
+                        review
+                            .get("observations")
+                            .cloned()
+                            .context("visual review is missing rendered observations")?,
+                    )
+                    .context("visual review rendered observations are invalid")?;
+                    validate_readiness_observation(
+                        contract,
+                        id,
+                        revision,
+                        bindings_digest,
+                        &observation,
+                    )?;
                 }
             }
             if let Some(kind) = crate::visuals::systems::template_kind(&current.template_id) {
@@ -1627,6 +2094,12 @@ async fn dispatch_optimizer(
             Ok(json!({ "algorithms": optimizers.list_algorithms() }))
         }
         ("GET", "/v1/optimizers/recipes") => Ok(json!({ "recipes": optimizers.list_recipes() })),
+        ("POST", "/v1/optimizers/eval/candidates") => {
+            let request: crate::optimizers::EvalStageCandidatesRequest =
+                serde_json::from_value(body)?;
+            let manifest = optimizers.stage_eval_candidates(request).await?;
+            Ok(json!({ "candidateSet": manifest }))
+        }
         ("POST", "/v1/optimizers/recipes/prepare") => {
             let request: crate::optimizers::OptimizerRecipeRunRequest =
                 serde_json::from_value(body)?;
@@ -1799,6 +2272,20 @@ async fn dispatch_optimizer(
             let run = optimizers.refresh(id.to_string()).await?;
             Ok(json!({ "run": run }))
         }
+        ("POST", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/pause") => {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/pause");
+            let (run, event) = optimizers.pause(id.to_string()).await?;
+            Ok(json!({ "run": run, "event": event }))
+        }
+        ("POST", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/resume") => {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/resume");
+            let (run, event) = optimizers.resume(id.to_string()).await?;
+            Ok(json!({ "run": run, "event": event }))
+        }
         ("POST", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/cancel") => {
             let id = path
                 .trim_start_matches("/v1/optimizers/runs/")
@@ -1867,6 +2354,165 @@ async fn dispatch_optimizer(
             Ok(json!({ "runs": runs }))
         }
         _ => anyhow::bail!("unsupported optimizer IPC route {method} {path}"),
+    }
+}
+
+/// Agent-facing Trace V5 access.
+///
+/// Read-only. `open` goes through the same `PresentationService` the native
+/// Data page uses, so the agent cannot reach a different inspector, bind one
+/// trace's visual to another's digest, or bypass the inspectability policy.
+/// Diagnostics IPC. Every route takes the same typed query object and refuses
+/// anything it does not recognize, so the adapter's allow-list and this
+/// dispatcher fail closed independently rather than trusting each other.
+async fn dispatch_diagnostics(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+) -> Result<Value> {
+    let service = core.diagnostics_service();
+    // The adapter forwards `sessionRef` on every call for provenance; it is not
+    // a query field, and a caller that meant to filter by session says so.
+    let mut request = body.clone();
+    if let Some(object) = request.as_object_mut() {
+        object.remove("sessionRef");
+    }
+    match (method, path) {
+        ("POST", "/v1/diagnostics/status") | ("GET", "/v1/diagnostics/status") => {
+            Ok(service.status().await)
+        }
+        ("POST", "/v1/diagnostics/query") => {
+            service
+                .query(crate::diagnostics::query::parse(&request)?)
+                .await
+        }
+        ("POST", "/v1/diagnostics/tail") => {
+            service
+                .tail(crate::diagnostics::query::parse(&request)?)
+                .await
+        }
+        ("POST", "/v1/diagnostics/explain") => {
+            service
+                .explain(crate::diagnostics::query::parse(&request)?)
+                .await
+        }
+        ("POST", "/v1/diagnostics/bundle") => {
+            service
+                .bundle(crate::diagnostics::query::parse(&request)?)
+                .await
+        }
+        ("POST", "/v1/diagnostics/clear-index") => service.clear_index().await,
+        (method, path) => anyhow::bail!("unknown diagnostics route {method} {path}"),
+    }
+}
+
+async fn dispatch_traces(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+) -> Result<Value> {
+    let trace_id = || -> Result<String> {
+        body.get("trace_id")
+            .or_else(|| body.get("traceId"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .context("trace_id required")
+    };
+    match (method, path) {
+        ("GET", "/v1/traces") | ("GET", "/v1/traces/") => {
+            let traces = core.data().list_traces().await?;
+            // Report why an unavailable trace is unavailable rather than
+            // omitting it, so the agent can say so instead of guessing.
+            let rows: Vec<Value> = traces
+                .iter()
+                .map(|trace| {
+                    let inspectability = crate::presentation::trace_inspectability(trace);
+                    json!({
+                        "traceId": trace.id,
+                        "digest": trace.digest,
+                        "title": trace.title,
+                        "source": trace.source,
+                        "reward": trace.reward,
+                        "createdAt": trace.created_at,
+                        "inspectable": inspectability.eligible(),
+                        "inspectability": inspectability.label(),
+                    })
+                })
+                .collect();
+            Ok(json!({ "traces": rows, "count": rows.len() }))
+        }
+        ("POST", "/v1/traces/get") => {
+            let trace = core.data().get_trace(trace_id()?).await?;
+            let inspectability = crate::presentation::trace_inspectability(&trace);
+            Ok(json!({
+                "trace": trace,
+                "inspectable": inspectability.eligible(),
+                "inspectability": inspectability.label(),
+            }))
+        }
+        ("POST", "/v1/traces/query") => {
+            let query = crate::trace_query::parse_query(body.get("query").unwrap_or(&Value::Null))?;
+            let snapshot = core
+                .data()
+                .query_traces(query, chrono::Utc::now().to_rfc3339())
+                .await?;
+            Ok(serde_json::to_value(snapshot)?)
+        }
+        ("POST", "/v1/traces/snapshot") => {
+            let snapshot_id = body
+                .get("snapshot_id")
+                .or_else(|| body.get("snapshotId"))
+                .and_then(Value::as_str)
+                .context("snapshot_id required")?;
+            let snapshot = core.data().query_snapshot(snapshot_id.to_string()).await?;
+            Ok(serde_json::to_value(snapshot)?)
+        }
+        ("POST", "/v1/traces/open_query") => {
+            let snapshot_id = body
+                .get("snapshot_id")
+                .or_else(|| body.get("snapshotId"))
+                .and_then(Value::as_str)
+                .context("snapshot_id required")?;
+            let visual = crate::presentation::ensure_query_catalog(core, snapshot_id).await?;
+            let session_id = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
+            let (shown, event) = core.visuals().show(visual.id.clone(), session_id).await?;
+            core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
+            Ok(json!({
+                "opened": true,
+                "snapshotId": snapshot_id,
+                "visualId": shown.id,
+                "templateId": shown.template_id,
+                "visual": shown,
+            }))
+        }
+        ("POST", "/v1/traces/open") => {
+            let id = trace_id()?;
+            let visual = crate::presentation::ensure_trace_inspector(core, &id).await?;
+            let session_id = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
+            let (shown, event) = core.visuals().show(visual.id.clone(), session_id).await?;
+            core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
+            Ok(json!({
+                "opened": true,
+                "traceId": id,
+                "digest": crate::presentation::trace_digest_binding(&shown),
+                "visualId": shown.id,
+                "templateId": shown.template_id,
+                "visual": shown,
+            }))
+        }
+        _ => anyhow::bail!("unsupported trace IPC route {method} {path}"),
     }
 }
 
@@ -1950,6 +2596,156 @@ pub fn local_addr(url: &str) -> Result<SocketAddr> {
 }
 
 #[cfg(test)]
+mod diagnostics_tests {
+    use super::*;
+    use crate::diagnostics::DiagnosticQuery;
+    use tempfile::tempdir;
+
+    fn capability_rejection() -> JsonHttpResponse {
+        JsonHttpResponse {
+            status: StatusCode::CONFLICT,
+            body: json!({
+                "code": "capability_mismatch",
+                "container_id": "ctr_9",
+                "missingOperations": ["rollouts/start"],
+                "remediation": "Re-probe the container, then start only against a declared capability set.",
+                "retryable": false
+            }),
+            extra_headers: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_capability_rejection_is_queryable_by_its_own_stable_code() {
+        let dir = tempdir().unwrap();
+        let core = CoreRuntime::open(dir.path()).unwrap();
+        let body = json!({
+            "containerId": "ctr_9",
+            "rolloutId": "roll_3",
+            "visualId": "vis_9"
+        });
+
+        record_ipc_failure(
+            &core,
+            &redacted_operation("/v1/containers/ctr_deadbeefcafe/rollouts/start"),
+            &capability_rejection(),
+            correlation_from_ipc_body(&body),
+            std::time::Duration::from_millis(42),
+        );
+
+        let result = core
+            .diagnostics_service()
+            .query(DiagnosticQuery {
+                codes: vec!["capability_mismatch".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(result["count"], json!(1));
+        let event = &result["events"][0];
+        assert_eq!(event["component"], json!("mcp"));
+        assert_eq!(event["container_id"], json!("ctr_9"));
+        assert_eq!(event["rollout_id"], json!("roll_3"));
+        assert_eq!(event["visual_id"], json!("vis_9"));
+        assert_eq!(
+            event["details"]["missing_operations"],
+            json!(["rollouts/start"])
+        );
+        assert!(event["details"]["remediation"]
+            .as_str()
+            .unwrap()
+            .contains("Re-probe"));
+        assert_eq!(event["details"]["status"], json!(409));
+        assert_eq!(event["details"]["duration_ms"], json!(42));
+        // The identity is in the body, not the label: one operation label per
+        // route, never one per container.
+        assert_eq!(
+            event["details"]["operation"],
+            json!("/v1/containers/{id}/rollouts/start")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_failure_is_an_error_and_a_refusal_is_a_warning() {
+        let dir = tempdir().unwrap();
+        let core = CoreRuntime::open(dir.path()).unwrap();
+        record_ipc_failure(
+            &core,
+            "/v1/visuals/{id}/render",
+            &JsonHttpResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "renderer exploded"),
+            crate::diagnostics::Correlation::default(),
+            std::time::Duration::from_millis(1),
+        );
+        record_ipc_failure(
+            &core,
+            "/v1/visuals",
+            &JsonHttpResponse::error(StatusCode::BAD_REQUEST, "templateId is required"),
+            crate::diagnostics::Correlation::default(),
+            std::time::Duration::from_millis(1),
+        );
+
+        let result = core
+            .diagnostics_service()
+            .query(DiagnosticQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(result["count"], json!(2));
+        let by_code: std::collections::HashMap<&str, &serde_json::Value> = result["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| (event["message"].as_str().unwrap(), event))
+            .collect();
+        assert_eq!(by_code["renderer exploded"]["severity"], json!("error"));
+        assert_eq!(by_code["renderer exploded"]["retryable"], json!(true));
+        assert_eq!(by_code["templateId is required"]["severity"], json!("warn"));
+        assert_eq!(by_code["templateId is required"]["retryable"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn a_successful_call_records_nothing() {
+        let dir = tempdir().unwrap();
+        let core = CoreRuntime::open(dir.path()).unwrap();
+        let response = JsonHttpResponse::ok(json!({"ok": true}));
+        assert!(response.status.is_success());
+        let result = core
+            .diagnostics_service()
+            .query(DiagnosticQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(result["count"], json!(0));
+    }
+
+    #[test]
+    fn operation_labels_never_carry_an_identity() {
+        assert_eq!(
+            redacted_operation("/v1/containers/ctr_0f9b2c4d8e/rollouts/poll?x=1"),
+            "/v1/containers/{id}/rollouts/poll"
+        );
+        assert_eq!(
+            redacted_operation("/v1/optimizers/opt_run_98f3aa12bc/events"),
+            "/v1/optimizers/{id}/events"
+        );
+        // Short, stable segments stay legible.
+        assert_eq!(redacted_operation("/v1/visuals"), "/v1/visuals");
+        assert_eq!(
+            redacted_operation("/v1/diagnostics/query"),
+            "/v1/diagnostics/query"
+        );
+    }
+
+    #[test]
+    fn correlation_is_read_in_both_casings() {
+        let camel = correlation_from_ipc_body(&json!({"rolloutId": "roll_1", "visualId": "vis_1"}));
+        let snake =
+            correlation_from_ipc_body(&json!({"rollout_id": "roll_1", "visual_id": "vis_1"}));
+        assert_eq!(camel, snake);
+        assert_eq!(camel.rollout_id.as_deref(), Some("roll_1"));
+        assert!(correlation_from_ipc_body(&json!("not an object")).is_empty());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1963,10 +2759,154 @@ mod tests {
         );
     }
 
+    fn live_contract() -> TemplateObservationContract {
+        TemplateObservationContract {
+            schema_version: "synth.visual-observation-contract.v1".into(),
+            readiness: crate::visuals::TemplateReadinessContract {
+                reject_transport_states: vec![
+                    "connecting".into(),
+                    "reconnecting".into(),
+                    "error".into(),
+                ],
+                minimum_rollout_count: 1,
+                minimum_rendered_frame_count: 1,
+                minimum_semantic_event_count: 1,
+                require_terminal: true,
+            },
+        }
+    }
+
+    fn rendered_observation() -> RenderedVisualObservation {
+        RenderedVisualObservation {
+            schema_version: "synth.rendered-visual-observation.v1".into(),
+            visual_id: "vis_1".into(),
+            rendered_revision: 14,
+            bindings_digest: "bindings-14".into(),
+            transport_state: "terminal".into(),
+            rollout_count: 10,
+            rendered_frame_count: 21,
+            semantic_event_count: 26,
+            terminal: true,
+            error: None,
+            observed_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
     #[test]
-    fn craftax_readiness_requires_real_image_replay() {
-        assert!(!required_authoring_checks("live.harbor_eval.v1").contains(&"imageReplay"));
-        assert!(required_authoring_checks("live.craftax.v1").contains(&"imageReplay"));
+    fn observation_contract_drives_image_replay_without_template_id_logic() {
+        let mut template = crate::visuals::resolve_template("live.craftax.v1").unwrap();
+        assert!(required_authoring_checks(&template).contains(&"imageReplay"));
+        template.id = "live.future_eval.v1".into();
+        assert!(required_authoring_checks(&template).contains(&"imageReplay"));
+        template.observation_contract = None;
+        assert!(!required_authoring_checks(&template).contains(&"imageReplay"));
+    }
+
+    #[test]
+    fn readiness_accepts_matching_mechanically_harvested_evidence() {
+        validate_readiness_observation(
+            &live_contract(),
+            "vis_1",
+            14,
+            "bindings-14",
+            &rendered_observation(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn readiness_rejects_connecting_and_zero_evidence() {
+        let mut observation = rendered_observation();
+        observation.transport_state = "connecting".into();
+        assert!(validate_readiness_observation(
+            &live_contract(),
+            "vis_1",
+            14,
+            "bindings-14",
+            &observation
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("transport state"));
+        observation.transport_state = "terminal".into();
+        observation.rendered_frame_count = 0;
+        assert!(validate_readiness_observation(
+            &live_contract(),
+            "vis_1",
+            14,
+            "bindings-14",
+            &observation
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("frame evidence"));
+    }
+
+    /// A state machine gains states. Readiness must not silently accept one
+    /// because no template contract listed it — that is how a pane that is not
+    /// showing evidence gets marked ready.
+    #[test]
+    fn readiness_rejects_every_transport_state_that_is_not_settled_evidence() {
+        for state in [
+            "idle",
+            "declared",
+            "replaying",
+            "connecting",
+            "reconnecting",
+            "error",
+            "surprise",
+        ] {
+            let mut observation = rendered_observation();
+            observation.transport_state = state.into();
+            let error = validate_readiness_observation(
+                &live_contract(),
+                "vis_1",
+                14,
+                "bindings-14",
+                &observation,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains("transport state"),
+                "{state} must be rejected: {error}"
+            );
+        }
+        for state in ["live", "terminal"] {
+            let mut observation = rendered_observation();
+            observation.transport_state = state.into();
+            validate_readiness_observation(
+                &live_contract(),
+                "vis_1",
+                14,
+                "bindings-14",
+                &observation,
+            )
+            .unwrap_or_else(|error| panic!("{state} must be able to carry evidence: {error}"));
+        }
+    }
+
+    #[test]
+    fn readiness_rejects_stale_revision_and_mismatched_bindings() {
+        let observation = rendered_observation();
+        assert!(validate_readiness_observation(
+            &live_contract(),
+            "vis_1",
+            15,
+            "bindings-14",
+            &observation
+        )
+        .is_err());
+        assert!(validate_readiness_observation(
+            &live_contract(),
+            "vis_1",
+            14,
+            "bindings-15",
+            &observation
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("bindings"));
     }
 
     #[test]
@@ -2146,10 +3086,16 @@ mod tests {
         })
         .await;
         let client = test_client();
-        let outcome =
-            run_one_scripted_rollout(&client, &base, 1, &["do".into()], Some("r1".into()))
-                .await
-                .unwrap();
+        let outcome = run_one_scripted_rollout(
+            &client,
+            &base,
+            1,
+            &["do".into()],
+            Some("r1".into()),
+            &crate::container_stream::StreamDiagnostics::none(),
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome.rollout_id, "r1");
         assert_eq!(outcome.stream_id.as_deref(), Some("stream:r1"));
         assert!(started.load(std::sync::atomic::Ordering::SeqCst));
@@ -2193,9 +3139,16 @@ mod tests {
         })
         .await;
         let client = test_client();
-        let error = run_one_scripted_rollout(&client, &base, 7, &["do".into()], Some("r1".into()))
-            .await
-            .unwrap_err();
+        let error = run_one_scripted_rollout(
+            &client,
+            &base,
+            7,
+            &["do".into()],
+            Some("r1".into()),
+            &crate::container_stream::StreamDiagnostics::none(),
+        )
+        .await
+        .unwrap_err();
         assert!(error
             .to_string()
             .contains("must be folded inside Containers"));
@@ -2232,9 +3185,16 @@ mod tests {
         })
         .await;
         let client = test_client();
-        let err = run_one_scripted_rollout(&client, &base, 1, &["do".into()], Some("r1".into()))
-            .await
-            .unwrap_err();
+        let err = run_one_scripted_rollout(
+            &client,
+            &base,
+            1,
+            &["do".into()],
+            Some("r1".into()),
+            &crate::container_stream::StreamDiagnostics::none(),
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("stream.subscribed"));
         assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
         task.abort();

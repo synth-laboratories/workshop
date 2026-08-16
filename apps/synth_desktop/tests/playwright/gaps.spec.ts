@@ -146,7 +146,7 @@ test.describe("coverage gaps", () => {
 			send("turn/completed", { turn: { id: "turn-visual-create" } });
 		});
 		const transcript = page.getByTestId("chat-transcript");
-		await expect(transcript.locator("code.mcp-activity-name").getByText("synth_visuals.visual_manage")).toBeVisible();
+		await expect(transcript.getByText("Visual draft created", { exact: true })).toBeVisible();
 		const open = transcript.getByTestId("tool-visual-open-vis-originating-create");
 		await expect(open).toBeVisible();
 		await open.click();
@@ -209,7 +209,10 @@ test.describe("coverage gaps", () => {
 		await page.getByRole("button", { name: "Clear filters" }).click();
 		await expect(page.getByTestId("inventory-trace-rust-trace")).toBeVisible();
 		await page.getByTestId("inventory-tab-usage").click();
-		await page.getByText("openai/gpt-5.6-luna").waitFor();
+		// The dashboard leads; the raw ledger is the receipt behind it, one
+		// disclosure away.
 		await page.getByText("1 containers · 1 traces · 1 usage entries").waitFor();
+		await page.getByTestId("inventory-usage-ledger-toggle").click();
+		await page.getByText("openai/gpt-5.6-luna").waitFor();
 	});
 });

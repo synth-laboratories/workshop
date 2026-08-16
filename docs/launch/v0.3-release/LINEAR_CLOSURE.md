@@ -12,12 +12,10 @@ Linear MCP in this agent environment is `needsAuth`. Tickets were **not** moved.
 | SYN-3227 Typed approval broker | Done after paid/sidecar/credential/policy CUA | `4b4e92a` + `b2651fb` | After permissive-policy and cap modal CUA |
 | SYN-3218 VisualsBench | Already complete; do not redesign | On this line | Confirm still green; do not reopen for polish |
 | SYN-3219 Click-to-label | Already complete; do not redesign | On this line | Confirm still green |
-| SYN-3222 Subagents | Not done | Grouped visual only | Leave open |
-| SYN-3224 E4 Harbor DEO | Not done | No result package | Leave open |
+| SYN-3222 Subagents | Implementation on `2dd1cf0` / `c146e83`; close only after packaged-build CUA | Native `thread/read`, dedicated rail, overlap Playwright | After installed-app overlap CUA |
+| SYN-3224 E4 Harbor DEO | Unblockers merged; matrix not run | SSE backfill, harbor-lite ingest, evals #278, containers #11, gamebench #8, cardbench #1 | After 3×2×5 cells, not the Craftax demo |
 | SYN-3221 E2 / SYN-3223 E3 / SYN-3225 GELO+OHCO | Deferred | — | Do not close as shipped |
 
 ## Follow-ups to file only if still true after the package cut
 
-- Port Reports onto this branch without optimizer plugin MCP.
-- SYN-3222 rail / child workspace / overlapping spawn-wait.
 - SYN-3224 evidence package with explicit missing/failed/timeout cells.

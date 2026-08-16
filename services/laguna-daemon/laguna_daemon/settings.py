@@ -93,7 +93,10 @@ def _validate(field: str, value: Any) -> Any:
         # 0 means never unload.
         return _require_int(field, value, 0, None)
     if field == "prompt_cache_slots":
-        return _require_int(field, value, 1, 32)
+        # A long-context cache on Laguna XS is measured in GiB. The backend's
+        # two-entry bound is part of the local-memory safety envelope, not an
+        # arbitrary tuning range.
+        return _require_int(field, value, 1, DEFAULT_PROMPT_CACHE_SLOTS)
     if field == "queue_capacity":
         return _require_int(field, value, 1, 32)
     raise SettingsError(f"unknown settings key {field!r}.", field=field)

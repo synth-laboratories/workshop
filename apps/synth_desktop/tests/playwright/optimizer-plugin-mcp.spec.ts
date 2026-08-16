@@ -1,6 +1,8 @@
 import { expect, test } from "./browser.fixture";
 
-test("plugin phases remain visible and Optimizers nav hides when disabled", async ({ page }) => {
+// The sidebar and the Optimizers page both read the registry listing now, so
+// the fake must answer `list()` — `status()` alone no longer drives the UI.
+test("plugin phases stay visible as the install progresses", async ({ page }) => {
 	await page.addInitScript(() => {
 		let phase = "downloading";
 		let releaseChannel = "official";
@@ -20,7 +22,7 @@ test("plugin phases remain visible and Optimizers nav hides when disabled", asyn
 		});
 		(window as any).synthPlugins = {
 			status: async () => pluginStatus(),
-			list: async () => [],
+			list: async () => [pluginStatus()],
 			setReleaseChannel: async (_pluginId: string, next: string) => {
 				releaseChannel = next;
 				return pluginStatus();
@@ -62,27 +64,97 @@ test("plugin phases remain visible and Optimizers nav hides when disabled", asyn
 	await expect(page.getByTestId("optimizer-plugin-status")).toContainText("0.2.9.dev20260814");
 });
 
-test("disabled Optimizers plugin removes navigation", async ({ page }) => {
+test("plugin lifecycle errors preserve the structured response body", async ({ page }) => {
 	await page.addInitScript(() => {
+		const plugin = {
+			schemaVersion: "synth.plugin-status.v1", pluginId: "optimizers", enabled: true,
+			phase: "stopped", installedVersion: "0.2.5", selectedVersion: "0.2.5",
+			releaseChannel: "official", catalogVersion: "0.2.5",
+			service: { phase: "stopped", activeRuns: 0 }, algorithms: [], templates: []
+		};
 		(window as any).synthPlugins = {
-			status: async () => ({
-				schemaVersion: "synth.plugin-status.v1",
-				pluginId: "optimizers",
-				enabled: false,
-				phase: "disabled",
-				releaseChannel: "official",
-				catalogVersion: "0.2.5",
-				service: { phase: "stopped", activeRuns: 0 },
-				algorithms: [],
-				templates: []
-			}),
-			list: async () => [],
-			setReleaseChannel: async () => { throw new Error("unused"); }
+			status: async () => plugin, list: async () => [plugin], setReleaseChannel: async () => plugin,
+			manage: async () => Promise.reject({
+				code: "optimizer_capability_handshake_failed", message: "Capability check failed — HTTP 502",
+				detail: "GET /v1/optimizer/capabilities\\n{\"error\":\"upstream unavailable\"}"
+			})
+		};
+		(window as any).synthOptimizers = {
+			listAlgorithms: async () => [], listRecipes: async () => [], list: async () => [],
+			get: async () => { throw new Error("unused"); }, create: async () => { throw new Error("unused"); },
+			startRecipe: async () => { throw new Error("unused"); }, refresh: async () => { throw new Error("unused"); },
+			eventsAfter: async () => [], getState: async () => ({}), getStateBatch: async () => [],
+			cancel: async () => { throw new Error("unused"); }, pause: async () => { throw new Error("unused"); },
+			resume: async () => { throw new Error("unused"); }, openVisual: async () => { throw new Error("unused"); },
+			importLocal: async () => { throw new Error("unused"); }, reconcileCloud: async () => { throw new Error("unused"); },
+			listCloud: async () => [], onEvent: () => () => undefined
 		};
 	});
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
-	await expect(page.getByTestId("open-optimizers")).toHaveCount(0);
+	await page.getByTestId("open-optimizers").click();
+	await page.getByTestId("plugin-start").click();
+	await expect(page.getByTestId("optimizer-error")).toContainText("Capability check failed — HTTP 502");
+	await expect(page.getByTestId("optimizer-error")).not.toContainText("[object Object]");
+	await page.getByTestId("optimizer-error-details").locator("summary").click();
+	await expect(page.getByTestId("optimizer-error-details")).toContainText("upstream unavailable");
+});
+
+const disabledPlugin = {
+	schemaVersion: "synth.plugin-status.v1",
+	pluginId: "optimizers",
+	enabled: false,
+	phase: "disabled",
+	releaseChannel: "official",
+	catalogVersion: "0.2.5",
+	service: { phase: "stopped", activeRuns: 0 },
+	algorithms: [],
+	templates: []
+};
+
+// A disabled plugin used to vanish from the sidebar, which left the user with
+// no way to find out where it went or turn it back on. It stays, says why, and
+// still opens its page.
+test("disabled Optimizers plugin stays navigable and says why", async ({ page }) => {
+	await page.addInitScript((plugin) => {
+		(window as any).synthPlugins = {
+			status: async () => plugin,
+			list: async () => [plugin],
+			setReleaseChannel: async () => { throw new Error("unused"); }
+		};
+	}, disabledPlugin);
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+
+	const row = page.getByTestId("open-optimizers");
+	await expect(row).toHaveCount(1);
+	await expect(page.getByTestId("plugin-status-optimizers")).toContainText("Disabled");
+
+	await row.click();
+	await expect(page.getByTestId("optimizers-page")).toBeVisible();
+});
+
+test("a disabled plugin holding live runs does not imply they stopped", async ({ page }) => {
+	await page.addInitScript((plugin) => {
+		const busy = { ...plugin, service: { phase: "ready", activeRuns: 2 } };
+		(window as any).synthPlugins = {
+			status: async () => busy,
+			list: async () => [busy],
+			setReleaseChannel: async () => { throw new Error("unused"); }
+		};
+	}, disabledPlugin);
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+	await expect(page.getByTestId("plugin-status-optimizers")).toContainText("2 running");
+});
+
+test("the Plugins section replaces the Research and Data groupings", async ({ page }) => {
+	await expect(page.getByTestId("plugins-nav")).toHaveCount(1);
+	await expect(page.getByTestId("research-nav")).toHaveCount(0);
+	await expect(page.getByTestId("inventory-nav")).toHaveCount(0);
+	for (const testId of ["open-visuals", "open-reports", "open-optimizers", "open-inventory"]) {
+		await expect(page.getByTestId(testId)).toHaveCount(1);
+	}
 });
 
 test("optimizer visual posts a subscription receipt after replay", async ({ page }) => {

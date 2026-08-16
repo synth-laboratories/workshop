@@ -68,7 +68,102 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
 		}
 	}, { scope: "worker" }],
 	page: async ({ page, rendererOrigin }, use) => {
+		page.on("pageerror", (error) => {
+			console.error(`[renderer pageerror] ${error.stack ?? error.message}`);
+		});
+		page.on("console", (message) => {
+			if (message.type() === "error") console.error(`[renderer console] ${message.text()}`);
+		});
 		await page.addInitScript(() => {
+			let coreBridge: Record<string, unknown>;
+			const coreDefaults = {
+				diagnostics: async () => ({
+					databasePath: "browser-memory://core-runtime",
+					schemaVersion: 0,
+					integrityOk: true,
+					contentStorePath: "browser-memory://content",
+					journalHead: 0,
+					sessionCount: 0,
+					runCount: 0,
+					visualCount: 0,
+					migrationComplete: true
+				}),
+				eventsAfter: async () => [],
+				sessionEventsAfter: async () => [],
+				sessionEventsTail: async (sessionId: string, limit = 200) => {
+					const legacy = coreBridge.sessionEventsAfter;
+					return typeof legacy === "function"
+						? await (legacy as (id: string, after: number, cap: number) => Promise<unknown[]>)(sessionId, 0, limit)
+						: [];
+				},
+				sessionEventsBefore: async () => [],
+				onEvent: () => () => undefined
+			};
+			coreBridge = coreDefaults;
+			Object.defineProperty(window, "synthCore", {
+				configurable: true,
+				get: () => coreBridge,
+				set: (fixture) => {
+					coreBridge = { ...coreDefaults, ...(fixture as Record<string, unknown>) };
+				}
+			});
+			const oauthDefaults = {
+				begin: async () => { throw new Error("OAuth fixture missing"); },
+				completeManual: async () => ({ configured: false }),
+				ensureReady: async () => ({ configured: false }),
+				status: async () => ({ configured: false }),
+				disconnect: async () => ({ configured: false }),
+				cancel: async () => undefined
+			};
+			let oauthBridge: Record<string, unknown> = oauthDefaults;
+			Object.defineProperty(window, "synthCodexOauth", {
+				configurable: true,
+				get: () => oauthBridge,
+				set: (fixture) => {
+					oauthBridge = { ...oauthDefaults, ...(fixture as Record<string, unknown>) };
+				}
+			});
+			// Feature specs often replace only the visual methods they exercise.
+			// Keep those fixtures forward-compatible with additions to the native
+			// bridge instead of turning an unrelated method into a page-wide load
+			// failure. The setter merges each focused fixture over a complete,
+			// deterministic browser-only bridge.
+			const visualDefaults = {
+				listTemplates: async () => [],
+				getTemplate: async () => { throw new Error("visual template fixture missing"); },
+				list: async () => [],
+				get: async () => { throw new Error("visual fixture missing"); },
+				reportObservation: async () => undefined,
+				revisions: async () => [],
+				annotations: async () => [],
+				createAnnotation: async () => { throw new Error("annotation fixture missing"); },
+				listSeals: async () => [],
+				seal: async () => { throw new Error("visual seal fixture missing"); },
+				getSeal: async () => { throw new Error("visual seal fixture missing"); },
+				uploadStatus: async () => null,
+				shareSeal: async () => { throw new Error("visual share fixture missing"); },
+				openShared: async () => { throw new Error("shared visual fixture missing"); },
+				create: async () => { throw new Error("visual create fixture missing"); },
+				update: async () => { throw new Error("visual update fixture missing"); },
+				save: async () => { throw new Error("visual save fixture missing"); },
+				fork: async () => { throw new Error("visual fork fixture missing"); },
+				archive: async () => { throw new Error("visual archive fixture missing"); },
+				show: async () => { throw new Error("visual show fixture missing"); },
+				content: async () => null,
+				renditions: async () => [],
+				rendition: async () => null,
+				render: async () => { throw new Error("visual render fixture missing"); },
+				onEvent: () => () => undefined,
+				onShow: () => () => undefined
+			};
+			let visualBridge: Record<string, unknown> = visualDefaults;
+			Object.defineProperty(window, "synthVisuals", {
+				configurable: true,
+				get: () => visualBridge,
+				set: (fixture) => {
+					visualBridge = { ...visualDefaults, ...(fixture as Record<string, unknown>) };
+				}
+			});
 			(window as typeof window & { synthRuntime?: unknown }).synthRuntime = {
 				async request(path: string) {
 					if (path === "/v1/health") return {

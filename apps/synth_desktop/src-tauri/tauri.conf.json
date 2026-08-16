@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Synth Desktop",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "identifier": "com.synth.desktop",
   "build": {
     "beforeDevCommand": "npm run frontend:dev",
@@ -39,6 +39,7 @@
     },
     "resources": {
       "../../../services/laguna-daemon/laguna_daemon": "services/laguna-daemon/laguna_daemon",
+      "../../../services/victoria-logs": "services/victoria-logs",
       "../../../visuals/families": "visuals/families",
       "../../../visuals/chrome": "visuals/chrome",
       "../../../visuals/components": "visuals/components",

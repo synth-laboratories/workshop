@@ -12,19 +12,18 @@ import { VisualChrome, MetricStrip } from "../../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber } from "../../../runtime/liveStream.ts";
 import { projectDigbenchLane, projectLiveEval } from "../../../runtime/liveEvalReducer.ts";
-import { bindingSlots } from "../../../runtime/bind.ts";
+import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../../runtime/types.ts";
 
 type StreamScope = { game_id?: string; rollout_ids?: string[]; selection?: { initial_rollout_id?: string } };
 type StreamPayload = { events?: LiveEvalEvent[]; sse_url?: string; replay_ms?: number; scope?: StreamScope };
 
-export type ShellProps = {
+export type ShellProps = LiveTemplateProps & {
   title?: string;
   lede?: string;
   stream?: StreamPayload;
   data?: StreamPayload;
   bindings?: VisualBinding[] | { slots?: VisualBinding[] };
-  sseUrl?: string;
 };
 
 const HISTORY_WINDOW = 40;
@@ -71,17 +70,21 @@ function historyOf(events: LiveEvalEvent[]): HistoryEntry[] {
 
 export function Shell(props: ShellProps) {
   const stream = asStream(props.data ?? props.stream);
-  const sseUrl =
-    props.sseUrl ??
-    stream.sse_url ??
-    bindingSlots(props.bindings).find((binding) => binding.slot === "stream" && binding.kind === "live_sse")?.source;
+  const declaredStreamCount = props.replay?.streams.length ?? 0;
   const scope = stream.scope;
   const fixtureEvents = useMemo(
-    () => (sseUrl ? undefined : stream.events),
-    [sseUrl, stream.events]
+    () => (declaredStreamCount > 0 ? undefined : stream.events),
+    [declaredStreamCount, stream.events]
   );
-  const hasSource = Boolean(sseUrl || stream.events);
-  const { events, live, error, ready } = useLiveEvalStream({ sseUrl, fixtureEvents, replayMs: stream.replay_ms });
+  const hasSource = declaredStreamCount > 0 || Boolean(stream.events);
+  const { events, state, error, ready } = useLiveEvalStream({
+    replay: props.replay,
+    fixtureEvents,
+    replayMs: stream.replay_ms,
+    visualId: props.visualId,
+    revision: props.revision
+  });
+  const live = state === "live";
   const scopedEvents = useMemo(() => {
     if (!scope?.rollout_ids?.length) return events;
     const allowed = new Set(scope.rollout_ids);

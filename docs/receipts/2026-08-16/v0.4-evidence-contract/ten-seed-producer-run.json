@@ -1,0 +1,580 @@
+{
+  "all_terminal": true,
+  "base_url": "http://127.0.0.1:8114",
+  "distinct_rollout_ids": 10,
+  "distinct_trace_ids": 10,
+  "failures": {},
+  "rollouts": [
+    {
+      "accumulated_reward_deltas": 2.0,
+      "achievements": [
+        "collect_sapling",
+        "collect_wood"
+      ],
+      "action_authorities": [
+        "model"
+      ],
+      "closed": true,
+      "envelopes": 103,
+      "failures": [],
+      "frames": 21,
+      "frames_resolved": 3,
+      "high_water": 103,
+      "kinds": [
+        "achievement_unlocked",
+        "eval.run.terminal",
+        "frame",
+        "observation",
+        "reward_signal",
+        "rollout.progress",
+        "span.policy.closed",
+        "span.policy.data",
+        "span.policy.opened",
+        "span.policy.plan",
+        "span.step.closed",
+        "trace.opened",
+        "trace.reconciled"
+      ],
+      "model_authoritative_steps": 20,
+      "observations": 21,
+      "policy_calls": 3,
+      "reward": 2.0,
+      "rollout_id": "canonical-seed-0",
+      "seed": 0,
+      "status": "completed",
+      "steps": 20,
+      "trace_link": {
+        "authority": "trace_v5",
+        "capture_id": "cap_8306a015464cd0a1",
+        "digest": "sha256:f7e86e99b65d209709b9377f973374d737d7e6e8dcf88920e6b3ff8845229c96",
+        "event_count": 76,
+        "rollout_id": "canonical-seed-0",
+        "stream_id": "stream:canonical-seed-0",
+        "trace_id": "trace_2032a25edcb6f7f2"
+      },
+      "trace_v5": {
+        "bundle_path": "/tmp/gamebench-craftax-traces/canonical-seed-0",
+        "capture_id": "cap_8306a015464cd0a1",
+        "digest": "sha256:f7e86e99b65d209709b9377f973374d737d7e6e8dcf88920e6b3ff8845229c96",
+        "event_count": 76,
+        "trace_id": "trace_2032a25edcb6f7f2"
+      },
+      "usage": []
+    },
+    {
+      "accumulated_reward_deltas": 2.0,
+      "achievements": [
+        "collect_sapling",
+        "collect_wood"
+      ],
+      "action_authorities": [
+        "model"
+      ],
+      "closed": true,
+      "envelopes": 96,
+      "failures": [],
+      "frames": 21,
+      "frames_resolved": 3,
+      "high_water": 96,
+      "kinds": [
+        "achievement_unlocked",
+        "eval.run.terminal",
+        "frame",
+        "observation",
+        "reward_signal",
+        "rollout.progress",
+        "span.policy.closed",
+        "span.policy.data",
+        "span.policy.opened",
+        "span.policy.plan",
+        "span.step.closed",
+        "trace.opened",
+        "trace.reconciled"
+      ],
+      "model_authoritative_steps": 20,
+      "observations": 21,
+      "policy_calls": 2,
+      "reward": 2.0,
+      "rollout_id": "canonical-seed-1",
+      "seed": 1,
+      "status": "completed",
+      "steps": 20,
+      "trace_link": {
+        "authority": "trace_v5",
+        "capture_id": "cap_1426054a512a0254",
+        "digest": "sha256:9f0ebb4065a25d8781ef52901d11f04cffb3703efd07f5a28b7c3f96e678c518",
+        "event_count": 72,
+        "rollout_id": "canonical-seed-1",
+        "stream_id": "stream:canonical-seed-1",
+        "trace_id": "trace_6e966ee82bb58bbf"
+      },
+      "trace_v5": {
+        "bundle_path": "/tmp/gamebench-craftax-traces/canonical-seed-1",
+        "capture_id": "cap_1426054a512a0254",
+        "digest": "sha256:9f0ebb4065a25d8781ef52901d11f04cffb3703efd07f5a28b7c3f96e678c518",
+        "event_count": 72,
+        "trace_id": "trace_6e966ee82bb58bbf"
+      },
+      "usage": []
+    },
+    {
+      "accumulated_reward_deltas": 2.0,
+      "achievements": [
+        "collect_sapling",
+        "collect_wood"
+      ],
+      "action_authorities": [
+        "model"
+      ],
+      "closed": true,
+      "envelopes": 96,
+      "failures": [],
+      "frames": 21,
+      "frames_resolved": 3,
+      "high_water": 96,
+      "kinds": [
+        "achievement_unlocked",
+        "eval.run.terminal",
+        "frame",
+        "observation",
+        "reward_signal",
+        "rollout.progress",
+        "span.policy.closed",
+        "span.policy.data",
+        "span.policy.opened",
+        "span.policy.plan",
+        "span.step.closed",
+        "trace.opened",
+        "trace.reconciled"
+      ],
+      "model_authoritative_steps": 20,
+      "observations": 21,
+      "policy_calls": 2,
+      "reward": 2.0,
+      "rollout_id": "canonical-seed-2",
+      "seed": 2,
+      "status": "completed",
+      "steps": 20,
+      "trace_link": {
+        "authority": "trace_v5",
+        "capture_id": "cap_c355b9b42b808d52",
+        "digest": "sha256:61008c1f9078752bc87becf80e98f5934b5ade85dc6efcdfd8d8397b65c61f79",
+        "event_count": 72,
+        "rollout_id": "canonical-seed-2",
+        "stream_id": "stream:canonical-seed-2",
+        "trace_id": "trace_5de4dfb423229499"
+      },
+      "trace_v5": {
+        "bundle_path": "/tmp/gamebench-craftax-traces/canonical-seed-2",
+        "capture_id": "cap_c355b9b42b808d52",
+        "digest": "sha256:61008c1f9078752bc87becf80e98f5934b5ade85dc6efcdfd8d8397b65c61f79",
+        "event_count": 72,
+        "trace_id": "trace_5de4dfb423229499"
+      },
+      "usage": []
+    },
+    {
+      "accumulated_reward_deltas": 2.6,
+      "achievements": [
+        "collect_sapling",
+        "collect_wood",
+        "defeat_zombie"
+      ],
+      "action_authorities": [
+        "model"
+      ],
+      "closed": true,
+      "envelopes": 97,
+      "failures": [],
+      "frames": 21,
+      "frames_resolved": 3,
+      "high_water": 97,
+      "kinds": [
+        "achievement_unlocked",
+        "eval.run.terminal",
+        "frame",
+        "observation",
+        "reward_signal",
+        "rollout.progress",
+        "span.policy.closed",
+        "span.policy.data",
+        "span.policy.opened",
+        "span.policy.plan",
+        "span.step.closed",
+        "trace.opened",
+        "trace.reconciled"
+      ],
+      "model_authoritative_steps": 20,
+      "observations": 21,
+      "policy_calls": 2,
+      "reward": 2.6,
+      "rollout_id": "canonical-seed-3",
+      "seed": 3,
+      "status": "completed",
+      "steps": 20,
+      "trace_link": {
+        "authority": "trace_v5",
+        "capture_id": "cap_8d733bdb2197bcc3",
+        "digest": "sha256:49922f22dbd32541ede699631b489bd405f09660addb5c36807cb01f0a7f3b63",
+        "event_count": 73,
+        "rollout_id": "canonical-seed-3",
+        "stream_id": "stream:canonical-seed-3",
+        "trace_id": "trace_57d73abc7b19278c"
+      },
+      "trace_v5": {
+        "bundle_path": "/tmp/gamebench-craftax-traces/canonical-seed-3",
+        "capture_id": "cap_8d733bdb2197bcc3",
+        "digest": "sha256:49922f22dbd32541ede699631b489bd405f09660addb5c36807cb01f0a7f3b63",
+        "event_count": 73,
+        "trace_id": "trace_57d73abc7b19278c"
+      },
+      "usage": []
+    },
+    {
+      "accumulated_reward_deltas": 1.6,
+      "achievements": [
+        "collect_sapling",
+        "collect_wood"
+      ],
+      "action_authorities": [
+        "model"
+      ],
+      "closed": true,
+      "envelopes": 101,
+      "failures": [],
+      "frames": 21,
+      "frames_resolved": 3,
+      "high_water": 101,
+      "kinds": [
+        "achievement_unlocked",
+        "eval.run.terminal",
+        "frame",
+        "observation",
+        "reward_signal",
+        "rollout.progress",
+        "span.policy.closed",
+        "span.policy.data",
+        "span.policy.opened",
+        "span.policy.plan",
+        "span.step.closed",
+        "trace.opened",
+        "trace.reconciled"
+      ],
+      "model_authoritative_steps": 20,
+      "observations": 21,
+      "policy_calls": 3,
+      "reward": 1.6,
+      "rollout_id": "canonical-seed-4",
+      "seed": 4,
+      "status": "completed",
+      "steps": 20,
+      "trace_link": {
+        "authority": "trace_v5",
+        "capture_id": "cap_281ed55ea0b6e190",
+        "digest": "sha256:a8b71228bf2f6b558b0653b212225f208d42fed53976bc82c381f320b742cf63",
+        "event_count": 76,
+        "rollout_id": "canonical-seed-4",
+        "stream_id": "stream:canonical-seed-4",
+        "trace_id": "trace_c4a08b5671590778"
+      },
+      "trace_v5": {
+        "bundle_path": "/tmp/gamebench-craftax-traces/canonical-seed-4",
+        "capture_id": "cap_281ed55ea0b6e190",
+        "digest": "sha256:a8b71228bf2f6b558b0653b212225f208d42fed53976bc82c381f320b742cf63",
+        "event_count": 76,
+        "trace_id": "trace_c4a08b5671590778"
+      },
+      "usage": []
+    },
+    {
+      "accumulated_reward_deltas": 1.8,
+      "achievements": [
+        "collect_sapling",
+        "collect_wood"
+      ],
+      "action_authorities": [
+        "model"
+      ],
+      "closed": true,
+      "envelopes": 100,
+      "failures": [],
+      "frames": 21,
+      "frames_resolved": 3,
+      "high_water": 100,
+      "kinds": [
+        "achievement_unlocked",
+        "eval.run.terminal",
+        "frame",
+        "observation",
+        "reward_signal",
+        "rollout.progress",
+        "span.policy.closed",
+        "span.policy.data",
+        "span.policy.opened",
+        "span.policy.plan",
+        "span.step.closed",
+        "trace.opened",
+        "trace.reconciled"
+      ],
+      "model_authoritative_steps": 20,
+      "observations": 21,
+      "policy_calls": 3,
+      "reward": 1.8,
+      "rollout_id": "canonical-seed-5",
+      "seed": 5,
+      "status": "completed",
+      "steps": 20,
+      "trace_link": {
+        "authority": "trace_v5",
+        "capture_id": "cap_b8ea417db2e964a6",
+        "digest": "sha256:094ab1919350267a86c6fa81a084dd98aed3e328224702583ed62f2962e1c9e5",
+        "event_count": 75,
+        "rollout_id": "canonical-seed-5",
+        "stream_id": "stream:canonical-seed-5",
+        "trace_id": "trace_f7e30112b02cd27a"
+      },
+      "trace_v5": {
+        "bundle_path": "/tmp/gamebench-craftax-traces/canonical-seed-5",
+        "capture_id": "cap_b8ea417db2e964a6",
+        "digest": "sha256:094ab1919350267a86c6fa81a084dd98aed3e328224702583ed62f2962e1c9e5",
+        "event_count": 75,
+        "trace_id": "trace_f7e30112b02cd27a"
+      },
+      "usage": []
+    },
+    {
+      "accumulated_reward_deltas": 2.0,
+      "achievements": [
+        "collect_sapling",
+        "collect_wood"
+      ],
+      "action_authorities": [
+        "model"
+      ],
+      "closed": true,
+      "envelopes": 96,
+      "failures": [],
+      "frames": 21,
+      "frames_resolved": 3,
+      "high_water": 96,
+      "kinds": [
+        "achievement_unlocked",
+        "eval.run.terminal",
+        "frame",
+        "observation",
+        "reward_signal",
+        "rollout.progress",
+        "span.policy.closed",
+        "span.policy.data",
+        "span.policy.opened",
+        "span.policy.plan",
+        "span.step.closed",
+        "trace.opened",
+        "trace.reconciled"
+      ],
+      "model_authoritative_steps": 20,
+      "observations": 21,
+      "policy_calls": 2,
+      "reward": 2.0,
+      "rollout_id": "canonical-seed-6",
+      "seed": 6,
+      "status": "completed",
+      "steps": 20,
+      "trace_link": {
+        "authority": "trace_v5",
+        "capture_id": "cap_d929f3a0225775cc",
+        "digest": "sha256:9ab132af21e3221920cd5632fb97df504a76833a1493ad2d6dc06992b0c2ba3c",
+        "event_count": 72,
+        "rollout_id": "canonical-seed-6",
+        "stream_id": "stream:canonical-seed-6",
+        "trace_id": "trace_c050cdb68cf280be"
+      },
+      "trace_v5": {
+        "bundle_path": "/tmp/gamebench-craftax-traces/canonical-seed-6",
+        "capture_id": "cap_d929f3a0225775cc",
+        "digest": "sha256:9ab132af21e3221920cd5632fb97df504a76833a1493ad2d6dc06992b0c2ba3c",
+        "event_count": 72,
+        "trace_id": "trace_c050cdb68cf280be"
+      },
+      "usage": []
+    },
+    {
+      "accumulated_reward_deltas": 0.8,
+      "achievements": [
+        "collect_wood"
+      ],
+      "action_authorities": [
+        "model"
+      ],
+      "closed": true,
+      "envelopes": 99,
+      "failures": [],
+      "frames": 21,
+      "frames_resolved": 3,
+      "high_water": 99,
+      "kinds": [
+        "achievement_unlocked",
+        "eval.run.terminal",
+        "frame",
+        "observation",
+        "reward_signal",
+        "rollout.progress",
+        "span.policy.closed",
+        "span.policy.data",
+        "span.policy.opened",
+        "span.policy.plan",
+        "span.step.closed",
+        "trace.opened",
+        "trace.reconciled"
+      ],
+      "model_authoritative_steps": 20,
+      "observations": 21,
+      "policy_calls": 3,
+      "reward": 0.8,
+      "rollout_id": "canonical-seed-7",
+      "seed": 7,
+      "status": "completed",
+      "steps": 20,
+      "trace_link": {
+        "authority": "trace_v5",
+        "capture_id": "cap_577231ee534f7daa",
+        "digest": "sha256:875bf105309532afda29e5acd405a3525fbdc99f2ddaf877ed33e15fcb9c0213",
+        "event_count": 75,
+        "rollout_id": "canonical-seed-7",
+        "stream_id": "stream:canonical-seed-7",
+        "trace_id": "trace_8c3f11e8a760c303"
+      },
+      "trace_v5": {
+        "bundle_path": "/tmp/gamebench-craftax-traces/canonical-seed-7",
+        "capture_id": "cap_577231ee534f7daa",
+        "digest": "sha256:875bf105309532afda29e5acd405a3525fbdc99f2ddaf877ed33e15fcb9c0213",
+        "event_count": 75,
+        "trace_id": "trace_8c3f11e8a760c303"
+      },
+      "usage": []
+    },
+    {
+      "accumulated_reward_deltas": 1.0,
+      "achievements": [
+        "collect_wood"
+      ],
+      "action_authorities": [
+        "model"
+      ],
+      "closed": true,
+      "envelopes": 99,
+      "failures": [],
+      "frames": 21,
+      "frames_resolved": 3,
+      "high_water": 99,
+      "kinds": [
+        "achievement_unlocked",
+        "eval.run.terminal",
+        "frame",
+        "observation",
+        "reward_signal",
+        "rollout.progress",
+        "span.policy.closed",
+        "span.policy.data",
+        "span.policy.opened",
+        "span.policy.plan",
+        "span.step.closed",
+        "trace.opened",
+        "trace.reconciled"
+      ],
+      "model_authoritative_steps": 20,
+      "observations": 21,
+      "policy_calls": 3,
+      "reward": 1.0,
+      "rollout_id": "canonical-seed-8",
+      "seed": 8,
+      "status": "completed",
+      "steps": 20,
+      "trace_link": {
+        "authority": "trace_v5",
+        "capture_id": "cap_864e1f65d871e24b",
+        "digest": "sha256:63e110c07f35e57c0bd797034663b030c1f899796c9cb24683f3099643eda69b",
+        "event_count": 75,
+        "rollout_id": "canonical-seed-8",
+        "stream_id": "stream:canonical-seed-8",
+        "trace_id": "trace_29f8a630df623980"
+      },
+      "trace_v5": {
+        "bundle_path": "/tmp/gamebench-craftax-traces/canonical-seed-8",
+        "capture_id": "cap_864e1f65d871e24b",
+        "digest": "sha256:63e110c07f35e57c0bd797034663b030c1f899796c9cb24683f3099643eda69b",
+        "event_count": 75,
+        "trace_id": "trace_29f8a630df623980"
+      },
+      "usage": []
+    },
+    {
+      "accumulated_reward_deltas": 1.6,
+      "achievements": [
+        "collect_sapling",
+        "collect_wood"
+      ],
+      "action_authorities": [
+        "model"
+      ],
+      "closed": true,
+      "envelopes": 100,
+      "failures": [],
+      "frames": 21,
+      "frames_resolved": 3,
+      "high_water": 100,
+      "kinds": [
+        "achievement_unlocked",
+        "eval.run.terminal",
+        "frame",
+        "observation",
+        "reward_signal",
+        "rollout.progress",
+        "span.policy.closed",
+        "span.policy.data",
+        "span.policy.opened",
+        "span.policy.plan",
+        "span.step.closed",
+        "trace.opened",
+        "trace.reconciled"
+      ],
+      "model_authoritative_steps": 20,
+      "observations": 21,
+      "policy_calls": 3,
+      "reward": 1.6,
+      "rollout_id": "canonical-seed-9",
+      "seed": 9,
+      "status": "completed",
+      "steps": 20,
+      "trace_link": {
+        "authority": "trace_v5",
+        "capture_id": "cap_03a350a2bb00efd9",
+        "digest": "sha256:d2c063bc158f56387c4257972560f9f90a4bef5aee3d1fa85bac1c52741f4e68",
+        "event_count": 76,
+        "rollout_id": "canonical-seed-9",
+        "stream_id": "stream:canonical-seed-9",
+        "trace_id": "trace_749d9409a63df50a"
+      },
+      "trace_v5": {
+        "bundle_path": "/tmp/gamebench-craftax-traces/canonical-seed-9",
+        "capture_id": "cap_03a350a2bb00efd9",
+        "digest": "sha256:d2c063bc158f56387c4257972560f9f90a4bef5aee3d1fa85bac1c52741f4e68",
+        "event_count": 76,
+        "trace_id": "trace_749d9409a63df50a"
+      },
+      "usage": []
+    }
+  ],
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ]
+}

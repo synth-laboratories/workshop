@@ -26,6 +26,11 @@ pub enum ProviderClass {
     Direct,
 }
 
+/// OpenRouter's native Responses endpoint. A renderer request may select the
+/// provider and model, but it must never select the origin that receives the
+/// user's credential.
+pub const OPENROUTER_RESPONSES_BASE_URL: &str = "https://openrouter.ai/api/v1";
+
 pub fn provider_class(provider_name: Option<&str>) -> ProviderClass {
     match provider_name {
         Some(name) if name.eq_ignore_ascii_case("local-laguna") => ProviderClass::LocalLaguna,
@@ -36,6 +41,143 @@ pub fn provider_class(provider_name: Option<&str>) -> ProviderClass {
         }
         _ => ProviderClass::Direct,
     }
+}
+
+/// Bind a local Codex attachment to the daemon-owned serving identity and
+/// capability set. UI aliases and provider speed tiers are presentation state;
+/// the local Responses daemon accepts its canonical model and default tier.
+pub fn apply_local_laguna_provider(request: &mut CodexSessionStartRequest, model: &str) {
+    request.model = model.to_owned();
+    request.service_tier = None;
+    request.local_model_catalog = None;
+}
+
+/// Attach authenticated daemon metadata and derive the transport tier from the
+/// exact selected entry. Renderer or unrelated bundled-model capabilities can
+/// therefore never influence the local provider binding.
+pub fn apply_local_laguna_catalog_metadata(
+    request: &mut CodexSessionStartRequest,
+    envelope: Value,
+) -> Result<()> {
+    let catalog = local_laguna_catalog(envelope.clone(), &request.model)?;
+    request.service_tier = Some(
+        catalog["models"][0]["default_service_tier"]
+            .as_str()
+            .expect("validated local catalog default service tier")
+            .to_owned(),
+    );
+    request.local_model_catalog = Some(envelope);
+    Ok(())
+}
+
+pub(crate) fn local_laguna_catalog(envelope: Value, model: &str) -> Result<Value> {
+    let models = envelope
+        .get("models")
+        .and_then(Value::as_array)
+        .context("Laguna /v1/models omitted its native Codex `models` envelope")?;
+    let matches = models
+        .iter()
+        .filter(|candidate| candidate.get("slug").and_then(Value::as_str) == Some(model))
+        .collect::<Vec<_>>();
+    let [selected] = matches.as_slice() else {
+        anyhow::bail!(
+            "Laguna /v1/models must contain exactly one native Codex entry for `{model}`"
+        );
+    };
+    let selected = selected
+        .as_object()
+        .context("Laguna native Codex model entry was not an object")?;
+    for required in [
+        "slug",
+        "display_name",
+        "description",
+        "base_instructions",
+        "default_reasoning_level",
+        "default_service_tier",
+        "shell_type",
+    ] {
+        selected
+            .get(required)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .with_context(|| format!("Laguna native Codex model omitted required `{required}`"))?;
+    }
+    for required in [
+        "supported_reasoning_levels",
+        "service_tiers",
+        "input_modalities",
+    ] {
+        selected
+            .get(required)
+            .and_then(Value::as_array)
+            .with_context(|| format!("Laguna native Codex model omitted required `{required}`"))?;
+    }
+    for required in ["context_window", "max_context_window"] {
+        selected
+            .get(required)
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+            .with_context(|| {
+                format!("Laguna native Codex model had invalid required `{required}`")
+            })?;
+    }
+    for required in [
+        "supported_in_api",
+        "supports_parallel_tool_calls",
+        "supports_search_tool",
+    ] {
+        selected
+            .get(required)
+            .and_then(Value::as_bool)
+            .with_context(|| format!("Laguna native Codex model omitted required `{required}`"))?;
+    }
+    let supported_reasoning = selected["supported_reasoning_levels"]
+        .as_array()
+        .expect("validated above");
+    let default_reasoning = selected["default_reasoning_level"]
+        .as_str()
+        .expect("validated above");
+    if !supported_reasoning
+        .iter()
+        .any(|level| level.get("effort").and_then(Value::as_str) == Some(default_reasoning))
+    {
+        anyhow::bail!(
+            "Laguna native Codex model default reasoning level is not advertised as supported"
+        );
+    }
+    if selected["input_modalities"]
+        .as_array()
+        .expect("validated above")
+        .is_empty()
+    {
+        anyhow::bail!("Laguna native Codex model advertised no input modalities");
+    }
+    Ok(serde_json::json!({"models": [Value::Object(selected.clone())]}))
+}
+
+/// Install the exact, authenticated metadata owned by the Laguna serving
+/// runtime. Identity, instructions, service tiers and capabilities are
+/// selected and validated as one model-specific unit; no bundled Codex model
+/// is used as a fallback or template.
+pub(crate) fn install_local_laguna_catalog(
+    home: &Path,
+    request: &CodexSessionStartRequest,
+) -> Result<bool> {
+    if provider_class(request.provider_name.as_deref()) != ProviderClass::LocalLaguna {
+        return Ok(false);
+    }
+    let envelope = request
+        .local_model_catalog
+        .clone()
+        .context("authenticated Laguna native Codex model catalog was not prepared")?;
+    let catalog = local_laguna_catalog(envelope, &request.model)?;
+    fs::create_dir_all(home)?;
+    fs::write(
+        home.join("model-catalog.json"),
+        serde_json::to_vec_pretty(&catalog)?,
+    )
+    .context("materialize validated local Laguna model catalog")?;
+    Ok(true)
 }
 
 /// Point a session start request at the Synth Cloud provider.
@@ -65,6 +207,28 @@ pub fn apply_synth_cloud_provider(
     request.base_url = format!("{}/api/v1", normalize_gateway_origin(gateway_url));
     request.provider_name = Some("synth-cloud".into());
     request.provider_title = Some("Synth Cloud Responses".into());
+    stage_brokered_credential(request, key)
+}
+
+/// Point an OpenRouter request at the source-owned endpoint and stage the
+/// native credential for the loopback broker.
+///
+/// Overwriting `base_url` before leasing is the security boundary: otherwise
+/// a compromised renderer could ask the native host to attach the real
+/// OpenRouter key to an attacker-controlled HTTPS origin.
+pub fn apply_openrouter_provider(
+    request: &mut CodexSessionStartRequest,
+    api_key: Option<&str>,
+) -> Result<(), String> {
+    let key = api_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "OpenRouter API key is not configured. Add it in Synth backend settings.".to_string()
+        })?;
+    request.base_url = OPENROUTER_RESPONSES_BASE_URL.into();
+    request.provider_name = Some("openrouter".into());
+    request.provider_title = Some("OpenRouter Responses".into());
     stage_brokered_credential(request, key)
 }
 
@@ -272,10 +436,29 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
     )?;
     let optimizers_references = optimizers_skill.join("references");
     fs::create_dir_all(&optimizers_references)?;
-    fs::write(
-        optimizers_references.join("gepa.md"),
-        include_str!("../../../../skills/use-synth-optimizers/references/gepa.md"),
-    )?;
+    // Install every reference SKILL.md links. A link the skill tells an agent to
+    // read, that is absent from the home, leaves it improvising a contract it
+    // was told exists — which is exactly how the first live eval session failed.
+    for (name, body) in [
+        (
+            "gepa.md",
+            include_str!("../../../../skills/use-synth-optimizers/references/gepa.md"),
+        ),
+        (
+            "gelo.md",
+            include_str!("../../../../skills/use-synth-optimizers/references/gelo.md"),
+        ),
+        (
+            "eval.md",
+            include_str!("../../../../skills/use-synth-optimizers/references/eval.md"),
+        ),
+        (
+            "sft.md",
+            include_str!("../../../../skills/use-synth-optimizers/references/sft.md"),
+        ),
+    ] {
+        fs::write(optimizers_references.join(name), body)?;
+    }
     let plugins_skill = home.join("skills/use-synth-plugins");
     fs::create_dir_all(&plugins_skill)?;
     fs::write(
@@ -362,6 +545,17 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
     } else {
         ""
     };
+    let model_catalog_config = if provider_class(request.provider_name.as_deref())
+        == ProviderClass::LocalLaguna
+        && home.join("model-catalog.json").is_file()
+    {
+        format!(
+            "model_catalog_json = \"{}\"\n",
+            toml_string(&home.join("model-catalog.json").to_string_lossy())
+        )
+    } else {
+        String::new()
+    };
     // A ChatGPT subscription uses the Codex auth.json file. Pointing this
     // provider at the local Laguna key makes Codex send that loopback secret as
     // a Bearer token instead of the ChatGPT OAuth access token.
@@ -376,8 +570,8 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         responses_base_url(&request.base_url)
     };
     let config = format!(
-        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"{}\"\n{}{}{}\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\n{}wire_api = \"responses\"\nrequires_openai_auth = {}\n# Codex selects provider-hosted compaction for OpenAI/Azure and local summarization otherwise.\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
-        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), toml_string(request.service_tier.as_deref().unwrap_or("default")), auth_config, disable_response_storage_config, compaction_config, workspace_write_config, toml_key(provider), toml_string(title), toml_string(&provider_base_url), env_key_config, oauth, agents_enabled, multi_agent_v1, multi_agent_v2
+        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"{}\"\n{}{}{}{}\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\n{}wire_api = \"responses\"\nrequires_openai_auth = {}\n# Codex selects provider-hosted compaction for OpenAI/Azure and local summarization otherwise.\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
+        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), toml_string(request.service_tier.as_deref().unwrap_or("default")), auth_config, disable_response_storage_config, compaction_config, model_catalog_config, workspace_write_config, toml_key(provider), toml_string(title), toml_string(&provider_base_url), env_key_config, oauth, agents_enabled, multi_agent_v1, multi_agent_v2
     );
     fs::write(home.join("config.toml"), config)?;
     let auth = home.join("auth.json");
@@ -389,7 +583,11 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
             "tokens": {
                 "id_token": credential.id_token,
                 "access_token": credential.access_token,
-                "refresh_token": credential.refresh_token,
+                // The child receives only the already-refreshed, bounded
+                // session credential. Long-lived refresh authority remains in
+                // the native store and is never materialized in a shell-enabled
+                // Codex home.
+                "refresh_token": "synth-desktop-does-not-delegate-refresh",
                 "account_id": credential.account_id,
             },
             "last_refresh": chrono::DateTime::from_timestamp_millis(credential.last_refresh_ms)
@@ -410,6 +608,8 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
     // Point Codex at the Rust noun adapters (all forward to CoreRuntime IPC).
     if let Ok(exe) = env::current_exe() {
         let ipc = crate::storage::app_data_root().join("visuals-ipc.json");
+        let app_name = crate::instance::display_name();
+        let bundle_id = crate::instance::bundle_id().unwrap_or_default();
         let mut existing = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
         for (server, binary) in [
             ("synth_plugins", "synth-plugins-mcp"),
@@ -417,13 +617,18 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
             ("synth_visuals", "synth-visuals-mcp"),
             ("synth_optimizers", "synth-optimizers-mcp"),
             ("synth_session", "synth-session-mcp"),
+            ("synth_traces", "synth-traces-mcp"),
+            ("synth_diagnostics", "synth-diagnostics-mcp"),
         ] {
             if !crate::context::mcp_group_enabled("bundled") {
                 continue;
             }
-            if server == "synth_optimizers" && !crate::plugins::optimizers_plugin_enabled() {
-                continue;
-            }
+            // A disabled plugin keeps its MCP server registered. Dropping it
+            // made the capability vanish with no way for the agent to learn
+            // why — the same failure the sidebar's Plugins section fixes for
+            // the human. Operations refuse with a typed `plugin_not_ready`
+            // instead, enforced in `optimizers::recipes::require_plugin_ready`
+            // rather than by whether this file ran at session start.
             let bin = exe
                 .parent()
                 .map(|dir| dir.join(binary))
@@ -439,8 +644,8 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
                 continue;
             }
             existing.push_str(&format!(
-                "\n{heading}\ncommand = \"{}\"\nargs = []\n{}default_tools_approval_mode = \"approve\"\nenv = {{ {} = \"{}\", SYNTH_SESSION_ID = \"{}\" }}\n",
-                toml_string(&bin.display().to_string()), mcp_enabled_tools(server), mcp_ipc_env_key(server), toml_string(&ipc.display().to_string()), toml_string(&request.session_id),
+                "\n{heading}\ncommand = \"{}\"\nargs = []\n{}default_tools_approval_mode = \"approve\"\n{}",
+                toml_string(&bin.display().to_string()), mcp_enabled_tools(server), mcp_env_config(server, &ipc, &request.session_id, &app_name, &bundle_id),
             ));
         }
         fs::write(home.join("config.toml"), existing)?;
@@ -734,9 +939,13 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         // tools callable for other MCP clients, while visual_manage routes the
         // same operations after the visual skill is loaded.
         "synth_visuals" => "enabled_tools = [\"visual_manage\"]\n",
-        "synth_optimizers" => "enabled_tools = [\"optimizer_manage\"]\n",
+        // Keep the compact facade and the two eval-specific aliases visible.
+        // Some models reliably select a dedicated schema while others follow
+        // the facade; both route through the same production adapter.
+        "synth_optimizers" => "enabled_tools = [\"optimizer_manage\", \"optimizer_stage_eval_candidates\", \"optimizer_start_recipe\"]\n",
         "synth_plugins" => "enabled_tools = [\"plugin_manage\"]\n",
         "synth_session" => "enabled_tools = [\"session_present\"]\n",
+        "synth_diagnostics" => "enabled_tools = [\"diagnostics_manage\"]\n",
         _ => "",
     }
 }
@@ -746,6 +955,23 @@ pub(crate) fn mcp_ipc_env_key(server: &str) -> &'static str {
         "synth_visuals" => "SYNTH_VISUALS_IPC_FILE",
         _ => "SYNTH_DESKTOP_IPC_FILE",
     }
+}
+
+pub(crate) fn mcp_env_config(
+    server: &str,
+    ipc: &Path,
+    session_id: &str,
+    app_name: &str,
+    bundle_id: &str,
+) -> String {
+    format!(
+        "env = {{ {} = \"{}\", SYNTH_SESSION_ID = \"{}\", SYNTH_DESKTOP_APP_NAME = \"{}\", SYNTH_DESKTOP_BUNDLE_ID = \"{}\" }}\n",
+        mcp_ipc_env_key(server),
+        toml_string(&ipc.display().to_string()),
+        toml_string(session_id),
+        toml_string(app_name),
+        toml_string(bundle_id),
+    )
 }
 
 /// Codex appends `/responses` to the provider base URL. Laguna and standard

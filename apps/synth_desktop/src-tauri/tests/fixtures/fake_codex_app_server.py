@@ -6,6 +6,19 @@ import os
 import pathlib
 import sys
 
+if sys.argv[1:] == ["debug", "models", "--bundled"]:
+    print(json.dumps({
+        "models": [{
+            "slug": "fixture-fallback",
+            "base_instructions": "Fixture bundled model instructions.",
+            "context_window": 272000,
+            "max_context_window": 1000000,
+            "input_modalities": ["text", "image"],
+            "supports_image_detail_original": True,
+        }]
+    }))
+    raise SystemExit(0)
+
 
 home = pathlib.Path(os.environ["CODEX_HOME"])
 home.mkdir(parents=True, exist_ok=True)
@@ -19,6 +32,9 @@ turn_number = 0
 exit_on_turn_start = home / "exit-on-turn-start"
 reject_thread_resume = home / "reject-thread-resume"
 request_approval_on_turn_start = home / "request-approval-on-turn-start"
+complete_before_turn_start_response = home / "complete-before-turn-start-response"
+final_answer_then_exit = home / "final-answer-then-exit"
+approval_response_path = home / "approval-response.json"
 
 
 def send(message: dict) -> None:
@@ -38,6 +54,14 @@ for raw in sys.stdin:
     method = message.get("method")
     request_id = message.get("id")
     params = message.get("params") or {}
+    if method is None and isinstance(request_id, int) and request_id >= 9000:
+        approval_response_path.write_text(json.dumps(message, separators=(",", ":")), encoding="utf-8")
+        send({
+            "jsonrpc": "2.0",
+            "method": "turn/completed",
+            "params": {"turn": {"id": "turn-fixture-approval", "status": "completed", "items": []}},
+        })
+        continue
     if request_id is None:
         continue
     # Desktop's answer to a server-originated approval request. It is already
@@ -70,7 +94,18 @@ for raw in sys.stdin:
                 exit_on_turn_start.unlink()
             sys.exit(0)
         turn_number += 1
-        result = {"turn": {"id": f"turn-fixture-{os.getpid()}-{turn_number}"}}
+        turn_id = f"turn-fixture-{os.getpid()}-{turn_number}"
+        if complete_before_turn_start_response.exists():
+            complete_before_turn_start_response.unlink()
+            send({
+                "jsonrpc": "2.0",
+                "method": "turn/completed",
+                "params": {
+                    "threadId": params.get("threadId", "thread-fixture"),
+                    "turn": {"id": turn_id, "status": "completed", "items": []},
+                },
+            })
+        result = {"turn": {"id": turn_id}}
     elif method == "turn/interrupt":
         result = {}
     elif method == "turn/steer":
@@ -97,6 +132,20 @@ for raw in sys.stdin:
                 "availableDecisions": ["decline", "accept", "acceptForSession"],
             },
         })
+    if method == "turn/start" and final_answer_then_exit.exists():
+        send({
+            "jsonrpc": "2.0",
+            "method": "item/agentMessage",
+            "params": {
+                "item": {
+                    "id": "message-final-fixture",
+                    "type": "agentMessage",
+                    "text": "FINAL_ANSWER_OK",
+                    "phase": "final_answer",
+                },
+            },
+        })
+        sys.exit(0)
     if method == "thread/compact/start":
         compact_turn_id = "compact-fixture-1"
         send({

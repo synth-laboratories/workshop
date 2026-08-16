@@ -1,14 +1,18 @@
 use super::event_pump::{
-    automatic_approval_response, normalized_turn_method, provider_child_env, rejection_response,
-    safe_approval_payload, CREDENTIAL_ENV_NAMES,
+    approval_decisions, automatic_approval_response, is_approval_method, normalized_turn_method,
+    provider_child_env, rejection_response, safe_approval_payload, CREDENTIAL_ENV_NAMES,
 };
 use super::home::{
-    apply_brokered_credential, apply_synth_cloud_provider, auto_compact_token_limit,
-    automatic_thread_title, ensure_home, mcp_enabled_tools, mcp_ipc_env_key, multi_agent_flags,
-    nested_id, normalize_gateway_origin, provider_class, requires_disabled_response_storage,
+    apply_brokered_credential, apply_local_laguna_catalog_metadata, apply_local_laguna_provider,
+    apply_openrouter_provider, apply_synth_cloud_provider, auto_compact_token_limit,
+    automatic_thread_title, ensure_home, install_local_laguna_catalog, local_laguna_catalog,
+    mcp_enabled_tools, mcp_env_config, mcp_ipc_env_key, multi_agent_flags, nested_id,
+    normalize_gateway_origin, provider_class, requires_disabled_response_storage,
     responses_base_url, safe_component, supports_provider_compaction, toml_string,
     validate_reasoning_effort, validate_start, workspace_write_config, ProviderClass,
+    OPENROUTER_RESPONSES_BASE_URL,
 };
+
 use super::manager::CodexManager;
 use super::proto::{
     is_detached_failure, select_approval_decision, CodexApprovalDecisionRequest,
@@ -23,7 +27,10 @@ use super::telemetry::{
 };
 use crate::core_runtime::CoreRuntime;
 use crate::credential_broker::{self, CredentialBroker};
-use crate::domain::{RunService, RunStatus, SessionService, SessionStatus};
+use crate::domain::{
+    RunCreate, RunService, RunStatus, RuntimeTarget, SessionCreate, SessionKind, SessionService,
+    SessionStatus,
+};
 use crate::session::SessionPersistence;
 use crate::storage::{
     CostSource, EventSource, MeasurementKind, UsageBreakdown, UsageRecord, UsageRecordsRepository,
@@ -40,6 +47,125 @@ use std::{
 };
 use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 use tempfile::tempdir;
+
+fn model_catalog_entry(slug: &str, instructions: &str) -> Value {
+    serde_json::json!({
+        "slug": slug,
+        "display_name": slug,
+        "description": format!("metadata for {slug}"),
+        "base_instructions": instructions,
+        "default_reasoning_level": "high",
+        "supported_reasoning_levels": [
+            {"effort": "none", "description": "no reasoning"},
+            {"effort": "high", "description": "reasoning"}
+        ],
+        "shell_type": "unified_exec",
+        "supported_in_api": true,
+        "service_tiers": [],
+        "default_service_tier": "default",
+        "context_window": 262144,
+        "max_context_window": 262144,
+        "input_modalities": ["text"],
+        "supports_parallel_tool_calls": true,
+        "supports_search_tool": false
+    })
+}
+
+fn local_catalog_envelope() -> Value {
+    serde_json::json!({"models": [model_catalog_entry(
+        "poolside/Laguna-XS-2.1-NVFP4-mlx",
+        "Laguna-owned local instructions."
+    )]})
+}
+
+#[test]
+fn local_laguna_catalog_selects_exact_model_as_a_unit_without_first_entry_leakage() {
+    let mut unrelated = model_catalog_entry("openai/gpt-first", "unrelated bundled instructions");
+    unrelated["service_tiers"] = serde_json::json!([{"id": "priority", "name": "Fast"}]);
+    unrelated["default_service_tier"] = serde_json::json!("priority");
+    unrelated["input_modalities"] = serde_json::json!(["text", "image"]);
+    unrelated["supports_search_tool"] = serde_json::json!(true);
+    let selected = model_catalog_entry(
+        "poolside/Laguna-XS-2.1-NVFP4-mlx",
+        "Laguna-owned local instructions.",
+    );
+    let catalog = local_laguna_catalog(
+        serde_json::json!({"models": [unrelated, selected.clone()]}),
+        "poolside/Laguna-XS-2.1-NVFP4-mlx",
+    )
+    .unwrap();
+
+    assert_eq!(catalog["models"][0], selected);
+    assert_eq!(catalog["models"][0]["service_tiers"], serde_json::json!([]));
+    assert_eq!(
+        catalog["models"][0]["input_modalities"],
+        serde_json::json!(["text"])
+    );
+    assert_eq!(catalog["models"][0]["supports_search_tool"], false);
+}
+
+#[test]
+fn local_laguna_provider_uses_daemon_identity_and_never_advertises_fast_tier() {
+    let temp = tempdir().unwrap();
+    let mut request = test_request(temp.path(), "local-provider-binding");
+    request.model = "laguna-xs-2.1".into();
+    request.service_tier = Some("fast".into());
+
+    apply_local_laguna_provider(&mut request, "poolside/Laguna-XS-2.1-NVFP4-mlx");
+
+    assert_eq!(request.model, "poolside/Laguna-XS-2.1-NVFP4-mlx");
+    assert_eq!(request.service_tier, None);
+    apply_local_laguna_catalog_metadata(&mut request, local_catalog_envelope()).unwrap();
+    assert_eq!(request.service_tier.as_deref(), Some("default"));
+}
+
+#[test]
+fn local_laguna_catalog_rejects_missing_duplicate_or_incomplete_exact_entries() {
+    let exact = model_catalog_entry(
+        "poolside/Laguna-XS-2.1-NVFP4-mlx",
+        "Laguna-owned local instructions.",
+    );
+    let mut incomplete = exact.clone();
+    incomplete
+        .as_object_mut()
+        .unwrap()
+        .remove("base_instructions");
+    for envelope in [
+        serde_json::json!({"models": []}),
+        serde_json::json!({"models": [model_catalog_entry("other", "other")]}),
+        serde_json::json!({"models": [exact.clone(), exact.clone()]}),
+        serde_json::json!({"models": [incomplete]}),
+    ] {
+        assert!(local_laguna_catalog(envelope, "poolside/Laguna-XS-2.1-NVFP4-mlx").is_err());
+    }
+}
+
+#[test]
+fn local_laguna_catalog_installation_fails_closed_without_authenticated_metadata() {
+    let temp = tempdir().unwrap();
+    let mut request = test_request(temp.path(), "catalog-fail-closed");
+    request.local_model_catalog = None;
+    let error = install_local_laguna_catalog(&temp.path().join("home"), &request)
+        .expect_err("local provider must not silently omit its validated catalog");
+    assert!(error
+        .to_string()
+        .contains("authenticated Laguna native Codex model catalog was not prepared"));
+}
+
+#[test]
+fn local_laguna_catalog_installation_materializes_exact_daemon_metadata() {
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    let request = test_request(temp.path(), "catalog-materialized");
+    assert!(install_local_laguna_catalog(&home, &request).unwrap());
+    let catalog: Value =
+        serde_json::from_slice(&fs::read(home.join("model-catalog.json")).unwrap()).unwrap();
+    assert_eq!(catalog["models"][0]["slug"], request.model);
+    assert_eq!(
+        catalog["models"][0]["base_instructions"],
+        "Laguna-owned local instructions."
+    );
+}
 
 fn fixture_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_codex_app_server.py")
@@ -62,6 +188,7 @@ fn test_request(workspace: &Path, session_id: &str) -> CodexSessionStartRequest 
         multi_agent_version: Some(MultiAgentVersion::None),
         auto_compact_token_limit: None,
         writable_roots: Vec::new(),
+        local_model_catalog: Some(local_catalog_envelope()),
         broker_credential: false,
     }
 }
@@ -94,8 +221,15 @@ async fn missing_rollout_on_resume_starts_a_replacement_thread() {
     assert_eq!(methods, vec!["thread/resume", "thread/start"]);
 }
 
+/// These waits poll a spawned fixture process, so they are load-sensitive:
+/// five seconds passed on an idle machine and failed intermittently while a
+/// build or another suite ran alongside. The assertion is that the state
+/// settles at all, not that it settles quickly — give it room so a busy CI box
+/// does not read as a product defect.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 async fn wait_for_record_status(manager: &CodexManager, session_id: &str, expected: &str) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(SETTLE_TIMEOUT, async {
         loop {
             let actual = manager
                 .records
@@ -115,7 +249,7 @@ async fn wait_for_record_status(manager: &CodexManager, session_id: &str, expect
 
 async fn wait_for_run_status(core: &CoreRuntime, run_id: &str, expected: &str) {
     let runs = RunService::new(core.storage().database().clone());
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(SETTLE_TIMEOUT, async {
         loop {
             let actual = runs
                 .get(run_id.to_owned())
@@ -145,7 +279,7 @@ fn fixture_requests(root: &Path, session_id: &str) -> Vec<Value> {
 }
 
 async fn wait_for_pending_approval(manager: &CodexManager) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(SETTLE_TIMEOUT, async {
         loop {
             if manager.approvals.pending_len().await == 1 {
                 break;
@@ -277,7 +411,7 @@ async fn dead_approval_origin_expires_and_drains_pending_state() {
         .unwrap()
         .clone();
     attachment.server.stop().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(SETTLE_TIMEOUT, async {
         loop {
             if manager.approvals.pending_len().await == 0 {
                 break;
@@ -394,6 +528,44 @@ async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
         message["method"] == "thread/resume" && message["params"]["threadId"] == "thread-fixture"
     }));
     manager.close(&request.session_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn final_answer_before_app_server_exit_completes_the_run() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let request = test_request(temp.path(), "final-answer-exit");
+
+    manager
+        .start(app.handle().clone(), request.clone())
+        .await
+        .unwrap();
+    arm_final_answer_then_exit(&codex_root, &request.session_id);
+    let turn_id = manager
+        .start_turn(
+            app.handle().clone(),
+            CodexTurnStartRequest {
+                session_id: request.session_id.clone(),
+                prompt: "reply and finish".into(),
+                effort: Some("none".into()),
+                client_message_id: None,
+            },
+        )
+        .await
+        .unwrap()
+        .turn_id
+        .unwrap();
+
+    wait_for_record_status(&manager, &request.session_id, SessionStatus::Ready.as_str()).await;
+    wait_for_run_status(&core, &turn_id, RunStatus::Completed.as_str()).await;
 }
 
 #[tokio::test]
@@ -556,6 +728,18 @@ fn disarm_turn_start_exit(root: &Path, session_id: &str) {
     }
 }
 
+fn arm_terminal_before_turn_start_response(root: &Path, session_id: &str) {
+    let home = session_home(root, session_id);
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("complete-before-turn-start-response"), "1").unwrap();
+}
+
+fn arm_final_answer_then_exit(root: &Path, session_id: &str) {
+    let home = session_home(root, session_id);
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("final-answer-then-exit"), "1").unwrap();
+}
+
 fn send_request(start: CodexSessionStartRequest, prompt: &str) -> CodexTurnSendRequest {
     CodexTurnSendRequest {
         start,
@@ -601,6 +785,77 @@ async fn turn_send_journals_the_renderer_message_id_once() {
         user_messages[0].payload["content"],
         "one logical submission"
     );
+
+    manager.close(&request.session_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn terminal_before_run_creation_reconciles_the_exact_turn() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let request = test_request(temp.path(), "fast-terminal");
+    arm_terminal_before_turn_start_response(&codex_root, &request.session_id);
+
+    let info = manager
+        .send_turn(
+            app.handle().clone(),
+            send_request(request.clone(), "finish before the start response"),
+        )
+        .await
+        .expect("the fast turn is durably reconciled");
+    let turn_id = info.turn_id.expect("fixture returns a turn id");
+    wait_for_run_status(&core, &turn_id, "completed").await;
+    assert_eq!(
+        manager.records.read().await[&request.session_id].status,
+        SessionStatus::Ready.as_str(),
+        "send_turn must return with the cache reconciled, not briefly stuck running"
+    );
+
+    let session = core
+        .sessions()
+        .get(request.session_id.clone())
+        .await
+        .unwrap()
+        .expect("session remains durable");
+    assert_eq!(session.active_run_id, None);
+    let run = core
+        .runs()
+        .get(turn_id.clone())
+        .await
+        .unwrap()
+        .expect("run remains durable");
+    assert_eq!(run.status, "completed");
+    assert_eq!(run.outcome.unwrap()["turn"]["id"], turn_id);
+    let events = core
+        .journal()
+        .session_events_after(request.session_id.clone(), 0, 200)
+        .await
+        .unwrap();
+    let terminal_index = events
+        .iter()
+        .position(|event| event.kind == "turn/completed")
+        .expect("fixture terminal is journalled");
+    let run_started_index = events
+        .iter()
+        .position(|event| event.kind == "run.started")
+        .expect("run creation is journalled");
+    assert!(
+        terminal_index < run_started_index,
+        "fixture must exercise terminal-before-run creation"
+    );
+    assert!(events.iter().any(|event| {
+        event.kind == "run.status_changed"
+            && event.payload["runId"] == turn_id
+            && event.payload["to"] == "completed"
+    }));
 
     manager.close(&request.session_id).await.unwrap();
 }
@@ -745,6 +1000,34 @@ async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() 
     let codex_root = temp.path().join("codex");
     fs::create_dir_all(&codex_root).unwrap();
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    SessionService::new(core.storage().database().clone())
+        .create_or_update(SessionCreate {
+            id: "restored-running".into(),
+            title: "Restored local turn".into(),
+            kind: SessionKind::Codex,
+            target: RuntimeTarget::local_laguna(),
+            project_id: None,
+            remote_id: None,
+            codex_thread_id: Some("thread-restored".into()),
+            status: SessionStatus::Ready,
+            state_generation: None,
+            metadata: json!({"titleOrigin":"automatic"}),
+            source: EventSource::Codex,
+        })
+        .await
+        .unwrap();
+    RunService::new(core.storage().database().clone())
+        .start(RunCreate {
+            id: "orphaned-run".into(),
+            session_id: "restored-running".into(),
+            mode: "codex_turn".into(),
+            model: Some("laguna".into()),
+            adapter: None,
+            metadata: json!({"threadId":"thread-restored"}),
+            source: EventSource::Codex,
+        })
+        .await
+        .unwrap();
     let record = CodexSessionRecord {
         session_id: "restored-running".into(),
         thread_id: "thread-restored".into(),
@@ -790,6 +1073,13 @@ async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() 
         .unwrap();
     assert_eq!(info.thread_id, "thread-restored");
     assert!(info.turn_id.is_some());
+    let orphaned = RunService::new(core.storage().database().clone())
+        .get("orphaned-run".into())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(orphaned.status, RunStatus::Interrupted.as_str());
+    assert_eq!(orphaned.outcome.unwrap()["reason"], "desktop_reattached");
     let requests = fixture_requests(&codex_root, "restored-running");
     assert!(requests.iter().any(|message| {
         message["method"] == "thread/resume" && message["params"]["threadId"] == "thread-restored"
@@ -1140,6 +1430,105 @@ fn approval_payload_does_not_expose_command_or_arbitrary_reason() {
     assert!(!encoded.contains("raw model"));
 }
 #[test]
+fn approval_request_variants_and_nested_decisions_are_normalized() {
+    assert!(is_approval_method("item/commandExecution/requestApproval"));
+    assert!(is_approval_method("item/commandExecution/request_approval"));
+    assert!(is_approval_method("permissions/request"));
+    assert!(!is_approval_method("item/commandExecution/started"));
+    assert_eq!(
+        approval_decisions(&json!({"item":{"available_decisions":["decline","accept"]}})),
+        vec!["decline", "accept"]
+    );
+}
+#[tokio::test]
+async fn app_server_approval_is_journaled_and_resumes_after_one_approval() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let mut request = test_request(temp.path(), "approval-round-trip");
+    request.approval_policy = Some("untrusted".into());
+    let home = codex_root.join("homes").join("approval-round-trip");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("request-approval-on-turn-start"), "1").unwrap();
+    manager
+        .start(app.handle().clone(), request.clone())
+        .await
+        .unwrap();
+    manager
+        .start_turn(
+            app.handle().clone(),
+            CodexTurnStartRequest {
+                session_id: request.session_id.clone(),
+                prompt: "request a shell approval".into(),
+                effort: Some("none".into()),
+                client_message_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let approval = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let events = core
+                .journal()
+                .session_events_after(request.session_id.clone(), 0, 100)
+                .await
+                .unwrap();
+            if let Some(event) = events
+                .into_iter()
+                .find(|event| event.kind == "approval.requested")
+            {
+                break event;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("approval should be journaled");
+    let approval_id = approval.payload["approvalId"].as_str().unwrap().to_owned();
+    // The fixture requests approval for the isolated child-home parent. The
+    // journal must describe that exact requested scope; substituting a generic
+    // workspace would misrepresent where the approved command can run.
+    let requested_scope = home.parent().unwrap().display().to_string();
+    assert_eq!(
+        approval.payload["detail"],
+        format!("Run a shell command in {requested_scope}")
+    );
+    assert_eq!(approval.payload["scope"], requested_scope);
+    assert!(!approval.payload.to_string().contains("hidden-command"));
+
+    manager
+        .resolve_approval(
+            app.handle().clone(),
+            super::proto::CodexApprovalDecisionRequest {
+                session_id: request.session_id.clone(),
+                approval_id,
+                decision: "once".into(),
+            },
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !home.join("approval-response.json").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("approval response should reach the app server");
+    let response: Value =
+        serde_json::from_str(&fs::read_to_string(home.join("approval-response.json")).unwrap())
+            .unwrap();
+    assert_eq!(response["result"]["decision"], "accept");
+    manager.close(&request.session_id).await.unwrap();
+}
+#[test]
 fn sanitizes_session_home_component() {
     assert_eq!(safe_component("a/b c"), "a_b_c");
 }
@@ -1166,7 +1555,7 @@ fn advertises_only_the_compact_visual_tool_to_codex() {
     assert_eq!(mcp_enabled_tools("synth_containers"), "");
     assert_eq!(
         mcp_enabled_tools("synth_optimizers"),
-        "enabled_tools = [\"optimizer_manage\"]\n"
+        "enabled_tools = [\"optimizer_manage\", \"optimizer_stage_eval_candidates\", \"optimizer_start_recipe\"]\n"
     );
     assert_eq!(
         mcp_enabled_tools("synth_session"),
@@ -1245,10 +1634,21 @@ fn generated_mcp_configs_use_each_adapter_owned_ipc_variable() {
         mcp_ipc_env_key("synth_optimizers"),
         "SYNTH_DESKTOP_IPC_FILE"
     );
-    assert_eq!(
-        mcp_ipc_env_key("synth_session"),
-        "SYNTH_DESKTOP_IPC_FILE"
+    assert_eq!(mcp_ipc_env_key("synth_session"), "SYNTH_DESKTOP_IPC_FILE");
+}
+#[test]
+fn generated_mcp_configs_pass_desktop_identity_for_visual_capture() {
+    let config = mcp_env_config(
+        "synth_visuals",
+        Path::new("/tmp/visuals-ipc.json"),
+        "session-123",
+        "Synth Workshop v0.4 · cua",
+        "com.synth.desktop.v04.dev.cua",
     );
+    assert!(config.contains("SYNTH_VISUALS_IPC_FILE = \"/tmp/visuals-ipc.json\""));
+    assert!(config.contains("SYNTH_SESSION_ID = \"session-123\""));
+    assert!(config.contains("SYNTH_DESKTOP_APP_NAME = \"Synth Workshop v0.4 · cua\""));
+    assert!(config.contains("SYNTH_DESKTOP_BUNDLE_ID = \"com.synth.desktop.v04.dev.cua\""));
 }
 #[test]
 fn normalizes_responses_provider_base_url() {
@@ -1346,10 +1746,28 @@ fn synth_cloud_provider_writes_expected_config() {
     let optimizer_skill =
         fs::read_to_string(home.join("skills/use-synth-optimizers/SKILL.md")).unwrap();
     assert!(optimizer_skill.contains("optimizer_manage"));
+    // Every reference the skill links must exist in the home, or an agent is
+    // told to read a file it cannot open.
+    for name in ["gepa.md", "gelo.md", "eval.md", "sft.md"] {
+        assert!(
+            optimizer_skill.contains(&format!("references/{name}")),
+            "SKILL.md should link {name}"
+        );
+        assert!(
+            home.join("skills/use-synth-optimizers/references")
+                .join(name)
+                .is_file(),
+            "{name} should be installed beside SKILL.md"
+        );
+    }
     assert!(optimizer_skill.contains("If the first `await_ready` reports"));
     assert!(optimizer_skill.contains("Do not inspect processes"));
     assert!(optimizer_skill.contains("on the first `start` call"));
     assert!(optimizer_skill.contains("Never run a shell or terminal command, including `sleep`"));
+    let optimizer_eval_reference =
+        fs::read_to_string(home.join("skills/use-synth-optimizers/references/eval.md")).unwrap();
+    assert!(optimizer_eval_reference.contains("candidate_set_id"));
+    assert!(optimizer_eval_reference.contains("stage_eval_candidates"));
     let visuals_skill = fs::read_to_string(home.join("skills/use-synth-visuals/SKILL.md")).unwrap();
     assert!(visuals_skill.contains("Optimizer visuals are a strict exception"));
 }
@@ -1387,6 +1805,8 @@ fn codex_oauth_materializes_private_chatgpt_auth_without_child_env() {
     let auth = fs::read_to_string(home.join("auth.json")).unwrap();
     assert!(auth.contains("\"auth_mode\": \"chatgpt\""));
     assert!(auth.contains("access-secret"));
+    assert!(!auth.contains("refresh-secret"));
+    assert!(auth.contains("synth-desktop-does-not-delegate-refresh"));
     assert_eq!(provider_child_env(&request).unwrap(), None);
     #[cfg(unix)]
     {
@@ -1575,6 +1995,30 @@ fn synth_cloud_provider_overwrites_renderer_api_key() {
 }
 
 #[test]
+fn openrouter_provider_overwrites_renderer_endpoint_before_leasing() {
+    let temp = tempdir().unwrap();
+    let (broker, _listener) =
+        CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new()))
+            .unwrap();
+    let mut request = test_request(temp.path(), "openrouter-origin-custody");
+    request.provider_name = Some("openrouter".into());
+    request.base_url = "https://credential-thief.example/api/v1".into();
+    request.api_key = "renderer-value".into();
+
+    apply_openrouter_provider(&mut request, Some("sk-or-native")).unwrap();
+    assert_eq!(request.base_url, OPENROUTER_RESPONSES_BASE_URL);
+    assert_eq!(request.api_key, "sk-or-native");
+    assert!(request.broker_credential);
+
+    apply_brokered_credential(&mut request, &broker).unwrap();
+    assert_eq!(request.base_url, format!("{}/api/v1", broker.origin()));
+    assert_eq!(
+        broker.upstream_for(&request.api_key).as_deref(),
+        Some("https://openrouter.ai")
+    );
+}
+
+#[test]
 fn synth_cloud_normalizes_a_local_bind_address_for_the_client() {
     let temp = tempdir().unwrap();
     let (broker, _listener) =
@@ -1710,6 +2154,7 @@ async fn a_provider_name_change_alone_respawns_the_child() {
     let before = broker.token_for("lease-provider-identity").unwrap();
     manager.receipts().push(credential_broker::SettledReceipt {
         session_id: "lease-provider-identity".into(),
+        turn_scope: None,
         provider_response_id: "resp-born-under-old-name".into(),
         model: None,
         prompt_tokens: None,
@@ -1785,6 +2230,66 @@ async fn a_rotated_credential_respawns_the_child_with_a_fresh_lease() {
     assert_ne!(old_token, new_token);
     assert!(!broker.resolves(&old_token));
     assert!(broker.resolves(&new_token));
+}
+
+#[tokio::test]
+async fn a_refreshed_chatgpt_access_token_rebinds_without_delegating_refresh() {
+    let temp = tempdir().unwrap();
+    let root = temp.path().join("codex");
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let app_handle = app.handle().clone();
+    let request_with = |access: &str| {
+        let mut request = test_request(temp.path(), "oauth-rotation");
+        request.provider_name = Some(crate::codex_oauth::PROVIDER_ID.into());
+        request.provider_title = Some("ChatGPT subscription (Codex OAuth)".into());
+        request.base_url = "https://chatgpt.com/backend-api/codex".into();
+        request.api_key = serde_json::to_string(&crate::codex_oauth::Credential {
+            access_token: access.into(),
+            refresh_token: "native-refresh-secret".into(),
+            id_token: "bounded-id-token".into(),
+            expires_ms: 2_000_000_000_000,
+            account_id: "acct_test".into(),
+            account_hint: None,
+            last_refresh_ms: 1_700_000_000_000,
+        })
+        .unwrap();
+        request
+    };
+
+    manager
+        .start(app_handle.clone(), request_with("old-access"))
+        .await
+        .unwrap();
+    let old_attachment = manager
+        .sessions
+        .read()
+        .await
+        .get("oauth-rotation")
+        .unwrap()
+        .attachment_id;
+
+    manager
+        .start(app_handle, request_with("new-access"))
+        .await
+        .unwrap();
+    let new_attachment = manager
+        .sessions
+        .read()
+        .await
+        .get("oauth-rotation")
+        .unwrap()
+        .attachment_id;
+    assert_ne!(old_attachment, new_attachment);
+    let auth = fs::read_to_string(root.join("homes/oauth-rotation/auth.json")).unwrap();
+    assert!(auth.contains("new-access"));
+    assert!(!auth.contains("old-access"));
+    assert!(!auth.contains("native-refresh-secret"));
 }
 
 #[test]
@@ -2055,9 +2560,11 @@ fn tracker_for(provider: &str, turn_id: &str) -> TurnPerformanceTracker {
         provider: provider.into(),
         model_id: "openrouter/poolside/laguna-s-2.1".into(),
         turn_id: turn_id.into(),
+        receipt_scope: turn_id.into(),
         started_at_ms: 1_000,
         first_output_at_ms: Some(1_100),
         last_output_at_ms: Some(1_900),
+        generation_active_ms: 800,
         usage: TurnTokenUsage {
             input_tokens: Some(1_000),
             cached_input_tokens: None,
@@ -2075,6 +2582,7 @@ fn settled_receipt(
 ) -> credential_broker::SettledReceipt {
     credential_broker::SettledReceipt {
         session_id: session_id.into(),
+        turn_scope: Some("turn-1".into()),
         provider_response_id: response_id.into(),
         model: Some("openrouter/poolside/laguna-s-2.1".into()),
         prompt_tokens: Some(500),
@@ -2111,7 +2619,7 @@ async fn finalize_turn(
 
 async fn usage_totals(core: &Arc<CoreRuntime>) -> UsageBreakdown {
     UsageRecordsRepository::new(core.storage().database().clone())
-        .summary("all".into(), None)
+        .summary("all".into(), None, 0)
         .await
         .unwrap()
         .totals
@@ -2195,11 +2703,10 @@ async fn local_turns_neither_drain_receipts_nor_carry_any_charge() {
     assert_eq!(receipts.drain(session).len(), 1);
 }
 
-/// The cancellation-race contract: a receipt landing after its turn
-/// finalized stays queued no longer than the session's next finalize, and
-/// never becomes a row of its own.
+/// A cancellation-race receipt retains its original turn scope and can never
+/// be charged to the next turn merely because that turn finalized later.
 #[tokio::test]
-async fn a_late_receipt_waits_for_the_next_finalize_and_never_invents_a_row() {
+async fn a_late_receipt_is_never_misattributed_to_the_next_turn() {
     let temp = tempdir().unwrap();
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
     let receipts = credential_broker::ReceiptStore::new();
@@ -2215,6 +2722,7 @@ async fn a_late_receipt_waits_for_the_next_finalize_and_never_invents_a_row() {
     finalize_turn(&core, &receipts, session, "synth-cloud", "turn-2").await;
     let totals = usage_totals(&core).await;
     assert_eq!(totals.requests, 2);
-    assert!((totals.billed_cost_usd.unwrap() - 0.05).abs() < 1e-12);
-    assert_eq!(totals.cost_source, CostSource::SynthCloud);
+    assert_eq!(totals.billed_cost_usd, None);
+    assert_eq!(totals.cost_source, CostSource::None);
+    assert_eq!(receipts.drain(session).len(), 1);
 }

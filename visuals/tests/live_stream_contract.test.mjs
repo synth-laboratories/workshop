@@ -53,6 +53,89 @@ test("batch ingest preserves lane-local identity, gaps, controls, and duplicate 
   assert.equal(healed.lastSequenceByScope.get("a"), 3);
 });
 
+test("numeric string sequences preserve lane-local gaps and recovery", () => {
+  const initial = ingestLiveEnvelopeBatch(undefinedState(), [
+    { lane: "a", sequence: "1", kind: "observation" },
+    { lane: "b", sequence: "1", kind: "observation" },
+    { lane: "a", sequence: "3", kind: "observation" },
+  ]);
+  assert.deepEqual(initial.gaps, [{ scope: "a", after: 1, before: 3 }]);
+  const healed = ingestLiveEnvelopeBatch(initial, [
+    { lane: "a", sequence: "2", kind: "observation" },
+  ]);
+  assert.deepEqual(healed.gaps, []);
+  assert.equal(healed.lastSequenceByScope.get("a"), 3);
+});
+
+test("replay pages normalize every producer shape and never invent a cursor", async () => {
+  const { parseReplayPage } = await import("../runtime/replayClient.ts");
+  const paged = parseReplayPage(
+    { page: { events: [{ sequence: 4 }] }, cursor: { next: 4, high_water: 9, has_more: true, closed: false } },
+    0,
+  );
+  assert.equal(paged.events.length, 1);
+  assert.equal(paged.cursor.next, 4);
+  assert.equal(paged.cursor.hasMore, true);
+  assert.equal(paged.cursor.closed, false);
+
+  // Top-level events with no cursor: the next cursor is the highest sequence
+  // seen, never a guess past it.
+  const flat = parseReplayPage({ events: [{ sequence_number: 7 }] }, 3);
+  assert.equal(flat.cursor.next, 7);
+  assert.equal(flat.cursor.hasMore, false);
+
+  // A bare array has no cursor at all, so it is one closed page. Any other
+  // reading would silently drop rows or spin forever.
+  const bare = parseReplayPage([{ sequence: 1 }], 0);
+  assert.equal(bare.cursor.closed, true);
+
+  // An unreadable page is an error, never an empty page.
+  assert.throws(() => parseReplayPage({ rows: [] }, 0), /neither page.events nor events/);
+  assert.throws(() => parseReplayPage(null, 0), /not an object/);
+});
+
+test("declared live bindings become replay streams, and a missing poll authority is reported", async () => {
+  const { replayStreamsFromBindings } = await import("../runtime/replayClient.ts");
+  const { streams, missingTransport } = replayStreamsFromBindings([
+    { slot: "stream", kind: "live_sse", source: "http://127.0.0.1:8114/rollouts/r1/stream", poll_url: "http://127.0.0.1:8114/rollouts/r1/events" },
+    { slot: "stream", kind: "live_sse", source: "http://127.0.0.1:8114/rollouts/r2/stream", poll_url: "http://127.0.0.1:8114/rollouts/r2/events" },
+    { slot: "stream", kind: "live_sse", source: "http://127.0.0.1:8114/rollouts/r3/stream" },
+    { slot: "notes", kind: "inline", source: undefined },
+  ]);
+  assert.equal(streams.length, 2);
+  assert.equal(streams[0].pollUrl, "http://127.0.0.1:8114/rollouts/r1/events");
+  // A stream with no durable authority cannot replay after it closes. It is
+  // named, not quietly dropped.
+  assert.deepEqual(missingTransport, ["http://127.0.0.1:8114/rollouts/r3/stream"]);
+});
+
+test("ten declared rollout streams each keep their own durable cursor", async () => {
+  const { createReplayClient } = await import("../runtime/replayClient.ts");
+  const asked = [];
+  const streams = Array.from({ length: 10 }, (_, index) => ({
+    streamId: `roll_${index}`,
+    pollUrl: `http://127.0.0.1:8114/rollouts/roll_${index}/events`,
+  }));
+  const client = createReplayClient(streams, async (pollUrl, after, limit) => {
+    asked.push({ pollUrl, after, limit });
+    return { page: { events: [{ sequence: after + 1 }] }, cursor: { next: after + 1, closed: true } };
+  });
+  const pages = await Promise.all(streams.map((stream) => client.poll(stream, 0, 500)));
+  assert.equal(client.streams.length, 10);
+  assert.equal(asked.length, 10);
+  assert.equal(new Set(asked.map((call) => call.pollUrl)).size, 10);
+  assert.ok(pages.every((page) => page.cursor.closed));
+});
+
+test("stream_id plus sequence is the Harbor live identity", () => {
+  const first = ingestLiveEnvelopeBatch(undefinedState(), [
+    { stream_id: "stream-a", sequence: 1, kind: "trial.planned" },
+    { stream_id: "stream-a", sequence: 1, kind: "trial.planned" },
+    { stream_id: "stream-b", sequence: 1, kind: "trial.planned" },
+  ]);
+  assert.equal(first.events.length, 2);
+});
+
 function undefinedState() {
   return ingestLiveEnvelopes([]);
 }
@@ -125,10 +208,42 @@ test("normalized live bindings retain the declared poll endpoint for recovery", 
   assert.equal(result.slots.stream.data.poll_url, binding.poll_url);
 });
 
-test("live stream recovery also runs after EventSource reaches CLOSED", () => {
-  const hook = readFileSync(join(root, "chrome/useLiveEvalStream.ts"), "utf8");
-  assert.match(hook, /es\.onerror = \(\) => \{\s*if \(!abort\.signal\.aborted\)/);
-  assert.doesNotMatch(hook, /readyState !== EventSource\.CLOSED/);
+test("multi-source slots are explicit and single-source slots reject duplicates", async () => {
+  const { bindTemplateSlots } = await import("../runtime/bind.ts");
+  const bindings = [
+    { slot: "stream", kind: "live_sse", source: "http://127.0.0.1:8098/rollouts/r1/stream", poll_url: "http://127.0.0.1:8098/rollouts/r1/events" },
+    { slot: "stream", kind: "live_sse", source: "http://127.0.0.1:8098/rollouts/r2/stream", poll_url: "http://127.0.0.1:8098/rollouts/r2/events" },
+  ];
+  const accepted = await bindTemplateSlots({
+    id: "live.craftax.v1",
+    slots: [{ name: "stream", accepts: ["live_sse"], required: true, multiple: true }],
+  }, bindings);
+  assert.equal(accepted.errors.length, 0);
+  assert.equal(accepted.slots.stream.source, "multiple");
+  assert.equal(accepted.slots.stream.data.length, 2);
+
+  const rejected = await bindTemplateSlots({
+    id: "live.harbor_eval.v1",
+    slots: [{ name: "stream", accepts: ["live_sse"], required: true }],
+  }, bindings);
+  assert.match(rejected.errors[0], /accepts one binding, received 2/);
+});
+
+test("a template cannot rest in an unexplained pending state", async () => {
+  const streams = await import("../chrome/useLiveEvalStreams.ts");
+  const hook = readFileSync(join(root, "chrome/useLiveEvalStreams.ts"), "utf8");
+  assert.equal(typeof streams.useLiveEvalStreams, "function");
+  // Declared streams that never answer become an error on a bounded deadline.
+  // The failure this replaced had no deadline, so "never asked" and "asked and
+  // waiting" were the same rendered state for as long as anyone watched.
+  assert.match(hook, /REPLAY_FIRST_RESPONSE_TIMEOUT_MS/);
+  assert.match(hook, /streamSubscribeTimeout/);
+  // Transport arrives as the host's client. The hook must not reach for
+  // bindings or construct URLs itself: a template that discovers its own
+  // transport can fail to discover one and say nothing.
+  assert.doesNotMatch(hook, /from "\.\.\/runtime\/bind\.ts"/);
+  assert.doesNotMatch(hook, /new URL\(/);
+  assert.doesNotMatch(hook, /fetch\(/);
 });
 
 test("ingest de-dupes, ignores heartbeats, and treats stream.subscribed as ready", () => {
@@ -147,16 +262,15 @@ test("ingest de-dupes, ignores heartbeats, and treats stream.subscribed as ready
 
 test("finite fixture replay is ready without a live subscription control", () => {
   const hook = readFileSync(join(root, "chrome/useLiveEvalStream.ts"), "utf8");
-  assert.match(
-    hook,
-    /if \(fixtureEvents\?\.length\) \{\s*\/\/[^]*?setReady\(true\);\s*setLive\(true\);/,
-    "local fixtures must finish as ready instead of falling back to connecting"
-  );
-  assert.match(
-    hook,
-    /setReady\(fixtureReady \|\| ingest\.current\.ready\)/,
-    "publishing fixture envelopes must not erase the local-ready state"
-  );
+  // A bundled fixture is complete local evidence. It must not wait on a
+  // live-only `stream.subscribed` envelope that will never arrive, and it must
+  // finish at `terminal` rather than resting in a pending state that reads as
+  // a stalled connection.
+  assert.match(hook, /ready: Boolean\(fixtureEvents\?\.length\)/);
+  assert.match(hook, /setState\("terminal"\)/);
+  // A declared stream always wins over a fixture: local example evidence never
+  // stands in for the transport a visual actually declared.
+  assert.match(hook, /declared \? live : fixture/);
 });
 
 test("live Craftax resolves persisted fixture references from packaged template assets", () => {
@@ -182,6 +296,22 @@ test("multiplexed rollout-local event ids never collapse across lanes", () => {
   ]);
   assert.equal(state.events.length, 4);
   assert.deepEqual(state.events.map((event) => event.rollout_id), ["seed-0", "seed-1", "seed-0", "seed-1"]);
+});
+
+test("payload-carried rollout identity is promoted before multiplexed replay", () => {
+  const state = ingestLiveEnvelopes([
+    { kind: "observation", event_id: "1", sequence: 1, payload: { rollout_id: "seed-2001", step: 0 } },
+    { kind: "observation", event_id: "1", sequence: 1, payload: { rollout_id: "seed-2002", step: 0 } },
+    { kind: "reward_signal", event_id: "5", sequence: 5, payload: { rollout_id: "seed-2001", reward: 2 } },
+    { kind: "reward_signal", event_id: "5", sequence: 5, payload: { rollout_id: "seed-2002", reward: 1 } },
+  ]);
+  assert.equal(state.events.length, 4);
+  assert.deepEqual(state.conflicts, []);
+  assert.deepEqual(state.events.map((event) => event.rollout_id), [
+    "seed-2001", "seed-2002", "seed-2001", "seed-2002",
+  ]);
+  assert.equal(state.lastSequenceByScope.get("seed-2001"), 5);
+  assert.equal(state.lastSequenceByScope.get("seed-2002"), 5);
 });
 
 test("A15 exact reconnect duplicates collapse but conflicting duplicates fail closed", () => {

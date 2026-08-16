@@ -41,6 +41,7 @@ const EXPECTED_IDS = [
   "live.harbor_eval.v1",
   "live.intern_acceptance.v1",
   "model.compare.v1",
+  "optimizer.eval.live.v1",
   "optimizer.gepa.candidate.v1",
   "optimizer.gepa.evaluations.v1",
   "optimizer.gepa.frontier.v1",
@@ -54,6 +55,7 @@ const EXPECTED_IDS = [
   "optimizer.sft.rollouts.v1",
   "posttrain.rollout_viewer.v1",
   "reward.breakdown.v1",
+  "trace.catalog.v1",
   "trace.rollout_inspector.v1",
 ];
 

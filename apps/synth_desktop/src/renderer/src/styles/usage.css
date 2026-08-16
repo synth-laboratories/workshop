@@ -1,0 +1,122 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Data → Usage — the device usage dashboard.
+
+   The first page dialect to live outside app.css. It is token-only by
+   construction (see the README's seven rules), which is why it can sit in its
+   own file instead of adding to the debt app.css is trying to shed.
+
+   Loaded last so it wins over the shell's un-migrated rules; it introduces no
+   selector app.css also styles, so the order is a safeguard, not a fight.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* ── Series palette ──────────────────────────────────────────────────────
+   Series hues are assigned by rank and never cycled, so a provider keeps its
+   colour when the window changes the series count. The four steps are
+   validated for lightness, chroma, CVD separation, and contrast against both
+   the light (#ffffff) and dark (#16171a) chart surfaces; a fifth provider
+   folds into the neutral `other` slot rather than inventing a hue. Identity is
+   never colour-alone — every band is named in the legend, the tooltip, and the
+   Breakdown table.
+   ────────────────────────────────────────────────────────────────────────── */
+:root {
+	--usage-series-one: #f05f22;
+	--usage-series-two: #447dfc;
+	--usage-series-three: #1f9d76;
+	--usage-series-four: #9061e8;
+	--usage-series-other: #8c929b;
+}
+.usage-series-one { --series: var(--usage-series-one); }
+.usage-series-two { --series: var(--usage-series-two); }
+.usage-series-three { --series: var(--usage-series-three); }
+.usage-series-four { --series: var(--usage-series-four); }
+.usage-series-other { --series: var(--usage-series-other); }
+
+.usage-panel { gap: var(--sp-5); }
+.usage-panel-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--sp-4); }
+.usage-panel-title { margin: 0; font-size: var(--fs-h2); font-weight: var(--fw-semi); letter-spacing: var(--tracking-tight); }
+.usage-panel-lede { margin: var(--sp-1) 0 0; color: var(--color-text-muted); font-size: var(--fs-meta); }
+.usage-panel-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+
+.usage-eyebrow { color: var(--color-text-faint); font-size: var(--fs-micro); font-weight: var(--fw-semi); letter-spacing: var(--tracking-eyebrow); text-transform: uppercase; }
+.usage-muted { margin: 0; color: var(--color-text-faint); font-size: var(--fs-meta); }
+.usage-faint { color: var(--color-text-faint); }
+.usage-num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.usage-segmented { display: inline-flex; gap: 1px; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: var(--radius-xs); background: var(--border-subtle); }
+.usage-segmented-button { min-height: 28px; padding: 0 var(--sp-3); border: 0; background: var(--surface-raised); color: var(--color-text-muted); font-size: var(--fs-meta); font-weight: var(--fw-medium); cursor: pointer; }
+.usage-segmented-button:hover { color: var(--color-text); }
+.usage-segmented-button.is-active { background: var(--surface-sunken); color: var(--color-text); }
+.usage-segmented-sm .usage-segmented-button { min-height: 24px; padding: 0 var(--sp-2); font-size: var(--fs-micro); }
+
+.usage-hero { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: var(--sp-4); align-items: stretch; }
+.usage-hero-spend, .usage-hero-chart { display: flex; flex-direction: column; padding: var(--sp-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-raised); }
+.usage-hero-value { margin-top: var(--sp-2); font-size: 34px; font-weight: var(--fw-semi); letter-spacing: var(--tracking-tight); font-variant-numeric: tabular-nums; line-height: var(--lh-tight); }
+.usage-hero-note { margin: var(--sp-1) 0 var(--sp-5); color: var(--color-text-faint); font-size: var(--fs-micro); }
+
+.usage-provider-bars { display: grid; gap: var(--sp-4); margin-top: auto; }
+.usage-provider-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-3); font-size: var(--fs-body); }
+.usage-provider-head span { display: inline-flex; align-items: center; gap: var(--sp-2); color: var(--color-text); }
+.usage-provider-head strong { font-weight: var(--fw-semi); font-variant-numeric: tabular-nums; }
+.usage-provider-track { height: 6px; margin: var(--sp-2) 0 var(--sp-1); overflow: hidden; border-radius: 999px; background: var(--surface-sunken); }
+.usage-provider-fill { height: 100%; border-radius: 999px; background: var(--series); }
+.usage-provider-meta { color: var(--color-text-faint); font-size: var(--fs-micro); }
+
+.usage-swatch { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 3px; background: var(--series); }
+
+.usage-section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.usage-section-head h3 { margin: 0; font-size: var(--fs-strong); font-weight: var(--fw-semi); }
+.usage-legend { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin-top: var(--sp-3); color: var(--color-text-muted); font-size: var(--fs-micro); }
+.usage-legend span { display: inline-flex; align-items: center; gap: var(--sp-2); }
+
+.usage-chart { margin-top: var(--sp-3); }
+.usage-chart-frame { display: flex; gap: var(--sp-3); }
+.usage-chart-axis { position: relative; width: 56px; flex: 0 0 auto; height: 200px; }
+.usage-chart-axis span { position: absolute; right: 0; transform: translateY(-50%); color: var(--color-text-faint); font-size: 10px; font-variant-numeric: tabular-nums; }
+.usage-chart-plot { position: relative; flex: 1 1 auto; height: 200px; min-width: 0; }
+.usage-chart-plot svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.usage-chart-gridline { position: absolute; left: 0; right: 0; height: 1px; background: var(--border-subtle); }
+.usage-chart-area { fill: var(--series); fill-opacity: .85; }
+.usage-chart-seam { fill: none; stroke: var(--surface-raised); stroke-width: 4; }
+.usage-chart-line { fill: none; stroke: var(--series); stroke-width: 1.5; }
+.usage-chart-crosshair { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--color-text-faint); pointer-events: none; }
+.usage-chart-tooltip { position: absolute; top: var(--sp-2); z-index: 2; display: grid; gap: 3px; min-width: 132px; padding: var(--sp-2) var(--sp-3); transform: translateX(-50%); border: 1px solid var(--border-subtle); border-radius: var(--radius-xs); background: var(--surface-raised); box-shadow: var(--shadow-dialog); font-size: var(--fs-micro); pointer-events: none; }
+.usage-chart-tooltip strong { font-size: var(--fs-meta); }
+.usage-chart-tooltip span { display: flex; align-items: center; gap: var(--sp-2); color: var(--color-text-muted); }
+.usage-chart-tooltip b { margin-left: auto; color: var(--color-text); font-variant-numeric: tabular-nums; }
+.usage-chart-days { display: flex; justify-content: space-between; margin: var(--sp-2) 0 0 68px; color: var(--color-text-faint); font-size: 10px; letter-spacing: .04em; }
+.usage-chart-note { margin: var(--sp-2) 0 0; color: var(--color-text-faint); font-size: var(--fs-micro); }
+.usage-chart-empty { display: grid; place-items: center; height: 200px; margin-top: var(--sp-3); border: 1px dashed var(--color-border-dashed); border-radius: var(--radius-xs); }
+.usage-chart-empty p { margin: 0; color: var(--color-text-faint); font-size: var(--fs-meta); }
+
+.usage-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--border-subtle); }
+.usage-stat { display: grid; gap: 3px; padding: var(--sp-4); background: var(--surface-raised); }
+.usage-stat-label { color: var(--color-text-faint); font-size: var(--fs-micro); font-weight: var(--fw-medium); letter-spacing: .04em; }
+.usage-stat-value { font-size: var(--fs-h2); font-weight: var(--fw-semi); font-variant-numeric: tabular-nums; letter-spacing: var(--tracking-tight); }
+.usage-stat-note { color: var(--color-text-faint); font-size: var(--fs-micro); }
+
+.usage-lower { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: var(--sp-4); align-items: start; }
+.usage-breakdown, .usage-quality { padding: var(--sp-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-raised); }
+.usage-quality .usage-muted { margin: var(--sp-1) 0 var(--sp-3); }
+.usage-quality-row { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-2) 0; border-top: 1px solid var(--border-subtle); color: var(--color-text-muted); font-size: var(--fs-body); }
+.usage-quality-row:first-of-type { border-top: 0; }
+.usage-quality-row strong { color: var(--color-text); font-weight: var(--fw-semi); font-variant-numeric: tabular-nums; }
+.usage-quality-total { margin-top: var(--sp-2); border-top: 1px solid var(--border-strong); }
+
+.usage-table-scroll { margin-top: var(--sp-3); overflow-x: auto; }
+.usage-table { width: 100%; border-collapse: collapse; font-size: var(--fs-meta); }
+.usage-table th, .usage-table td { padding: var(--sp-2) var(--sp-2); text-align: left; }
+.usage-table thead th { color: var(--color-text-faint); font-size: var(--fs-micro); font-weight: var(--fw-medium); letter-spacing: .04em; border-bottom: 1px solid var(--border-subtle); }
+.usage-table tbody th { display: flex; align-items: baseline; gap: var(--sp-2); font-weight: var(--fw-medium); }
+.usage-table tbody tr + tr th, .usage-table tbody tr + tr td { border-top: 1px solid var(--border-subtle); }
+.usage-table-name { overflow-wrap: anywhere; }
+.usage-table-provider { color: var(--color-text-faint); font-size: var(--fs-micro); font-weight: var(--fw-regular); }
+
+.usage-ledger { border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-raised); }
+.usage-ledger > summary { display: flex; align-items: baseline; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); color: var(--color-text-muted); font-size: var(--fs-meta); font-weight: var(--fw-medium); cursor: pointer; }
+.usage-ledger > summary::-webkit-details-marker { display: none; }
+.usage-ledger[open] > summary { border-bottom: 1px solid var(--border-subtle); }
+.usage-ledger .ws-list, .usage-ledger .ws-empty { padding: var(--sp-3) var(--sp-4); }
+
+@media (max-width: 900px) {
+	.usage-hero, .usage-lower { grid-template-columns: minmax(0, 1fr); }
+}

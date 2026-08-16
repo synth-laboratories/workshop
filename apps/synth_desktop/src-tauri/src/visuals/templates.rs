@@ -8,6 +8,31 @@ use std::{
 
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
+pub struct TemplateReadinessContract {
+    #[serde(default)]
+    pub reject_transport_states: Vec<String>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub minimum_rollout_count: u64,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub minimum_rendered_frame_count: u64,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub minimum_semantic_event_count: u64,
+    #[serde(default)]
+    pub require_terminal: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TemplateObservationContract {
+    pub schema_version: String,
+    pub readiness: TemplateReadinessContract,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
 pub struct TemplateMeta {
     pub schema_version: String,
     pub id: String,
@@ -29,6 +54,8 @@ pub struct TemplateMeta {
     #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub slots: Vec<Value>,
+    #[serde(default)]
+    pub observation_contract: Option<TemplateObservationContract>,
 }
 
 pub fn visuals_root() -> PathBuf {
@@ -237,6 +264,11 @@ fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
         shell_path: None,
         example_binding: None,
         slots,
+        observation_contract: value
+            .get("observationContract")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?,
     };
     let shell = path.join("shell.tsx");
     if shell.exists() {

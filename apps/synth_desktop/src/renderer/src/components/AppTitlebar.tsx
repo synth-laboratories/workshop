@@ -32,7 +32,7 @@ export type AppTitlebarProps = {
 	activeLocalModel: boolean;
 	terminalOpen: boolean;
 	sidePanelOpen: boolean;
-	sidePanelTab: "outputs" | "inference";
+	sidePanelTab: "outputs" | "inference" | "trace";
 	reserveNativeControls?: boolean;
 	brand?: "synth" | "openai";
 	onCloseTab: () => void;

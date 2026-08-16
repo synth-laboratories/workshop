@@ -1,18 +1,12 @@
-#[path = "../src/cloud/mod.rs"]
-mod cloud;
-#[path = "../src/instance.rs"]
-mod instance;
-// The cloud module now includes the durable Intern ingestion adapter, which is
-// intentionally built against the same storage module as the application.
-#[path = "../src/storage/mod.rs"]
-mod storage;
-
-use cloud::intern::{
+use serde_json::{json, Map};
+use std::{sync::Arc, time::Duration};
+// Link the library crate rather than `#[path]`-including its sources: the
+// re-included modules referenced `crate::domain`/`http`/`visuals`, which do not
+// exist in a test crate, so the whole Rust suite stopped compiling.
+use synth_desktop_lib::cloud::intern::{
     normalize_event, AsyncCommandRequest, AsyncEnsureRequest, CommandReceipt, InternClient,
     InternEvent, InternRuntime, RuntimeBinding, RuntimeKind, SyncCommandRequest, SyncCreateRequest,
 };
-use serde_json::{json, Map};
-use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,

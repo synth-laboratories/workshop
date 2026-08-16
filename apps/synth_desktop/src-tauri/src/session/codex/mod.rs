@@ -10,12 +10,15 @@ mod telemetry;
 mod tests;
 
 pub use home::{
-    apply_brokered_credential, apply_synth_cloud_provider, codex_root, oauth_auth_path,
+    apply_brokered_credential, apply_local_laguna_catalog_metadata, apply_local_laguna_provider,
+    apply_openrouter_provider, apply_synth_cloud_provider, codex_root, oauth_auth_path,
     provider_class, scrub_oauth_auth_files, stage_brokered_credential, ProviderClass,
 };
 pub use manager::CodexManager;
+pub(crate) use proto::is_detached_failure;
 pub use proto::{
     CodexApprovalDecisionRequest, CodexSessionInfo, CodexSessionRecord, CodexSessionRequest,
-    CodexSessionStartRequest, CodexSteerRequest, CodexTurnFailure, CodexTurnSendRequest,
-    CodexTurnStartRequest, ProviderTransport, CODEX_SESSION_DETACHED, CODEX_TURN_START_FAILED,
+    CodexSessionStartRequest, CodexSteerRequest, CodexThreadItemsRequest, CodexThreadReadRequest,
+    CodexTurnFailure, CodexTurnSendRequest, CodexTurnStartRequest, ProviderTransport,
+    CODEX_SESSION_DETACHED, CODEX_SESSION_UNHEALTHY, CODEX_TURN_START_FAILED,
 };

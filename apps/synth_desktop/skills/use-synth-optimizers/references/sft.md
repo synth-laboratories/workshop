@@ -1,14 +1,14 @@
 # SFT
 
-Use SFT when the output is a trained adapter/checkpoint rather than a prompt candidate. Hosted SFT lives in optimizers-beta (`algorithm_id: "sft"`), not a public package and not `goex.sft.v1`. Workshop mirrors `optimizer_event_page.v1` and opens `optimizer.sft.live.v1`.
+Use SFT when the output is a trained adapter/checkpoint rather than a prompt candidate. Hosted SFT lives in the public `synth-optimizers` service (`algorithm_id: "sft"`), not in Workshop's private beta client and not in `goex.sft.v1`. Workshop mirrors `optimizer_event_page.v1` and opens `optimizer.sft.live.v1`.
 
 ## Start the hosted fixture (streaming)
 
 Recipe: `sft.hosted.fixture.v1`.
 
-Requires a running optimizers-beta plus `SYNTH_OPTIMIZERS_BETA_URL` (or `OPTIMIZERS_BETA_URL`) and `OPTIMIZERS_BETA_SERVICE_TOKEN`. The fixture backend charges nothing. Two clicks with different training files are two jobs; one accelerator means the second job stays `queued`.
+Requires the public service plus `SYNTH_OPTIMIZERS_SFT_SERVICE_URL` (defaults to `http://127.0.0.1:8878`) and `SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN`. The fixture backend charges nothing. Each explicit start creates a distinct canonical public run.
 
-After explicit approval:
+After explicit user instruction (no paid-compute approval is needed for this no-cost fixture):
 
 ```json
 {"operation":"start_recipe","arguments":{"recipe_id":"sft.hosted.fixture.v1","open_visual":true}}
@@ -18,7 +18,7 @@ Follow `watch_run` from sequence 0. Expect `optimizer.visual.ready`, then `sft.t
 
 ## Craftax Nemotron 3.5 Lightning Tinker (hosted, local Craftax slot)
 
-Recipe: `sft.craftax.nemotron-nano.tinker.v1`. Available when `OPTIMIZERS_BETA_SERVICE_TOKEN` is set (URL defaults to `http://127.0.0.1:8879`). Student ids: workshop `docs/sft_tinker_base_models.toml` (default is 3.5 Lightning). Optional `base_model` must be an id from that file. Checkpoint evals hit the local Craftax slot (`CRAFTAX_URL` or `http://127.0.0.1:8098`). Training rows: `SYNTH_SFT_TRAIN_JSONL` on Desktop (copied into the recipe TOML) or on the beta process. Spec: workshop `docs/optimizers_beta_sft.md`. Do not present `goex.sft.v1` as this recipe. Tinker charges apply; say that before asking for approval.
+Recipe: `sft.craftax.nemotron-nano.tinker.v1`. Available when `SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN` is set (URL defaults to `http://127.0.0.1:8878`). Student ids: workshop `docs/sft_tinker_base_models.toml` (default is 3.5 Lightning). Optional `base_model` must be an id from that file. Checkpoint evals hit the local Craftax slot (`CRAFTAX_URL` or `http://127.0.0.1:8098`). Training rows come from `SYNTH_SFT_TRAIN_JSONL` on Desktop and are copied into the product-owned recipe. The public service owns any private executor handoff. Spec: workshop `docs/optimizers_beta_sft.md`. Do not present `goex.sft.v1` as this recipe. Tinker charges apply; say that before asking for approval.
 
 After explicit approval:
 

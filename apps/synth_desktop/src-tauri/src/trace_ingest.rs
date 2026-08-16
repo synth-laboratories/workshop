@@ -7,6 +7,8 @@
 use crate::data::{TraceBundleInspection, TraceRecord};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -79,6 +81,12 @@ pub(crate) async fn inspect_input(
     fs::create_dir_all(staging_root)?;
     let staging = staging_root.join(format!("inspect-{}", Uuid::new_v4().simple()));
     fs::create_dir(&staging)?;
+    if metadata.is_file() {
+        if let Some(lite) = harbor_lite_inspection(&source)? {
+            let _ = fs::remove_dir_all(&staging);
+            return Ok(lite);
+        }
+    }
     let archive_path = staging.join("bundle.zip");
     let cli = resolve_trace_cli()?;
     let output = Command::new(cli)
@@ -131,6 +139,81 @@ pub(crate) async fn inspect_input(
     })();
     let _ = fs::remove_dir_all(&staging);
     result
+}
+
+fn is_harbor_lite_seal(payload: &serde_json::Value) -> bool {
+    let schema = payload
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if schema != "synth.trace.v5" && schema != "synth.trace.harbor-lite.v1" {
+        return false;
+    }
+    let stream = payload.get("stream").and_then(serde_json::Value::as_object);
+    let has_stream = stream.is_some_and(|stream| {
+        stream
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+            && stream
+                .get("closed")
+                .and_then(serde_json::Value::as_bool)
+                .is_some()
+    });
+    let events = payload.get("events").and_then(serde_json::Value::as_array);
+    let missing_identity = events.is_some_and(|events| {
+        events.iter().any(|event| {
+            event
+                .get("actor_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .is_empty()
+                || event
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .is_empty()
+        })
+    });
+    has_stream && events.is_some() && (schema == "synth.trace.harbor-lite.v1" || missing_identity)
+}
+
+fn harbor_lite_inspection(path: &Path) -> Result<Option<InspectedInput>> {
+    let bytes = fs::read(path)?;
+    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Ok(None);
+    };
+    if !is_harbor_lite_seal(&payload) {
+        return Ok(None);
+    }
+    let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+    let inspection_json = json!({
+        "schema_version": "synth.trace-inspection.v1",
+        "input_kind": "harbor_lite_seal",
+        "compatibility": "harbor_lite",
+        "source_bytes_digest": digest,
+        "bundle_digest": serde_json::Value::Null,
+        "archive_digest": serde_json::Value::Null,
+        "self_contained": false,
+        "trusted": false,
+        "validation": {
+            "valid": true,
+            "self_contained": false,
+            "code": "harbor_lite",
+            "message": "Harbor lite seal is not native Trace V5; identity fields were not synthesized"
+        },
+        "traces": [],
+        "assets": [],
+        "projections": []
+    });
+    let inspection: TraceBundleInspection =
+        serde_json::from_value(inspection_json.clone()).context("decode harbor lite inspection")?;
+    Ok(Some(InspectedInput {
+        inspection,
+        inspection_json,
+        archive_bytes: None,
+        raw_file_bytes: Some(bytes),
+    }))
 }
 
 /// Resolve the format-authority CLI without assuming a Finder-launched app has

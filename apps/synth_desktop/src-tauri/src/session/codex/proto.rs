@@ -47,6 +47,11 @@ pub struct CodexSessionStartRequest {
     /// discarded by `prepare_codex_start` before launch.
     #[serde(default)]
     pub writable_roots: Vec<String>,
+    /// Authenticated native Codex model envelope returned by the local Laguna
+    /// daemon. Rust populates this after residency preflight; renderer input is
+    /// never accepted, and local startup fails closed when it is absent.
+    #[serde(skip)]
+    pub local_model_catalog: Option<Value>,
     /// Rust-set marker that `api_key` holds a real user credential which must
     /// move into native custody before any child process observes it. Staged
     /// by `prepare_codex_start`, consumed by `CodexManager::start` at spawn
@@ -75,6 +80,10 @@ impl fmt::Debug for CodexSessionStartRequest {
             .field("multi_agent_version", &self.multi_agent_version)
             .field("auto_compact_token_limit", &self.auto_compact_token_limit)
             .field("writable_roots", &self.writable_roots)
+            .field(
+                "local_model_catalog",
+                &self.local_model_catalog.as_ref().map(|_| "<present>"),
+            )
             .field("broker_credential", &self.broker_credential)
             .finish()
     }
@@ -126,6 +135,7 @@ pub struct CodexTurnFailure {
 }
 
 pub const CODEX_SESSION_DETACHED: &str = "codex_session_detached";
+pub const CODEX_SESSION_UNHEALTHY: &str = "codex_session_unhealthy";
 pub const CODEX_TURN_START_FAILED: &str = "codex_turn_start_failed";
 pub(crate) const DETACHED_MESSAGE: &str =
     "The local agent process disconnected before the turn started. Retry to reconnect.";
@@ -172,6 +182,30 @@ pub(crate) fn is_detached_failure(error: &anyhow::Error) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionRequest {
     pub session_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexThreadReadRequest {
+    pub session_id: String,
+    pub thread_id: String,
+    #[serde(default = "default_include_turns")]
+    pub include_turns: bool,
+}
+
+fn default_include_turns() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexThreadItemsRequest {
+    pub session_id: String,
+    pub thread_id: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, specta::Type)]

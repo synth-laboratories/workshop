@@ -177,6 +177,7 @@ test("V6: axe, browser AX tree, keyboard names, focus, reduced motion, and 200% 
         await page.keyboard.press("ArrowLeft");
         await expect(scrub).toBeFocused();
       } else if (fixture.family === "Craftax") {
+        await visual.getByRole("button", { name: "Replay", exact: true }).click();
         const lane = visual.getByRole("navigation", { name: "Rollout lanes" }).getByRole("button").first();
         await expect(lane).toBeVisible();
         await lane.focus();

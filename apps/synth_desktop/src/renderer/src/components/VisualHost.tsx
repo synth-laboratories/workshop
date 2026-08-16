@@ -1,15 +1,25 @@
-import { Component, useEffect, useMemo, useState, type ComponentType, type ErrorInfo, type ReactNode } from "react";
+import { Component, useEffect, useMemo, useRef, useState, type ComponentType, type ErrorInfo, type ReactNode } from "react";
 import type { ArtifactRef } from "../types/landing";
 import type { VisualRecord } from "@synth/runtime-protocol";
-import { bindTemplateSlots, bindingSlots, isVisualBindings, propsFromBindings, resolveTemplate } from "@synth/visuals";
+import {
+	bindTemplateSlots,
+	createReplayClient,
+	isVisualBindings,
+	propsFromBindings,
+	replayStreamsFromBindings,
+	resolveTemplate,
+	resolveVisualBindings
+} from "@synth/visuals";
 import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } from "../bridge";
 import { loadVisualShell } from "../runtime/visualsLoader";
 import { bridges } from "../runtime/desktopBridge";
 import { mergeOptimizerEventPage, type OptimizerEventCursorState } from "../runtime/optimizerEventCursor";
+import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
 import { MermaidVisual } from "./MermaidVisual";
 import { SystemsMapVisual } from "./SystemsMapVisual";
 import { SystemsDynamicVisual } from "./SystemsDynamicVisual";
 import type { SubagentState } from "../runtime/sessionView";
+import { bindingAuthorityKey } from "../runtime/visualRevisionState";
 
 type ShellProps = {
 	title?: string;
@@ -69,31 +79,91 @@ function subagentMarker(id: string): string {
 function SubagentsVisual({ artifact }: { artifact: ArtifactRef }) {
 	const resolved = propsFromBindings(artifact.bindings);
 	const agents = Array.isArray(resolved.props.agents) ? resolved.props.agents as SubagentState[] : [];
+	const sessionId = typeof resolved.props.sessionId === "string" ? resolved.props.sessionId : undefined;
 	const [now, setNow] = useState(Date.now());
+	const [selectedId, setSelectedId] = useState<string | null>(null);
+	const [detail, setDetail] = useState<unknown>(null);
+	const [detailError, setDetailError] = useState<string | null>(null);
 	useEffect(() => {
 		const timer = window.setInterval(() => setNow(Date.now()), 1_000);
 		return () => window.clearInterval(timer);
 	}, []);
+	useEffect(() => {
+		if (!selectedId || !sessionId || !bridges.codex?.readThread) {
+			setDetail(null);
+			setDetailError(null);
+			return;
+		}
+		let cancelled = false;
+		void bridges.codex.readThread(sessionId, selectedId, true).then(
+			(payload) => {
+				if (!cancelled) {
+					setDetail(payload);
+					setDetailError(null);
+				}
+			},
+			(reason) => {
+				if (!cancelled) {
+					setDetail(null);
+					setDetailError(reason instanceof Error ? reason.message : String(reason));
+				}
+			}
+		);
+		return () => {
+			cancelled = true;
+		};
+	}, [selectedId, sessionId]);
 	const groups = [
 		{ label: "Working", agents: agents.filter((agent) => agent.status === "starting" || agent.status === "working") },
 		{ label: "Needs attention", agents: agents.filter((agent) => agent.status === "interrupted" || agent.status === "failed" || agent.status === "stopped" || agent.status === "unavailable") },
 		{ label: "Completed", agents: agents.filter((agent) => agent.status === "completed") }
 	];
+	const selected = agents.find((agent) => agent.id === selectedId) ?? null;
+	const working = groups[0].agents.length;
+	const attention = groups[1].agents.length;
+	const completed = groups[2].agents.length;
+	if (selected) {
+		return (
+			<div className="subagents-visual" data-testid="visual-subagents">
+				<button type="button" className="subagents-back" data-testid="subagents-back" onClick={() => setSelectedId(null)}>
+					← {selected.title}
+				</button>
+				<p className="subagents-workspace-summary" data-testid="subagents-workspace-summary">
+					{subagentStatusLabel(selected.status)} · {selected.status === "starting" || selected.status === "working" ? elapsedLabel(selected.startedAt, now) : elapsedLabel(selected.updatedAt, now)}
+				</p>
+				<div className="subagents-detail" data-testid="subagents-detail">
+					{selected.summary ? <p>{selected.summary}</p> : <p>No result yet</p>}
+					{detailError ? <p className="subagents-empty">{detailError}</p> : null}
+					{detail ? <pre>{JSON.stringify(detail, null, 2)}</pre> : null}
+				</div>
+			</div>
+		);
+	}
 	return (
 		<div className="subagents-visual" data-testid="visual-subagents">
+			<p className="subagents-workspace-summary" data-testid="subagents-workspace-summary">
+				{working} working · {attention} need attention · {completed} completed
+			</p>
 			{groups.map((group) => (
 				<section key={group.label} className="subagents-group">
 					<h3>{group.label} · {group.agents.length}</h3>
 					{group.agents.length === 0 ? <p className="subagents-empty">No {group.label.toLowerCase()} subagents</p> : null}
 					{group.agents.map((agent) => (
-						<div className="subagent-row" key={agent.id} data-status={agent.status}>
+						<button
+							type="button"
+							className="subagent-row"
+							key={agent.id}
+							data-status={agent.status}
+							data-testid={`subagent-row-${agent.id}`}
+							onClick={() => setSelectedId(agent.id)}
+						>
 							<span className={`subagent-mark mark-${agent.status}`} aria-hidden>{subagentMarker(agent.id)}</span>
 							<div className="subagent-copy">
 								<div className="subagent-title-row"><strong>{agent.title}</strong><span className={`subagent-state state-${agent.status}`}>{subagentStatusLabel(agent.status)}</span></div>
 								{agent.summary ? <p>{agent.summary}</p> : null}
 							</div>
 							<time dateTime={agent.updatedAt}>{agent.status === "starting" || agent.status === "working" ? elapsedLabel(agent.startedAt, now) : elapsedLabel(agent.updatedAt, now) + " ago"}</time>
-						</div>
+						</button>
 					))}
 				</section>
 			))}
@@ -191,9 +261,29 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [optimizerPayload, setOptimizerPayload] = useState<Record<string, unknown> | null>(null);
 	const [optimizerLoadError, setOptimizerLoadError] = useState<string | null>(null);
 	const [comparisonPayload, setComparisonPayload] = useState<Record<string, unknown> | null>(null);
+	// One reader decides whether these bindings are legible, and it can say no.
+	// Returning an empty slot list for a shape it did not understand is how a
+	// visual with ten declared streams rendered an empty pane with no error.
+	const resolvedBindings = useMemo(() => resolveVisualBindings(artifact.bindings), [artifact.bindings]);
 	const traceBindings = useMemo(
-		() => bindingSlots(artifact.bindings).filter((binding) => binding.kind === "trace_v5"),
-		[artifact.bindings]
+		() => resolvedBindings.slots.filter((binding) => binding.kind === "trace_v5"),
+		[resolvedBindings]
+	);
+	const replay = useMemo(
+		() => replayStreamsFromBindings(resolvedBindings.slots),
+		[resolvedBindings]
+	);
+	const replayClient = useMemo(
+		() =>
+			// Native allowlisted polling when the host offers it. Outside the
+			// packaged app — browser preview, tests — the client falls back to
+			// fetch. The capability is checked, not assumed: a bridge without
+			// `pollStream` would otherwise throw on the first poll.
+			createReplayClient(replay.streams, typeof bridges.visuals?.pollStream === "function"
+				? (pollUrl, after, limit) =>
+						bridges.visuals!.pollStream({ visualId: artifact.id, pollUrl, after, limit })
+				: undefined),
+		[artifact.id, replay.streams]
 	);
 	const synchronouslyResolved = useMemo(() => {
 		if (!isVisualBindings(artifact.bindings) || traceBindings.length === 0) {
@@ -213,6 +303,41 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		"loading" | "replaying" | "subscribed" | "stale" | "reconnecting" | "terminal" | "failed"
 	>("loading");
 
+	const visualIdentity = useMemo(
+		() => ({
+			visualId: artifact.visualId ?? artifact.id,
+			visualRevision: typeof artifact.revision === "number" ? artifact.revision : null,
+		}),
+		[artifact.id, artifact.visualId, artifact.revision]
+	);
+
+	useEffect(() => {
+		if (resolvedBindings.status === "canonical") return;
+		if (resolvedBindings.status === "rejected") {
+			reportDiagnostic({
+				...visualIdentity,
+				severity: "error",
+				component: "visual-host",
+				event: "visual.bindings.invalid",
+				code: DIAGNOSTIC_CODES.visualBindingsInvalid,
+				message: resolvedBindings.error ?? "Visual bindings are unreadable",
+				details: { templateId: artifact.templateId ?? null }
+			});
+			return;
+		}
+		// COMPAT: rendered from an upgraded legacy shape. Loud so the writer is
+		// fixed before the upgrade path is removed.
+		reportDiagnostic({
+			...visualIdentity,
+			severity: "warn",
+			component: "visual-host",
+			event: "visual.bindings.upgraded",
+			code: DIAGNOSTIC_CODES.visualBindingsUpgraded,
+			message: `Rendered from upgraded legacy bindings on ${resolvedBindings.upgradedSlots.join(", ")}`,
+			details: { templateId: artifact.templateId ?? null, slots: resolvedBindings.upgradedSlots }
+		});
+	}, [artifact.templateId, resolvedBindings, visualIdentity]);
+
 	useEffect(() => {
 		let cancelled = false;
 		const templateId = artifact.templateId;
@@ -220,19 +345,47 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		setShell(null);
 		if (!templateId) {
 			setFailed(true);
+			reportDiagnostic({
+				...visualIdentity,
+				severity: "error",
+				component: "visual-host",
+				event: "visual.template.missing",
+				code: DIAGNOSTIC_CODES.visualTemplateUnavailable,
+				message: "Visual has no template id to render",
+			});
 			return;
 		}
 		void loadVisualShell(templateId)
 			.then((Component) => {
 				if (cancelled) return;
-				if (!Component) setFailed(true);
-				else setShell(() => Component);
+				if (!Component) {
+					setFailed(true);
+					reportDiagnostic({
+						...visualIdentity,
+						severity: "error",
+						component: "visual-host",
+						event: "visual.shell.unavailable",
+						code: DIAGNOSTIC_CODES.visualTemplateUnavailable,
+						message: `Template ${templateId} resolved no shell component`,
+						details: { templateId },
+					});
+				} else setShell(() => Component);
 			})
-			.catch(() => {
-				if (!cancelled) setFailed(true);
+			.catch((reason) => {
+				if (cancelled) return;
+				setFailed(true);
+				reportDiagnostic({
+					...visualIdentity,
+					severity: "error",
+					component: "visual-host",
+					event: "visual.shell.load_failed",
+					code: DIAGNOSTIC_CODES.visualShellLoadFailed,
+					message: reason instanceof Error ? reason.message : String(reason),
+					details: { templateId },
+				});
 			});
 		return () => { cancelled = true; };
-	}, [artifact.templateId]);
+	}, [artifact.templateId, visualIdentity]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -244,6 +397,15 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		const template = artifact.templateId ? resolveTemplate(artifact.templateId) : undefined;
 		if (!template) {
 			setTraceResolution({ status: "error", props: {}, error: `Template ${artifact.templateId ?? "unknown"} is unavailable` });
+			reportDiagnostic({
+				...visualIdentity,
+				severity: "error",
+				component: "visual-host",
+				event: "visual.template.unavailable",
+				code: DIAGNOSTIC_CODES.visualTemplateUnavailable,
+				message: `Template ${artifact.templateId ?? "unknown"} is unavailable`,
+				details: { templateId: artifact.templateId ?? null },
+			});
 			return () => { cancelled = true; };
 		}
 		if (!bridges.inventory) {
@@ -255,6 +417,25 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		);
 		if (unsupportedBinding) {
 			setTraceResolution({ status: "error", props: {}, error: `Unsupported trace projection schema: ${unsupportedBinding.schema}` });
+			// The failure this whole diagnostic system was built for: ten sealed
+			// traces, an empty pane, and no way to ask why. Emit the received
+			// schema, the accepted one, and every identity the binding names.
+			reportDiagnostic({
+				...visualIdentity,
+				traceId: typeof unsupportedBinding.source === "string" ? unsupportedBinding.source : null,
+				severity: "error",
+				component: "visual-host",
+				event: "visual.projection.rejected",
+				code: DIAGNOSTIC_CODES.unsupportedTraceProjectionSchema,
+				message: `Unsupported trace projection schema: ${unsupportedBinding.schema}`,
+				details: {
+					receivedSchema: unsupportedBinding.schema ?? null,
+					expectedSchemas: ["synth.trace-projection.rollout-inspector.v1"],
+					templateId: artifact.templateId ?? null,
+					slot: unsupportedBinding.slot ?? null,
+					remediation: "Project Trace V5 into the visual's accepted input contract.",
+				},
+			});
 			return () => { cancelled = true; };
 		}
 
@@ -284,6 +465,15 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				if (cancelled) return;
 				if (result.errors.length > 0) {
 					setTraceResolution({ status: "error", props: {}, error: result.errors.join(" · ") });
+					reportDiagnostic({
+						...visualIdentity,
+						severity: "error",
+						component: "visual-host",
+						event: "visual.binding.unresolved",
+						code: DIAGNOSTIC_CODES.visualBindingUnresolved,
+						message: result.errors.join(" · "),
+						details: { templateId: artifact.templateId ?? null, errorCount: result.errors.length },
+					});
 					return;
 				}
 				const props = Object.fromEntries(
@@ -294,7 +484,23 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				setTraceResolution({ status: "ready", props });
 			})
 			.catch((reason) => {
-				if (!cancelled) setTraceResolution({ status: "error", props: {}, error: reason instanceof Error ? reason.message : String(reason) });
+				if (cancelled) return;
+				const message = reason instanceof Error ? reason.message : String(reason);
+				setTraceResolution({ status: "error", props: {}, error: message });
+				reportDiagnostic({
+					...visualIdentity,
+					severity: "error",
+					component: "visual-host",
+					event: "visual.projection.failed",
+					// A projection-schema mismatch thrown from the resolver is the
+					// same defect as the one caught above; keep one code so a
+					// query for it finds both spellings of the failure.
+					code: message.includes("projection schema")
+						? DIAGNOSTIC_CODES.unsupportedTraceProjectionSchema
+						: DIAGNOSTIC_CODES.visualBindingUnresolved,
+					message,
+					details: { templateId: artifact.templateId ?? null },
+				});
 			});
 		return () => { cancelled = true; };
 	}, [artifact.id, artifact.revision, artifact.templateId, artifact.bindings, traceBindings.length]);
@@ -344,6 +550,18 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				}
 				if (next.gap || next.cursor < runCursor) {
 					setConnectionState("stale");
+					reportDiagnostic({
+						...visualIdentity,
+						optimizerRunId,
+						streamId: optimizerRunId,
+						severity: "warn",
+						component: "visual-host",
+						event: "stream.replay.gap",
+						code: DIAGNOSTIC_CODES.streamReplayGap,
+						message: `Optimizer event history is incomplete at ${next.cursor}/${runCursor}`,
+						retryable: true,
+						details: { cursor: next.cursor, runCursor, gap: next.gap },
+					});
 					throw new Error(`Optimizer event history is incomplete at ${next.cursor}/${runCursor}`);
 				}
 				current = next;
@@ -371,9 +589,21 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				}
 			} catch (reason) {
 				if (!cancelled) {
+					const message = reason instanceof Error ? reason.message : String(reason);
 					setOptimizerPayload(null);
-					setOptimizerLoadError(reason instanceof Error ? reason.message : String(reason));
+					setOptimizerLoadError(message);
 					setConnectionState("failed");
+					reportDiagnostic({
+						...visualIdentity,
+						optimizerRunId,
+						streamId: optimizerRunId,
+						severity: "error",
+						component: "visual-host",
+						event: "stream.interrupted",
+						code: DIAGNOSTIC_CODES.streamInterrupted,
+						message,
+						retryable: true,
+					});
 				}
 			}
 		};
@@ -440,6 +670,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	}, [boundRunId]);
 
 	if (failed) return <VisualInvalidState title="Template unavailable" detail={`No bundled shell is registered for ${artifact.templateId ?? "this visual"}.`} />;
+	if (resolvedBindings.status === "rejected") {
+		return <VisualInvalidState title="Visual bindings unreadable" detail={resolvedBindings.error ?? "This visual's bindings could not be read."} />;
+	}
 	if (synchronouslyResolved.errors.length > 0) return <VisualInvalidState title="Visual data unavailable" detail={synchronouslyResolved.errors.join(" · ")} />;
 	if (traceResolution.status === "loading") return <p className="visual-loading" role="status">Loading sealed trace…</p>;
 	if (traceResolution.status === "error") {
@@ -468,20 +701,106 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				{...(optimizerPayload ?? {})}
 				data={optimizerPayload ?? resolvedProps.optimizer_run}
 				comparison={comparisonPayload ?? undefined}
+				replay={replayClient}
+				replayMissingTransport={replay.missingTransport}
+				visualId={artifact.visualId ?? artifact.id}
+				revision={typeof artifact.revision === "number" ? artifact.revision : null}
 			/>
 		</div>
 	);
+}
+
+function numericAttribute(element: Element, name: string): number {
+	const value = Number(element.getAttribute(name));
+	return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+/** The template reports runtime facts as DOM data, but Workshop owns the
+ * extractor and readiness decision. Nothing supplied by a template is treated
+ * as a passing boolean. */
+function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactRef; children: ReactNode }) {
+	const root = useRef<HTMLDivElement>(null);
+	const [bindingsDigest, setBindingsDigest] = useState<string | null>(null);
+	const template = artifact.templateId ? resolveTemplate(artifact.templateId) : undefined;
+	const contract = template?.observationContract;
+
+	useEffect(() => {
+		let cancelled = false;
+		setBindingsDigest(null);
+		if (!contract || !artifact.visualId || !artifact.revision || !bridges.visuals) return;
+		void bridges.visuals.revisions(artifact.visualId).then((revisions) => {
+			const digest = revisions.find((candidate) => candidate.revision === artifact.revision)?.bindingsDigest;
+			if (!cancelled && digest) setBindingsDigest(digest);
+		});
+		return () => { cancelled = true; };
+	}, [artifact.revision, artifact.visualId, contract]);
+
+	useEffect(() => {
+		const host = root.current;
+		if (!host || !contract || !bindingsDigest || !artifact.visualId || !artifact.revision || !bridges.visuals) return;
+		let frame: number | null = null;
+		const publish = () => {
+			frame = null;
+			const surface = host.querySelector("[data-visual-transport-state]");
+			if (!surface) return;
+			const rawError = surface.getAttribute("data-visual-error")?.trim();
+			void bridges.visuals?.reportObservation({
+				schemaVersion: "synth.rendered-visual-observation.v1",
+				visualId: artifact.visualId!,
+				renderedRevision: artifact.revision!,
+				bindingsDigest,
+				transportState: surface.getAttribute("data-visual-transport-state") ?? "unknown",
+				rolloutCount: numericAttribute(surface, "data-visual-rollout-count"),
+				renderedFrameCount: numericAttribute(surface, "data-visual-rendered-frame-count"),
+				semanticEventCount: numericAttribute(surface, "data-visual-semantic-event-count"),
+				terminal: surface.getAttribute("data-visual-terminal") === "true",
+				error: rawError || null,
+				observedAt: new Date().toISOString()
+			});
+		};
+		const schedule = () => {
+			if (frame == null) frame = window.requestAnimationFrame(publish);
+		};
+		const observer = new MutationObserver(schedule);
+		observer.observe(host, { subtree: true, childList: true, attributes: true });
+		schedule();
+		return () => {
+			observer.disconnect();
+			if (frame != null) window.cancelAnimationFrame(frame);
+		};
+	}, [artifact.revision, artifact.visualId, bindingsDigest, contract]);
+
+	return <div ref={root} data-visual-observation-contract={contract?.schemaVersion}>{children}</div>;
 }
 
 function VisualInvalidState({ title, detail }: { title: string; detail: string }) {
 	return <div className="visual-invalid" role="alert" data-testid="visual-invalid"><strong>{title}</strong><p>{detail}</p></div>;
 }
 
-class VisualErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+class VisualErrorBoundary extends Component<
+	{ children: ReactNode; visualId?: string; visualRevision?: number | null; templateId?: string | null },
+	{ error: Error | null }
+> {
 	state: { error: Error | null } = { error: null };
 	static getDerivedStateFromError(error: Error) { return { error }; }
 	componentDidCatch(error: Error, info: ErrorInfo) {
+		// `console.error` reaches a devtools console nobody has open. The
+		// structured record is what the agent can actually query, so the
+		// boundary emits both.
 		console.error("Visual shell render failed", error, info.componentStack);
+		reportDiagnostic({
+			severity: "error",
+			component: "visual-host",
+			event: "visual.render.failed",
+			code: DIAGNOSTIC_CODES.visualRenderFailed,
+			message: error.message,
+			visualId: this.props.visualId ?? null,
+			visualRevision: this.props.visualRevision ?? null,
+			details: {
+				templateId: this.props.templateId ?? null,
+				componentStack: info.componentStack?.slice(0, 1_000) ?? null,
+			},
+		});
 	}
 	render() {
 		if (this.state.error) return <VisualInvalidState title="Visual failed to render" detail={this.state.error.message} />;
@@ -491,41 +810,44 @@ class VisualErrorBoundary extends Component<{ children: ReactNode }, { error: Er
 
 /** Shared host used by chat cards, the right pane, and the Visuals library. */
 export function VisualHost({ artifact }: { artifact: ArtifactRef }) {
+	const bindingsKey = bindingAuthorityKey(artifact.bindings);
 	const isSystemsDynamic =
 		artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
 	if (isSystemsDynamic) {
-		return <VisualErrorBoundary key={`${artifact.id}:systems-dynamic`}><SystemsDynamicVisual artifact={artifact} /></VisualErrorBoundary>;
+		return <VisualErrorBoundary key={`${artifact.id}:systems-dynamic`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}><SystemsDynamicVisual artifact={artifact} /></VisualErrorBoundary>;
 	}
 	const isSystems = artifact.templateId === "diagram.systems.v1" || artifact.rendererKind === "systems";
 	if (isSystems) {
-		return <VisualErrorBoundary key={`${artifact.id}:systems`}><SystemsMapVisual artifact={artifact} /></VisualErrorBoundary>;
+		return <VisualErrorBoundary key={`${artifact.id}:systems`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}><SystemsMapVisual artifact={artifact} /></VisualErrorBoundary>;
 	}
 	const isMermaid =
 		artifact.templateId === "diagram.mermaid.v1" || artifact.rendererKind === "mermaid";
 	if (isMermaid) {
 		return (
-			<VisualErrorBoundary key={`${artifact.id}:mermaid`}>
+			<VisualErrorBoundary key={`${artifact.id}:mermaid`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}>
 				<MermaidVisual artifact={artifact} />
 			</VisualErrorBoundary>
 		);
 	}
 	if (artifact.templateId === "synth.subagents.v1") {
 		return (
-			<VisualErrorBoundary key={`${artifact.id}:${artifact.templateId ?? "subagents"}`}>
+			<VisualErrorBoundary key={`${artifact.id}:${artifact.templateId ?? "subagents"}`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}>
 				<SubagentsVisual artifact={artifact} />
 			</VisualErrorBoundary>
 		);
 	}
 	if (artifact.preview?.variant && artifact.preview.variant !== "generic" && !artifact.templateId) {
 		return (
-			<VisualErrorBoundary key={`${artifact.id}:preview`}>
+			<VisualErrorBoundary key={`${artifact.id}:preview`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}>
 				<MockFallback artifact={artifact} />
 			</VisualErrorBoundary>
 		);
 	}
 	return (
-		<VisualErrorBoundary key={`${artifact.id}:${artifact.templateId ?? "missing"}`}>
-			<TemplateVisualHost artifact={artifact} />
+		<VisualErrorBoundary key={`${artifact.id}:${artifact.templateId ?? "missing"}:${bindingsKey}`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}>
+			<VisualObservationBoundary artifact={artifact}>
+				<TemplateVisualHost artifact={artifact} />
+			</VisualObservationBoundary>
 		</VisualErrorBoundary>
 	);
 }
@@ -669,6 +991,12 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const isSystemsDynamic = artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
 	const isSystems = artifact.templateId === "diagram.systems.v1" || artifact.rendererKind === "systems";
 	const kindLabel = isSubagents ? "Agents" : isSystemsDynamic ? "Benjamin Dicken Style" : isSystems ? "Systems map · 2D" : isMermaid ? "Diagram" : "Visual";
+	const revisionSync = artifact.metadata?.revisionSync as {
+		loading?: boolean;
+		requestedRevision?: number;
+		acceptedRevision?: number;
+		error?: string | null;
+	} | undefined;
 	return (
 		<aside
 			className={`visual-pane${expanded ? " visual-pane-expanded" : ""}`}
@@ -677,11 +1005,14 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 		>
 			<header className="visual-pane-head">
 				<div className="visual-pane-head-text">
-					<span className="visual-pane-kind">{kindLabel}</span>
+					<span className="visual-pane-kind">
+						{kindLabel}{revision ? ` · rev ${revision}` : ""}
+						{revisionSync?.loading ? ` · reconciling${(revisionSync.requestedRevision ?? -1) > (revisionSync.acceptedRevision ?? -1) ? ` rev ${revisionSync.requestedRevision}` : ""}` : ""}
+					</span>
 					<span className="visual-pane-title">{artifact.title}</span>
 				</div>
 				<div className="visual-pane-head-actions">
-					{sealedBundle ? (
+					{isSubagents ? null : sealedBundle ? (
 						<>
 							<button type="button" className="visual-expand" onClick={() => { setSealedBundle(null); setCompareBundle(null); setShareUpload(null); }}>Live revision</button>
 							{compareBundle ? <button type="button" className="visual-expand" onClick={() => setCompareBundle(null)}>Close comparison</button> : null}
@@ -690,6 +1021,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 							</button>
 						</>
 					) : null}
+					{isSubagents ? null : (
 					<button
 						type="button"
 						className="visual-expand"
@@ -699,6 +1031,8 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					>
 						Label{annotations.length ? ` · ${annotations.length}` : ""}
 					</button>
+					)}
+					{isSubagents ? null : (
 					<button
 						type="button"
 						className="visual-expand"
@@ -708,6 +1042,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					>
 						{busy ? "Working…" : "Seal"}
 					</button>
+					)}
 					<button
 						type="button"
 						className="visual-expand"
@@ -721,7 +1056,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					<button type="button" className="visual-close" onClick={onClose} aria-label="Close visual">×</button>
 				</div>
 			</header>
-			{artifactError ? <div className="visual-artifact-error" role="alert">{artifactError}</div> : null}
+			{artifactError || revisionSync?.error ? <div className="visual-artifact-error" role="alert">{artifactError ?? `Visual refresh failed · ${revisionSync?.error}`}</div> : null}
 			{seals.length ? (
 				<div className="visual-seal-strip" aria-label="Sealed revisions">
 					<span>Offline:</span>

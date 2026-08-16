@@ -14,6 +14,8 @@ import {
 export const AGENT_DISCONNECTED_MESSAGE =
 	"The local agent process disconnected before the turn started. Retry to reconnect.";
 
+export const CODEX_SESSION_UNHEALTHY = "codex_session_unhealthy";
+
 /** Legacy untyped rejections from the pre-`codex_turn_send` bridge path. */
 export const DETACHED_ERROR_TEXT =
 	/codex session not started|is not attached|app-server (stopped|stdout closed)/i;
@@ -58,7 +60,7 @@ export function codexTurnFailure(sessionId: string, reason: unknown): CodexTurnF
 }
 
 export function turnFailureMessage(failure: CodexTurnFailure): string {
-	if (failure.code === "codex_session_detached" || DETACHED_ERROR_TEXT.test(failure.message)) {
+	if (failure.code === "codex_session_detached" || failure.code === CODEX_SESSION_UNHEALTHY || DETACHED_ERROR_TEXT.test(failure.message)) {
 		return AGENT_DISCONNECTED_MESSAGE;
 	}
 	return failure.message;
@@ -141,7 +143,19 @@ export function truncate(label: string, max = 22) {
 }
 
 export function desktopBootError(reason: unknown): string {
-	const message = reason instanceof Error ? reason.message : String(reason);
+	const message = reason instanceof Error
+		? reason.message
+		: typeof reason === "string"
+			? reason
+			: reason && typeof reason === "object"
+				? (() => {
+					const detail = reason as { message?: unknown; error?: unknown; detail?: unknown };
+					if (typeof detail.message === "string") return detail.message;
+					if (typeof detail.error === "string") return detail.error;
+					if (typeof detail.detail === "string") return detail.detail;
+					try { return JSON.stringify(reason); } catch { return "Unknown desktop runtime error"; }
+				})()
+				: String(reason);
 	if (/command\s+.+not found|unknown command/i.test(message)) {
 		return "Desktop backend was updated; fully quit and reopen Synth Desktop.";
 	}

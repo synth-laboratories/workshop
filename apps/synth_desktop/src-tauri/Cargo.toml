@@ -1,6 +1,6 @@
 [package]
 name = "synth-desktop"
-version = "0.3.0"
+version = "0.4.0"
 description = "Synth Desktop Tauri host"
 edition = "2021"
 default-run = "synth-desktop"
@@ -72,6 +72,14 @@ path = "src/bin/synth_plugins_mcp.rs"
 [[bin]]
 name = "synth-session-mcp"
 path = "src/bin/synth_session_mcp.rs"
+
+[[bin]]
+name = "synth-traces-mcp"
+path = "src/bin/synth_traces_mcp.rs"
+
+[[bin]]
+name = "synth-diagnostics-mcp"
+path = "src/bin/synth_diagnostics_mcp.rs"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

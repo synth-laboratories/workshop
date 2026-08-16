@@ -21,6 +21,17 @@ import type { Skill } from "../runtime/skills";
 import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
 import { bridges } from "../runtime/desktopBridge";
+import {
+	armedPromptId,
+	IDLE_STEER_STATE,
+	normalizeSteerFailure,
+	promotingPromptId,
+	reduceSteer,
+	steerFailure,
+	type SteerEffect,
+	type SteerEvent,
+	type SteerState
+} from "../runtime/steering";
 
 /** Permission chip + menus — injectable like InferenceTransport. */
 export type ComposerPermissions = {
@@ -40,7 +51,7 @@ export type ComposerModelControls = {
 
 export type ComposerQueue = {
 	prompts?: Array<{ id: string; text: string }>;
-	onEnqueue?: (text: string) => void;
+	onEnqueue?: (text: string) => string | undefined;
 	onEdit?: (id: string, text: string) => void;
 	onRemove?: (id: string) => void;
 	onPromote?: (id: string, text: string) => void | Promise<void>;
@@ -57,6 +68,7 @@ export type ComposerTurn = {
 	steerSupported?: boolean;
 	steerError?: string | null;
 	onSteer?: (text: string) => void | Promise<void>;
+	onStop?: () => void;
 	/** Recoverable turn-start failure, rendered above the input inside its dock. */
 	sendFailure?: { message: string; onRetry: () => void } | null;
 };
@@ -115,7 +127,6 @@ const SANDBOX_OPTIONS: Array<{ id: SandboxMode; label: string; description: stri
 	{ id: "workspace-write", label: "Workspace access", description: "Read and write inside the workspace." },
 	{ id: "danger-full-access", label: "Full system access", description: "Allow unrestricted filesystem and network access." }
 ];
-
 const APPROVAL_CHIP_LABEL: Record<ApprovalPolicy, string> = { untrusted: "Ask", "on-request": "Risky", never: "Auto" };
 const SANDBOX_CHIP_LABEL: Record<SandboxMode, string> = { "read-only": "Read", "workspace-write": "Workspace", "danger-full-access": "Full" };
 
@@ -321,6 +332,10 @@ function IconSend() {
 			/>
 		</svg>
 	);
+}
+
+function IconStop() {
+	return <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden><rect x="3" y="3" width="8" height="8" rx="1" fill="currentColor" /></svg>;
 }
 
 function IconImage() {
@@ -678,6 +693,7 @@ export function Composer({
 		steerSupported = false,
 		steerError = null,
 		onSteer,
+		onStop,
 		sendFailure = null
 	} = turn;
 	const {
@@ -711,10 +727,13 @@ export function Composer({
 	const [skillChip, setSkillChip] = useState<Skill | null>(null);
 	const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
 	const [modelMenuOpen, setModelMenuOpen] = useState(false);
-	const [armedQueuedPromptId, setArmedQueuedPromptId] = useState<string | null>(null);
-	const [promotingQueuedPromptId, setPromotingQueuedPromptId] = useState<string | null>(null);
-	const queuedEnterRef = useRef<{ id: string; at: number } | null>(null);
-	const queuedEnterTimerRef = useRef<number | null>(null);
+	// Steering lives in the turn controller, not on the queued-prompt row, so a
+	// second Return works from wherever the keyboard is. The ref mirrors the
+	// state because a keydown handler must read it before React commits.
+	const [steer, setSteer] = useState<SteerState>(IDLE_STEER_STATE);
+	const steerRef = useRef<SteerState>(IDLE_STEER_STATE);
+	const armedQueuedPromptId = armedPromptId(steer);
+	const promotingQueuedPromptId = promotingPromptId(steer);
 	const [workspaceMenuSignal, setWorkspaceMenuSignal] = useState(0);
 	const dockRef = useRef<HTMLDivElement>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1015,9 +1034,10 @@ export function Composer({
 		setSubmitting(true);
 		try {
 			if (intent === "enqueue") {
-				onEnqueue?.(text);
+				const queuedId = onEnqueue?.(text);
 				setValue("");
 				setSkillChip(null);
+				if (queuedId && agentWorking && steerSupported) armQueuedPrompt(queuedId, text);
 				return;
 			}
 			if (intent === "steer") {
@@ -1084,27 +1104,89 @@ export function Composer({
 		return true;
 	};
 
+	const dispatchSteer = (event: SteerEvent): SteerEffect => {
+		const { state: next, effect } = reduceSteer(steerRef.current, event);
+		steerRef.current = next;
+		setSteer(next);
+		return effect;
+	};
+
+	/**
+	 * Deliver one promotion. The prompt leaves **Next turns** only when the
+	 * backend acknowledges it, and a rejection is normalized before it can be
+	 * rendered — a raw runtime object never reaches the composer.
+	 */
+	const runSteerEffect = (effect: SteerEffect): boolean => {
+		if (!effect) return false;
+		// The queue row is editable, so promote whatever it now says.
+		const queued = queuedPrompts.find((item) => item.id === effect.promptId);
+		const text = (queued?.text ?? effect.text).trim();
+		if (!text) {
+			dispatchSteer({ type: "disarm" });
+			return false;
+		}
+		void Promise.resolve(onPromoteQueuedPrompt?.(effect.promptId, text))
+			.then(() => dispatchSteer({ type: "acknowledged", promptId: effect.promptId }))
+			.catch((reason) => {
+				const failure = normalizeSteerFailure(reason);
+				// The structured original stays out of the DOM and in the log.
+				console.error("[steer] promotion rejected", failure.code, failure.detail);
+				dispatchSteer({ type: "rejected", promptId: effect.promptId, failure });
+			});
+		return true;
+	};
+
+	const armQueuedPrompt = (id: string, text: string) => {
+		dispatchSteer({ type: "queued", promptId: id, text, at: Date.now() });
+	};
+
 	const handleQueuedPromptEnter = (id: string, text: string) => {
-		if (!agentWorking || !steerSupported || promotingQueuedPromptId || !text.trim()) return;
-		const now = Date.now();
-		const prior = queuedEnterRef.current;
-		if (prior?.id === id && now - prior.at <= 700) {
-			queuedEnterRef.current = null;
-			if (queuedEnterTimerRef.current !== null) window.clearTimeout(queuedEnterTimerRef.current);
-			setArmedQueuedPromptId(null);
-			setPromotingQueuedPromptId(id);
-			void Promise.resolve(onPromoteQueuedPrompt?.(id, text.trim()))
-				.finally(() => setPromotingQueuedPromptId(null));
+		if (!agentWorking || !steerSupported || !text.trim()) return;
+		if (armedPromptId(steerRef.current) === id) {
+			runSteerEffect(dispatchSteer({ type: "return", composerText: "", at: Date.now() }));
 			return;
 		}
-		queuedEnterRef.current = { id, at: now };
-		setArmedQueuedPromptId(id);
-		if (queuedEnterTimerRef.current !== null) window.clearTimeout(queuedEnterTimerRef.current);
-		queuedEnterTimerRef.current = window.setTimeout(() => {
-			if (queuedEnterRef.current?.id === id) queuedEnterRef.current = null;
-			setArmedQueuedPromptId((current) => current === id ? null : current);
-		}, 700);
+		armQueuedPrompt(id, text);
 	};
+
+	const promoteComposerQueueOnSecondReturn = (
+		composerValue: string,
+		options: { repeat: boolean; composing: boolean }
+	): boolean => {
+		if (!agentWorking || activeEnterAction !== "enqueue" || !steerSupported) return false;
+		return runSteerEffect(
+			dispatchSteer({
+				type: "return",
+				composerText: composerValue,
+				at: Date.now(),
+				repeat: options.repeat,
+				composing: options.composing
+			})
+		);
+	};
+
+	// A prompt that vanished from the persisted queue — removed here, or
+	// replaced by a reconnect — can no longer be promoted.
+	const queuedPromptKey = queuedPrompts.map((item) => item.id).join(" ");
+	useEffect(() => {
+		dispatchSteer({ type: "queueReconciled", promptIds: queuedPromptKey ? queuedPromptKey.split(" ") : [] });
+		// dispatchSteer is stable in effect; the id list is the real dependency.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [queuedPromptKey]);
+
+	// Once the turn ends there is nothing to steer. The prompt stays queued for
+	// the normal next-turn path rather than being lost or delivered twice.
+	useEffect(() => {
+		if (!agentWorking) dispatchSteer({ type: "turnEnded" });
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [agentWorking]);
+
+	// One steering error surface. The promotion machine owns its own failure;
+	// the direct-steer path reports through `steerError`. Both are already
+	// normalized strings, so neither can render an object.
+	const promotionFailure = steerFailure(steer);
+	const steerMessage = promotionFailure?.message ?? (typeof steerError === "string" ? steerError : null);
+	const steerErrorCode = promotionFailure?.code ?? null;
 
 	const sendLabel = !agentWorking
 		? "Send message"
@@ -1130,13 +1212,11 @@ export function Composer({
 								value={item.text}
 								onChange={(event) => onEditQueuedPrompt?.(item.id, event.target.value)}
 								disabled={promotingQueuedPromptId === item.id}
-								onBlur={() => {
-									queuedEnterRef.current = null;
-									setArmedQueuedPromptId(null);
-								}}
 								onKeyDown={(event) => {
-									if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.repeat) return;
+									if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey) return;
+									if (event.nativeEvent.isComposing || event.keyCode === 229) return;
 									event.preventDefault();
+									if (event.repeat) return;
 									handleQueuedPromptEnter(item.id, item.text);
 								}}
 							/>
@@ -1160,8 +1240,13 @@ export function Composer({
 					<button type="button" data-testid="keep-queued" onClick={onKeepQueued}>Keep</button>
 				</div>
 			) : null}
-			{steerError ? (
-				<p className="composer-steer-error" role="alert" data-testid="steer-error">{steerError}</p>
+			{steerMessage ? (
+				<p
+					className="composer-steer-error"
+					role="alert"
+					data-testid="steer-error"
+					data-steer-error-code={steerErrorCode ?? undefined}
+				>{steerMessage}</p>
 			) : null}
 			{sendFailure ? (
 				<div className="composer-send-retry" role="status" data-testid="send-retry">
@@ -1173,6 +1258,11 @@ export function Composer({
 				<p className="composer-steer-error" role="alert" data-testid="composer-mic-error">{voiceError}</p>
 			) : null}
 			{attachmentError ? <p className="composer-steer-error" role="alert" data-testid="composer-attachment-error">{attachmentError}</p> : null}
+			{armedQueuedPromptId ? (
+				<p className="composer-steer-hint" role="status" aria-live="polite" data-testid="composer-steer-hint">
+					Queued — Return again to steer
+				</p>
+			) : null}
 			{state.selectedTargetId.startsWith("openrouter-") && !state.openrouterApiKeyConfigured ? (
 				<div className="composer-configuration-required" role="alert" data-testid="openrouter-key-required">
 					<span><strong>OpenRouter API key required</strong> Add it under Settings → Account before sending a message.</span>
@@ -1224,7 +1314,20 @@ export function Composer({
 							return;
 						}
 						if (e.key !== "Enter" || e.shiftKey) return;
+						// An IME commit press belongs to the composition, not to the
+						// composer. Let it through untouched.
+						if (e.nativeEvent.isComposing || e.keyCode === 229) return;
 						e.preventDefault();
+						// A held Return is one instruction, not one per repeat.
+						if (e.repeat) return;
+						if (
+							!e.metaKey &&
+							!e.ctrlKey &&
+							promoteComposerQueueOnSecondReturn(e.currentTarget.value, {
+								repeat: e.repeat,
+								composing: e.nativeEvent.isComposing
+							})
+						) return;
 						if (e.metaKey || e.ctrlKey) submitAlternate();
 						else submit();
 					}}
@@ -1326,13 +1429,13 @@ export function Composer({
 						<button
 							type="button"
 							className="send-btn"
-							disabled={!enabled || !value.trim() || submitting}
-							onClick={submit}
-							aria-label={sendLabel}
-							data-testid="composer-send"
+							disabled={!enabled || submitting || (!agentWorking && !value.trim())}
+							onClick={agentWorking ? onStop : submit}
+							aria-label={agentWorking ? "Stop generating" : sendLabel}
+							data-testid={agentWorking ? "composer-stop" : "composer-send"}
 							data-intent={enterAction}
 						>
-							<IconSend />
+							{agentWorking ? <IconStop /> : <IconSend />}
 						</button>
 					</div>
 				</div>

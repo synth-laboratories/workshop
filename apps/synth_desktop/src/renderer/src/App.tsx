@@ -69,6 +69,7 @@ export default function App() {
 								c.setView({ kind: "landing" });
 							}
 						}}
+						pluginStatuses={c.pluginStatuses}
 						onOpenInventory={() => c.setView({ kind: "inventory" })}
 						onOpenVisuals={() => c.setView({ kind: "visuals" })}
 						onOpenReports={() => c.setView({ kind: "reports" })}
@@ -117,11 +118,7 @@ export default function App() {
 						}}
 						onNewConversation={c.onNewConversation}
 						onToggleTerminal={() => {
-							c.setTerminalOpen((current) => {
-								const next = !current;
-								c.persistLayoutSnapshot({ bottomPanelVisible: next });
-								return next;
-							});
+							c.persistLayoutSnapshot({ bottomPanelVisible: !c.terminalOpen });
 						}}
 						onToggleInference={() => {
 							const next = !(c.sidePanelOpen && c.sidePanelTab === "inference");
@@ -140,11 +137,14 @@ export default function App() {
 					<MainRoutes
 						view={c.view}
 						setView={c.setView}
+						pluginStatuses={c.pluginStatuses}
+						refreshPluginStatuses={c.refreshPluginStatuses}
 						state={c.state}
 						sessions={c.sessions}
 						selectedTargetId={c.selectedTargetId}
 						onSelectTarget={c.onSelectTarget}
 						activeChat={c.activeChat}
+						eventsBySession={c.eventsBySession}
 						activeChatSession={c.activeChatSession}
 						activeChatRunning={c.activeChatRunning}
 						activeChatWarmingUp={c.activeChatWarmingUp}
@@ -163,6 +163,8 @@ export default function App() {
 						sidePanelTab={c.sidePanelTab}
 						setSidePanelTab={c.setSidePanelTab}
 						setSidePanelOpen={c.setSidePanelOpen}
+						transcriptHistoryBySession={c.transcriptHistoryBySession}
+						loadOlderTranscript={c.loadOlderTranscript}
 						inferenceMonitor={c.inferenceMonitor}
 						persistedPerformanceByTarget={c.persistedPerformanceByTarget}
 						preferences={c.preferences}
@@ -184,10 +186,17 @@ export default function App() {
 						setSandboxMode={c.setSandboxMode}
 						showToast={c.showToast}
 						startOptimizerAgent={async (title, prompt) => {
-							const targetId = c.selectedTargetId === "local-laguna" && c.state.codexOauthConfigured
-								? "chatgpt-luna"
-								: c.selectedTargetId;
-							const session = await c.createConversation(targetId, title);
+							// An optimizer setup is an ordinary product turn on the
+							// operator-selected target. Do not silently route a local
+							// request through ChatGPT merely because OAuth exists.
+							// Defer native startup so sendTurn atomically takes custody
+							// of the first prompt instead of opening a blank eager thread.
+							const session = await c.createConversation(
+								c.selectedTargetId,
+								title,
+								undefined,
+								{ deferNativeStart: true }
+							);
 							const sent = await c.sendToSession(session.id, prompt);
 							if (!sent) throw new Error("The optimizer setup agent could not start");
 						}}
@@ -197,8 +206,6 @@ export default function App() {
 						toggleContainer={c.toggleContainer}
 						probeOpenContainer={c.probeOpenContainer}
 						controlActive={c.controlActive}
-						setQueueAfterStop={c.setQueueAfterStop}
-						promptsForConversationLength={(chatId) => promptsForConversation(chatId).length}
 						onActivityModeChange={(mode) => c.setPreferences(setToolActivityMode(mode))}
 					/>
 
@@ -241,6 +248,10 @@ export default function App() {
 						showToast={c.showToast}
 						setView={c.setView}
 						setUsageSheetOpen={c.setUsageSheetOpen}
+						onStopActiveTurn={() => {
+							c.setQueueAfterStop(c.activeChat ? promptsForConversation(c.activeChat.id).length > 0 : false);
+							void c.controlActive("cancel");
+						}}
 					/>
 
 					<TerminalPanel
@@ -251,7 +262,6 @@ export default function App() {
 						fontFamily={c.preferences.appearance.terminalFontFamily}
 						fontSize={c.preferences.appearance.terminalFontSize}
 						onOpenChange={(open) => {
-							c.setTerminalOpen(open);
 							c.persistLayoutSnapshot({ bottomPanelVisible: open });
 						}}
 						onHeightChange={(height) => c.persistLayoutSnapshot({ bottomPanelHeight: height })}

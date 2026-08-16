@@ -7,9 +7,12 @@ Three files, in cascade order:
 | `tokens.css` | The vocabulary. Space, type, tone, surface, selection, measure. |
 | `primitives.css` | The shared component layer. Every page composes `.ws-*`; no page restyles them. |
 | `app.css` | Shell geometry and the not-yet-migrated page dialects. Shrinks as pages move. |
+| `usage.css` | Data → Usage. The first page to move *out* of `app.css`; token-only. |
 
 Import order in `main.tsx` must be `tokens.css` → `primitives.css` → `app.css`, so
-un-migrated page rules keep winning during the transition.
+un-migrated page rules keep winning during the transition. Migrated page files load
+after `app.css`; a page only earns one once its rules are token-only, which is what
+the `lint:app-css` gate is measuring.
 
 ## Why this exists
 
