@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
+import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 
@@ -492,8 +492,11 @@ window.synthWorkspaceScope ??= isTauri
 			}
 		};
 	window.synthModelPerformance ??= isTauri
-		? { summaries: () => invokeCommand<ModelPerformanceSummary[]>(COMMANDS.MODEL_PERFORMANCE_SUMMARY) }
-		: { summaries: async () => [] };
+		? {
+			summaries: () => invokeCommand<ModelPerformanceSummary[]>(COMMANDS.MODEL_PERFORMANCE_SUMMARY),
+			turnSamples: (sessionId) => invokeCommand<ModelPerformanceTurnSample[]>(COMMANDS.MODEL_PERFORMANCE_TURN_SAMPLES, { sessionId })
+		}
+		: { summaries: async () => [], turnSamples: async () => [] };
 	window.synthUpdates ??= isTauri
 		? {
 			status: () => invokeCommand<UpdateStatus>(COMMANDS.UPDATE_STATUS),

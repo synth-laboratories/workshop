@@ -98,6 +98,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::data_trace_projection_resolve,
         crate::data_usage_list,
         crate::model_performance_summary,
+        crate::model_performance_turn_samples,
         crate::usage_summary,
         crate::tariff_catalog,
         crate::update_status,
@@ -341,7 +342,7 @@ mod tests {
         // here rather than pass quietly. Bump it only alongside a reviewed
         // `collect_commands!` change.
         assert_eq!(
-            exported, 188,
+            exported, 189,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

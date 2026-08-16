@@ -83,7 +83,10 @@ use reports::{
 };
 use serde_json::Value;
 use std::sync::Arc;
-use storage::{AppEvent, CoreDiagnostics, ModelPerformanceRepository, ModelPerformanceSummary};
+use storage::{
+    AppEvent, CoreDiagnostics, ModelPerformanceRepository, ModelPerformanceSummary,
+    ModelPerformanceTurnSample,
+};
 use synth_config::{
     BackendSettings, BackendSettingsUpdate, DesktopPermissionSettings, DesktopPermissionUpdate,
     ModelMultiAgentSetting, ModelMultiAgentUpdate, WorkspaceAccessSettings, WorkspaceAccessUpdate,
@@ -553,6 +556,18 @@ async fn model_performance_summary(
 ) -> Result<Vec<ModelPerformanceSummary>, AppError> {
     ModelPerformanceRepository::new(state.storage().database().clone())
         .summaries()
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn model_performance_turn_samples(
+    state: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+) -> Result<Vec<ModelPerformanceTurnSample>, AppError> {
+    ModelPerformanceRepository::new(state.storage().database().clone())
+        .turn_samples(session_id)
         .await
         .map_err(AppError::from)
 }

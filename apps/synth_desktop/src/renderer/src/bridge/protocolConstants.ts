@@ -121,6 +121,7 @@ export const COMMANDS = {
 	DATA_USAGE_LIST: "data_usage_list",
 	DATA_COUNTS: "data_counts",
 	MODEL_PERFORMANCE_SUMMARY: "model_performance_summary",
+	MODEL_PERFORMANCE_TURN_SAMPLES: "model_performance_turn_samples",
 	MODEL_PERFORMANCE_GET: "model_performance_get",
 	USAGE_SUMMARY: "usage_summary",
 	TARIFF_CATALOG: "tariff_catalog",

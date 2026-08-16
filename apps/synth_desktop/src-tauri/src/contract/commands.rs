@@ -92,6 +92,7 @@ impl Commands {
     pub const DATA_USAGE_LIST: &'static str = "data_usage_list";
     pub const DATA_COUNTS: &'static str = "data_counts";
     pub const MODEL_PERFORMANCE_SUMMARY: &'static str = "model_performance_summary";
+    pub const MODEL_PERFORMANCE_TURN_SAMPLES: &'static str = "model_performance_turn_samples";
     pub const MODEL_PERFORMANCE_GET: &'static str = "model_performance_get";
     pub const USAGE_SUMMARY: &'static str = "usage_summary";
     pub const TARIFF_CATALOG: &'static str = "tariff_catalog";

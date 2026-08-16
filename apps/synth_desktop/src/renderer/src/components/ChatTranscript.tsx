@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ArtifactRef, LocalActivityLine, LocalChat } from "../types/landing";
-import type { Session } from "@synth/runtime-protocol";
+import type { RuntimeEvent, Session } from "@synth/runtime-protocol";
 import { FileTypeIcon, shortenPath } from "./FileTypeIcon";
 import { ContainerIcon } from "./ContainerPane";
 import { ManderPresence } from "./mander";
@@ -11,10 +11,12 @@ import {
 	type ToolActivityMode
 } from "../preferences";
 import { contextCompactionTokenSummary } from "../runtime/sessionView";
+import { useTurnPerformanceLabels } from "../hooks/useTurnPerformanceLabels";
 import "./PaidComputeApprovalModal.css";
 
 type Props = {
 	chat: LocalChat;
+	events?: RuntimeEvent[];
 	openArtifactId: string | null;
 	/** Pass artifact id to toggle open/closed; pass null to force close. */
 	onOpenArtifact: (id: string | null) => void;
@@ -29,8 +31,6 @@ type Props = {
 	onAdvanced?: () => void;
 	activityMode?: ToolActivityMode;
 	onActivityModeChange?: (mode: ToolActivityMode) => void;
-	/** Rolling model p50 throughput, shared by the live row and completed responses. */
-	medianTpsLabel?: string | null;
 	outputsOpen?: boolean;
 	onToggleOutputs?: () => void;
 	showMascot?: boolean;
@@ -601,6 +601,7 @@ function UserMessage({ id, body, images, onExpansionChange }: { id: string; body
 
 export function ChatTranscript({
 	chat,
+	events = [],
 	openArtifactId,
 	onOpenArtifact,
 	openContainerId = null,
@@ -614,7 +615,6 @@ export function ChatTranscript({
 	onAdvanced,
 	activityMode = "grouped",
 	onActivityModeChange,
-	medianTpsLabel = null,
 	outputsOpen = false,
 	onToggleOutputs,
 	showMascot = false,
@@ -636,7 +636,7 @@ export function ChatTranscript({
 	const artifacts = chat.artifacts ?? [];
 	const containerIds = outputContainerIds(chat);
 	const hasResources = containerIds.length > 0 || artifacts.length > 0;
-	const transcriptMedianTpsLabel = medianTpsLabel?.replace(/\bp50\b/g, "median") ?? null;
+	const turnTpsLabels = useTurnPerformanceLabels(chat, events, running);
 	const finalAssistantMessageId = useMemo(() => {
 		for (let index = chat.messages.length - 1; index >= 0; index -= 1) {
 			if (chat.messages[index]?.role === "assistant") return chat.messages[index]!.id;
@@ -884,7 +884,7 @@ export function ChatTranscript({
 											{showAdvancedAtMessage ? <button type="button" className="message-advanced" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
 										</div>
 										<div className="assistant-message-footer">
-											{transcriptMedianTpsLabel ? <small className="message-throughput" data-testid={`assistant-median-tps-${m.id}`}>{transcriptMedianTpsLabel}</small> : null}
+											{turnTpsLabels.byMessageId[m.id] ? <small className="message-throughput" data-testid={`assistant-median-tps-${m.id}`}>{turnTpsLabels.byMessageId[m.id]}</small> : null}
 											<div className="message-actions"><CopyMessageButton body={m.body} /></div>
 										</div>
 									</div>
@@ -907,7 +907,7 @@ export function ChatTranscript({
 							<div className="model-working" role="status" aria-live="polite" data-testid="model-working">
 								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>
 								<span>{warmingUp ? "Warming up…" : "Working…"}</span>
-								{transcriptMedianTpsLabel ? <small className="model-working-throughput" data-testid="model-working-median-tps">{transcriptMedianTpsLabel}</small> : null}
+								{turnTpsLabels.live ? <small className="model-working-throughput" data-testid="model-working-median-tps">{turnTpsLabels.live}</small> : null}
 								{onStop ? <button type="button" onClick={onStop} aria-label="Stop generating">Stop</button> : null}
 								{onAdvanced ? <button type="button" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
 							</div>

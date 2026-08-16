@@ -23,7 +23,10 @@ pub use live_spool::{
     envelopes_from_event_log, load_live_spool, persist_live_envelopes, replay_frame_from_envelope,
     LiveSpool, LIVE_SPOOL_SCHEMA,
 };
-pub use model_performance::{MeasurementKind, ModelPerformanceRepository, ModelPerformanceSummary};
+pub use model_performance::{
+    MeasurementKind, ModelPerformanceRepository, ModelPerformanceSummary,
+    ModelPerformanceTurnSample,
+};
 pub use models::{
     AppEvent, CommandReceiptRecord, CoreDiagnostics, EventSource, RunRecord, SessionRecord,
     APP_EVENT_SCHEMA_VERSION,

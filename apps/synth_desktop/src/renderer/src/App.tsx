@@ -144,6 +144,7 @@ export default function App() {
 						selectedTargetId={c.selectedTargetId}
 						onSelectTarget={c.onSelectTarget}
 						activeChat={c.activeChat}
+						eventsBySession={c.eventsBySession}
 						activeChatSession={c.activeChatSession}
 						activeChatRunning={c.activeChatRunning}
 						activeChatWarmingUp={c.activeChatWarmingUp}
@@ -165,7 +166,6 @@ export default function App() {
 						transcriptHistoryBySession={c.transcriptHistoryBySession}
 						loadOlderTranscript={c.loadOlderTranscript}
 						inferenceMonitor={c.inferenceMonitor}
-						selectedModelMedianTpsLabel={c.selectedModelMedianTpsLabel}
 						persistedPerformanceByTarget={c.persistedPerformanceByTarget}
 						preferences={c.preferences}
 						setPreferences={c.setPreferences}

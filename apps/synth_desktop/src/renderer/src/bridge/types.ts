@@ -380,8 +380,17 @@ export type ModelPerformanceSummary = {
 	lastObservedAt: string;
 };
 
+export type ModelPerformanceTurnSample = {
+	runId: string | null;
+	measurementKind: ModelPerformanceSummary["measurementKind"];
+	startedAtMs: number;
+	completedAtMs: number;
+	outputTps: number;
+};
+
 export type ModelPerformanceBridge = {
 	summaries(): Promise<ModelPerformanceSummary[]>;
+	turnSamples(sessionId: string): Promise<ModelPerformanceTurnSample[]>;
 };
 
 /** Device-wide usage dashboard, aggregated natively over `usage_records`. */

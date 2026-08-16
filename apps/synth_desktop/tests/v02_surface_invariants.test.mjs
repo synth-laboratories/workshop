@@ -31,7 +31,8 @@ test("v0.4 transcript shows median throughput while working and after assistant 
 	const labels = read("runtime/modelPerformanceLabels.ts");
 	assert.match(source, /data-testid="model-working-median-tps"/);
 	assert.match(source, /data-testid={`assistant-median-tps-\${m\.id}`}/);
-	assert.match(source, /medianTpsLabel\?\.replace\(\/\\bp50\\b\/g, "median"\)/);
+	assert.match(source, /useTurnPerformanceLabels\(chat, events, running\)/);
+	assert.doesNotMatch(source, /medianTpsLabel\?\.replace/);
 	assert.match(labels, /summary\.provider === "openai-codex-oauth"/);
 	assert.match(labels, /CHATGPT_LUNA_MODEL\) return "chatgpt-luna"/);
 	assert.match(labels, /CHATGPT_SOL_MODEL\) return "chatgpt-sol"/);

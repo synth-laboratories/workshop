@@ -29,6 +29,7 @@ export const commands = {
 	dataTraceProjectionResolve: (traceDigest: string, projectionKind: string) => typedError<ResolvedTraceProjection, AppError>(__TAURI_INVOKE("data_trace_projection_resolve", { traceDigest, projectionKind })),
 	dataUsageList: (limit: unknown | null) => typedError<UsageEntry[], AppError>(__TAURI_INVOKE("data_usage_list", { limit })),
 	modelPerformanceSummary: () => typedError<ModelPerformanceSummary[], AppError>(__TAURI_INVOKE("model_performance_summary")),
+	modelPerformanceTurnSamples: (sessionId: string) => typedError<ModelPerformanceTurnSample[], AppError>(__TAURI_INVOKE("model_performance_turn_samples", { sessionId })),
 	/**
 	 *  Device-wide usage dashboard for one time window, aggregated in SQLite/Rust
 	 *  over the authoritative per-request `usage_records` ledger — the renderer
@@ -1168,6 +1169,19 @@ export type ModelPerformanceSummary = {
 	tpsP95: number | null,
 	ttftP50Ms: number | null,
 	lastObservedAt: string,
+};
+
+/**
+ *  One authoritative request measurement for reconstructing per-user-turn
+ *  throughput in the transcript. The renderer groups these rows between user
+ *  message timestamps; it must never substitute the model's lifetime p50.
+ */
+export type ModelPerformanceTurnSample = {
+	runId: string | null,
+	measurementKind: MeasurementKind,
+	startedAtMs: unknown,
+	completedAtMs: unknown,
+	outputTps: number | null,
 };
 
 export type MultiAgentVersion = "none" | "v1" | "v2";
