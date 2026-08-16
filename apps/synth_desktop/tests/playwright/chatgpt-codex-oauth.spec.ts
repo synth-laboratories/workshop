@@ -71,3 +71,66 @@ test("subscription UI is available by default", async ({ page }) => {
 	await page.getByTestId("composer-model").click();
 	await expect(page.getByTestId("composer-model-menu")).toContainText("ChatGPT · subscription");
 });
+
+test("the first ChatGPT message verifies readiness once and reaches atomic sendTurn", async ({ page }) => {
+	await page.addInitScript(() => {
+		const testWindow = window as typeof window & {
+			__oauthReadinessChecks?: number;
+			__chatgptSends?: string[];
+		};
+		testWindow.__oauthReadinessChecks = 0;
+		testWindow.__chatgptSends = [];
+		const ready = {
+			state: "ready" as const,
+			action: "reauthenticate" as const,
+			canUseModels: true,
+			guidance: "Ready",
+			configured: true,
+			accountHint: "person@example.com"
+		};
+		window.synthCodexOauth = {
+			begin: async () => ({ authorizeUrl: "https://auth.example.test", mode: "manual" as const }),
+			completeManual: async () => ready,
+			ensureReady: async () => {
+				testWindow.__oauthReadinessChecks! += 1;
+				return ready;
+			},
+			status: async () => ready,
+			disconnect: async () => ({ configured: false }),
+			cancel: async () => undefined
+		};
+		window.synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [],
+			start: async () => { throw new Error("sendTurn owns first-message startup"); },
+			startTurn: async () => { throw new Error("sendTurn owns the first turn"); },
+			sendTurn: async (request: { sessionId: string }, prompt: string) => {
+				testWindow.__chatgptSends!.push(prompt);
+				return { sessionId: request.sessionId, threadId: "chatgpt-thread", turnId: "chatgpt-turn" };
+			},
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-option-chatgpt-luna").click();
+	const readinessBeforeSend = await page.evaluate(() => (
+		window as typeof window & { __oauthReadinessChecks?: number }
+	).__oauthReadinessChecks ?? 0);
+	await page.getByTestId("composer-input").fill("first ChatGPT message");
+	await page.getByTestId("composer-send").click();
+	await expect(page.getByTestId("model-working")).toBeVisible();
+	const calls = await page.evaluate((readinessAtSubmit) => {
+		const testWindow = window as typeof window & {
+			__oauthReadinessChecks?: number;
+			__chatgptSends?: string[];
+		};
+		return {
+			readinessDuringSend: (testWindow.__oauthReadinessChecks ?? 0) - readinessAtSubmit,
+			sends: testWindow.__chatgptSends
+		};
+	}, readinessBeforeSend);
+	expect(calls).toEqual({ readinessDuringSend: 1, sends: ["first ChatGPT message"] });
+});

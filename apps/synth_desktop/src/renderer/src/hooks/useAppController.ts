@@ -1216,13 +1216,28 @@ export function useAppController() {
 	}, [activeSessionId, createConversation, selectedTargetId, view.kind]);
 
 	const sendToSession = useCallback(
-		async (sessionId: string, text: string, options?: { messageId?: string; images?: ComposerImageAttachment[] }) => {
+		async (
+			sessionId: string,
+			text: string,
+			options?: {
+				messageId?: string;
+				images?: ComposerImageAttachment[];
+				readinessVerified?: boolean;
+			}
+		) => {
 			try {
 				const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
 				const sessionTargetId = session ? executionTargetToUiId(session.target) : selectedTargetId;
 				const pendingTargetId = isInternTargetId(selectedTargetId) ? sessionTargetId : selectedTargetId;
-				if (!await ensureOpenRouterReady(pendingTargetId)) return false;
-				if (!await ensureCodexOauthReady(pendingTargetId)) return false;
+				// The landing composer verifies provider readiness before creating the
+				// session. Repeating an OAuth probe after createConversation has changed
+				// routes leaves the new session visible but the first prompt unjournaled
+				// when that second probe stalls. Direct/session-specific sends still own
+				// their readiness check.
+				if (!options?.readinessVerified) {
+					if (!await ensureOpenRouterReady(pendingTargetId)) return false;
+					if (!await ensureCodexOauthReady(pendingTargetId)) return false;
+				}
 				setBusy(true);
 				if (nativeCodex && (!session || session.target.kind !== "intern")) {
 					if (!session) throw new Error(`Native Codex session is not registered: ${sessionId}`);
@@ -1360,7 +1375,7 @@ export function useAppController() {
 				// Intern creation itself starts the objective. Sending the same text
 				// again would issue a duplicate operator command.
 				if (!ensured.objectiveConsumed) {
-					await sendToSession(ensured.sessionId, text, { images });
+					await sendToSession(ensured.sessionId, text, { images, readinessVerified: true });
 				}
 			} catch {
 				/* toast already shown */
