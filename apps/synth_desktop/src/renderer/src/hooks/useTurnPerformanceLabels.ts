@@ -5,6 +5,8 @@ import type { LocalChat } from "../types/landing";
 import { formatTps } from "../components/InferencePanel";
 import { bridges } from "../runtime/desktopBridge";
 
+const GENERATION_TPS_UNAVAILABLE = "Generation TPS unavailable";
+
 function timestamp(value: string): number | null {
 	const parsed = Date.parse(value);
 	return Number.isFinite(parsed) ? parsed : null;
@@ -100,8 +102,8 @@ export function turnPerformanceLabels(chat: LocalChat, samples: ModelPerformance
 		const turnSamples = samples.filter((sample) =>
 			sample.startedAtMs >= userStartedAt! && (nextUserAt == null || sample.startedAtMs < nextUserAt)
 		);
-		const turnLabel = label(turnSamples);
-		if (turnLabel) byMessageId[message.id] = turnLabel;
+		const turnLabel = label(turnSamples) ?? GENERATION_TPS_UNAVAILABLE;
+		byMessageId[message.id] = turnLabel;
 		if (nextUserAt == null) live = turnLabel;
 	}
 	return { byMessageId, live };
@@ -137,7 +139,7 @@ export function useTurnPerformanceLabels(chat: LocalChat, events: RuntimeEvent[]
 			if (message.role === "user") lastUserAt = timestamp(message.at);
 		}
 		const live = liveTurnPerformanceLabel(events, lastUserAt);
-		if (!live) return { ...persisted, live: null };
+		if (!live) return persisted;
 		const byMessageId = { ...persisted.byMessageId };
 		let inCurrentTurn = false;
 		for (const message of chat.messages) {
