@@ -128,10 +128,12 @@ export function ComposerDock({
 					const conversationId = activeSessionId;
 					if (!conversationId) {
 						showToast("No active conversation to queue into");
-						return;
+						return undefined;
 					}
 					setSteerError(null);
-					setPreferences(enqueuePrompt(conversationId, text));
+					const next = enqueuePrompt(conversationId, text);
+					setPreferences(next);
+					return next.promptQueue.at(-1)?.id;
 				},
 				onEdit: (id, text) => {
 					try {

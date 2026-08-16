@@ -40,7 +40,7 @@ export type ComposerModelControls = {
 
 export type ComposerQueue = {
 	prompts?: Array<{ id: string; text: string }>;
-	onEnqueue?: (text: string) => void;
+	onEnqueue?: (text: string) => string | undefined;
 	onEdit?: (id: string, text: string) => void;
 	onRemove?: (id: string) => void;
 	onPromote?: (id: string, text: string) => void | Promise<void>;
@@ -1021,9 +1021,10 @@ export function Composer({
 		setSubmitting(true);
 		try {
 			if (intent === "enqueue") {
-				onEnqueue?.(text);
+				const queuedId = onEnqueue?.(text);
 				setValue("");
 				setSkillChip(null);
+				if (queuedId && agentWorking && steerSupported) armQueuedPrompt(queuedId);
 				return;
 			}
 			if (intent === "steer") {
@@ -1090,19 +1091,17 @@ export function Composer({
 		return true;
 	};
 
-	const handleQueuedPromptEnter = (id: string, text: string) => {
-		if (!agentWorking || !steerSupported || promotingQueuedPromptId || !text.trim()) return;
+	const promoteQueuedPrompt = (id: string, text: string) => {
+		queuedEnterRef.current = null;
+		if (queuedEnterTimerRef.current !== null) window.clearTimeout(queuedEnterTimerRef.current);
+		setArmedQueuedPromptId(null);
+		setPromotingQueuedPromptId(id);
+		void Promise.resolve(onPromoteQueuedPrompt?.(id, text.trim()))
+			.finally(() => setPromotingQueuedPromptId(null));
+	};
+
+	const armQueuedPrompt = (id: string) => {
 		const now = Date.now();
-		const prior = queuedEnterRef.current;
-		if (prior?.id === id && now - prior.at <= 700) {
-			queuedEnterRef.current = null;
-			if (queuedEnterTimerRef.current !== null) window.clearTimeout(queuedEnterTimerRef.current);
-			setArmedQueuedPromptId(null);
-			setPromotingQueuedPromptId(id);
-			void Promise.resolve(onPromoteQueuedPrompt?.(id, text.trim()))
-				.finally(() => setPromotingQueuedPromptId(null));
-			return;
-		}
 		queuedEnterRef.current = { id, at: now };
 		setArmedQueuedPromptId(id);
 		if (queuedEnterTimerRef.current !== null) window.clearTimeout(queuedEnterTimerRef.current);
@@ -1110,6 +1109,26 @@ export function Composer({
 			if (queuedEnterRef.current?.id === id) queuedEnterRef.current = null;
 			setArmedQueuedPromptId((current) => current === id ? null : current);
 		}, 700);
+	};
+
+	const handleQueuedPromptEnter = (id: string, text: string) => {
+		if (!agentWorking || !steerSupported || promotingQueuedPromptId || !text.trim()) return;
+		const prior = queuedEnterRef.current;
+		if (prior?.id === id && Date.now() - prior.at <= 700) {
+			promoteQueuedPrompt(id, text);
+			return;
+		}
+		armQueuedPrompt(id);
+	};
+
+	const promoteComposerQueueOnSecondReturn = (): boolean => {
+		if (!agentWorking || activeEnterAction !== "enqueue" || !steerSupported || value.trim() || promotingQueuedPromptId) return false;
+		const armed = queuedEnterRef.current;
+		if (!armed || Date.now() - armed.at > 700) return false;
+		const queued = queuedPrompts.find((item) => item.id === armed.id);
+		if (!queued) return false;
+		promoteQueuedPrompt(queued.id, queued.text);
+		return true;
 	};
 
 	const sendLabel = !agentWorking
@@ -1231,6 +1250,7 @@ export function Composer({
 						}
 						if (e.key !== "Enter" || e.shiftKey) return;
 						e.preventDefault();
+						if (!e.metaKey && !e.ctrlKey && promoteComposerQueueOnSecondReturn()) return;
 						if (e.metaKey || e.ctrlKey) submitAlternate();
 						else submit();
 					}}
