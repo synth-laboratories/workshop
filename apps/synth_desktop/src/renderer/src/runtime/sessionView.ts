@@ -611,8 +611,6 @@ function safeToolStatus(item: Record<string, unknown>, eventKind = ""): LocalAct
 }
 
 function safeToolFailure(item: Record<string, unknown>): string | undefined {
-	const error = objectValue(item.error);
-	const direct = error ? stringField(error, "message", "detail", "code") : typeof item.error === "string" ? item.error : undefined;
 	const result = objectValue(item.result);
 	const structured = result && objectValue(result.structuredContent);
 	// A structured application failure keeps its stable code and remediation so
@@ -622,7 +620,10 @@ function safeToolFailure(item: Record<string, unknown>): string | undefined {
 		? [stringField(coded, "code"), stringField(coded, "remediation")].filter(Boolean).join(" · ")
 		: undefined;
 	const structuredError = structured ? stringField(structured, "error", "message", "detail", "code") : undefined;
-	const message = codedMessage || direct || structuredError;
+	// Provider error text is not a trusted transcript surface: it can contain
+	// prompts, credentials, or arbitrary tool output. Only the structured,
+	// application-owned failure envelope is safe to render.
+	const message = codedMessage || structuredError;
 	return message ? redactCommand(message).slice(0, 320) : undefined;
 }
 
@@ -789,10 +790,11 @@ function mcpToolActivity(
 				: visualStage === "failed"
 					? "Visual update failed"
 					: undefined;
+	const visualDuration = visualStage && durationMs != null ? `${durationMs}ms` : undefined;
 	return {
 		key: `mcp:${id}`,
 		label: lifecycleLabel ?? ([server, tool].filter(Boolean).join(".") || "Tool call"),
-		detail: [argsLabel, failure].filter(Boolean).join(" · ") || undefined,
+		detail: [argsLabel, failure, visualDuration].filter(Boolean).join(" · ") || undefined,
 		kind: visualStage ? "visual_lifecycle" : artifactId ? "visual" : "working",
 		artifactId,
 		containerId,
@@ -1450,7 +1452,10 @@ export function eventsToLocalActivity(
 				if (safeTool.kind === "file_read") runActions.reads += 1;
 				if (safeTool.kind === "file_write") runActions.writes += 1;
 				if (safeTool.kind === "search") runActions.searches += 1;
-				if (safeTool.toolStatus) runActions.tools += 1;
+				if (
+					safeTool.toolStatus
+					&& !["command", "file_read", "file_write", "search"].includes(safeTool.kind ?? "")
+				) runActions.tools += 1;
 				const line: LocalActivityLine = {
 					id: `activity-${event.sequence}`,
 					label: safeTool.label,

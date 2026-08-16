@@ -1540,7 +1540,7 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(transcript.locator("code.mcp-activity-name").getByText("synth_containers.container_probe")).toBeVisible();
 	await expect(transcript.getByText("Visual update failed", { exact: true })).toBeVisible();
 	await expect(transcript.getByText("Visual draft created", { exact: true })).toBeVisible();
-	await expect(transcript.getByText("Completed", { exact: true })).toHaveCount(1);
+	await expect(transcript.getByText("Completed", { exact: true })).toHaveCount(2);
 	await expect(transcript.getByText("Needs attention", { exact: true })).toBeVisible();
 	await expect(transcript).toContainText("template id craftax.rollout.v1 · title Craftax rollout · 2ms");
 	await transcript.getByTestId("resource-shelf-trigger").click();

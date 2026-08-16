@@ -75,6 +75,23 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
 			if (message.type() === "error") console.error(`[renderer console] ${message.text()}`);
 		});
 		await page.addInitScript(() => {
+			let coreBridge: Record<string, unknown>;
+			const coreDefaults = {
+				sessionEventsTail: async (sessionId: string, limit = 200) => {
+					const legacy = coreBridge.sessionEventsAfter;
+					return typeof legacy === "function"
+						? await (legacy as (id: string, after: number, cap: number) => Promise<unknown[]>)(sessionId, 0, limit)
+						: [];
+				}
+			};
+			coreBridge = coreDefaults;
+			Object.defineProperty(window, "synthCore", {
+				configurable: true,
+				get: () => coreBridge,
+				set: (fixture) => {
+					coreBridge = { ...coreDefaults, ...(fixture as Record<string, unknown>) };
+				}
+			});
 			const oauthDefaults = {
 				begin: async () => { throw new Error("OAuth fixture missing"); },
 				completeManual: async () => ({ configured: false }),
