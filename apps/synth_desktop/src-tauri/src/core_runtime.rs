@@ -44,6 +44,19 @@ pub struct CoreRuntime {
 impl CoreRuntime {
     pub fn open(root: impl Into<std::path::PathBuf>) -> Result<Self> {
         let storage = Storage::open(root)?;
+        // Bindings written before the canonical envelope was enforced still
+        // render an empty pane, so bring them forward at open. Storage cannot
+        // do this itself: deciding what a legacy shape meant is domain logic.
+        let backfill = storage
+            .database()
+            .with_conn(crate::visuals::canonicalize_persisted_bindings)
+            .context("canonicalize persisted visual bindings")?;
+        if backfill.changed() {
+            eprintln!(
+                "synth-desktop: visual bindings backfill scanned {}, upgraded {}, refused {}",
+                backfill.scanned, backfill.upgraded, backfill.refused
+            );
+        }
         let backend = crate::synth_config::resolve().context("resolve Synth backend")?;
         let intern = Arc::new(match backend.api_key {
             Some(api_key) => InternRuntime::configured(
