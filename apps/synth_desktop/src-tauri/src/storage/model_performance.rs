@@ -158,21 +158,20 @@ fn summaries(conn: &Connection) -> Result<Vec<ModelPerformanceSummary>> {
 
 fn turn_samples(conn: &Connection, session_id: &str) -> Result<Vec<ModelPerformanceTurnSample>> {
     let mut statement = conn.prepare(
-        "SELECT run_id,measurement_kind,started_at_ms,completed_at_ms,observed_output_tps,end_to_end_output_tps
+        "SELECT run_id,measurement_kind,started_at_ms,completed_at_ms,observed_output_tps
          FROM usage_records
          WHERE session_id=?1 AND output_tokens IS NOT NULL AND output_tokens>0
+           AND observed_output_tps IS NOT NULL AND observed_output_tps>0
          ORDER BY started_at_ms,completed_at_ms",
     )?;
     let rows = statement.query_map([session_id], |row| {
         let kind = MeasurementKind::parse(&row.get::<_, String>(1)?);
-        let observed = row.get::<_, Option<f64>>(4)?;
-        let end_to_end = row.get::<_, Option<f64>>(5)?;
         Ok((
             row.get::<_, Option<String>>(0)?,
             kind,
             row.get::<_, i64>(2)?,
             row.get::<_, i64>(3)?,
-            observed.or(end_to_end),
+            row.get::<_, Option<f64>>(4)?,
         ))
     })?;
     let mut samples = Vec::new();
@@ -293,6 +292,12 @@ mod tests {
         let mut second = record("two", 29.0);
         second.session_id = Some("session-b".into());
         w.record(second).await.unwrap();
+        let mut end_to_end_only = record("tool-gap", 0.1);
+        end_to_end_only.session_id = Some("session-a".into());
+        end_to_end_only.measurement_kind = MeasurementKind::EndToEnd;
+        end_to_end_only.observed_output_tps = None;
+        end_to_end_only.end_to_end_output_tps = Some(0.1);
+        w.record(end_to_end_only).await.unwrap();
 
         let rows = ModelPerformanceRepository::new(s.database().clone())
             .turn_samples("session-a".into())

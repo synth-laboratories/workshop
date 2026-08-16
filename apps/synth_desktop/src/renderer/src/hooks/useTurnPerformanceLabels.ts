@@ -3,7 +3,6 @@ import type { RuntimeEvent } from "@synth/runtime-protocol";
 import type { ModelPerformanceTurnSample } from "../bridge";
 import type { LocalChat } from "../types/landing";
 import { formatTps } from "../components/InferencePanel";
-import { performanceKindLabel } from "../runtime/modelPerformanceLabels";
 import { bridges } from "../runtime/desktopBridge";
 
 function timestamp(value: string): number | null {
@@ -21,9 +20,7 @@ function median(values: number[]): number | null {
 function label(samples: ModelPerformanceTurnSample[]): string | null {
 	const value = median(samples.map((sample) => sample.outputTps));
 	if (value == null) return null;
-	const kinds = new Set(samples.map((sample) => sample.measurementKind));
-	const kind = kinds.size === 1 ? performanceKindLabel(samples[0]!.measurementKind) : "observed";
-	return `${formatTps(value)} tok/s ${kind} median`;
+	return `${formatTps(value)} tok/s generation median`;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -58,12 +55,17 @@ export function liveTurnPerformanceLabel(events: RuntimeEvent[], lastUserAt: num
 	if (lastUserAt == null) return null;
 	let firstOutputAt: number | null = null;
 	let lastOutputAt: number | null = null;
+	let generationActiveMs = 0;
 	let latestOutputTokens: number | null = null;
 	for (const event of events) {
 		const at = timestamp(event.createdAt);
 		if (at == null || at < lastUserAt) continue;
 		if (event.eventKind === "message.delta" && typeof event.payload.delta === "string" && event.payload.delta.length > 0) {
 			firstOutputAt ??= at;
+			if (lastOutputAt != null) {
+				const gap = at - lastOutputAt;
+				if (gap > 0 && gap <= 2_000) generationActiveMs += gap;
+			}
 			lastOutputAt = at;
 		}
 		if (event.eventKind.toLowerCase().includes("usage") || event.eventKind.startsWith("run.")) {
@@ -71,10 +73,10 @@ export function liveTurnPerformanceLabel(events: RuntimeEvent[], lastUserAt: num
 		}
 	}
 	if (firstOutputAt == null || lastOutputAt == null || latestOutputTokens == null) return null;
-	const seconds = (lastOutputAt - firstOutputAt) / 1_000;
+	const seconds = generationActiveMs / 1_000;
 	if (seconds <= 0) return null;
 	const tps = latestOutputTokens / seconds;
-	return Number.isFinite(tps) && tps > 0 ? `${formatTps(tps)} tok/s observed median` : null;
+	return Number.isFinite(tps) && tps > 0 ? `${formatTps(tps)} tok/s generation median` : null;
 }
 
 export function turnPerformanceLabels(chat: LocalChat, samples: ModelPerformanceTurnSample[]) {

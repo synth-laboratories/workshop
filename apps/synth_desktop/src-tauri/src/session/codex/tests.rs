@@ -2564,6 +2564,7 @@ fn tracker_for(provider: &str, turn_id: &str) -> TurnPerformanceTracker {
         started_at_ms: 1_000,
         first_output_at_ms: Some(1_100),
         last_output_at_ms: Some(1_900),
+        generation_active_ms: 800,
         usage: TurnTokenUsage {
             input_tokens: Some(1_000),
             cached_input_tokens: None,

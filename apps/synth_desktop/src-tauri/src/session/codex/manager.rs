@@ -571,6 +571,7 @@ impl CodexManager {
                 started_at_ms,
                 first_output_at_ms: None,
                 last_output_at_ms: None,
+                generation_active_ms: 0,
                 usage: TurnTokenUsage::default(),
             },
         );

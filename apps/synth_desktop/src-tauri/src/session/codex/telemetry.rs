@@ -25,10 +25,15 @@ pub(crate) struct TurnPerformanceTracker {
     pub(crate) started_at_ms: i64,
     pub(crate) first_output_at_ms: Option<i64>,
     pub(crate) last_output_at_ms: Option<i64>,
+    /// Sum of time between adjacent output deltas while the model is actively
+    /// generating. Long gaps are orchestration/tool time and are excluded.
+    pub(crate) generation_active_ms: i64,
     pub(crate) usage: TurnTokenUsage,
 }
 
 pub(crate) type PerformanceTrackers = Arc<Mutex<HashMap<String, TurnPerformanceTracker>>>;
+
+const MAX_GENERATION_DELTA_GAP_MS: i64 = 2_000;
 
 pub(crate) fn is_context_compaction_notification(method: &str, params: &Value) -> bool {
     method == "thread/compacted"
@@ -155,6 +160,12 @@ pub(crate) async fn track_performance_event(
         };
         if is_output_delta(method, params) {
             tracker.first_output_at_ms.get_or_insert(now_ms);
+            if let Some(previous) = tracker.last_output_at_ms {
+                let gap = now_ms - previous;
+                if gap > 0 && gap <= MAX_GENERATION_DELTA_GAP_MS {
+                    tracker.generation_active_ms += gap;
+                }
+            }
             tracker.last_output_at_ms = Some(now_ms);
         }
         if method.to_ascii_lowercase().contains("usage") || terminal {
@@ -194,14 +205,12 @@ pub(crate) async fn finalize_performance_tracker(
     };
     let completed_at_ms = completed_at_ms.unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
     let output_tokens = tracker.usage.output_tokens.filter(|tokens| *tokens > 0);
-    let stream_seconds = tracker
-        .first_output_at_ms
-        .zip(tracker.last_output_at_ms)
-        .map(|(first, last)| (last - first) as f64 / 1_000.0)
-        .filter(|seconds| *seconds > 0.0);
+    let generation_seconds = (tracker.generation_active_ms as f64 / 1_000.0)
+        .is_normal()
+        .then_some(tracker.generation_active_ms as f64 / 1_000.0);
     let end_to_end_seconds = ((completed_at_ms - tracker.started_at_ms) as f64 / 1_000.0).max(0.0);
     let observed_output_tps = output_tokens
-        .zip(stream_seconds)
+        .zip(generation_seconds)
         .map(|(tokens, seconds)| tokens as f64 / seconds);
     let end_to_end_output_tps = output_tokens
         .filter(|_| end_to_end_seconds > 0.0)
