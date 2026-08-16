@@ -583,7 +583,10 @@ impl OptimizerManager {
             version: hit.version.clone(),
             digest: hit.digest.clone(),
         });
-        write_env_sh(&self.home, &api_key, &base_url, &hit.version)?;
+        // env.sh is written after the handshake, not here. Publishing the
+        // address before the service has proven anything is what left a
+        // convincing file pointing at a dead port.
+        let runtime_epoch = uuid::Uuid::new_v4().simple().to_string();
         let deadline = tokio::time::Instant::now() + crate::limits::OPTIMIZER_SIDECAR_READY_WAIT;
         while tokio::time::Instant::now() < deadline {
             if let Some(status) = self.probe().await {
@@ -608,6 +611,13 @@ impl OptimizerManager {
                         }
                     };
                     self.store_handshake_capabilities(&capabilities)?;
+                    write_env_sh(
+                        &self.home,
+                        &api_key,
+                        &base_url,
+                        &hit.version,
+                        &runtime_epoch,
+                    )?;
                     self.set_status(status).await;
                     return Ok(self.status().await);
                 }
@@ -898,6 +908,7 @@ impl OptimizerManager {
             // Uninstalling the version that proved these capabilities must not
             // leave them behind to vouch for whatever is installed next.
             clear_stored_capabilities(&self.home);
+            clear_env_sh(&self.home);
         }
         Ok(self.refresh().await)
     }
@@ -1038,6 +1049,9 @@ impl OptimizerManager {
     }
 
     async fn abort_runtime(&self) {
+        // The exported address describes a service that is about to stop
+        // existing. Every teardown goes through here.
+        clear_env_sh(&self.home);
         let worker_pids = self
             .gepa_workers
             .lock()
@@ -1293,30 +1307,73 @@ async fn launch_sidecar_upstream(
         }
     }
     let _ = run_spools;
-
     drop(listener);
+    drop(addr);
+    drop(upstream_base_url);
+
     let runtime_dir = home.join("runtime");
     fs::create_dir_all(&runtime_dir)?;
-    let log = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(home.join("sidecar.log"))?;
-    let mut command = optimizer_command(home, &hit.version)?;
-    isolate_process_group(&mut command);
-    command
-        .args(["gepa", "service", "--db"])
-        .arg(runtime_dir.join("gepa.sqlite"))
-        .arg("--bind")
-        .arg(addr.to_string())
-        .env("SYNTH_OPTIMIZER_API_KEY", ensure_api_key(home)?)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log))
-        .kill_on_drop(true);
-    let child = command
-        .spawn()
-        .context("spawn allowlisted synth-optimizers GEPA service")?;
-    Ok((Some(child), upstream_base_url, None))
+    let api_key = ensure_api_key(home)?;
+
+    // The port has to be reserved, released, and handed to the child, so there
+    // is a window in which something else can take it. Nothing can close that
+    // window from here: the shipped runtime has no way to report the address it
+    // actually bound — `--bind :0` plus the service-discovery heartbeat only
+    // exist on unreleased builds — so the host must name a port in advance.
+    //
+    // What it can do is refuse to mistake a lost race for a working service. A
+    // child that cannot bind exits almost immediately, so a short grace period
+    // separates "bound" from "gone", and a fresh port is drawn for each retry.
+    // Without this the failure surfaced much later as an unexplained health
+    // timeout against a port owned by someone else.
+    const BIND_ATTEMPTS: usize = 3;
+    const BIND_GRACE: Duration = Duration::from_millis(250);
+    let mut last_exit = None;
+    for attempt in 1..=BIND_ATTEMPTS {
+        let probe = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .context("reserve optimizer service loopback")?;
+        let addr = probe.local_addr()?;
+        drop(probe);
+
+        let log = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(home.join("sidecar.log"))?;
+        let mut command = optimizer_command(home, &hit.version)?;
+        isolate_process_group(&mut command);
+        command
+            .args(["gepa", "service", "--db"])
+            .arg(runtime_dir.join("gepa.sqlite"))
+            .arg("--bind")
+            .arg(addr.to_string())
+            .env("SYNTH_OPTIMIZER_API_KEY", &api_key)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log.try_clone()?))
+            .stderr(Stdio::from(log))
+            .kill_on_drop(true);
+        let mut child = command
+            .spawn()
+            .context("spawn allowlisted synth-optimizers GEPA service")?;
+
+        tokio::time::sleep(BIND_GRACE).await;
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // Exited inside the grace period: it never got the port.
+                last_exit = Some(status);
+                if attempt < BIND_ATTEMPTS {
+                    continue;
+                }
+            }
+            Ok(None) => return Ok((Some(child), format!("http://{addr}"), None)),
+            Err(error) => return Err(error).context("poll optimizer service after spawn"),
+        }
+    }
+    bail!(
+        "optimizer service exited immediately on {BIND_ATTEMPTS} consecutive ports \
+         (last exit: {last_exit:?}); see {}",
+        home.join("sidecar.log").display()
+    )
 }
 
 #[cfg(unix)]
@@ -1592,13 +1649,43 @@ fn write_secret(path: &Path, value: &[u8], newline: bool) -> Result<()> {
     Ok(())
 }
 
-fn write_env_sh(home: &Path, api_key: &str, base_url: &str, version: &str) -> Result<()> {
+/// Export the live sidecar's address for a human or an agent to source.
+///
+/// Written only after the capability handshake succeeds, because this file is
+/// the most convincing thing in the directory and nothing else about it says
+/// whether the service behind it is alive. A copy left over from a previous
+/// run is what made the original incident read as "the sidecar never started":
+/// the port belonged to an in-process proxy that dies with the host, so after
+/// the fact it always looks dead. `writtenAt` and the epoch are here so a stale
+/// copy is self-evidently stale rather than merely wrong.
+///
+/// Mode 0600: it carries the bearer token in cleartext.
+fn write_env_sh(
+    home: &Path,
+    api_key: &str,
+    base_url: &str,
+    version: &str,
+    epoch: &str,
+) -> Result<()> {
     fs::create_dir_all(home)?;
+    let written_at = chrono::Utc::now().to_rfc3339();
     let body = format!(
-        "export SYNTH_OPTIMIZER_HOST=\"127.0.0.1\"\nexport SYNTH_OPTIMIZER_BASE_URL=\"{base_url}\"\nexport SYNTH_OPTIMIZER_API_KEY=\"{api_key}\"\nexport SYNTH_OPTIMIZER_VERSION=\"{version}\"\n"
+        "# Written after a successful capability handshake. Removed on stop.\n\
+         # A copy of this file is not evidence that the service is running.\n\
+         export SYNTH_OPTIMIZER_HOST=\"127.0.0.1\"\n\
+         export SYNTH_OPTIMIZER_BASE_URL=\"{base_url}\"\n\
+         export SYNTH_OPTIMIZER_API_KEY=\"{api_key}\"\n\
+         export SYNTH_OPTIMIZER_VERSION=\"{version}\"\n\
+         export SYNTH_OPTIMIZER_RUNTIME_EPOCH=\"{epoch}\"\n\
+         export SYNTH_OPTIMIZER_WRITTEN_AT=\"{written_at}\"\n"
     );
-    fs::write(home.join("env.sh"), body)?;
-    Ok(())
+    write_secret(&home.join("env.sh"), body.as_bytes(), false)
+}
+
+/// Remove the exported address. Paired with every teardown path, so the file
+/// never outlives the service it describes.
+fn clear_env_sh(home: &Path) {
+    let _ = fs::remove_file(home.join("env.sh"));
 }
 
 fn read_selected_version(home: &Path) -> Result<Option<String>> {
