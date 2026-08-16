@@ -3,8 +3,9 @@
 use crate::codex::CodexManager;
 use crate::container_stream::{
     authoritative_poll_telemetry, declared_poll_url, declared_sse_url, declared_stream_descriptor,
-    refuse_auto_transport, require_caller_policy_ref, require_task_instance, resolve_declared_url,
-    wait_for_stream_subscribed, SUBSCRIBE_READY_TIMEOUT,
+    normalized_rollout_telemetry, refuse_auto_transport, require_caller_policy_ref,
+    require_task_instance, resolve_declared_url, wait_for_stream_subscribed,
+    SUBSCRIBE_READY_TIMEOUT,
 };
 use crate::core_runtime::CoreRuntime;
 use crate::data::ContainerRegisterRequest;
@@ -942,8 +943,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     .as_deref()
                     .context("container has no base URL")?,
             )?;
-            let telemetry = body.get("telemetry").cloned().unwrap_or_else(|| json!({"enabled":true,"transport":"sse","detail":"standard","frame":{"enabled":true,"format":"png","every_n_steps":1}}));
-            refuse_auto_transport(&telemetry)?;
+            let telemetry = normalized_rollout_telemetry(body.get("telemetry"))?;
             let rollout_id = body
                 .get("rollout_id")
                 .and_then(Value::as_str)
@@ -973,7 +973,13 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             ) {
                 anyhow::bail!("container has no normalized prepare endpoint; native benchmark routes must be folded inside Containers");
             }
-            let prepared = response.error_for_status()?.json::<Value>().await?;
+            let status = response.status();
+            let response_body = response.text().await?;
+            if !status.is_success() {
+                anyhow::bail!("container prepare failed ({status}): {response_body}");
+            }
+            let prepared = serde_json::from_str::<Value>(&response_body)
+                .context("decode container prepare response")?;
             let returned_rollout_id = prepared
                 .get("rollout_id")
                 .and_then(Value::as_str)
@@ -1117,8 +1123,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             }
             let task_instance_id = require_task_instance(&body)?;
             let poll_url = resolve_declared_url(&base, &declared_poll_url(stream)?)?;
-            let telemetry = body.get("telemetry").cloned().unwrap_or_else(|| json!({"enabled":true,"transport":"sse","detail":"standard","frame":{"enabled":true,"format":"png","every_n_steps":1}}));
-            refuse_auto_transport(&telemetry)?;
+            let telemetry = normalized_rollout_telemetry(body.get("telemetry"))?;
             let client = crate::http::http_client_builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT)

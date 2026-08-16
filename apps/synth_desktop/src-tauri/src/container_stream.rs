@@ -194,9 +194,39 @@ pub fn authoritative_poll_telemetry() -> Value {
     })
 }
 
+/// Fill the required normalized rollout telemetry envelope without overriding
+/// a caller's explicit transport/detail choices. Agent tools intentionally
+/// expose telemetry as optional, so the host owns these protocol defaults.
+pub fn normalized_rollout_telemetry(value: Option<&Value>) -> Result<Value> {
+    let mut telemetry = match value {
+        Some(Value::Object(map)) => map.clone(),
+        Some(_) => bail!("telemetry must be an object"),
+        None => serde_json::Map::new(),
+    };
+    telemetry.entry("enabled").or_insert(json!(true));
+    telemetry.entry("transport").or_insert(json!("sse"));
+    telemetry.entry("retention").or_insert(json!("run"));
+    telemetry.entry("detail").or_insert(json!("standard"));
+    telemetry
+        .entry("frame")
+        .or_insert(json!({"enabled": true, "format": "png", "every_n_steps": 1}));
+    let normalized = Value::Object(telemetry);
+    refuse_auto_transport(&normalized)?;
+    Ok(normalized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalized_telemetry_fills_protocol_defaults_without_overriding_transport() {
+        let telemetry = normalized_rollout_telemetry(Some(&json!({"transport":"poll"})))
+            .expect("normalize telemetry");
+        assert_eq!(telemetry["enabled"], true);
+        assert_eq!(telemetry["transport"], "poll");
+        assert_eq!(telemetry["retention"], "run");
+    }
 
     #[test]
     fn declared_poll_url_uses_descriptor_and_never_guesses_events() {
