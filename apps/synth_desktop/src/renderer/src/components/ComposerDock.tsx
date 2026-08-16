@@ -8,6 +8,28 @@ import {
 	removeQueuedPrompt,
 	updateQueuedPrompt
 } from "../preferences";
+
+export function composerErrorMessage(reason: unknown): string {
+	if (reason instanceof Error && reason.message.trim()) return reason.message;
+	if (reason && typeof reason === "object") {
+		const value = reason as { code?: unknown; message?: unknown; error?: unknown };
+		const nested = value.error && typeof value.error === "object"
+			? value.error as { code?: unknown; message?: unknown }
+			: null;
+		const message = typeof value.message === "string" && value.message.trim()
+			? value.message.trim()
+			: typeof nested?.message === "string" && nested.message.trim()
+				? nested.message.trim()
+				: null;
+		const code = typeof value.code === "string" && value.code.trim()
+			? value.code.trim()
+			: typeof nested?.code === "string" && nested.code.trim()
+				? nested.code.trim()
+				: null;
+		if (message) return code ? `${message} (${code})` : message;
+	}
+	return "The active turn rejected steering. The prompt remains queued.";
+}
 import { nextQueuedPrompt } from "../runtime/promptQueue";
 import type { ApprovalPolicy, SandboxMode } from "../runtime/nativeCodex";
 import type { ModelKnobTransportValue } from "../runtime/modelCapabilities";
@@ -139,7 +161,7 @@ export function ComposerDock({
 					try {
 						setPreferences(updateQueuedPrompt(id, text));
 					} catch (reason) {
-						showToast(reason instanceof Error ? reason.message : String(reason));
+						showToast(composerErrorMessage(reason));
 					}
 				},
 				onRemove: (id) => setPreferences(removeQueuedPrompt(id)),
@@ -153,7 +175,7 @@ export function ComposerDock({
 						setPreferences(removeQueuedPrompt(id));
 						setSteerError(null);
 					} catch (reason) {
-						setSteerError(reason instanceof Error ? reason.message : String(reason));
+						setSteerError(composerErrorMessage(reason));
 					}
 				},
 				afterStop: queueAfterStop,
@@ -184,7 +206,7 @@ export function ComposerDock({
 						await nativeCodex.steerTurn(activeSessionId, text);
 						setSteerError(null);
 					} catch (reason) {
-						setSteerError(reason instanceof Error ? reason.message : String(reason));
+						setSteerError(composerErrorMessage(reason));
 					}
 				},
 				onStop: onStopActiveTurn
