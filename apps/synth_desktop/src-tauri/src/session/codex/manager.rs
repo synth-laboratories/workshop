@@ -605,8 +605,17 @@ impl CodexManager {
         {
             if tracker.turn_id == pending_turn_id {
                 tracker.turn_id = turn_id.clone();
+                // Acceptance, rather than queue/send time, owns elapsed-work timing.
+                tracker.started_at_ms = chrono::Utc::now().timestamp_millis();
             }
         }
+        self.record_turn_accepted(
+            &app,
+            &request.session_id,
+            &turn_id,
+            request.client_message_id.as_deref(),
+        )
+        .await;
         *session.turn_id.write().await = Some(turn_id.clone());
         // Mark the session running before any queued terminal notification can
         // be observed. A fast app-server may emit its final answer in the same
@@ -937,6 +946,10 @@ impl CodexManager {
                 }),
             )
             .await?;
+        // Steering text is queued/journalled before the provider responds, but it
+        // resets the work clock only after the active turn accepts it.
+        self.record_turn_accepted(&app, &request.session_id, &turn_id, None)
+            .await;
         Ok(())
     }
 
@@ -1073,6 +1086,27 @@ impl CodexManager {
                     "role": "user",
                     "content": prompt,
                 }),
+            ),
+        );
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), persist).await;
+    }
+
+    /// Durable clock boundary for an accepted active turn. User bubbles may be
+    /// journalled optimistically before provider acceptance; they intentionally
+    /// do not own elapsed-work timing.
+    async fn record_turn_accepted<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: &str,
+        turn_id: &str,
+        client_message_id: Option<&str>,
+    ) {
+        let persist = self.persistence.append_and_emit(
+            app,
+            EventAppend::codex(
+                session_id.to_owned(),
+                "turn/accepted",
+                json!({ "turnId": turn_id, "userMessageId": client_message_id }),
             ),
         );
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), persist).await;

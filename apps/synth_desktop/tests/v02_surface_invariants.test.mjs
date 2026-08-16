@@ -26,7 +26,7 @@ test("v0.2 pending approval cards pin above Working in ChatTranscript", () => {
 	assert.doesNotMatch(source, /if \(!running\) return \[\];/);
 });
 
-test("v0.4 transcript shows median throughput while working and after assistant messages", () => {
+test("v0.4 transcript shows immutable generation speed and final elapsed work", () => {
 	const source = read("components/ChatTranscript.tsx");
 	const turnLabels = read("hooks/useTurnPerformanceLabels.ts");
 	const labels = read("runtime/modelPerformanceLabels.ts");
@@ -34,8 +34,10 @@ test("v0.4 transcript shows median throughput while working and after assistant 
 	assert.match(source, /data-testid={`assistant-median-tps-\${m\.id}`}/);
 	assert.match(source, /useTurnPerformanceLabels\(chat, events, running\)/);
 	assert.doesNotMatch(source, /medianTpsLabel\?\.replace/);
-	assert.match(turnLabels, /Generation TPS unavailable/);
-	assert.match(turnLabels, /label\(turnSamples\) \?\? GENERATION_TPS_UNAVAILABLE/);
+	assert.match(turnLabels, /Generation speed unavailable/);
+	assert.match(turnLabels, /event\.eventKind === "turn\/accepted"/);
+	assert.match(turnLabels, /MAX_GENERATION_DELTA_GAP_MS/);
+	assert.match(source, /Elapsed work time/);
 	assert.match(labels, /summary\.provider === "openai-codex-oauth"/);
 	assert.match(labels, /CHATGPT_LUNA_MODEL\) return "chatgpt-luna"/);
 	assert.match(labels, /CHATGPT_SOL_MODEL\) return "chatgpt-sol"/);
