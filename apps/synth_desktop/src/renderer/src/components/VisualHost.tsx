@@ -6,6 +6,7 @@ import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } fro
 import { loadVisualShell } from "../runtime/visualsLoader";
 import { bridges } from "../runtime/desktopBridge";
 import { mergeOptimizerEventPage, type OptimizerEventCursorState } from "../runtime/optimizerEventCursor";
+import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
 import { MermaidVisual } from "./MermaidVisual";
 import { SystemsMapVisual } from "./SystemsMapVisual";
 import { SystemsDynamicVisual } from "./SystemsDynamicVisual";
@@ -273,6 +274,14 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		"loading" | "replaying" | "subscribed" | "stale" | "reconnecting" | "terminal" | "failed"
 	>("loading");
 
+	const visualIdentity = useMemo(
+		() => ({
+			visualId: artifact.visualId ?? artifact.id,
+			visualRevision: typeof artifact.revision === "number" ? artifact.revision : null,
+		}),
+		[artifact.id, artifact.visualId, artifact.revision]
+	);
+
 	useEffect(() => {
 		let cancelled = false;
 		const templateId = artifact.templateId;
@@ -280,19 +289,47 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		setShell(null);
 		if (!templateId) {
 			setFailed(true);
+			reportDiagnostic({
+				...visualIdentity,
+				severity: "error",
+				component: "visual-host",
+				event: "visual.template.missing",
+				code: DIAGNOSTIC_CODES.visualTemplateUnavailable,
+				message: "Visual has no template id to render",
+			});
 			return;
 		}
 		void loadVisualShell(templateId)
 			.then((Component) => {
 				if (cancelled) return;
-				if (!Component) setFailed(true);
-				else setShell(() => Component);
+				if (!Component) {
+					setFailed(true);
+					reportDiagnostic({
+						...visualIdentity,
+						severity: "error",
+						component: "visual-host",
+						event: "visual.shell.unavailable",
+						code: DIAGNOSTIC_CODES.visualTemplateUnavailable,
+						message: `Template ${templateId} resolved no shell component`,
+						details: { templateId },
+					});
+				} else setShell(() => Component);
 			})
-			.catch(() => {
-				if (!cancelled) setFailed(true);
+			.catch((reason) => {
+				if (cancelled) return;
+				setFailed(true);
+				reportDiagnostic({
+					...visualIdentity,
+					severity: "error",
+					component: "visual-host",
+					event: "visual.shell.load_failed",
+					code: DIAGNOSTIC_CODES.visualShellLoadFailed,
+					message: reason instanceof Error ? reason.message : String(reason),
+					details: { templateId },
+				});
 			});
 		return () => { cancelled = true; };
-	}, [artifact.templateId]);
+	}, [artifact.templateId, visualIdentity]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -304,6 +341,15 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		const template = artifact.templateId ? resolveTemplate(artifact.templateId) : undefined;
 		if (!template) {
 			setTraceResolution({ status: "error", props: {}, error: `Template ${artifact.templateId ?? "unknown"} is unavailable` });
+			reportDiagnostic({
+				...visualIdentity,
+				severity: "error",
+				component: "visual-host",
+				event: "visual.template.unavailable",
+				code: DIAGNOSTIC_CODES.visualTemplateUnavailable,
+				message: `Template ${artifact.templateId ?? "unknown"} is unavailable`,
+				details: { templateId: artifact.templateId ?? null },
+			});
 			return () => { cancelled = true; };
 		}
 		if (!bridges.inventory) {
@@ -315,6 +361,25 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		);
 		if (unsupportedBinding) {
 			setTraceResolution({ status: "error", props: {}, error: `Unsupported trace projection schema: ${unsupportedBinding.schema}` });
+			// The failure this whole diagnostic system was built for: ten sealed
+			// traces, an empty pane, and no way to ask why. Emit the received
+			// schema, the accepted one, and every identity the binding names.
+			reportDiagnostic({
+				...visualIdentity,
+				traceId: typeof unsupportedBinding.source === "string" ? unsupportedBinding.source : null,
+				severity: "error",
+				component: "visual-host",
+				event: "visual.projection.rejected",
+				code: DIAGNOSTIC_CODES.unsupportedTraceProjectionSchema,
+				message: `Unsupported trace projection schema: ${unsupportedBinding.schema}`,
+				details: {
+					receivedSchema: unsupportedBinding.schema ?? null,
+					expectedSchemas: ["synth.trace-projection.rollout-inspector.v1"],
+					templateId: artifact.templateId ?? null,
+					slot: unsupportedBinding.slot ?? null,
+					remediation: "Project Trace V5 into the visual's accepted input contract.",
+				},
+			});
 			return () => { cancelled = true; };
 		}
 
@@ -344,6 +409,15 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				if (cancelled) return;
 				if (result.errors.length > 0) {
 					setTraceResolution({ status: "error", props: {}, error: result.errors.join(" · ") });
+					reportDiagnostic({
+						...visualIdentity,
+						severity: "error",
+						component: "visual-host",
+						event: "visual.binding.unresolved",
+						code: DIAGNOSTIC_CODES.visualBindingUnresolved,
+						message: result.errors.join(" · "),
+						details: { templateId: artifact.templateId ?? null, errorCount: result.errors.length },
+					});
 					return;
 				}
 				const props = Object.fromEntries(
@@ -354,7 +428,23 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				setTraceResolution({ status: "ready", props });
 			})
 			.catch((reason) => {
-				if (!cancelled) setTraceResolution({ status: "error", props: {}, error: reason instanceof Error ? reason.message : String(reason) });
+				if (cancelled) return;
+				const message = reason instanceof Error ? reason.message : String(reason);
+				setTraceResolution({ status: "error", props: {}, error: message });
+				reportDiagnostic({
+					...visualIdentity,
+					severity: "error",
+					component: "visual-host",
+					event: "visual.projection.failed",
+					// A projection-schema mismatch thrown from the resolver is the
+					// same defect as the one caught above; keep one code so a
+					// query for it finds both spellings of the failure.
+					code: message.includes("projection schema")
+						? DIAGNOSTIC_CODES.unsupportedTraceProjectionSchema
+						: DIAGNOSTIC_CODES.visualBindingUnresolved,
+					message,
+					details: { templateId: artifact.templateId ?? null },
+				});
 			});
 		return () => { cancelled = true; };
 	}, [artifact.id, artifact.revision, artifact.templateId, artifact.bindings, traceBindings.length]);
@@ -404,6 +494,18 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				}
 				if (next.gap || next.cursor < runCursor) {
 					setConnectionState("stale");
+					reportDiagnostic({
+						...visualIdentity,
+						optimizerRunId,
+						streamId: optimizerRunId,
+						severity: "warn",
+						component: "visual-host",
+						event: "stream.replay.gap",
+						code: DIAGNOSTIC_CODES.streamReplayGap,
+						message: `Optimizer event history is incomplete at ${next.cursor}/${runCursor}`,
+						retryable: true,
+						details: { cursor: next.cursor, runCursor, gap: next.gap },
+					});
 					throw new Error(`Optimizer event history is incomplete at ${next.cursor}/${runCursor}`);
 				}
 				current = next;
@@ -431,9 +533,21 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				}
 			} catch (reason) {
 				if (!cancelled) {
+					const message = reason instanceof Error ? reason.message : String(reason);
 					setOptimizerPayload(null);
-					setOptimizerLoadError(reason instanceof Error ? reason.message : String(reason));
+					setOptimizerLoadError(message);
 					setConnectionState("failed");
+					reportDiagnostic({
+						...visualIdentity,
+						optimizerRunId,
+						streamId: optimizerRunId,
+						severity: "error",
+						component: "visual-host",
+						event: "stream.interrupted",
+						code: DIAGNOSTIC_CODES.streamInterrupted,
+						message,
+						retryable: true,
+					});
 				}
 			}
 		};
@@ -539,11 +653,30 @@ function VisualInvalidState({ title, detail }: { title: string; detail: string }
 	return <div className="visual-invalid" role="alert" data-testid="visual-invalid"><strong>{title}</strong><p>{detail}</p></div>;
 }
 
-class VisualErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+class VisualErrorBoundary extends Component<
+	{ children: ReactNode; visualId?: string; visualRevision?: number | null; templateId?: string | null },
+	{ error: Error | null }
+> {
 	state: { error: Error | null } = { error: null };
 	static getDerivedStateFromError(error: Error) { return { error }; }
 	componentDidCatch(error: Error, info: ErrorInfo) {
+		// `console.error` reaches a devtools console nobody has open. The
+		// structured record is what the agent can actually query, so the
+		// boundary emits both.
 		console.error("Visual shell render failed", error, info.componentStack);
+		reportDiagnostic({
+			severity: "error",
+			component: "visual-host",
+			event: "visual.render.failed",
+			code: DIAGNOSTIC_CODES.visualRenderFailed,
+			message: error.message,
+			visualId: this.props.visualId ?? null,
+			visualRevision: this.props.visualRevision ?? null,
+			details: {
+				templateId: this.props.templateId ?? null,
+				componentStack: info.componentStack?.slice(0, 1_000) ?? null,
+			},
+		});
 	}
 	render() {
 		if (this.state.error) return <VisualInvalidState title="Visual failed to render" detail={this.state.error.message} />;
@@ -556,37 +689,37 @@ export function VisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const isSystemsDynamic =
 		artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
 	if (isSystemsDynamic) {
-		return <VisualErrorBoundary key={`${artifact.id}:systems-dynamic`}><SystemsDynamicVisual artifact={artifact} /></VisualErrorBoundary>;
+		return <VisualErrorBoundary key={`${artifact.id}:systems-dynamic`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}><SystemsDynamicVisual artifact={artifact} /></VisualErrorBoundary>;
 	}
 	const isSystems = artifact.templateId === "diagram.systems.v1" || artifact.rendererKind === "systems";
 	if (isSystems) {
-		return <VisualErrorBoundary key={`${artifact.id}:systems`}><SystemsMapVisual artifact={artifact} /></VisualErrorBoundary>;
+		return <VisualErrorBoundary key={`${artifact.id}:systems`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}><SystemsMapVisual artifact={artifact} /></VisualErrorBoundary>;
 	}
 	const isMermaid =
 		artifact.templateId === "diagram.mermaid.v1" || artifact.rendererKind === "mermaid";
 	if (isMermaid) {
 		return (
-			<VisualErrorBoundary key={`${artifact.id}:mermaid`}>
+			<VisualErrorBoundary key={`${artifact.id}:mermaid`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}>
 				<MermaidVisual artifact={artifact} />
 			</VisualErrorBoundary>
 		);
 	}
 	if (artifact.templateId === "synth.subagents.v1") {
 		return (
-			<VisualErrorBoundary key={`${artifact.id}:${artifact.templateId ?? "subagents"}`}>
+			<VisualErrorBoundary key={`${artifact.id}:${artifact.templateId ?? "subagents"}`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}>
 				<SubagentsVisual artifact={artifact} />
 			</VisualErrorBoundary>
 		);
 	}
 	if (artifact.preview?.variant && artifact.preview.variant !== "generic" && !artifact.templateId) {
 		return (
-			<VisualErrorBoundary key={`${artifact.id}:preview`}>
+			<VisualErrorBoundary key={`${artifact.id}:preview`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}>
 				<MockFallback artifact={artifact} />
 			</VisualErrorBoundary>
 		);
 	}
 	return (
-		<VisualErrorBoundary key={`${artifact.id}:${artifact.templateId ?? "missing"}`}>
+		<VisualErrorBoundary key={`${artifact.id}:${artifact.templateId ?? "missing"}`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}>
 			<TemplateVisualHost artifact={artifact} />
 		</VisualErrorBoundary>
 	);

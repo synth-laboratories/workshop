@@ -67,6 +67,26 @@ impl EventJournal {
             .await
     }
 
+    /// Append many events inside one transaction.
+    ///
+    /// The diagnostic writer batches on count or a short timer; one transaction
+    /// per event would put a durable fsync between every queued diagnostic and
+    /// turn a bounded background drain into a visible disk load.
+    pub async fn append_batch(&self, inputs: Vec<EventAppend>) -> Result<Vec<AppEvent>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            let mut appended = Vec::with_capacity(inputs.len());
+            for input in inputs {
+                appended.push(append_event(conn, input)?);
+            }
+            Ok(appended)
+        })
+        .await
+    }
+
     pub async fn events_after(&self, after_sequence: i64, limit: i64) -> Result<Vec<AppEvent>> {
         let db = self.db.clone();
         db.run(move |conn| list_events_after(conn, after_sequence, limit))

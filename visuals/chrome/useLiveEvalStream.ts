@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { LiveEvalEvent } from "../runtime/types.ts";
+import { reportVisualDiagnostic, VISUAL_STREAM_CODES } from "../runtime/diagnostics.ts";
 import {
   emptyLiveIngest,
   ingestLiveEnvelope,
@@ -18,14 +19,20 @@ export function useLiveEvalStream(options: {
   fixtureEvents?: LiveEvalEvent[];
   replayMs?: number;
   poll?: (pollUrl: string, after: number, limit: number) => Promise<unknown>;
+  /** Identity for correlated diagnostics. Absent outside Workshop. */
+  visualId?: string | null;
+  rolloutId?: string | null;
+  streamId?: string | null;
 }): { events: LiveEvalEvent[]; live: boolean; ready: boolean; recovering: boolean; recovered: number; error: string | null } {
-  const { sseUrl, pollUrl, fixtureEvents, replayMs = 800 } = options;
+  const { sseUrl, pollUrl, fixtureEvents, replayMs = 800, visualId, rolloutId, streamId } = options;
   const [events, setEvents] = useState<LiveEvalEvent[]>([]);
   const [live, setLive] = useState(false);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recovering, setRecovering] = useState(false);
   const [recovered, setRecovered] = useState(0);
+  const diagnose = (code: string, event: string, message: string, retryable: boolean, details?: Record<string, unknown>) =>
+    reportVisualDiagnostic({ severity: "error", event, code, message, retryable, visualId, rolloutId, streamId, details });
   const idx = useRef(0);
   const ingest = useRef(emptyLiveIngest());
   const poll = useRef(options.poll);
@@ -119,11 +126,21 @@ export function useLiveEvalStream(options: {
               if (pageNumber === 999) throw new Error("poll recovery exceeded 1000 pages");
             }
             setRecovered((value) => value + Math.max(0, ingest.current.events.length - before));
-            if (ingest.current.conflicts.length) setError(ingest.current.conflicts.at(-1) ?? "Conflicting replay envelope");
-            else if (ingest.current.gaps.length) setError(`Evidence gap after sequence ${ingest.current.gaps.at(-1)?.after}`);
-            else setError(null);
+            if (ingest.current.conflicts.length) {
+              const conflict = ingest.current.conflicts.at(-1) ?? "Conflicting replay envelope";
+              setError(conflict);
+              diagnose(VISUAL_STREAM_CODES.streamReplayGap, "stream.replay.conflict", conflict, false);
+            } else if (ingest.current.gaps.length) {
+              const after = ingest.current.gaps.at(-1)?.after;
+              setError(`Evidence gap after sequence ${after}`);
+              diagnose(VISUAL_STREAM_CODES.streamReplayGap, "stream.replay.gap", `Evidence gap after sequence ${after}`, true, { after });
+            } else setError(null);
           } catch (e) {
-            if (!abort.signal.aborted) setError(e instanceof Error ? e.message : "poll recovery error");
+            if (!abort.signal.aborted) {
+              const message = e instanceof Error ? e.message : "poll recovery error";
+              setError(message);
+              diagnose(VISUAL_STREAM_CODES.streamInterrupted, "stream.recovery.failed", message, true);
+            }
           } finally {
             setRecovering(false);
             recovery = null;
@@ -154,6 +171,9 @@ export function useLiveEvalStream(options: {
         es.onerror = () => {
           if (!abort.signal.aborted) {
             setError("SSE connection interrupted");
+            // Durable polling usually recovers this, which is exactly why it
+            // needs recording: the run completes and the pane still looks wrong.
+            diagnose(VISUAL_STREAM_CODES.streamInterrupted, "stream.interrupted", "SSE connection interrupted", true);
             void backfill();
           }
         };

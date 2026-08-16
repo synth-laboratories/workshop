@@ -1601,6 +1601,29 @@ async fn append_diagnostic_event(
     service
         .append_events(run_id.to_string(), vec![event])
         .await?;
+
+    // The run evidence above stays authoritative. This makes the same failure
+    // findable from the other side — by optimizer_run_id, alongside whatever
+    // container, stream, or visual failed with it.
+    if let Some(diagnostics) = service.diagnostics() {
+        let mut input = crate::diagnostics::DiagnosticInput::new(
+            crate::diagnostics::Severity::Error,
+            "optimizers",
+            "optimizer.worker.failed",
+            crate::diagnostics::codes::OPTIMIZER_WORKER_FAILED,
+            display_message.chars().take(500).collect::<String>(),
+        );
+        input.correlation.optimizer_run_id = Some(run_id.to_owned());
+        input.details.insert("algorithm".into(), json!("gepa"));
+        if let Some(path) = stderr_path.as_ref() {
+            // The pointer, not the contents: a log tail is evidence to open,
+            // not payload to index.
+            input
+                .details
+                .insert("log_path".into(), json!(path.display().to_string()));
+        }
+        diagnostics.emit(input);
+    }
     Ok(())
 }
 

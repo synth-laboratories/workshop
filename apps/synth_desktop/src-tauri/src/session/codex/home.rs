@@ -618,6 +618,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
             ("synth_optimizers", "synth-optimizers-mcp"),
             ("synth_session", "synth-session-mcp"),
             ("synth_traces", "synth-traces-mcp"),
+            ("synth_diagnostics", "synth-diagnostics-mcp"),
         ] {
             if !crate::context::mcp_group_enabled("bundled") {
                 continue;
@@ -944,6 +945,7 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         "synth_optimizers" => "enabled_tools = [\"optimizer_manage\", \"optimizer_stage_eval_candidates\", \"optimizer_start_recipe\"]\n",
         "synth_plugins" => "enabled_tools = [\"plugin_manage\"]\n",
         "synth_session" => "enabled_tools = [\"session_present\"]\n",
+        "synth_diagnostics" => "enabled_tools = [\"diagnostics_manage\"]\n",
         _ => "",
     }
 }

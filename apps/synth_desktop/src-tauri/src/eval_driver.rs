@@ -1420,7 +1420,24 @@ async fn run_policy_rollout(
         }),
     )
     .await?;
-    wait_for_stream_subscribed(&client, &poll_url, SUBSCRIBE_READY_TIMEOUT).await?;
+    // The eval driver runs headless, which is exactly when nobody is watching a
+    // pane: its stream failures are the ones most worth having recorded.
+    let stream_diagnostics = crate::container_stream::StreamDiagnostics::new(
+        Some(core.diagnostics_service().clone()),
+        crate::diagnostics::Correlation {
+            container_id: Some(container_id.to_string()),
+            rollout_id: Some(rollout_id.to_string()),
+            visual_id: Some(visual_id.to_string()),
+            stream_id: prepared_stream
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| Some(rollout_id.to_string())),
+            ..Default::default()
+        },
+    );
+    wait_for_stream_subscribed(&client, &poll_url, SUBSCRIBE_READY_TIMEOUT, &stream_diagnostics)
+        .await?;
 
     let mut start_body = json!({
         "rollout_id": rollout_id,

@@ -21,6 +21,13 @@ pub struct VisualRegistry {
     pub(super) db: Arc<Database>,
     pub(super) journal: EventJournal,
     pub(super) content: ContentStore,
+    /// Attached by the composition root once diagnostics exist.
+    ///
+    /// `visual.render_failed` already lands in the journal as a domain event,
+    /// but a domain event is scoped to the visual. The diagnostic is what puts
+    /// that failure next to the rollout, stream, and container it belongs to.
+    pub(super) diagnostics:
+        Arc<std::sync::OnceLock<Arc<crate::diagnostics::DiagnosticsService>>>,
 }
 
 impl VisualRegistry {
@@ -29,11 +36,51 @@ impl VisualRegistry {
             db,
             journal,
             content,
+            diagnostics: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
     pub(crate) fn content(&self) -> &ContentStore {
         &self.content
+    }
+
+    /// Wire diagnostics in after both services exist. Idempotent.
+    pub fn attach_diagnostics(&self, service: Arc<crate::diagnostics::DiagnosticsService>) {
+        let _ = self.diagnostics.set(service);
+    }
+
+    /// Record a visual-surface failure with everything the record already knows.
+    fn diagnose_visual(
+        &self,
+        visual: &VisualRecord,
+        event: &str,
+        code: &str,
+        message: &str,
+        details: serde_json::Value,
+    ) {
+        let Some(service) = self.diagnostics.get() else {
+            return;
+        };
+        let mut input = crate::diagnostics::DiagnosticInput::new(
+            crate::diagnostics::Severity::Error,
+            "visual-registry",
+            event,
+            code,
+            message,
+        );
+        input.correlation.visual_id = Some(visual.id.clone());
+        input.correlation.visual_revision = Some(visual.current_revision);
+        input.correlation.session_id = visual.session_id.clone();
+        input.correlation.rollout_id = visual.run_id.clone();
+        input.correlation.trace_id = visual.trace_id.clone();
+        if let Some(object) = details.as_object() {
+            input.details = object.clone();
+        }
+        input.details.insert(
+            "template_id".into(),
+            serde_json::json!(visual.template_id.clone()),
+        );
+        service.emit(input);
     }
 
     pub async fn list(&self, query: VisualQuery) -> Result<Vec<VisualRecord>> {
@@ -768,6 +815,13 @@ impl VisualRegistry {
         let stored = visual.clone();
         let fail_message = message.clone();
         self.db.clone().run_transaction(move|conn|{persist_visual(conn,&stored)?;crate::storage::append_event(conn,EventAppend{event_id:None,session_id:stored.session_id.clone(),run_id:stored.run_id.clone(),source:EventSource::Visual,kind:"visual.render_failed".into(),payload:json!({"visualId":stored.id,"revision":stored.current_revision,"visualKind":kind.as_str(),"error":fail_message}),remote_sequence:None,command_id:None,created_at:None})?;Ok(())}).await?;
+        self.diagnose_visual(
+            &visual,
+            "visual.render.failed",
+            crate::diagnostics::codes::VISUAL_RENDER_FAILED,
+            &message,
+            json!({ "visual_kind": kind.as_str() }),
+        );
         self.get(visual.id).await
     }
 
@@ -893,6 +947,13 @@ impl VisualRegistry {
             Ok(())
         })
         .await?;
+        self.diagnose_visual(
+            &visual,
+            "visual.render.failed",
+            crate::diagnostics::codes::VISUAL_RENDER_FAILED,
+            &message,
+            json!({ "diagram_kind": diagram_kind }),
+        );
         self.get(visual.id).await
     }
 }

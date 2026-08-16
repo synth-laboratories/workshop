@@ -130,6 +130,12 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::plugins_set_release_channel,
         crate::visual_subscription_ready,
         crate::visual_stream_poll,
+        crate::diagnostics_report,
+        crate::diagnostics_status,
+        crate::diagnostics_query,
+        crate::diagnostics_explain,
+        crate::diagnostics_bundle,
+        crate::diagnostics_clear_index,
         crate::optimizers::manager::optimizer_sidecar_status,
         crate::optimizers::manager::optimizer_sidecar_install,
         crate::optimizers::manager::optimizer_sidecar_start,
@@ -343,10 +349,11 @@ mod tests {
         // Hand-maintained on purpose: the exporter dropping commands must fail
         // here rather than pass quietly. Bump it only alongside a reviewed
         // `collect_commands!` change.
-        // 190 → 191: `runtime_contracts`, which backs the Settings → About
-        // runtime version rows.
+        // 190 → 197: `runtime_contracts` backs the Settings → About runtime
+        // version rows, and the six diagnostics commands expose the local
+        // diagnostics boundary.
         assert_eq!(
-            exported, 191,
+            exported, 197,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

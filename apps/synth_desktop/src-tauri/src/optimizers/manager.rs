@@ -217,6 +217,8 @@ pub struct OptimizerManager {
     gepa_workers: Mutex<HashMap<String, GepaWorkerState>>,
     run_spools: Arc<Mutex<HashMap<String, RunSpoolState>>>,
     client: Client,
+    /// Attached by the composition root once diagnostics exist.
+    diagnostics: Arc<std::sync::OnceLock<Arc<crate::diagnostics::DiagnosticsService>>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -250,7 +252,13 @@ impl OptimizerManager {
             gepa_workers: Mutex::new(HashMap::new()),
             run_spools: Arc::new(Mutex::new(HashMap::new())),
             client: crate::http::http_client(),
+            diagnostics: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// Wire diagnostics in after both services exist. Idempotent.
+    pub fn attach_diagnostics(&self, service: Arc<crate::diagnostics::DiagnosticsService>) {
+        let _ = self.diagnostics.set(service);
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<OptimizerSidecarStatus> {
@@ -341,8 +349,59 @@ impl OptimizerManager {
 
     pub async fn set_status(&self, mut status: OptimizerSidecarStatus) {
         status.updated_at = now_ms();
-        *self.status.write().await = status.clone();
+        let previous = {
+            let mut current = self.status.write().await;
+            let previous = current.phase.clone();
+            *current = status.clone();
+            previous
+        };
+        // This runs on every renderer poll. Only a *transition* is news; the
+        // steady state is what `diagnostics_status` is for.
+        if previous != status.phase {
+            self.diagnose_phase(&previous, &status);
+        }
         let _ = self.updates.send(status);
+    }
+
+    fn diagnose_phase(&self, previous: &str, status: &OptimizerSidecarStatus) {
+        let Some(service) = self.diagnostics.get() else {
+            return;
+        };
+        let unavailable = matches!(
+            status.phase.as_str(),
+            "failed" | "error" | "unavailable" | "crashed" | "stopped"
+        );
+        let mut input = crate::diagnostics::DiagnosticInput::new(
+            if unavailable {
+                crate::diagnostics::Severity::Error
+            } else {
+                crate::diagnostics::Severity::Info
+            },
+            "optimizer-sidecar",
+            "optimizer.sidecar.phase",
+            if unavailable {
+                crate::diagnostics::codes::OPTIMIZER_SIDECAR_UNAVAILABLE
+            } else {
+                "optimizer_sidecar_phase"
+            },
+            status
+                .detail
+                .clone()
+                .unwrap_or_else(|| format!("optimizer sidecar is {}", status.phase)),
+        )
+        .retryable(unavailable);
+        input
+            .details
+            .insert("phase".into(), serde_json::json!(status.phase));
+        input
+            .details
+            .insert("previous_phase".into(), serde_json::json!(previous));
+        if let Some(version) = status.version.as_ref() {
+            input
+                .details
+                .insert("version".into(), serde_json::json!(version));
+        }
+        service.emit(input);
     }
 
     /// Discover installed versions, then probe a live sidecar if one is running.

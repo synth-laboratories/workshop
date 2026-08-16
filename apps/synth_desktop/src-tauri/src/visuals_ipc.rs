@@ -112,6 +112,154 @@ async fn route_request(
     app: &AppHandle,
     token: &str,
 ) -> JsonHttpResponse {
+    // Every MCP adapter call arrives here, so this is the one place that has to
+    // instrument them. Operation name, duration, status, and correlated
+    // identities only — never the arguments, which carry policy refs, prompts,
+    // and whatever else a caller decided to send.
+    let started = std::time::Instant::now();
+    let operation = redacted_operation(&request.path);
+    let correlation = correlation_from_ipc_body(&request.body);
+    let response = route_request_inner(request, core, app, token).await;
+    let elapsed = started.elapsed();
+    if !response.status.is_success() {
+        record_ipc_failure(core, &operation, &response, correlation, elapsed);
+    } else if elapsed >= SLOW_CALL_THRESHOLD {
+        // Thresholded, never sampled: a sampled latency record answers no
+        // specific question, while "this call took 40 seconds" answers one.
+        record_slow_call(core, &operation, correlation, elapsed);
+    }
+    response
+}
+
+/// A successful call slower than this is worth one record.
+const SLOW_CALL_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn record_slow_call(
+    core: &CoreRuntime,
+    operation: &str,
+    correlation: crate::diagnostics::Correlation,
+    elapsed: std::time::Duration,
+) {
+    let mut input = crate::diagnostics::DiagnosticInput::new(
+        crate::diagnostics::Severity::Info,
+        "mcp",
+        "mcp.request.slow",
+        "mcp_request_slow",
+        format!("{operation} took {}ms", elapsed.as_millis()),
+    );
+    input.correlation = correlation;
+    input.details.insert("operation".into(), json!(operation));
+    input
+        .details
+        .insert("duration_ms".into(), json!(elapsed.as_millis() as u64));
+    core.diagnostics_service().emit(input);
+}
+
+/// Operation name for a diagnostic label: the route with its identities
+/// stripped, so `/v1/containers/ctr_9/rollouts/start` stays one low-cardinality
+/// label instead of one label per container.
+fn redacted_operation(path: &str) -> String {
+    let path = path.split('?').next().unwrap_or(path);
+    path.split('/')
+        .map(|segment| {
+            if segment.len() > 12 && segment.contains('_') {
+                "{id}"
+            } else {
+                segment
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Pull whatever identities the request body already names. An MCP failure
+/// that knows its rollout is worth far more than one that only knows its path.
+fn correlation_from_ipc_body(body: &Value) -> crate::diagnostics::Correlation {
+    let mut correlation = crate::diagnostics::Correlation::default();
+    let Some(object) = body.as_object() else {
+        return correlation;
+    };
+    for (camel, snake, field) in [
+        ("sessionRef", "session_id", "session_id"),
+        ("visualId", "visual_id", "visual_id"),
+        ("containerId", "container_id", "container_id"),
+        ("rolloutId", "rollout_id", "rollout_id"),
+        ("streamId", "stream_id", "stream_id"),
+        ("optimizerRunId", "optimizer_run_id", "optimizer_run_id"),
+        ("traceId", "trace_id", "trace_id"),
+        ("commandId", "command_id", "command_id"),
+    ] {
+        if let Some(value) = object
+            .get(camel)
+            .or_else(|| object.get(snake))
+            .and_then(Value::as_str)
+        {
+            correlation.set(field, Some(value.to_owned()));
+        }
+    }
+    correlation
+}
+
+fn record_ipc_failure(
+    core: &CoreRuntime,
+    operation: &str,
+    response: &JsonHttpResponse,
+    correlation: crate::diagnostics::Correlation,
+    elapsed: std::time::Duration,
+) {
+    let status = response.status.as_u16();
+    // A stable code from the responding subsystem beats a generic one; a
+    // capability rejection must stay queryable as itself.
+    let code = response
+        .body
+        .get("code")
+        .and_then(Value::as_str)
+        .filter(|code| {
+            code.bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        })
+        .unwrap_or(crate::diagnostics::codes::MCP_REQUEST_FAILED)
+        .to_owned();
+    let message = response
+        .body
+        .get("message")
+        .or_else(|| response.body.get("error"))
+        .and_then(Value::as_str)
+        .unwrap_or("IPC request failed")
+        .to_owned();
+    let mut input = crate::diagnostics::DiagnosticInput::new(
+        if status >= 500 {
+            crate::diagnostics::Severity::Error
+        } else {
+            crate::diagnostics::Severity::Warn
+        },
+        "mcp",
+        "mcp.request.failed",
+        &code,
+        message,
+    )
+    .retryable(status == 429 || status >= 500);
+    input.correlation = correlation;
+    input.details.insert("operation".into(), json!(operation));
+    input.details.insert("status".into(), json!(status));
+    input
+        .details
+        .insert("duration_ms".into(), json!(elapsed.as_millis() as u64));
+    if let Some(remediation) = response.body.get("remediation") {
+        input.details.insert("remediation".into(), remediation.clone());
+    }
+    if let Some(missing) = response.body.get("missingOperations") {
+        input.details.insert("missing_operations".into(), missing.clone());
+    }
+    core.diagnostics_service().emit(input);
+}
+
+async fn route_request_inner(
+    request: JsonHttpRequest,
+    core: &CoreRuntime,
+    app: &AppHandle,
+    token: &str,
+) -> JsonHttpResponse {
     match dispatch_request(request, core, app, token).await {
         Ok(value) => JsonHttpResponse::ok(value),
         Err(error) if crate::error::error_is::<crate::error::Unauthorized>(&error) => {
@@ -180,6 +328,9 @@ async fn dispatch_request(
     }
     if path.starts_with("/v1/traces") {
         return dispatch_traces(method, path, json_body, core).await;
+    }
+    if path.starts_with("/v1/diagnostics") {
+        return dispatch_diagnostics(method, path, json_body, core).await;
     }
     dispatch(method, path, json_body, core).await
 }
@@ -432,6 +583,7 @@ async fn run_one_scripted_rollout(
     seed: i64,
     actions: &[String],
     requested_rollout_id: Option<String>,
+    diagnostics: &crate::container_stream::StreamDiagnostics,
 ) -> Result<ScriptedRollout> {
     let telemetry = authoritative_poll_telemetry();
     refuse_auto_transport(&telemetry)?;
@@ -461,7 +613,9 @@ async fn run_one_scripted_rollout(
     let prepared_stream = declared_stream_descriptor(&prepared)?
         .context("prepare omitted stream descriptor; refusing to guess /events")?;
     let poll_url = resolve_declared_url(base, &declared_poll_url(&prepared_stream)?)?;
-    wait_for_stream_subscribed(client, &poll_url, SUBSCRIBE_READY_TIMEOUT).await?;
+    let rollout_diagnostics = diagnostics.clone().with_rollout(&rollout_id);
+    wait_for_stream_subscribed(client, &poll_url, SUBSCRIBE_READY_TIMEOUT, &rollout_diagnostics)
+        .await?;
 
     let mut state = client
         .post(format!("{base}/rollouts"))
@@ -1128,8 +1282,31 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
                 .build()?;
-            let subscription =
-                wait_for_stream_subscribed(&client, &poll_url, SUBSCRIBE_READY_TIMEOUT).await?;
+            let stream_diagnostics = crate::container_stream::StreamDiagnostics::new(
+                Some(core.diagnostics_service().clone()),
+                crate::diagnostics::Correlation {
+                    container_id: Some(id.to_string()),
+                    rollout_id: Some(rollout_id.to_string()),
+                    visual_id: Some(visual_id.to_string()),
+                    visual_revision: Some(visual.current_revision),
+                    stream_id: stream
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .or_else(|| Some(rollout_id.to_string())),
+                    session_id: json_field(&body, "sessionRef", "session_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    ..Default::default()
+                },
+            );
+            let subscription = wait_for_stream_subscribed(
+                &client,
+                &poll_url,
+                SUBSCRIBE_READY_TIMEOUT,
+                &stream_diagnostics,
+            )
+            .await?;
             let mut start_body = json!({
                 "rollout_id": rollout_id, "seed": body.get("seed"), "task_instance_id": task_instance_id,
                 "policy_ref": policy_ref, "telemetry": telemetry, "slot": LIVE_EVAL_SLOT
@@ -1231,7 +1408,21 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     state,
                     events,
                     stream_id,
-                } = run_one_scripted_rollout(&client, &base, seed, &actions, None).await?;
+                } = run_one_scripted_rollout(
+                    &client,
+                    &base,
+                    seed,
+                    &actions,
+                    None,
+                    &crate::container_stream::StreamDiagnostics::new(
+                        Some(core.diagnostics_service().clone()),
+                        crate::diagnostics::Correlation {
+                            container_id: Some(id.to_string()),
+                            ..Default::default()
+                        },
+                    ),
+                )
+                .await?;
                 let spool = crate::storage::persist_live_envelopes(
                     core.content(),
                     stream_id.as_deref(),
@@ -1938,6 +2129,43 @@ async fn dispatch_optimizer(
 /// Read-only. `open` goes through the same `PresentationService` the native
 /// Data page uses, so the agent cannot reach a different inspector, bind one
 /// trace's visual to another's digest, or bypass the inspectability policy.
+/// Diagnostics IPC. Every route takes the same typed query object and refuses
+/// anything it does not recognize, so the adapter's allow-list and this
+/// dispatcher fail closed independently rather than trusting each other.
+async fn dispatch_diagnostics(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+) -> Result<Value> {
+    let service = core.diagnostics_service();
+    // The adapter forwards `sessionRef` on every call for provenance; it is not
+    // a query field, and a caller that meant to filter by session says so.
+    let mut request = body.clone();
+    if let Some(object) = request.as_object_mut() {
+        object.remove("sessionRef");
+    }
+    match (method, path) {
+        ("POST", "/v1/diagnostics/status") | ("GET", "/v1/diagnostics/status") => {
+            Ok(service.status().await)
+        }
+        ("POST", "/v1/diagnostics/query") => {
+            service.query(crate::diagnostics::query::parse(&request)?).await
+        }
+        ("POST", "/v1/diagnostics/tail") => {
+            service.tail(crate::diagnostics::query::parse(&request)?).await
+        }
+        ("POST", "/v1/diagnostics/explain") => {
+            service.explain(crate::diagnostics::query::parse(&request)?).await
+        }
+        ("POST", "/v1/diagnostics/bundle") => {
+            service.bundle(crate::diagnostics::query::parse(&request)?).await
+        }
+        ("POST", "/v1/diagnostics/clear-index") => service.clear_index().await,
+        (method, path) => anyhow::bail!("unknown diagnostics route {method} {path}"),
+    }
+}
+
 async fn dispatch_traces(
     method: &str,
     path: &str,
@@ -2124,6 +2352,159 @@ async fn dispatch_plugins(
 pub fn local_addr(url: &str) -> Result<SocketAddr> {
     let trimmed = url.trim_start_matches("http://");
     trimmed.parse().context("parse visuals IPC addr")
+}
+
+#[cfg(test)]
+mod diagnostics_tests {
+    use super::*;
+    use crate::diagnostics::DiagnosticQuery;
+    use tempfile::tempdir;
+
+    fn capability_rejection() -> JsonHttpResponse {
+        JsonHttpResponse {
+            status: StatusCode::CONFLICT,
+            body: json!({
+                "code": "capability_mismatch",
+                "container_id": "ctr_9",
+                "missingOperations": ["rollouts/start"],
+                "remediation": "Re-probe the container, then start only against a declared capability set.",
+                "retryable": false
+            }),
+            extra_headers: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_capability_rejection_is_queryable_by_its_own_stable_code() {
+        let dir = tempdir().unwrap();
+        let core = CoreRuntime::open(dir.path()).unwrap();
+        let body = json!({
+            "containerId": "ctr_9",
+            "rolloutId": "roll_3",
+            "visualId": "vis_9"
+        });
+
+        record_ipc_failure(
+            &core,
+            &redacted_operation("/v1/containers/ctr_deadbeefcafe/rollouts/start"),
+            &capability_rejection(),
+            correlation_from_ipc_body(&body),
+            std::time::Duration::from_millis(42),
+        );
+
+        let result = core
+            .diagnostics_service()
+            .query(DiagnosticQuery {
+                codes: vec!["capability_mismatch".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(result["count"], json!(1));
+        let event = &result["events"][0];
+        assert_eq!(event["component"], json!("mcp"));
+        assert_eq!(event["container_id"], json!("ctr_9"));
+        assert_eq!(event["rollout_id"], json!("roll_3"));
+        assert_eq!(event["visual_id"], json!("vis_9"));
+        assert_eq!(
+            event["details"]["missing_operations"],
+            json!(["rollouts/start"])
+        );
+        assert!(event["details"]["remediation"]
+            .as_str()
+            .unwrap()
+            .contains("Re-probe"));
+        assert_eq!(event["details"]["status"], json!(409));
+        assert_eq!(event["details"]["duration_ms"], json!(42));
+        // The identity is in the body, not the label: one operation label per
+        // route, never one per container.
+        assert_eq!(
+            event["details"]["operation"],
+            json!("/v1/containers/{id}/rollouts/start")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_failure_is_an_error_and_a_refusal_is_a_warning() {
+        let dir = tempdir().unwrap();
+        let core = CoreRuntime::open(dir.path()).unwrap();
+        record_ipc_failure(
+            &core,
+            "/v1/visuals/{id}/render",
+            &JsonHttpResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "renderer exploded"),
+            crate::diagnostics::Correlation::default(),
+            std::time::Duration::from_millis(1),
+        );
+        record_ipc_failure(
+            &core,
+            "/v1/visuals",
+            &JsonHttpResponse::error(StatusCode::BAD_REQUEST, "templateId is required"),
+            crate::diagnostics::Correlation::default(),
+            std::time::Duration::from_millis(1),
+        );
+
+        let result = core
+            .diagnostics_service()
+            .query(DiagnosticQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(result["count"], json!(2));
+        let by_code: std::collections::HashMap<&str, &serde_json::Value> = result["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| (event["message"].as_str().unwrap(), event))
+            .collect();
+        assert_eq!(by_code["renderer exploded"]["severity"], json!("error"));
+        assert_eq!(by_code["renderer exploded"]["retryable"], json!(true));
+        assert_eq!(
+            by_code["templateId is required"]["severity"],
+            json!("warn")
+        );
+        assert_eq!(by_code["templateId is required"]["retryable"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn a_successful_call_records_nothing() {
+        let dir = tempdir().unwrap();
+        let core = CoreRuntime::open(dir.path()).unwrap();
+        let response = JsonHttpResponse::ok(json!({"ok": true}));
+        assert!(response.status.is_success());
+        let result = core
+            .diagnostics_service()
+            .query(DiagnosticQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(result["count"], json!(0));
+    }
+
+    #[test]
+    fn operation_labels_never_carry_an_identity() {
+        assert_eq!(
+            redacted_operation("/v1/containers/ctr_0f9b2c4d8e/rollouts/poll?x=1"),
+            "/v1/containers/{id}/rollouts/poll"
+        );
+        assert_eq!(
+            redacted_operation("/v1/optimizers/opt_run_98f3aa12bc/events"),
+            "/v1/optimizers/{id}/events"
+        );
+        // Short, stable segments stay legible.
+        assert_eq!(redacted_operation("/v1/visuals"), "/v1/visuals");
+        assert_eq!(
+            redacted_operation("/v1/diagnostics/query"),
+            "/v1/diagnostics/query"
+        );
+    }
+
+    #[test]
+    fn correlation_is_read_in_both_casings() {
+        let camel = correlation_from_ipc_body(&json!({"rolloutId": "roll_1", "visualId": "vis_1"}));
+        let snake =
+            correlation_from_ipc_body(&json!({"rollout_id": "roll_1", "visual_id": "vis_1"}));
+        assert_eq!(camel, snake);
+        assert_eq!(camel.rollout_id.as_deref(), Some("roll_1"));
+        assert!(correlation_from_ipc_body(&json!("not an object")).is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -2324,7 +2705,14 @@ mod tests {
         .await;
         let client = test_client();
         let outcome =
-            run_one_scripted_rollout(&client, &base, 1, &["do".into()], Some("r1".into()))
+            run_one_scripted_rollout(
+                &client,
+                &base,
+                1,
+                &["do".into()],
+                Some("r1".into()),
+                &crate::container_stream::StreamDiagnostics::none(),
+            )
                 .await
                 .unwrap();
         assert_eq!(outcome.rollout_id, "r1");
@@ -2370,7 +2758,14 @@ mod tests {
         })
         .await;
         let client = test_client();
-        let error = run_one_scripted_rollout(&client, &base, 7, &["do".into()], Some("r1".into()))
+        let error = run_one_scripted_rollout(
+            &client,
+            &base,
+            7,
+            &["do".into()],
+            Some("r1".into()),
+            &crate::container_stream::StreamDiagnostics::none(),
+        )
             .await
             .unwrap_err();
         assert!(error
@@ -2409,7 +2804,14 @@ mod tests {
         })
         .await;
         let client = test_client();
-        let err = run_one_scripted_rollout(&client, &base, 1, &["do".into()], Some("r1".into()))
+        let err = run_one_scripted_rollout(
+            &client,
+            &base,
+            1,
+            &["do".into()],
+            Some("r1".into()),
+            &crate::container_stream::StreamDiagnostics::none(),
+        )
             .await
             .unwrap_err();
         assert!(err.to_string().contains("stream.subscribed"));

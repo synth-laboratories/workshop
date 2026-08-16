@@ -39,6 +39,7 @@
     },
     "resources": {
       "../../../services/laguna-daemon/laguna_daemon": "services/laguna-daemon/laguna_daemon",
+      "../../../services/victoria-logs": "services/victoria-logs",
       "../../../visuals/families": "visuals/families",
       "../../../visuals/chrome": "visuals/chrome",
       "../../../visuals/components": "visuals/components",

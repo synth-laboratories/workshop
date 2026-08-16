@@ -56,6 +56,11 @@ pub struct OptimizerService {
     local_recipes: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
     events_tx: broadcast::Sender<AppEvent>,
     manager: Arc<super::OptimizerManager>,
+    /// Attached once by the composition root. Optimizer lifecycle failures are
+    /// already recorded as bounded run evidence; this lets the same failure
+    /// also be correlated with the container, stream, and visual around it —
+    /// without inventing a second source of truth for the run itself.
+    diagnostics: Arc<std::sync::OnceLock<Arc<crate::diagnostics::DiagnosticsService>>>,
 }
 
 impl OptimizerService {
@@ -88,11 +93,22 @@ impl OptimizerService {
             local_recipes: Arc::new(Mutex::new(HashMap::new())),
             events_tx,
             manager,
+            diagnostics: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
     pub fn manager(&self) -> &Arc<super::OptimizerManager> {
         &self.manager
+    }
+
+    /// Wire diagnostics in after both services exist. Idempotent; a service
+    /// that is never attached simply emits nothing.
+    pub fn attach_diagnostics(&self, service: Arc<crate::diagnostics::DiagnosticsService>) {
+        let _ = self.diagnostics.set(service);
+    }
+
+    pub(crate) fn diagnostics(&self) -> Option<&Arc<crate::diagnostics::DiagnosticsService>> {
+        self.diagnostics.get()
     }
 
     pub fn list_algorithms(&self) -> Vec<Value> {
