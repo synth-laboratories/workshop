@@ -142,6 +142,28 @@ Five generalizations. Each has an existing invitation in the code.
 5. **Install becomes a strategy.** Today install means "pip package from pypi.org
    becomes a sidecar." Ours is "verify notarization and team ID, place a signed
    `.app`, then acquire OS grants." Same phases, different executor.
+   **Deferred to Phase 3, deliberately.** `PluginService::execute` and
+   `PluginService::status` both reach straight into `core.optimizers().manager()`,
+   so the seam has to abstract status probing as well as installation. Its shape
+   depends on answers Phase 3 produces — whether the helper install needs an
+   approval mid-sequence for TCC, and how status probes a helper that may be
+   installed but ungranted. Extracting a trait now would mean writing the second
+   implementation from a guess and rewriting it in three weeks. Items 1–4 are
+   independently useful; this one is not.
+
+### What Phase 2 actually landed
+
+`ApprovalKind::ComputerUse` and `PluginRisk::HandOff` exist with no producer
+yet — Phase 5 raises them. The dead-code warnings on `PHASE_NEEDS_PERMISSIONS`,
+`PLUGIN_PERMISSION_STATES`, `PluginNotReady::missing`, and the `ComputerUse`
+variant are expected and match the pre-existing `PluginRisk::Read` precedent.
+
+One correction to §4 found while implementing: the
+`("never", _) => approve everything` hazard is **not** confined to
+`plugins/policy.rs`. `session/approval_policy.rs` honors `never` the same way
+and gates the host mutation path, and `ApprovalBroker::authorize_host` consults
+a remembered-session grant *before* either engine runs. G6 is only closed
+because all three consult one predicate, `ApprovalKind::requires_human`.
 
 ### Two deliberate carve-outs
 
@@ -313,7 +335,7 @@ pure Rust and TypeScript and do not wait on it. Phases 3, 4, and the G1 receipt 
 |---|---|---|---|
 | **0** | Developer ID, hardened runtime, notarization, stapling, stable helper bundle ID. **Blocking for 3/4/G1; external lead time** | ~1 wk | Not started — needs an operator |
 | **1** | Spike: drive the installed Synth Desktop.app. *Does a Tauri/WebKit window expose a usable AX tree?* | ~2 d | Needs an operator TCC grant |
-| **2** | Generalize `plugins/` to N; add `needs_permissions` and permission rows; add `PluginRisk::HandOff` | ~1 wk | **In progress** |
+| **2** | Generalize `plugins/` to N; add `needs_permissions` and permission rows; add `PluginRisk::HandOff` | ~1 wk | **4 of 5 done**; install-as-strategy deferred to Phase 3 |
 | **3** | Helper app + MCP proxy + caller authentication (`SecCode` / audit token against our team ID) | ~2–3 wk | Blocked on Phase 0 |
 | **4** | Permission wizard from plugin phases; install / uninstall including `tccutil reset` | ~1 wk | Blocked on Phase 0 |
 | **5** | `ApprovalKind::ComputerUse` with payload; app allowlist; terminal-class denial; lock pause/resume | ~1.5 wk | Unblocked |
@@ -345,8 +367,12 @@ prevention, and a synthetic cursor — not the automation itself.
 | Design | Settled. §5 and §7 are normative; §3 is gradeable |
 | Phase 0 (Developer ID) | **Not started, external lead time, needs an operator.** Nothing an engineer can unblock |
 | Phase 1 (AX spike) | Ready to run; needs a TCC grant from the operator and approval to install a third-party helper for comparison |
-| Phase 2 | In progress on `v0.5/cua` |
+| Phase 2 | 4 of 5 landed on `v0.5/cua`, tested. Item 5 folded into Phase 3 |
 | Phases 3–7 | Ready to write; 3, 4, and 7 land after Phase 0 |
+
+Phase 5 is the next unblocked lane: `ApprovalKind::ComputerUse` has a type and a
+policy but no producer, so the allowlist, terminal-class denial, and lock
+pause/resume can all be written and tested against it without a helper binary.
 
 Two things are unknown in a way no amount of planning resolves, and both are cheap
 to answer:
