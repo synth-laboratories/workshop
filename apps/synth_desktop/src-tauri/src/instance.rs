@@ -7,6 +7,7 @@ pub const INSTANCE_ENV: &str = "SYNTH_DESKTOP_INSTANCE";
 pub const DATA_ROOT_ENV: &str = "SYNTH_DESKTOP_DATA_ROOT";
 pub const MANIFEST_ENV: &str = "SYNTH_DESKTOP_INSTANCE_MANIFEST";
 pub const APP_NAME_ENV: &str = "SYNTH_DESKTOP_APP_NAME";
+pub const BUNDLE_ID_ENV: &str = "SYNTH_DESKTOP_BUNDLE_ID";
 
 #[derive(Clone, Debug, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +74,13 @@ pub fn display_name() -> String {
     name()
         .map(|value| format!("Synth Desktop · {value}"))
         .unwrap_or_else(|| "Synth Desktop".into())
+}
+
+pub fn bundle_id() -> Option<String> {
+    env::var(BUNDLE_ID_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 pub fn diagnostics() -> InstanceDiagnostics {

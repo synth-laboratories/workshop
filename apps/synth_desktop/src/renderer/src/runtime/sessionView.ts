@@ -606,6 +606,16 @@ function safeToolStatus(item: Record<string, unknown>): LocalActivityLine["toolS
 	return "running";
 }
 
+function safeToolFailure(item: Record<string, unknown>): string | undefined {
+	const error = objectValue(item.error);
+	const direct = error ? stringField(error, "message", "detail", "code") : typeof item.error === "string" ? item.error : undefined;
+	const result = objectValue(item.result);
+	const structured = result && objectValue(result.structuredContent);
+	const structuredError = structured ? stringField(structured, "error", "message", "detail", "code") : undefined;
+	const message = direct ?? structuredError;
+	return message ? redactCommand(message).slice(0, 320) : undefined;
+}
+
 function compactToolArgs(args: Record<string, unknown>, fields: string[]): string | undefined {
 	const values: string[] = [];
 	for (const field of fields) {
@@ -749,6 +759,7 @@ function mcpToolActivity(
 		? (tool === "visual_manage" ? stringField(args, "operation") : tool.replace(/^visual_/, ""))
 		: undefined;
 	const toolStatus = safeToolStatus(item);
+	const failure = toolStatus === "failed" ? safeToolFailure(item) : undefined;
 	const visualStage: LocalActivityLine["visualStage"] = toolStatus === "failed" && visualOperation
 		? "failed"
 		: visualOperation === "create"
@@ -770,7 +781,7 @@ function mcpToolActivity(
 	return {
 		key: `mcp:${id}`,
 		label: lifecycleLabel ?? ([server, tool].filter(Boolean).join(".") || "Tool call"),
-		detail: [argsLabel, duration].filter(Boolean).join(" · ") || undefined,
+		detail: [argsLabel, duration, failure].filter(Boolean).join(" · ") || undefined,
 		kind: visualStage ? "visual_lifecycle" : artifactId ? "visual" : "working",
 		artifactId,
 		containerId,

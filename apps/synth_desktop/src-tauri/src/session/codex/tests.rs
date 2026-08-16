@@ -1643,10 +1643,12 @@ fn generated_mcp_configs_pass_desktop_identity_for_visual_capture() {
         Path::new("/tmp/visuals-ipc.json"),
         "session-123",
         "Synth Workshop v0.4 · cua",
+        "com.synth.desktop.v04.dev.cua",
     );
     assert!(config.contains("SYNTH_VISUALS_IPC_FILE = \"/tmp/visuals-ipc.json\""));
     assert!(config.contains("SYNTH_SESSION_ID = \"session-123\""));
     assert!(config.contains("SYNTH_DESKTOP_APP_NAME = \"Synth Workshop v0.4 · cua\""));
+    assert!(config.contains("SYNTH_DESKTOP_BUNDLE_ID = \"com.synth.desktop.v04.dev.cua\""));
 }
 #[test]
 fn normalizes_responses_provider_base_url() {

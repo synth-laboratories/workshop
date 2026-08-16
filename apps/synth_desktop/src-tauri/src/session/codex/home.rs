@@ -609,6 +609,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
     if let Ok(exe) = env::current_exe() {
         let ipc = crate::storage::app_data_root().join("visuals-ipc.json");
         let app_name = crate::instance::display_name();
+        let bundle_id = crate::instance::bundle_id().unwrap_or_default();
         let mut existing = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
         for (server, binary) in [
             ("synth_plugins", "synth-plugins-mcp"),
@@ -643,7 +644,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
             }
             existing.push_str(&format!(
                 "\n{heading}\ncommand = \"{}\"\nargs = []\n{}default_tools_approval_mode = \"approve\"\n{}",
-                toml_string(&bin.display().to_string()), mcp_enabled_tools(server), mcp_env_config(server, &ipc, &request.session_id, &app_name),
+                toml_string(&bin.display().to_string()), mcp_enabled_tools(server), mcp_env_config(server, &ipc, &request.session_id, &app_name, &bundle_id),
             ));
         }
         fs::write(home.join("config.toml"), existing)?;
@@ -954,13 +955,14 @@ pub(crate) fn mcp_ipc_env_key(server: &str) -> &'static str {
     }
 }
 
-pub(crate) fn mcp_env_config(server: &str, ipc: &Path, session_id: &str, app_name: &str) -> String {
+pub(crate) fn mcp_env_config(server: &str, ipc: &Path, session_id: &str, app_name: &str, bundle_id: &str) -> String {
     format!(
-        "env = {{ {} = \"{}\", SYNTH_SESSION_ID = \"{}\", SYNTH_DESKTOP_APP_NAME = \"{}\" }}\n",
+        "env = {{ {} = \"{}\", SYNTH_SESSION_ID = \"{}\", SYNTH_DESKTOP_APP_NAME = \"{}\", SYNTH_DESKTOP_BUNDLE_ID = \"{}\" }}\n",
         mcp_ipc_env_key(server),
         toml_string(&ipc.display().to_string()),
         toml_string(session_id),
         toml_string(app_name),
+        toml_string(bundle_id),
     )
 }
 

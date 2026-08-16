@@ -1089,22 +1089,38 @@ fn capture_current_macos_window(
 ) -> Result<(), String> {
     let app_name = env::var("SYNTH_DESKTOP_APP_NAME")
         .map_err(|_| "template review capture requires SYNTH_DESKTOP_APP_NAME".to_string())?;
+    let bundle_id = env::var("SYNTH_DESKTOP_BUNDLE_ID").unwrap_or_default();
     let swift = r#"import CoreGraphics
+import AppKit
 import Foundation
-let wanted = CommandLine.arguments[1]
+let wantedName = CommandLine.arguments[1]
+let wantedBundle = CommandLine.arguments[2]
 let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)! as! [[String: Any]]
-let candidates = windows.compactMap { item -> (Int, Double)? in
-  guard (item[kCGWindowOwnerName as String] as? String) == wanted,
+let candidates = windows.compactMap { item -> (Int, Double, String, String)? in
+  guard let owner = item[kCGWindowOwnerName as String] as? String,
+        let pid = item[kCGWindowOwnerPID as String] as? Int,
         let number = item[kCGWindowNumber as String] as? Int,
         let bounds = item[kCGWindowBounds as String] as? [String: Any],
         let width = bounds["Width"] as? Double,
         let height = bounds["Height"] as? Double,
         width >= 640, height >= 400 else { return nil }
-  return (number, width * height)
+  let bundle = NSRunningApplication(processIdentifier: pid_t(pid))?.bundleIdentifier ?? ""
+  guard (!wantedBundle.isEmpty && bundle == wantedBundle) || owner == wantedName else { return nil }
+  return (number, width * height, owner, bundle)
 }
-if let best = candidates.max(by: { $0.1 < $1.1 }) { print(best.0) }"#;
+if let best = candidates.max(by: { $0.1 < $1.1 }) { print(best.0) }
+else {
+  let observed = windows.compactMap { item -> String? in
+    guard let owner = item[kCGWindowOwnerName as String] as? String,
+          owner.lowercased().contains("synth"),
+          let pid = item[kCGWindowOwnerPID as String] as? Int else { return nil }
+    let bundle = NSRunningApplication(processIdentifier: pid_t(pid))?.bundleIdentifier ?? "unknown"
+    return "\(owner) [\(bundle)]"
+  }
+  fputs("observed synth windows: \(observed.joined(separator: ", "))", stderr)
+}"#;
     let output = Command::new("swift")
-        .args(["-e", swift, &app_name])
+        .args(["-e", swift, &app_name, &bundle_id])
         .output()
         .map_err(|error| format!("launch Desktop window resolver: {error}"))?;
     if !output.status.success() {
@@ -1115,7 +1131,12 @@ if let best = candidates.max(by: { $0.1 < $1.1 }) { print(best.0) }"#;
     }
     let window_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if window_id.is_empty() {
-        return Err(format!("no reviewable Desktop window found for {app_name}"));
+        let observed = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!(
+            "DesktopWindowNotFound: expected app `{app_name}` bundle `{}`; {}",
+            if bundle_id.is_empty() { "unavailable" } else { &bundle_id },
+            if observed.is_empty() { "no Synth windows were visible" } else { &observed }
+        ));
     }
     let raw_path = png_path.with_extension("window.png");
     let capture = Command::new("/usr/sbin/screencapture")
