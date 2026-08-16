@@ -36,8 +36,8 @@ or filesystem search to discover this tool.
 | `list` | `{ "search"?: string, "status"?: string, "session_id"?: string }` |
 | `get` | `{ "visual_id": string }` |
 | `create` | `{ "template_id": string, "title"?: string, "content"?: string, "props"?: object, "session_id"?: string, "instance_id"?: string }` |
-| `update` | `{ "visual_id": string, "title"?: string, "content"?: string, "bindings"?: object, "status"?: string }` |
-| `bind` | `{ "instance_id": string, "slot": string, "kind": string, "source": string, "path"?: string, "schema"?: string }` |
+| `update` | `{ "visual_id": string, "title"?: string, "content"?: string, "bindings"?: object, "status"?: string }` — `bindings` must be the canonical envelope; prefer `bind` |
+| `bind` | `{ "instance_id": string, "slot": string, "kind": string, "source": string, "poll_url"?: string, "path"?: string, "schema"?: string, "mode"?: "replace" \| "append", "bindings"?: [{ "kind": string, "source": string, "poll_url"?: string }] }` — the only supported way to write bindings |
 | `show` | `{ "visual_id": string, "session_id"?: string }` |
 | `fork` | `{ "visual_id": string, "title"?: string }` |
 | `archive` | `{ "visual_id": string }` |
@@ -101,12 +101,51 @@ Use specialized rollout or trace templates only when their interaction is genuin
 
 For a Trace V5 record, bind the canonical `synth.trace-projection.rollout-inspector.v1` projection and let the first-class inspector preserve the trace hierarchy. Start in **Focus** for agent messages, tool activity, failures, and evaluation evidence; switch to **Full** only when model-call and lifecycle provenance matter. Put verdicts and grader rationale in **Evidence**, and identity, digests, visibility, token usage, and lane coverage in **Metadata**. Search commands and outputs or jump to an exact sequence instead of flattening the run into a generic chart. Never reconstruct missing events, expose content above the projection's visibility ceiling, or imply that an incomplete lane has complete coverage.
 
+## Writing bindings
+
+Bindings are always the canonical envelope:
+
+```json
+{"schemaVersion": "synth.visual-bindings.v1",
+ "slots": [{"slot": "stream", "kind": "live_sse", "source": "...", "poll_url": "..."}]}
+```
+
+Use the `bind` operation, which writes that envelope for you. A slot-keyed
+object such as `{"stream": [...]}` is a legacy shape: it is upgraded with a
+warning today and will be refused. Do not hand-build binding objects through
+`update` when `bind` can express what you need.
+
+For a slot the template declares `multiple` — such as ten rollout streams on one
+`stream` slot — bind them in one call:
+
+```js
+await tools.mcp__synth_visuals__visual_manage({
+  operation: "bind",
+  arguments: {
+    instance_id: visualId,
+    slot: "stream",
+    mode: "append",
+    bindings: rolloutIds.map((id) => ({
+      kind: "live_sse",
+      source: `${base}/rollouts/${id}/stream`,
+      poll_url: `${base}/rollouts/${id}/events`,
+      schema: "synth.trace-stream-event.v1"
+    }))
+  }
+});
+```
+
+`mode` defaults to `replace`, which drops existing bindings on that slot. Use
+`append` when adding to a `multiple` slot across several calls.
+
 ## Live container evals
 
 Use the task-family live template for an eval that is still running:
 `live.craftax.v1`, `live.harbor_eval.v1`, or `live.digbench.v1`. Bind its required
 `stream` slot as `live_sse` with the absolute SSE endpoint and exact poll
-endpoint declared by rollout preparation. The stream emits
+endpoint declared by rollout preparation. Every live binding needs `poll_url`:
+the durable poll authority is what lets a completed run replay, and a stream
+bound without one cannot be reopened after it closes. The stream emits
 `synth.trace-stream-event.v1`; never guess or rewrite either route. Discover the
 container with `container_list` / `container_probe` and inspect advertised
 transports before binding.

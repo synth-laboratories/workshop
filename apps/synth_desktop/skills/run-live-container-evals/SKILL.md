@@ -92,8 +92,15 @@ Do not claim a paid Luna 10× run from this skill.
 5. Create the task-family visual through `synth_visuals.visual_manage`:
    `live.craftax.v1` for native Craftax, `live.harbor_eval.v1` for a Harbor
    attempt, or `live.digbench.v1` for dig.bench. Bind slot `stream` (never
-   `live` or `jobs`) as `live_sse` to the **declared** SSE URL. Do not construct
-   `/events` or `/rollouts/{id}/stream`.
+   `live` or `jobs`) as `live_sse` to the **declared** SSE URL, with the
+   declared `poll_url` beside it. Do not construct `/events` or
+   `/rollouts/{id}/stream`.
+
+   Use the `bind` operation — it writes the canonical
+   `synth.visual-bindings.v1` envelope. For several rollouts on one `stream`
+   slot, pass `mode: "append"` with a `bindings` array in a single call. Do not
+   hand-build a `{"stream": [...]}` object through `update`: that shape is
+   legacy, is upgraded with a warning, and will be refused.
 6. Open the visual in canvas mode and consume the stream until its control envelope reports
    `stream.subscribed`. This acknowledgement is non-evidence and does not
    advance the evidence sequence. Refuse the paid/mutating start if it is
