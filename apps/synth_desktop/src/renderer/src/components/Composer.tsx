@@ -116,6 +116,7 @@ const SANDBOX_OPTIONS: Array<{ id: SandboxMode; label: string; description: stri
 	{ id: "workspace-write", label: "Workspace access", description: "Read and write inside the workspace." },
 	{ id: "danger-full-access", label: "Full system access", description: "Allow unrestricted filesystem and network access." }
 ];
+const QUEUED_STEER_CONFIRMATION_MS = 2_500;
 
 const APPROVAL_CHIP_LABEL: Record<ApprovalPolicy, string> = { untrusted: "Ask", "on-request": "Risky", never: "Auto" };
 const SANDBOX_CHIP_LABEL: Record<SandboxMode, string> = { "read-only": "Read", "workspace-write": "Workspace", "danger-full-access": "Full" };
@@ -1108,13 +1109,13 @@ export function Composer({
 		queuedEnterTimerRef.current = window.setTimeout(() => {
 			if (queuedEnterRef.current?.id === id) queuedEnterRef.current = null;
 			setArmedQueuedPromptId((current) => current === id ? null : current);
-		}, 700);
+		}, QUEUED_STEER_CONFIRMATION_MS);
 	};
 
 	const handleQueuedPromptEnter = (id: string, text: string) => {
 		if (!agentWorking || !steerSupported || promotingQueuedPromptId || !text.trim()) return;
 		const prior = queuedEnterRef.current;
-		if (prior?.id === id && Date.now() - prior.at <= 700) {
+		if (prior?.id === id && Date.now() - prior.at <= QUEUED_STEER_CONFIRMATION_MS) {
 			promoteQueuedPrompt(id, text);
 			return;
 		}
@@ -1124,7 +1125,7 @@ export function Composer({
 	const promoteComposerQueueOnSecondReturn = (composerValue: string): boolean => {
 		if (!agentWorking || activeEnterAction !== "enqueue" || !steerSupported || promotingQueuedPromptId) return false;
 		const armed = queuedEnterRef.current;
-		if (!armed || Date.now() - armed.at > 700) return false;
+		if (!armed || Date.now() - armed.at > QUEUED_STEER_CONFIRMATION_MS) return false;
 		// React may not have committed setValue("") before a physical double Return.
 		// Accept the pre-commit DOM value only when it is the exact prompt we armed;
 		// newly typed text must remain a distinct queued prompt.
