@@ -23,14 +23,15 @@ identify the policy files in the session workspace first, then freeze them:
 
 ```json
 {"operation":"stage_eval_candidates","arguments":{
-  "session_ref":"<session>",
   "candidates":[
     {"label":"baseline","path":"policies/baseline","entrypoint":"heuristic_baseline:choose_actions","kind":"python-code.craftax-choose-actions.v1","baseline":true},
     {"label":"memory-v2","path":"policies/memory_v2","entrypoint":"heuristic_baseline:choose_actions","kind":"python-code.craftax-choose-actions.v1"}
   ]}}
 ```
 
-Paths are **workspace-relative**; absolute paths and `..` are refused. Mark
+Paths are **workspace-relative**; absolute paths and `..` are refused. The
+host fills in the calling session, so omit `session_ref` rather than inventing
+one. Mark
 exactly one baseline — a recipe whose `decision_mode` is `promote` cannot compute
 a paired lift without one, and will return `inconclusive`.
 
