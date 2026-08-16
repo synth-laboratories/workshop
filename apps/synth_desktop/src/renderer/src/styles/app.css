@@ -8013,6 +8013,15 @@ html.sidebar-hidden .sidebar {
 .prompt-queue-after-stop p { flex: 1; min-width: 0; margin: 0; color: #856c4a; font-size: 11px; }
 .prompt-queue-after-stop button { min-height: 28px; padding: 3px 9px; font-size: 11px; }
 
+.composer-steer-hint {
+	width: min(720px, 100%);
+	margin: 0 0 6px;
+	padding: 0 4px;
+	color: var(--color-text-muted);
+	font-size: 11px;
+	font-weight: 600;
+}
+
 .sidebar-show-more {
 	align-self: flex-start;
 	margin: 5px 8px 0 28px;

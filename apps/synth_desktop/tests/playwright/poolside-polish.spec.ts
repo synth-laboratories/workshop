@@ -349,9 +349,11 @@ test.describe("steer and enqueue", () => {
 		await composer.fill("steer without queue focus");
 		await composer.press("Enter");
 		await expect(page.getByTestId("prompt-queue")).toContainText("Return again to steer now");
+		await expect(page.getByTestId("composer-steer-hint")).toHaveText("Queued — Return again to steer");
 		await expect(composer).toBeFocused();
 		await composer.press("Enter");
 		await expect(page.getByTestId("prompt-queue")).toBeHidden();
+		await expect(page.getByTestId("composer-steer-hint")).toBeHidden();
 		await expect.poll(() => page.evaluate(() => (window as typeof window & { __steerCalls?: Array<{ sessionId: string; text: string }> }).__steerCalls ?? [])).toEqual([
 			{ sessionId: "composer-steer-session", text: "steer without queue focus" }
 		]);

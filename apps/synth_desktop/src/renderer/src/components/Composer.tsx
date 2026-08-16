@@ -1198,6 +1198,11 @@ export function Composer({
 				<p className="composer-steer-error" role="alert" data-testid="composer-mic-error">{voiceError}</p>
 			) : null}
 			{attachmentError ? <p className="composer-steer-error" role="alert" data-testid="composer-attachment-error">{attachmentError}</p> : null}
+			{armedQueuedPromptId ? (
+				<p className="composer-steer-hint" role="status" aria-live="polite" data-testid="composer-steer-hint">
+					Queued — Return again to steer
+				</p>
+			) : null}
 			{state.selectedTargetId.startsWith("openrouter-") && !state.openrouterApiKeyConfigured ? (
 				<div className="composer-configuration-required" role="alert" data-testid="openrouter-key-required">
 					<span><strong>OpenRouter API key required</strong> Add it under Settings → Account before sending a message.</span>
