@@ -17,7 +17,7 @@ pub mod intern_protocol_test_support {
 mod codex;
 mod codex_oauth;
 pub mod container_capabilities;
-mod container_stream;
+pub mod container_stream;
 mod context;
 pub mod contract;
 pub mod core_runtime;
@@ -1449,27 +1449,74 @@ async fn visual_stream_poll(
                         == Some(request.poll_url.as_str())
             })
         });
+    // Every renderer poll of a live stream lands here, so this is where a live
+    // stream going quiet becomes a record rather than an empty pane.
+    let diagnose = |code: &str, message: String, retryable: bool, details: serde_json::Value| {
+        let mut input = diagnostics::DiagnosticInput::new(
+            diagnostics::Severity::Error,
+            "container-stream",
+            "stream.poll.failed",
+            code,
+            message,
+        )
+        .retryable(retryable);
+        input.correlation.visual_id = Some(visual.id.clone());
+        input.correlation.visual_revision = Some(visual.current_revision);
+        input.correlation.session_id = visual.session_id.clone();
+        input.correlation.rollout_id = visual.run_id.clone();
+        input.correlation.trace_id = visual.trace_id.clone();
+        if let Some(object) = details.as_object() {
+            input.details = object.clone();
+        }
+        state.diagnostics_service().emit(input);
+    };
     if !declared {
+        // An undeclared URL is a binding defect, not a transport failure: the
+        // visual is asking for a stream it never declared.
+        diagnose(
+            diagnostics::codes::VISUAL_BINDING_UNRESOLVED,
+            "visual stream poll URL is not declared on this visual".into(),
+            false,
+            serde_json::json!({}),
+        );
         return Err(AppError::from(anyhow::anyhow!(
             "visual stream poll URL is not declared on this visual"
         )));
     }
     let limit = request.limit.clamp(1, 500);
-    let response = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(AppError::from)?
-        .get(&request.poll_url)
-        .query(&[("after", request.after.to_string()), ("limit", limit.to_string())])
-        .send()
-        .await
-        .map_err(AppError::from)?
-        .error_for_status()
-        .map_err(AppError::from)?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(AppError::from)?;
-    Ok(contract::specta::OpaqueJson(response))
+    let started = std::time::Instant::now();
+    let response = async {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?
+            .get(&request.poll_url)
+            .query(&[("after", request.after.to_string()), ("limit", limit.to_string())])
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<serde_json::Value>()
+            .await
+    }
+    .await;
+    match response {
+        Ok(page) => Ok(contract::specta::OpaqueJson(page)),
+        Err(error) => {
+            let status = error.status().map(|status| status.as_u16());
+            diagnose(
+                diagnostics::codes::STREAM_INTERRUPTED,
+                error.to_string(),
+                // A refused or 5xx poll may recover; a 4xx says the stream is
+                // gone and retrying only repeats the question.
+                error.is_timeout() || error.is_connect() || status.is_none_or(|code| code >= 500),
+                serde_json::json!({
+                    "status": status,
+                    "after": request.after,
+                    "duration_ms": started.elapsed().as_millis() as u64,
+                }),
+            );
+            Err(AppError::from(error))
+        }
+    }
 }
 
 async fn publish_visual_event(

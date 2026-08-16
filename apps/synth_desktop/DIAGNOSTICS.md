@@ -54,8 +54,25 @@ diagnostic on recovery.
 | `src-tauri/src/diagnostics/explain.rs` | Deterministic cause / symptom ordering |
 | `src-tauri/src/diagnostics/codes.rs` | Stable codes, causal rank, remediation text |
 | `src-tauri/src/bin/synth_diagnostics_mcp.rs` | The agent-facing stdio adapter |
-| `src/renderer/src/runtime/diagnostics.ts` | Renderer emitter |
+| `src/renderer/src/runtime/diagnostics.ts` | Renderer emitter, and the sink visuals emit through |
 | `src/renderer/src/components/DiagnosticsPanel.tsx` | The Diagnostics surface |
+| `visuals/runtime/diagnostics.ts` | The visuals package's seam (host-installed sink) |
+| `skills/use-synth-diagnostics/SKILL.md` | How the agent is taught to use it |
+
+## Instrumented surfaces
+
+| Surface | Emits |
+| --- | --- |
+| `container_stream.rs` | subscribe timeout, poll refusal, subscribed transition |
+| `lib.rs` (`visual_stream_poll`) | live-stream poll failures, undeclared poll URLs |
+| `visuals_ipc.rs` | every failed MCP/IPC call, and successful ones over 5s |
+| `visuals/registry.rs` | render failures with visual id and revision |
+| `optimizers/manager.rs` | sidecar phase transitions |
+| `optimizers/recipes.rs` | worker failure, beside its existing run evidence |
+| `session/persistence.rs` | provider disconnect and stall |
+| `VisualHost.tsx` | projection, binding, template, shell, render, stream failures |
+| `useAppController.ts` | provider stall and first-activity timeout |
+| `visuals/chrome/useLiveEvalStream.ts` | SSE interruption, replay gaps, recovery failure |
 
 ## Staging the binary
 
@@ -113,8 +130,10 @@ free text; prompt-shaped keys collapse to `{length, digest}`; environment
 snapshots are dropped whole, both by key name and by shape. `diagnostics_bundle`
 writes a `0600` file locally and uploads nothing.
 
-Retention defaults to 7 days or a 2 GB quota, whichever comes first, enforced by
-VictoriaLogs. "Clear diagnostic index" deletes the index and its cursor; the
+Retention has two tiers. The index keeps 7 days or 2 GB, whichever comes first,
+enforced by VictoriaLogs. The journal keeps 30 days or 200,000 diagnostic rows,
+trimmed hourly — deliberately longer, because the journal is what the index is
+rebuilt from. The trim touches `diagnostic.event` rows and nothing else. "Clear diagnostic index" deletes the index and its cursor; the
 authoritative journal, sealed traces, and run evidence are untouched, and the
 next indexing pass rebuilds from zero.
 
@@ -123,8 +142,14 @@ next indexing pass rebuilds from zero.
 ```
 cargo test --manifest-path src-tauri/Cargo.toml --lib diagnostics::
 cargo test --manifest-path src-tauri/Cargo.toml --test diagnostics_index
+cargo test --manifest-path src-tauri/Cargo.toml --test diagnostics_correlation
 ../../node_modules/.bin/playwright test tests/playwright/diagnostics-reporting.spec.ts
 ```
+
+`diagnostics_correlation` is the acceptance test for the whole system: a stream
+that never subscribes, explained from the visual id alone, with the cause named
+and the symptom ranked beneath it. If it regresses, the system has stopped being
+worth its weight.
 
 `diagnostics_index` starts the real sidecar. If the binary has not been staged,
 the three tests that need it **skip loudly** rather than passing quietly — a

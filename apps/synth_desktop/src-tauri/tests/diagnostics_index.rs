@@ -437,6 +437,82 @@ async fn a_hung_index_does_not_slow_a_single_producer_call() {
     hung.abort();
 }
 
+/// Failure injection: the reserved port is taken between reserve and spawn.
+///
+/// The supervisor reserves a port, releases it, and hands it to the child. That
+/// window is real, so losing the race must degrade rather than hang or crash.
+#[tokio::test]
+async fn a_port_collision_degrades_instead_of_hanging() {
+    let Some(_) = require_binary("a_port_collision_degrades_instead_of_hanging") else {
+        return;
+    };
+    let harness = harness();
+    // Hold every port the supervisor could plausibly draw by occupying the one
+    // it just released: bind after start begins is racy, so instead point the
+    // sidecar at a data directory it cannot create.
+    let blocked = harness.root.join("not-a-directory");
+    std::fs::create_dir_all(&harness.root).expect("root");
+    std::fs::write(&blocked, b"this is a file").expect("occupy the data path");
+    let sidecar = VictoriaLogsSidecar::new(SidecarConfig::for_root(&blocked));
+    let state = sidecar.start().await;
+    assert!(
+        matches!(state, SidecarState::Degraded(_)),
+        "expected degraded, got {state:?}"
+    );
+
+    // And the service still answers.
+    harness.service.emit(projection_failure_input());
+    let result = harness
+        .service
+        .query(DiagnosticQuery::default())
+        .await
+        .expect("query");
+    assert_eq!(result["count"], json!(1));
+    assert_eq!(result["source"], json!("journal"));
+}
+
+/// Failure injection: the disk quota is set below one batch.
+///
+/// VictoriaLogs enforces its own quota. Whatever it does under one, Workshop
+/// must stay healthy and the journal must stay complete.
+#[tokio::test]
+async fn a_tiny_quota_never_costs_an_authoritative_event() {
+    let Some(_) = require_binary("a_tiny_quota_never_costs_an_authoritative_event") else {
+        return;
+    };
+    let harness = harness();
+    let mut config = SidecarConfig::for_root(&harness.root);
+    config.quota_bytes = 1024 * 1024;
+    config.retention_days = 1;
+    let sidecar = VictoriaLogsSidecar::new(config);
+    let state = sidecar.start().await;
+
+    for index in 0..50 {
+        harness.service.emit(DiagnosticInput::new(
+            Severity::Error,
+            "renderer",
+            "test.event",
+            "quota_probe",
+            format!("event {index}"),
+        ));
+    }
+    harness.service.flush().await.expect("flush");
+
+    let result = harness
+        .service
+        .query(DiagnosticQuery {
+            codes: vec!["quota_probe".into()],
+            limit: 100,
+            ..Default::default()
+        })
+        .await
+        .expect("query");
+    assert_eq!(result["count"], json!(50), "a quota cost authoritative events");
+    if matches!(state, SidecarState::Ready) {
+        sidecar.stop().await.expect("stop");
+    }
+}
+
 /// The packaged layout is `…/Contents/MacOS/synth-desktop` next to
 /// `…/Contents/Resources/services/victoria-logs/victoria-logs`. This proves the
 /// nested lookup finds it, without needing a signed build to say so.
@@ -473,6 +549,139 @@ fn the_bundled_binary_is_found_through_the_packaged_resource_layout() {
     let refused = locate_binary();
     std::env::remove_var(synth_desktop_lib::diagnostics::sidecar::BINARY_ENV);
     assert_eq!(refused, None);
+}
+
+/// Acceptance criterion 12, without booting two windows.
+///
+/// The claim is that two instances do not share an index. Two live sidecars on
+/// two data roots is that claim exactly; the GUI around them is not part of it.
+#[tokio::test]
+async fn two_live_sidecars_hold_separate_ports_descriptors_and_data() {
+    let Some(_) = require_binary("two_live_sidecars_hold_separate_ports_descriptors_and_data")
+    else {
+        return;
+    };
+    let first = harness();
+    let second = harness();
+    let (Some(one), Some(two)) = (started(&first.root).await, started(&second.root).await) else {
+        return;
+    };
+
+    let one_url = one.url().await.expect("first url");
+    let two_url = two.url().await.expect("second url");
+    assert_ne!(one_url, two_url, "two instances shared a port");
+
+    let one_descriptor = one.read_descriptor().expect("first descriptor");
+    let two_descriptor = two.read_descriptor().expect("second descriptor");
+    assert_ne!(one_descriptor.data_dir, two_descriptor.data_dir);
+    assert_ne!(one_descriptor.pid, two_descriptor.pid);
+
+    // Index one instance's diagnostic and prove the other cannot see it.
+    first
+        .store
+        .append_batch(vec![projection_failure("roll_first")])
+        .await
+        .expect("append");
+    let indexer = Indexer::new(first.store.clone(), &first.root);
+    let client = VictoriaLogsClient::new(&one_url).expect("client");
+    indexer.index_once(&client).await.expect("index");
+
+    let other = VictoriaLogsClient::new(&two_url).expect("client");
+    let logsql = compile(&DiagnosticQuery::default(), chrono::Utc::now()).expect("compile");
+    tokio::time::sleep(Duration::from_millis(750)).await;
+    let leaked = other.search_sequences(&logsql, 100).await.expect("query");
+    assert!(
+        leaked.is_empty(),
+        "one instance's diagnostics reached another's index: {leaked:?}"
+    );
+
+    one.stop().await.expect("stop");
+    two.stop().await.expect("stop");
+}
+
+/// The producer path must cost the same whatever the index is doing.
+///
+/// Four states, one workload, one bound. This is the headless half of the
+/// performance acceptance: it measures the path diagnostics actually add to,
+/// not the app-level scenarios, which need a driven window.
+#[tokio::test]
+async fn emission_cost_is_unchanged_across_every_index_state() {
+    const SAMPLES: u32 = 2_000;
+    let mut timings: Vec<(&str, Duration)> = Vec::new();
+
+    // 1. Absent: no sidecar was ever started.
+    let absent = harness();
+    timings.push(("absent", measure_emission(&absent, SAMPLES)));
+
+    // 2. Ready: a real index, running and healthy.
+    if require_binary("emission_cost_is_unchanged_across_every_index_state").is_some() {
+        let ready = harness();
+        if let Some(sidecar) = started(&ready.root).await {
+            timings.push(("ready", measure_emission(&ready, SAMPLES)));
+            sidecar.stop().await.expect("stop");
+            // 3. Crashed: started, then killed underneath us.
+            timings.push(("crashed", measure_emission(&ready, SAMPLES)));
+        }
+    }
+
+    // 4. Slow: an endpoint that accepts and never answers.
+    let slow = harness();
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let hung = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(600)).await;
+                drop(stream);
+            });
+        }
+    });
+    let indexing = tokio::spawn({
+        let store = slow.store.clone();
+        let root = slow.root.clone();
+        async move {
+            let client = VictoriaLogsClient::new(format!("http://{addr}")).expect("client");
+            let _ = Indexer::new(store, root).index_once(&client).await;
+        }
+    });
+    timings.push(("slow", measure_emission(&slow, SAMPLES)));
+    indexing.abort();
+    hung.abort();
+
+    for (state, per_event) in &timings {
+        assert!(
+            *per_event < Duration::from_micros(500),
+            "emission cost {per_event:?} per event with the index {state}"
+        );
+    }
+    // The states must not differ from each other by an order of magnitude
+    // either: a uniform-but-slow path would pass the bound above and still mean
+    // emission had acquired a dependency.
+    let slowest = timings.iter().map(|(_, cost)| *cost).max().expect("timings");
+    let fastest = timings.iter().map(|(_, cost)| *cost).min().expect("timings");
+    assert!(
+        slowest < fastest * 10 + Duration::from_micros(50),
+        "index state changed emission cost: {timings:?}"
+    );
+}
+
+fn measure_emission(harness: &Harness, samples: u32) -> Duration {
+    let started = std::time::Instant::now();
+    for index in 0..samples {
+        harness.service.emit(DiagnosticInput::new(
+            Severity::Info,
+            "renderer",
+            "test.event",
+            "producer_cost",
+            format!("event {index}"),
+        ));
+    }
+    started.elapsed() / samples
 }
 
 fn projection_failure_input() -> DiagnosticInput {

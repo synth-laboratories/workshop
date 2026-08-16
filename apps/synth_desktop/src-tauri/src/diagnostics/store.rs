@@ -14,6 +14,7 @@ use anyhow::Result;
 use rusqlite::{types::Value as SqlValue, Connection};
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// A diagnostic plus the journal sequence that makes it addressable.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,6 +143,46 @@ impl DiagnosticStore {
                     |row| row.get(0),
                 )?;
                 Ok(head)
+            })
+            .await
+    }
+
+    /// Trim diagnostics beyond the retention window and the row ceiling.
+    ///
+    /// The index keeps 7 days; the journal keeps longer, because it is the
+    /// authority the index is rebuilt from. Only `diagnostic.event` rows are
+    /// ever considered — sessions, runs, approvals, visuals, and seals are
+    /// other kinds and must not be reachable from here at all.
+    ///
+    /// Trimming below the indexer's cursor is safe: the cursor only moves
+    /// forward, so a deleted row is one the index already holds or one that
+    /// aged out of the index's own window anyway.
+    pub async fn trim(&self, keep: Duration, max_rows: i64) -> Result<usize> {
+        let cutoff = (chrono::Utc::now()
+            - chrono::Duration::from_std(keep).unwrap_or_else(|_| chrono::Duration::days(30)))
+        .to_rfc3339();
+        self.db
+            .run(move |conn| {
+                let by_age = conn.execute(
+                    &format!(
+                        "DELETE FROM events WHERE kind = '{JOURNAL_KIND}' AND created_at < ?1"
+                    ),
+                    rusqlite::params![cutoff],
+                )?;
+                // A single burst can blow the row ceiling long before anything
+                // reaches the age cutoff, so bound by count as well.
+                let by_count = conn.execute(
+                    &format!(
+                        "DELETE FROM events WHERE kind = '{JOURNAL_KIND}' AND sequence <= (
+                             SELECT sequence FROM events
+                             WHERE kind = '{JOURNAL_KIND}'
+                             ORDER BY sequence DESC
+                             LIMIT 1 OFFSET ?1
+                         )"
+                    ),
+                    rusqlite::params![max_rows],
+                )?;
+                Ok(by_age + by_count)
             })
             .await
     }
@@ -511,6 +552,87 @@ mod tests {
             .unwrap();
         let codes: Vec<&str> = loaded.iter().map(|r| r.event.code.as_str()).collect();
         assert_eq!(codes, vec!["third_code", "first_code"]);
+    }
+
+    #[tokio::test]
+    async fn the_trim_drops_stale_diagnostics_and_nothing_else() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let journal = EventJournal::new(storage.database().clone());
+        let store = DiagnosticStore::new(storage.database().clone(), journal.clone());
+
+        // A domain event of another kind, from long before the cutoff. If the
+        // trim can reach this, it can reach a session, a run, or a seal.
+        journal
+            .append(EventAppend {
+                event_id: None,
+                session_id: None,
+                run_id: None,
+                source: crate::storage::EventSource::System,
+                kind: "runtime.ready".into(),
+                payload: json!({"ancient": true}),
+                remote_sequence: None,
+                command_id: None,
+                created_at: Some("2020-01-01T00:00:00+00:00".into()),
+            })
+            .await
+            .unwrap();
+
+        let mut stale = DiagnosticInput::new(
+            Severity::Error,
+            "renderer",
+            "test.event",
+            "stale_code",
+            "old",
+        );
+        stale.timestamp = Some("2020-01-01T00:00:00Z".into());
+        store
+            .append_batch(vec![
+                validate(stale).unwrap(),
+                sample("renderer", "fresh_code", Severity::Error),
+            ])
+            .await
+            .unwrap();
+
+        let removed = store
+            .trim(std::time::Duration::from_secs(86_400), 10_000)
+            .await
+            .unwrap();
+        assert_eq!(removed, 1);
+
+        let remaining = store.search(DiagnosticQuery {
+            since: std::time::Duration::from_secs(7 * 86_400),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].event.code, "fresh_code");
+
+        // The other kind survived.
+        let survivors = journal.events_after(0, 100).await.unwrap();
+        assert!(
+            survivors.iter().any(|event| event.kind == "runtime.ready"),
+            "the trim deleted an event kind it does not own"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_row_ceiling_bounds_a_burst_the_age_window_cannot() {
+        let dir = tempdir().unwrap();
+        let store = store(dir.path());
+        store
+            .append_batch(
+                (0..20)
+                    .map(|_| sample("renderer", "burst_code", Severity::Info))
+                    .collect(),
+            )
+            .await
+            .unwrap();
+        // Everything is recent, so only the ceiling can act.
+        let removed = store.trim(std::time::Duration::from_secs(86_400), 5).await.unwrap();
+        assert_eq!(removed, 15);
+        assert_eq!(store.summary().await.unwrap().0, 5);
     }
 
     #[test]

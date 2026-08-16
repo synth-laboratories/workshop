@@ -38,6 +38,19 @@ pub const INDEX_RETRY: Duration = Duration::from_secs(15);
 /// the main window becoming interactive.
 pub const LAZY_START_DELAY: Duration = Duration::from_secs(3);
 
+/// How long diagnostics stay in the authoritative journal.
+///
+/// Deliberately longer than the index's 7 days: the journal is what the index
+/// is rebuilt from, so it has to outlive it. The evidence that matters —
+/// traces, run records, seals — is stored elsewhere and is never touched here.
+pub const JOURNAL_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// Row ceiling, so a burst cannot outrun the age window.
+pub const JOURNAL_MAX_ROWS: i64 = 200_000;
+
+/// How often the trim runs. Retention is a floor, not a deadline.
+pub const TRIM_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
 #[derive(Default)]
 struct Stats {
     persisted: AtomicU64,
@@ -199,7 +212,18 @@ impl DiagnosticsService {
     }
 
     async fn run_index_loop(self: Arc<Self>) {
+        let mut last_trim = std::time::Instant::now();
         loop {
+            if last_trim.elapsed() >= TRIM_INTERVAL {
+                last_trim = std::time::Instant::now();
+                match self.store.trim(JOURNAL_RETENTION, JOURNAL_MAX_ROWS).await {
+                    Ok(0) => {}
+                    Ok(removed) => eprintln!("synth-desktop: trimmed {removed} stale diagnostics"),
+                    Err(error) => {
+                        eprintln!("synth-desktop: diagnostics trim failed: {error:#}")
+                    }
+                }
+            }
             let state = self.sidecar.state().await;
             let ready = match state {
                 SidecarState::Ready if !self.sidecar.exited().await => SidecarState::Ready,
@@ -255,6 +279,8 @@ impl DiagnosticsService {
             "instance": self.instance_id,
             "data_dir": self.root.display().to_string(),
             "retention_days": self.sidecar.config().retention_days,
+            "journal_retention_days": JOURNAL_RETENTION.as_secs() / 86_400,
+            "journal_max_rows": JOURNAL_MAX_ROWS,
             "quota_bytes": self.sidecar.config().quota_bytes,
             "index_bytes": self.sidecar.index_size_bytes(),
             "index_lag": self.indexer.lag().await,

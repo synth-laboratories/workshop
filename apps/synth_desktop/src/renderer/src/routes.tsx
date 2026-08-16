@@ -449,8 +449,11 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 									content: (
 										<DiagnosticsPanel
 											sessionId={activeChat.id}
+											visualId={openArtifact?.visualId ?? openArtifact?.id ?? null}
 											onOpenVisual={(id) => toggleArtifact(id)}
 											onOpenContainer={(id) => void toggleContainer(id)}
+											onOpenOptimizer={() => setView({ kind: "optimizers" })}
+											onOpenTrace={() => setView({ kind: "inventory" })}
 										/>
 									)
 								},

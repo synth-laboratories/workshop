@@ -144,3 +144,32 @@ export function reportDiagnosticError(
 	const message = report.message ?? (reason instanceof Error ? reason.message : String(reason));
 	reportDiagnostic({ ...report, severity: "error", message });
 }
+
+/**
+ * Install the sink the visuals package emits through.
+ *
+ * Visual bundles cannot import this module (they run in hosts that have no
+ * Workshop), so the host hands them a function instead. Called once at startup;
+ * absent it, visuals report nothing rather than throwing inside a chart.
+ */
+export function installVisualDiagnosticSink(): void {
+	const host = window as typeof window & {
+		__synthDiagnosticSink?: (report: Record<string, unknown>) => void;
+	};
+	host.__synthDiagnosticSink = (report) => {
+		reportDiagnostic({
+			severity: (report.severity as DiagnosticSeverity) ?? "error",
+			// The visuals package speaks for the surface it renders in.
+			component: "visual-host",
+			event: String(report.event ?? "visual.stream.event"),
+			code: String(report.code ?? "visual_render_failed"),
+			message: String(report.message ?? ""),
+			retryable: Boolean(report.retryable),
+			visualId: (report.visualId as string | null) ?? null,
+			rolloutId: (report.rolloutId as string | null) ?? null,
+			streamId: (report.streamId as string | null) ?? null,
+			traceId: (report.traceId as string | null) ?? null,
+			details: (report.details as Record<string, unknown> | undefined) ?? undefined,
+		});
+	};
+}

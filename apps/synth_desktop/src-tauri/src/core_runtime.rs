@@ -82,7 +82,7 @@ impl CoreRuntime {
             journal.clone(),
             visuals.clone(),
             events_tx.clone(),
-            optimizer_manager,
+            optimizer_manager.clone(),
         );
         let plugin_path = storage
             .content_root()
@@ -105,6 +105,8 @@ impl CoreRuntime {
             diagnostics_root,
         );
         optimizers.attach_diagnostics(diagnostics.clone());
+        visuals.attach_diagnostics(diagnostics.clone());
+        optimizer_manager.attach_diagnostics(diagnostics.clone());
         Self {
             storage,
             journal,

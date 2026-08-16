@@ -54,6 +54,14 @@ type DiagnosticEvent = {
 	details?: Record<string, unknown>;
 };
 
+type DiagnosticExplanation = {
+	cause: (DiagnosticEvent & { rank: number; correlation: Record<string, string> }) | null;
+	symptoms: Array<DiagnosticEvent & { rank: number }>;
+	remediation: string | null;
+	matched: number;
+	identities: Record<string, string[]>;
+};
+
 type DiagnosticResult = {
 	source: "victorialogs" | "journal";
 	count: number;
@@ -116,6 +124,8 @@ export function DiagnosticsPanel({
 	const [loading, setLoading] = useState(false);
 	const [failure, setFailure] = useState<string | null>(null);
 	const [bundlePath, setBundlePath] = useState<string | null>(null);
+	const [explanation, setExplanation] = useState<DiagnosticExplanation | null>(null);
+	const [explaining, setExplaining] = useState<string | null>(null);
 	const generation = useRef(0);
 
 	const query = useMemo(() => {
@@ -168,6 +178,32 @@ export function DiagnosticsPanel({
 			setFailure(reason instanceof Error ? reason.message : String(reason));
 		}
 	}, [query]);
+
+	/**
+	 * Explain is the operation the system exists for. The pane sends the same
+	 * identities the agent would, so a human and an agent get the same answer.
+	 */
+	const explain = useCallback(async (event: DiagnosticEvent) => {
+		const identities: Record<string, string> = {};
+		for (const field of ["visual_id", "rollout_id", "stream_id", "container_id", "optimizer_run_id", "trace_id", "session_id"] as const) {
+			const value = event[field];
+			if (value) identities[field] = value;
+		}
+		if (Object.keys(identities).length === 0) return;
+		setExplaining(event.event_id);
+		setExplanation(null);
+		try {
+			setExplanation(
+				await invokeCommand<DiagnosticExplanation>(COMMANDS.DIAGNOSTICS_EXPLAIN, {
+					request: { ...identities, since }
+				})
+			);
+		} catch (reason) {
+			setFailure(reason instanceof Error ? reason.message : String(reason));
+		} finally {
+			setExplaining(null);
+		}
+	}, [since]);
 
 	const clearIndex = useCallback(async () => {
 		try {
@@ -253,6 +289,14 @@ export function DiagnosticsPanel({
 						</div>
 						<p className="diagnostics-event-message">{event.message}</p>
 						<div className="diagnostics-links">
+							<button
+								type="button"
+								onClick={() => void explain(event)}
+								disabled={explaining === event.event_id}
+								data-testid="diagnostics-explain"
+							>
+								{explaining === event.event_id ? "…" : "explain"}
+							</button>
 							{event.visual_id && onOpenVisual ? (
 								<button type="button" onClick={() => onOpenVisual(event.visual_id!)}>visual</button>
 							) : null}
@@ -270,6 +314,27 @@ export function DiagnosticsPanel({
 					</li>
 				))}
 			</ol>
+
+			{explanation ? (
+				<section className="diagnostics-explanation" data-testid="diagnostics-explanation">
+					<header>
+						<span className="diagnostics-code">{explanation.cause?.code ?? "no cause"}</span>
+						<button type="button" onClick={() => setExplanation(null)} aria-label="Dismiss explanation">×</button>
+					</header>
+					{explanation.cause ? <p className="diagnostics-event-message">{explanation.cause.message}</p> : null}
+					{explanation.remediation ? <p className="diagnostics-remediation">{explanation.remediation}</p> : null}
+					{explanation.symptoms.length > 0 ? (
+						<ul className="diagnostics-symptoms">
+							{explanation.symptoms.slice(0, 6).map((symptom) => (
+								<li key={symptom.event_id}>
+									<span className="diagnostics-code">{symptom.code}</span>
+									<span className="diagnostics-component">{symptom.component}</span>
+								</li>
+							))}
+						</ul>
+					) : null}
+				</section>
+			) : null}
 
 			{result && result.count === 0 && !loading ? (
 				<p className="diagnostics-empty" data-testid="diagnostics-empty">No diagnostics in this window.</p>

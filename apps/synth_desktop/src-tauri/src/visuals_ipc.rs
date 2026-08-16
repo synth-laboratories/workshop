@@ -120,10 +120,39 @@ async fn route_request(
     let operation = redacted_operation(&request.path);
     let correlation = correlation_from_ipc_body(&request.body);
     let response = route_request_inner(request, core, app, token).await;
+    let elapsed = started.elapsed();
     if !response.status.is_success() {
-        record_ipc_failure(core, &operation, &response, correlation, started.elapsed());
+        record_ipc_failure(core, &operation, &response, correlation, elapsed);
+    } else if elapsed >= SLOW_CALL_THRESHOLD {
+        // Thresholded, never sampled: a sampled latency record answers no
+        // specific question, while "this call took 40 seconds" answers one.
+        record_slow_call(core, &operation, correlation, elapsed);
     }
     response
+}
+
+/// A successful call slower than this is worth one record.
+const SLOW_CALL_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn record_slow_call(
+    core: &CoreRuntime,
+    operation: &str,
+    correlation: crate::diagnostics::Correlation,
+    elapsed: std::time::Duration,
+) {
+    let mut input = crate::diagnostics::DiagnosticInput::new(
+        crate::diagnostics::Severity::Info,
+        "mcp",
+        "mcp.request.slow",
+        "mcp_request_slow",
+        format!("{operation} took {}ms", elapsed.as_millis()),
+    );
+    input.correlation = correlation;
+    input.details.insert("operation".into(), json!(operation));
+    input
+        .details
+        .insert("duration_ms".into(), json!(elapsed.as_millis() as u64));
+    core.diagnostics_service().emit(input);
 }
 
 /// Operation name for a diagnostic label: the route with its identities
@@ -554,6 +583,7 @@ async fn run_one_scripted_rollout(
     seed: i64,
     actions: &[String],
     requested_rollout_id: Option<String>,
+    diagnostics: &crate::container_stream::StreamDiagnostics,
 ) -> Result<ScriptedRollout> {
     let telemetry = authoritative_poll_telemetry();
     refuse_auto_transport(&telemetry)?;
@@ -583,7 +613,9 @@ async fn run_one_scripted_rollout(
     let prepared_stream = declared_stream_descriptor(&prepared)?
         .context("prepare omitted stream descriptor; refusing to guess /events")?;
     let poll_url = resolve_declared_url(base, &declared_poll_url(&prepared_stream)?)?;
-    wait_for_stream_subscribed(client, &poll_url, SUBSCRIBE_READY_TIMEOUT).await?;
+    let rollout_diagnostics = diagnostics.clone().with_rollout(&rollout_id);
+    wait_for_stream_subscribed(client, &poll_url, SUBSCRIBE_READY_TIMEOUT, &rollout_diagnostics)
+        .await?;
 
     let mut state = client
         .post(format!("{base}/rollouts"))
@@ -1250,8 +1282,31 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
                 .build()?;
-            let subscription =
-                wait_for_stream_subscribed(&client, &poll_url, SUBSCRIBE_READY_TIMEOUT).await?;
+            let stream_diagnostics = crate::container_stream::StreamDiagnostics::new(
+                Some(core.diagnostics_service().clone()),
+                crate::diagnostics::Correlation {
+                    container_id: Some(id.to_string()),
+                    rollout_id: Some(rollout_id.to_string()),
+                    visual_id: Some(visual_id.to_string()),
+                    visual_revision: Some(visual.current_revision),
+                    stream_id: stream
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .or_else(|| Some(rollout_id.to_string())),
+                    session_id: json_field(&body, "sessionRef", "session_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    ..Default::default()
+                },
+            );
+            let subscription = wait_for_stream_subscribed(
+                &client,
+                &poll_url,
+                SUBSCRIBE_READY_TIMEOUT,
+                &stream_diagnostics,
+            )
+            .await?;
             let mut start_body = json!({
                 "rollout_id": rollout_id, "seed": body.get("seed"), "task_instance_id": task_instance_id,
                 "policy_ref": policy_ref, "telemetry": telemetry, "slot": LIVE_EVAL_SLOT
@@ -1353,7 +1408,21 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     state,
                     events,
                     stream_id,
-                } = run_one_scripted_rollout(&client, &base, seed, &actions, None).await?;
+                } = run_one_scripted_rollout(
+                    &client,
+                    &base,
+                    seed,
+                    &actions,
+                    None,
+                    &crate::container_stream::StreamDiagnostics::new(
+                        Some(core.diagnostics_service().clone()),
+                        crate::diagnostics::Correlation {
+                            container_id: Some(id.to_string()),
+                            ..Default::default()
+                        },
+                    ),
+                )
+                .await?;
                 let spool = crate::storage::persist_live_envelopes(
                     core.content(),
                     stream_id.as_deref(),
@@ -2636,7 +2705,14 @@ mod tests {
         .await;
         let client = test_client();
         let outcome =
-            run_one_scripted_rollout(&client, &base, 1, &["do".into()], Some("r1".into()))
+            run_one_scripted_rollout(
+                &client,
+                &base,
+                1,
+                &["do".into()],
+                Some("r1".into()),
+                &crate::container_stream::StreamDiagnostics::none(),
+            )
                 .await
                 .unwrap();
         assert_eq!(outcome.rollout_id, "r1");
@@ -2682,7 +2758,14 @@ mod tests {
         })
         .await;
         let client = test_client();
-        let error = run_one_scripted_rollout(&client, &base, 7, &["do".into()], Some("r1".into()))
+        let error = run_one_scripted_rollout(
+            &client,
+            &base,
+            7,
+            &["do".into()],
+            Some("r1".into()),
+            &crate::container_stream::StreamDiagnostics::none(),
+        )
             .await
             .unwrap_err();
         assert!(error
@@ -2721,7 +2804,14 @@ mod tests {
         })
         .await;
         let client = test_client();
-        let err = run_one_scripted_rollout(&client, &base, 1, &["do".into()], Some("r1".into()))
+        let err = run_one_scripted_rollout(
+            &client,
+            &base,
+            1,
+            &["do".into()],
+            Some("r1".into()),
+            &crate::container_stream::StreamDiagnostics::none(),
+        )
             .await
             .unwrap_err();
         assert!(err.to_string().contains("stream.subscribed"));

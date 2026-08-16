@@ -112,7 +112,7 @@ fn tools() -> Value {
     json!({"tools":[
         {
             "name": "diagnostics_manage",
-            "description": "Query the local diagnostic record of this Workshop instance. Correlates renderer, Tauri, MCP, container, stream, visual, optimizer, and provider failures by shared identity. Operations: status, query, tail, explain, bundle. `explain` takes the identities you already hold (visual_id, session_id, rollout_id, stream_id, trace_id, …) and returns the upstream cause, its downstream symptoms, the evidence, and a remediation. Everything is local; no raw query language, SQL, or filesystem access is accepted.",
+            "description": "Query the local diagnostic record of this Workshop instance. Correlates renderer, Tauri, MCP, container, stream, visual, optimizer, and provider failures by shared identity. Operations: status, query, tail, explain, bundle. `explain` takes the identities you already hold (visual_id, session_id, rollout_id, stream_id, trace_id, …) and returns the upstream cause, its downstream symptoms, the evidence, and a remediation. Everything is local; no raw query language, SQL, or filesystem access is accepted. Load the use-synth-diagnostics skill.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
