@@ -557,6 +557,7 @@ export type VisualsBridge = {
 		base64: string;
 	}>;
 	render(visualId: string): Promise<VisualRecord>;
+	pollStream(request: { visualId: string; pollUrl: string; after: number; limit: number }): Promise<unknown>;
 	onEvent(listener: (event: AppEvent) => void): () => void;
 	onShow(listener: (event: AppEvent) => void): () => void;
 };

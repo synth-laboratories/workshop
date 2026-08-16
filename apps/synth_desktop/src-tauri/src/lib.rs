@@ -1254,6 +1254,64 @@ async fn visual_subscription_ready(
     Ok(contract::specta::OpaqueJson(stored))
 }
 
+#[derive(Clone, Debug, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+struct VisualStreamPollRequest {
+    visual_id: String,
+    poll_url: String,
+    after: u32,
+    limit: u16,
+}
+
+/// Fetch a visual's persisted, declaration-validated poll authority through
+/// the native process. WKWebView cannot reliably read loopback HTTP because
+/// its CORS/CSP boundary differs from the backend's; this command is narrowly
+/// scoped to exact URLs already stored on the named visual.
+#[tauri::command]
+#[specta::specta]
+async fn visual_stream_poll(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: VisualStreamPollRequest,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let visual = state
+        .visuals()
+        .get(request.visual_id)
+        .await
+        .map_err(AppError::from)?;
+    let declared = visual
+        .bindings
+        .get("slots")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|slots| {
+            slots.iter().any(|binding| {
+                binding.get("kind").and_then(serde_json::Value::as_str) == Some("live_sse")
+                    && binding.get("poll_url").and_then(serde_json::Value::as_str)
+                        == Some(request.poll_url.as_str())
+            })
+        });
+    if !declared {
+        return Err(AppError::from(anyhow::anyhow!(
+            "visual stream poll URL is not declared on this visual"
+        )));
+    }
+    let limit = request.limit.clamp(1, 500);
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(AppError::from)?
+        .get(&request.poll_url)
+        .query(&[("after", request.after.to_string()), ("limit", limit.to_string())])
+        .send()
+        .await
+        .map_err(AppError::from)?
+        .error_for_status()
+        .map_err(AppError::from)?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(AppError::from)?;
+    Ok(contract::specta::OpaqueJson(response))
+}
+
 async fn publish_visual_event(
     app: &tauri::AppHandle,
     core: &CoreRuntime,

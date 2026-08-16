@@ -128,6 +128,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::plugins_manage,
         crate::plugins_set_release_channel,
         crate::visual_subscription_ready,
+        crate::visual_stream_poll,
         crate::optimizers::manager::optimizer_sidecar_status,
         crate::optimizers::manager::optimizer_sidecar_install,
         crate::optimizers::manager::optimizer_sidecar_start,
@@ -342,7 +343,7 @@ mod tests {
         // here rather than pass quietly. Bump it only alongside a reviewed
         // `collect_commands!` change.
         assert_eq!(
-            exported, 189,
+            exported, 190,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

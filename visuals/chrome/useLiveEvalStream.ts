@@ -17,6 +17,7 @@ export function useLiveEvalStream(options: {
   pollUrl?: string;
   fixtureEvents?: LiveEvalEvent[];
   replayMs?: number;
+  poll?: (pollUrl: string, after: number, limit: number) => Promise<unknown>;
 }): { events: LiveEvalEvent[]; live: boolean; ready: boolean; recovering: boolean; recovered: number; error: string | null } {
   const { sseUrl, pollUrl, fixtureEvents, replayMs = 800 } = options;
   const [events, setEvents] = useState<LiveEvalEvent[]>([]);
@@ -27,6 +28,8 @@ export function useLiveEvalStream(options: {
   const [recovered, setRecovered] = useState(0);
   const idx = useRef(0);
   const ingest = useRef(emptyLiveIngest());
+  const poll = useRef(options.poll);
+  poll.current = options.poll;
 
   useEffect(() => {
     const fixtureReady = Boolean(!sseUrl && fixtureEvents?.length);
@@ -84,9 +87,13 @@ export function useLiveEvalStream(options: {
               const url = new URL(pollUrl, sseUrl);
               url.searchParams.set("after", String(after));
               url.searchParams.set("limit", "500");
-              const response = await fetch(url, { signal: abort.signal, headers: { Accept: "application/json" } });
-              if (!response.ok) throw new Error(`poll recovery HTTP ${response.status}`);
-              const body = await response.json() as {
+              const body = (poll.current
+                ? await poll.current(pollUrl, after, 500)
+                : await (async () => {
+                    const response = await fetch(url, { signal: abort.signal, headers: { Accept: "application/json" } });
+                    if (!response.ok) throw new Error(`poll recovery HTTP ${response.status}`);
+                    return response.json();
+                  })()) as {
                 events?: LiveEnvelope[];
                 page?: { events?: LiveEnvelope[] };
                 cursor?: { next?: number; high_water?: number; has_more?: boolean; closed?: boolean };

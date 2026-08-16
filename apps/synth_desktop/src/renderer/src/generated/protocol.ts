@@ -94,6 +94,13 @@ export const commands = {
 	pluginsManage: (operation: string, pluginId: string, version: string | null, sessionId: string | null) => typedError<unknown, AppError>(__TAURI_INVOKE("plugins_manage", { operation, pluginId, version, sessionId })),
 	pluginsSetReleaseChannel: (pluginId: string, channel: string) => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("plugins_set_release_channel", { pluginId, channel })),
 	visualSubscriptionReady: (request: VisualReadyRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_subscription_ready", { request })),
+	/**
+	 *  Fetch a visual's persisted, declaration-validated poll authority through
+	 *  the native process. WKWebView cannot reliably read loopback HTTP because
+	 *  its CORS/CSP boundary differs from the backend's; this command is narrowly
+	 *  scoped to exact URLs already stored on the named visual.
+	 */
+	visualStreamPoll: (request: VisualStreamPollRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_stream_poll", { request })),
 	optimizerSidecarStatus: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_status")),
 	optimizerSidecarInstall: (version: string | null) => typedError<OptimizerSidecarVersion, AppError>(__TAURI_INVOKE("optimizer_sidecar_install", { version })),
 	optimizerSidecarStart: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_start")),
@@ -2358,6 +2365,13 @@ export type VisualSealBundle = {
 };
 
 export type VisualStatus = "draft" | "live" | "saved" | "failed" | "archived";
+
+export type VisualStreamPollRequest = {
+	visualId: string,
+	pollUrl: string,
+	after: number,
+	limit: number,
+};
 
 export type VisualUpdateRequest = {
 	title: string | null,

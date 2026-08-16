@@ -56,6 +56,7 @@ export type ShellProps = {
   bindings?: VisualBinding[] | { slots?: VisualBinding[] };
   sseUrl?: string;
   visualMetadata?: VisualMetadata;
+  pollStream?: (pollUrl: string, after: number, limit: number) => Promise<unknown>;
 };
 
 const DEFAULT_CONFIG: ViewerConfig = {
@@ -219,13 +220,14 @@ export function Shell(props: ShellProps) {
     sseUrl: liveBindings.length <= 1 ? sseUrl : undefined,
     pollUrl: liveBindings.length <= 1 ? pollUrl : undefined,
     fixtureEvents,
-    replayMs: stream.replay_ms
+    replayMs: stream.replay_ms,
+    poll: props.pollStream
   });
   const multiplexed = useLiveEvalStreams(liveBindings.length > 1
     ? liveBindings.flatMap((binding) => binding.poll_url
       ? [{ sseUrl: binding.source, pollUrl: binding.poll_url }]
       : [])
-    : []);
+    : [], { poll: props.pollStream });
   const { events, live, error, ready, recovering, recovered } = liveBindings.length > 1 ? multiplexed : single;
   const config = { ...DEFAULT_CONFIG, ...props.visualMetadata?.visualConfig };
   const scopedEvents = useMemo(() => {

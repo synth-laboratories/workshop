@@ -528,6 +528,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				{...(optimizerPayload ?? {})}
 				data={optimizerPayload ?? resolvedProps.optimizer_run}
 				comparison={comparisonPayload ?? undefined}
+				pollStream={bridges.visuals ? (pollUrl: string, after: number, limit: number) =>
+					bridges.visuals!.pollStream({ visualId: artifact.id, pollUrl, after, limit }) : undefined}
 			/>
 		</div>
 	);

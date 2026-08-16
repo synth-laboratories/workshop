@@ -19,7 +19,10 @@ export type DeclaredLiveStream = {
  * makes completed evaluations reopenable without converting Trace V5 into a
  * different visual input schema.
  */
-export function useLiveEvalStreams(streams: DeclaredLiveStream[]): {
+export function useLiveEvalStreams(
+  streams: DeclaredLiveStream[],
+  options: { poll?: (pollUrl: string, after: number, limit: number) => Promise<unknown> } = {}
+): {
   events: LiveEvalEvent[];
   live: boolean;
   ready: boolean;
@@ -34,6 +37,8 @@ export function useLiveEvalStreams(streams: DeclaredLiveStream[]): {
   const [recovered, setRecovered] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const ingest = useRef(emptyLiveIngest());
+  const poll = useRef(options.poll);
+  poll.current = options.poll;
   const streamKey = streams.map((stream) => `${stream.sseUrl ?? ""}\n${stream.pollUrl}`).join("\n\n");
 
   useEffect(() => {
@@ -71,9 +76,13 @@ export function useLiveEvalStreams(streams: DeclaredLiveStream[]): {
         const url = new URL(stream.pollUrl, stream.sseUrl);
         url.searchParams.set("after", String(after));
         url.searchParams.set("limit", "500");
-        const response = await fetch(url, { signal: abort.signal, headers: { Accept: "application/json" } });
-        if (!response.ok) throw new Error(`poll recovery HTTP ${response.status} for ${stream.pollUrl}`);
-        const body = await response.json() as {
+        const body = (poll.current
+          ? await poll.current(stream.pollUrl, after, 500)
+          : await (async () => {
+              const response = await fetch(url, { signal: abort.signal, headers: { Accept: "application/json" } });
+              if (!response.ok) throw new Error(`poll recovery HTTP ${response.status} for ${stream.pollUrl}`);
+              return response.json();
+            })()) as {
           events?: LiveEnvelope[];
           page?: { events?: LiveEnvelope[] };
           cursor?: { next?: number; high_water?: number; has_more?: boolean; closed?: boolean };

@@ -642,6 +642,7 @@ window.synthWorkspaceScope ??= isTauri
 					sizeClass: sizeClass ?? null
 				}),
 			render: (visualId) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_RENDER, { visualId }),
+			pollStream: (request) => invokeCommand(COMMANDS.VISUAL_STREAM_POLL, { request }),
 			onEvent(listener) {
 				return listenRuntimeAppEvents((payload) => {
 					if (payload.kind.startsWith("visual.")) listener(payload);

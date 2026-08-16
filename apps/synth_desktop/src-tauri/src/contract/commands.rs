@@ -177,6 +177,7 @@ impl Commands {
     pub const PLUGINS_MANAGE: &'static str = "plugins_manage";
     pub const PLUGINS_SET_RELEASE_CHANNEL: &'static str = "plugins_set_release_channel";
     pub const VISUAL_SUBSCRIPTION_READY: &'static str = "visual_subscription_ready";
+    pub const VISUAL_STREAM_POLL: &'static str = "visual_stream_poll";
     pub const OPTIMIZER_SIDECAR_STATUS: &'static str = "optimizer_sidecar_status";
     pub const OPTIMIZER_SIDECAR_INSTALL: &'static str = "optimizer_sidecar_install";
     pub const OPTIMIZER_SIDECAR_START: &'static str = "optimizer_sidecar_start";
