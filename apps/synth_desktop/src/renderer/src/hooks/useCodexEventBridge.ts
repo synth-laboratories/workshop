@@ -1,4 +1,4 @@
-import { useEffect, type MutableRefObject } from "react";
+import { useEffect, useRef, type MutableRefObject } from "react";
 import type { Session } from "@synth/runtime-protocol";
 import {
 	codexResumeRequest,
@@ -53,25 +53,31 @@ export function useCodexEventBridge(args: {
 	onOauthReauthRequired?: () => void;
 	onCodexUsage?: (usage: CodexUsageSnapshot) => void;
 }): void {
-	const {
-		nativeCodex,
-		allocateNativeSequence,
-		sessionsRef,
-		manualCompactionPendingRef,
-		queuedCompactionRef,
-		staleRunFenceRef,
-		autoCompactTokenLimits,
-		localBaseUrl,
-		showToast,
-		onTurnActivity,
-		onRawEvent,
-		onOauthReauthRequired,
-		onCodexUsage
-	} = args;
+	const { nativeCodex } = args;
+	// The Tauri listener is installed asynchronously. Reinstalling it whenever an
+	// inline callback changes creates a real event-loss window after every event:
+	// dispatch -> React render -> unlisten -> async listen. Keep one transport
+	// subscription and let it read the current handlers/configuration instead.
+	const currentRef = useRef(args);
+	currentRef.current = args;
 
 	useEffect(() => {
 		if (!nativeCodex) return;
 		return nativeCodex.onEvent((event) => {
+			const {
+				allocateNativeSequence,
+				sessionsRef,
+				manualCompactionPendingRef,
+				queuedCompactionRef,
+				staleRunFenceRef,
+				autoCompactTokenLimits,
+				localBaseUrl,
+				showToast,
+				onTurnActivity,
+				onRawEvent,
+				onOauthReauthRequired,
+				onCodexUsage
+			} = currentRef.current;
 			onTurnActivity?.(event.sessionId);
 			onRawEvent?.(event);
 			const usage = codexUsageFromEvent(event);
@@ -121,19 +127,5 @@ export function useCodexEventBridge(args: {
 				title: updatedThreadName
 			});
 		});
-	}, [
-		allocateNativeSequence,
-		autoCompactTokenLimits,
-		localBaseUrl,
-		onTurnActivity,
-		onRawEvent,
-		manualCompactionPendingRef,
-		nativeCodex,
-		onOauthReauthRequired,
-		onCodexUsage,
-		queuedCompactionRef,
-		sessionsRef,
-		showToast,
-		staleRunFenceRef
-	]);
+	}, [nativeCodex]);
 }

@@ -1036,12 +1036,15 @@ test("native Codex deltas form one readable message with working and stop state"
 	await page.addInitScript(() => {
 		let listener: ((event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) | undefined;
 		let interrupts = 0;
+		let subscriptions = 0;
 		const testWindow = window as typeof window & {
 			__emitConversationCodex?: typeof listener;
 			__conversationInterrupts?: () => number;
+			__conversationSubscriptions?: () => number;
 			synthCodex?: unknown;
 		};
 		testWindow.__conversationInterrupts = () => interrupts;
+		testWindow.__conversationSubscriptions = () => subscriptions;
 		testWindow.synthCodex = {
 			defaultWorkspace: async () => "/workspaces/default",
 			list: async () => [{
@@ -1054,6 +1057,7 @@ test("native Codex deltas form one readable message with working and stop state"
 			interrupt: async () => { interrupts += 1; },
 			close: async () => undefined,
 			onEvent: (next: typeof listener) => {
+				subscriptions += 1;
 				listener = next;
 				testWindow.__emitConversationCodex = next;
 				return () => { listener = undefined; };
@@ -1062,6 +1066,9 @@ test("native Codex deltas form one readable message with working and stop state"
 	});
 	await installLagunaFixture(page, "ready");
 	await page.getByTestId("local-chat-stream-session").click();
+	const subscriptionCountAfterMount = await page.evaluate(() =>
+		(window as typeof window & { __conversationSubscriptions: () => number }).__conversationSubscriptions()
+	);
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitConversationCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitConversationCodex;
@@ -1130,6 +1137,10 @@ test("native Codex deltas form one readable message with working and stop state"
 	await expect(transcript).not.toContainText("remoteControl/status/changed");
 	await expect(transcript).not.toContainText("model-metadata");
 	await expect(transcript).not.toContainText("account/rateLimits/updated");
+	// Rendering each event must not tear down and asynchronously recreate the
+	// native listener. That race dropped burst completions in the desktop app
+	// even though CoreRuntime had durably journaled them.
+	expect(await page.evaluate(() => (window as typeof window & { __conversationSubscriptions: () => number }).__conversationSubscriptions())).toBe(subscriptionCountAfterMount);
 	await expect(thought).toBeVisible();
 	await expect(transcript).toContainText("Checking the relevant renderer state.");
 
