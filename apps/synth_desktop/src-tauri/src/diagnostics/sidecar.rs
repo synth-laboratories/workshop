@@ -99,6 +99,10 @@ pub struct SidecarConfig {
     pub root: PathBuf,
     pub retention_days: u32,
     pub quota_bytes: u64,
+    /// Deterministic listen port for development and failure-injection tests.
+    /// Production leaves this unset and asks the OS for an ephemeral port.
+    #[doc(hidden)]
+    pub listen_port: Option<u16>,
 }
 
 impl SidecarConfig {
@@ -107,6 +111,7 @@ impl SidecarConfig {
             root: root.into(),
             retention_days: DEFAULT_RETENTION_DAYS,
             quota_bytes: DEFAULT_QUOTA_BYTES,
+            listen_port: None,
         }
     }
 
@@ -191,13 +196,16 @@ impl VictoriaLogsSidecar {
         self.set_state(SidecarState::Starting, None).await;
         self.reap_stale_process().await;
 
-        let port = match reserve_port().await {
-            Ok(port) => port,
-            Err(error) => {
-                return self
-                    .set_state(SidecarState::Degraded(format!("no_port: {error}")), None)
-                    .await
-            }
+        let port = match self.config.listen_port {
+            Some(port) => port,
+            None => match reserve_port().await {
+                Ok(port) => port,
+                Err(error) => {
+                    return self
+                        .set_state(SidecarState::Degraded(format!("no_port: {error}")), None)
+                        .await
+                }
+            },
         };
         let url = format!("http://127.0.0.1:{port}");
         let child = match self.spawn_process(&binary, port).await {
@@ -228,6 +236,15 @@ impl VictoriaLogsSidecar {
             if client.healthy().await {
                 self.inner.lock().await.attempt = 0;
                 return self.set_state(SidecarState::Ready, pid).await;
+            }
+            if self.exited().await {
+                self.terminate().await;
+                return self
+                    .set_state(
+                        SidecarState::Degraded("process_exited_before_ready".into()),
+                        None,
+                    )
+                    .await;
             }
             tokio::time::sleep(READY_POLL).await;
         }

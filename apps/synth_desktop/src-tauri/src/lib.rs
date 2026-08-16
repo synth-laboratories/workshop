@@ -3500,7 +3500,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Synth Desktop")
         .run(|app, event| {
-            if let RunEvent::ExitRequested { .. } = event {
+            // macOS may advance from Command-Q to the terminal `Exit` event
+            // without giving every plugin observer an `ExitRequested` callback.
+            // Draining is idempotent, so cover both phases: a clean request
+            // stops services early, and `Exit` is the final ownership fence.
+            if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
                 if let Some(supervisor) = app.try_state::<Arc<services::ServiceSupervisor>>() {
                     let supervisor = (*supervisor).clone();
                     tauri::async_runtime::block_on(supervisor.drain_all());

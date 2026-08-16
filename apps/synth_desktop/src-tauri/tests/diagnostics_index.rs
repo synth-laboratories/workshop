@@ -447,17 +447,22 @@ async fn a_port_collision_degrades_instead_of_hanging() {
         return;
     };
     let harness = harness();
-    // Hold every port the supervisor could plausibly draw by occupying the one
-    // it just released: bind after start begins is racy, so instead point the
-    // sidecar at a data directory it cannot create.
-    let blocked = harness.root.join("not-a-directory");
-    std::fs::create_dir_all(&harness.root).expect("root");
-    std::fs::write(&blocked, b"this is a file").expect("occupy the data path");
-    let sidecar = VictoriaLogsSidecar::new(SidecarConfig::for_root(&blocked));
+    let collision = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("reserve collision port");
+    let port = collision.local_addr().expect("collision address").port();
+    let mut config = SidecarConfig::for_root(&harness.root);
+    config.listen_port = Some(port);
+    let sidecar = VictoriaLogsSidecar::new(config);
+    let started = std::time::Instant::now();
     let state = sidecar.start().await;
     assert!(
-        matches!(state, SidecarState::Degraded(_)),
-        "expected degraded, got {state:?}"
+        matches!(state, SidecarState::Degraded(ref reason) if reason == "process_exited_before_ready"),
+        "expected a bind collision to degrade, got {state:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "port collision waited for the full readiness timeout"
     );
 
     // And the service still answers.
@@ -471,10 +476,89 @@ async fn a_port_collision_degrades_instead_of_hanging() {
     assert_eq!(result["source"], json!("journal"));
 }
 
+/// VictoriaLogs must really enforce the configured retention, while the
+/// longer-lived journal remains authoritative.
+///
+/// The sidecar's minimum supported retention is one day and cleanup is
+/// partition-based. A deterministic acceptance test therefore sends a
+/// 36-hour-old journal row to a fresh one-day index and proves VictoriaLogs
+/// rejects it while SQLite retains it.
+#[tokio::test]
+async fn index_retention_rejects_expired_rows_without_touching_the_journal() {
+    let Some(_) =
+        require_binary("index_retention_rejects_expired_rows_without_touching_the_journal")
+    else {
+        return;
+    };
+    let harness = harness();
+    let mut old = DiagnosticInput::new(
+        Severity::Warn,
+        "diagnostics",
+        "diagnostics.retention.probe",
+        "retention_probe",
+        "retention probe",
+    );
+    old.timestamp = Some((chrono::Utc::now() - chrono::Duration::hours(36)).to_rfc3339());
+    let written = harness
+        .store
+        .append_batch(vec![validate(old).expect("valid old diagnostic")])
+        .await
+        .expect("append old diagnostic");
+    let sequence = written[0].sequence;
+    let query = DiagnosticQuery {
+        codes: vec!["retention_probe".into()],
+        since: Duration::from_secs(3 * 24 * 60 * 60),
+        ..Default::default()
+    };
+    let logsql = compile(&query, chrono::Utc::now()).expect("compile retention query");
+
+    let mut one_day = SidecarConfig::for_root(&harness.root);
+    one_day.retention_days = 1;
+    let sidecar = VictoriaLogsSidecar::new(one_day);
+    assert_eq!(sidecar.start().await, SidecarState::Ready);
+    let client =
+        VictoriaLogsClient::new(sidecar.url().await.expect("one-day url")).expect("client");
+    let progress = Indexer::new(harness.store.clone(), &harness.root)
+        .index_once(&client)
+        .await
+        .expect("ship expired row to one-day index");
+    assert_eq!(
+        progress.indexed, 1,
+        "journal row was not offered to VictoriaLogs"
+    );
+    let mut indexed = vec![sequence];
+    for _ in 0..40 {
+        indexed = client
+            .search_sequences(&logsql, 10)
+            .await
+            .expect("query after retention rejection");
+        if indexed.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(
+        indexed.is_empty(),
+        "VictoriaLogs retained a row outside the one-day policy: {indexed:?}"
+    );
+    assert_eq!(
+        harness
+            .store
+            .load_by_sequences(vec![sequence])
+            .await
+            .expect("load journal row")
+            .len(),
+        1,
+        "index retention deleted the authoritative journal row"
+    );
+    sidecar.stop().await.expect("stop one-day sidecar");
+}
+
 /// Failure injection: the disk quota is set below one batch.
 ///
-/// VictoriaLogs enforces its own quota. Whatever it does under one, Workshop
-/// must stay healthy and the journal must stay complete.
+/// VictoriaLogs enforces its own quota asynchronously. This test proves that
+/// Workshop can offer a batch to a real index configured below that batch and
+/// the authoritative journal remains complete regardless of index eviction.
 #[tokio::test]
 async fn a_tiny_quota_never_costs_an_authoritative_event() {
     let Some(_) = require_binary("a_tiny_quota_never_costs_an_authoritative_event") else {
@@ -482,10 +566,10 @@ async fn a_tiny_quota_never_costs_an_authoritative_event() {
     };
     let harness = harness();
     let mut config = SidecarConfig::for_root(&harness.root);
-    config.quota_bytes = 1024 * 1024;
+    config.quota_bytes = 1;
     config.retention_days = 1;
     let sidecar = VictoriaLogsSidecar::new(config);
-    let state = sidecar.start().await;
+    assert_eq!(sidecar.start().await, SidecarState::Ready);
 
     for index in 0..50 {
         harness.service.emit(DiagnosticInput::new(
@@ -498,6 +582,14 @@ async fn a_tiny_quota_never_costs_an_authoritative_event() {
     }
     harness.service.flush().await.expect("flush");
 
+    let client = VictoriaLogsClient::new(sidecar.url().await.expect("tiny-quota url"))
+        .expect("tiny-quota client");
+    let progress = Indexer::new(harness.store.clone(), &harness.root)
+        .index_once(&client)
+        .await
+        .expect("offer batch to tiny-quota index");
+    assert_eq!(progress.indexed, 50, "batch never reached the constrained index");
+
     let result = harness
         .service
         .query(DiagnosticQuery {
@@ -508,9 +600,7 @@ async fn a_tiny_quota_never_costs_an_authoritative_event() {
         .await
         .expect("query");
     assert_eq!(result["count"], json!(50), "a quota cost authoritative events");
-    if matches!(state, SidecarState::Ready) {
-        sidecar.stop().await.expect("stop");
-    }
+    sidecar.stop().await.expect("stop");
 }
 
 /// The packaged layout is `…/Contents/MacOS/synth-desktop` next to
