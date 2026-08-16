@@ -102,7 +102,10 @@ test("hosted SFT uses only the public synth-optimizers control plane", () => {
 	assert.match(service, /SftOptimizerClient::from_env\(\)\?\s*\.cancel\(&id\)/s);
 	assert.match(service, /binding\.kind == "synth_optimizers_sft"[\s\S]*"optimizer\.sft\.live\.v1"/);
 	assert.match(commands, /"sft\.hosted\.fixture\.v1"[\s\S]*SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN/);
-	assert.match(commands, /request\.recipe_id == "sft\.hosted\.fixture\.v1"[\s\S]*start_recipe\(request\)[\s\S]*return Ok\(run\)/);
+	assert.match(
+		commands,
+		/matches!\([\s\S]*request\.recipe_id\.as_str\(\)[\s\S]*"sft\.hosted\.fixture\.v1"[\s\S]*start_recipe\(request\)[\s\S]*return Ok\(run\)/,
+	);
 });
 
 test("v0.2 grouped activity keeps visual and container MCP calls out of used-tools summaries", () => {
