@@ -567,7 +567,7 @@ function activityKind(eventKind: string): LocalActivityLine["kind"] {
 	return "working";
 }
 
-type SafeToolActivity = Pick<LocalActivityLine, "label" | "detail" | "path" | "kind" | "toolStatus" | "visualStage" | "artifactId" | "containerId"> & { key: string };
+type SafeToolActivity = Pick<LocalActivityLine, "label" | "detail" | "path" | "kind" | "toolStatus" | "durationMs" | "visualStage" | "artifactId" | "containerId"> & { key: string };
 
 const VISUAL_MUTATION_TOOLS = new Set([
 	"visual_manage",
@@ -599,10 +599,11 @@ function redactCommand(command: string): string {
 		.slice(0, 800);
 }
 
-function safeToolStatus(item: Record<string, unknown>): LocalActivityLine["toolStatus"] {
+function safeToolStatus(item: Record<string, unknown>, eventKind = ""): LocalActivityLine["toolStatus"] {
 	const status = (stringField(item, "status") ?? "").toLowerCase();
-	if (/failed|error|cancelled|rejected/.test(status)) return "failed";
-	if (/completed|success|done/.test(status)) return "completed";
+	const lifecycle = `${status} ${eventKind}`.toLowerCase();
+	if (/failed|error|cancelled|rejected/.test(lifecycle)) return "failed";
+	if (/completed|success|done/.test(lifecycle)) return "completed";
 	return "running";
 }
 
@@ -708,7 +709,8 @@ function mcpToolActivity(
 	args: Record<string, unknown>,
 	id: string,
 	itemType: string,
-	tool: string
+	tool: string,
+	eventKind: string
 ): SafeToolActivity | undefined {
 	if (!["mcptoolcall", "dynamictoolcall", "toolcall"].includes(itemType)) return undefined;
 	const server = (stringField(item, "server", "pluginId", "plugin_id") ?? "").toLowerCase();
@@ -746,8 +748,8 @@ function mcpToolActivity(
 		"status",
 		"limit"
 	];
-	const duration = typeof item.durationMs === "number" && Number.isFinite(item.durationMs)
-		? `${Math.max(0, Math.round(item.durationMs))}ms`
+	const durationMs = typeof item.durationMs === "number" && Number.isFinite(item.durationMs)
+		? Math.max(0, item.durationMs)
 		: undefined;
 	const nestedArgs = objectValue(args.arguments) ?? {};
 	const argsLabel = [compactToolArgs(args, fields), compactToolArgs(nestedArgs, fields)]
@@ -758,7 +760,7 @@ function mcpToolActivity(
 	const visualOperation = server === "synth_visuals"
 		? (tool === "visual_manage" ? stringField(args, "operation") : tool.replace(/^visual_/, ""))
 		: undefined;
-	const toolStatus = safeToolStatus(item);
+	const toolStatus = safeToolStatus(item, eventKind);
 	const failure = toolStatus === "failed" ? safeToolFailure(item) : undefined;
 	const visualStage: LocalActivityLine["visualStage"] = toolStatus === "failed" && visualOperation
 		? "failed"
@@ -781,11 +783,12 @@ function mcpToolActivity(
 	return {
 		key: `mcp:${id}`,
 		label: lifecycleLabel ?? ([server, tool].filter(Boolean).join(".") || "Tool call"),
-		detail: [argsLabel, duration, failure].filter(Boolean).join(" · ") || undefined,
+		detail: [argsLabel, failure].filter(Boolean).join(" · ") || undefined,
 		kind: visualStage ? "visual_lifecycle" : artifactId ? "visual" : "working",
 		artifactId,
 		containerId,
 		toolStatus,
+		durationMs,
 		visualStage
 	};
 }
@@ -798,35 +801,42 @@ function safeToolActivity(event: RuntimeEvent): SafeToolActivity | undefined {
 	const tool = (stringField(item, "tool", "name", "toolName", "tool_name") ?? "").toLowerCase();
 	const args = nestedObject(item, "arguments", "args", "input") ?? nestedObject(payload, "arguments", "args", "input") ?? {};
 	const id = stringField(item, "id", "callId", "call_id") ?? `${event.eventKind}-${event.sequence}`;
+	const toolStatus = safeToolStatus(item, event.eventKind);
+	const durationMs = typeof item.durationMs === "number" && Number.isFinite(item.durationMs)
+		? Math.max(0, item.durationMs)
+		: typeof payload.durationMs === "number" && Number.isFinite(payload.durationMs)
+			? Math.max(0, payload.durationMs)
+			: undefined;
+	const lifecycle = { toolStatus, durationMs };
 
 	if (event.eventKind === "command.execution" || itemType === "commandexecution") {
 		const raw = stringField(item, "command", "cmd") ?? stringField(payload, "command", "cmd");
 		if (!raw) return undefined;
-		return { key: `command:${id}`, label: "Run Shell Command", detail: redactCommand(raw), kind: "command" };
+		return { key: `command:${id}`, label: "Run Shell Command", detail: redactCommand(raw), kind: "command", ...lifecycle };
 	}
 
 	if (event.eventKind === "file.change" || itemType === "filechange") {
 		const path = stringField(item, "path", "filePath", "file_path") ?? stringField(payload, "path", "filePath", "file_path");
-		return path ? { key: `write:${id}:${path}`, label: "Wrote", path, kind: "file_write" } : undefined;
+		return path ? { key: `write:${id}:${path}`, label: "Wrote", path, kind: "file_write", ...lifecycle } : undefined;
 	}
 
 	const path = stringField(args, "path", "file", "filePath", "file_path")
 		?? stringField(item, "path", "file", "filePath", "file_path");
 	if (["read", "read_file", "readfile", "read_text_file", "filesystem.read_text_file"].includes(tool)) {
-		return path ? { key: `read:${id}:${path}`, label: "Read", path, kind: "file_read" } : undefined;
+		return path ? { key: `read:${id}:${path}`, label: "Read", path, kind: "file_read", ...lifecycle } : undefined;
 	}
 	if (["search", "search_files", "grep", "find", "find_files", "list_directory", "list_files"].includes(tool)) {
 		const query = stringField(args, "query", "pattern", "glob");
-		return { key: `search:${id}`, label: tool.startsWith("list") ? "Listed files" : "Searched files", detail: query?.slice(0, 300), kind: "search" };
+		return { key: `search:${id}`, label: tool.startsWith("list") ? "Listed files" : "Searched files", detail: query?.slice(0, 300), kind: "search", ...lifecycle };
 	}
 	if (["web_search", "websearch", "search_web"].includes(tool) || itemType === "websearch") {
 		const query = stringField(args, "query") ?? stringField(item, "query");
-		return { key: `search:${id}`, label: "Searched the web", detail: query?.slice(0, 300), kind: "search" };
+		return { key: `search:${id}`, label: "Searched the web", detail: query?.slice(0, 300), kind: "search", ...lifecycle };
 	}
 	if (["view_image", "viewimage"].includes(tool)) {
-		return { key: `view:${id}`, label: "Viewed image", path, kind: "working" };
+		return { key: `view:${id}`, label: "Viewed image", path, kind: "working", ...lifecycle };
 	}
-	return mcpToolActivity(item, args, id, itemType, tool);
+	return mcpToolActivity(item, args, id, itemType, tool, event.eventKind);
 }
 
 function compactDuration(start: string | undefined, end: string): string {
@@ -1423,6 +1433,7 @@ export function eventsToLocalActivity(
 				existing.kind = safeTool.kind;
 				existing.visualStage = safeTool.visualStage;
 				existing.toolStatus = safeTool.toolStatus;
+				existing.durationMs = safeTool.durationMs;
 				existing.artifactId = safeTool.artifactId;
 				existing.containerId = safeTool.containerId;
 			} else {
@@ -1442,7 +1453,8 @@ export function eventsToLocalActivity(
 					visualStage: safeTool.visualStage,
 					artifactId: safeTool.artifactId,
 					containerId: safeTool.containerId,
-					toolStatus: safeTool.toolStatus
+					toolStatus: safeTool.toolStatus,
+					durationMs: safeTool.durationMs
 				};
 				shownToolLines.set(safeTool.key, line);
 				(byMessage[current] ??= []).push(line);

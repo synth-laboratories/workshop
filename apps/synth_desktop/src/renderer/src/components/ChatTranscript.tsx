@@ -39,6 +39,15 @@ type Props = {
 	onLoadOlder?: () => void;
 };
 
+function formatToolDuration(durationMs: number | undefined, status: LocalActivityLine["toolStatus"]): string | null {
+	if (status === "running" || durationMs == null || durationMs <= 15_000) return null;
+	const totalSeconds = Math.round(durationMs / 1_000);
+	if (totalSeconds < 60) return `${totalSeconds}s`;
+	const minutes = Math.floor(totalSeconds / 60);
+	const seconds = totalSeconds % 60;
+	return `${minutes}m${seconds ? ` ${seconds}s` : ""}`;
+}
+
 export type TranscriptHistoryState = {
 	state: "idle" | "loading" | "loaded" | "error";
 	hasMore: boolean;
@@ -148,6 +157,10 @@ function ActivityLine({
 	const runningIndicator = line.toolStatus === "running"
 		? <span className="tool-running-indicator" role="img" aria-label="Tool call running" />
 		: null;
+	const durationLabel = formatToolDuration(line.durationMs, line.toolStatus);
+	const duration = durationLabel
+		? <span className="tool-duration" aria-label={`Tool call took ${durationLabel}`}>{durationLabel}</span>
+		: null;
 	if (line.kind === "approval" && line.approvalId) {
 		const approvalId = line.approvalId ?? line.id;
 		return (
@@ -177,6 +190,7 @@ function ActivityLine({
 						{shortenPath(line.path)}
 					</code>
 				</span>
+				{duration}
 			</div>
 		);
 	}
@@ -264,6 +278,7 @@ function ActivityLine({
 					<span className="tool-activity-label">{line.label}</span>
 					{line.detail ? <code title={line.detail}>{line.detail}</code> : null}
 				</span>
+				{duration}
 			</div>
 		);
 	}
@@ -277,6 +292,7 @@ function ActivityLine({
 					<span className="tool-activity-label">{line.label}</span>
 					{line.detail ? <span className="tool-activity-detail">{line.detail}</span> : null}
 				</span>
+				{duration}
 			</div>
 		);
 	}
@@ -291,6 +307,7 @@ function ActivityLine({
 					{line.detail ? <span className="tool-activity-detail">{line.detail}</span> : null}
 					<span className={`tool-status tool-status-${line.toolStatus}`}>{line.toolStatus === "running" ? "Running" : line.toolStatus === "completed" ? "Completed" : "Failed"}</span>
 				</span>
+				{duration}
 				{onToggleVisual ? (
 					<button
 						type="button"

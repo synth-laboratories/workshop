@@ -952,6 +952,13 @@ a,
 	.plugin-row-spinner { animation: none; }
 }
 
+.tool-duration {
+	flex: 0 0 auto;
+	color: var(--color-text-faint);
+	font-size:var(--font-size-xs);
+	font-variant-numeric: tabular-nums;
+}
+
 .empty-hint {
 	padding: 6px 10px;
 	font-size: 12px;

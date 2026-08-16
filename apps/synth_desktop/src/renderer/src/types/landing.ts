@@ -124,6 +124,8 @@ export type LocalActivityLine = {
 	path?: string;
 	/** Sanitized lifecycle status for an allowlisted tool call. */
 	toolStatus?: "running" | "completed" | "failed";
+	/** Provider-reported wall duration for a finished tool call. */
+	durationMs?: number;
 	/** User-facing visual authoring milestone; never a raw tool operation. */
 	visualStage?: "draft" | "review" | "ready" | "failed";
 	/** Transcript placement relative to the assistant response owning this activity. */

@@ -152,6 +152,25 @@ test("provider duration wins over a synthesized terminal timestamp", () => {
 	assert.doesNotMatch(summary.label, /19m/);
 });
 
+test("completed tool lifecycle preserves provider duration and terminal status", () => {
+	const activity = eventsToLocalActivity([
+		event({
+			sequence: 1,
+			eventKind: "item/started",
+			payload: { item: { type: "commandExecution", id: "cmd-slow", command: "npm test" } }
+		}),
+		event({
+			sequence: 2,
+			eventKind: "item/completed",
+			payload: { item: { type: "commandExecution", id: "cmd-slow", command: "npm test", durationMs: 16_400 } }
+		})
+	], []);
+	const commands = Object.values(activity).flat().filter((line) => line.kind === "command");
+	assert.equal(commands.length, 1);
+	assert.equal(commands[0].toolStatus, "completed");
+	assert.equal(commands[0].durationMs, 16_400);
+});
+
 test("visual tool operations project as lifecycle milestones", () => {
 	const activity = eventsToLocalActivity([
 		event({

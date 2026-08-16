@@ -48,6 +48,14 @@ test("running tool calls show a compact progress icon before their tool icon", (
 	assert.match(css, /prefers-reduced-motion: reduce[\s\S]*\.tool-running-indicator/);
 });
 
+test("finished tool calls show duration only after fifteen seconds", () => {
+	const transcript = read("components/ChatTranscript.tsx");
+	const projection = read("runtime/sessionView.ts");
+	assert.match(transcript, /durationMs == null \|\| durationMs <= 15_000/);
+	assert.match(transcript, /className="tool-duration"/);
+	assert.match(projection, /durationMs: safeTool\.durationMs/);
+});
+
 test("paid-compute approval is a cap-scoped modal, not a transcript card", () => {
 	const transcript = read("components/ChatTranscript.tsx");
 	assert.match(transcript, /data-testid="paid-compute-approval-modal"/);
