@@ -9,27 +9,17 @@ import {
 	updateQueuedPrompt
 } from "../preferences";
 
+/**
+ * One user-facing sentence for a composer failure.
+ *
+ * Every path goes through {@link normalizeSteerFailure}, so an internal session
+ * UUID, a transport body, or a bare object can never be interpolated into the
+ * composer — the structured original stays in `detail` for diagnostics.
+ */
 export function composerErrorMessage(reason: unknown): string {
-	if (reason instanceof Error && reason.message.trim()) return reason.message;
-	if (reason && typeof reason === "object") {
-		const value = reason as { code?: unknown; message?: unknown; error?: unknown };
-		const nested = value.error && typeof value.error === "object"
-			? value.error as { code?: unknown; message?: unknown }
-			: null;
-		const message = typeof value.message === "string" && value.message.trim()
-			? value.message.trim()
-			: typeof nested?.message === "string" && nested.message.trim()
-				? nested.message.trim()
-				: null;
-		const code = typeof value.code === "string" && value.code.trim()
-			? value.code.trim()
-			: typeof nested?.code === "string" && nested.code.trim()
-				? nested.code.trim()
-				: null;
-		if (message) return code ? `${message} (${code})` : message;
-	}
-	return "The active turn rejected steering. The prompt remains queued.";
+	return normalizeSteerFailure(reason).message;
 }
+import { normalizeSteerFailure, STEER_UNSUPPORTED } from "../runtime/steering";
 import { nextQueuedPrompt } from "../runtime/promptQueue";
 import type { ApprovalPolicy, SandboxMode } from "../runtime/nativeCodex";
 import type { ModelKnobTransportValue } from "../runtime/modelCapabilities";
@@ -165,18 +155,14 @@ export function ComposerDock({
 					}
 				},
 				onRemove: (id) => setPreferences(removeQueuedPrompt(id)),
+				// Rejections propagate: the composer's steering state machine owns
+				// the failure, so a prompt is retired only once the backend has
+				// acknowledged the steer it was promoted into.
 				onPromote: async (id, text) => {
-					if (!activeSessionId || !nativeCodex?.steerTurn) {
-						setSteerError("Steer is not supported by the current runtime. Keep the prompt queued or wait for the turn to finish.");
-						return;
-					}
-					try {
-						await nativeCodex.steerTurn(activeSessionId, text);
-						setPreferences(removeQueuedPrompt(id));
-						setSteerError(null);
-					} catch (reason) {
-						setSteerError(composerErrorMessage(reason));
-					}
+					if (!activeSessionId || !nativeCodex?.steerTurn) throw STEER_UNSUPPORTED;
+					setSteerError(null);
+					await nativeCodex.steerTurn(activeSessionId, text);
+					setPreferences(removeQueuedPrompt(id));
 				},
 				afterStop: queueAfterStop,
 				onKeep: () => setQueueAfterStop(false),
@@ -199,14 +185,16 @@ export function ComposerDock({
 					: null,
 				onSteer: async (text) => {
 					if (!activeSessionId || !nativeCodex?.steerTurn) {
-						setSteerError("Steer is not supported by the current runtime. Queue the prompt or wait for the turn to finish.");
+						setSteerError(STEER_UNSUPPORTED.message);
 						return;
 					}
 					try {
 						await nativeCodex.steerTurn(activeSessionId, text);
 						setSteerError(null);
 					} catch (reason) {
-						setSteerError(composerErrorMessage(reason));
+						const failure = normalizeSteerFailure(reason);
+						console.error("[steer] direct steer rejected", failure.code, failure.detail);
+						setSteerError(failure.message);
 					}
 				},
 				onStop: onStopActiveTurn

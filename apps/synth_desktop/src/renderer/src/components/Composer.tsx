@@ -21,6 +21,17 @@ import type { Skill } from "../runtime/skills";
 import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
 import { bridges } from "../runtime/desktopBridge";
+import {
+	armedPromptId,
+	IDLE_STEER_STATE,
+	normalizeSteerFailure,
+	promotingPromptId,
+	reduceSteer,
+	steerFailure,
+	type SteerEffect,
+	type SteerEvent,
+	type SteerState
+} from "../runtime/steering";
 
 /** Permission chip + menus — injectable like InferenceTransport. */
 export type ComposerPermissions = {
@@ -116,8 +127,6 @@ const SANDBOX_OPTIONS: Array<{ id: SandboxMode; label: string; description: stri
 	{ id: "workspace-write", label: "Workspace access", description: "Read and write inside the workspace." },
 	{ id: "danger-full-access", label: "Full system access", description: "Allow unrestricted filesystem and network access." }
 ];
-const QUEUED_STEER_CONFIRMATION_MS = 2_500;
-
 const APPROVAL_CHIP_LABEL: Record<ApprovalPolicy, string> = { untrusted: "Ask", "on-request": "Risky", never: "Auto" };
 const SANDBOX_CHIP_LABEL: Record<SandboxMode, string> = { "read-only": "Read", "workspace-write": "Workspace", "danger-full-access": "Full" };
 
@@ -718,10 +727,13 @@ export function Composer({
 	const [skillChip, setSkillChip] = useState<Skill | null>(null);
 	const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
 	const [modelMenuOpen, setModelMenuOpen] = useState(false);
-	const [armedQueuedPromptId, setArmedQueuedPromptId] = useState<string | null>(null);
-	const [promotingQueuedPromptId, setPromotingQueuedPromptId] = useState<string | null>(null);
-	const queuedEnterRef = useRef<{ id: string; text: string; at: number } | null>(null);
-	const queuedEnterTimerRef = useRef<number | null>(null);
+	// Steering lives in the turn controller, not on the queued-prompt row, so a
+	// second Return works from wherever the keyboard is. The ref mirrors the
+	// state because a keydown handler must read it before React commits.
+	const [steer, setSteer] = useState<SteerState>(IDLE_STEER_STATE);
+	const steerRef = useRef<SteerState>(IDLE_STEER_STATE);
+	const armedQueuedPromptId = armedPromptId(steer);
+	const promotingQueuedPromptId = promotingPromptId(steer);
 	const [workspaceMenuSignal, setWorkspaceMenuSignal] = useState(0);
 	const dockRef = useRef<HTMLDivElement>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1092,49 +1104,89 @@ export function Composer({
 		return true;
 	};
 
-	const promoteQueuedPrompt = (id: string, text: string) => {
-		queuedEnterRef.current = null;
-		if (queuedEnterTimerRef.current !== null) window.clearTimeout(queuedEnterTimerRef.current);
-		setArmedQueuedPromptId(null);
-		setPromotingQueuedPromptId(id);
-		void Promise.resolve(onPromoteQueuedPrompt?.(id, text.trim()))
-			.finally(() => setPromotingQueuedPromptId(null));
+	const dispatchSteer = (event: SteerEvent): SteerEffect => {
+		const { state: next, effect } = reduceSteer(steerRef.current, event);
+		steerRef.current = next;
+		setSteer(next);
+		return effect;
+	};
+
+	/**
+	 * Deliver one promotion. The prompt leaves **Next turns** only when the
+	 * backend acknowledges it, and a rejection is normalized before it can be
+	 * rendered — a raw runtime object never reaches the composer.
+	 */
+	const runSteerEffect = (effect: SteerEffect): boolean => {
+		if (!effect) return false;
+		// The queue row is editable, so promote whatever it now says.
+		const queued = queuedPrompts.find((item) => item.id === effect.promptId);
+		const text = (queued?.text ?? effect.text).trim();
+		if (!text) {
+			dispatchSteer({ type: "disarm" });
+			return false;
+		}
+		void Promise.resolve(onPromoteQueuedPrompt?.(effect.promptId, text))
+			.then(() => dispatchSteer({ type: "acknowledged", promptId: effect.promptId }))
+			.catch((reason) => {
+				const failure = normalizeSteerFailure(reason);
+				// The structured original stays out of the DOM and in the log.
+				console.error("[steer] promotion rejected", failure.code, failure.detail);
+				dispatchSteer({ type: "rejected", promptId: effect.promptId, failure });
+			});
+		return true;
 	};
 
 	const armQueuedPrompt = (id: string, text: string) => {
-		const now = Date.now();
-		queuedEnterRef.current = { id, text, at: now };
-		setArmedQueuedPromptId(id);
-		if (queuedEnterTimerRef.current !== null) window.clearTimeout(queuedEnterTimerRef.current);
-		queuedEnterTimerRef.current = window.setTimeout(() => {
-			if (queuedEnterRef.current?.id === id) queuedEnterRef.current = null;
-			setArmedQueuedPromptId((current) => current === id ? null : current);
-		}, QUEUED_STEER_CONFIRMATION_MS);
+		dispatchSteer({ type: "queued", promptId: id, text, at: Date.now() });
 	};
 
 	const handleQueuedPromptEnter = (id: string, text: string) => {
-		if (!agentWorking || !steerSupported || promotingQueuedPromptId || !text.trim()) return;
-		const prior = queuedEnterRef.current;
-		if (prior?.id === id && Date.now() - prior.at <= QUEUED_STEER_CONFIRMATION_MS) {
-			promoteQueuedPrompt(id, text);
+		if (!agentWorking || !steerSupported || !text.trim()) return;
+		if (armedPromptId(steerRef.current) === id) {
+			runSteerEffect(dispatchSteer({ type: "return", composerText: "", at: Date.now() }));
 			return;
 		}
 		armQueuedPrompt(id, text);
 	};
 
-	const promoteComposerQueueOnSecondReturn = (composerValue: string): boolean => {
-		if (!agentWorking || activeEnterAction !== "enqueue" || !steerSupported || promotingQueuedPromptId) return false;
-		const armed = queuedEnterRef.current;
-		if (!armed || Date.now() - armed.at > QUEUED_STEER_CONFIRMATION_MS) return false;
-		// React may not have committed setValue("") before a physical double Return.
-		// Accept the pre-commit DOM value only when it is the exact prompt we armed;
-		// newly typed text must remain a distinct queued prompt.
-		const currentText = composerValue.trim();
-		if (currentText && currentText !== armed.text) return false;
-		const queued = queuedPrompts.find((item) => item.id === armed.id);
-		promoteQueuedPrompt(armed.id, queued?.text ?? armed.text);
-		return true;
+	const promoteComposerQueueOnSecondReturn = (
+		composerValue: string,
+		options: { repeat: boolean; composing: boolean }
+	): boolean => {
+		if (!agentWorking || activeEnterAction !== "enqueue" || !steerSupported) return false;
+		return runSteerEffect(
+			dispatchSteer({
+				type: "return",
+				composerText: composerValue,
+				at: Date.now(),
+				repeat: options.repeat,
+				composing: options.composing
+			})
+		);
 	};
+
+	// A prompt that vanished from the persisted queue — removed here, or
+	// replaced by a reconnect — can no longer be promoted.
+	const queuedPromptKey = queuedPrompts.map((item) => item.id).join(" ");
+	useEffect(() => {
+		dispatchSteer({ type: "queueReconciled", promptIds: queuedPromptKey ? queuedPromptKey.split(" ") : [] });
+		// dispatchSteer is stable in effect; the id list is the real dependency.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [queuedPromptKey]);
+
+	// Once the turn ends there is nothing to steer. The prompt stays queued for
+	// the normal next-turn path rather than being lost or delivered twice.
+	useEffect(() => {
+		if (!agentWorking) dispatchSteer({ type: "turnEnded" });
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [agentWorking]);
+
+	// One steering error surface. The promotion machine owns its own failure;
+	// the direct-steer path reports through `steerError`. Both are already
+	// normalized strings, so neither can render an object.
+	const promotionFailure = steerFailure(steer);
+	const steerMessage = promotionFailure?.message ?? (typeof steerError === "string" ? steerError : null);
+	const steerErrorCode = promotionFailure?.code ?? null;
 
 	const sendLabel = !agentWorking
 		? "Send message"
@@ -1160,13 +1212,11 @@ export function Composer({
 								value={item.text}
 								onChange={(event) => onEditQueuedPrompt?.(item.id, event.target.value)}
 								disabled={promotingQueuedPromptId === item.id}
-								onBlur={() => {
-									queuedEnterRef.current = null;
-									setArmedQueuedPromptId(null);
-								}}
 								onKeyDown={(event) => {
-									if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey || event.repeat) return;
+									if (event.key !== "Enter" || event.shiftKey || event.metaKey || event.ctrlKey) return;
+									if (event.nativeEvent.isComposing || event.keyCode === 229) return;
 									event.preventDefault();
+									if (event.repeat) return;
 									handleQueuedPromptEnter(item.id, item.text);
 								}}
 							/>
@@ -1190,8 +1240,13 @@ export function Composer({
 					<button type="button" data-testid="keep-queued" onClick={onKeepQueued}>Keep</button>
 				</div>
 			) : null}
-			{steerError ? (
-				<p className="composer-steer-error" role="alert" data-testid="steer-error">{steerError}</p>
+			{steerMessage ? (
+				<p
+					className="composer-steer-error"
+					role="alert"
+					data-testid="steer-error"
+					data-steer-error-code={steerErrorCode ?? undefined}
+				>{steerMessage}</p>
 			) : null}
 			{sendFailure ? (
 				<div className="composer-send-retry" role="status" data-testid="send-retry">
@@ -1259,8 +1314,20 @@ export function Composer({
 							return;
 						}
 						if (e.key !== "Enter" || e.shiftKey) return;
+						// An IME commit press belongs to the composition, not to the
+						// composer. Let it through untouched.
+						if (e.nativeEvent.isComposing || e.keyCode === 229) return;
 						e.preventDefault();
-						if (!e.metaKey && !e.ctrlKey && promoteComposerQueueOnSecondReturn(e.currentTarget.value)) return;
+						// A held Return is one instruction, not one per repeat.
+						if (e.repeat) return;
+						if (
+							!e.metaKey &&
+							!e.ctrlKey &&
+							promoteComposerQueueOnSecondReturn(e.currentTarget.value, {
+								repeat: e.repeat,
+								composing: e.nativeEvent.isComposing
+							})
+						) return;
 						if (e.metaKey || e.ctrlKey) submitAlternate();
 						else submit();
 					}}
