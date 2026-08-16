@@ -528,8 +528,6 @@ impl OptimizerManager {
         read_capabilities(&self.home).unwrap_or_else(|| {
             json!({
                 "algorithms": [],
-                "recipes": [],
-                "compatibleTemplateIds": [],
                 "controls": [],
                 "replay": false,
                 "cancellation": false
@@ -1343,24 +1341,15 @@ async fn launch_sidecar_upstream(
                         if request.method == hyper::Method::GET && path == "/health" {
                             JsonHttpResponse::ok(body)
                         } else if request.method == hyper::Method::GET
-                            && (path == "/v1/optimizer/capabilities"
-                                || path == "/v1/optimizer/status")
+                            && path == "/v1/optimizer/capabilities"
                         {
                             JsonHttpResponse::ok(json!({
                                 "status": "ok",
-                                "algorithms": ["gepa"],
-                                "recipes": [
-                                    "gepa.banking77.smoke.v1",
-                                    "gepa.banking77.luna.v1",
-                                    "gepa.banking77.sol.v1",
-                                    "gepa.craftax.smoke.v1"
-                                ],
+                                "algorithms": OPTIMIZERS_CONTRACT.algorithms,
+                                "contractVersion": "optimizer.contract.v1",
+                                "serviceVersion": OPTIMIZERS_CONTRACT.official,
                                 "replay": true,
-                                "cancellation": true,
-                                "compatibleTemplateIds": [
-                                    "optimizer.gepa.live.v1",
-                                    "optimizer.run.v1"
-                                ]
+                                "cancellation": true
                             }))
                         } else if request.method == hyper::Method::GET
                             && path.starts_with("/runs/")
@@ -3415,19 +3404,12 @@ mod tests {
         assert_eq!(started.phase, "ready");
         let caps = mgr.advertised_capabilities();
         assert_eq!(caps["algorithms"][0], "gepa");
-        assert!(caps["compatibleTemplateIds"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|value| value == "optimizer.gepa.live.v1"));
         assert!(
-            !caps["compatibleTemplateIds"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|value| value == "optimizer.sft.live.v1"),
-            "persist the live sidecar handshake, not Desktop's broader catalog"
+            caps.get("compatibleTemplateIds").is_none() && caps.get("recipes").is_none(),
+            "the runtime-authored handshake must not echo Desktop vocabulary"
         );
+        assert_eq!(caps["contractVersion"], "optimizer.contract.v1");
+        assert_eq!(caps["serviceVersion"], OPTIMIZERS_CONTRACT.official);
         assert!(caps["digest"].as_str().unwrap().starts_with("sha256:"));
     }
 
