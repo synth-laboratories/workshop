@@ -289,6 +289,18 @@ impl CodexManager {
             upstream_credential,
             provider_name: requested_provider.clone(),
         });
+        // A desktop crash can leave CoreRuntime's last run marked active even
+        // though this fresh manager owns no process or turn for it. Reattaching a
+        // thread is the authoritative proof that the old attachment is gone. Close
+        // that orphan before publishing Ready or accepting another turn; otherwise
+        // start_run rejects the new turn after the model has already started it.
+        if let Some(event) = self
+            .persistence
+            .interrupt_active_run(&request.session_id, "desktop_reattached")
+            .await?
+        {
+            self.persistence.publish_event(&app, event).await?;
+        }
         self.sessions
             .write()
             .await

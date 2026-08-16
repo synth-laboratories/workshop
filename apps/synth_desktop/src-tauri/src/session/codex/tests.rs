@@ -27,7 +27,10 @@ use super::telemetry::{
 };
 use crate::core_runtime::CoreRuntime;
 use crate::credential_broker::{self, CredentialBroker};
-use crate::domain::{RunService, RunStatus, SessionService, SessionStatus};
+use crate::domain::{
+    RunCreate, RunService, RunStatus, RuntimeTarget, SessionCreate, SessionKind, SessionService,
+    SessionStatus,
+};
 use crate::session::SessionPersistence;
 use crate::storage::{
     CostSource, EventSource, MeasurementKind, UsageBreakdown, UsageRecord, UsageRecordsRepository,
@@ -997,6 +1000,34 @@ async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() 
     let codex_root = temp.path().join("codex");
     fs::create_dir_all(&codex_root).unwrap();
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    SessionService::new(core.storage().database().clone())
+        .create_or_update(SessionCreate {
+            id: "restored-running".into(),
+            title: "Restored local turn".into(),
+            kind: SessionKind::Codex,
+            target: RuntimeTarget::local_laguna(),
+            project_id: None,
+            remote_id: None,
+            codex_thread_id: Some("thread-restored".into()),
+            status: SessionStatus::Ready,
+            state_generation: None,
+            metadata: json!({"titleOrigin":"automatic"}),
+            source: EventSource::Codex,
+        })
+        .await
+        .unwrap();
+    RunService::new(core.storage().database().clone())
+        .start(RunCreate {
+            id: "orphaned-run".into(),
+            session_id: "restored-running".into(),
+            mode: "codex_turn".into(),
+            model: Some("laguna".into()),
+            adapter: None,
+            metadata: json!({"threadId":"thread-restored"}),
+            source: EventSource::Codex,
+        })
+        .await
+        .unwrap();
     let record = CodexSessionRecord {
         session_id: "restored-running".into(),
         thread_id: "thread-restored".into(),
@@ -1042,6 +1073,13 @@ async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() 
         .unwrap();
     assert_eq!(info.thread_id, "thread-restored");
     assert!(info.turn_id.is_some());
+    let orphaned = RunService::new(core.storage().database().clone())
+        .get("orphaned-run".into())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(orphaned.status, RunStatus::Interrupted.as_str());
+    assert_eq!(orphaned.outcome.unwrap()["reason"], "desktop_reattached");
     let requests = fixture_requests(&codex_root, "restored-running");
     assert!(requests.iter().any(|message| {
         message["method"] == "thread/resume" && message["params"]["threadId"] == "thread-restored"
