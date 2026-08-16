@@ -116,6 +116,39 @@ type OptimizerDiagnostic = {
 	logPath?: string;
 };
 
+type ErrorPresentation = {
+	message: string;
+	details?: string;
+};
+
+function stringifyDiagnostic(value: unknown): string | undefined {
+	if (typeof value === "string") return value;
+	if (value == null) return undefined;
+	try {
+		return JSON.stringify(value, null, 2);
+	} catch {
+		return undefined;
+	}
+}
+
+/** Tauri errors are structured objects, never strings. Do not coerce one with
+ * `String(error)`, which is how lifecycle failures became `[object Object]`. */
+function presentError(reason: unknown): ErrorPresentation {
+	if (reason instanceof Error) return { message: reason.message };
+	if (typeof reason === "string") return { message: reason };
+	if (reason && typeof reason === "object") {
+		const value = reason as Record<string, unknown>;
+		const message = [value.safeMessage, value.safe_message, value.message, value.error]
+			.find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)
+			?? "The optimizer operation failed.";
+		const details = [value.responseBody, value.response_body, value.detail]
+			.map(stringifyDiagnostic)
+			.find((candidate): candidate is string => Boolean(candidate) && candidate !== message);
+		return { message, details };
+	}
+	return { message: "The optimizer operation failed." };
+}
+
 function optimizerDiagnostic(error: unknown): OptimizerDiagnostic | null {
 	if (!error) return null;
 	const value = typeof error === "object" ? error as Record<string, unknown> : {};
@@ -243,6 +276,7 @@ export function OptimizersPage({
 	const [algorithm, setAlgorithm] = useState("all");
 	const [source, setSource] = useState("all");
 	const [error, setError] = useState<string | null>(null);
+	const [errorDetails, setErrorDetails] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [startingAgent, setStartingAgent] = useState<OptimizerGuide["id"] | null>(null);
@@ -270,6 +304,7 @@ export function OptimizersPage({
 		if (question && !window.confirm(question)) return;
 		setLifecycleBusy(action.operation);
 		setError(null);
+		setErrorDetails(null);
 		try {
 			const next = await bridges.plugins.manage(action.operation, "optimizers");
 			setReceipt(next);
@@ -278,7 +313,9 @@ export function OptimizersPage({
 			if (next.error) setError(next.error);
 			await refreshPlugin();
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			const failure = presentError(reason);
+			setError(failure.message);
+			setErrorDetails(failure.details ?? null);
 		} finally {
 			setLifecycleBusy(null);
 		}
@@ -310,7 +347,7 @@ export function OptimizersPage({
 	// which subscribes to `optimizer:status`; this page polled it every 750 ms
 	// and each poll re-probed the live sidecar.
 	useEffect(() => {
-		void refresh().catch((reason) => setError(String(reason)));
+		void refresh().catch((reason) => setError(presentError(reason).message));
 		const unlisten = bridges.optimizers?.onEvent?.(() => {
 			void refresh().catch(() => undefined);
 			void refreshPlugin().catch(() => undefined);
@@ -357,7 +394,7 @@ export function OptimizersPage({
 			setPluginOverride(await bridges.plugins.setReleaseChannel("optimizers", channel));
 			void onRefreshPlugins?.();
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(presentError(reason).message);
 		} finally {
 			setChangingReleaseChannel(false);
 		}
@@ -370,7 +407,7 @@ export function OptimizersPage({
 		try {
 			await onStartAgent(guide);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(presentError(reason).message);
 		} finally {
 			setStartingAgent(null);
 		}
@@ -390,7 +427,7 @@ export function OptimizersPage({
 			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
 			if (visualId) onOpenVisual(visualId);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(presentError(reason).message);
 		} finally {
 			setStartingSftFixture(false);
 		}
@@ -405,7 +442,7 @@ export function OptimizersPage({
 			if (visualId) onOpenVisual(visualId);
 			await refresh();
 		} catch (reason) {
-			setError(String(reason));
+			setError(presentError(reason).message);
 		} finally {
 			setBusy(false);
 		}
@@ -429,7 +466,7 @@ export function OptimizersPage({
 			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
 			if (visualId) onOpenVisual(visualId);
 		} catch (reason) {
-			setError(String(reason));
+			setError(presentError(reason).message);
 		} finally {
 			setBusy(false);
 		}
@@ -459,7 +496,7 @@ export function OptimizersPage({
 			}
 			await refresh();
 		} catch (reason) {
-			setError(String(reason));
+			setError(presentError(reason).message);
 		} finally {
 			setBusy(false);
 		}
@@ -493,7 +530,7 @@ export function OptimizersPage({
 			}
 			await refresh();
 		} catch (reason) {
-			setError(String(reason));
+			setError(presentError(reason).message);
 		} finally {
 			setBusy(false);
 		}
@@ -508,7 +545,7 @@ export function OptimizersPage({
 			setSelectedId(run.id);
 			await refresh();
 		} catch (reason) {
-			setError(String(reason));
+			setError(presentError(reason).message);
 		} finally {
 			setBusy(false);
 		}
@@ -529,7 +566,17 @@ export function OptimizersPage({
 				</div>
 			</header>
 
-			{error ? <p className="inventory-error" role="alert" data-testid="optimizer-error">{error}</p> : null}
+			{error ? (
+				<section className="inventory-error" role="alert" data-testid="optimizer-error">
+					<p>{error}</p>
+					{errorDetails ? (
+						<details data-testid="optimizer-error-details">
+							<summary>Show technical details</summary>
+							<pre>{errorDetails}</pre>
+						</details>
+					) : null}
+				</section>
+			) : null}
 			{plugin ? (
 				<section className="optimizer-plugin-status" data-testid="optimizer-plugin-status" data-phase={plugin.phase}>
 					<div className="optimizer-plugin-summary">

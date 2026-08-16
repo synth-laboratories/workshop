@@ -568,9 +568,10 @@ impl OptimizerManager {
                                 base_url: None,
                                 version: Some(hit.version.clone()),
                                 digest: Some(hit.digest.clone()),
-                                detail: Some(
-                                    "Optimizer sidecar did not prove its capabilities".into(),
-                                ),
+                                detail: Some(format!(
+                                    "Capability check failed: {}",
+                                    diagnostic_error_message(&error)
+                                )),
                                 updated_at: now_ms(),
                             })
                             .await;
@@ -613,9 +614,17 @@ impl OptimizerManager {
             .await
             .context("read optimizer capability handshake")?;
         if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let body = truncate_diagnostic(&body, 2_000);
             bail!(
-                "optimizer capability handshake returned HTTP {}",
-                response.status()
+                "optimizer capability handshake returned HTTP {}{}",
+                status,
+                if body.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {body}")
+                }
             );
         }
         let mut capabilities: Value = response
@@ -1932,6 +1941,18 @@ fn health_body(hit: &OptimizerSidecarVersion) -> Value {
         "algorithmVersion": hit.algorithm_version,
         "recipeSchemaVersion": hit.recipe_schema_version,
     })
+}
+
+fn truncate_diagnostic(value: &str, max_chars: usize) -> String {
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        truncated.push_str("… (truncated)");
+    }
+    truncated
+}
+
+fn diagnostic_error_message(error: &anyhow::Error) -> String {
+    truncate_diagnostic(&error.to_string(), 2_000)
 }
 
 async fn route_sidecar(

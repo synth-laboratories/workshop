@@ -64,6 +64,42 @@ test("plugin phases stay visible as the install progresses", async ({ page }) =>
 	await expect(page.getByTestId("optimizer-plugin-status")).toContainText("0.2.9.dev20260814");
 });
 
+test("plugin lifecycle errors preserve the structured response body", async ({ page }) => {
+	await page.addInitScript(() => {
+		const plugin = {
+			schemaVersion: "synth.plugin-status.v1", pluginId: "optimizers", enabled: true,
+			phase: "stopped", installedVersion: "0.2.5", selectedVersion: "0.2.5",
+			releaseChannel: "official", catalogVersion: "0.2.5",
+			service: { phase: "stopped", activeRuns: 0 }, algorithms: [], templates: []
+		};
+		(window as any).synthPlugins = {
+			status: async () => plugin, list: async () => [plugin], setReleaseChannel: async () => plugin,
+			manage: async () => Promise.reject({
+				code: "optimizer_capability_handshake_failed", message: "Capability check failed — HTTP 502",
+				detail: "GET /v1/optimizer/capabilities\\n{\"error\":\"upstream unavailable\"}"
+			})
+		};
+		(window as any).synthOptimizers = {
+			listAlgorithms: async () => [], listRecipes: async () => [], list: async () => [],
+			get: async () => { throw new Error("unused"); }, create: async () => { throw new Error("unused"); },
+			startRecipe: async () => { throw new Error("unused"); }, refresh: async () => { throw new Error("unused"); },
+			eventsAfter: async () => [], getState: async () => ({}), getStateBatch: async () => [],
+			cancel: async () => { throw new Error("unused"); }, pause: async () => { throw new Error("unused"); },
+			resume: async () => { throw new Error("unused"); }, openVisual: async () => { throw new Error("unused"); },
+			importLocal: async () => { throw new Error("unused"); }, reconcileCloud: async () => { throw new Error("unused"); },
+			listCloud: async () => [], onEvent: () => () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+	await page.getByTestId("open-optimizers").click();
+	await page.getByTestId("plugin-start").click();
+	await expect(page.getByTestId("optimizer-error")).toContainText("Capability check failed — HTTP 502");
+	await expect(page.getByTestId("optimizer-error")).not.toContainText("[object Object]");
+	await page.getByTestId("optimizer-error-details").locator("summary").click();
+	await expect(page.getByTestId("optimizer-error-details")).toContainText("upstream unavailable");
+});
+
 const disabledPlugin = {
 	schemaVersion: "synth.plugin-status.v1",
 	pluginId: "optimizers",
