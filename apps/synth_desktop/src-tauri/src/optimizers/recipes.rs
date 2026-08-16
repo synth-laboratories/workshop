@@ -1927,6 +1927,10 @@ fn materialize_craftax_config(
                 &format!("CRAFTER_MAX_TURNS={CRAFTAX_MAX_TURNS}"),
                 "CRAFTER_MIN_BATCH=1",
                 "CRAFTER_MAX_BATCH=5",
+                &format!(
+                    "CRAFTER_STREAM_ROOT={}",
+                    runs_root.join(run_id).join("container-streams").display()
+                ),
                 &uv.display().to_string(),
                 "run",
                 "--frozen",
@@ -1974,6 +1978,10 @@ fn materialize_craftax_config(
         .insert("taskset".into(), toml::Value::Table(taskset));
 
     let gepa = table_mut(&mut config, "gepa")?;
+    gepa.insert(
+        "rollout_submission_mode".into(),
+        toml::Value::String("sync".into()),
+    );
     gepa.insert("max_generations".into(), MAX_GENERATIONS.into());
     gepa.insert(
         "proposals_per_generation".into(),
@@ -2388,6 +2396,10 @@ namespace = "base"
             toml::Value::Array(vec![toml::Value::String("test:101".into())])
         );
         assert_eq!(config["gepa"]["minibatch_size"].as_integer(), Some(1));
+        assert_eq!(
+            config["gepa"]["rollout_submission_mode"].as_str(),
+            Some("sync")
+        );
         assert_eq!(config["gepa"]["max_train_rollouts"].as_integer(), Some(4));
         assert_eq!(config["gepa"]["max_heldout_rollouts"].as_integer(), Some(2));
         assert_eq!(config["gepa"]["max_total_rollouts"].as_integer(), Some(6));
@@ -2399,6 +2411,7 @@ namespace = "base"
         );
         assert!(text.contains("\"--frozen\""));
         assert!(text.contains("\"CRAFTER_MAX_TURNS=8\""));
+        assert!(text.contains("CRAFTER_STREAM_ROOT="));
         assert!(text.contains("startup_timeout_seconds = 240"));
         assert!(text.contains("auth_mode = \"chatgpt\""));
         assert!(!text.contains("OLD_KEY"));
