@@ -168,6 +168,24 @@ pub(crate) enum ApprovalKind {
         provider: String,
         purpose: String,
     },
+    /// One computer-use action against one native app. See `docs/COMPUTER_USE.md`.
+    ///
+    /// `hazard` marks an action whose effect leaves the machine or cannot be
+    /// undone from inside the app — sending a message, submitting a form,
+    /// confirming a payment. Consent for those is bound to `payload`, not to the
+    /// app, because "you may drive Mail" is not consent to send *this* mail.
+    ComputerUse {
+        /// Bundle identifier of the target app.
+        app: String,
+        /// Action verb from the vocabulary in `docs/COMPUTER_USE.md` §5.
+        action: String,
+        /// What the action will actually do, already redacted by the producer:
+        /// recipient, text, destination. Shown verbatim on the card.
+        payload: Value,
+        hazard: bool,
+        /// Accessibility element the action targets, when it targets one.
+        element_index: Option<u64>,
+    },
 }
 
 impl ApprovalKind {
@@ -178,7 +196,22 @@ impl ApprovalKind {
             Self::SidecarLifecycle { .. } => "sidecar_lifecycle",
             Self::PluginLifecycle { .. } => "plugin_lifecycle",
             Self::CredentialAccess { .. } => "credential_access",
+            Self::ComputerUse { .. } => "computer_use",
         }
+    }
+
+    /// Requests no policy may settle and no remembered grant may satisfy.
+    ///
+    /// The permissive `approval_policy = "never"` is honored everywhere else in
+    /// Workshop, deliberately: the operator asked for it. It is not honored here.
+    /// A hazard action commits content on the operator's behalf, so the consent
+    /// is about that content — a previous yes was about a different payload, and
+    /// a policy set weeks ago was about no payload at all.
+    ///
+    /// This is the single owner of that judgment. Both policy engines and the
+    /// remembered-grant path consult it rather than re-deriving it.
+    pub(crate) fn requires_human(&self) -> bool {
+        matches!(self, Self::ComputerUse { hazard: true, .. })
     }
 
     fn source(&self) -> EventSource {
@@ -191,10 +224,11 @@ impl ApprovalKind {
 
     pub(crate) fn validate_decision(&self, decision: &ApprovalDecision) -> Result<()> {
         if decision.remembered_scope().is_some()
-            && matches!(
-                self,
-                Self::PaidCompute { .. } | Self::CredentialAccess { .. }
-            )
+            && (self.requires_human()
+                || matches!(
+                    self,
+                    Self::PaidCompute { .. } | Self::CredentialAccess { .. }
+                ))
         {
             return Err(anyhow!("{} approvals cannot be remembered", self.name()));
         }
@@ -218,6 +252,10 @@ impl ApprovalKind {
             (Self::ShellCommand { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
             (Self::SidecarLifecycle { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
             (Self::PluginLifecycle { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
+            // Remembered scopes on a hazard action were already refused above,
+            // so what reaches here is either a once-off hazard approval or an
+            // app-scope grant, and both are valid.
+            (Self::ComputerUse { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
             (
                 Self::CredentialAccess { .. },
                 ApprovalDecision::Approve {
@@ -325,6 +363,24 @@ impl ApprovalKind {
                 "provider": provider,
                 "purpose": purpose,
                 "alwaysSupported": false,
+            }),
+            Self::ComputerUse {
+                app,
+                action,
+                payload,
+                hazard,
+                element_index,
+            } => json!({
+                "approvalId": approval_id,
+                "kind": self.name(),
+                "app": app,
+                "action": action,
+                // The card shows this. An empty payload on a hazard action is a
+                // producer bug, not a reason for the card to omit the field.
+                "payload": payload,
+                "hazard": hazard,
+                "elementIndex": element_index,
+                "alwaysSupported": !hazard,
             }),
         }
     }
@@ -793,6 +849,12 @@ impl ApprovalBroker {
 }
 
 fn remembered_key(kind: &ApprovalKind) -> Option<String> {
+    // No key means no remembered grant can satisfy the request. Checked here
+    // rather than at each call site so that a kind added later cannot become
+    // rememberable by omission.
+    if kind.requires_human() {
+        return None;
+    }
     match kind {
         ApprovalKind::SidecarLifecycle { sidecar, action } => {
             Some(format!("sidecar:{sidecar}:{action}"))
@@ -853,6 +915,49 @@ mod tests {
     use crate::storage::EventAppend;
     use std::sync::atomic::AtomicUsize;
     use tempfile::tempdir;
+
+    fn computer_use(hazard: bool) -> ApprovalKind {
+        ApprovalKind::ComputerUse {
+            app: "com.apple.mail".into(),
+            action: "click".into(),
+            payload: json!({ "recipient": "board@example.com" }),
+            hazard,
+            element_index: Some(7),
+        }
+    }
+
+    /// Consent for a hazard action is consent for *that payload*. A remembered
+    /// grant would answer a question nobody asked.
+    #[test]
+    fn hazard_approvals_cannot_be_remembered_or_keyed() {
+        for scope in [ApprovalScope::Session, ApprovalScope::Workspace] {
+            let error = computer_use(true)
+                .validate_decision(&ApprovalDecision::Approve { scope })
+                .unwrap_err();
+            assert!(error.to_string().contains("cannot be remembered"));
+        }
+        computer_use(true)
+            .validate_decision(&ApprovalDecision::Approve {
+                scope: ApprovalScope::Once,
+            })
+            .unwrap();
+        assert!(remembered_key(&computer_use(true)).is_none());
+    }
+
+    /// The card has to show what the action will do, not just which app it
+    /// touches — that distinction is the whole point of the hazard class.
+    #[test]
+    fn hazard_payload_reaches_the_card() {
+        let payload = computer_use(true).safe_payload("approval-1");
+        assert_eq!(payload["kind"], "computer_use");
+        assert_eq!(payload["payload"]["recipient"], "board@example.com");
+        assert_eq!(payload["hazard"], true);
+        assert_eq!(payload["alwaysSupported"], false);
+        assert_eq!(
+            computer_use(false).safe_payload("approval-2")["alwaysSupported"],
+            true
+        );
+    }
 
     struct RecordingResolver {
         expired: Arc<AtomicUsize>,

@@ -13,7 +13,11 @@ pub(crate) fn auto_decision(
     kind: &ApprovalKind,
 ) -> Result<Option<ApprovalDecision>> {
     match approval_policy {
-        "never" => Ok(Some(approve_kind(kind))),
+        // `requires_human` outranks the permissive policy. An unrecognized
+        // policy name still errors below: a typo must not be laundered into
+        // "ask the human" and read as working.
+        "never" if !kind.requires_human() => Ok(Some(approve_kind(kind))),
+        "never" => Ok(None),
         "on-request" => match kind {
             ApprovalKind::SidecarLifecycle { action, .. }
                 if matches!(action.as_str(), "start" | "stop") =>
@@ -110,5 +114,31 @@ mod tests {
     #[test]
     fn unknown_policy_fails_closed() {
         assert!(auto_decision("always-ask", &paid()).is_err());
+    }
+
+    fn computer_use(hazard: bool) -> ApprovalKind {
+        ApprovalKind::ComputerUse {
+            app: "com.apple.mail".into(),
+            action: "click".into(),
+            payload: json!({ "recipient": "board@example.com" }),
+            hazard,
+            element_index: None,
+        }
+    }
+
+    /// The host engine and the plugin engine both honor `never`, so both need
+    /// the hazard carve-out. Covering only one leaves the other as the hole.
+    #[test]
+    fn hazard_computer_use_outranks_the_permissive_policy() {
+        for policy in ["never", "on-request", "untrusted"] {
+            assert!(
+                auto_decision(policy, &computer_use(true)).unwrap().is_none(),
+                "`{policy}` auto-settled a hazard action"
+            );
+        }
+        assert!(auto_decision("always-ask", &computer_use(true)).is_err());
+        assert!(auto_decision("never", &computer_use(false))
+            .unwrap()
+            .is_some());
     }
 }
