@@ -245,6 +245,22 @@ test("multiplexed rollout-local event ids never collapse across lanes", () => {
   assert.deepEqual(state.events.map((event) => event.rollout_id), ["seed-0", "seed-1", "seed-0", "seed-1"]);
 });
 
+test("payload-carried rollout identity is promoted before multiplexed replay", () => {
+  const state = ingestLiveEnvelopes([
+    { kind: "observation", event_id: "1", sequence: 1, payload: { rollout_id: "seed-2001", step: 0 } },
+    { kind: "observation", event_id: "1", sequence: 1, payload: { rollout_id: "seed-2002", step: 0 } },
+    { kind: "reward_signal", event_id: "5", sequence: 5, payload: { rollout_id: "seed-2001", reward: 2 } },
+    { kind: "reward_signal", event_id: "5", sequence: 5, payload: { rollout_id: "seed-2002", reward: 1 } },
+  ]);
+  assert.equal(state.events.length, 4);
+  assert.deepEqual(state.conflicts, []);
+  assert.deepEqual(state.events.map((event) => event.rollout_id), [
+    "seed-2001", "seed-2002", "seed-2001", "seed-2002",
+  ]);
+  assert.equal(state.lastSequenceByScope.get("seed-2001"), 5);
+  assert.equal(state.lastSequenceByScope.get("seed-2002"), 5);
+});
+
 test("A15 exact reconnect duplicates collapse but conflicting duplicates fail closed", () => {
   const exact = ingestLiveEnvelopes([
     { kind: "observation", event_id: "7", sequence: 7, rollout_id: "r1", digest: "same", payload: { step: 1 } },

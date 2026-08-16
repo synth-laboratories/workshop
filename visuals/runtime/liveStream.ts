@@ -122,17 +122,66 @@ export function isControlEnvelope(event: LiveEnvelope): boolean {
   );
 }
 
+function payloadString(event: LiveEnvelope, ...keys: string[]): string {
+  const payload = event.payload;
+  if (!payload) return "";
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return "";
+}
+
+/**
+ * Producers may carry transport identity in the envelope payload. Promote that
+ * declared identity at the ingestion boundary so every viewer gets the same
+ * rollout-local de-duplication and lane projection without knowing a producer's
+ * wire shape.
+ */
+export function envelopeScope(event: LiveEnvelope): string {
+  const streamId = typeof event.stream_id === "string" && event.stream_id.length > 0
+    ? event.stream_id
+    : payloadString(event, "stream_id", "stream.id");
+  return streamId
+    || event.rollout_id
+    || payloadString(event, "rollout_id")
+    || event.lane
+    || payloadString(event, "lane")
+    || event.run_id
+    || payloadString(event, "run_id")
+    || "run";
+}
+
+function normalizeEnvelopeIdentity(event: LiveEnvelope): LiveEnvelope {
+  const rolloutId = event.rollout_id || payloadString(event, "rollout_id");
+  const lane = event.lane || payloadString(event, "lane") || rolloutId;
+  const runId = event.run_id || payloadString(event, "run_id");
+  const streamId = typeof event.stream_id === "string" && event.stream_id.length > 0
+    ? event.stream_id
+    : payloadString(event, "stream_id", "stream.id");
+  if (!rolloutId && !lane && !runId && !streamId) return event;
+  return {
+    ...event,
+    ...(rolloutId ? { rollout_id: rolloutId } : {}),
+    ...(lane ? { lane } : {}),
+    ...(runId ? { run_id: runId } : {}),
+    ...(streamId ? { stream_id: streamId } : {}),
+  };
+}
+
 export function envelopeIdentity(event: LiveEnvelope, index: number): string {
   // Sequence/event_id is monotonic only within a rollout. A multiplexed run
   // legitimately contains ten `event_id: "1"` records, so identity must keep
   // the producer lane. Treating event_id as globally unique silently drops
   // all but one lane while still making the aggregate lane count look valid.
-  const streamId = typeof event.stream_id === "string" ? event.stream_id : "";
+  const streamId = typeof event.stream_id === "string" && event.stream_id.length > 0
+    ? event.stream_id
+    : payloadString(event, "stream_id", "stream.id");
   const sequence = event.sequence_number ?? event.sequence;
   if (streamId && sequence != null && String(sequence).length > 0) {
     return `${streamId}:${sequence}`;
   }
-  const scope = streamId || event.rollout_id || event.lane || event.run_id || "run";
+  const scope = envelopeScope(event);
   if (typeof event.event_id === "string" && event.event_id.length > 0) {
     return `${scope}:${event.event_id}`;
   }
@@ -184,8 +233,8 @@ export function ingestLiveEnvelopeBatch(
       ready ||= String(event.kind ?? event.type ?? "") === "stream.subscribed";
       continue;
     }
-    events.push(event);
-    const scope = String(event.rollout_id ?? event.lane ?? event.run_id ?? "run");
+    events.push(normalizeEnvelopeIdentity(event));
+    const scope = envelopeScope(event);
     const rawSequence = event.sequence_number ?? event.sequence;
     const sequence = typeof rawSequence === "number" ? rawSequence : Number(rawSequence);
     if (!Number.isFinite(sequence)) continue;
