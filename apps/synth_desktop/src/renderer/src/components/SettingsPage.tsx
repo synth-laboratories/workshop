@@ -18,6 +18,7 @@ import { ModelObservabilitySettings } from "./ModelObservabilitySettings";
 import { AccountPage } from "./AccountPage";
 import { GeneralPreferencesSettings } from "./GeneralPreferencesSettings";
 import { SettingsCard } from "./SettingsCard";
+import { RuntimeContractRows } from "./RuntimeContractRows";
 import type { DesktopPreferences } from "../preferences";
 import { ProviderMark } from "./ProviderMark";
 import { bridges } from "../runtime/desktopBridge";
@@ -517,6 +518,7 @@ export function SettingsPage({
 										</button>
 									) : null}
 									<code className="finetune-file">{desktopIdentity?.manifest ?? desktopIdentity?.dataRoot ?? "Local-first research workbench"}</code>
+									<RuntimeContractRows />
 								</div>
 								<p className="settings-runtime-copy">
 									Synth Desktop is a local-first research workbench.

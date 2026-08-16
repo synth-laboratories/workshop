@@ -34,11 +34,18 @@ use tauri::State;
 use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
-pub const OFFICIAL_SIDECAR_VERSION: &str = "0.2.5";
-pub const DEV_SIDECAR_VERSION: &str = "0.2.9.dev20260814";
+// Channel pins, the floor, and the vocabulary lists all resolve from the one
+// contract table so a version has a single place to be read and changed.
+use crate::contract::runtimes::{ReleaseChannel, OPTIMIZERS as OPTIMIZERS_CONTRACT};
+
+pub const OFFICIAL_SIDECAR_VERSION: &str = OPTIMIZERS_CONTRACT.official;
+pub const DEV_SIDECAR_VERSION: &str = OPTIMIZERS_CONTRACT.dev;
 pub const DEFAULT_SIDECAR_VERSION: &str = OFFICIAL_SIDECAR_VERSION;
+pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = OPTIMIZERS_CONTRACT.recipe_schema;
+/// `{package}-{official}`. Spelled out because `format!` is not const and ten
+/// call sites want `&'static str`; `algorithm_version_matches_the_contract`
+/// fails if it drifts from the table.
 pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.5";
-pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = "gepa.recipe.v1";
 /// Optimizer-family visuals bind this slot. `live` and `jobs` are refused.
 pub const OPTIMIZER_VISUAL_SLOT: &str = "optimizer_run";
 const SELECTED_VERSION_FILE: &str = "selected_version";
@@ -156,17 +163,26 @@ fn catalog_spec(version: &str) -> OptimizerSidecarInstallSpec {
         recipe_schema_version: DEFAULT_RECIPE_SCHEMA_VERSION.into(),
         payload: json!({
             "sidecarVersion": version,
-            "algorithms": [{
-                "id": "gepa",
-                "version": algorithm_version
-            }],
+            "algorithms": OPTIMIZERS_CONTRACT
+                .algorithms
+                .iter()
+                .map(|id| json!({ "id": id, "version": algorithm_version }))
+                .collect::<Vec<_>>(),
             "recipeSchemaVersion": DEFAULT_RECIPE_SCHEMA_VERSION,
-            "templates": ["optimizer.gepa.live.v1", "optimizer.run.v1"],
+            "templates": OPTIMIZERS_CONTRACT.templates,
+            // Desktop's expectation of the pinned version, not a claim about
+            // the artifact on disk. The install payload asserting
+            // `eventReplay: true` for a wheel that served no events route is
+            // how this incident was seeded; only the handshake settles it.
             "health": true,
             "cancellation": true,
             "eventReplay": true,
         }),
-        template_ids: vec!["optimizer.gepa.live.v1".into(), "optimizer.run.v1".into()],
+        template_ids: OPTIMIZERS_CONTRACT
+            .templates
+            .iter()
+            .map(|id| (*id).to_owned())
+            .collect(),
     }
 }
 
@@ -408,6 +424,7 @@ impl OptimizerManager {
     }
 
     pub fn select_version(&self, version: &str) -> Result<OptimizerSidecarVersion> {
+        enforce_version_floor(version)?;
         let hit = self
             .discover()?
             .into_iter()
@@ -470,6 +487,7 @@ impl OptimizerManager {
         spec: OptimizerSidecarInstallSpec,
     ) -> Result<OptimizerSidecarVersion> {
         validate_version_id(&spec.version)?;
+        enforce_version_floor(&spec.version)?;
         fs::create_dir_all(&self.home)?;
         let previous_selected = read_selected_version(&self.home)?;
         let staging_name = format!(
@@ -1328,6 +1346,23 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Refuse a runtime older than the contract floor.
+///
+/// Install-time UX, not a safety property: it explains the refusal before a
+/// download instead of after a failed handshake. The handshake stays the gate,
+/// because a version number is the runtime's claim about itself and the
+/// capability response is the only thing that demonstrates anything.
+fn enforce_version_floor(version: &str) -> Result<()> {
+    if OPTIMIZERS_CONTRACT.meets_floor(version) {
+        return Ok(());
+    }
+    bail!(
+        "optimizer sidecar `{version}` is older than the supported floor \
+         `{floor}`; install {floor} or newer",
+        floor = OPTIMIZERS_CONTRACT.min_supported
+    )
+}
+
 fn validate_version_id(version: &str) -> Result<()> {
     if version.is_empty()
         || version.len() > 64
@@ -1695,7 +1730,7 @@ fn materialize_verified_distribution(
         "publisher": "Synth Laboratories",
         "networkHost": "pypi.org",
         "platform": std::env::consts::OS,
-        "workshopCompat": "0.4.0",
+        "workshopCompat": OPTIMIZERS_CONTRACT.workshop_compat,
     });
     fs::write(staging.join(PAYLOAD_FILE), &payload)?;
     fs::write(

@@ -195,7 +195,7 @@ fn main() {
     run_stdio_server(
         McpServerInfo {
             name: "synth-containers-mcp",
-            version: "0.1.0",
+            version: env!("CARGO_PKG_VERSION"),
         },
         tools,
         |name, args| call_tool(name, args),

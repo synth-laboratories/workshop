@@ -4,12 +4,17 @@ use super::types::{
     CatalogEntry, PluginActionReceipt, PluginStatus, DEV_RELEASE_CHANNEL, OFFICIAL_RELEASE_CHANNEL,
     OPTIMIZERS_PLUGIN_ID, PLUGIN_PUBLISHER,
 };
+use crate::contract::runtimes::OPTIMIZERS as CONTRACT;
 use crate::optimizers::manager::{
     DEFAULT_SIDECAR_VERSION, DEV_SIDECAR_VERSION, OFFICIAL_SIDECAR_VERSION,
 };
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
+
+fn owned(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_owned()).collect()
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -65,19 +70,14 @@ impl PluginRegistry {
             release_channel: release_channel.into(),
             version: version.into(),
             publisher: PLUGIN_PUBLISHER.into(),
-            package: "synth-optimizers".into(),
+            package: CONTRACT.package.into(),
             network_host: "pypi.org".into(),
             download_size_bytes: 12_000_000,
-            workshop_compat: "0.4.0".into(),
-            algorithms: vec!["gepa".into()],
-            templates: vec!["optimizer.gepa.live.v1".into(), "optimizer.run.v1".into()],
-            recipe_schema_version: "gepa.recipe.v1".into(),
-            bounded_recipes: vec![
-                "gepa.banking77.smoke.v1".into(),
-                "gepa.banking77.luna.v1".into(),
-                "gepa.banking77.sol.v1".into(),
-                "gepa.craftax.smoke.v1".into(),
-            ],
+            workshop_compat: CONTRACT.workshop_compat.into(),
+            algorithms: owned(CONTRACT.algorithms),
+            templates: owned(CONTRACT.templates),
+            recipe_schema_version: CONTRACT.recipe_schema.into(),
+            bounded_recipes: owned(CONTRACT.bounded_recipes),
         })
     }
 

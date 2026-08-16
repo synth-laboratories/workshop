@@ -10,6 +10,13 @@ export const commands = {
 	desktopInstanceDiagnostics: () => __TAURI_INVOKE<InstanceDiagnostics>("desktop_instance_diagnostics"),
 	desktopImagePreview: (path: string) => typedError<string, AppError>(__TAURI_INVOKE("desktop_image_preview", { path })),
 	coreDiagnostics: () => typedError<CoreDiagnostics, AppError>(__TAURI_INVOKE("core_diagnostics")),
+	/**
+	 *  Every runtime version Desktop pins, resolved from the one contract table.
+	 *
+	 *  Settings → About renders exactly this struct. Answering "which runtime is
+	 *  installed, and is it new enough?" used to require reading the source.
+	 */
+	runtimeContracts: () => typedError<RuntimeContractView[], AppError>(__TAURI_INVOKE("runtime_contracts")),
 	coreEventsAfter: (afterSequence: unknown, limit: unknown | null) => typedError<AppEvent_Serialize[], AppError>(__TAURI_INVOKE("core_events_after", { afterSequence, limit })),
 	coreSessionEventsAfter: (sessionId: string, afterSequence: unknown, limit: unknown | null) => typedError<AppEvent_Serialize[], AppError>(__TAURI_INVOKE("core_session_events_after", { sessionId, afterSequence, limit })),
 	coreSessionEventsTail: (sessionId: string, limit: unknown | null) => typedError<AppEvent_Serialize[], AppError>(__TAURI_INVOKE("core_session_events_tail", { sessionId, limit })),
@@ -1948,6 +1955,31 @@ export type RollbackMetadata = {
 	 */
 	importedIds: { [key in string]: string[] },
 	deleteOrder: string[],
+};
+
+/**
+ *  One About row. Serialised from the same table the code enforces — a
+ *  hand-maintained list in the renderer would be another copy, and the drift it
+ *  exists to expose would be invisible again.
+ */
+export type RuntimeContractView = {
+	runtimeId: string,
+	package: string,
+	/**  Version found on disk, when Desktop manages the install. */
+	installed: string | null,
+	/**  Version Desktop pins for the active channel. */
+	expected: string,
+	minSupported: string,
+	releaseChannel: string,
+	workshopCompat: string,
+	algorithms: string[],
+	/**  False when the installed version is below the floor, or absent. */
+	meetsFloor: boolean,
+	/**
+	 *  False when nothing in Desktop installs this runtime, so `expected` is a
+	 *  statement of intent rather than a fact and About should say so.
+	 */
+	managed: boolean,
 };
 
 export type RuntimeKind = "sync" | "async";

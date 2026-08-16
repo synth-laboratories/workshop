@@ -5182,6 +5182,36 @@ html.sidebar-hidden .titlebar {
 	padding: 0 16px;
 }
 
+.about-runtime-rows {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-top: 8px;
+}
+
+.about-runtime-row {
+	display: flex;
+	align-items: baseline;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.about-runtime-name {
+	color: var(--color-text-muted);
+}
+
+.about-runtime-value {
+	font-family: var(--code-font-family);
+}
+
+.about-runtime-meta {
+	color: var(--color-text-faint);
+}
+
+.about-runtime-flag {
+	color: var(--tone-danger-fg);
+}
+
 .about-changelog {
 	padding: 0 16px;
 }

@@ -153,7 +153,7 @@ fn main() {
     run_stdio_server(
         McpServerInfo {
             name: "synth-plugins-mcp",
-            version: "0.4.0",
+            version: env!("CARGO_PKG_VERSION"),
         },
         tools,
         call_tool,

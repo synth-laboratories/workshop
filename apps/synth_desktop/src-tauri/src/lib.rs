@@ -111,6 +111,45 @@ fn core_diagnostics(state: State<'_, Arc<CoreRuntime>>) -> Result<CoreDiagnostic
     state.diagnostics().map_err(AppError::from)
 }
 
+/// Every runtime version Desktop pins, resolved from the one contract table.
+///
+/// Settings → About renders exactly this struct. Answering "which runtime is
+/// installed, and is it new enough?" used to require reading the source.
+#[tauri::command]
+#[specta::specta]
+fn runtime_contracts(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<Vec<contract::runtimes::RuntimeContractView>, AppError> {
+    use contract::runtimes::{ReleaseChannel, ALL};
+    let channel = match crate::plugins::PluginRegistry::open_default()
+        .release_channel()
+        .as_str()
+    {
+        "dev" => ReleaseChannel::Dev,
+        _ => ReleaseChannel::Official,
+    };
+    let installed = state
+        .optimizers()
+        .manager()
+        .version()
+        .ok()
+        .flatten()
+        .map(|hit| hit.version);
+    Ok(ALL
+        .iter()
+        .map(|entry| {
+            // Only the managed sidecar has an install to inspect. An
+            // unprovisioned runtime reports no version rather than borrowing
+            // one it cannot substantiate.
+            let found = entry
+                .provisioned_by_desktop
+                .then(|| installed.clone())
+                .flatten();
+            entry.view(channel, found)
+        })
+        .collect())
+}
+
 #[tauri::command]
 #[specta::specta]
 fn desktop_image_preview(path: String) -> Result<String, AppError> {

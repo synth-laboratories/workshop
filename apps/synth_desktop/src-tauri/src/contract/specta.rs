@@ -79,6 +79,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         desktop_instance_diagnostics,
         crate::desktop_image_preview,
         crate::core_diagnostics,
+        crate::runtime_contracts,
         crate::core_events_after,
         crate::core_session_events_after,
         crate::core_session_events_tail,
@@ -342,6 +343,8 @@ mod tests {
         // Hand-maintained on purpose: the exporter dropping commands must fail
         // here rather than pass quietly. Bump it only alongside a reviewed
         // `collect_commands!` change.
+        // 189 → 190: `runtime_contracts`, which backs the Settings → About
+        // runtime version rows.
         assert_eq!(
             exported, 190,
             "generated bindings must contain the complete desktop command set"

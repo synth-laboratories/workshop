@@ -339,7 +339,7 @@ fn main() {
     run_stdio_server(
         McpServerInfo {
             name: "synth-optimizers-mcp",
-            version: "0.1.0",
+            version: env!("CARGO_PKG_VERSION"),
         },
         tools,
         call_tool,

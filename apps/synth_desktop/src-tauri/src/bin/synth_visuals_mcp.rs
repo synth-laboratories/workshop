@@ -1266,7 +1266,7 @@ fn main() {
     run_stdio_server(
         McpServerInfo {
             name: "synth-visuals-mcp",
-            version: "0.1.0",
+            version: env!("CARGO_PKG_VERSION"),
         },
         tools,
         call_tool,
