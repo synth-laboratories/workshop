@@ -107,7 +107,10 @@ import type { MainView } from "../routes";
 // prove the provider stream is alive, so never leave the operator at Working…
 // forever if no event follows.
 const TURN_FIRST_ACTIVITY_TIMEOUT_MS = 45_000;
-const TURN_ACTIVITY_IDLE_TIMEOUT_MS = 45_000;
+// XHigh reasoning can legitimately emit no transport events for several
+// minutes. This is a last-resort dead-connection fence, not a latency budget;
+// the separate first-activity watchdog still catches turns that never start.
+const TURN_ACTIVITY_IDLE_TIMEOUT_MS = 10 * 60_000;
 const TURN_START_TIMEOUT_MESSAGE =
 	"This task did not begin producing activity. Check your ChatGPT connection and retry.";
 const TURN_ACTIVITY_STALLED_MESSAGE =
