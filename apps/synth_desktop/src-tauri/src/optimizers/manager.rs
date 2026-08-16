@@ -1234,6 +1234,14 @@ fn optimizer_command(home: &Path, version: &str) -> Result<Command> {
     Ok(Command::new(bin))
 }
 
+fn optimizer_gepa_home(home: &Path) -> PathBuf {
+    home.join("runtime/gepa-home")
+}
+
+fn optimizer_gepa_db(home: &Path) -> PathBuf {
+    home.join("runtime/gepa.sqlite")
+}
+
 fn developer_uv_mode() -> Result<bool> {
     if env::var("SYNTH_OPTIMIZER_DEV_MODE").as_deref() == Ok("1") {
         return Ok(true);
@@ -1296,6 +1304,10 @@ fn launch_gepa_recipe_process(
         .args(["gepa", "run", "--config"])
         .arg(config_path)
         .current_dir(cookbook)
+        // The service discovers live child runs through GEPA_HOME/index.jsonl.
+        // Pin both processes to the same instance-owned directory instead of
+        // relying on whichever user-global HOME the Desktop inherited.
+        .env("GEPA_HOME", optimizer_gepa_home(home))
         .env("OPENAI_API_KEY", openai_api_key)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
@@ -1367,72 +1379,108 @@ async fn launch_sidecar_upstream(
     }
     let _ = run_spools;
     drop(listener);
-    drop(addr);
+    let _ = addr;
     drop(upstream_base_url);
 
-    let runtime_dir = home.join("runtime");
-    fs::create_dir_all(&runtime_dir)?;
+    let gepa_home = optimizer_gepa_home(home);
+    let db_path = optimizer_gepa_db(home);
+    fs::create_dir_all(&gepa_home)?;
     let api_key = ensure_api_key(home)?;
-
-    // The port has to be reserved, released, and handed to the child, so there
-    // is a window in which something else can take it. Nothing can close that
-    // window from here: the shipped runtime has no way to report the address it
-    // actually bound — `--bind :0` plus the service-discovery heartbeat only
-    // exist on unreleased builds — so the host must name a port in advance.
-    //
-    // What it can do is refuse to mistake a lost race for a working service. A
-    // child that cannot bind exits almost immediately, so a short grace period
-    // separates "bound" from "gone", and a fresh port is drawn for each retry.
-    // Without this the failure surfaced much later as an unexplained health
-    // timeout against a port owned by someone else.
-    const BIND_ATTEMPTS: usize = 3;
-    const BIND_GRACE: Duration = Duration::from_millis(250);
-    let mut last_exit = None;
-    for attempt in 1..=BIND_ATTEMPTS {
-        let probe = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .context("reserve optimizer service loopback")?;
-        let addr = probe.local_addr()?;
-        drop(probe);
-
-        let log = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(home.join("sidecar.log"))?;
-        let mut command = optimizer_command(home, &hit.version)?;
-        isolate_process_group(&mut command);
-        command
-            .args(["gepa", "service", "--db"])
-            .arg(runtime_dir.join("gepa.sqlite"))
-            .arg("--bind")
-            .arg(addr.to_string())
-            .env("SYNTH_OPTIMIZER_API_KEY", &api_key)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(log.try_clone()?))
-            .stderr(Stdio::from(log))
-            .kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .context("spawn allowlisted synth-optimizers GEPA service")?;
-
-        tokio::time::sleep(BIND_GRACE).await;
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                // Exited inside the grace period: it never got the port.
-                last_exit = Some(status);
-                if attempt < BIND_ATTEMPTS {
-                    continue;
-                }
-            }
-            Ok(None) => return Ok((Some(child), format!("http://{addr}"), None)),
-            Err(error) => return Err(error).context("poll optimizer service after spawn"),
+    let heartbeat_path = optimizer_service_heartbeat_path(&gepa_home, &db_path);
+    let _ = fs::remove_file(&heartbeat_path);
+    let log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(home.join("sidecar.log"))?;
+    let mut command = optimizer_command(home, &hit.version)?;
+    isolate_process_group(&mut command);
+    command
+        .args(["gepa", "service", "--db"])
+        .arg(&db_path)
+        .args(["--bind", "127.0.0.1:0"])
+        .env("GEPA_HOME", &gepa_home)
+        .env("SYNTH_OPTIMIZER_API_KEY", &api_key)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log))
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .context("spawn allowlisted synth-optimizers GEPA service")?;
+    let child_pid = child
+        .id()
+        .ok_or_else(|| anyhow!("optimizer service started without a process id"))?;
+    let deadline = tokio::time::Instant::now() + crate::limits::OPTIMIZER_SIDECAR_READY_WAIT;
+    while tokio::time::Instant::now() < deadline {
+        if let Some(status) = child
+            .try_wait()
+            .context("poll optimizer service during address discovery")?
+        {
+            bail!(
+                "optimizer service exited before publishing its address ({status}); see {}",
+                home.join("sidecar.log").display()
+            );
         }
+        if let Some(base_url) =
+            read_optimizer_service_address(&heartbeat_path, &db_path, child_pid, &hit.version)?
+        {
+            return Ok((Some(child), base_url, None));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    terminate_child(&mut child).await;
     bail!(
-        "optimizer service exited immediately on {BIND_ATTEMPTS} consecutive ports \
-         (last exit: {last_exit:?}); see {}",
+        "optimizer service did not publish its bound address within {:?}; see {}",
+        crate::limits::OPTIMIZER_SIDECAR_READY_WAIT,
         home.join("sidecar.log").display()
     )
+}
+
+fn optimizer_service_heartbeat_path(gepa_home: &Path, db_path: &Path) -> PathBuf {
+    gepa_home.join("services").join(format!(
+        "{}.json",
+        sha256_hex(db_path.to_string_lossy().as_bytes())
+    ))
+}
+
+fn read_optimizer_service_address(
+    heartbeat_path: &Path,
+    db_path: &Path,
+    child_pid: u32,
+    expected_version: &str,
+) -> Result<Option<String>> {
+    let body = match fs::read(heartbeat_path) {
+        Ok(body) => body,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("read optimizer service discovery heartbeat"),
+    };
+    let heartbeat: Value =
+        serde_json::from_slice(&body).context("parse optimizer service discovery heartbeat")?;
+    if heartbeat.get("schema").and_then(Value::as_str) != Some("synth.gepa_service.whoami.v1")
+        || heartbeat.get("pid").and_then(Value::as_u64) != Some(u64::from(child_pid))
+        || heartbeat.get("db_path").and_then(Value::as_str)
+            != Some(db_path.to_string_lossy().as_ref())
+        || heartbeat.get("version").and_then(Value::as_str) != Some(expected_version)
+    {
+        return Ok(None);
+    }
+    let service_url = heartbeat
+        .get("service_url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("optimizer service heartbeat omitted service_url"))?;
+    let parsed = reqwest::Url::parse(service_url)
+        .context("optimizer service heartbeat contained an invalid service_url")?;
+    let loopback = matches!(parsed.host_str(), Some("127.0.0.1") | Some("::1"));
+    if parsed.scheme() != "http"
+        || !loopback
+        || parsed.port().is_none()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        bail!("optimizer service heartbeat advertised a non-loopback HTTP address");
+    }
+    Ok(Some(service_url.trim_end_matches('/').to_owned()))
 }
 
 #[cfg(unix)]
@@ -2525,6 +2573,55 @@ mod tests {
         (OptimizerManager::with_home(dir.path().to_path_buf()), dir)
     }
 
+    #[test]
+    fn service_discovery_accepts_only_the_spawned_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager_home = dir.path().join("manager");
+        let gepa_home = optimizer_gepa_home(&manager_home);
+        let db_path = optimizer_gepa_db(&manager_home);
+        let heartbeat_path = optimizer_service_heartbeat_path(&gepa_home, &db_path);
+        fs::create_dir_all(heartbeat_path.parent().unwrap()).unwrap();
+        let heartbeat = json!({
+            "schema": "synth.gepa_service.whoami.v1",
+            "pid": 4242,
+            "db_path": db_path.to_string_lossy(),
+            "version": DEFAULT_SIDECAR_VERSION,
+            "service_url": "http://127.0.0.1:49152"
+        });
+        fs::write(&heartbeat_path, serde_json::to_vec(&heartbeat).unwrap()).unwrap();
+
+        assert_eq!(
+            read_optimizer_service_address(
+                &heartbeat_path,
+                &db_path,
+                4242,
+                DEFAULT_SIDECAR_VERSION,
+            )
+            .unwrap()
+            .as_deref(),
+            Some("http://127.0.0.1:49152")
+        );
+        assert!(read_optimizer_service_address(
+            &heartbeat_path,
+            &db_path,
+            4243,
+            DEFAULT_SIDECAR_VERSION,
+        )
+        .unwrap()
+        .is_none());
+
+        let mut remote = heartbeat;
+        remote["service_url"] = json!("http://example.com:49152");
+        fs::write(&heartbeat_path, serde_json::to_vec(&remote).unwrap()).unwrap();
+        assert!(read_optimizer_service_address(
+            &heartbeat_path,
+            &db_path,
+            4242,
+            DEFAULT_SIDECAR_VERSION,
+        )
+        .is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn optimizer_launcher_survives_staging_activation() {
@@ -2621,9 +2718,19 @@ mod tests {
         let (mgr, _home) = manager();
         let run = seed_run(&svc).await;
         mgr.install(None).unwrap();
+        assert!(!mgr.home().join("env.sh").exists());
         let started = mgr.start().await.unwrap();
         assert_eq!(started.phase, "ready");
         assert!(started.base_url.is_some());
+        let env_path = mgr.home().join("env.sh");
+        let env_body = fs::read_to_string(&env_path).unwrap();
+        assert!(env_body.contains("SYNTH_OPTIMIZER_RUNTIME_EPOCH"));
+        assert!(env_body.contains("SYNTH_OPTIMIZER_WRITTEN_AT"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&env_path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
         let (pinned, pin) = mgr
             .pin_run(&svc, &run.id, "gepa.banking77.smoke.v1")
             .await
@@ -2632,6 +2739,7 @@ mod tests {
         assert!(Path::new(&pin.spool_path).join("identity.json").is_file());
         let stopped = mgr.stop().await.unwrap();
         assert_ne!(stopped.phase, "ready");
+        assert!(!env_path.exists());
         let kept = svc.get(run.id.clone()).await.unwrap();
         assert_eq!(kept.id, run.id);
         assert!(kept.cursor_seq >= 1);
@@ -2783,6 +2891,8 @@ mod tests {
         let visual_id = run.visual_refs[0].id.clone();
         mgr.install(None).unwrap();
         mgr.start().await.unwrap();
+        assert!(mgr.home().join("capabilities.json").is_file());
+        assert!(mgr.home().join("env.sh").is_file());
         let (pinned, pin) = mgr
             .pin_run(&svc, &run.id, "gepa.banking77.smoke.v1")
             .await
@@ -2801,6 +2911,8 @@ mod tests {
         svc.persist_run(completed).await.unwrap();
         mgr.uninstall(DEFAULT_SIDECAR_VERSION, &svc).await.unwrap();
         assert!(mgr.discover().unwrap().is_empty());
+        assert!(!mgr.home().join("capabilities.json").exists());
+        assert!(!mgr.home().join("env.sh").exists());
         let kept = svc.get(run.id.clone()).await.unwrap();
         assert_eq!(kept.id, run.id);
         let events = svc.events_after(run.id.clone(), 0, None).await.unwrap();
