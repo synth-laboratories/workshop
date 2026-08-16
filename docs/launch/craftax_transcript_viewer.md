@@ -14,11 +14,11 @@ Large traces remain bounded at the normalized-call layer, and the source envelop
 
 ## Replay/capture integration plan
 
-This branch starts at committed base `fb2acf7`. The shared `v0.4-replay-and-capture-contracts` checkout had uncommitted work and was inspected read-only.
+The implementation originated at `2ef275a` from base `fb2acf7` and is now integrated on the authoritative `release/v0.4-final` line after the replay/capture contract repair.
 
 After that work is committed:
 
-1. Rebase `v0.4-craftax-transcript-viewer` onto the replay/capture branch tip.
+1. Keep the transcript projection layered on the canonical replay client when future replay changes land.
 2. Resolve `live.craftax.v1/shell.tsx` in favor of the replay branch's `LiveTemplateProps`, host-owned `ReplayClient`, explicit transport state, revision prop, and replay-authoritative frame base URL.
 3. Retain this branch's `projectAgentTurns(visibleEvents)` boundary. Do not restore binding-derived `sseUrl` discovery or introduce a second stream consumer.
 4. Preserve the replay branch's fixture rule: fixtures are local authoring evidence and never stand in for a declared stream.
