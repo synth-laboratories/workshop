@@ -89,28 +89,16 @@ merely due for its next `/info` refresh is not reported as stale. Reusing a
 cached `/info` body preserves the earlier `observed_at`: a health-only refresh
 cannot launder a stale capability observation into a fresh one.
 
-## Required GameBench change
+## The GameBench side, as shipped
 
-The intended pool source is:
+The pool source is:
 
 ```text
 gamebench: tasks/craftax-singleplayer/containers/react/craftax_singleplayer_container.py
 ```
 
-Required source revision: `be0ad8a9e1977ca73b0e5c56b9195947b6d40c36`
-(`feat(craftax): add normalized live Luna rollout contract`), image
-`synth-containers 0.4.0.20260730`.
-
-At that revision the service implements `POST /rollouts/prepare` and enforces
-`react:luna_low`, but `/info` and `/metadata` advertise only
-`liveEval.policyRefs`. Workshop therefore projects `source: "none"` and every
-operation as `unknown`, and prepare fails closed with
-`container_capability_mismatch`.
-
-**This change belongs in the GameBench repository, not in this branch.** Add the
-block below to both `GET /info` and `GET /metadata` in
-`craftax_singleplayer_container.py`, keeping the existing `liveEval.policyRefs`
-for older readers:
+That service now advertises the normalized block from both `GET /info` and
+`GET /metadata`, so Workshop projects `source: "info"` and prepare passes:
 
 ```python
 "capabilities": {
@@ -121,9 +109,7 @@ for older readers:
         "rollouts.get": True,
         "rollouts.poll": True,
         "reward.get": True,
-        # Flip to True only once the start path accepts a real
-        # trace_context and seals a Trace V5 artifact.
-        "trace_v5.capture": False,
+        "trace_v5.capture": True,
     },
     "policy_refs": [
         {
@@ -136,12 +122,29 @@ for older readers:
 },
 ```
 
-Note that `/metadata` already carries an unrelated `capabilities` object
+Note that `/metadata` also carries an unrelated `capabilities` object
 (`async_rollout`, `checkpoint_resume`, …). Workshop only treats a block as
-normalized when it names the protocol or carries an `operations` object, so the
-existing keys must be merged into the same object rather than replaced.
+normalized when it names the protocol or carries an `operations` object, so
+those keys are merged into the same object rather than replacing it.
 
-## Until the pool ships it
+Every operation above is backed by a route the service implements, and
+`trace_v5.capture` is true only because the start path accepts a real
+`trace_context` and seals a Trace V5 artifact. `reward.get` was advertised
+before `GET /rollouts/{id}/reward` existed; that route now exists.
+
+Required source revision: `af2fdf5` on GameBench branch
+`v0.4-workshop-evidence-contract` (`feat(craftax): emit the normalized
+live-eval evidence contract`), which also publishes the frame, observation,
+policy-span, usage, and reward evidence this template renders. The producer
+half of that contract is documented beside the service in
+`containers/react/LIVE_EVAL_CONTRACT.md`.
+
+Capabilities are only half the gate: passing preflight says a pool accepts the
+protocol, not that its stream carries renderable evidence. A pool that
+advertises correctly and emits nothing but progress and a terminal reward will
+prepare, start, and complete — and produce an empty visual.
+
+## If a pool has not shipped its block yet
 
 An operator — the person at the keyboard, not an agent — may declare the pool in
 `config.toml`. That file is written only by Tauri commands and is unreachable
