@@ -7,6 +7,7 @@ import type { LiveEvalEvent, VisualBinding } from "../../../runtime/types.ts";
 import {
   craftaxEventLane,
   craftaxEventSequence,
+  craftaxRewardValue,
   craftaxTruthLabel,
   craftaxTruthState,
   groupTraceByStep,
@@ -173,7 +174,7 @@ function summarizeLanes(events: LiveEvalEvent[]): Map<string, LaneSummary> {
     const lane = craftaxEventLane(event);
     const summary = summaries.get(lane) ?? { achievements: 0, terminal: false };
     if (event.kind === "reward_signal") {
-      const value = finite(object(event.payload).value);
+      const value = craftaxRewardValue(event.payload);
       if (value != null) summary.reward = (summary.reward ?? 0) + value;
     } else if (event.kind === "snapshot") {
       const payload = object(event.payload);
@@ -282,7 +283,7 @@ export function Shell(props: ShellProps) {
   }, [viewer.frameUrl, failedFrameUrl, sseUrl]);
   const rewardSeries = rewardSignals.length
     ? rewardSignals.reduce<number[]>((series, event) => {
-        series.push((series.at(-1) ?? 0) + (finite(event.payload.value) ?? 0));
+        series.push((series.at(-1) ?? 0) + (craftaxRewardValue(event.payload) ?? 0));
         return series;
       }, [])
     : visibleEvents.flatMap((event) => {
