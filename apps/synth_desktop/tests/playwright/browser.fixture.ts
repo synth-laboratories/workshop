@@ -101,6 +101,7 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
 				getTemplate: async () => { throw new Error("visual template fixture missing"); },
 				list: async () => [],
 				get: async () => { throw new Error("visual fixture missing"); },
+				reportObservation: async () => undefined,
 				revisions: async () => [],
 				annotations: async () => [],
 				createAnnotation: async () => { throw new Error("annotation fixture missing"); },

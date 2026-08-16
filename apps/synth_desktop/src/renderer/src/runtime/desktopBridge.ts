@@ -45,14 +45,17 @@ function appEventToCodexEvent(event: AppEvent): CodexEvent | null {
 	return { sessionId: event.sessionId, method: event.kind, params };
 }
 
-function listenRuntimeAppEvents(listener: (event: AppEvent) => void): () => void {
+function listenRuntimeAppEvents(listener: (event: AppEvent) => void, onAttached?: () => void): () => void {
 	let disposed = false;
 	let unlisten: (() => void) | undefined;
 	void listen<AppEvent | OriginTaggedAppEvent>(EVENT_CHANNELS.RUNTIME, ({ payload }) => {
 		listener(unwrapRuntimeEvent(payload));
 	}).then((next) => {
 		if (disposed) next();
-		else unlisten = next;
+		else {
+			unlisten = next;
+			onAttached?.();
+		}
 	});
 	return () => {
 		disposed = true;
@@ -615,6 +618,7 @@ window.synthWorkspaceScope ??= isTauri
 			getTemplate: (templateId) => invokeCommand<VisualTemplateMeta>(COMMANDS.VISUALS_TEMPLATES_GET, { templateId }),
 			list: (query) => invokeCommand<VisualRecord[]>(COMMANDS.VISUALS_LIST, { query: query ?? null }),
 			get: (visualId) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_GET, { visualId }),
+			reportObservation: (observation) => invokeCommand<void>(COMMANDS.VISUALS_OBSERVATION_REPORT, { observation }),
 			revisions: (visualId) => invokeCommand<VisualRevision[]>(COMMANDS.VISUALS_REVISIONS, { visualId }),
 			annotations: (visualId) => invokeCommand<VisualAnnotation[]>(COMMANDS.VISUALS_ANNOTATIONS_LIST, { visualId }),
 			createAnnotation: (visualId, request) => invokeCommand<VisualAnnotation>(COMMANDS.VISUALS_ANNOTATION_CREATE, { visualId, request }),
@@ -643,10 +647,10 @@ window.synthWorkspaceScope ??= isTauri
 				}),
 			render: (visualId) => invokeCommand<VisualRecord>(COMMANDS.VISUALS_RENDER, { visualId }),
 			pollStream: (request) => invokeCommand(COMMANDS.VISUAL_STREAM_POLL, { request }),
-			onEvent(listener) {
+			onEvent(listener, onAttached) {
 				return listenRuntimeAppEvents((payload) => {
 					if (payload.kind.startsWith("visual.")) listener(payload);
-				});
+				}, onAttached);
 			},
 			onShow(listener) {
 				let disposed = false;

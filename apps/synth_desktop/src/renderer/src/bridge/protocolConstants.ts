@@ -140,6 +140,7 @@ export const COMMANDS = {
 	VISUALS_TEMPLATES_GET: "visuals_templates_get",
 	VISUALS_LIST: "visuals_list",
 	VISUALS_GET: "visuals_get",
+	VISUALS_OBSERVATION_REPORT: "visuals_observation_report",
 	VISUALS_REVISIONS: "visuals_revisions",
 	VISUALS_ANNOTATIONS_LIST: "visuals_annotations_list",
 	VISUALS_ANNOTATION_CREATE: "visuals_annotation_create",

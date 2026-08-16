@@ -1,4 +1,4 @@
-import { Component, useEffect, useMemo, useState, type ComponentType, type ErrorInfo, type ReactNode } from "react";
+import { Component, useEffect, useMemo, useRef, useState, type ComponentType, type ErrorInfo, type ReactNode } from "react";
 import type { ArtifactRef } from "../types/landing";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import { bindTemplateSlots, bindingSlots, isVisualBindings, propsFromBindings, resolveTemplate } from "@synth/visuals";
@@ -11,6 +11,7 @@ import { MermaidVisual } from "./MermaidVisual";
 import { SystemsMapVisual } from "./SystemsMapVisual";
 import { SystemsDynamicVisual } from "./SystemsDynamicVisual";
 import type { SubagentState } from "../runtime/sessionView";
+import { bindingAuthorityKey } from "../runtime/visualRevisionState";
 
 type ShellProps = {
 	title?: string;
@@ -649,6 +650,69 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	);
 }
 
+function numericAttribute(element: Element, name: string): number {
+	const value = Number(element.getAttribute(name));
+	return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+/** The template reports runtime facts as DOM data, but Workshop owns the
+ * extractor and readiness decision. Nothing supplied by a template is treated
+ * as a passing boolean. */
+function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactRef; children: ReactNode }) {
+	const root = useRef<HTMLDivElement>(null);
+	const [bindingsDigest, setBindingsDigest] = useState<string | null>(null);
+	const template = artifact.templateId ? resolveTemplate(artifact.templateId) : undefined;
+	const contract = template?.observationContract;
+
+	useEffect(() => {
+		let cancelled = false;
+		setBindingsDigest(null);
+		if (!contract || !artifact.visualId || !artifact.revision || !bridges.visuals) return;
+		void bridges.visuals.revisions(artifact.visualId).then((revisions) => {
+			const digest = revisions.find((candidate) => candidate.revision === artifact.revision)?.bindingsDigest;
+			if (!cancelled && digest) setBindingsDigest(digest);
+		});
+		return () => { cancelled = true; };
+	}, [artifact.revision, artifact.visualId, contract]);
+
+	useEffect(() => {
+		const host = root.current;
+		if (!host || !contract || !bindingsDigest || !artifact.visualId || !artifact.revision || !bridges.visuals) return;
+		let frame: number | null = null;
+		const publish = () => {
+			frame = null;
+			const surface = host.querySelector("[data-visual-transport-state]");
+			if (!surface) return;
+			const rawError = surface.getAttribute("data-visual-error")?.trim();
+			void bridges.visuals?.reportObservation({
+				schemaVersion: "synth.rendered-visual-observation.v1",
+				visualId: artifact.visualId!,
+				renderedRevision: artifact.revision!,
+				bindingsDigest,
+				transportState: surface.getAttribute("data-visual-transport-state") ?? "unknown",
+				rolloutCount: numericAttribute(surface, "data-visual-rollout-count"),
+				renderedFrameCount: numericAttribute(surface, "data-visual-rendered-frame-count"),
+				semanticEventCount: numericAttribute(surface, "data-visual-semantic-event-count"),
+				terminal: surface.getAttribute("data-visual-terminal") === "true",
+				error: rawError || null,
+				observedAt: new Date().toISOString()
+			});
+		};
+		const schedule = () => {
+			if (frame == null) frame = window.requestAnimationFrame(publish);
+		};
+		const observer = new MutationObserver(schedule);
+		observer.observe(host, { subtree: true, childList: true, attributes: true });
+		schedule();
+		return () => {
+			observer.disconnect();
+			if (frame != null) window.cancelAnimationFrame(frame);
+		};
+	}, [artifact.revision, artifact.visualId, bindingsDigest, contract]);
+
+	return <div ref={root} data-visual-observation-contract={contract?.schemaVersion}>{children}</div>;
+}
+
 function VisualInvalidState({ title, detail }: { title: string; detail: string }) {
 	return <div className="visual-invalid" role="alert" data-testid="visual-invalid"><strong>{title}</strong><p>{detail}</p></div>;
 }
@@ -686,6 +750,7 @@ class VisualErrorBoundary extends Component<
 
 /** Shared host used by chat cards, the right pane, and the Visuals library. */
 export function VisualHost({ artifact }: { artifact: ArtifactRef }) {
+	const bindingsKey = bindingAuthorityKey(artifact.bindings);
 	const isSystemsDynamic =
 		artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
 	if (isSystemsDynamic) {
@@ -719,8 +784,10 @@ export function VisualHost({ artifact }: { artifact: ArtifactRef }) {
 		);
 	}
 	return (
-		<VisualErrorBoundary key={`${artifact.id}:${artifact.templateId ?? "missing"}`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}>
-			<TemplateVisualHost artifact={artifact} />
+		<VisualErrorBoundary key={`${artifact.id}:${artifact.templateId ?? "missing"}:${bindingsKey}`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}>
+			<VisualObservationBoundary artifact={artifact}>
+				<TemplateVisualHost artifact={artifact} />
+			</VisualObservationBoundary>
 		</VisualErrorBoundary>
 	);
 }
@@ -864,6 +931,12 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const isSystemsDynamic = artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
 	const isSystems = artifact.templateId === "diagram.systems.v1" || artifact.rendererKind === "systems";
 	const kindLabel = isSubagents ? "Agents" : isSystemsDynamic ? "Benjamin Dicken Style" : isSystems ? "Systems map · 2D" : isMermaid ? "Diagram" : "Visual";
+	const revisionSync = artifact.metadata?.revisionSync as {
+		loading?: boolean;
+		requestedRevision?: number;
+		acceptedRevision?: number;
+		error?: string | null;
+	} | undefined;
 	return (
 		<aside
 			className={`visual-pane${expanded ? " visual-pane-expanded" : ""}`}
@@ -872,7 +945,10 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 		>
 			<header className="visual-pane-head">
 				<div className="visual-pane-head-text">
-					<span className="visual-pane-kind">{kindLabel}</span>
+					<span className="visual-pane-kind">
+						{kindLabel}{revision ? ` · rev ${revision}` : ""}
+						{revisionSync?.loading ? ` · reconciling${(revisionSync.requestedRevision ?? -1) > (revisionSync.acceptedRevision ?? -1) ? ` rev ${revisionSync.requestedRevision}` : ""}` : ""}
+					</span>
 					<span className="visual-pane-title">{artifact.title}</span>
 				</div>
 				<div className="visual-pane-head-actions">
@@ -920,7 +996,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					<button type="button" className="visual-close" onClick={onClose} aria-label="Close visual">×</button>
 				</div>
 			</header>
-			{artifactError ? <div className="visual-artifact-error" role="alert">{artifactError}</div> : null}
+			{artifactError || revisionSync?.error ? <div className="visual-artifact-error" role="alert">{artifactError ?? `Visual refresh failed · ${revisionSync?.error}`}</div> : null}
 			{seals.length ? (
 				<div className="visual-seal-strip" aria-label="Sealed revisions">
 					<span>Offline:</span>

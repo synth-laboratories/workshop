@@ -874,6 +874,40 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         capture_desktop_review(id, width, height, &png_path)?;
         "desktop-window"
     };
+    let observation = if capture_mode == "desktop-window" {
+        let value = request(
+            "GET",
+            &format!("/v1/review-observations/{id}"),
+            None,
+        )?
+        .get("observation")
+        .cloned()
+        .ok_or("review observation response is missing observation")?;
+        if value.get("renderedRevision").and_then(Value::as_i64) != Some(revision) {
+            return Err(format!(
+                "captured pane rendered revision {:?}, but durable revision is {revision}",
+                value.get("renderedRevision").and_then(Value::as_i64)
+            ));
+        }
+        Some(value)
+    } else {
+        None
+    };
+    let captured_at = chrono::Utc::now().to_rfc3339();
+    let observation_path = png_path.with_extension("observations.json");
+    fs::write(
+        &observation_path,
+        serde_json::to_vec_pretty(&json!({
+            "schemaVersion": "synth.visual-capture-observation.v1",
+            "visualId": id,
+            "revision": revision,
+            "screenshotPath": png_path.to_string_lossy(),
+            "captureTime": captured_at,
+            "observation": observation,
+        }))
+        .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
     let png = fs::read(&png_path).map_err(|error| error.to_string())?;
     Ok(json!({
         "visual_id": id,
@@ -882,6 +916,8 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         "capture_mode": capture_mode,
         "viewport": {"width":width,"height":height},
         "screenshot_path": png_path.to_string_lossy(),
+        "capture_time": captured_at,
+        "observations": observation,
         "instruction": "Inspect the attached PNG image before submitting visual_review. If any collision, truncation, crossing, weak hierarchy, or excessive density is visible, update and capture again.",
         "_mcpImage": {"data":base64::engine::general_purpose::STANDARD.encode(png),"mimeType":"image/png"}
     }))

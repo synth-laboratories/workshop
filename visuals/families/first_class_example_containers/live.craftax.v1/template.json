@@ -8,6 +8,16 @@
   "accent": "#FF5C00",
   "shell": "shell.tsx",
   "tags": ["live", "craftax", "eval", "stream", "canvas", "gameplay", "trace-v5"],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": ["connecting", "reconnecting", "error"],
+      "minimumRolloutCount": 1,
+      "minimumRenderedFrameCount": 1,
+      "minimumSemanticEventCount": 1,
+      "requireTerminal": true
+    }
+  },
   "slots": [
     {
       "name": "stream",

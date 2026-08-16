@@ -1617,6 +1617,14 @@ async fn visuals_get(
 
 #[tauri::command]
 #[specta::specta]
+fn visuals_observation_report(
+    observation: visuals_ipc::RenderedVisualObservation,
+) -> Result<(), AppError> {
+    visuals_ipc::record_rendered_observation(observation).map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn visuals_revisions(
     state: State<'_, Arc<CoreRuntime>>,
     visual_id: String,

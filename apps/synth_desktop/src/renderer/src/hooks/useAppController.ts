@@ -3,7 +3,7 @@
  * Owns remaining App orchestration (boot, permissions, sessions, overlays,
  * eval host) so App.tsx stays shell + wiring only.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { appEventToRuntimeEvent } from "@synth/runtime-protocol";
 import desktopPackage from "../../../../package.json";
 import type {
@@ -35,7 +35,6 @@ import {
 	EXECUTION_TARGETS,
 	isInternTargetId
 } from "../types/landing";
-import type { ArtifactRef } from "../types/landing";
 import { useInferenceMonitor } from "../components/InferencePanel";
 import { artifactFromVisualRecord } from "../components/VisualHost";
 import { useAccountShell } from "./useAccountShell";
@@ -102,6 +101,11 @@ import { drainPromptQueues, removeQueuedPrompt } from "../runtime/promptQueue";
 import { bridges } from "../runtime/desktopBridge";
 import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
 import { responseTraceStore } from "../runtime/responseTraceStore";
+import {
+	EMPTY_VISUAL_REVISION_STATE,
+	newestVisualArtifact,
+	visualRevisionReducer
+} from "../runtime/visualRevisionState";
 import type { MainView } from "../routes";
 
 // `turn/start` only proves the app-server accepted the request. It does not
@@ -201,7 +205,14 @@ export function useAppController() {
 	const [unreadChatIds, setUnreadChatIds] = useState<Set<string>>(() => new Set(loadPreferences().unreadCompletedChats));
 	const previousSessionStatusesRef = useRef(new Map<string, Session["status"]>());
 	const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
-	const [standaloneVisual, setStandaloneVisual] = useState<ArtifactRef | null>(null);
+	const [visualRevisionState, dispatchVisualRevision] = useReducer(
+		visualRevisionReducer,
+		EMPTY_VISUAL_REVISION_STATE
+	);
+	const openArtifactIdRef = useRef<string | null>(null);
+	const visualRequestGenerationRef = useRef(0);
+	const pendingVisualRefreshRef = useRef<{ id: string; minimumRevision: number; generation: number } | null>(null);
+	const acceptedVisualRevisionRef = useRef<{ id: string | null; revision: number }>({ id: null, revision: -1 });
 	const [openContainer, setOpenContainer] = useState<ContainerDeployment | null>(null);
 	const inferenceMonitor = useInferenceMonitor({ visible: selectedTargetId === "local-laguna" });
 	const {
@@ -994,14 +1005,40 @@ export function useAppController() {
 			? (state.syncSessions.find((s) => s.id === view.sessionId) ?? null)
 			: null;
 
-	const openArtifact =
-		standaloneVisual && openArtifactId === standaloneVisual.id
-			? standaloneVisual
-			: view.kind === "chat" && activeChat
-				? (activeChat.artifacts?.find((a) => a.id === openArtifactId) ?? null)
-				: view.kind === "sync" && activeSync
-					? (activeSync.artifacts?.find((a) => a.id === openArtifactId) ?? null)
-					: null;
+	const contextualArtifact = view.kind === "chat" && activeChat
+		? (activeChat.artifacts?.find((a) => a.id === openArtifactId) ?? null)
+		: view.kind === "sync" && activeSync
+			? (activeSync.artifacts?.find((a) => a.id === openArtifactId) ?? null)
+			: null;
+	const selectedOpenArtifact = newestVisualArtifact(
+		openArtifactId,
+		visualRevisionState.artifact,
+		contextualArtifact
+	) ?? contextualArtifact;
+	const openArtifact = selectedOpenArtifact && visualRevisionState.id === openArtifactId
+		? {
+			...selectedOpenArtifact,
+			metadata: {
+				...selectedOpenArtifact.metadata,
+				revisionSync: {
+					loading: visualRevisionState.loading,
+					requestedRevision: visualRevisionState.requestedRevision,
+					acceptedRevision: visualRevisionState.acceptedRevision,
+					error: visualRevisionState.error
+				}
+			}
+		}
+		: selectedOpenArtifact;
+	openArtifactIdRef.current = openArtifactId;
+	acceptedVisualRevisionRef.current = {
+		id: openArtifactId,
+		revision: typeof openArtifact?.revision === "number" ? openArtifact.revision : -1
+	};
+
+	useEffect(() => {
+		if (!openArtifactId || !contextualArtifact?.visualId) return;
+		dispatchVisualRevision({ type: "select", id: openArtifactId, artifact: contextualArtifact });
+	}, [contextualArtifact, openArtifactId]);
 
 	const viewKey =
 		view.kind === "chat"
@@ -1014,7 +1051,10 @@ export function useAppController() {
 
 	useEffect(() => {
 		setOpenArtifactId(null);
-		setStandaloneVisual(null);
+		openArtifactIdRef.current = null;
+		visualRequestGenerationRef.current += 1;
+		pendingVisualRefreshRef.current = null;
+		dispatchVisualRevision({ type: "close" });
 		setOpenContainer(null);
 		setContainerPaneExpanded(false);
 	}, [viewKey]);
@@ -1025,7 +1065,6 @@ export function useAppController() {
 		const subagents = surface?.artifacts?.find((artifact) => artifact.templateId === "synth.subagents.v1");
 		if (!surface || !subagents || autoOpenedSubagentsRef.current.has(surface.id)) return;
 		autoOpenedSubagentsRef.current.add(surface.id);
-		setStandaloneVisual(null);
 		setOpenArtifactId(subagents.id);
 	}, [activeChat, activeSync, openArtifactId, openContainer]);
 
@@ -1034,7 +1073,10 @@ export function useAppController() {
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key === "Escape") {
 				setOpenArtifactId(null);
-				setStandaloneVisual(null);
+				openArtifactIdRef.current = null;
+				visualRequestGenerationRef.current += 1;
+				pendingVisualRefreshRef.current = null;
+				dispatchVisualRevision({ type: "close" });
 				setOpenContainer(null);
 				setContainerPaneExpanded(false);
 			}
@@ -1046,12 +1088,21 @@ export function useAppController() {
 	const toggleArtifact = useCallback((id: string | null) => {
 		if (id == null) {
 			setOpenArtifactId(null);
-			setStandaloneVisual(null);
+			openArtifactIdRef.current = null;
+			visualRequestGenerationRef.current += 1;
+			pendingVisualRefreshRef.current = null;
+			dispatchVisualRevision({ type: "close" });
 			return;
 		}
-		setStandaloneVisual(null);
 		setOpenContainer(null);
-		setOpenArtifactId((current) => (current === id ? null : id));
+		setOpenArtifactId((current) => {
+			const next = current === id ? null : id;
+			openArtifactIdRef.current = next;
+			visualRequestGenerationRef.current += 1;
+			pendingVisualRefreshRef.current = null;
+			dispatchVisualRevision(next ? { type: "select", id: next } : { type: "close" });
+			return next;
+		});
 	}, []);
 
 	const toggleContainer = useCallback(async (id: string | null) => {
@@ -1067,7 +1118,10 @@ export function useAppController() {
 			try {
 			const container = await bridges.inventory.getContainer(id);
 			setOpenArtifactId(null);
-			setStandaloneVisual(null);
+			openArtifactIdRef.current = null;
+			visualRequestGenerationRef.current += 1;
+			pendingVisualRefreshRef.current = null;
+			dispatchVisualRevision({ type: "close" });
 			setOpenContainer(container);
 		} catch (reason) {
 			showToast(reason instanceof Error ? reason.message : String(reason));
@@ -1090,27 +1144,89 @@ export function useAppController() {
 			"schemaVersion" in visual && visual.schemaVersion === "synth.desktop-visual.v1"
 				? artifactFromVisualRecord(visual as VisualRecord)
 				: visualRecordToArtifact(visual as VisualInstanceRecord);
-		setStandaloneVisual(artifact);
+		openArtifactIdRef.current = artifact.id;
+		acceptedVisualRevisionRef.current = { id: artifact.id, revision: artifact.revision ?? -1 };
+		visualRequestGenerationRef.current += 1;
+		pendingVisualRefreshRef.current = null;
+		dispatchVisualRevision({ type: "select", id: artifact.id, artifact });
 		setOpenArtifactId(artifact.id);
 		// Opening an artifact is a side-pane action. Navigation remains explicit so
 		// traces stay beside their catalog and chat-created visuals stay beside chat.
 	}, []);
 
+	const reconcileOpenVisual = useCallback((visualId: string, minimumRevision = -1, open = false) => {
+		if (!bridges.visuals) return;
+		const wasOpen = openArtifactIdRef.current === visualId;
+		if (open) {
+			if (openArtifactIdRef.current !== visualId) {
+				visualRequestGenerationRef.current += 1;
+				pendingVisualRefreshRef.current = null;
+			}
+			openArtifactIdRef.current = visualId;
+			setOpenArtifactId(visualId);
+			dispatchVisualRevision({ type: "select", id: visualId });
+		} else if (openArtifactIdRef.current !== visualId) {
+			return;
+		}
+		if (
+			minimumRevision >= 0 &&
+			acceptedVisualRevisionRef.current.id === visualId &&
+			acceptedVisualRevisionRef.current.revision >= minimumRevision &&
+			(!open || wasOpen)
+		) return;
+		const pending = pendingVisualRefreshRef.current;
+		if (pending?.id === visualId && pending.minimumRevision >= minimumRevision) return;
+		const generation = ++visualRequestGenerationRef.current;
+		pendingVisualRefreshRef.current = { id: visualId, minimumRevision, generation };
+		dispatchVisualRevision({ type: "request", id: visualId, minimumRevision, generation });
+		void bridges.visuals.get(visualId).then(
+			(visual) => {
+				if (openArtifactIdRef.current !== visualId || visualRequestGenerationRef.current !== generation) return;
+				const artifact = artifactFromVisualRecord(visual);
+				acceptedVisualRevisionRef.current = { id: visualId, revision: artifact.revision ?? -1 };
+				dispatchVisualRevision({ type: "resolve", id: visualId, artifact, generation });
+				if (pendingVisualRefreshRef.current?.generation === generation) pendingVisualRefreshRef.current = null;
+			},
+			(reason) => {
+				if (openArtifactIdRef.current !== visualId || visualRequestGenerationRef.current !== generation) return;
+				dispatchVisualRevision({ type: "fail", id: visualId, generation, error: String(reason) });
+				if (pendingVisualRefreshRef.current?.generation === generation) pendingVisualRefreshRef.current = null;
+			}
+		);
+	}, []);
+
 	useEffect(() => {
-		const unlisten = bridges.visuals?.onShow?.(async (event) => {
+		if (openArtifactId && contextualArtifact?.visualId === openArtifactId) {
+			reconcileOpenVisual(openArtifactId, contextualArtifact.revision ?? -1);
+		}
+	}, [contextualArtifact?.visualId, openArtifactId, reconcileOpenVisual]);
+
+	useEffect(() => {
+		if (!bridges.visuals) return;
+		const reconcileSelected = () => {
+			const visualId = openArtifactIdRef.current;
+			if (visualId) reconcileOpenVisual(visualId);
+		};
+		const unlisten = bridges.visuals.onEvent((event) => {
 			const visualId =
 				typeof event.payload?.visualId === "string" ? event.payload.visualId : null;
-			if (!visualId || !bridges.visuals) return;
-			try {
-				const visual = await bridges.visuals.get(visualId);
-				openVisualRecord(visual);
-				showToast(`Opened visual · ${visual.title}`);
-			} catch (reason) {
-				showToast(`Visual show failed · ${String(reason)}`);
+			if (!visualId) return;
+			const eventRevision = typeof event.payload?.revision === "number" ? event.payload.revision : -1;
+			if (event.kind === "visual.show") reconcileOpenVisual(visualId, eventRevision, true);
+			else if (event.kind === "visual.updated" && openArtifactIdRef.current === visualId) {
+				reconcileOpenVisual(visualId, eventRevision);
 			}
-		});
-		return () => unlisten?.();
-	}, [openVisualRecord, showToast]);
+		}, reconcileSelected);
+		window.addEventListener("focus", reconcileSelected);
+		// Covers browser fixtures whose listener is synchronous and older bridges
+		// without an attachment callback. The callback repeats this fetch after the
+		// real Tauri listener promise resolves, closing the attach gap.
+		reconcileSelected();
+		return () => {
+			unlisten();
+			window.removeEventListener("focus", reconcileSelected);
+		};
+	}, [reconcileOpenVisual]);
 
 	const ensureOpenRouterReady = useCallback(async (targetId: string): Promise<boolean> => {
 		if (!targetId.startsWith("openrouter-")) return true;
@@ -1481,10 +1597,13 @@ export function useAppController() {
 	const onNewConversation = useCallback(() => {
 		void loadMachinePermissions()
 			.catch((reason) => showToast(`Could not load machine permissions: ${reason instanceof Error ? reason.message : String(reason)}`))
-			.finally(() => {
-				setView({ kind: "landing" });
-				setOpenArtifactId(null);
-				setStandaloneVisual(null);
+				.finally(() => {
+					setView({ kind: "landing" });
+					setOpenArtifactId(null);
+					openArtifactIdRef.current = null;
+					visualRequestGenerationRef.current += 1;
+					pendingVisualRefreshRef.current = null;
+					dispatchVisualRevision({ type: "close" });
 			});
 	}, [loadMachinePermissions, showToast]);
 
@@ -1753,7 +1872,7 @@ export function useAppController() {
 		openArtifactId,
 		openArtifact,
 		openContainer,
-		standaloneVisual,
+		standaloneVisual: visualRevisionState.artifact,
 		toggleArtifact,
 		toggleContainer,
 		probeOpenContainer,

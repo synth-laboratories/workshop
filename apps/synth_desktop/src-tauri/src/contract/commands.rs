@@ -111,6 +111,7 @@ impl Commands {
     pub const VISUALS_TEMPLATES_GET: &'static str = "visuals_templates_get";
     pub const VISUALS_LIST: &'static str = "visuals_list";
     pub const VISUALS_GET: &'static str = "visuals_get";
+    pub const VISUALS_OBSERVATION_REPORT: &'static str = "visuals_observation_report";
     pub const VISUALS_REVISIONS: &'static str = "visuals_revisions";
     pub const VISUALS_ANNOTATIONS_LIST: &'static str = "visuals_annotations_list";
     pub const VISUALS_ANNOTATION_CREATE: &'static str = "visuals_annotation_create";

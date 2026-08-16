@@ -149,6 +149,7 @@ export const commands = {
 	offset: unknown,
 } | null) => typedError<VisualRecord_Serialize[], AppError>(__TAURI_INVOKE("visuals_list", { query })),
 	visualsGet: (visualId: string) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_get", { visualId })),
+	visualsObservationReport: (observation: RenderedVisualObservation) => typedError<null, AppError>(__TAURI_INVOKE("visuals_observation_report", { observation })),
 	visualsRevisions: (visualId: string) => typedError<VisualRevision_Serialize[], AppError>(__TAURI_INVOKE("visuals_revisions", { visualId })),
 	visualsAnnotationsList: (visualId: string) => typedError<VisualAnnotation[], AppError>(__TAURI_INVOKE("visuals_annotations_list", { visualId })),
 	visualsAnnotationCreate: (visualId: string, request: VisualAnnotationCreate) => typedError<VisualAnnotation, AppError>(__TAURI_INVOKE("visuals_annotation_create", { visualId, request })),
@@ -1582,6 +1583,20 @@ export type PluginStatus_Serialize = {
 	detail?: string | null,
 };
 
+export type RenderedVisualObservation = {
+	schemaVersion: string,
+	visualId: string,
+	renderedRevision: unknown,
+	bindingsDigest: string,
+	transportState: string,
+	rolloutCount: unknown,
+	renderedFrameCount: unknown,
+	semanticEventCount: unknown,
+	terminal: boolean,
+	error: string | null,
+	observedAt: string,
+};
+
 export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic";
 
 export type ReportBlock = ReportBlock_Serialize | ReportBlock_Deserialize;
@@ -2083,6 +2098,20 @@ export type TemplateMeta = {
 	shellPath?: string | null,
 	exampleBinding?: unknown,
 	slots?: unknown,
+	observationContract?: TemplateObservationContract | null,
+};
+
+export type TemplateObservationContract = {
+	schemaVersion: string,
+	readiness: TemplateReadinessContract,
+};
+
+export type TemplateReadinessContract = {
+	rejectTransportStates?: string[],
+	minimumRolloutCount?: unknown,
+	minimumRenderedFrameCount?: unknown,
+	minimumSemanticEventCount?: unknown,
+	requireTerminal?: boolean,
 };
 
 export type TerminalCreateRequest = {

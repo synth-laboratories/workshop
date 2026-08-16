@@ -58,6 +58,16 @@ export type VisualTemplateMeta = {
   /** Relative path to the React shell from the template root. */
   shell: string;
   tags?: string[];
+  observationContract?: {
+    schemaVersion: "synth.visual-observation-contract.v1";
+    readiness: {
+      rejectTransportStates?: string[];
+      minimumRolloutCount?: number;
+      minimumRenderedFrameCount?: number;
+      minimumSemanticEventCount?: number;
+      requireTerminal?: boolean;
+    };
+  };
 };
 
 /**

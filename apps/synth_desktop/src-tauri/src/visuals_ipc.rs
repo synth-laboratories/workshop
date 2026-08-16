@@ -21,6 +21,7 @@ use crate::visuals::{
     require_visualsbench_start_policy, VisualAnnotationCreate, VisualCreateRequest, VisualQuery,
     VisualStatus, VisualUpdateRequest, LIVE_EVAL_SLOT,
 };
+use crate::visuals::{TemplateMeta, TemplateObservationContract};
 use base64::Engine;
 
 const MAX_SCRIPTED_ROLLOUTS: u64 = 10;
@@ -33,24 +34,110 @@ const BASE_AUTHORING_CHECKS: [&str; 6] = [
     "realEvidence",
 ];
 
-fn required_authoring_checks(template_id: &str) -> Vec<&'static str> {
+fn required_authoring_checks(template: &TemplateMeta) -> Vec<&'static str> {
     let mut checks = BASE_AUTHORING_CHECKS.to_vec();
     checks.push("screenshotInspected");
-    if template_id.starts_with("diagram.") {
+    if template.id.starts_with("diagram.") {
         checks.push("noTextCollisions");
         checks.push("focalDensity");
     }
-    if template_id == "live.craftax.v1" {
+    if template
+        .observation_contract
+        .as_ref()
+        .is_some_and(|contract| contract.readiness.minimum_rendered_frame_count > 0)
+    {
         checks.push("imageReplay");
     }
     checks
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VisualCaptureObservationReceipt {
+    schema_version: String,
+    visual_id: String,
+    revision: i64,
+    screenshot_path: String,
+    capture_time: String,
+    observation: Option<RenderedVisualObservation>,
+}
+
+fn capture_observation_receipt(screenshot: &str) -> Result<VisualCaptureObservationReceipt> {
+    let path = std::path::Path::new(screenshot).with_extension("observations.json");
+    let receipt: VisualCaptureObservationReceipt = serde_json::from_slice(
+        &fs::read(&path).with_context(|| {
+            format!(
+                "visual review requires capture observations beside {}",
+                path.display()
+            )
+        })?,
+    )
+    .context("visual capture observation receipt is invalid")?;
+    if receipt.schema_version != "synth.visual-capture-observation.v1"
+        || receipt.screenshot_path != screenshot
+    {
+        anyhow::bail!("visual capture observation receipt does not match screenshot");
+    }
+    Ok(receipt)
+}
+
+fn validate_readiness_observation(
+    contract: &TemplateObservationContract,
+    visual_id: &str,
+    revision: i64,
+    bindings_digest: &str,
+    observation: &RenderedVisualObservation,
+) -> Result<()> {
+    if observation.visual_id != visual_id || observation.rendered_revision != revision {
+        anyhow::bail!(
+            "captured rendered revision {} for {}, expected revision {revision} for {visual_id}",
+            observation.rendered_revision,
+            observation.visual_id
+        );
+    }
+    if observation.bindings_digest != bindings_digest {
+        anyhow::bail!("captured bindings do not match the current durable revision");
+    }
+    let readiness = &contract.readiness;
+    if readiness
+        .reject_transport_states
+        .iter()
+        .any(|state| state == &observation.transport_state)
+    {
+        anyhow::bail!(
+            "visual readiness rejects rendered transport state {}",
+            observation.transport_state
+        );
+    }
+    if observation.error.as_deref().is_some_and(|error| !error.is_empty()) {
+        anyhow::bail!("visual readiness rejects a rendered error state");
+    }
+    if observation.rollout_count < readiness.minimum_rollout_count {
+        anyhow::bail!("visual readiness has zero or insufficient rendered rollouts");
+    }
+    if observation.rendered_frame_count < readiness.minimum_rendered_frame_count {
+        anyhow::bail!("visual readiness has zero or insufficient rendered frame evidence");
+    }
+    if observation.semantic_event_count < readiness.minimum_semantic_event_count {
+        anyhow::bail!("visual readiness has zero or insufficient semantic event evidence");
+    }
+    if readiness.require_terminal && !observation.terminal {
+        anyhow::bail!("visual readiness requires rendered terminal evidence");
+    }
+    Ok(())
 }
 
 use anyhow::{Context, Result};
 use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fs,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Mutex, OnceLock},
+};
 use tauri::{AppHandle, LogicalSize, Manager, Size};
 use uuid::Uuid;
 
@@ -60,6 +147,58 @@ pub struct VisualsIpcConnection {
     pub url: String,
     pub token: String,
     pub path: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderedVisualObservation {
+    pub schema_version: String,
+    pub visual_id: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub rendered_revision: i64,
+    pub bindings_digest: String,
+    pub transport_state: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub rollout_count: u64,
+    #[specta(type = specta_typescript::Unknown)]
+    pub rendered_frame_count: u64,
+    #[specta(type = specta_typescript::Unknown)]
+    pub semantic_event_count: u64,
+    pub terminal: bool,
+    pub error: Option<String>,
+    pub observed_at: String,
+}
+
+static RENDERED_OBSERVATIONS: OnceLock<Mutex<BTreeMap<String, RenderedVisualObservation>>> =
+    OnceLock::new();
+
+pub fn record_rendered_observation(observation: RenderedVisualObservation) -> Result<()> {
+    if observation.schema_version != "synth.rendered-visual-observation.v1" {
+        anyhow::bail!("unsupported rendered visual observation schema");
+    }
+    if observation.visual_id.trim().is_empty() || observation.rendered_revision < 1 {
+        anyhow::bail!("rendered visual observation requires visual identity and revision");
+    }
+    if observation.bindings_digest.trim().is_empty() || observation.transport_state.trim().is_empty()
+    {
+        anyhow::bail!("rendered visual observation requires bindings and transport authority");
+    }
+    RENDERED_OBSERVATIONS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("rendered observation store is unavailable"))?
+        .insert(observation.visual_id.clone(), observation);
+    Ok(())
+}
+
+fn rendered_observation(visual_id: &str) -> Result<RenderedVisualObservation> {
+    RENDERED_OBSERVATIONS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("rendered observation store is unavailable"))?
+        .get(visual_id)
+        .cloned()
+        .with_context(|| format!("no rendered observation is available for visual {visual_id}"))
 }
 
 pub fn connection_path(root: &std::path::Path) -> PathBuf {
@@ -314,6 +453,13 @@ async fn dispatch_request(
         request.body
     };
     let method = request.method.as_str();
+    if method == "GET" && path.starts_with("/v1/review-observations/") {
+        let visual_id = path.trim_start_matches("/v1/review-observations/");
+        if visual_id.is_empty() || visual_id.contains('/') {
+            anyhow::bail!("invalid review observation visual id");
+        }
+        return Ok(json!({"observation": rendered_observation(visual_id)?}));
+    }
     if method == "POST" && path == "/v1/review-window/resize" {
         return resize_review_window(app, &json_body);
     }
@@ -1493,7 +1639,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .trim_end_matches('/');
             let visual = registry.get(id.to_string()).await?;
             let template = registry.get_template(&visual.template_id)?;
-            let required_checks = required_authoring_checks(&visual.template_id);
+            let required_checks = required_authoring_checks(&template);
             let reviews = visual
                 .metadata
                 .get("authoringReviews")
@@ -1636,7 +1782,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             if findings.iter().any(|value| !value.is_string()) {
                 anyhow::bail!("review findings must be strings");
             }
-            {
+            let capture_receipt = {
                 let screenshot = body
                     .get("screenshot_path")
                     .and_then(Value::as_str)
@@ -1657,6 +1803,15 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                         "visual review screenshot_path must be an existing absolute file"
                     );
                 }
+                let receipt = capture_observation_receipt(screenshot)?;
+                if receipt.visual_id != id || receipt.revision != revision {
+                    anyhow::bail!("visual capture observations do not match the reviewed visual revision");
+                }
+                receipt
+            };
+            let template = registry.get_template(&current.template_id)?;
+            if template.observation_contract.is_some() && capture_receipt.observation.is_none() {
+                anyhow::bail!("this template requires mechanically harvested rendered observations");
             }
             let mut metadata = current.metadata.as_object().cloned().unwrap_or_default();
             let mut reviews = metadata
@@ -1670,6 +1825,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "checks": checks,
                 "findings": findings,
                 "screenshotPath": body.get("screenshot_path").cloned().unwrap_or(Value::Null),
+                "captureTime": capture_receipt.capture_time,
+                "observations": capture_receipt.observation,
                 "reviewedAt": chrono::Utc::now().to_rfc3339(),
             }));
             metadata.insert("authoringReviews".into(), Value::Array(reviews.clone()));
@@ -1724,7 +1881,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     "visual readiness requires at least two reviews of revision {revision}"
                 );
             }
-            let required = required_authoring_checks(&current.template_id);
+            let template = registry.get_template(&current.template_id)?;
+            let required = required_authoring_checks(&template);
             for review in &current_reviews {
                 for check in &required {
                     if review
@@ -1734,6 +1892,34 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     {
                         anyhow::bail!("visual review is not passing required check {check}");
                     }
+                }
+            }
+            if let Some(contract) = template.observation_contract.as_ref() {
+                let durable = registry
+                    .revisions(id.to_string())
+                    .await?
+                    .into_iter()
+                    .find(|candidate| candidate.revision == revision)
+                    .context("current visual revision record is missing")?;
+                let bindings_digest = durable
+                    .bindings_digest
+                    .as_deref()
+                    .context("current visual revision is missing bindings digest")?;
+                for review in &current_reviews {
+                    let observation: RenderedVisualObservation = serde_json::from_value(
+                        review
+                            .get("observations")
+                            .cloned()
+                            .context("visual review is missing rendered observations")?,
+                    )
+                    .context("visual review rendered observations are invalid")?;
+                    validate_readiness_observation(
+                        contract,
+                        id,
+                        revision,
+                        bindings_digest,
+                        &observation,
+                    )?;
                 }
             }
             if let Some(kind) = crate::visuals::systems::template_kind(&current.template_id) {
@@ -2521,10 +2707,94 @@ mod tests {
         );
     }
 
+    fn live_contract() -> TemplateObservationContract {
+        TemplateObservationContract {
+            schema_version: "synth.visual-observation-contract.v1".into(),
+            readiness: crate::visuals::TemplateReadinessContract {
+                reject_transport_states: vec![
+                    "connecting".into(),
+                    "reconnecting".into(),
+                    "error".into(),
+                ],
+                minimum_rollout_count: 1,
+                minimum_rendered_frame_count: 1,
+                minimum_semantic_event_count: 1,
+                require_terminal: true,
+            },
+        }
+    }
+
+    fn rendered_observation() -> RenderedVisualObservation {
+        RenderedVisualObservation {
+            schema_version: "synth.rendered-visual-observation.v1".into(),
+            visual_id: "vis_1".into(),
+            rendered_revision: 14,
+            bindings_digest: "bindings-14".into(),
+            transport_state: "terminal".into(),
+            rollout_count: 10,
+            rendered_frame_count: 21,
+            semantic_event_count: 26,
+            terminal: true,
+            error: None,
+            observed_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
     #[test]
-    fn craftax_readiness_requires_real_image_replay() {
-        assert!(!required_authoring_checks("live.harbor_eval.v1").contains(&"imageReplay"));
-        assert!(required_authoring_checks("live.craftax.v1").contains(&"imageReplay"));
+    fn observation_contract_drives_image_replay_without_template_id_logic() {
+        let mut template = crate::visuals::resolve_template("live.craftax.v1").unwrap();
+        assert!(required_authoring_checks(&template).contains(&"imageReplay"));
+        template.id = "live.future_eval.v1".into();
+        assert!(required_authoring_checks(&template).contains(&"imageReplay"));
+        template.observation_contract = None;
+        assert!(!required_authoring_checks(&template).contains(&"imageReplay"));
+    }
+
+    #[test]
+    fn readiness_accepts_matching_mechanically_harvested_evidence() {
+        validate_readiness_observation(
+            &live_contract(),
+            "vis_1",
+            14,
+            "bindings-14",
+            &rendered_observation(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn readiness_rejects_connecting_and_zero_evidence() {
+        let mut observation = rendered_observation();
+        observation.transport_state = "connecting".into();
+        assert!(validate_readiness_observation(
+            &live_contract(), "vis_1", 14, "bindings-14", &observation
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("transport state"));
+        observation.transport_state = "terminal".into();
+        observation.rendered_frame_count = 0;
+        assert!(validate_readiness_observation(
+            &live_contract(), "vis_1", 14, "bindings-14", &observation
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("frame evidence"));
+    }
+
+    #[test]
+    fn readiness_rejects_stale_revision_and_mismatched_bindings() {
+        let observation = rendered_observation();
+        assert!(validate_readiness_observation(
+            &live_contract(), "vis_1", 15, "bindings-14", &observation
+        )
+        .is_err());
+        assert!(validate_readiness_observation(
+            &live_contract(), "vis_1", 14, "bindings-15", &observation
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("bindings"));
     }
 
     #[test]

@@ -500,6 +500,19 @@ export type VisualsBridge = {
 		offset?: number;
 	}): Promise<VisualRecord[]>;
 	get(visualId: string): Promise<VisualRecord>;
+	reportObservation(observation: {
+		schemaVersion: "synth.rendered-visual-observation.v1";
+		visualId: string;
+		renderedRevision: number;
+		bindingsDigest: string;
+		transportState: string;
+		rolloutCount: number;
+		renderedFrameCount: number;
+		semanticEventCount: number;
+		terminal: boolean;
+		error?: string | null;
+		observedAt: string;
+	}): Promise<void>;
 	revisions(visualId: string): Promise<VisualRevision[]>;
 	annotations(visualId: string): Promise<VisualAnnotation[]>;
 	createAnnotation(visualId: string, request: {
@@ -558,7 +571,7 @@ export type VisualsBridge = {
 	}>;
 	render(visualId: string): Promise<VisualRecord>;
 	pollStream(request: { visualId: string; pollUrl: string; after: number; limit: number }): Promise<unknown>;
-	onEvent(listener: (event: AppEvent) => void): () => void;
+	onEvent(listener: (event: AppEvent) => void, onAttached?: () => void): () => void;
 	onShow(listener: (event: AppEvent) => void): () => void;
 };
 

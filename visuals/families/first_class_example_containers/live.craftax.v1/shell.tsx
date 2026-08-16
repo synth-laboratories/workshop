@@ -230,6 +230,10 @@ export function Shell(props: ShellProps) {
       : [])
     : [], { poll: props.pollStream });
   const { events, live, error, ready, recovering, recovered } = liveBindings.length > 1 ? multiplexed : single;
+	const missingTransportCount = liveBindings.filter((binding) => !binding.poll_url).length;
+	const bindingError = liveBindings.length > 1 && missingTransportCount > 0
+		? `${missingTransportCount} live stream${missingTransportCount === 1 ? " is" : "s are"} missing required poll transport`
+		: null;
   const config = { ...DEFAULT_CONFIG, ...props.visualMetadata?.visualConfig };
   const scopedEvents = useMemo(() => {
     // A visual bound to specific rollouts must never silently import every
@@ -263,6 +267,7 @@ export function Shell(props: ShellProps) {
   const observation = latestObservation(visibleEvents);
   const inventory = inventoryFrom(observation);
   const terminalLanes = [...laneSummaries.values()].filter((summary) => summary.terminal).length;
+  const allLanesTerminal = lanes.length > 0 && terminalLanes === lanes.length;
   const visualLive = live && terminalLanes < lanes.length;
   const inspectedItems = traceMode === "focus"
     ? semanticTrace.filter((item) => item.category === "policy" || item.category === "evidence")
@@ -297,7 +302,9 @@ export function Shell(props: ShellProps) {
     return series;
   }, []);
   const lastDurableSequence = craftaxEventSequence(fullProjection.ordered.at(-1) ?? ({} as LiveEvalEvent), -1);
-  const connectionState = recovering
+  const connectionState = bindingError
+		? "binding error"
+		: recovering
     ? `catching up${recovered ? ` · recovered ${recovered}` : ""}`
     : error
     ? `connection interrupted · last durable seq ${lastDurableSequence >= 0 ? lastDurableSequence : "—"}`
@@ -342,7 +349,17 @@ export function Shell(props: ShellProps) {
   }, [framePlaying, frameFps, frameEvents, laneEvents, visibleEvents]);
 
   return (
-    <div className={`craftax-live-viewer theme-${config.theme} density-${config.density}`} data-testid="visual-live-craftax" data-visual-landmark="gameplay-dashboard">
+    <div
+		className={`craftax-live-viewer theme-${config.theme} density-${config.density}`}
+		data-testid="visual-live-craftax"
+		data-visual-landmark="gameplay-dashboard"
+		data-visual-transport-state={bindingError ? "error" : recovering ? "reconnecting" : visualLive ? "streaming" : ready ? (allLanesTerminal ? "terminal" : "ready") : "connecting"}
+		data-visual-rollout-count={lanes.length}
+		data-visual-rendered-frame-count={frameUrl ? frameEvents.length : 0}
+		data-visual-semantic-event-count={semanticTrace.length}
+		data-visual-terminal={allLanesTerminal ? "true" : "false"}
+		data-visual-error={bindingError ?? error ?? ""}
+	>
       <header className="cv-topbar">
         <div><p className="cv-eyebrow">Live eval · Craftax{scope?.campaign_id ? <> · <Identifier value={scope.campaign_id} label="campaign" max={18} copy={false} /></> : null}</p><h2>{props.title ?? "Policy through time"}</h2>{props.lede ? <p className="cv-lede">{props.lede}</p> : null}</div>
         <div className="cv-connection" role="status"><span className={visualLive ? "live" : ready ? "ready" : ""} />{connectionState}</div>
@@ -357,7 +374,7 @@ export function Shell(props: ShellProps) {
         <Metric label="Trace" value={`${semanticTrace.length} semantic events`} />
       </section>
 
-      {error ? <p role="alert" className="cv-error">{error}</p> : null}
+      {bindingError || error ? <p role="alert" className="cv-error">{bindingError ?? error}</p> : null}
       <nav className="cv-lanes" aria-label="Rollout lanes">
         {lanes.map((lane) => {
           const summary = laneSummaries.get(lane);

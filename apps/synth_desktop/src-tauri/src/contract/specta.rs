@@ -146,6 +146,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::visuals_templates_get,
         crate::visuals_list,
         crate::visuals_get,
+        crate::visuals_observation_report,
         crate::visuals_revisions,
         crate::visuals_annotations_list,
         crate::visuals_annotation_create,
@@ -353,7 +354,7 @@ mod tests {
         // version rows, and the six diagnostics commands expose the local
         // diagnostics boundary.
         assert_eq!(
-            exported, 197,
+            exported, 198,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(
