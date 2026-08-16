@@ -101,6 +101,21 @@ export const commands = {
 	 *  scoped to exact URLs already stored on the named visual.
 	 */
 	visualStreamPoll: (request: VisualStreamPollRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_stream_poll", { request })),
+	/**  Record a renderer diagnostic. Returns as soon as it is queued. */
+	diagnosticsReport: (request: DiagnosticReportRequest) => typedError<null, AppError>(__TAURI_INVOKE("diagnostics_report", { request })),
+	diagnosticsStatus: () => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_status")),
+	/**
+	 *  Typed diagnostic query for the Diagnostics pane. The renderer is bounded by
+	 *  the same contract as the agent — there is only one query path.
+	 */
+	diagnosticsQuery: (request: unknown) => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_query", { request })),
+	diagnosticsExplain: (request: unknown) => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_explain", { request })),
+	diagnosticsBundle: (request: unknown) => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_bundle", { request })),
+	/**
+	 *  Drop the disposable index. Traces, run evidence, and the authoritative
+	 *  journal are untouched.
+	 */
+	diagnosticsClearIndex: () => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_clear_index")),
 	optimizerSidecarStatus: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_status")),
 	optimizerSidecarInstall: (version: string | null) => typedError<OptimizerSidecarVersion, AppError>(__TAURI_INVOKE("optimizer_sidecar_install", { version })),
 	optimizerSidecarStart: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_start")),
@@ -767,6 +782,36 @@ export type DesktopPermissionSettings = {
 export type DesktopPermissionUpdate = {
 	approvalPolicy: string,
 	sandboxMode: string,
+};
+
+/**
+ *  One structured diagnostic from the renderer.
+ *
+ *  The renderer is the only surface whose failures were previously invisible
+ *  to everything else — a `console.error` in a webview reaches no journal, no
+ *  index, and no agent. This is the narrow command that ends that: it carries
+ *  the same envelope every other emitter uses, and the backend validates,
+ *  redacts, and correlates it exactly as if it had originated in Rust.
+ */
+export type DiagnosticReportRequest = {
+	severity: string,
+	component: string,
+	event: string,
+	code: string,
+	message: string,
+	retryable?: boolean,
+	sessionId?: string | null,
+	turnId?: string | null,
+	toolCallId?: string | null,
+	commandId?: string | null,
+	visualId?: string | null,
+	visualRevision?: unknown,
+	containerId?: string | null,
+	rolloutId?: string | null,
+	streamId?: string | null,
+	optimizerRunId?: string | null,
+	traceId?: string | null,
+	details?: unknown,
 };
 
 export type EntityCount = {

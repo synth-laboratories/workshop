@@ -100,6 +100,7 @@ import { loadDeviceUsage } from "../runtime/deviceUsage";
 import { createSemanticEvalApi } from "../runtime/evalApi";
 import { drainPromptQueues, removeQueuedPrompt } from "../runtime/promptQueue";
 import { bridges } from "../runtime/desktopBridge";
+import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
 import { responseTraceStore } from "../runtime/responseTraceStore";
 import type { MainView } from "../routes";
 
@@ -276,6 +277,16 @@ export function useAppController() {
 			}, { updateStatus: false });
 			setFailedSend({ sessionId, text, messageId, message: TURN_ACTIVITY_STALLED_MESSAGE });
 			showToast(TURN_ACTIVITY_STALLED_MESSAGE);
+			reportDiagnostic({
+				sessionId,
+				severity: "error",
+				component: "renderer",
+				event: "provider.activity.stalled",
+				code: DIAGNOSTIC_CODES.providerStalled,
+				message: TURN_ACTIVITY_STALLED_MESSAGE,
+				retryable: true,
+				details: { reason: "turn_activity_stalled", idleTimeoutMs: TURN_ACTIVITY_IDLE_TIMEOUT_MS }
+			});
 		}, TURN_ACTIVITY_IDLE_TIMEOUT_MS);
 		turnActivityWatchdogsRef.current.set(sessionId, timer);
 	}, [allocateNativeSequence, clearTurnActivityWatchdog, nativeCodex, showToast]);
@@ -300,6 +311,16 @@ export function useAppController() {
 			}, { updateStatus: false });
 			setFailedSend({ sessionId, text, messageId, message: TURN_START_TIMEOUT_MESSAGE });
 			showToast(TURN_START_TIMEOUT_MESSAGE);
+			reportDiagnostic({
+				sessionId,
+				severity: "error",
+				component: "renderer",
+				event: "provider.first_activity.timeout",
+				code: DIAGNOSTIC_CODES.providerDisconnected,
+				message: TURN_START_TIMEOUT_MESSAGE,
+				retryable: true,
+				details: { reason: "turn_first_activity_timeout", timeoutMs: TURN_FIRST_ACTIVITY_TIMEOUT_MS }
+			});
 		}, TURN_FIRST_ACTIVITY_TIMEOUT_MS);
 		turnStartWatchdogsRef.current.set(sessionId, timer);
 		armTurnActivityWatchdog(sessionId, text, messageId);

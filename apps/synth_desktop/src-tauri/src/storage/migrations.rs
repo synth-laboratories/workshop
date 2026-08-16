@@ -21,6 +21,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_16,
     MIGRATION_17,
     MIGRATION_18,
+    MIGRATION_19,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1098,6 +1099,56 @@ CREATE TABLE IF NOT EXISTS query_snapshots (
 
 CREATE INDEX IF NOT EXISTS query_snapshots_domain_time
 ON query_snapshots(domain, queried_at DESC);
+"#;
+
+/// Diagnostics (`synth.diagnostic-event.v1`) live in the journal as one more
+/// event kind — there is no second authoritative event model. What they do
+/// need is a way to be *found*: a typed diagnostic query filters on the
+/// envelope's indexed labels and its correlation identities, and without these
+/// partial expression indexes every such lookup degrades into a full scan of
+/// every journal payload the app has ever written.
+///
+/// Every index here is partial on the diagnostic kind, so an installation that
+/// never emits a diagnostic pays nothing for them.
+const MIGRATION_19: &str = r#"
+CREATE INDEX IF NOT EXISTS events_diagnostics_sequence
+ON events(sequence DESC) WHERE kind = 'diagnostic.event';
+
+CREATE INDEX IF NOT EXISTS events_diagnostics_component
+ON events(json_extract(payload_json, '$.component'), sequence DESC)
+WHERE kind = 'diagnostic.event';
+
+CREATE INDEX IF NOT EXISTS events_diagnostics_severity
+ON events(json_extract(payload_json, '$.severity'), sequence DESC)
+WHERE kind = 'diagnostic.event';
+
+CREATE INDEX IF NOT EXISTS events_diagnostics_code
+ON events(json_extract(payload_json, '$.code'), sequence DESC)
+WHERE kind = 'diagnostic.event';
+
+CREATE INDEX IF NOT EXISTS events_diagnostics_visual
+ON events(json_extract(payload_json, '$.visual_id'), sequence DESC)
+WHERE kind = 'diagnostic.event';
+
+CREATE INDEX IF NOT EXISTS events_diagnostics_rollout
+ON events(json_extract(payload_json, '$.rollout_id'), sequence DESC)
+WHERE kind = 'diagnostic.event';
+
+CREATE INDEX IF NOT EXISTS events_diagnostics_stream
+ON events(json_extract(payload_json, '$.stream_id'), sequence DESC)
+WHERE kind = 'diagnostic.event';
+
+CREATE INDEX IF NOT EXISTS events_diagnostics_container
+ON events(json_extract(payload_json, '$.container_id'), sequence DESC)
+WHERE kind = 'diagnostic.event';
+
+CREATE INDEX IF NOT EXISTS events_diagnostics_optimizer_run
+ON events(json_extract(payload_json, '$.optimizer_run_id'), sequence DESC)
+WHERE kind = 'diagnostic.event';
+
+CREATE INDEX IF NOT EXISTS events_diagnostics_trace
+ON events(json_extract(payload_json, '$.trace_id'), sequence DESC)
+WHERE kind = 'diagnostic.event';
 "#;
 
 #[cfg(test)]

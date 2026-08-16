@@ -28,6 +28,7 @@ import { VisualsPage } from "./components/VisualsPage";
 import { ReportsPage } from "./components/ReportsPage";
 import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
 import { ResponsesTracePanel } from "./components/ResponsesTracePanel";
+import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
 import { sessionIsLocalChat, sessionIsSync } from "./runtime/sessionView";
 import { bridges } from "./runtime/desktopBridge";
 
@@ -439,6 +440,19 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 									id: "trace",
 									label: "Advanced",
 									content: <ResponsesTracePanel sessionId={activeChat.id} running={activeChatRunning} />
+								},
+								{
+									id: "diagnostics",
+									label: "Diagnostics",
+									// Only the active tab's content mounts, so the pane's
+									// queries never run behind a closed tab.
+									content: (
+										<DiagnosticsPanel
+											sessionId={activeChat.id}
+											onOpenVisual={(id) => toggleArtifact(id)}
+											onOpenContainer={(id) => void toggleContainer(id)}
+										/>
+									)
 								},
 								...(activeLocalModel
 									? [

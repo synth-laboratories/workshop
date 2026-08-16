@@ -24,6 +24,7 @@ pub mod core_runtime;
 mod credential_broker;
 pub mod data;
 mod device_auth;
+pub mod diagnostics;
 mod domain;
 pub mod error;
 mod eval_driver;
@@ -1218,6 +1219,165 @@ async fn plugins_set_release_channel(
         .set_release_channel(&channel)
         .map_err(AppError::from)?;
     Ok(state.plugins().status(&state).await)
+}
+
+/// One structured diagnostic from the renderer.
+///
+/// The renderer is the only surface whose failures were previously invisible
+/// to everything else — a `console.error` in a webview reaches no journal, no
+/// index, and no agent. This is the narrow command that ends that: it carries
+/// the same envelope every other emitter uses, and the backend validates,
+/// redacts, and correlates it exactly as if it had originated in Rust.
+#[derive(Clone, Debug, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticReportRequest {
+    severity: String,
+    component: String,
+    event: String,
+    code: String,
+    message: String,
+    #[serde(default)]
+    retryable: bool,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    turn_id: Option<String>,
+    #[serde(default)]
+    tool_call_id: Option<String>,
+    #[serde(default)]
+    command_id: Option<String>,
+    #[serde(default)]
+    visual_id: Option<String>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    visual_revision: Option<i64>,
+    #[serde(default)]
+    container_id: Option<String>,
+    #[serde(default)]
+    rollout_id: Option<String>,
+    #[serde(default)]
+    stream_id: Option<String>,
+    #[serde(default)]
+    optimizer_run_id: Option<String>,
+    #[serde(default)]
+    trace_id: Option<String>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    details: Option<serde_json::Value>,
+}
+
+impl From<DiagnosticReportRequest> for diagnostics::DiagnosticInput {
+    fn from(request: DiagnosticReportRequest) -> Self {
+        let mut input = diagnostics::DiagnosticInput {
+            severity: request.severity,
+            component: request.component,
+            event: request.event,
+            code: request.code,
+            message: request.message,
+            retryable: request.retryable,
+            ..Default::default()
+        };
+        input.correlation.session_id = request.session_id;
+        input.correlation.turn_id = request.turn_id;
+        input.correlation.tool_call_id = request.tool_call_id;
+        input.correlation.command_id = request.command_id;
+        input.correlation.visual_id = request.visual_id;
+        input.correlation.visual_revision = request.visual_revision;
+        input.correlation.container_id = request.container_id;
+        input.correlation.rollout_id = request.rollout_id;
+        input.correlation.stream_id = request.stream_id;
+        input.correlation.optimizer_run_id = request.optimizer_run_id;
+        input.correlation.trace_id = request.trace_id;
+        if let Some(serde_json::Value::Object(details)) = request.details {
+            input.details = details;
+        }
+        input
+    }
+}
+
+/// Record a renderer diagnostic. Returns as soon as it is queued.
+#[tauri::command]
+#[specta::specta]
+async fn diagnostics_report(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: DiagnosticReportRequest,
+) -> Result<(), AppError> {
+    state
+        .diagnostics_service()
+        .emit(diagnostics::DiagnosticInput::from(request));
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn diagnostics_status(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    Ok(contract::specta::OpaqueJson(
+        state.diagnostics_service().status().await,
+    ))
+}
+
+/// Typed diagnostic query for the Diagnostics pane. The renderer is bounded by
+/// the same contract as the agent — there is only one query path.
+#[tauri::command]
+#[specta::specta]
+async fn diagnostics_query(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: contract::specta::OpaqueJson,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let query = diagnostics::query::parse(&request.0).map_err(AppError::from)?;
+    state
+        .diagnostics_service()
+        .query(query)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn diagnostics_explain(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: contract::specta::OpaqueJson,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let query = diagnostics::query::parse(&request.0).map_err(AppError::from)?;
+    state
+        .diagnostics_service()
+        .explain(query)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn diagnostics_bundle(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: contract::specta::OpaqueJson,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let query = diagnostics::query::parse(&request.0).map_err(AppError::from)?;
+    state
+        .diagnostics_service()
+        .bundle(query)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+/// Drop the disposable index. Traces, run evidence, and the authoritative
+/// journal are untouched.
+#[tauri::command]
+#[specta::specta]
+async fn diagnostics_clear_index(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .diagnostics_service()
+        .clear_index()
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
 }
 
 #[derive(Clone, Debug, serde::Deserialize, specta::Type)]
@@ -3124,6 +3284,14 @@ pub fn run() {
                 let window = webview.window();
                 let _ = window.maximize();
                 let _ = window.show();
+                // Diagnostics start here, not in setup: the index is a
+                // background convenience and must never sit in front of the
+                // first paint. `start` is idempotent, and the bootstrap task
+                // arms the same call in case this page never loads — the one
+                // failure diagnostics most needs to be running for.
+                if let Some(core) = window.app_handle().try_state::<Arc<CoreRuntime>>() {
+                    core.diagnostics_service().start();
+                }
             }
         })
         .setup(|app| {
@@ -3175,6 +3343,7 @@ pub fn run() {
             supervisor.register(laguna.clone());
             supervisor.register(optimizer_manager.clone());
             supervisor.register(whisper.clone());
+            supervisor.register(core.diagnostics_service().sidecar().clone());
             app.manage(core.clone());
             app.manage(migration);
             app.manage(codex.clone());
@@ -3227,6 +3396,9 @@ pub fn run() {
                 if let Err(error) = bootstrap_core.resume_intern_providers().await {
                     eprintln!("Intern restart reconciliation failed: {error}");
                 }
+                // Fallback arm: if the main window never finished loading, the
+                // renderer's own failure still has somewhere to be recorded.
+                bootstrap_core.diagnostics_service().start();
             });
 
             let ipc_core = core.clone();
