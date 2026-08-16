@@ -46,12 +46,20 @@ pub struct RuntimeContract {
     pub official: &'static str,
     /// Pinned version on the dev channel.
     pub dev: &'static str,
-    /// Oldest version Desktop will install or select.
+    /// Oldest version Desktop will install or select on the official channel.
     ///
     /// A floor is install-time UX, not a safety property: it explains a refusal
     /// before a download rather than after a failed handshake. The handshake
     /// remains the gate.
     pub min_supported: &'static str,
+    /// Same, for the dev channel.
+    ///
+    /// Separate because the channels are cut independently, and a floor set
+    /// from the official line would make the dev channel uninstallable every
+    /// time official moved first — turning install-time UX into an outage for
+    /// anyone tracking dev. When a dev cut lags, the handshake is what refuses
+    /// it, which is the gate that was always doing the real work.
+    pub min_supported_dev: &'static str,
     /// Workshop release line this runtime is pinned against.
     pub workshop_compat: &'static str,
     /// Algorithm ids Desktop expects this runtime to serve. The runtime's own
@@ -78,7 +86,20 @@ impl RuntimeContract {
         }
     }
 
-    /// Is `version` at or above the floor?
+    /// The floor that applies to a version, inferred from its own shape.
+    ///
+    /// A `.dev` suffix is what makes a build a dev-channel build — the publish
+    /// workflow enforces exactly that — so the version says which floor it is
+    /// answerable to without threading channel state through every call site.
+    pub fn floor_for(&self, version: &str) -> &'static str {
+        if version.contains(".dev") {
+            self.min_supported_dev
+        } else {
+            self.min_supported
+        }
+    }
+
+    /// Is `version` at or above the floor for its own channel?
     ///
     /// Compared as dotted numeric segments so `0.2.10` outranks `0.2.9`; a
     /// lexical compare gets that backwards. Any trailing pre-release suffix
@@ -86,7 +107,7 @@ impl RuntimeContract {
     /// a dev build of a release sorts alongside it rather than below every
     /// numeric version.
     pub fn meets_floor(&self, version: &str) -> bool {
-        !version_is_older(version, self.min_supported)
+        !version_is_older(version, self.floor_for(version))
     }
 }
 
@@ -118,14 +139,22 @@ fn numeric_segments(version: &str) -> Vec<u64> {
 pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
     runtime_id: "optimizers",
     package: "synth-optimizers",
-    official: "0.2.5",
+    official: "0.2.12",
+    // Behind official: this cut predates both required routes. It still
+    // installs — its own channel's floor is what it is measured against — and
+    // then fails the handshake, which is the honest place for that failure.
+    // Blocking the install instead would take the dev channel offline to
+    // report a problem the gate already reports precisely.
     dev: "0.2.9.dev20260814",
-    // Raise to the first release carrying /v1/optimizer/capabilities and
-    // /runs/{id}/optimizer-events once it is cut and pinned above. Holding the
-    // floor at the shipped version keeps installs working while the release is
-    // prepared; the handshake refuses a runtime that cannot serve them either
-    // way, which is the guarantee that matters.
-    min_supported: "0.2.5",
+    // 0.2.12 is the first release serving /v1/optimizer/capabilities and
+    // /runs/{id}/optimizer-events. Below it, install now fails with a version
+    // the user can act on instead of a handshake error after the download.
+    // The handshake still refuses anything that cannot actually serve them;
+    // the floor only moves the message earlier.
+    min_supported: "0.2.12",
+    // No dev cut carries the required routes yet; the handshake refuses one
+    // that cannot serve them. Raise this when the dev channel is cut again.
+    min_supported_dev: "0.2.9.dev20260814",
     workshop_compat: "0.4.0",
     algorithms: &["gepa"],
     templates: &["optimizer.gepa.live.v1", "optimizer.run.v1"],
@@ -152,6 +181,7 @@ pub const EVAL: RuntimeContract = RuntimeContract {
     official: "unmanaged",
     dev: "unmanaged",
     min_supported: "0",
+    min_supported_dev: "0",
     workshop_compat: "0.4.0",
     algorithms: &["eval"],
     templates: &["optimizer.eval.live.v1", "optimizer.run.v1"],
@@ -232,12 +262,36 @@ mod tests {
     fn prerelease_suffixes_sort_with_their_release() {
         let contract = RuntimeContract {
             min_supported: "0.2.6",
+            min_supported_dev: "0.2.6",
             ..OPTIMIZERS
         };
-        // The shipped dev pin must clear a 0.2.6 floor: it is 0.2.9.
-        assert!(contract.meets_floor(OPTIMIZERS.dev));
+        assert!(contract.meets_floor("0.2.9.dev20260814"));
         assert!(!contract.meets_floor("0.2.5.dev20260814"));
         assert!(contract.meets_floor("0.2.6.dev20260816"));
+    }
+
+    /// Channels are cut independently, so a build answers to its own channel's
+    /// floor. Sharing one floor means every official release that lands first
+    /// makes the dev channel uninstallable — an outage in place of a message
+    /// the handshake already delivers precisely.
+    #[test]
+    fn each_channel_is_measured_against_its_own_floor() {
+        let contract = RuntimeContract {
+            min_supported: "0.2.12",
+            min_supported_dev: "0.2.9.dev20260814",
+            ..OPTIMIZERS
+        };
+        assert_eq!(contract.floor_for("0.2.12"), "0.2.12");
+        assert_eq!(contract.floor_for("0.2.9.dev20260814"), "0.2.9.dev20260814");
+
+        // Official below the official floor is refused.
+        assert!(!contract.meets_floor("0.2.5"));
+        assert!(contract.meets_floor("0.2.12"));
+
+        // The shipped dev pin trails official and still installs; the handshake
+        // is what refuses it for lacking the routes.
+        assert!(contract.meets_floor(OPTIMIZERS.dev));
+        assert!(!contract.meets_floor("0.2.8.dev20260814"));
     }
 
     #[test]
