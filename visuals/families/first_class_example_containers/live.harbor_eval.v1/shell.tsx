@@ -11,7 +11,7 @@ import { VisualChrome, MetricStrip } from "../../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber } from "../../../runtime/liveStream.ts";
 import { projectLiveEval } from "../../../runtime/liveEvalReducer.ts";
-import { bindingSlots } from "../../../runtime/bind.ts";
+import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../../runtime/types.ts";
 
 type StreamPayload = {
@@ -22,14 +22,13 @@ type StreamPayload = {
   transports?: { poll?: { url?: string }; sse?: { url?: string } };
 };
 
-export type ShellProps = {
+export type ShellProps = LiveTemplateProps & {
   title?: string;
   lede?: string;
   stream?: StreamPayload;
   jobs?: StreamPayload;
   data?: StreamPayload;
   bindings?: VisualBinding[] | { slots?: VisualBinding[] };
-  sseUrl?: string;
 };
 
 const STREAM_WINDOW = 30;
@@ -92,21 +91,20 @@ function foldTrials(events: LiveEvalEvent[]): TrialView[] {
 
 export function Shell(props: ShellProps) {
   const stream = asStream(props.data ?? props.stream ?? props.jobs);
-  const sseUrl =
-    props.sseUrl ??
-    stream.transports?.sse?.url ??
-    stream.sse_url ??
-    bindingSlots(props.bindings).find((binding) => binding.slot === "stream" && binding.kind === "live_sse")?.source;
-  const pollUrl =
-    stream.transports?.poll?.url ??
-    stream.poll_url ??
-    bindingSlots(props.bindings).find((binding) => binding.slot === "stream")?.poll_url;
+  const declaredStreamCount = props.replay?.streams.length ?? 0;
   const fixtureEvents = useMemo(
-    () => (sseUrl ? undefined : stream.events),
-    [sseUrl, stream.events]
+    () => (declaredStreamCount > 0 ? undefined : stream.events),
+    [declaredStreamCount, stream.events]
   );
-  const hasSource = Boolean(sseUrl || stream.events);
-  const { events, live, error, ready } = useLiveEvalStream({ sseUrl, pollUrl, fixtureEvents, replayMs: stream.replay_ms });
+  const hasSource = declaredStreamCount > 0 || Boolean(stream.events);
+  const { events, state, error, ready } = useLiveEvalStream({
+    replay: props.replay,
+    fixtureEvents,
+    replayMs: stream.replay_ms,
+    visualId: props.visualId,
+    revision: props.revision
+  });
+  const live = state === "live";
   const [showFullStream, setShowFullStream] = useState(false);
   const [eventCutoff, setEventCutoff] = useState<number | null>(null);
   const [selectedEventIndex, setSelectedEventIndex] = useState<number | null>(null);

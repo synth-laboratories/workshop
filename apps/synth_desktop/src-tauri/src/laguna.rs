@@ -48,6 +48,7 @@ fn laguna_base_url() -> String {
         .unwrap_or_else(|_| format!("http://127.0.0.1:{}", laguna_port()))
 }
 const MODEL_INDEX: &str = "model.safetensors.index.json";
+const MAX_SAFETENSORS_HEADER_BYTES: u64 = 100_000_000;
 const SELECTED_MODEL_FILE: &str = "selected_model_path";
 /// The daemon at `DEFAULT_PORT` is the only local runtime: it owns the weights,
 /// the admission slot, the prompt caches, and every telemetry number below.
@@ -201,6 +202,11 @@ pub struct LagunaUnloadOutcome {
     pub detail: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct LagunaLoadOutcome {
+    resident: bool,
+}
+
 /// One `/v1/synth/settings` exchange. A 404 is an expected answer from a
 /// daemon build that predates the runtime-settings API, and a 400 carries the
 /// daemon's typed validation envelope — both are data for the renderer, not
@@ -326,6 +332,36 @@ impl LagunaManager {
         env::var("SYNTH_LAGUNA_API_KEY").ok()
     }
 
+    /// Model identity owned by the same selection logic used to launch and
+    /// load the daemon. Renderer-friendly aliases must not cross the provider
+    /// boundary as serving model ids.
+    pub fn configured_model_id(&self) -> Result<String> {
+        selected_model_id()
+    }
+
+    /// Read the daemon-owned native Codex model envelope over the same
+    /// authenticated loopback transport used for inference. This is the
+    /// production source for local model instructions and capabilities.
+    pub async fn codex_model_catalog(&self, base_url: &str, api_key: &str) -> Result<Value> {
+        let response = self
+            .client
+            .get(format!("{}/v1/models", base_url.trim_end_matches('/')))
+            .bearer_auth(api_key)
+            .timeout(crate::limits::LAGUNA_HEALTH_TIMEOUT)
+            .send()
+            .await
+            .with_context(|| format!("Laguna model catalog is unreachable at {base_url}"))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .context("Laguna model catalog returned an unreadable payload")?;
+        if !status.is_success() {
+            anyhow::bail!("Laguna model catalog returned status {}", status.as_u16());
+        }
+        serde_json::from_slice(&body).context("Laguna model catalog returned invalid JSON")
+    }
+
     pub fn discover_models(&self) -> Result<Vec<LagunaModelHit>> {
         discover_models()
     }
@@ -378,9 +414,33 @@ impl LagunaManager {
         let model_dir = models_root.join(spec.id);
         fs::create_dir_all(&model_dir)?;
         let python = LagunaRuntimeState::detect().require_ready()?;
-        let script = r#"from huggingface_hub import snapshot_download
-import json, sys
-snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[3])
+        let script = r#"from huggingface_hub import HfApi, snapshot_download
+import hashlib, json, pathlib, sys
+repo, revision, target = sys.argv[1], sys.argv[2], pathlib.Path(sys.argv[3])
+snapshot_download(repo_id=repo, revision=revision, local_dir=target)
+index = json.loads((target / 'model.safetensors.index.json').read_text())
+shards = {v for v in (index.get('weight_map') or {}).values()
+          if isinstance(v, str) and v.endswith('.safetensors')}
+if not shards:
+    raise RuntimeError('model index references no safetensor shards')
+info = HfApi().model_info(repo, revision=revision, files_metadata=True)
+expected = {}
+for sibling in info.siblings:
+    lfs = getattr(sibling, 'lfs', None)
+    digest = lfs.get('sha256') if isinstance(lfs, dict) else getattr(lfs, 'sha256', None)
+    if isinstance(digest, str) and len(digest) == 64:
+        expected[sibling.rfilename] = digest.lower()
+for shard in sorted(shards):
+    if '/' in shard or '\\' in shard:
+        raise RuntimeError(f'unsafe indexed model shard: {shard}')
+    if shard not in expected:
+        raise RuntimeError(f'provider omitted a SHA-256 for model shard: {shard}')
+    hasher = hashlib.sha256()
+    with (target / shard).open('rb') as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b''):
+            hasher.update(chunk)
+    if hasher.hexdigest() != expected[shard]:
+        raise RuntimeError(f'provider checksum mismatch for model shard: {shard}')
 "#;
         progress(
             "downloading",
@@ -533,6 +593,86 @@ snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[
         self.set_error(format!("Timed out waiting for Laguna at {base_url}"))
             .await;
         Ok(None)
+    }
+
+    /// Prepare the production local provider for a model turn. `/health`
+    /// intentionally remains ready while weights are evicted, so daemon
+    /// readiness alone cannot prove that an already-attached Codex session may
+    /// send. The control-plane load operation is idempotent and is the daemon's
+    /// authoritative way to restore residency after manual or idle unload.
+    pub async fn ensure_for_turn(&self, workshop_root: &Path) -> Result<Option<String>> {
+        let Some(base_url) = self.ensure(workshop_root).await? else {
+            return Ok(None);
+        };
+        let api_key = self
+            .api_key()
+            .context("Laguna daemon credential is unavailable after ensure")?;
+        let model = selected_model_id()?;
+        if self.status().await.loaded_model.as_deref() == Some(model.as_str()) {
+            return Ok(Some(base_url));
+        }
+        let mut loading = self.status().await;
+        loading.phase = "loading".into();
+        loading.detail = Some("Loading Laguna weights for the next turn…".into());
+        self.set_status(loading).await;
+        if let Err(error) = self.load_model_at(&base_url, &api_key, &model).await {
+            self.set_error(error.to_string()).await;
+            return Err(error);
+        }
+        // The load response's `resident: true` is authoritative. Publish it
+        // immediately, then enrich timing/memory fields from health when that
+        // follow-up probe is available.
+        let mut ready = self.status().await;
+        ready.phase = "ready".into();
+        ready.loaded_model = Some(model);
+        ready.detail = Some("Laguna XS ready".into());
+        self.set_status(ready).await;
+        self.refresh().await;
+        Ok(Some(base_url))
+    }
+
+    async fn load_model_at(&self, base_url: &str, api_key: &str, model: &str) -> Result<()> {
+        let mut url = reqwest::Url::parse(base_url).context("invalid Laguna base URL")?;
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| anyhow::anyhow!("Laguna base URL cannot carry path segments"))?;
+            segments.pop_if_empty();
+            segments.extend(["v1", "synth", "models"]);
+            segments.extend(model.split('/'));
+            segments.push("load");
+        }
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(api_key)
+            .timeout(crate::limits::LAGUNA_READY_WAIT)
+            .send()
+            .await
+            .with_context(|| format!("Laguna model load is unreachable at {base_url}"))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .context("Laguna model load returned an unreadable payload")?;
+        if !status.is_success() {
+            let code = serde_json::from_slice::<Value>(&body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .pointer("/error/code")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| "load_failed".into());
+            anyhow::bail!("Laguna model load returned {} ({code})", status.as_u16());
+        }
+        let outcome: LagunaLoadOutcome = serde_json::from_slice(&body)
+            .context("Laguna model load returned an unreadable success payload")?;
+        if !outcome.resident {
+            anyhow::bail!("Laguna model load completed without resident weights");
+        }
+        Ok(())
     }
 
     async fn probe(&self, base_url: &str, api_key: &str) -> Option<LagunaStatus> {
@@ -1116,6 +1256,12 @@ fn validate_model_dir(model_dir: &Path) -> Result<LagunaModelHit> {
         .get("weight_map")
         .and_then(Value::as_object)
         .ok_or_else(|| anyhow::anyhow!("{} has no weight_map object", index_path.display()))?;
+    if weight_map.values().any(|value| !value.is_string()) {
+        return Err(anyhow::anyhow!(
+            "{} contains a non-string shard reference",
+            index_path.display()
+        ));
+    }
     let shards: HashSet<&str> = weight_map.values().filter_map(Value::as_str).collect();
     if shards.is_empty() {
         return Err(anyhow::anyhow!(
@@ -1124,6 +1270,7 @@ fn validate_model_dir(model_dir: &Path) -> Result<LagunaModelHit> {
         ));
     }
     let mut total_bytes = 0;
+    let mut payload_bytes = 0;
     for shard in &shards {
         if !shard.ends_with(".safetensors") || shard.contains('/') || shard.contains('\\') {
             return Err(anyhow::anyhow!(
@@ -1135,6 +1282,19 @@ fn validate_model_dir(model_dir: &Path) -> Result<LagunaModelHit> {
         total_bytes += fs::metadata(&path)
             .with_context(|| format!("Referenced model shard is missing: {}", path.display()))?
             .len();
+        payload_bytes += safetensors_payload_bytes(&path)?;
+    }
+    if let Some(declared) = index
+        .get("metadata")
+        .and_then(|metadata| metadata.get("total_size"))
+        .and_then(Value::as_u64)
+    {
+        if payload_bytes != declared {
+            return Err(anyhow::anyhow!(
+                "Model tensor payload bytes do not match {}: expected {declared}, found {payload_bytes}",
+                index_path.display()
+            ));
+        }
     }
     let canonical = model_dir
         .canonicalize()
@@ -1174,6 +1334,85 @@ fn validate_model_dir(model_dir: &Path) -> Result<LagunaModelHit> {
         runtime_ready: true,
         companion_bytes: 0,
     })
+}
+
+fn safetensors_payload_bytes(path: &Path) -> Result<u64> {
+    let file_size = fs::metadata(path)
+        .with_context(|| format!("Read safetensors metadata: {}", path.display()))?
+        .len();
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("Open safetensors shard: {}", path.display()))?;
+    let mut encoded_header_size = [0u8; 8];
+    file.read_exact(&mut encoded_header_size)
+        .with_context(|| format!("Read safetensors header size: {}", path.display()))?;
+    let header_size = u64::from_le_bytes(encoded_header_size);
+    if header_size == 0
+        || header_size > MAX_SAFETENSORS_HEADER_BYTES
+        || 8u64.saturating_add(header_size) > file_size
+    {
+        return Err(anyhow::anyhow!(
+            "Invalid safetensors header size in {}",
+            path.display()
+        ));
+    }
+    let mut encoded_header = vec![0u8; header_size as usize];
+    file.read_exact(&mut encoded_header)
+        .with_context(|| format!("Read safetensors header: {}", path.display()))?;
+    let header: Value = serde_json::from_slice(&encoded_header)
+        .with_context(|| format!("Invalid safetensors header JSON: {}", path.display()))?;
+    let object = header.as_object().ok_or_else(|| {
+        anyhow::anyhow!("Safetensors header is not an object: {}", path.display())
+    })?;
+    let mut ranges = Vec::new();
+    for (name, tensor) in object {
+        if name == "__metadata__" {
+            continue;
+        }
+        let offsets = tensor
+            .get("data_offsets")
+            .and_then(Value::as_array)
+            .filter(|offsets| offsets.len() == 2)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Invalid safetensors tensor offsets in {}", path.display())
+            })?;
+        let start = offsets[0].as_u64().ok_or_else(|| {
+            anyhow::anyhow!("Invalid safetensors tensor offset in {}", path.display())
+        })?;
+        let end = offsets[1].as_u64().ok_or_else(|| {
+            anyhow::anyhow!("Invalid safetensors tensor offset in {}", path.display())
+        })?;
+        if end < start {
+            return Err(anyhow::anyhow!(
+                "Invalid safetensors tensor range in {}",
+                path.display()
+            ));
+        }
+        ranges.push((start, end));
+    }
+    if ranges.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Safetensors shard contains no tensors: {}",
+            path.display()
+        ));
+    }
+    ranges.sort_unstable();
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        if start != cursor {
+            return Err(anyhow::anyhow!(
+                "Safetensors tensor data is not contiguous in {}",
+                path.display()
+            ));
+        }
+        cursor = end;
+    }
+    if 8u64.saturating_add(header_size).saturating_add(cursor) != file_size {
+        return Err(anyhow::anyhow!(
+            "Safetensors payload length does not match file size: {}",
+            path.display()
+        ));
+    }
+    Ok(cursor)
 }
 
 fn discover_models() -> Result<Vec<LagunaModelHit>> {
@@ -1297,6 +1536,9 @@ fn spawn_sidecar(root: &Path, api_key: &str, backend: &str) -> Result<()> {
         "PYTHONPATH",
         append_path(&daemon, env::var("PYTHONPATH").ok()),
     );
+    // Keep explicit ownership even though the daemon has its own process group:
+    // if Desktop crashes, the large MLX allocation must not survive it.
+    command.env("SYNTH_DESKTOP_PARENT_PID", std::process::id().to_string());
     apply_daemon_env(&mut command, api_key, backend, &models_dir()?);
     detach(&mut command);
     let child = command.spawn().context("spawn Laguna sidecar")?;
@@ -1406,16 +1648,56 @@ fn stop_managed_sidecar() -> Result<bool> {
             let _ = fs::remove_file(path);
             return Ok(false);
         }
+        // The daemon is a session/process-group leader. Signal the whole group
+        // so an MLX worker cannot survive its parent, then verify termination
+        // and escalate after a bounded grace period.
+        let process_group = format!("-{pid}");
         let status = Command::new("/bin/kill")
-            .args(["-TERM", &pid.to_string()])
+            .args(["-TERM", "--", process_group.as_str()])
             .status()
             .context("stop stale Synth-managed Laguna sidecar")?;
-        if status.success() {
-            let _ = fs::remove_file(path);
-            return Ok(true);
+        if !status.success() {
+            return Ok(false);
         }
+        for _ in 0..100 {
+            if !process_is_alive(pid) {
+                let _ = fs::remove_file(path);
+                return Ok(true);
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let killed = Command::new("/bin/kill")
+            .args(["-KILL", "--", process_group.as_str()])
+            .status()
+            .context("force-stop unresponsive Synth-managed Laguna sidecar")?;
+        if !killed.success() {
+            return Ok(false);
+        }
+        for _ in 0..40 {
+            if !process_is_alive(pid) {
+                let _ = fs::remove_file(path);
+                return Ok(true);
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        anyhow::bail!("Synth-managed Laguna sidecar {pid} did not terminate after SIGKILL");
     }
-    Ok(false)
+    #[cfg(not(unix))]
+    {
+        Ok(false)
+    }
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    Command::new("/bin/kill")
+        .args(["-0", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn validate_python(python: &Path) -> Result<()> {
@@ -1508,6 +1790,116 @@ fn libc_detach() {
 mod tests {
     use super::*;
 
+    async fn serve_model_load(
+        status: u16,
+        body: &'static str,
+    ) -> (String, String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let credential = uuid::Uuid::new_v4().to_string();
+        let expected_credential = credential.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 16 * 1024];
+            let length = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..length]);
+            assert!(request.starts_with(
+                "POST /v1/synth/models/poolside/Laguna-XS-2.1-NVFP4-mlx/load HTTP/1.1"
+            ));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains(&format!("authorization: bearer {}", expected_credential)));
+            let reason = if status == 200 {
+                "OK"
+            } else {
+                "Service Unavailable"
+            };
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        (format!("http://{address}"), credential, server)
+    }
+
+    async fn serve_model_catalog(
+        body: &'static str,
+    ) -> (String, String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let credential = uuid::Uuid::new_v4().to_string();
+        let expected_credential = credential.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 16 * 1024];
+            let length = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..length]);
+            assert!(request.starts_with("GET /v1/models HTTP/1.1"));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains(&format!("authorization: bearer {}", expected_credential)));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        (format!("http://{address}"), credential, server)
+    }
+
+    #[tokio::test]
+    async fn codex_catalog_uses_authenticated_daemon_native_envelope() {
+        let body = r#"{"models":[{"slug":"poolside/Laguna-XS-2.1-NVFP4-mlx","base_instructions":"daemon-owned"}]}"#;
+        let (base_url, credential, server) = serve_model_catalog(body).await;
+        let catalog = LagunaManager::new()
+            .codex_model_catalog(&base_url, &credential)
+            .await
+            .unwrap();
+        assert_eq!(catalog["models"][0]["base_instructions"], "daemon-owned");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn production_load_control_restores_residency_after_unload() {
+        let (base_url, credential, server) = serve_model_load(
+            200,
+            r#"{"operation_id":"op_test","model":"poolside/Laguna-XS-2.1-NVFP4-mlx","state":"resident_idle","resident":true,"already_resident":false}"#,
+        )
+        .await;
+        LagunaManager::new()
+            .load_model_at(&base_url, &credential, DEFAULT_MODEL)
+            .await
+            .expect("the production load control response restores residency");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn model_load_failure_is_typed_and_does_not_echo_daemon_detail() {
+        let (base_url, credential, server) = serve_model_load(
+            503,
+            r#"{"error":{"code":"insufficient_memory","message":"sensitive daemon detail"}}"#,
+        )
+        .await;
+        let error = LagunaManager::new()
+            .load_model_at(&base_url, &credential, DEFAULT_MODEL)
+            .await
+            .expect_err("a rejected load must fail the turn preflight")
+            .to_string();
+        assert!(error.contains("503 (insufficient_memory)"));
+        assert!(!error.contains("sensitive daemon detail"));
+        assert!(!error.contains(&credential));
+        server.await.unwrap();
+    }
+
     #[test]
     fn parses_portable_df_capacity_for_download_preflight() {
         let output = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3s5 100000000 1000 50331648 1% /System/Volumes/Data\n";
@@ -1522,14 +1914,30 @@ mod tests {
         let model = root.join(DEFAULT_MODEL);
         fs::create_dir_all(&model).unwrap();
         fs::write(model.join("config.json"), r#"{"model_type":"laguna"}"#).unwrap();
-        fs::write(model.join("a.safetensors"), b"abc").unwrap();
-        fs::write(model.join("b.safetensors"), b"12345").unwrap();
+        write_safetensors(&model.join("a.safetensors"), b"abc");
+        write_safetensors(&model.join("b.safetensors"), b"12345");
         fs::write(
             model.join(MODEL_INDEX),
-            r#"{"weight_map":{"a":"a.safetensors","b":"b.safetensors","c":"a.safetensors"}}"#,
+            r#"{"metadata":{"total_size":8},"weight_map":{"a":"a.safetensors","b":"b.safetensors","c":"a.safetensors"}}"#,
         )
         .unwrap();
         root
+    }
+
+    fn write_safetensors(path: &Path, payload: &[u8]) {
+        let header = serde_json::to_vec(&serde_json::json!({
+            "weight": {
+                "dtype": "U8",
+                "shape": [payload.len()],
+                "data_offsets": [0, payload.len()]
+            }
+        }))
+        .unwrap();
+        let mut bytes = Vec::with_capacity(8 + header.len() + payload.len());
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&header);
+        bytes.extend_from_slice(payload);
+        fs::write(path, bytes).unwrap();
     }
     #[test]
     fn settings_exchange_marks_missing_endpoint_as_unsupported() {
@@ -1581,7 +1989,10 @@ mod tests {
         let parent = validate_model_input(&root).unwrap();
         assert_eq!(direct, parent);
         assert_eq!(direct.shard_count, 2);
-        assert_eq!(direct.total_bytes, 8);
+        let model = root.join(DEFAULT_MODEL);
+        let on_disk = fs::metadata(model.join("a.safetensors")).unwrap().len()
+            + fs::metadata(model.join("b.safetensors")).unwrap().len();
+        assert_eq!(direct.total_bytes, on_disk);
         assert_eq!(Path::new(&direct.models_root), root.canonicalize().unwrap());
         fs::remove_dir_all(root).unwrap();
     }

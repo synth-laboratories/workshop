@@ -285,9 +285,21 @@ pub(super) async fn prepare(
     let mut summary = run.summary.as_object().cloned().unwrap_or_default();
     summary.insert("preparationDigest".into(), json!(digest));
     summary.insert("waitingForViewer".into(), json!(true));
-    if let Some(digest) = manager.advertised_capabilities().get("digest").cloned() {
-        summary.insert("capabilitiesDigest".into(), digest);
-    }
+    // A missing digest is a refusal, never a skipped pin. Without this, prepare
+    // records no `capabilitiesDigest`, start's comparison is a skipped `if let`,
+    // and the anti-swap guard is inert in exactly the case it exists to catch:
+    // capabilities that were never proven by a live handshake.
+    let capabilities_digest = manager
+        .advertised_capabilities()
+        .get("digest")
+        .cloned()
+        .ok_or_else(|| {
+            anyhow!(
+                "optimizer capabilities are not proven; the sidecar must complete a capability \
+                 handshake before a run is prepared"
+            )
+        })?;
+    summary.insert("capabilitiesDigest".into(), capabilities_digest);
     run.summary = serde_json::Value::Object(summary);
     run.status = "waiting_for_viewer".into();
     let run = service.persist_run(run).await?;
@@ -363,6 +375,14 @@ pub(super) async fn start_prepared(
 }
 
 async fn require_plugin_ready(manager: &super::OptimizerManager) -> Result<()> {
+    // A disabled plugin refuses work even when its sidecar is still up.
+    // `disable` only clears the registry flag, so the process keeps running;
+    // without this check the only thing enforcing "disabled" was that the MCP
+    // server stopped being registered at session start — which a session that
+    // was already open never sees.
+    if !crate::plugins::optimizers_plugin_enabled() {
+        return Err(crate::plugins::PluginNotReady::new("disabled", "enable").into());
+    }
     if manager.is_running().await {
         return Ok(());
     }
@@ -850,6 +870,25 @@ fn craftax_recipe_limits() -> serde_json::Value {
     })
 }
 
+/// How long a live child may run without its run becoming visible.
+///
+/// Overridable only under `cfg(test)`: the bound is worth 90 seconds in
+/// production and worth milliseconds in a test that has to observe it expire.
+fn run_index_wait() -> Duration {
+    // Runtime `cfg!` rather than a test-only compile attribute: a
+    // source-inspection guard below splits this file on that attribute's text,
+    // so introducing one above the recipe entry points — or even quoting it in
+    // a comment up here — silently shortens the region that guard checks.
+    if cfg!(test) {
+        if let Ok(millis) = std::env::var("SYNTH_OPTIMIZER_TEST_INDEX_WAIT_MS") {
+            if let Ok(millis) = millis.parse::<u64>() {
+                return Duration::from_millis(millis);
+            }
+        }
+    }
+    crate::limits::OPTIMIZER_RUN_INDEX_WAIT
+}
+
 async fn run_recipe_worker(
     service: OptimizerService,
     run_id: String,
@@ -875,15 +914,51 @@ async fn run_recipe_worker(
         .await?;
 
     let mut upstream_cursor = 0;
+    // A run that never becomes visible is bounded, not waited out. Retrying an
+    // unindexed run until the child exits on its own turns a contract failure
+    // into a full-budget one: the rollouts are still paid for, and their events
+    // can never be ingested. `run_not_found` cannot distinguish "not registered
+    // yet" from "this service will never see this run" (a mismatched database,
+    // or a service that does not serve the events route at all), so the wait is
+    // capped and the child is killed rather than allowed to spend to term.
+    let mut indexed = false;
+    let index_wait = run_index_wait();
+    let index_deadline = tokio::time::Instant::now() + index_wait;
     loop {
-        if let Err(error) =
-            ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await
-        {
-            // The producer registers its durable index shortly after spawn.
-            // A 404 is retryable only while the child is demonstrably alive;
-            // it is not a successful empty event page.
-            if !super::OptimizerManager::optimizer_run_not_indexed(&error) {
-                return Err(error);
+        match ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await {
+            Ok(()) => indexed = true,
+            Err(error) => {
+                // The producer registers its durable index shortly after spawn.
+                // A 404 is retryable only while the child is demonstrably alive;
+                // it is not a successful empty event page.
+                if !super::OptimizerManager::optimizer_run_not_indexed(&error) {
+                    return Err(error);
+                }
+                if !indexed && tokio::time::Instant::now() >= index_deadline {
+                    manager.terminate_gepa_recipe(&run_id).await;
+                    if child.try_wait()?.is_none() {
+                        let _ = child.kill().await;
+                    }
+                    let waited = index_wait.as_secs_f32();
+                    append_terminal_event(
+                        &service,
+                        &run_id,
+                        true,
+                        format!(
+                            "run_never_indexed: the optimizer service never reported run {run_id} \
+                             after {waited}s of a live recipe process; the child was terminated \
+                             before spending further"
+                        ),
+                    )
+                    .await?;
+                    bail!(
+                        "run_never_indexed: optimizer run {run_id} was never visible to the \
+                         polled service after {waited}s; terminated the recipe process. The \
+                         service and the recipe child are not sharing a run index — verify the \
+                         sidecar serves /runs/{{id}}/optimizer-events and that the child writes \
+                         the database the service was started with"
+                    );
+                }
             }
         }
         tokio::select! {
@@ -1526,6 +1601,29 @@ async fn append_diagnostic_event(
     service
         .append_events(run_id.to_string(), vec![event])
         .await?;
+
+    // The run evidence above stays authoritative. This makes the same failure
+    // findable from the other side — by optimizer_run_id, alongside whatever
+    // container, stream, or visual failed with it.
+    if let Some(diagnostics) = service.diagnostics() {
+        let mut input = crate::diagnostics::DiagnosticInput::new(
+            crate::diagnostics::Severity::Error,
+            "optimizers",
+            "optimizer.worker.failed",
+            crate::diagnostics::codes::OPTIMIZER_WORKER_FAILED,
+            display_message.chars().take(500).collect::<String>(),
+        );
+        input.correlation.optimizer_run_id = Some(run_id.to_owned());
+        input.details.insert("algorithm".into(), json!("gepa"));
+        if let Some(path) = stderr_path.as_ref() {
+            // The pointer, not the contents: a log tail is evidence to open,
+            // not payload to index.
+            input
+                .details
+                .insert("log_path".into(), json!(path.display().to_string()));
+        }
+        diagnostics.emit(input);
+    }
     Ok(())
 }
 
@@ -1829,6 +1927,10 @@ fn materialize_craftax_config(
                 &format!("CRAFTER_MAX_TURNS={CRAFTAX_MAX_TURNS}"),
                 "CRAFTER_MIN_BATCH=1",
                 "CRAFTER_MAX_BATCH=5",
+                &format!(
+                    "CRAFTER_STREAM_ROOT={}",
+                    runs_root.join(run_id).join("container-streams").display()
+                ),
                 &uv.display().to_string(),
                 "run",
                 "--frozen",
@@ -1876,6 +1978,10 @@ fn materialize_craftax_config(
         .insert("taskset".into(), toml::Value::Table(taskset));
 
     let gepa = table_mut(&mut config, "gepa")?;
+    gepa.insert(
+        "rollout_submission_mode".into(),
+        toml::Value::String("sync".into()),
+    );
     gepa.insert("max_generations".into(), MAX_GENERATIONS.into());
     gepa.insert(
         "proposals_per_generation".into(),
@@ -2290,6 +2396,10 @@ namespace = "base"
             toml::Value::Array(vec![toml::Value::String("test:101".into())])
         );
         assert_eq!(config["gepa"]["minibatch_size"].as_integer(), Some(1));
+        assert_eq!(
+            config["gepa"]["rollout_submission_mode"].as_str(),
+            Some("sync")
+        );
         assert_eq!(config["gepa"]["max_train_rollouts"].as_integer(), Some(4));
         assert_eq!(config["gepa"]["max_heldout_rollouts"].as_integer(), Some(2));
         assert_eq!(config["gepa"]["max_total_rollouts"].as_integer(), Some(6));
@@ -2301,6 +2411,7 @@ namespace = "base"
         );
         assert!(text.contains("\"--frozen\""));
         assert!(text.contains("\"CRAFTER_MAX_TURNS=8\""));
+        assert!(text.contains("CRAFTER_STREAM_ROOT="));
         assert!(text.contains("startup_timeout_seconds = 240"));
         assert!(text.contains("auth_mode = \"chatgpt\""));
         assert!(!text.contains("OLD_KEY"));
@@ -2439,6 +2550,106 @@ namespace = "base"
         );
     }
 
+    /// A10 / test 1b. The failing-path twin of run→poll visibility.
+    ///
+    /// A run the polled service can never see used to be waited out until the
+    /// child exited on its own — every rollout paid for, every event
+    /// unreachable, and the failure delivered at the end. The bound turns that
+    /// into a known, small cost. This drives the real supervisor loop against a
+    /// child that stays alive, so it exercises the kill path rather than a
+    /// predicate.
+    #[tokio::test]
+    async fn a_run_that_never_indexes_is_killed_within_the_bound() {
+        use super::super::OptimizerManager;
+        use std::sync::Arc;
+
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path().join("core")).unwrap();
+        let journal = EventJournal::new(storage.database().clone());
+        let content = ContentStore::new(storage.content_root());
+        let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
+        let (events_tx, _) = tokio::sync::broadcast::channel(16);
+        let manager = Arc::new(OptimizerManager::with_home(dir.path().join("manager")));
+        manager.install(None).unwrap();
+        manager.start().await.unwrap();
+        let service = OptimizerService::new_with_manager(
+            storage.database().clone(),
+            journal,
+            visuals,
+            events_tx,
+            manager.clone(),
+        );
+
+        // No spool is ever opened for this run, so the events endpoint 404s for
+        // its whole life — exactly the shape of a service pointed at a database
+        // the child never writes.
+        let (run, _) = service
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "never_indexed_run",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        std::env::set_var("OPENAI_API_KEY", "sk-test");
+        std::env::set_var("SYNTH_OPTIMIZER_TEST_INDEX_WAIT_MS", "250");
+        // Without this the stand-in registers the run the moment it is spawned,
+        // so it is indexed before the first poll and this failure cannot happen.
+        std::env::set_var("SYNTH_OPTIMIZER_TEST_SUPPRESS_SPOOL", "1");
+        // Outlives the bound by orders of magnitude: if the supervisor did not
+        // kill it, this test would hang rather than pass.
+        std::env::set_var("SYNTH_OPTIMIZER_TEST_CHILD_SLEEP_SECS", "120");
+
+        let run_dir = dir.path().join("run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let config_path = run_dir.join("recipe.toml");
+        fs::write(&config_path, "").unwrap();
+        let (_cancel_tx, cancel_rx) = watch::channel(false);
+
+        let started = std::time::Instant::now();
+        let error = run_recipe_worker(
+            service.clone(),
+            run.id.clone(),
+            run_dir.clone(),
+            config_path,
+            run_dir.clone(),
+            manager.clone(),
+            cancel_rx,
+        )
+        .await
+        .unwrap_err();
+        let elapsed = started.elapsed();
+
+        std::env::remove_var("SYNTH_OPTIMIZER_TEST_INDEX_WAIT_MS");
+        std::env::remove_var("SYNTH_OPTIMIZER_TEST_CHILD_SLEEP_SECS");
+        std::env::remove_var("SYNTH_OPTIMIZER_TEST_SUPPRESS_SPOOL");
+
+        assert!(
+            error.to_string().contains("run_never_indexed"),
+            "expected a bounded never-indexed failure, got: {error}"
+        );
+        // The point of the bound is that it fires on its own schedule rather
+        // than on the child's. A 120s child that returned in under 30s can only
+        // have been terminated.
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "the bound did not fire; waited {elapsed:?}"
+        );
+        assert!(
+            manager.active_gepa_run_ids().await.is_empty(),
+            "the terminated child was left registered"
+        );
+        // The run is closed out as failed rather than left running forever.
+        let stored = service.get(run.id.clone()).await.unwrap();
+        assert_eq!(stored.status, "failed");
+
+        let _ = manager.stop().await;
+    }
+
     #[test]
     fn parses_only_the_requested_dotenv_key() {
         let text = "OTHER=do-not-return\nexport OPENAI_API_KEY='test-key'\n";
@@ -2456,6 +2667,86 @@ namespace = "base"
             assert!(path.is_absolute());
             assert!(path.is_file());
         }
+    }
+
+    /// Release receipt for the bounded Craftax product recipe. Unlike the unit
+    /// stand-in, this installs the pinned wheel, starts its real service, and
+    /// requires the real child event feed to remain visible through Desktop.
+    #[tokio::test]
+    #[ignore = "paid Craftax acceptance; requires ChatGPT auth and OPENAI_API_KEY"]
+    async fn paid_craftax_smoke_reaches_terminal_through_the_real_sidecar() {
+        assert_eq!(
+            std::env::var("SYNTH_OPTIMIZER_LIVE_SIDECAR").as_deref(),
+            Ok("1"),
+            "Craftax acceptance must exercise the installed sidecar"
+        );
+        assert_eq!(
+            std::env::var("SYNTH_OPTIMIZER_LIVE_INSTALL").as_deref(),
+            Ok("1"),
+            "Craftax acceptance must install the published wheel"
+        );
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path().join("core")).unwrap();
+        let journal = EventJournal::new(storage.database().clone());
+        let content = ContentStore::new(storage.content_root());
+        let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
+        let (events_tx, _) = tokio::sync::broadcast::channel(64);
+        let manager = Arc::new(super::super::OptimizerManager::with_home(
+            dir.path().join("manager"),
+        ));
+        manager.install(None).unwrap();
+        let ready = manager.start().await.unwrap();
+        assert_eq!(ready.phase, "ready");
+        let service = OptimizerService::new_with_manager(
+            storage.database().clone(),
+            journal,
+            visuals,
+            events_tx,
+            manager.clone(),
+        );
+        let run = service
+            .start_recipe(OptimizerRecipeRunRequest {
+                recipe_id: CRAFTAX_GEPA_SMOKE_RECIPE.into(),
+                session_ref: Some("v04-craftax-release-receipt".into()),
+                open_visual: Some(true),
+                base_model: None,
+                dataset_shard: None,
+                candidate_set_id: None,
+            })
+            .await
+            .unwrap()
+            .0;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1_800);
+        let terminal = loop {
+            let current = service.get(run.id.clone()).await.unwrap();
+            if matches!(
+                current.status.as_str(),
+                "completed" | "failed" | "cancelled"
+            ) {
+                break current;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "Craftax smoke timed out at status {} cursor {}",
+                current.status,
+                current.cursor_seq
+            );
+            sleep(Duration::from_secs(2)).await;
+        };
+        let page = manager
+            .optimizer_events_after(&run.id, 0, 2_000)
+            .await
+            .unwrap();
+        assert!(
+            !page["events"].as_array().unwrap().is_empty(),
+            "real Craftax child produced no pollable optimizer events"
+        );
+        let _ = manager.stop().await;
+        assert_eq!(
+            terminal.status, "completed",
+            "Craftax smoke failed: {:?}",
+            terminal.error
+        );
     }
 
     /// Manual A3 receipt. This is ignored in normal CI because it performs two
@@ -2494,6 +2785,7 @@ namespace = "base"
                 open_visual: Some(true),
                 base_model: None,
                 dataset_shard: None,
+                candidate_set_id: None,
             }),
             service.start_recipe(OptimizerRecipeRunRequest {
                 recipe_id: BANKING77_GEPA_SOL_RECIPE.into(),
@@ -2501,6 +2793,7 @@ namespace = "base"
                 open_visual: Some(true),
                 base_model: None,
                 dataset_shard: None,
+                candidate_set_id: None,
             })
         );
         let luna = luna.unwrap().0;

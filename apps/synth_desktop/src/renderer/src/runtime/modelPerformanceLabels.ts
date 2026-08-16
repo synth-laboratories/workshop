@@ -1,4 +1,7 @@
 import {
+	CHATGPT_LUNA_MODEL,
+	CHATGPT_SOL_MODEL,
+	CHATGPT_TERRA_MODEL,
 	OPENROUTER_LAGUNA_S_MODEL,
 	OPENROUTER_LUNA_MODEL,
 	OPENROUTER_MUSE_SPARK_MODEL,
@@ -10,6 +13,12 @@ import type { ModelPerformanceSummary } from "../bridge";
 
 export function performanceTargetId(summary: ModelPerformanceSummary): string | null {
 	if (summary.provider === "local-laguna") return "local-laguna";
+	if (summary.provider === "openai-codex-oauth") {
+		if (summary.modelId === CHATGPT_LUNA_MODEL) return "chatgpt-luna";
+		if (summary.modelId === CHATGPT_SOL_MODEL) return "chatgpt-sol";
+		if (summary.modelId === CHATGPT_TERRA_MODEL) return "chatgpt-terra";
+		return null;
+	}
 	if (summary.provider === "synth-cloud" && summary.modelId === SYNTH_CLOUD_LAGUNA_S_MODEL) {
 		return "synth-cloud-laguna-s";
 	}

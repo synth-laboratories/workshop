@@ -154,6 +154,17 @@ async fn route_request(
         Err(error) if crate::error::error_is::<crate::error::Unauthorized>(&error) => {
             JsonHttpResponse::error(StatusCode::UNAUTHORIZED, error.to_string())
         }
+        Err(error)
+            if crate::error::error_is::<crate::container_capabilities::ContainerPreflightError>(
+                &error,
+            ) =>
+        {
+            JsonHttpResponse {
+                status: StatusCode::CONFLICT,
+                body: crate::container_capabilities::preflight_error_body(&error),
+                extra_headers: Vec::new(),
+            }
+        }
         Err(error) if crate::error::error_is::<crate::error::ProtocolMismatch>(&error) => {
             JsonHttpResponse::error(StatusCode::UPGRADE_REQUIRED, error.to_string())
         }
@@ -240,6 +251,9 @@ fn percent_decode(value: &str) -> String {
 }
 
 async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) -> Result<Value> {
+    if let Some(route) = laguna_eval_route(method, path) {
+        return dispatch_laguna(route, &deps.laguna).await;
+    }
     let core = &deps.core;
     match (method, path) {
         ("GET", "/health") | ("GET", "/v1/health") => Ok(json!({
@@ -287,14 +301,14 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
                 .trim_end_matches("/export")
                 .trim_end_matches('/')
                 .to_string();
-            export_session(core, &session_id).await
+            export_session(core, &deps.codex, &session_id).await
         }
         ("POST", "/v1/export_session") => {
             let session_id = body
                 .get("sessionId")
                 .and_then(|value| value.as_str().map(str::to_string))
                 .context("export_session requires sessionId")?;
-            export_session(core, &session_id).await
+            export_session(core, &deps.codex, &session_id).await
         }
         ("GET", "/v1/containers") | ("POST", "/v1/containers") => {
             visuals_ipc::dispatch(method, path, body, core).await
@@ -363,6 +377,92 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
         ("POST", "/v1/policy_preflight") => policy_preflight(deps, body).await,
         _ => bail!("unsupported eval driver route {method} {path}"),
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LagunaEvalRoute {
+    Ensure,
+    Status,
+    Inference,
+    Unload,
+}
+
+fn laguna_eval_route(method: &str, path: &str) -> Option<LagunaEvalRoute> {
+    match (method, path) {
+        ("POST", "/v1/laguna/ensure") => Some(LagunaEvalRoute::Ensure),
+        ("GET", "/v1/laguna/status") => Some(LagunaEvalRoute::Status),
+        ("GET", "/v1/laguna/inference") => Some(LagunaEvalRoute::Inference),
+        ("POST", "/v1/laguna/model/unload") => Some(LagunaEvalRoute::Unload),
+        _ => None,
+    }
+}
+
+async fn dispatch_laguna(route: LagunaEvalRoute, laguna: &LagunaManager) -> Result<Value> {
+    match route {
+        LagunaEvalRoute::Ensure => laguna_ensure(laguna).await,
+        LagunaEvalRoute::Status => laguna_status(laguna).await,
+        LagunaEvalRoute::Inference => Ok(serde_json::to_value(laguna.inference_snapshot().await?)?),
+        LagunaEvalRoute::Unload => Ok(serde_json::to_value(laguna.unload_model().await?)?),
+    }
+}
+
+/// Start the same managed Laguna runtime used by the composer, retaining the
+/// product status as the prerequisite receipt when weights or hardware are not
+/// available. Provider credentials and the daemon key never cross this API.
+async fn laguna_ensure(laguna: &LagunaManager) -> Result<Value> {
+    let root = crate::runtime::workshop_root()?;
+    let base_url = match laguna.ensure_for_turn(&root).await {
+        Ok(base_url) => base_url,
+        Err(error) => {
+            laguna.set_error(error.to_string()).await;
+            None
+        }
+    };
+    let product_status = laguna.status().await;
+    let (outcome, code) = classify_laguna_ensure(&product_status, base_url.is_some());
+    let mut status = serde_json::to_value(product_status)?;
+    let status_object = status
+        .as_object_mut()
+        .context("Laguna status must serialize as an object")?;
+    status_object.insert("outcome".into(), Value::String(outcome.into()));
+    status_object.insert("code".into(), Value::String(code.into()));
+    Ok(json!({
+        "ok": base_url.is_some(),
+        "baseUrl": base_url,
+        "status": status,
+    }))
+}
+
+fn classify_laguna_ensure(
+    status: &crate::laguna::LagunaStatus,
+    ready: bool,
+) -> (&'static str, &'static str) {
+    if ready && status.phase == "ready" {
+        return ("ready", "ready");
+    }
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        return ("unmet_prerequisite", "hardware_unsupported");
+    }
+    if status.phase == "not_installed" {
+        return ("unmet_prerequisite", "weights_unavailable");
+    }
+    ("product_error", "runtime_unavailable")
+}
+
+/// Mirror `laguna_get_status`: the first read ensures the managed runtime and
+/// subsequent reads refresh `/health`, so evals observe the same status the UI
+/// renders rather than a parallel test probe.
+async fn laguna_status(laguna: &LagunaManager) -> Result<Value> {
+    let status = if laguna.status().await.phase == "unknown" {
+        let root = crate::runtime::workshop_root()?;
+        if let Err(error) = laguna.ensure(&root).await {
+            laguna.set_error(error.to_string()).await;
+        }
+        laguna.status().await
+    } else {
+        laguna.refresh().await
+    };
+    Ok(serde_json::to_value(status)?)
 }
 
 async fn export_visualsbench(core: &CoreRuntime, visual_id: &str, body: Value) -> Result<Value> {
@@ -562,6 +662,7 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
         multi_agent_version: None,
         auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
         writable_roots: Vec::new(),
+        local_model_catalog: None,
         broker_credential: false,
     };
     start = prepare_start(&deps.laguna, start).await?;
@@ -583,21 +684,29 @@ async fn prepare_start(
     laguna: &LagunaManager,
     mut request: CodexSessionStartRequest,
 ) -> Result<CodexSessionStartRequest> {
+    request.local_model_catalog = None;
     match crate::codex::provider_class(request.provider_name.as_deref()) {
         crate::codex::ProviderClass::LocalLaguna => {
             let root = crate::runtime::workshop_root()?;
+            let model = laguna.configured_model_id()?;
+            crate::codex::apply_local_laguna_provider(&mut request, &model);
             request.base_url = laguna
-                .ensure(&root)
+                .ensure_for_turn(&root)
                 .await?
                 .ok_or_else(|| anyhow!("Laguna Responses server is unavailable"))?;
-            request.api_key = laguna.api_key().unwrap_or_default();
+            request.api_key = laguna
+                .api_key()
+                .context("Laguna daemon credential is unavailable after ensure")?;
+            let catalog = laguna
+                .codex_model_catalog(&request.base_url, &request.api_key)
+                .await?;
+            crate::codex::apply_local_laguna_catalog_metadata(&mut request, catalog)?;
         }
         crate::codex::ProviderClass::OpenRouter => {
-            let key = synth_config::openrouter_api_key()?
-                .ok_or_else(|| anyhow!("OpenRouter API key is not configured"))?;
+            let key = synth_config::openrouter_api_key()?;
             // Staged for native custody, exactly like the production path;
             // `CodexManager::start` exchanges it for a loopback lease at spawn.
-            crate::codex::stage_brokered_credential(&mut request, &key)
+            crate::codex::apply_openrouter_provider(&mut request, key.as_deref())
                 .map_err(|message| anyhow!(message))?;
         }
         crate::codex::ProviderClass::SynthCloud => {
@@ -681,6 +790,7 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
         multi_agent_version: None,
         auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
         writable_roots: Vec::new(),
+        local_model_catalog: None,
         broker_credential: false,
     };
     start = prepare_start(&deps.laguna, start).await?;
@@ -758,7 +868,53 @@ fn is_terminal_event(kind: &str, payload: &Value) -> bool {
         ))
 }
 
-async fn export_session(core: &CoreRuntime, session_id: &str) -> Result<Value> {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EvalProviderBinding {
+    provider: String,
+    model: String,
+    endpoint_class: &'static str,
+    credential_binding: &'static str,
+    brokered: bool,
+    fallback_allowed: bool,
+}
+
+fn eval_provider_binding(record: &crate::codex::CodexSessionRecord) -> EvalProviderBinding {
+    let (endpoint_class, credential_binding, brokered) =
+        match crate::codex::provider_class(Some(&record.provider_name)) {
+            crate::codex::ProviderClass::LocalLaguna => {
+                ("local-loopback-responses", "local-daemon-bearer", false)
+            }
+            crate::codex::ProviderClass::OpenRouter => {
+                ("openrouter-responses", "native-loopback-lease", true)
+            }
+            crate::codex::ProviderClass::SynthCloud => (
+                "synth-cloud-responses-gateway",
+                "native-loopback-lease",
+                true,
+            ),
+            crate::codex::ProviderClass::OpenaiCodexOauth => {
+                ("chatgpt-codex", "oauth-session-file", false)
+            }
+            crate::codex::ProviderClass::Direct => {
+                ("custom-responses", "provider-environment", false)
+            }
+        };
+    EvalProviderBinding {
+        provider: record.provider_name.clone(),
+        model: record.model.clone(),
+        endpoint_class,
+        credential_binding,
+        brokered,
+        fallback_allowed: false,
+    }
+}
+
+async fn export_session(
+    core: &CoreRuntime,
+    codex: &CodexManager,
+    session_id: &str,
+) -> Result<Value> {
     let mut events = Vec::new();
     let mut after = 0_i64;
     loop {
@@ -778,6 +934,13 @@ async fn export_session(core: &CoreRuntime, session_id: &str) -> Result<Value> {
         }
     }
     let session = core.sessions().get(session_id.to_string()).await?;
+    let provider_binding = codex
+        .list()
+        .await
+        .into_iter()
+        .find(|record| record.session_id == session_id)
+        .map(|record| eval_provider_binding(&record))
+        .with_context(|| format!("Codex provider binding missing for eval session {session_id}"))?;
     let visuals = core
         .visuals()
         .list(crate::visuals::VisualQuery {
@@ -802,6 +965,7 @@ async fn export_session(core: &CoreRuntime, session_id: &str) -> Result<Value> {
         "schemaVersion": "synth.eval-session-export.v1",
         "sessionId": session_id,
         "session": session,
+        "providerBinding": provider_binding,
         "events": events,
         "eventCount": events.len(),
         "visuals": visual_exports,
@@ -1083,7 +1247,7 @@ async fn resolve_policy_target(
             let root = crate::runtime::workshop_root()?;
             let base_url = deps
                 .laguna
-                .ensure(&root)
+                .ensure_for_turn(&root)
                 .await?
                 .ok_or_else(|| anyhow!("local Laguna daemon is unavailable"))?;
             let api_key = deps
@@ -1114,6 +1278,9 @@ async fn run_policy_rollout(
 ) -> Result<Value> {
     let core = &deps.core;
     let container = core.data().get_container(container_id.to_string()).await?;
+    // Same gate as the direct IPC prepare route: reject unhealthy, stale, or
+    // capability-incompatible records before any mutating call.
+    crate::container_capabilities::preflight_prepare_request(&container, &body)?;
     let base = container
         .base_url
         .as_deref()
@@ -1253,7 +1420,29 @@ async fn run_policy_rollout(
         }),
     )
     .await?;
-    wait_for_stream_subscribed(&client, &poll_url, SUBSCRIBE_READY_TIMEOUT).await?;
+    // The eval driver runs headless, which is exactly when nobody is watching a
+    // pane: its stream failures are the ones most worth having recorded.
+    let stream_diagnostics = crate::container_stream::StreamDiagnostics::new(
+        Some(core.diagnostics_service().clone()),
+        crate::diagnostics::Correlation {
+            container_id: Some(container_id.to_string()),
+            rollout_id: Some(rollout_id.to_string()),
+            visual_id: Some(visual_id.to_string()),
+            stream_id: prepared_stream
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| Some(rollout_id.to_string())),
+            ..Default::default()
+        },
+    );
+    wait_for_stream_subscribed(
+        &client,
+        &poll_url,
+        SUBSCRIBE_READY_TIMEOUT,
+        &stream_diagnostics,
+    )
+    .await?;
 
     let mut start_body = json!({
         "rollout_id": rollout_id,
@@ -2013,6 +2202,101 @@ mod tests {
     #[test]
     fn protocol_version_is_stable() {
         assert_eq!(PROTOCOL_VERSION, "synth.eval-driver.v1");
+    }
+
+    #[test]
+    fn laguna_eval_routes_are_explicit_and_method_scoped() {
+        assert_eq!(
+            laguna_eval_route("POST", "/v1/laguna/ensure"),
+            Some(LagunaEvalRoute::Ensure)
+        );
+        assert_eq!(
+            laguna_eval_route("GET", "/v1/laguna/status"),
+            Some(LagunaEvalRoute::Status)
+        );
+        assert_eq!(
+            laguna_eval_route("GET", "/v1/laguna/inference"),
+            Some(LagunaEvalRoute::Inference)
+        );
+        assert_eq!(
+            laguna_eval_route("POST", "/v1/laguna/model/unload"),
+            Some(LagunaEvalRoute::Unload)
+        );
+        assert_eq!(laguna_eval_route("GET", "/v1/laguna/ensure"), None);
+        assert_eq!(laguna_eval_route("POST", "/v1/laguna/status"), None);
+        assert_eq!(laguna_eval_route("GET", "/v1/laguna/model/unload"), None);
+    }
+
+    fn laguna_status_fixture(phase: &str) -> crate::laguna::LagunaStatus {
+        crate::laguna::LagunaStatus {
+            phase: phase.into(),
+            base_url: Some("http://127.0.0.1:17301".into()),
+            backend: Some("mlx_lm".into()),
+            loaded_model: None,
+            detail: None,
+            memory_bytes: None,
+            idle_seconds: None,
+            idle_unload_after_seconds: None,
+            last_used_at: None,
+            free_at: None,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn laguna_ensure_classifies_only_stable_prerequisites_as_skips() {
+        assert_eq!(
+            classify_laguna_ensure(&laguna_status_fixture("ready"), true),
+            ("ready", "ready")
+        );
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            assert_eq!(
+                classify_laguna_ensure(&laguna_status_fixture("not_installed"), false),
+                ("unmet_prerequisite", "weights_unavailable")
+            );
+            for phase in ["error", "unavailable", "unloaded"] {
+                assert_eq!(
+                    classify_laguna_ensure(&laguna_status_fixture(phase), false),
+                    ("product_error", "runtime_unavailable")
+                );
+            }
+        } else {
+            assert_eq!(
+                classify_laguna_ensure(&laguna_status_fixture("error"), false),
+                ("unmet_prerequisite", "hardware_unsupported")
+            );
+        }
+    }
+
+    #[test]
+    fn provider_binding_is_typed_and_contains_no_endpoint_or_credential() {
+        let record = crate::codex::CodexSessionRecord {
+            session_id: "eval-1".into(),
+            thread_id: "thread-1".into(),
+            workspace: "/tmp/workspace".into(),
+            model: "openai/gpt-5.6-luna".into(),
+            provider_name: "openrouter".into(),
+            provider_title: "OpenRouter Responses".into(),
+            base_url: "http://127.0.0.1:12345/v1".into(),
+            status: "ready".into(),
+            title: None,
+            title_origin: None,
+            presentation_emotion: None,
+            presentation_summary: None,
+            approval_policy: "never".into(),
+            sandbox: "workspace-write".into(),
+        };
+        let binding = eval_provider_binding(&record);
+        assert_eq!(binding.provider, "openrouter");
+        assert_eq!(binding.model, "openai/gpt-5.6-luna");
+        assert_eq!(binding.endpoint_class, "openrouter-responses");
+        assert_eq!(binding.credential_binding, "native-loopback-lease");
+        assert!(binding.brokered);
+        assert!(!binding.fallback_allowed);
+        let value = serde_json::to_value(binding).unwrap();
+        assert!(value.get("baseUrl").is_none());
+        assert!(value.get("apiKey").is_none());
+        assert!(!value.to_string().contains("127.0.0.1"));
     }
 
     #[test]

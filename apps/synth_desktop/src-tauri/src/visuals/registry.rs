@@ -1,7 +1,7 @@
 use super::mermaid::{self, Theme};
 use super::models::{
-    validate_bindings, RendererKind, VisualCreateRequest, VisualQuery, VisualRecord,
-    VisualRevision, VisualStatus, VisualUpdateRequest, VISUAL_SCHEMA_VERSION,
+    canonicalize_bindings, BindingsForm, RendererKind, VisualCreateRequest, VisualQuery,
+    VisualRecord, VisualRevision, VisualStatus, VisualUpdateRequest, VISUAL_SCHEMA_VERSION,
 };
 use super::renditions::{self, VisualAsset, VisualRendition};
 use super::systems::{self, SystemsKind};
@@ -21,6 +21,12 @@ pub struct VisualRegistry {
     pub(super) db: Arc<Database>,
     pub(super) journal: EventJournal,
     pub(super) content: ContentStore,
+    /// Attached by the composition root once diagnostics exist.
+    ///
+    /// `visual.render_failed` already lands in the journal as a domain event,
+    /// but a domain event is scoped to the visual. The diagnostic is what puts
+    /// that failure next to the rollout, stream, and container it belongs to.
+    pub(super) diagnostics: Arc<std::sync::OnceLock<Arc<crate::diagnostics::DiagnosticsService>>>,
 }
 
 impl VisualRegistry {
@@ -29,11 +35,101 @@ impl VisualRegistry {
             db,
             journal,
             content,
+            diagnostics: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
     pub(crate) fn content(&self) -> &ContentStore {
         &self.content
+    }
+
+    /// Wire diagnostics in after both services exist. Idempotent.
+    pub fn attach_diagnostics(&self, service: Arc<crate::diagnostics::DiagnosticsService>) {
+        let _ = self.diagnostics.set(service);
+    }
+
+    /// Record a visual-surface failure with everything the record already knows.
+    fn diagnose_visual(
+        &self,
+        visual: &VisualRecord,
+        event: &str,
+        code: &str,
+        message: &str,
+        details: serde_json::Value,
+    ) {
+        let Some(service) = self.diagnostics.get() else {
+            return;
+        };
+        let mut input = crate::diagnostics::DiagnosticInput::new(
+            crate::diagnostics::Severity::Error,
+            "visual-registry",
+            event,
+            code,
+            message,
+        );
+        input.correlation.visual_id = Some(visual.id.clone());
+        input.correlation.visual_revision = Some(visual.current_revision);
+        input.correlation.session_id = visual.session_id.clone();
+        input.correlation.rollout_id = visual.run_id.clone();
+        input.correlation.trace_id = visual.trace_id.clone();
+        if let Some(object) = details.as_object() {
+            input.details = object.clone();
+        }
+        input.details.insert(
+            "template_id".into(),
+            serde_json::json!(visual.template_id.clone()),
+        );
+        service.emit(input);
+    }
+
+    /// Report that a writer sent bindings in a shape this build had to upgrade.
+    ///
+    /// COMPAT: loud on purpose. A silently accepted legacy shape is how ten
+    /// declared streams became an empty pane with no error — the upgrade has to
+    /// be visible to an operator long before a rendered acceptance fails.
+    fn report_bindings_upgrade(
+        &self,
+        visual_id: &str,
+        revision: i64,
+        session_id: Option<&str>,
+        template_id: &str,
+        form: &BindingsForm,
+        upgraded_slots: &[String],
+    ) {
+        if !form.is_upgrade() {
+            return;
+        }
+        eprintln!(
+            "synth-desktop: upgraded {} visual bindings for {visual_id} rev {revision} \
+             (template {template_id}, slots {upgraded_slots:?}); writers must send {}",
+            form.as_str(),
+            super::models::VISUAL_BINDINGS_SCHEMA_VERSION
+        );
+        let Some(service) = self.diagnostics.get() else {
+            return;
+        };
+        let mut input = crate::diagnostics::DiagnosticInput::new(
+            crate::diagnostics::Severity::Warn,
+            "visual-registry",
+            "visual.bindings.upgraded",
+            crate::diagnostics::codes::VISUAL_BINDINGS_UPGRADED,
+            format!(
+                "upgraded {} visual bindings to {}",
+                form.as_str(),
+                super::models::VISUAL_BINDINGS_SCHEMA_VERSION
+            ),
+        );
+        input.correlation.visual_id = Some(visual_id.to_string());
+        input.correlation.visual_revision = Some(revision);
+        input.correlation.session_id = session_id.map(str::to_string);
+        input
+            .details
+            .insert("template_id".into(), json!(template_id));
+        input.details.insert("form".into(), json!(form.as_str()));
+        // Slot names come from a template contract, not from free text, so the
+        // cardinality here is bounded by the template's declared slots.
+        input.details.insert("slots".into(), json!(upgraded_slots));
+        service.emit(input);
     }
 
     pub async fn list(&self, query: VisualQuery) -> Result<Vec<VisualRecord>> {
@@ -62,8 +158,11 @@ impl VisualRegistry {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| format!("vis_{}", Uuid::new_v4().simple()));
         validate_visual_id(&id)?;
-        let bindings = request.bindings.unwrap_or_else(|| json!({}));
-        validate_bindings(&bindings)?;
+        let authored_bindings = request.bindings.unwrap_or_else(|| json!({}));
+        let canonical = canonicalize_bindings(&authored_bindings)?;
+        let bindings_form = canonical.form.clone();
+        let upgraded_slots = canonical.upgraded_slots.clone();
+        let bindings = canonical.value;
         let is_mermaid = mermaid::is_mermaid_template(&template.id);
         let systems_kind = systems::template_kind(&template.id);
         if is_mermaid {
@@ -203,6 +302,14 @@ impl VisualRegistry {
                 Ok((inserted, event))
             })
             .await?;
+        self.report_bindings_upgrade(
+            &record.id,
+            record.current_revision,
+            record.session_id.as_deref(),
+            &record.template_id,
+            &bindings_form,
+            &upgraded_slots,
+        );
         if mermaid::is_mermaid_template(&record.template_id) {
             let rendered = self.render_mermaid(&record.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
@@ -229,6 +336,18 @@ impl VisualRegistry {
             if let Some(kind) = systems::template_kind(&existing.template_id) {
                 systems::validate_source(source, kind)?;
             }
+        }
+        // Canonicalise before anything reads the bindings. The mermaid and
+        // systems guards below match on the canonical slots array, so a legacy
+        // shape used to walk straight past them.
+        let mut request = request;
+        let mut bindings_form = BindingsForm::Canonical;
+        let mut upgraded_slots = Vec::new();
+        if let Some(bindings) = request.bindings.as_ref() {
+            let canonical = canonicalize_bindings(bindings)?;
+            bindings_form = canonical.form.clone();
+            upgraded_slots = canonical.upgraded_slots.clone();
+            request.bindings = Some(canonical.value);
         }
         if let Some(bindings) = request.bindings.as_ref() {
             let existing = self.get(id.clone()).await?;
@@ -270,7 +389,8 @@ impl VisualRegistry {
                 }
                 let mut new_bindings = None;
                 if let Some(bindings) = request.bindings {
-                    validate_bindings(&bindings)?;
+                    // Already canonical: `update` canonicalises before the
+                    // transaction so every guard above reads the same shape.
                     current.bindings = bindings.clone();
                     new_bindings = Some(bindings);
                     bumped = true;
@@ -325,6 +445,14 @@ impl VisualRegistry {
                 Ok((current, event))
             })
             .await?;
+        self.report_bindings_upgrade(
+            &updated.id,
+            updated.current_revision,
+            updated.session_id.as_deref(),
+            &updated.template_id,
+            &bindings_form,
+            &upgraded_slots,
+        );
         if content_changed && mermaid::is_mermaid_template(&updated.template_id) {
             let rendered = self.render_mermaid(&updated.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
@@ -768,6 +896,13 @@ impl VisualRegistry {
         let stored = visual.clone();
         let fail_message = message.clone();
         self.db.clone().run_transaction(move|conn|{persist_visual(conn,&stored)?;crate::storage::append_event(conn,EventAppend{event_id:None,session_id:stored.session_id.clone(),run_id:stored.run_id.clone(),source:EventSource::Visual,kind:"visual.render_failed".into(),payload:json!({"visualId":stored.id,"revision":stored.current_revision,"visualKind":kind.as_str(),"error":fail_message}),remote_sequence:None,command_id:None,created_at:None})?;Ok(())}).await?;
+        self.diagnose_visual(
+            &visual,
+            "visual.render.failed",
+            crate::diagnostics::codes::VISUAL_RENDER_FAILED,
+            &message,
+            json!({ "visual_kind": kind.as_str() }),
+        );
         self.get(visual.id).await
     }
 
@@ -893,6 +1028,13 @@ impl VisualRegistry {
             Ok(())
         })
         .await?;
+        self.diagnose_visual(
+            &visual,
+            "visual.render.failed",
+            crate::diagnostics::codes::VISUAL_RENDER_FAILED,
+            &message,
+            json!({ "diagram_kind": diagram_kind }),
+        );
         self.get(visual.id).await
     }
 }
@@ -935,7 +1077,7 @@ fn validate_visual_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn digest_json(value: &Value) -> String {
+pub(super) fn digest_json(value: &Value) -> String {
     let encoded = serde_json::to_vec(value).unwrap_or_default();
     let mut hasher = Sha256::new();
     hasher.update(encoded);

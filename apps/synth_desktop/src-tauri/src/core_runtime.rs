@@ -33,6 +33,7 @@ pub struct CoreRuntime {
     data: DataStore,
     optimizers: OptimizerService,
     plugins: PluginService,
+    diagnostics: Arc<crate::diagnostics::DiagnosticsService>,
     intern: Arc<InternRuntime>,
     intern_provider: Arc<InternProviderManager>,
     sessions: SessionService,
@@ -43,6 +44,19 @@ pub struct CoreRuntime {
 impl CoreRuntime {
     pub fn open(root: impl Into<std::path::PathBuf>) -> Result<Self> {
         let storage = Storage::open(root)?;
+        // Bindings written before the canonical envelope was enforced still
+        // render an empty pane, so bring them forward at open. Storage cannot
+        // do this itself: deciding what a legacy shape meant is domain logic.
+        let backfill = storage
+            .database()
+            .with_conn(crate::visuals::canonicalize_persisted_bindings)
+            .context("canonicalize persisted visual bindings")?;
+        if backfill.changed() {
+            eprintln!(
+                "synth-desktop: visual bindings backfill scanned {}, upgraded {}, refused {}",
+                backfill.scanned, backfill.upgraded, backfill.refused
+            );
+        }
         let backend = crate::synth_config::resolve().context("resolve Synth backend")?;
         let intern = Arc::new(match backend.api_key {
             Some(api_key) => InternRuntime::configured(
@@ -81,7 +95,7 @@ impl CoreRuntime {
             journal.clone(),
             visuals.clone(),
             events_tx.clone(),
-            optimizer_manager,
+            optimizer_manager.clone(),
         );
         let plugin_path = storage
             .content_root()
@@ -89,6 +103,23 @@ impl CoreRuntime {
             .unwrap_or_else(|| storage.content_root())
             .join("plugins/optimizers.json");
         let plugins = PluginService::new(crate::plugins::PluginRegistry::with_path(plugin_path));
+        // Diagnostics share the journal's database and live beside the content
+        // store, one directory per instance. The service is constructed here
+        // but starts nothing: its writer and its index sidecar are started
+        // deliberately, after the main window is interactive.
+        let diagnostics_root = storage
+            .content_root()
+            .parent()
+            .unwrap_or_else(|| storage.content_root())
+            .join("diagnostics");
+        let diagnostics = crate::diagnostics::DiagnosticsService::new(
+            storage.database().clone(),
+            journal.clone(),
+            diagnostics_root,
+        );
+        optimizers.attach_diagnostics(diagnostics.clone());
+        visuals.attach_diagnostics(diagnostics.clone());
+        optimizer_manager.attach_diagnostics(diagnostics.clone());
         Self {
             storage,
             journal,
@@ -98,6 +129,7 @@ impl CoreRuntime {
             data,
             optimizers,
             plugins,
+            diagnostics,
             intern,
             intern_provider,
             sessions,
@@ -148,6 +180,12 @@ impl CoreRuntime {
 
     pub fn plugins(&self) -> &PluginService {
         &self.plugins
+    }
+
+    /// Local diagnostics. Named apart from [`Self::diagnostics`], which
+    /// reports storage health and predates this system.
+    pub fn diagnostics_service(&self) -> &Arc<crate::diagnostics::DiagnosticsService> {
+        &self.diagnostics
     }
 
     pub fn intern(&self) -> &Arc<InternRuntime> {

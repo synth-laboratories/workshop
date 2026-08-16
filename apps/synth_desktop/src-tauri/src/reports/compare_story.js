@@ -8,6 +8,10 @@
   function num(value) {
     return typeof value === "number" && Number.isFinite(value);
   }
+  function color(value, fallback = "#57534e") {
+    const candidate = String(value || "").trim();
+    return /^#[0-9a-f]{6}$/i.test(candidate) ? candidate : fallback;
+  }
   function fmtCost(value) {
     if (!num(value)) return MISSING;
     return value < 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(3)}`;
@@ -91,19 +95,19 @@
               const cells = efforts.map((effort) => scale.find((cell) => cell.arm === arm.id && cell.effort === effort) || { arm: arm.id, effort, mean: null });
               const present = cells.filter((cell) => num(cell.mean));
               const line = present.length >= 2
-                ? `<polyline fill="none" stroke="${arm.color}" stroke-width="1.5" points="${present.map((cell) => `${xEffort(cell.effort)},${yEffort(cell.mean)}`).join(" ")}" />`
+                ? `<polyline fill="none" stroke="${color(arm.color)}" stroke-width="1.5" points="${present.map((cell) => `${xEffort(cell.effort)},${yEffort(cell.mean)}`).join(" ")}" />`
                 : "";
               const marks = cells.map((cell) => {
                 const x = xEffort(cell.effort);
                 if (num(cell.mean)) {
                   return `<g>
                     <title>${escape(arm.label)} · ${escape(cell.effort)} · mean ${fmtMean(cell.mean)} · ${cell.scored ?? MISSING}/${cell.n ?? MISSING} scored</title>
-                    <rect x="${x - 6}" y="${yEffort(cell.mean) - 6}" width="12" height="12" fill="${arm.color}" stroke="#1c1917" stroke-width="1.25" transform="rotate(45 ${x} ${yEffort(cell.mean)})" />
+                    <rect x="${x - 6}" y="${yEffort(cell.mean) - 6}" width="12" height="12" fill="${color(arm.color)}" stroke="#1c1917" stroke-width="1.25" transform="rotate(45 ${x} ${yEffort(cell.mean)})" />
                   </g>`;
                 }
                 return `<g>
                   <title>${escape(arm.label)} · ${escape(cell.effort)} · not run</title>
-                  <text x="${x}" y="${arm.id === "oss20" ? 84 : 104}" text-anchor="middle" fill="${arm.color}" font-size="16">${MISSING}</text>
+                  <text x="${x}" y="${arm.id === "oss20" ? 84 : 104}" text-anchor="middle" fill="${color(arm.color)}" font-size="16">${MISSING}</text>
                 </g>`;
               }).join("");
               return line + marks;
@@ -140,24 +144,24 @@
                 .map((effort) => means.find((row) => (row.arm || "") === arm.id && effortOf(row) === effort))
                 .filter(Boolean);
               if (chain.length < 2) return "";
-              return `<polyline fill="none" stroke="${arm.color}" stroke-width="1.5" stroke-linecap="round" points="${chain.map((row) => `${xOf(row)},${yOf(row)}`).join(" ")}" />`;
+              return `<polyline fill="none" stroke="${color(arm.color)}" stroke-width="1.5" stroke-linecap="round" points="${chain.map((row) => `${xOf(row)},${yOf(row)}`).join(" ")}" />`;
             }).join("")}
             ${points.map((p) => `<g>
               <title>${escape(p.label)} · ${escape(effortOf(p))} · reward ${p.reward} · ${state.axis === "time" ? fmtMin(p.wall_s) : fmtCost(p.cost)} · invalid ${p.invalids ?? MISSING}</title>
-              <circle cx="${xOf(p)}" cy="${yOf(p)}" r="${seedR(p)}" fill="${p.color}" fill-opacity="0.72" stroke="#fff" stroke-width="1.25" />
+              <circle cx="${xOf(p)}" cy="${yOf(p)}" r="${seedR(p)}" fill="${color(p.color)}" fill-opacity="0.72" stroke="#fff" stroke-width="1.25" />
             </g>`).join("")}
             ${means.map((p) => {
               const r = meanR(p);
               return `<g>
                 <title>${escape(p.label)} · ${escape(effortOf(p))} · reward ${fmtMean(p.reward)}</title>
-                <rect x="${xOf(p) - r}" y="${yOf(p) - r}" width="${r * 2}" height="${r * 2}" fill="${p.color}" stroke="#1c1917" stroke-width="1.25" transform="rotate(45 ${xOf(p)} ${yOf(p)})" />
+                <rect x="${xOf(p) - r}" y="${yOf(p) - r}" width="${r * 2}" height="${r * 2}" fill="${color(p.color)}" stroke="#1c1917" stroke-width="1.25" transform="rotate(45 ${xOf(p)} ${yOf(p)})" />
               </g>`;
             }).join("")}
             <text x="208" y="202" text-anchor="middle" fill="#78716c" font-size="11">${escape(axisLabel)}</text>
             <text x="16" y="108" text-anchor="middle" fill="#78716c" font-size="11" transform="rotate(-90 16 108)">reward</text>
           </svg>
           <div class="sv-legend">
-            ${(data.arms || []).map((arm) => `<span><i style="background:${arm.color}"></i>${escape(arm.label)}</span>`).join("")}
+            ${(data.arms || []).map((arm) => `<span><i style="background:${color(arm.color)}"></i>${escape(arm.label)}</span>`).join("")}
             <span class="sv-size">${efforts.map((effort) => {
               const scored = (data.effortScale || []).some((cell) => cell.effort === effort && num(cell.mean));
               return `<b class="${scored ? "" : "sv-empty"}" title="${scored ? escape(effort) : `${effort} not run`}"><svg width="${SEED_R[effort] * 2 + 6}" height="${SEED_R.high * 2 + 4}" viewBox="0 0 ${SEED_R[effort] * 2 + 6} ${SEED_R.high * 2 + 4}" aria-hidden="true"><circle cx="${SEED_R[effort] + 3}" cy="${SEED_R.high + 2}" r="${SEED_R[effort]}" fill="${scored ? "#57534e" : "none"}" stroke="#57534e" stroke-width="1.25" stroke-dasharray="${scored ? "0" : "2 2"}" /></svg>${escape(effort)}</b>`;
@@ -179,11 +183,11 @@
                 <strong>${escape(row.name)}</strong>
                 <div class="sv-dual">
                   <span>${Math.round(row.oss20 * 10)}/10</span>
-                  <b style="width:${Math.max(row.oss20, 0.04) * 100}%;background:${(data.arms[0] || {}).color || "#c2410c"}"></b>
+                  <b style="width:${Math.max(row.oss20, 0.04) * 100}%;background:${color((data.arms[0] || {}).color, "#c2410c")}"></b>
                 </div>
                 <div class="sv-dual">
                   <span>${Math.round(row.oss120 * 10)}/10</span>
-                  <b style="width:${Math.max(row.oss120, 0.04) * 100}%;background:${(data.arms[1] || {}).color || "#1d4ed8"}"></b>
+                  <b style="width:${Math.max(row.oss120, 0.04) * 100}%;background:${color((data.arms[1] || {}).color, "#1d4ed8")}"></b>
                 </div>
                 <em class="sv-chip">${escape(row.exclusive ? `${side} only` : `${delta > 0 ? "+" : ""}${delta}pp`)}</em>
               </div>`;
@@ -225,8 +229,8 @@
           <div class="sv-invalids">
             ${(data.invalids || []).map((row) => `<div class="sv-inv">
               <span>s${row.seed}</span>
-              <b style="height:${Math.max(row.oss20, 1) / (data.invalidMax || 1) * 72}px;background:${(data.arms[0] || {}).color || "#c2410c"}" title="20B ${row.oss20}"></b>
-              <b style="height:${Math.max(row.oss120, 1) / (data.invalidMax || 1) * 72}px;background:${(data.arms[1] || {}).color || "#1d4ed8"}" title="120B ${row.oss120}"></b>
+              <b style="height:${Math.max(row.oss20, 1) / (data.invalidMax || 1) * 72}px;background:${color((data.arms[0] || {}).color, "#c2410c")}" title="20B ${row.oss20}"></b>
+              <b style="height:${Math.max(row.oss120, 1) / (data.invalidMax || 1) * 72}px;background:${color((data.arms[1] || {}).color, "#1d4ed8")}" title="120B ${row.oss120}"></b>
             </div>`).join("")}
           </div>
           <ul class="sv-issues">

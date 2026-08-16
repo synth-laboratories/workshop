@@ -1,15 +1,30 @@
 mod account;
 mod account_cloud;
-mod cloud;
+pub mod cloud;
+
+/// Narrow public seam for the standalone Intern wire-contract integration
+/// test. Re-exporting the protocol types keeps that test on the real crate
+/// graph; path-including `cloud/mod.rs` built a second fake crate root and
+/// failed as soon as cloud code referenced `crate::storage` or `crate::error`.
+#[doc(hidden)]
+pub mod intern_protocol_test_support {
+    pub use crate::cloud::intern::{
+        normalize_event, AsyncCommandRequest, AsyncEnsureRequest, CommandReceipt, InternClient,
+        InternEvent, InternRuntime, RuntimeBinding, RuntimeKind, SyncCommandRequest,
+        SyncCreateRequest,
+    };
+}
 mod codex;
 mod codex_oauth;
-mod container_stream;
+pub mod container_capabilities;
+pub mod container_stream;
 mod context;
 pub mod contract;
 pub mod core_runtime;
 mod credential_broker;
 pub mod data;
 mod device_auth;
+pub mod diagnostics;
 mod domain;
 pub mod error;
 mod eval_driver;
@@ -21,6 +36,7 @@ mod laguna;
 mod limits;
 mod optimizers;
 mod plugins;
+pub mod presentation;
 mod reports;
 mod runtime;
 mod services;
@@ -31,9 +47,10 @@ mod synth_config;
 mod tariffs;
 mod terminal;
 pub mod trace_ingest;
+pub mod trace_query;
 mod update_check;
 mod visuals;
-mod visuals_ipc;
+pub mod visuals_ipc;
 mod whisper;
 mod workspace_scope;
 
@@ -68,7 +85,10 @@ use reports::{
 };
 use serde_json::Value;
 use std::sync::Arc;
-use storage::{AppEvent, CoreDiagnostics, ModelPerformanceRepository, ModelPerformanceSummary};
+use storage::{
+    AppEvent, CoreDiagnostics, ModelPerformanceRepository, ModelPerformanceSummary,
+    ModelPerformanceTurnSample,
+};
 use synth_config::{
     BackendSettings, BackendSettingsUpdate, DesktopPermissionSettings, DesktopPermissionUpdate,
     ModelMultiAgentSetting, ModelMultiAgentUpdate, WorkspaceAccessSettings, WorkspaceAccessUpdate,
@@ -90,6 +110,45 @@ use workspace_scope::{ConversationWorkspaceScope, WorkspaceAccessMode};
 #[specta::specta]
 fn core_diagnostics(state: State<'_, Arc<CoreRuntime>>) -> Result<CoreDiagnostics, AppError> {
     state.diagnostics().map_err(AppError::from)
+}
+
+/// Every runtime version Desktop pins, resolved from the one contract table.
+///
+/// Settings → About renders exactly this struct. Answering "which runtime is
+/// installed, and is it new enough?" used to require reading the source.
+#[tauri::command]
+#[specta::specta]
+fn runtime_contracts(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<Vec<contract::runtimes::RuntimeContractView>, AppError> {
+    use contract::runtimes::{ReleaseChannel, ALL};
+    let channel = match crate::plugins::PluginRegistry::open_default()
+        .release_channel()
+        .as_str()
+    {
+        "dev" => ReleaseChannel::Dev,
+        _ => ReleaseChannel::Official,
+    };
+    let installed = state
+        .optimizers()
+        .manager()
+        .version()
+        .ok()
+        .flatten()
+        .map(|hit| hit.version);
+    Ok(ALL
+        .iter()
+        .map(|entry| {
+            // Only the managed sidecar has an install to inspect. An
+            // unprovisioned runtime reports no version rather than borrowing
+            // one it cannot substantiate.
+            let found = entry
+                .provisioned_by_desktop
+                .then(|| installed.clone())
+                .flatten();
+            entry.view(channel, found)
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -153,6 +212,42 @@ async fn core_session_events_after(
             session_id,
             after_sequence.0,
             limit.map(|value| value.0).unwrap_or(500).clamp(1, 2000),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn core_session_events_tail(
+    state: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<Vec<AppEvent>, AppError> {
+    state
+        .journal()
+        .session_events_tail(
+            session_id,
+            limit.map(|value| value.0).unwrap_or(250).clamp(1, 2000),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn core_session_events_before(
+    state: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+    before_sequence: contract::specta::OpaqueInteger<i64>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<Vec<AppEvent>, AppError> {
+    state
+        .journal()
+        .session_events_before(
+            session_id,
+            before_sequence.0,
+            limit.map(|value| value.0).unwrap_or(1000).clamp(1, 2000),
         )
         .await
         .map_err(AppError::from)
@@ -266,15 +361,18 @@ async fn hydrate_container(
                 .json::<serde_json::Value>()
                 .await
                 .unwrap_or_else(|_| serde_json::json!({}));
-            let ok =
-                code.is_success() && payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
+            let status = crate::container_capabilities::observed_status(code.as_u16(), &payload);
             (
-                if ok { "ready" } else { "unhealthy" }.to_string(),
-                serde_json::json!({"ok": ok, "status": code.as_u16(), "payload": payload}),
+                status.to_string(),
+                serde_json::json!({
+                    "ok": status == crate::container_capabilities::READY_STATUS,
+                    "status": code.as_u16(),
+                    "payload": payload
+                }),
             )
         }
         Err(error) => (
-            "unhealthy".into(),
+            crate::container_capabilities::UNHEALTHY_STATUS.into(),
             serde_json::json!({"ok": false, "error": error.to_string()}),
         ),
     };
@@ -320,9 +418,17 @@ async fn hydrate_container(
             "health-only"
         }),
     );
-    metadata.insert(
-        "healthCheckedAt".into(),
-        serde_json::json!(chrono::Utc::now().to_rfc3339()),
+    // One writer for the typed capability surface: `container_list`,
+    // `container_get`, and `container_probe` must never disagree about what a
+    // record can do. Reusing a cached `/info` body keeps the earlier
+    // observation time so a health-only refresh cannot launder a stale one.
+    let declared = synth_config::container_capability_declaration(base_url).unwrap_or_default();
+    crate::container_capabilities::write_capability_metadata(
+        &mut metadata,
+        info.as_ref(),
+        declared.as_ref(),
+        refresh_metadata,
+        chrono::Utc::now(),
     );
     if refresh_metadata {
         metadata.insert(
@@ -506,6 +612,18 @@ async fn model_performance_summary(
         .map_err(AppError::from)
 }
 
+#[tauri::command]
+#[specta::specta]
+async fn model_performance_turn_samples(
+    state: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+) -> Result<Vec<ModelPerformanceTurnSample>, AppError> {
+    ModelPerformanceRepository::new(state.storage().database().clone())
+        .turn_samples(session_id)
+        .await
+        .map_err(AppError::from)
+}
+
 /// Device-wide usage dashboard for one time window, aggregated in SQLite/Rust
 /// over the authoritative per-request `usage_records` ledger — the renderer
 /// never reduces raw rows itself.
@@ -519,7 +637,7 @@ async fn usage_summary(
     let offset_seconds = chrono::Local::now().offset().local_minus_utc();
     let since_ms = storage::window_start_ms(&window, now, offset_seconds);
     storage::UsageRecordsRepository::new(state.storage().database().clone())
-        .summary(window, since_ms)
+        .summary(window, since_ms, offset_seconds)
         .await
         .map_err(AppError::from)
 }
@@ -595,6 +713,23 @@ async fn optimizers_recipes_list(
         .collect())
 }
 
+/// Freeze policy files from the session's workspace into one immutable
+/// candidate set. Its id is the only policy input `optimizers_recipe_start`
+/// accepts for an `eval.*` recipe.
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_stage_eval_candidates(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: optimizers::EvalStageCandidatesRequest,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .optimizers()
+        .stage_eval_candidates(request)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn optimizers_recipe_start(
@@ -623,6 +758,22 @@ pub(crate) async fn authorize_optimizer_recipe_start(
                 request.recipe_id
             ))
         })?;
+    // These product-owned fixtures are deterministic and cannot incur provider
+    // charges. The click itself is the operator's explicit instruction. The
+    // hosted SFT fixture uses the public service; the eval fixture uses only
+    // the pinned local container runtime. Neither depends on plugin lifecycle.
+    if matches!(
+        request.recipe_id.as_str(),
+        "sft.hosted.fixture.v1" | "eval.fixture.policy-smoke.v1"
+    ) {
+        let (run, event) = state
+            .optimizers()
+            .start_recipe(request)
+            .await
+            .map_err(AppError::from)?;
+        publish_optimizer_event(app, state, event).await?;
+        return Ok(run);
+    }
     let session_id = request
         .session_ref
         .as_deref()
@@ -631,22 +782,32 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     let requesting_agent = session_id
         .map(|value| format!("Agent session {value}"))
         .unwrap_or_else(|| "Workshop operator".into());
+    let is_local_eval = recipe.get("algorithmId").and_then(Value::as_str) == Some("eval");
     let limits = recipe
         .get("limits")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    let max_cost_usd = limits
-        .get("maxCostUsd")
-        .or_else(|| limits.get("costCeilingUsd"))
-        .and_then(Value::as_f64)
-        .filter(|value| value.is_finite() && *value > 0.0);
-    let max_rollouts = [
-        "maxTotalRollouts",
-        "maxTotalEnvironmentRollouts",
-        "maxSearchRollouts",
-    ]
-    .into_iter()
-    .find_map(|key| limits.get(key).and_then(Value::as_u64));
+    let (max_cost_usd, max_rollouts) = if is_local_eval {
+        let (cost, trials) =
+            optimizers::paid_compute_bounds(&recipe, request.candidate_set_id.as_deref())
+                .map_err(AppError::from)?;
+        (Some(cost), Some(trials))
+    } else {
+        (
+            limits
+                .get("maxCostUsd")
+                .or_else(|| limits.get("costCeilingUsd"))
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && *value > 0.0),
+            [
+                "maxTotalRollouts",
+                "maxTotalEnvironmentRollouts",
+                "maxSearchRollouts",
+            ]
+            .into_iter()
+            .find_map(|key| limits.get(key).and_then(Value::as_u64)),
+        )
+    };
     let paid_cap = session::approval::PaidComputeCap {
         max_cost_usd_micros: max_cost_usd.map(|value| (value * 1_000_000.0).round() as u64),
         max_rollouts,
@@ -657,6 +818,21 @@ pub(crate) async fn authorize_optimizer_recipe_start(
             request.recipe_id
         )));
     }
+    let credential_names: Vec<String> = if is_local_eval {
+        recipe
+            .get("credentialInputs")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    } else {
+        optimizer_recipe_credentials(&request.recipe_id)
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect()
+    };
     let paid = session::approval::ApprovalKind::PaidCompute {
         operation: "optimizer.recipe.start".into(),
         parameters: serde_json::json!({
@@ -673,43 +849,49 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         proposer_model: None,
         evaluator_model: None,
         timeout_seconds: None,
-        credential_names: vec![],
+        credential_names: credential_names.clone(),
         preparation_digest: None,
     };
-    let paid_approval_id = codex.approvals.authorize_host(app, session_id, paid)
+    let paid_approval_id = codex
+        .approvals
+        .authorize_host(app, session_id, paid)
         .await
         .map_err(AppError::from)?;
 
-    for provider in optimizer_recipe_credentials(&request.recipe_id) {
-        codex.approvals.authorize_host(
-            app,
-            session_id,
-            session::approval::ApprovalKind::CredentialAccess {
-                provider: (*provider).into(),
-                purpose: format!("run bounded optimizer recipe {}", request.recipe_id),
-            },
-        )
-        .await
-        .map_err(AppError::from)?;
+    for provider in &credential_names {
+        codex
+            .approvals
+            .authorize_host(
+                app,
+                session_id,
+                session::approval::ApprovalKind::CredentialAccess {
+                    provider: provider.clone(),
+                    purpose: format!("run bounded optimizer recipe {}", request.recipe_id),
+                },
+            )
+            .await
+            .map_err(AppError::from)?;
     }
 
     let sidecar_status = state.optimizers().manager().refresh().await;
-    if sidecar_status.phase != "ready" {
+    if !is_local_eval && sidecar_status.phase != "ready" {
         let action = if sidecar_status.phase == "not_installed" {
             "install_and_start"
         } else {
             "start"
         };
-        codex.approvals.authorize_host(
-            app,
-            session_id,
-            session::approval::ApprovalKind::SidecarLifecycle {
-                sidecar: "optimizers".into(),
-                action: action.into(),
-            },
-        )
-        .await
-        .map_err(AppError::from)?;
+        codex
+            .approvals
+            .authorize_host(
+                app,
+                session_id,
+                session::approval::ApprovalKind::SidecarLifecycle {
+                    sidecar: "optimizers".into(),
+                    action: action.into(),
+                },
+            )
+            .await
+            .map_err(AppError::from)?;
     }
 
     let (run, event) = state
@@ -735,8 +917,15 @@ fn optimizer_recipe_credentials(recipe_id: &str) -> &'static [&'static str] {
         &["OPENAI_API_KEY"]
     } else if recipe_id == "sft.craftax.gpt-oss.smoke.v1" {
         &["GROQ_API_KEY", "TINKER_API_KEY"]
-    } else if recipe_id.starts_with("hosted.") {
+    } else if recipe_id == "gelo.craftax.hosted.v1" {
         &["OPTIMIZERS_BETA_SERVICE_TOKEN"]
+    } else if matches!(
+        recipe_id,
+        "sft.hosted.fixture.v1"
+            | "sft.craftax.nemotron-nano.tinker.v1"
+            | "sft.banking77.nemotron-lightning.tinker.v1"
+    ) {
+        &["SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN"]
     } else {
         &[]
     }
@@ -996,8 +1185,53 @@ async fn plugins_status(
     state: State<'_, Arc<CoreRuntime>>,
     plugin_id: Option<String>,
 ) -> Result<PluginStatus, AppError> {
-    let _ = plugin_id;
+    // Validate rather than discard: returning the optimizers status for any id
+    // asked about let the caller believe a plugin existed that does not.
+    if let Some(plugin_id) = plugin_id.as_deref() {
+        if plugin_id != plugins::OPTIMIZERS_PLUGIN_ID {
+            return Err(AppError::from(anyhow::anyhow!(
+                "unknown plugin_id `{plugin_id}`"
+            )));
+        }
+    }
     Ok(state.plugins().status(&state).await)
+}
+
+/// Human-triggered plugin lifecycle.
+///
+/// Delegates to the same `PluginService::manage` the agent-facing
+/// `plugin_manage` MCP tool reaches over loopback IPC, so approval policy,
+/// active-run guards, retention classes, and receipts are enforced once. Until
+/// this existed an agent could install, update, disable, and remove the
+/// Optimizers plugin while the UI had no way to do any of it.
+#[tauri::command]
+#[specta::specta]
+async fn plugins_manage(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    approvals: State<'_, Arc<crate::session::approval::ApprovalBroker>>,
+    operation: String,
+    plugin_id: String,
+    version: Option<String>,
+    session_id: Option<String>,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let arguments = serde_json::json!({
+        "plugin_id": plugin_id,
+        "version": version,
+    });
+    state
+        .plugins()
+        .manage(
+            &state,
+            approvals.inner(),
+            &app,
+            session_id.as_deref(),
+            &operation,
+            &arguments,
+        )
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -1024,6 +1258,165 @@ async fn plugins_set_release_channel(
         .set_release_channel(&channel)
         .map_err(AppError::from)?;
     Ok(state.plugins().status(&state).await)
+}
+
+/// One structured diagnostic from the renderer.
+///
+/// The renderer is the only surface whose failures were previously invisible
+/// to everything else — a `console.error` in a webview reaches no journal, no
+/// index, and no agent. This is the narrow command that ends that: it carries
+/// the same envelope every other emitter uses, and the backend validates,
+/// redacts, and correlates it exactly as if it had originated in Rust.
+#[derive(Clone, Debug, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticReportRequest {
+    severity: String,
+    component: String,
+    event: String,
+    code: String,
+    message: String,
+    #[serde(default)]
+    retryable: bool,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    turn_id: Option<String>,
+    #[serde(default)]
+    tool_call_id: Option<String>,
+    #[serde(default)]
+    command_id: Option<String>,
+    #[serde(default)]
+    visual_id: Option<String>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    visual_revision: Option<i64>,
+    #[serde(default)]
+    container_id: Option<String>,
+    #[serde(default)]
+    rollout_id: Option<String>,
+    #[serde(default)]
+    stream_id: Option<String>,
+    #[serde(default)]
+    optimizer_run_id: Option<String>,
+    #[serde(default)]
+    trace_id: Option<String>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    details: Option<serde_json::Value>,
+}
+
+impl From<DiagnosticReportRequest> for diagnostics::DiagnosticInput {
+    fn from(request: DiagnosticReportRequest) -> Self {
+        let mut input = diagnostics::DiagnosticInput {
+            severity: request.severity,
+            component: request.component,
+            event: request.event,
+            code: request.code,
+            message: request.message,
+            retryable: request.retryable,
+            ..Default::default()
+        };
+        input.correlation.session_id = request.session_id;
+        input.correlation.turn_id = request.turn_id;
+        input.correlation.tool_call_id = request.tool_call_id;
+        input.correlation.command_id = request.command_id;
+        input.correlation.visual_id = request.visual_id;
+        input.correlation.visual_revision = request.visual_revision;
+        input.correlation.container_id = request.container_id;
+        input.correlation.rollout_id = request.rollout_id;
+        input.correlation.stream_id = request.stream_id;
+        input.correlation.optimizer_run_id = request.optimizer_run_id;
+        input.correlation.trace_id = request.trace_id;
+        if let Some(serde_json::Value::Object(details)) = request.details {
+            input.details = details;
+        }
+        input
+    }
+}
+
+/// Record a renderer diagnostic. Returns as soon as it is queued.
+#[tauri::command]
+#[specta::specta]
+async fn diagnostics_report(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: DiagnosticReportRequest,
+) -> Result<(), AppError> {
+    state
+        .diagnostics_service()
+        .emit(diagnostics::DiagnosticInput::from(request));
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn diagnostics_status(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    Ok(contract::specta::OpaqueJson(
+        state.diagnostics_service().status().await,
+    ))
+}
+
+/// Typed diagnostic query for the Diagnostics pane. The renderer is bounded by
+/// the same contract as the agent — there is only one query path.
+#[tauri::command]
+#[specta::specta]
+async fn diagnostics_query(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: contract::specta::OpaqueJson,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let query = diagnostics::query::parse(&request.0).map_err(AppError::from)?;
+    state
+        .diagnostics_service()
+        .query(query)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn diagnostics_explain(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: contract::specta::OpaqueJson,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let query = diagnostics::query::parse(&request.0).map_err(AppError::from)?;
+    state
+        .diagnostics_service()
+        .explain(query)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn diagnostics_bundle(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: contract::specta::OpaqueJson,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let query = diagnostics::query::parse(&request.0).map_err(AppError::from)?;
+    state
+        .diagnostics_service()
+        .bundle(query)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+/// Drop the disposable index. Traces, run evidence, and the authoritative
+/// journal are untouched.
+#[tauri::command]
+#[specta::specta]
+async fn diagnostics_clear_index(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .diagnostics_service()
+        .clear_index()
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
 }
 
 #[derive(Clone, Debug, serde::Deserialize, specta::Type)]
@@ -1058,6 +1451,163 @@ async fn visual_subscription_ready(
         .await
         .map_err(AppError::from)?;
     Ok(contract::specta::OpaqueJson(stored))
+}
+
+#[derive(Clone, Debug, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+struct VisualStreamPollRequest {
+    visual_id: String,
+    poll_url: String,
+    after: u32,
+    limit: u16,
+}
+
+/// Fetch a visual's persisted, declaration-validated poll authority through
+/// the native process. WKWebView cannot reliably read loopback HTTP because
+/// its CORS/CSP boundary differs from the backend's; this command is narrowly
+/// scoped to exact URLs already stored on the named visual.
+#[tauri::command]
+#[specta::specta]
+async fn visual_stream_poll(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: VisualStreamPollRequest,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let visual = state
+        .visuals()
+        .get(request.visual_id)
+        .await
+        .map_err(AppError::from)?;
+    // One authority decides what this visual declared. Reading the raw
+    // `slots` key here is what let a visual hold ten poll URLs the poll
+    // command would have rejected.
+    let declared_urls = visuals::declared_poll_urls(&visual.bindings);
+    let declared = declared_urls
+        .iter()
+        .any(|url| url == request.poll_url.as_str());
+    // Every renderer poll of a live stream lands here, so this is where a live
+    // stream going quiet becomes a record rather than an empty pane.
+    let diagnose_at = |severity: diagnostics::Severity,
+                       event: &str,
+                       code: &str,
+                       message: String,
+                       retryable: bool,
+                       details: serde_json::Value| {
+        let mut input =
+            diagnostics::DiagnosticInput::new(severity, "container-stream", event, code, message)
+                .retryable(retryable);
+        input.correlation.visual_id = Some(visual.id.clone());
+        input.correlation.visual_revision = Some(visual.current_revision);
+        input.correlation.session_id = visual.session_id.clone();
+        input.correlation.rollout_id = visual.run_id.clone();
+        input.correlation.trace_id = visual.trace_id.clone();
+        if let Some(object) = details.as_object() {
+            input.details = object.clone();
+        }
+        state.diagnostics_service().emit(input);
+    };
+    let fail = |code: &str, message: String, retryable: bool, details: serde_json::Value| {
+        diagnose_at(
+            diagnostics::Severity::Error,
+            "stream.poll.failed",
+            code,
+            message,
+            retryable,
+            details,
+        );
+    };
+    if !declared {
+        // An undeclared URL is a binding defect, not a transport failure: the
+        // visual is asking for a stream it never declared.
+        fail(
+            diagnostics::codes::VISUAL_BINDING_UNRESOLVED,
+            "visual stream poll URL is not declared on this visual".into(),
+            false,
+            serde_json::json!({"declared_stream_count": declared_urls.len()}),
+        );
+        return Err(AppError::from(anyhow::anyhow!(
+            "visual stream poll URL is not declared on this visual; \
+             the visual declares {} live stream(s)",
+            declared_urls.len()
+        )));
+    }
+    let limit = request.limit.clamp(1, 500);
+    let started = std::time::Instant::now();
+    let response = async {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?
+            .get(&request.poll_url)
+            .query(&[
+                ("after", request.after.to_string()),
+                ("limit", limit.to_string()),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<serde_json::Value>()
+            .await
+    }
+    .await;
+    match response {
+        Ok(page) => {
+            // A successful poll has to be as visible as a failing one. Without
+            // this, "the renderer never asked" and "the stream returned
+            // nothing" are the same empty pane and the same empty query.
+            let cursor = page.get("cursor");
+            let rows = page
+                .get("events")
+                .or_else(|| page.pointer("/page/events"))
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len);
+            let closed = cursor
+                .and_then(|cursor| cursor.get("closed"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            diagnose_at(
+                diagnostics::Severity::Debug,
+                if closed {
+                    "stream.poll.closed"
+                } else {
+                    "stream.poll.page"
+                },
+                diagnostics::codes::STREAM_POLL_OBSERVED,
+                format!(
+                    "polled {} row(s) after sequence {}",
+                    rows.unwrap_or(0),
+                    request.after
+                ),
+                false,
+                // Identifiers and counts only. Envelope bodies never enter a
+                // diagnostic: they carry model output and rollout payloads.
+                serde_json::json!({
+                    "after": request.after,
+                    "limit": limit,
+                    "row_count": rows,
+                    "next": cursor.and_then(|cursor| cursor.get("next")),
+                    "high_water": cursor.and_then(|cursor| cursor.get("high_water")),
+                    "closed": closed,
+                    "duration_ms": started.elapsed().as_millis() as u64,
+                }),
+            );
+            Ok(contract::specta::OpaqueJson(page))
+        }
+        Err(error) => {
+            let status = error.status().map(|status| status.as_u16());
+            fail(
+                diagnostics::codes::STREAM_INTERRUPTED,
+                error.to_string(),
+                // A refused or 5xx poll may recover; a 4xx says the stream is
+                // gone and retrying only repeats the question.
+                error.is_timeout() || error.is_connect() || status.is_none_or(|code| code >= 500),
+                serde_json::json!({
+                    "status": status,
+                    "after": request.after,
+                    "duration_ms": started.elapsed().as_millis() as u64,
+                }),
+            );
+            Err(AppError::from(error))
+        }
+    }
 }
 
 async fn publish_visual_event(
@@ -1115,6 +1665,14 @@ async fn visuals_get(
     visual_id: String,
 ) -> Result<VisualRecord, AppError> {
     state.visuals().get(visual_id).await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn visuals_observation_report(
+    observation: visuals_ipc::RenderedVisualObservation,
+) -> Result<(), AppError> {
+    visuals_ipc::record_rendered_observation(observation).map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -1761,50 +2319,25 @@ async fn reports_upload_status(
 #[tauri::command]
 #[specta::specta]
 async fn reports_share(
-    app: tauri::AppHandle,
-    state: State<'_, Arc<CoreRuntime>>,
-    receipt_digest: String,
+    _app: tauri::AppHandle,
+    _state: State<'_, Arc<CoreRuntime>>,
+    _receipt_digest: String,
 ) -> Result<ReportUpload, AppError> {
-    let backend = synth_config::resolve().map_err(AppError::from)?;
-    let api_key = backend.api_key.ok_or_else(|| {
-        AppError::from(anyhow::anyhow!("Share requires a signed-in Synth account"))
-    })?;
-    let (upload, event) = state
-        .reports()
-        .share_seal(receipt_digest, backend.backend_url, api_key)
-        .await
-        .map_err(AppError::from)?;
-    if event.get("schemaVersion").is_some() {
-        publish_visual_event(&app, &state, event).await?;
-    }
-    Ok(upload)
+    Err(AppError::message(
+        "Direct Report sharing is disabled; create and approve a revision-bound visibility request",
+    ))
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn reports_promote(
-    state: State<'_, Arc<CoreRuntime>>,
-    publication_id: String,
-    slug: String,
+    _state: State<'_, Arc<CoreRuntime>>,
+    _publication_id: String,
+    _slug: String,
 ) -> Result<reports::ReportPromotion, AppError> {
-    let backend = synth_config::resolve().map_err(AppError::from)?;
-    let api_key = backend.api_key.ok_or_else(|| {
-        AppError::from(anyhow::anyhow!(
-            "Publishing a Report requires a signed-in Synth account"
-        ))
-    })?;
-    state
-        .reports()
-        .promote_publication(
-            publication_id,
-            slug,
-            backend.backend_url,
-            api_key,
-            None,
-            None,
-        )
-        .await
-        .map_err(AppError::from)
+    Err(AppError::message(
+        "Direct Report promotion is disabled; create and approve a revision-bound public visibility request",
+    ))
 }
 
 #[tauri::command]
@@ -2112,7 +2645,7 @@ async fn account_summary_now(
         core.storage(),
         &origin,
         &settings.profile,
-        settings.api_key_configured,
+        settings.api_key_configured && !read.unauthenticated,
         now,
         &read,
     )
@@ -2159,6 +2692,12 @@ async fn account_open_billing(
         )
         .await
         .map_err(AppError::from)?;
+    let url = account_cloud::validate_billing_url(
+        &url,
+        &resolved.backend_url,
+        synth_config::development_routing_enabled(),
+    )
+    .map_err(AppError::from)?;
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_url(url.clone(), None::<String>)
@@ -2480,6 +3019,7 @@ async fn prepare_codex_provider(
     oauth: &codex_oauth::Manager,
     mut request: CodexSessionStartRequest,
 ) -> Result<CodexSessionStartRequest, AppError> {
+    request.local_model_catalog = None;
     if request.multi_agent_version.is_none() {
         request.multi_agent_version =
             Some(synth_config::resolve_model_multi_agent(&request.model).map_err(AppError::from)?);
@@ -2492,27 +3032,33 @@ async fn prepare_codex_provider(
     match codex::provider_class(request.provider_name.as_deref()) {
         codex::ProviderClass::LocalLaguna => {
             let root = runtime::workshop_root().map_err(AppError::from)?;
+            let model = laguna.configured_model_id().map_err(AppError::from)?;
+            codex::apply_local_laguna_provider(&mut request, &model);
             request.base_url = laguna
-                .ensure(&root)
+                .ensure_for_turn(&root)
                 .await
                 .map_err(AppError::from)?
                 .ok_or_else(|| AppError::message("Laguna Responses server is unavailable"))?;
             // The Laguna key is this process's loopback service token, not a
             // user credential: the child talks to the local daemon directly
             // and no broker lease is involved.
-            request.api_key = laguna.api_key().unwrap_or_default();
+            request.api_key = laguna.api_key().ok_or_else(|| {
+                AppError::message("Laguna daemon credential is unavailable after ensure")
+            })?;
+            let catalog = laguna
+                .codex_model_catalog(&request.base_url, &request.api_key)
+                .await
+                .map_err(AppError::from)?;
+            codex::apply_local_laguna_catalog_metadata(&mut request, catalog)
+                .map_err(AppError::from)?;
         }
         codex::ProviderClass::OpenRouter => {
-            let key = synth_config::openrouter_api_key()
-                .map_err(AppError::from)?
-                .ok_or_else(|| {
-                    AppError::message(
-                        "OpenRouter API key is not configured. Add it in Synth backend settings.",
-                    )
-                })?;
+            let key = synth_config::openrouter_api_key().map_err(AppError::from)?;
             // The OpenRouter key is the user's, and leaks into shell snapshots
             // the same way the Synth key did; it goes into native custody too.
-            codex::stage_brokered_credential(&mut request, &key)?;
+            // Its origin is also native-owned: renderer input must never decide
+            // where that credential is forwarded.
+            codex::apply_openrouter_provider(&mut request, key.as_deref())?;
         }
         codex::ProviderClass::SynthCloud => {
             let resolved = synth_config::resolve().map_err(AppError::from)?;
@@ -2582,9 +3128,37 @@ async fn codex_turn_send(
         .map_err(|error| CodexTurnFailure {
             code: "codex_provider_unavailable".into(),
             message: error.message.clone(),
-            session_id,
+            session_id: session_id.clone(),
             detail: error.detail,
         })?;
+    if codex::provider_class(request.start.provider_name.as_deref())
+        == codex::ProviderClass::SynthCloud
+    {
+        let resolved = synth_config::resolve().map_err(|error| CodexTurnFailure {
+            code: "synth_cloud_admission_failed".into(),
+            message: error.to_string(),
+            session_id: session_id.clone(),
+            detail: String::new(),
+        })?;
+        // Admission is intentionally isolated from the display cache. A
+        // network failure or revoked key must fail closed rather than reuse a
+        // previously healthy account snapshot for a paid turn.
+        let admission = account_cloud::AccountCloudClient::open();
+        let read = admission
+            .read(
+                &resolved.backend_url,
+                resolved.api_key.as_deref(),
+                true,
+                chrono::Utc::now(),
+            )
+            .await;
+        account_cloud::validate_turn_admission(&read).map_err(|message| CodexTurnFailure {
+            code: "synth_cloud_admission_failed".into(),
+            message,
+            session_id: session_id.clone(),
+            detail: String::new(),
+        })?;
+    }
     state.send_turn(app, request).await
 }
 
@@ -2644,8 +3218,12 @@ async fn codex_thread_compact(
 async fn codex_thread_read(
     state: State<'_, Arc<CodexManager>>,
     request: CodexThreadReadRequest,
-) -> Result<Value, AppError> {
-    state.read_thread(request).await.map_err(AppError::from)
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .read_thread(request)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -2653,10 +3231,11 @@ async fn codex_thread_read(
 async fn codex_thread_items_list(
     state: State<'_, Arc<CodexManager>>,
     request: CodexThreadItemsRequest,
-) -> Result<Value, AppError> {
+) -> Result<contract::specta::OpaqueJson, AppError> {
     state
         .list_thread_items(request)
         .await
+        .map(contract::specta::OpaqueJson)
         .map_err(AppError::from)
 }
 
@@ -2689,10 +3268,16 @@ async fn codex_approval_resolve(
             .map_err(AppError::from)?;
         return Ok(());
     }
-    state
-        .resolve_approval(app, request)
-        .await
-        .map_err(AppError::from)
+    match state.resolve_approval(app, request).await {
+        Ok(()) => Ok(()),
+        Err(error) if crate::session::codex::is_detached_failure(&error) => Err(AppError {
+            code: crate::session::codex::CODEX_SESSION_UNHEALTHY.into(),
+            message: "This task's local agent is no longer running. Start a new turn to reconnect."
+                .into(),
+            detail: format!("{error:?}"),
+        }),
+        Err(error) => Err(AppError::from(error)),
+    }
 }
 
 #[tauri::command]
@@ -2845,6 +3430,14 @@ pub fn run() {
                 let window = webview.window();
                 let _ = window.maximize();
                 let _ = window.show();
+                // Diagnostics start here, not in setup: the index is a
+                // background convenience and must never sit in front of the
+                // first paint. `start` is idempotent, and the bootstrap task
+                // arms the same call in case this page never loads — the one
+                // failure diagnostics most needs to be running for.
+                if let Some(core) = window.app_handle().try_state::<Arc<CoreRuntime>>() {
+                    core.diagnostics_service().start();
+                }
             }
         })
         .setup(|app| {
@@ -2887,11 +3480,16 @@ pub fn run() {
                 crate::session::SessionPersistence::from_core(Some(core.clone())),
             ));
             let whisper = Arc::new(whisper::WhisperManager::new());
-            let codex = Arc::new(CodexManager::new(Some(core.clone()), broker.clone()));
+            let codex = Arc::new(CodexManager::new(
+                Some(core.clone()),
+                broker.clone(),
+                approvals.clone(),
+            ));
             let supervisor = Arc::new(services::ServiceSupervisor::new());
             supervisor.register(laguna.clone());
             supervisor.register(optimizer_manager.clone());
             supervisor.register(whisper.clone());
+            supervisor.register(core.diagnostics_service().sidecar().clone());
             app.manage(core.clone());
             app.manage(migration);
             app.manage(codex.clone());
@@ -2944,6 +3542,9 @@ pub fn run() {
                 if let Err(error) = bootstrap_core.resume_intern_providers().await {
                     eprintln!("Intern restart reconciliation failed: {error}");
                 }
+                // Fallback arm: if the main window never finished loading, the
+                // renderer's own failure still has somewhere to be recorded.
+                bootstrap_core.diagnostics_service().start();
             });
 
             let ipc_core = core.clone();
@@ -2998,7 +3599,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Synth Desktop")
         .run(|app, event| {
-            if let RunEvent::ExitRequested { .. } = event {
+            // macOS may advance from Command-Q to the terminal `Exit` event
+            // without giving every plugin observer an `ExitRequested` callback.
+            // Draining is idempotent, so cover both phases: a clean request
+            // stops services early, and `Exit` is the final ownership fence.
+            if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
                 if let Some(supervisor) = app.try_state::<Arc<services::ServiceSupervisor>>() {
                     let supervisor = (*supervisor).clone();
                     tauri::async_runtime::block_on(supervisor.drain_all());

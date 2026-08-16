@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ArtifactRef, LocalActivityLine, LocalChat } from "../types/landing";
-import type { Session } from "@synth/runtime-protocol";
+import type { RuntimeEvent, Session } from "@synth/runtime-protocol";
 import { FileTypeIcon, shortenPath } from "./FileTypeIcon";
 import { ContainerIcon } from "./ContainerPane";
 import { ManderPresence } from "./mander";
@@ -11,10 +11,12 @@ import {
 	type ToolActivityMode
 } from "../preferences";
 import { contextCompactionTokenSummary } from "../runtime/sessionView";
+import { useTurnPerformanceLabels } from "../hooks/useTurnPerformanceLabels";
 import "./PaidComputeApprovalModal.css";
 
 type Props = {
 	chat: LocalChat;
+	events?: RuntimeEvent[];
 	openArtifactId: string | null;
 	/** Pass artifact id to toggle open/closed; pass null to force close. */
 	onOpenArtifact: (id: string | null) => void;
@@ -26,12 +28,30 @@ type Props = {
 	running?: boolean;
 	warmingUp?: boolean;
 	onStop?: () => void;
+	onAdvanced?: () => void;
 	activityMode?: ToolActivityMode;
 	onActivityModeChange?: (mode: ToolActivityMode) => void;
 	outputsOpen?: boolean;
 	onToggleOutputs?: () => void;
 	showMascot?: boolean;
 	session?: Session;
+	historyState?: TranscriptHistoryState;
+	onLoadOlder?: () => void;
+};
+
+function formatToolDuration(durationMs: number | undefined, status: LocalActivityLine["toolStatus"]): string | null {
+	if (status === "running" || durationMs == null || durationMs <= 15_000) return null;
+	const totalSeconds = Math.round(durationMs / 1_000);
+	if (totalSeconds < 60) return `${totalSeconds}s`;
+	const minutes = Math.floor(totalSeconds / 60);
+	const seconds = totalSeconds % 60;
+	return `${minutes}m${seconds ? ` ${seconds}s` : ""}`;
+}
+
+export type TranscriptHistoryState = {
+	state: "idle" | "loading" | "loaded" | "error";
+	hasMore: boolean;
+	error?: string;
 };
 
 export function outputContainerIds(chat: LocalChat): string[] {
@@ -134,6 +154,13 @@ function ActivityLine({
 	const isFile =
 		Boolean(line.path) || line.kind === "file_read" || line.kind === "file_write";
 	const expandable = Boolean(line.detail) && !isVisualCue && !isFile;
+	const runningIndicator = line.toolStatus === "running"
+		? <span className="tool-running-indicator" role="img" aria-label="Tool call running" />
+		: null;
+	const durationLabel = formatToolDuration(line.durationMs, line.toolStatus);
+	const duration = durationLabel
+		? <span className="tool-duration" aria-label={`Tool call took ${durationLabel}`}>{durationLabel}</span>
+		: null;
 	if (line.kind === "approval" && line.approvalId) {
 		const approvalId = line.approvalId ?? line.id;
 		return (
@@ -155,6 +182,7 @@ function ActivityLine({
 		const showVerb = /^(Read|Wrote|Edit)/i.test(verb) ? verb.split(/\s/)[0] : "Read";
 		return (
 			<div className="local-activity file-activity" data-testid={`activity-${line.id}`}>
+				{runningIndicator}
 				<FileTypeIcon path={line.path} />
 				<span className="file-activity-text">
 					<span className="file-activity-verb">{showVerb}</span>{" "}
@@ -162,6 +190,7 @@ function ActivityLine({
 						{shortenPath(line.path)}
 					</code>
 				</span>
+				{duration}
 			</div>
 		);
 	}
@@ -185,10 +214,17 @@ function ActivityLine({
 				<span className="visual-lifecycle-copy">
 					<strong>{line.label}</strong>
 					<span>Draft <i /> Review <i /> Ready</span>
+					{line.detail ? <span className="visual-lifecycle-detail">{line.detail}</span> : null}
 				</span>
 				<span className="visual-lifecycle-status">{stageLabel}</span>
 				{onToggleVisual ? (
-					<button type="button" className="visual-lifecycle-open" onClick={onToggleVisual} aria-label={visualOpen ? "Hide visual" : "Open visual"}>
+					<button
+						type="button"
+						className="visual-lifecycle-open"
+						onClick={onToggleVisual}
+						aria-label={visualOpen ? "Hide visual" : "Open visual"}
+						data-testid={line.artifactId ? `tool-visual-open-${line.artifactId}` : undefined}
+					>
 						{visualOpen ? "Hide" : "Open"}
 					</button>
 				) : null}
@@ -236,11 +272,13 @@ function ActivityLine({
 	if (line.kind === "command") {
 		return (
 			<div className="local-activity tool-activity command-activity" data-testid={`activity-${line.id}`}>
+				{runningIndicator}
 				<span className="tool-activity-icon" aria-hidden>&gt;_</span>
 				<span className="tool-activity-body">
 					<span className="tool-activity-label">{line.label}</span>
 					{line.detail ? <code title={line.detail}>{line.detail}</code> : null}
 				</span>
+				{duration}
 			</div>
 		);
 	}
@@ -248,11 +286,13 @@ function ActivityLine({
 	if (line.kind === "search") {
 		return (
 			<div className="local-activity tool-activity search-activity" data-testid={`activity-${line.id}`}>
+				{runningIndicator}
 				<span className="tool-activity-icon" aria-hidden>⌕</span>
 				<span className="tool-activity-body">
 					<span className="tool-activity-label">{line.label}</span>
 					{line.detail ? <span className="tool-activity-detail">{line.detail}</span> : null}
 				</span>
+				{duration}
 			</div>
 		);
 	}
@@ -260,12 +300,14 @@ function ActivityLine({
 	if (line.toolStatus) {
 		return (
 			<div className="local-activity tool-activity mcp-activity" data-testid={`activity-${line.id}`}>
+				{runningIndicator}
 				<span className="tool-activity-icon" aria-hidden>◆</span>
 				<span className="tool-activity-body">
 					<code className="mcp-activity-name">{line.label}</code>
 					{line.detail ? <span className="tool-activity-detail">{line.detail}</span> : null}
 					<span className={`tool-status tool-status-${line.toolStatus}`}>{line.toolStatus === "running" ? "Running" : line.toolStatus === "completed" ? "Completed" : "Failed"}</span>
 				</span>
+				{duration}
 				{onToggleVisual ? (
 					<button
 						type="button"
@@ -583,6 +625,7 @@ function UserMessage({ id, body, images, onExpansionChange }: { id: string; body
 
 export function ChatTranscript({
 	chat,
+	events = [],
 	openArtifactId,
 	onOpenArtifact,
 	openContainerId = null,
@@ -593,18 +636,23 @@ export function ChatTranscript({
 	running = false,
 	warmingUp = false,
 	onStop,
+	onAdvanced,
 	activityMode = "grouped",
 	onActivityModeChange,
 	outputsOpen = false,
 	onToggleOutputs,
 	showMascot = false,
-	session
+	session,
+	historyState,
+	onLoadOlder
 }: Props) {
 	const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
 	const [modeMenuOpen, setModeMenuOpen] = useState(false);
 	const modeMenuRef = useRef<HTMLDivElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const followsTailRef = useRef(true);
+	const historyAnchorRef = useRef<{ chatId: string; scrollHeight: number } | null>(null);
+	const historyRequestPendingRef = useRef(false);
 	const previousChatIdRef = useRef(chat.id);
 	const previousActiveRef = useRef<LocalActivityLine[] | undefined>(undefined);
 	const [liveAnnouncement, setLiveAnnouncement] = useState("");
@@ -612,6 +660,13 @@ export function ChatTranscript({
 	const artifacts = chat.artifacts ?? [];
 	const containerIds = outputContainerIds(chat);
 	const hasResources = containerIds.length > 0 || artifacts.length > 0;
+	const turnTpsLabels = useTurnPerformanceLabels(chat, events, running);
+	const finalAssistantMessageId = useMemo(() => {
+		for (let index = chat.messages.length - 1; index >= 0; index -= 1) {
+			if (chat.messages[index]?.role === "assistant") return chat.messages[index]!.id;
+		}
+		return null;
+	}, [chat.messages]);
 	const activeLines = activityByMessageId.__active__ ?? [];
 	// A pending approval is a turn-level blocking condition, not ordinary
 	// message activity. Message-id rotation and replay ordering can attach it to
@@ -643,9 +698,15 @@ export function ChatTranscript({
 	useEffect(() => {
 		if (previousChatIdRef.current !== chat.id) {
 			followsTailRef.current = true;
+			historyAnchorRef.current = null;
+			historyRequestPendingRef.current = false;
 		}
 		previousChatIdRef.current = chat.id;
 	}, [chat.id]);
+
+	useEffect(() => {
+		if (historyState?.state !== "loading") historyRequestPendingRef.current = false;
+	}, [historyState?.state]);
 
 	/*
 	 * --composer-clearance is published by Composer.tsx onto .main-pane and
@@ -656,6 +717,14 @@ export function ChatTranscript({
 	 */
 
 	useLayoutEffect(() => {
+		const anchor = historyAnchorRef.current;
+		const scroller = scrollRef.current;
+		if (!anchor || !scroller || anchor.chatId !== chat.id || historyState?.state === "loading") return;
+		scroller.scrollTop += scroller.scrollHeight - anchor.scrollHeight;
+		historyAnchorRef.current = null;
+	}, [chat.id, historyState?.state, transcriptContentKey]);
+
+	useLayoutEffect(() => {
 		if (!followsTailRef.current) return;
 		const scroller = scrollRef.current;
 		if (!scroller) return;
@@ -664,6 +733,14 @@ export function ChatTranscript({
 		});
 		return () => cancelAnimationFrame(frame);
 	}, [transcriptContentKey]);
+
+	const requestOlderHistory = () => {
+		const scroller = scrollRef.current;
+		if (!scroller || !onLoadOlder || !historyState?.hasMore || historyState.state === "loading" || historyRequestPendingRef.current) return;
+		historyRequestPendingRef.current = true;
+		historyAnchorRef.current = { chatId: chat.id, scrollHeight: scroller.scrollHeight };
+		onLoadOlder();
+	};
 
 	useEffect(() => {
 		const announcement = activityStatusAnnouncement(previousActiveRef.current, activeLines, running);
@@ -788,11 +865,21 @@ export function ChatTranscript({
 				ref={scrollRef}
 				onScroll={(event) => {
 					const node = event.currentTarget;
-					followsTailRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 96;
+					const followsTail = node.scrollHeight - node.scrollTop - node.clientHeight <= 96;
+					followsTailRef.current = followsTail;
+					if (node.scrollTop <= 96 && !followsTail) requestOlderHistory();
 				}}
 			>
 				<div className="chat-transcript-inner">
+					{historyState?.state === "loading" && chat.messages.length === 0 ? (
+						<div className="transcript-history-status" role="status">Loading conversation history…</div>
+					) : historyState?.state === "error" ? (
+						<div className="transcript-history-status transcript-history-error" role="alert">History unavailable: {historyState.error ?? "Unknown error"}</div>
+					) : historyState?.hasMore ? (
+						<button type="button" className="transcript-history-load" onClick={requestOlderHistory}>Load earlier history</button>
+					) : null}
 						{chat.messages.map((m) => {
+						const showAdvancedAtMessage = !running && onAdvanced && m.id === finalAssistantMessageId;
 						const messageArtifacts = artifacts.filter((a) => a.messageId === m.id);
 						const primaryArtifact = messageArtifacts[0];
 						const primaryOpen = primaryArtifact
@@ -815,9 +902,15 @@ export function ChatTranscript({
 								) : m.role === "system" ? (
 									<div className="local-system"><p>{m.body}</p><div className="message-actions"><CopyMessageButton body={m.body} /></div></div>
 								) : (
-									<div className="local-assistant">
-										<p>{m.body}</p>
-										<div className="message-actions"><CopyMessageButton body={m.body} /></div>
+									<div className={`local-assistant${showAdvancedAtMessage ? " local-assistant-with-advanced" : ""}`}>
+										<div className="local-assistant-content">
+											<p>{m.body}</p>
+											{showAdvancedAtMessage ? <button type="button" className="message-advanced" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
+										</div>
+										<div className="assistant-message-footer">
+											{turnTpsLabels.byMessageId[m.id] ? <small className="message-throughput" data-testid={`assistant-median-tps-${m.id}`} aria-label={`${turnTpsLabels.byMessageId[m.id]!.generation}${turnTpsLabels.byMessageId[m.id]!.worked ? `. Elapsed work time ${turnTpsLabels.byMessageId[m.id]!.worked!.slice(7)}` : ""}`}>{turnTpsLabels.byMessageId[m.id]!.generation}{turnTpsLabels.byMessageId[m.id]!.worked ? ` · ${turnTpsLabels.byMessageId[m.id]!.worked}` : ""}</small> : null}
+											<div className="message-actions"><CopyMessageButton body={m.body} /></div>
+										</div>
 									</div>
 								)}
 								{m.role === "assistant" ? renderPresented(presentedAfter, [], false, running) : null}
@@ -838,7 +931,9 @@ export function ChatTranscript({
 							<div className="model-working" role="status" aria-live="polite" data-testid="model-working">
 								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>
 								<span>{warmingUp ? "Warming up…" : "Working…"}</span>
-								<button type="button" onClick={onStop} aria-label="Stop generating">Stop</button>
+								{turnTpsLabels.live ? <small className="model-working-throughput" data-testid="model-working-median-tps">{turnTpsLabels.live}</small> : null}
+								{onStop ? <button type="button" onClick={onStop} aria-label="Stop generating">Stop</button> : null}
+								{onAdvanced ? <button type="button" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
 							</div>
 						) : null}
 					</div>

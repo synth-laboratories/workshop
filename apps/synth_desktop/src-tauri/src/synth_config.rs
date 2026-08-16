@@ -50,6 +50,45 @@ fn lookup_default(table: &[(&str, &str)], profile: &str) -> Option<String> {
         .map(|(_, url)| (*url).to_owned())
 }
 
+fn source_owned_backend_url(profile: &str) -> Option<String> {
+    lookup_default(DEFAULT_ENDPOINTS, profile).or_else(|| {
+        match profile {
+            "prod" => Some("https://api.usesynth.ai"),
+            "local" => Some("http://127.0.0.1:8000"),
+            _ => None,
+        }
+        .map(str::to_owned)
+    })
+}
+
+/// Mutable routing exists only for named debug instances. A data-root alone
+/// is not an authority signal: release apps also have one, and must never
+/// forward credentials to an endpoint selected by their launch environment.
+pub(crate) fn development_routing_enabled() -> bool {
+    cfg!(debug_assertions) && crate::instance::name().is_some()
+}
+
+fn select_backend_url(
+    profile: &str,
+    allow_development_override: bool,
+    environment_override: Option<String>,
+    configured_override: Option<String>,
+) -> Result<String> {
+    if allow_development_override {
+        environment_override
+            .filter(|value| !value.trim().is_empty())
+            .or(configured_override)
+            .or_else(|| source_owned_backend_url(profile))
+            .ok_or_else(|| anyhow!("unknown Desktop backend profile `{profile}`"))
+    } else {
+        source_owned_backend_url(profile).ok_or_else(|| {
+            anyhow!(
+                "Desktop profile `{profile}` has no source-owned backend route; network access is blocked"
+            )
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "lowercase")]
 pub enum MultiAgentVersion {
@@ -315,6 +354,48 @@ pub fn workspace_access_settings() -> Result<WorkspaceAccessSettings> {
 
 pub fn allowed_workspace_roots() -> Result<Vec<String>> {
     Ok(workspace_access_settings()?.allowed_roots)
+}
+
+/// Operator-declared live-eval capabilities for a container base URL.
+///
+/// This is the **only** way a capability claim enters Workshop without the
+/// service itself advertising it, and it is deliberately here rather than in
+/// registration metadata: `config.toml` is written by Tauri commands (the
+/// person at the keyboard) and is unreachable from the loopback IPC the MCP
+/// adapters speak, so an agent cannot assert that an incompatible engine
+/// supports the prepared-rollout workflow.
+///
+/// ```toml
+/// [[containers.capability_declaration]]
+/// base_url = "http://127.0.0.1:8104"
+/// protocol = "synth.container.live-eval.v1"
+/// operations = { "rollouts.prepare" = true, "reward.get" = true }
+/// policy_refs = [{ harness = "react", config = "luna_low" }]
+/// ```
+pub fn container_capability_declaration(base_url: &str) -> Result<Option<serde_json::Value>> {
+    Ok(declaration_for(&read_toml(&config_path())?, base_url))
+}
+
+fn declaration_for(document: &toml::Value, base_url: &str) -> Option<serde_json::Value> {
+    let wanted = base_url.trim().trim_end_matches('/');
+    if wanted.is_empty() {
+        return None;
+    }
+    let entries = document
+        .get("containers")
+        .and_then(|value| value.get("capability_declaration"))
+        .and_then(toml::Value::as_array)?;
+    let entry = entries.iter().find(|entry| {
+        entry
+            .get("base_url")
+            .and_then(toml::Value::as_str)
+            .map(|declared| declared.trim().trim_end_matches('/'))
+            == Some(wanted)
+    })?;
+    let mut block = serde_json::to_value(entry).ok()?;
+    // `base_url` is the key, not part of the capability projection.
+    block.as_object_mut()?.remove("base_url");
+    Some(block)
 }
 
 pub(crate) fn select_default_workspace_path(
@@ -594,27 +675,23 @@ pub fn resolve() -> Result<ResolvedBackend> {
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| DEFAULT_PROFILE.into());
-    let endpoint = env::var("SYNTH_BACKEND_URL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| {
-            intern
-                .and_then(|v| v.get("endpoints"))
-                .and_then(toml::Value::as_table)
-                .and_then(|v| v.get(&profile))
-                .and_then(toml::Value::as_str)
-                .map(str::to_owned)
-        })
-        .or_else(|| lookup_default(DEFAULT_ENDPOINTS, &profile))
-        .unwrap_or_else(|| match profile.as_str() {
-            "staging" => "https://api-dev.usesynth.ai".into(),
-            "local" => "http://127.0.0.1:8000".into(),
-            _ => "https://api.usesynth.ai".into(),
-        });
+    let allow_development_override = development_routing_enabled();
+    let configured_endpoint = intern
+        .and_then(|v| v.get("endpoints"))
+        .and_then(toml::Value::as_table)
+        .and_then(|v| v.get(&profile))
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned);
+    let endpoint = select_backend_url(
+        &profile,
+        allow_development_override,
+        env::var("SYNTH_BACKEND_URL").ok(),
+        configured_endpoint,
+    )?;
     // Named development instances may point their isolated cloud lane at a
     // disposable local Responses backend. Canonical apps retain source-owned
     // routing and deliberately ignore this process override.
-    let responses_gateway_url = if env::var_os(crate::instance::DATA_ROOT_ENV).is_some() {
+    let responses_gateway_url = if allow_development_override {
         env::var("SYNTH_RESPONSES_GATEWAY_URL")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -844,10 +921,22 @@ fn remove_env_secret(path: &Path, key: &str) -> Result<()> {
 
 fn validate_url(value: &str) -> Result<String> {
     let value = value.trim().trim_end_matches('/');
-    if !(value.starts_with("http://") || value.starts_with("https://"))
-        || value.contains(char::is_whitespace)
-    {
-        return Err(anyhow!("backend URL must be an http:// or https:// URL"));
+    let parsed = reqwest::Url::parse(value)
+        .map_err(|_| anyhow!("backend URL must be a valid http:// or https:// URL"))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(anyhow!("backend URL must not contain credentials"));
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("backend URL must include a host"))?;
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback) {
+        return Err(anyhow!(
+            "backend URL must use https (http is allowed only for loopback development)"
+        ));
     }
     Ok(value.to_owned())
 }
@@ -954,6 +1043,42 @@ mod tests {
         assert!(!debug.contains("renderer-secret"));
         assert!(!debug.contains("renderer-openrouter-secret"));
         assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
+    fn container_capability_declaration_matches_one_operator_owned_base_url() {
+        let document = r#"
+[[containers.capability_declaration]]
+base_url = "http://127.0.0.1:8104/"
+protocol = "synth.container.live-eval.v1"
+operations = { "rollouts.prepare" = true, "trace_v5.capture" = false }
+policy_refs = [{ harness = "react", config = "luna_low" }]
+
+[[containers.capability_declaration]]
+base_url = "http://127.0.0.1:9000"
+protocol = "synth.container.live-eval.v1"
+operations = { "rollouts.prepare" = false }
+"#
+        .parse::<toml::Value>()
+        .unwrap();
+
+        let declared = declaration_for(&document, "http://127.0.0.1:8104").unwrap();
+        assert_eq!(declared["protocol"], "synth.container.live-eval.v1");
+        assert_eq!(declared["operations"]["rollouts.prepare"], true);
+        assert_eq!(declared["operations"]["trace_v5.capture"], false);
+        assert_eq!(declared["policy_refs"][0]["config"], "luna_low");
+        // The key is not part of the projection.
+        assert!(declared.get("base_url").is_none());
+
+        // Trailing-slash difference still matches; a different port does not.
+        assert!(declaration_for(&document, "http://127.0.0.1:8104/").is_some());
+        assert!(declaration_for(&document, "http://127.0.0.1:8105").is_none());
+        assert!(declaration_for(&document, "").is_none());
+        assert!(declaration_for(
+            &toml::Value::Table(Default::default()),
+            "http://127.0.0.1:8104"
+        )
+        .is_none());
     }
 
     #[test]
@@ -1246,6 +1371,40 @@ mod tests {
         assert_eq!(
             lookup_default(DEFAULT_ENDPOINTS, "production").as_deref(),
             Some("https://mcp.usesynth.ai")
+        );
+    }
+
+    #[test]
+    fn canonical_routing_ignores_environment_and_configured_endpoints() {
+        let selected = select_backend_url(
+            "prod",
+            false,
+            Some("https://environment.attacker.invalid".into()),
+            Some("https://config.attacker.invalid".into()),
+        )
+        .unwrap();
+        assert_eq!(selected, "https://api.usesynth.ai");
+        assert!(select_backend_url(
+            "attacker-profile",
+            false,
+            Some("https://environment.attacker.invalid".into()),
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn backend_urls_require_https_except_for_loopback_development() {
+        assert_eq!(
+            validate_url("http://127.0.0.1:41109/").unwrap(),
+            "http://127.0.0.1:41109"
+        );
+        assert!(validate_url("http://api.usesynth.ai").is_err());
+        assert!(validate_url("https://user:secret@api.usesynth.ai").is_err());
+        assert!(validate_url("file:///tmp/backend").is_err());
+        assert_eq!(
+            validate_url("https://api.usesynth.ai/").unwrap(),
+            "https://api.usesynth.ai"
         );
     }
 

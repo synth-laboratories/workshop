@@ -42,6 +42,16 @@ test("Craftax viewer isolates the selected lane in a time-ordered multiplex", ()
   assert.equal(second.reward, 5);
 });
 
+test("native GameBench reward_signal reward alias remains visible during replay", () => {
+  const projection = projectCraftaxViewer([
+    event("seed:2001", "rollout.progress", 1, { status: "running", reward: 0 }),
+    event("seed:2001", "reward_signal", 2, { reward: 1 }),
+    event("seed:2001", "eval.run.terminal", 3, { status: "completed" }),
+  ]);
+  assert.equal(projection.reward, 1);
+  assert.equal(projection.cumulativeReward, 1);
+});
+
 test("through-time cutoff hides future policy, reward, frame, and achievement evidence", () => {
   const events = [
     event("seed:0", "trace.opened", 1),

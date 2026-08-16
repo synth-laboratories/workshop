@@ -412,10 +412,26 @@ export type UsageBreakdown = {
   perfSampleCount: number;
 };
 
+/**
+ * One local calendar day for one provider, reduced from the same ledger rows
+ * as the window totals, so a daily chart can never disagree with the headline
+ * it sits under. The provider rides on `totals.provider`; `totals.modelId` is
+ * `"all"` because a day point spans every model that provider ran.
+ */
+export type UsageDayPoint = {
+  day: string;
+  totals: UsageBreakdown;
+};
+
 export type UsageSummary = {
   window: UsageWindow;
   totals: UsageBreakdown;
   models: UsageBreakdown[];
+  /**
+   * Ascending by day, then provider. Days with no requests are absent rather
+   * than zero-filled — the caller owns the calendar it draws.
+   */
+  days: UsageDayPoint[];
   generatedAt: string;
 };
 

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import sys
 import threading
 import time
 from collections import OrderedDict
@@ -31,6 +32,10 @@ _ARGUMENT = re.compile(
 _TOOL_CALL_STOP_GRACE_TOKENS = 16
 _MIN_SYSTEM_MEMORY_BYTES = 32 * 1024**3
 _MODEL_MEMORY_HEADROOM_BYTES = 8 * 1024**3
+_MIN_AVAILABLE_MEMORY_BYTES = 24 * 1024**3
+_RESIDENT_MEMORY_FLOOR_BYTES = 4 * 1024**3
+_EMERGENCY_MEMORY_FLOOR_BYTES = 2 * 1024**3
+_MAX_SAFETENSORS_HEADER_BYTES = 100_000_000
 
 
 def _physical_memory_bytes() -> int | None:
@@ -49,22 +54,141 @@ def _physical_memory_bytes() -> int | None:
     return total if total > 0 else None
 
 
+def _available_memory_bytes() -> int | None:
+    """Return memory that can be reclaimed without forcing swap.
+
+    The Laguna deployment target is macOS, where Mach's free, inactive, and
+    purgeable page counts are the closest stable no-subprocess admission fact.
+    Speculative pages are already included in ``free_count``. If the Mach
+    query fails on macOS, return zero so a safety gate cannot silently open.
+    """
+    if sys.platform != "darwin":
+        try:
+            pages = int(os.sysconf("SC_AVPHYS_PAGES"))
+            page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        except (AttributeError, OSError, TypeError, ValueError):
+            return None
+        available = pages * page_size
+        return available if available > 0 else None
+
+    try:
+        import ctypes
+
+        class VmStatistics64(ctypes.Structure):
+            _fields_ = [
+                ("free_count", ctypes.c_uint32),
+                ("active_count", ctypes.c_uint32),
+                ("inactive_count", ctypes.c_uint32),
+                ("wire_count", ctypes.c_uint32),
+                ("zero_fill_count", ctypes.c_uint64),
+                ("reactivations", ctypes.c_uint64),
+                ("pageins", ctypes.c_uint64),
+                ("pageouts", ctypes.c_uint64),
+                ("faults", ctypes.c_uint64),
+                ("cow_faults", ctypes.c_uint64),
+                ("lookups", ctypes.c_uint64),
+                ("hits", ctypes.c_uint64),
+                ("purges", ctypes.c_uint64),
+                ("purgeable_count", ctypes.c_uint32),
+                ("speculative_count", ctypes.c_uint32),
+                ("decompressions", ctypes.c_uint64),
+                ("compressions", ctypes.c_uint64),
+                ("swapins", ctypes.c_uint64),
+                ("swapouts", ctypes.c_uint64),
+                ("compressor_page_count", ctypes.c_uint32),
+                ("throttled_count", ctypes.c_uint32),
+                ("external_page_count", ctypes.c_uint32),
+                ("internal_page_count", ctypes.c_uint32),
+                ("total_uncompressed_pages_in_compressor", ctypes.c_uint64),
+            ]
+
+        system = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        system.mach_host_self.restype = ctypes.c_uint32
+        host = system.mach_host_self()
+        page_size = ctypes.c_uint32()
+        if system.host_page_size(host, ctypes.byref(page_size)) != 0:
+            return 0
+        stats = VmStatistics64()
+        count = ctypes.c_uint32(ctypes.sizeof(stats) // ctypes.sizeof(ctypes.c_int32))
+        if system.host_statistics64(host, 4, ctypes.byref(stats), ctypes.byref(count)) != 0:
+            return 0
+        pages = stats.free_count + stats.inactive_count + stats.purgeable_count
+        return pages * page_size.value
+    except (AttributeError, OSError, TypeError, ValueError):
+        return 0
+
+
+def _required_available_memory_bytes(model_path: Path) -> int:
+    weights = _model_weight_bytes(model_path)
+    allocation_floor = (weights + 4 * 1024**3) if weights else 0
+    return max(_MIN_AVAILABLE_MEMORY_BYTES, allocation_floor)
+
+
 def _model_weight_bytes(model_path: Path) -> int | None:
     index_path = model_path / "model.safetensors.index.json"
     try:
         index = json.loads(index_path.read_text())
         declared = (index.get("metadata") or {}).get("total_size")
-        if isinstance(declared, int) and declared > 0:
-            return declared
         shards = {
             value
             for value in (index.get("weight_map") or {}).values()
             if isinstance(value, str)
+            and value.endswith(".safetensors")
+            and "/" not in value
+            and "\\" not in value
         }
-        total = sum((model_path / shard).stat().st_size for shard in shards)
-        return total if total > 0 else None
+        if not shards:
+            return None
+        payload_bytes = sum(
+            _safetensors_payload_bytes(model_path / shard) for shard in shards
+        )
+        if isinstance(declared, int) and declared > 0 and payload_bytes != declared:
+            return None
+        return payload_bytes if payload_bytes > 0 else None
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return None
+
+
+def _safetensors_payload_bytes(path: Path) -> int:
+    file_size = path.stat().st_size
+    with path.open("rb") as file:
+        encoded_header_size = file.read(8)
+        if len(encoded_header_size) != 8:
+            raise ValueError("truncated safetensors header size")
+        header_size = int.from_bytes(encoded_header_size, "little")
+        if (
+            header_size <= 0
+            or header_size > _MAX_SAFETENSORS_HEADER_BYTES
+            or 8 + header_size > file_size
+        ):
+            raise ValueError("invalid safetensors header size")
+        header = json.loads(file.read(header_size))
+
+    ranges: list[tuple[int, int]] = []
+    for name, tensor in header.items():
+        if name == "__metadata__":
+            continue
+        offsets = tensor.get("data_offsets") if isinstance(tensor, dict) else None
+        if (
+            not isinstance(offsets, list)
+            or len(offsets) != 2
+            or not all(isinstance(offset, int) for offset in offsets)
+            or offsets[0] < 0
+            or offsets[1] < offsets[0]
+        ):
+            raise ValueError("invalid safetensors tensor offsets")
+        ranges.append((offsets[0], offsets[1]))
+    if not ranges:
+        raise ValueError("safetensors shard has no tensors")
+    ranges.sort()
+    cursor = 0
+    for start, end in ranges:
+        if start != cursor:
+            raise ValueError("non-contiguous safetensors tensor offsets")
+        cursor = end
+    if 8 + header_size + cursor != file_size:
+        raise ValueError("safetensors payload length does not match file size")
+    return cursor
 
 
 def _required_system_memory_bytes(model_path: Path) -> int:
@@ -545,6 +669,7 @@ class NativeMlxBackend:
         adapter_path: str | None = None,
         context_length: int = 262_144,
         system_memory_bytes: int | None = None,
+        available_memory_bytes: int | None = None,
     ) -> None:
         self.model_path = model_path
         self.adapter_path = adapter_path
@@ -581,6 +706,7 @@ class NativeMlxBackend:
             if system_memory_bytes is not None
             else _physical_memory_bytes()
         )
+        self._available_memory_override = available_memory_bytes
 
     async def capabilities(self, model: str) -> ModelCapabilities:
         return self._capabilities
@@ -603,17 +729,45 @@ class NativeMlxBackend:
             self._loading = True
             try:
                 required_memory = _required_system_memory_bytes(self.model_path)
+                available_memory = (
+                    self._available_memory_override
+                    if self._available_memory_override is not None
+                    else _available_memory_bytes()
+                )
+                required_available = _required_available_memory_bytes(self.model_path)
                 if (
                     self._system_memory_bytes is not None
                     and self._system_memory_bytes < required_memory
+                ) or (
+                    available_memory is not None
+                    and available_memory < required_available
                 ):
-                    available_gib = self._system_memory_bytes / 1024**3
-                    required_gib = required_memory / 1024**3
+                    capacity_shortfall = (
+                        self._system_memory_bytes is not None
+                        and self._system_memory_bytes < required_memory
+                    )
+                    measured_capacity = (
+                        self._system_memory_bytes
+                        if capacity_shortfall
+                        else available_memory
+                    )
+                    assert measured_capacity is not None
+                    available_gib = measured_capacity / 1024**3
+                    required_gib = (
+                        required_memory if capacity_shortfall else required_available
+                    ) / 1024**3
                     raise ResponsesError(
                         "insufficient_system_memory",
                         f"{self.model_path.name} was not loaded because this Mac has "
                         f"{available_gib:.1f} GiB of unified memory; "
                         f"at least {required_gib:.1f} GiB is required.",
+                        503,
+                        error_type="server_error",
+                    )
+                if _model_weight_bytes(self.model_path) is None:
+                    raise ResponsesError(
+                        "model_not_found",
+                        f"MLX model artifacts are incomplete or invalid: {self.model_path}",
                         503,
                         error_type="server_error",
                     )
@@ -640,14 +794,6 @@ class NativeMlxBackend:
                     503,
                     error_type="server_error",
                 )
-            if not self.model_path.exists():
-                raise ResponsesError(
-                    "model_not_found",
-                    f"MLX model path does not exist: {self.model_path}",
-                    503,
-                    error_type="server_error",
-                )
-
             def load_model() -> tuple[Any, Any]:
                 # mlx-vlm carries the open Laguna architecture and NVFP4
                 # loader. We use only its in-process model primitives, never
@@ -1135,6 +1281,32 @@ class NativeMlxBackend:
                     return False
             await self._release_model_memory()
             return True
+
+    async def relieve_memory_pressure(self) -> str:
+        """Continuously enforce a safe floor while MLX weights are resident."""
+        if self._model is None:
+            return "ok"
+        available = (
+            self._available_memory_override
+            if self._available_memory_override is not None
+            else _available_memory_bytes()
+        )
+        if available is None or available >= _RESIDENT_MEMORY_FLOOR_BYTES:
+            return "ok"
+        async with self._load_lock:
+            async with self._admission_lock:
+                if self._model is None:
+                    return "ok"
+                if self._inflight_generations > 0:
+                    for flag in self._cancel_flags.values():
+                        flag.set()
+                    return (
+                        "active_emergency"
+                        if available < _EMERGENCY_MEMORY_FLOOR_BYTES
+                        else "ok"
+                    )
+            await self._release_model_memory()
+            return "unloaded"
 
     async def _release_model_memory(self) -> None:
         def release() -> None:

@@ -4,12 +4,125 @@
 //! `transports.poll.url` until `stream.subscribed` with `ready: true`, then
 //! start. Never construct `/events`. Heartbeats do not count as ready.
 
+use crate::diagnostics::{codes, Correlation, DiagnosticInput, DiagnosticsService, Severity};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use std::time::Duration;
 
 pub const STREAM_SUBSCRIBED_KIND: &str = "stream.subscribed";
 pub const SUBSCRIBE_READY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Correlated diagnostic emitter for one rollout's stream.
+///
+/// The helpers below are pure functions over a client and a URL; the identities
+/// that make their failures worth recording (container, rollout, stream,
+/// visual, session) live with the caller. This carries both, so a subscribe
+/// timeout is recorded as *this* rollout's timeout rather than an anonymous one.
+///
+/// [`StreamDiagnostics::none`] keeps every existing call site and test honest:
+/// an uninstrumented caller emits nothing rather than reaching for a global.
+#[derive(Clone, Default)]
+pub struct StreamDiagnostics {
+    service: Option<Arc<DiagnosticsService>>,
+    correlation: Correlation,
+}
+
+impl StreamDiagnostics {
+    pub fn new(service: Option<Arc<DiagnosticsService>>, correlation: Correlation) -> Self {
+        Self {
+            service,
+            correlation,
+        }
+    }
+
+    /// For tests and for callers that hold no runtime.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    fn emit(
+        &self,
+        severity: Severity,
+        event: &str,
+        code: &str,
+        message: impl Into<String>,
+        retryable: bool,
+        details: Value,
+    ) {
+        let Some(service) = self.service.as_ref() else {
+            return;
+        };
+        let mut input = DiagnosticInput::new(severity, "container-stream", event, code, message)
+            .retryable(retryable);
+        input.correlation = self.correlation.clone();
+        if let Some(object) = details.as_object() {
+            input.details = object.clone();
+        }
+        service.emit(input);
+    }
+
+    /// The stream reached subscribed. Recorded at `info` because it is the
+    /// transition that tells an investigator the gap started *after* here.
+    pub fn subscribed(&self, waited: Duration) {
+        self.emit(
+            Severity::Info,
+            "stream.subscribed",
+            "stream_subscribed",
+            "declared stream reached subscribed",
+            false,
+            json!({ "waited_ms": waited.as_millis() as u64 }),
+        );
+    }
+
+    pub fn subscribe_timeout(&self, timeout: Duration) {
+        self.emit(
+            Severity::Error,
+            "stream.subscribe.timeout",
+            codes::STREAM_SUBSCRIBE_TIMEOUT,
+            format!(
+                "declared stream never reached subscribed within {}ms",
+                timeout.as_millis()
+            ),
+            true,
+            json!({ "timeout_ms": timeout.as_millis() as u64 }),
+        );
+    }
+
+    /// The declared poll authority refused. The rollout is not started, so this
+    /// is the cause of every downstream emptiness, not a symptom of it.
+    pub fn poll_unavailable(&self, status: u16) {
+        self.emit(
+            Severity::Error,
+            "stream.poll.unavailable",
+            codes::STREAM_INTERRUPTED,
+            format!("declared poll authority returned {status}"),
+            true,
+            json!({ "status": status }),
+        );
+    }
+
+    /// Narrow an emitter to one rollout. The scripted-rollout helper mints its
+    /// own ids, so the caller cannot supply them up front.
+    pub fn with_rollout(mut self, rollout_id: &str) -> Self {
+        self.correlation.rollout_id = Some(rollout_id.to_owned());
+        if self.correlation.stream_id.is_none() {
+            self.correlation.stream_id = Some(rollout_id.to_owned());
+        }
+        self
+    }
+
+    pub fn interrupted(&self, message: impl Into<String>, retryable: bool) {
+        self.emit(
+            Severity::Error,
+            "stream.interrupted",
+            codes::STREAM_INTERRUPTED,
+            message,
+            retryable,
+            json!({}),
+        );
+    }
+}
 
 /// Bind the stream descriptor echoed by prepare/create-rollout. Never construct
 /// `/events` or `/rollouts/{id}/stream` here — those guesses are C1-09 fails.
@@ -91,7 +204,9 @@ pub async fn wait_for_stream_subscribed(
     client: &reqwest::Client,
     poll_url: &str,
     timeout: Duration,
+    diagnostics: &StreamDiagnostics,
 ) -> Result<Value> {
+    let started = std::time::Instant::now();
     let poll_once = async {
         loop {
             let response = client
@@ -101,6 +216,7 @@ pub async fn wait_for_stream_subscribed(
                 .await
                 .context("poll declared transports.poll.url")?;
             if response.status().as_u16() == 503 {
+                diagnostics.poll_unavailable(503);
                 bail!("refusing start: declared poll returned 503");
             }
             let poll = response
@@ -115,8 +231,15 @@ pub async fn wait_for_stream_subscribed(
         }
     };
     match tokio::time::timeout(timeout, poll_once).await {
-        Ok(result) => result,
-        Err(_) => require_stream_subscribed_before_start(&json!({})).map(|()| json!({})),
+        Ok(Ok(poll)) => {
+            diagnostics.subscribed(started.elapsed());
+            Ok(poll)
+        }
+        Ok(Err(error)) => Err(error),
+        Err(_) => {
+            diagnostics.subscribe_timeout(timeout);
+            require_stream_subscribed_before_start(&json!({})).map(|()| json!({}))
+        }
     }
 }
 
@@ -194,9 +317,39 @@ pub fn authoritative_poll_telemetry() -> Value {
     })
 }
 
+/// Fill the required normalized rollout telemetry envelope without overriding
+/// a caller's explicit transport/detail choices. Agent tools intentionally
+/// expose telemetry as optional, so the host owns these protocol defaults.
+pub fn normalized_rollout_telemetry(value: Option<&Value>) -> Result<Value> {
+    let mut telemetry = match value {
+        Some(Value::Object(map)) => map.clone(),
+        Some(_) => bail!("telemetry must be an object"),
+        None => serde_json::Map::new(),
+    };
+    telemetry.entry("enabled").or_insert(json!(true));
+    telemetry.entry("transport").or_insert(json!("sse"));
+    telemetry.entry("retention").or_insert(json!("run"));
+    telemetry.entry("detail").or_insert(json!("standard"));
+    telemetry
+        .entry("frame")
+        .or_insert(json!({"enabled": true, "format": "png", "every_n_steps": 1}));
+    let normalized = Value::Object(telemetry);
+    refuse_auto_transport(&normalized)?;
+    Ok(normalized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalized_telemetry_fills_protocol_defaults_without_overriding_transport() {
+        let telemetry = normalized_rollout_telemetry(Some(&json!({"transport":"poll"})))
+            .expect("normalize telemetry");
+        assert_eq!(telemetry["enabled"], true);
+        assert_eq!(telemetry["transport"], "poll");
+        assert_eq!(telemetry["retention"], "run");
+    }
 
     #[test]
     fn declared_poll_url_uses_descriptor_and_never_guesses_events() {
@@ -337,6 +490,7 @@ mod tests {
             &client,
             &format!("http://{addr}/rollouts/r1/events"),
             Duration::from_secs(1),
+            &StreamDiagnostics::none(),
         )
         .await
         .unwrap_err();

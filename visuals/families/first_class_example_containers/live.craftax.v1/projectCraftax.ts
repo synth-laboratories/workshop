@@ -11,6 +11,12 @@ function finite(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+/** Canonical streams use `value`; native GameBench history used `reward`. */
+export function craftaxRewardValue(payload: unknown): number | undefined {
+  const record = object(payload);
+  return finite(record.value) ?? finite(record.reward);
+}
+
 export function craftaxEventLane(event: LiveEvalEvent): string {
   return event.lane || event.run_id || "eval";
 }
@@ -437,7 +443,7 @@ export function projectCraftaxViewer(
   const shared = projectLiveEval(visibleEvents);
   const rewardSignals = visibleEvents.filter((event) => event.kind === "reward_signal");
   const cumulativeReward = rewardSignals.reduce<number | undefined>((sum, event) => {
-    const value = finite(event.payload.value);
+    const value = craftaxRewardValue(event.payload);
     return value == null ? sum : (sum ?? 0) + value;
   }, undefined);
   const frame = lastKind(visibleEvents, "frame");

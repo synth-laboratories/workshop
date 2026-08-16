@@ -14,6 +14,12 @@ pub const CONTAINER_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Re-fetch task catalogs / metadata when older than this.
 pub const CONTAINER_METADATA_REFRESH: Duration = Duration::from_secs(300);
 
+/// Maximum accepted age of a container health + capability observation before
+/// `rollouts.prepare` refuses and asks for `container_probe`. Deliberately
+/// wider than `CONTAINER_METADATA_REFRESH` so a record that is merely due for
+/// its next `/info` refresh is not reported as stale.
+pub const CONTAINER_CAPABILITY_MAX_AGE: Duration = Duration::from_secs(900);
+
 /// Short visuals IPC hop to a registered loopback container.
 pub const VISUALS_IPC_HOP_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -62,6 +68,15 @@ pub const OPTIMIZER_SIDECAR_HEALTH_TIMEOUT: Duration = Duration::from_millis(120
 // extension on first launch. Keep this bounded, but allow cold starts to
 // complete instead of repeatedly killing the build at five seconds.
 pub const OPTIMIZER_SIDECAR_READY_WAIT: Duration = Duration::from_secs(60);
+
+/// How long a spawned recipe child may run without its run becoming visible to
+/// the optimizer service the host polls.
+// The producer registers its durable index shortly after spawn, so this only
+// has to outlast that registration. Past it the run is not merely slow: the
+// child is writing somewhere the polled service cannot see, and every further
+// second is paid rollouts whose events can never be ingested. Bounded here so
+// that a contract failure costs a known amount instead of a whole run.
+pub const OPTIMIZER_RUN_INDEX_WAIT: Duration = Duration::from_secs(90);
 
 /// Laguna generation / chat request.
 pub const LAGUNA_INFERENCE_TIMEOUT: Duration = Duration::from_secs(20);

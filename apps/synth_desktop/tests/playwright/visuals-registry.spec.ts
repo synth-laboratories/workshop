@@ -93,6 +93,64 @@ test("Visuals page can create a draft visual from the registry", async ({ page }
 	await expect(page.getByTestId("visuals-grid")).toContainText("New visual");
 });
 
+test("an already-open pane rejects stale gets and reconciles a dropped final update on focus", async ({ page }) => {
+	await page.addInitScript((base) => {
+		let current = { ...base, id: "vis_race", title: "Revision 13", currentRevision: 13 };
+		const listeners = new Set<(event: Record<string, unknown>) => void>();
+		let releaseOld: ((value: VisualRecord) => void) | null = null;
+		let gets = 0;
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [],
+			list: async () => [],
+			get: async () => {
+				gets += 1;
+				if (gets === 1) return new Promise<VisualRecord>((resolve) => { releaseOld = resolve; });
+				return current;
+			},
+			revisions: async () => [],
+			onEvent: (next: (event: Record<string, unknown>) => void, attached?: () => void) => {
+				listeners.add(next);
+				queueMicrotask(() => attached?.());
+				return () => { listeners.delete(next); };
+			}
+		};
+		(window as typeof window & { __visualRace?: unknown }).__visualRace = {
+			isAttached: () => listeners.size > 0,
+			getCount: () => gets,
+			show13: () => listeners.forEach((listener) => listener({ kind: "visual.show", payload: { visualId: "vis_race", revision: 13 } })),
+			update14: () => {
+				current = { ...current, title: "Revision 14", currentRevision: 14 };
+				listeners.forEach((listener) => listener({ kind: "visual.updated", payload: { visualId: "vis_race", revision: 14 } }));
+			},
+			drop15: () => { current = { ...current, title: "Revision 15", currentRevision: 15 }; },
+			release13: () => releaseOld?.({ ...current, title: "Revision 13", currentRevision: 13 }),
+			emit15: () => listeners.forEach((listener) => listener({ kind: "visual.updated", payload: { visualId: "vis_race", revision: 15 } }))
+		};
+	}, sampleVisual);
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualRace: { isAttached(): boolean } }).__visualRace.isAttached())).toBe(true);
+	await page.getByTestId("open-visuals").click();
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualRace: { isAttached(): boolean } }).__visualRace.isAttached())).toBe(true);
+	await page.evaluate(() => (window as typeof window & { __visualRace: { show13(): void; update14(): void } }).__visualRace.show13());
+	await page.evaluate(() => (window as typeof window & { __visualRace: { show13(): void; update14(): void } }).__visualRace.update14());
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualRace: { getCount(): number } }).__visualRace.getCount())).toBe(2);
+	await expect.poll(() => page.evaluate(() => window.__synthEval?.getState().openVisualId)).toBe("vis_race");
+	await expect(page.getByTestId("visual-pane")).toContainText("Revision 14");
+	await expect(page.getByTestId("visual-pane")).toContainText("rev 14");
+	await page.evaluate(() => (window as typeof window & { __visualRace: { release13(): void } }).__visualRace.release13());
+	await expect(page.getByTestId("visual-pane")).toContainText("Revision 14");
+
+	await page.evaluate(() => {
+		(window as typeof window & { __visualRace: { drop15(): void } }).__visualRace.drop15();
+		window.dispatchEvent(new Event("focus"));
+	});
+	await expect(page.getByTestId("visual-pane")).toContainText("Revision 15");
+	await page.getByRole("button", { name: "Close visual" }).click();
+	await page.evaluate(() => (window as typeof window & { __visualRace: { emit15(): void } }).__visualRace.emit15());
+	await expect(page.getByTestId("visual-pane")).toBeHidden();
+});
+
 test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears when stacked", async ({ page }) => {
 	await page.setViewportSize({ width: 1280, height: 840 });
 	await installVisualsFixture(page);

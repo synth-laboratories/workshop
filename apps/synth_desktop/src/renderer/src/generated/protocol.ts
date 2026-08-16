@@ -10,8 +10,17 @@ export const commands = {
 	desktopInstanceDiagnostics: () => __TAURI_INVOKE<InstanceDiagnostics>("desktop_instance_diagnostics"),
 	desktopImagePreview: (path: string) => typedError<string, AppError>(__TAURI_INVOKE("desktop_image_preview", { path })),
 	coreDiagnostics: () => typedError<CoreDiagnostics, AppError>(__TAURI_INVOKE("core_diagnostics")),
+	/**
+	 *  Every runtime version Desktop pins, resolved from the one contract table.
+	 *
+	 *  Settings → About renders exactly this struct. Answering "which runtime is
+	 *  installed, and is it new enough?" used to require reading the source.
+	 */
+	runtimeContracts: () => typedError<RuntimeContractView[], AppError>(__TAURI_INVOKE("runtime_contracts")),
 	coreEventsAfter: (afterSequence: unknown, limit: unknown | null) => typedError<AppEvent_Serialize[], AppError>(__TAURI_INVOKE("core_events_after", { afterSequence, limit })),
 	coreSessionEventsAfter: (sessionId: string, afterSequence: unknown, limit: unknown | null) => typedError<AppEvent_Serialize[], AppError>(__TAURI_INVOKE("core_session_events_after", { sessionId, afterSequence, limit })),
+	coreSessionEventsTail: (sessionId: string, limit: unknown | null) => typedError<AppEvent_Serialize[], AppError>(__TAURI_INVOKE("core_session_events_tail", { sessionId, limit })),
+	coreSessionEventsBefore: (sessionId: string, beforeSequence: unknown, limit: unknown | null) => typedError<AppEvent_Serialize[], AppError>(__TAURI_INVOKE("core_session_events_before", { sessionId, beforeSequence, limit })),
 	internSessionsList: () => typedError<InternSessionWire[], AppError>(__TAURI_INVOKE("intern_sessions_list")),
 	internSessionCreate: (request: InternSessionCreateRequest_Deserialize) => typedError<InternSessionWire, AppError>(__TAURI_INVOKE("intern_session_create", { request })),
 	internSessionSend: (request: InternSessionSendRequest) => typedError<InternSendResult, AppError>(__TAURI_INVOKE("intern_session_send", { request })),
@@ -27,6 +36,7 @@ export const commands = {
 	dataTraceProjectionResolve: (traceDigest: string, projectionKind: string) => typedError<ResolvedTraceProjection, AppError>(__TAURI_INVOKE("data_trace_projection_resolve", { traceDigest, projectionKind })),
 	dataUsageList: (limit: unknown | null) => typedError<UsageEntry[], AppError>(__TAURI_INVOKE("data_usage_list", { limit })),
 	modelPerformanceSummary: () => typedError<ModelPerformanceSummary[], AppError>(__TAURI_INVOKE("model_performance_summary")),
+	modelPerformanceTurnSamples: (sessionId: string) => typedError<ModelPerformanceTurnSample[], AppError>(__TAURI_INVOKE("model_performance_turn_samples", { sessionId })),
 	/**
 	 *  Device-wide usage dashboard for one time window, aggregated in SQLite/Rust
 	 *  over the authoritative per-request `usage_records` ledger — the renderer
@@ -48,6 +58,12 @@ export const commands = {
 	optimizersAlgorithmsList: () => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_algorithms_list")),
 	optimizersRecipesList: () => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_recipes_list")),
 	optimizersRecipeStart: (request: OptimizerRecipeRunRequest) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_recipe_start", { request })),
+	/**
+	 *  Freeze policy files from the session's workspace into one immutable
+	 *  candidate set. Its id is the only policy input `optimizers_recipe_start`
+	 *  accepts for an `eval.*` recipe.
+	 */
+	optimizersStageEvalCandidates: (request: EvalStageCandidatesRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("optimizers_stage_eval_candidates", { request })),
 	optimizersList: (query: {
 	status: string | null,
 	algorithmId: string | null,
@@ -73,8 +89,40 @@ export const commands = {
 	optimizersListCloud: (algorithm: string | null, status: string | null, limit: unknown | null) => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_list_cloud", { algorithm, status, limit })),
 	pluginsStatus: (pluginId: string | null) => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("plugins_status", { pluginId })),
 	pluginsList: () => typedError<PluginStatus_Serialize[], AppError>(__TAURI_INVOKE("plugins_list")),
+	/**
+	 *  Human-triggered plugin lifecycle.
+	 *
+	 *  Delegates to the same `PluginService::manage` the agent-facing
+	 *  `plugin_manage` MCP tool reaches over loopback IPC, so approval policy,
+	 *  active-run guards, retention classes, and receipts are enforced once. Until
+	 *  this existed an agent could install, update, disable, and remove the
+	 *  Optimizers plugin while the UI had no way to do any of it.
+	 */
+	pluginsManage: (operation: string, pluginId: string, version: string | null, sessionId: string | null) => typedError<unknown, AppError>(__TAURI_INVOKE("plugins_manage", { operation, pluginId, version, sessionId })),
 	pluginsSetReleaseChannel: (pluginId: string, channel: string) => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("plugins_set_release_channel", { pluginId, channel })),
 	visualSubscriptionReady: (request: VisualReadyRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_subscription_ready", { request })),
+	/**
+	 *  Fetch a visual's persisted, declaration-validated poll authority through
+	 *  the native process. WKWebView cannot reliably read loopback HTTP because
+	 *  its CORS/CSP boundary differs from the backend's; this command is narrowly
+	 *  scoped to exact URLs already stored on the named visual.
+	 */
+	visualStreamPoll: (request: VisualStreamPollRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_stream_poll", { request })),
+	/**  Record a renderer diagnostic. Returns as soon as it is queued. */
+	diagnosticsReport: (request: DiagnosticReportRequest) => typedError<null, AppError>(__TAURI_INVOKE("diagnostics_report", { request })),
+	diagnosticsStatus: () => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_status")),
+	/**
+	 *  Typed diagnostic query for the Diagnostics pane. The renderer is bounded by
+	 *  the same contract as the agent — there is only one query path.
+	 */
+	diagnosticsQuery: (request: unknown) => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_query", { request })),
+	diagnosticsExplain: (request: unknown) => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_explain", { request })),
+	diagnosticsBundle: (request: unknown) => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_bundle", { request })),
+	/**
+	 *  Drop the disposable index. Traces, run evidence, and the authoritative
+	 *  journal are untouched.
+	 */
+	diagnosticsClearIndex: () => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_clear_index")),
 	optimizerSidecarStatus: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_status")),
 	optimizerSidecarInstall: (version: string | null) => typedError<OptimizerSidecarVersion, AppError>(__TAURI_INVOKE("optimizer_sidecar_install", { version })),
 	optimizerSidecarStart: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_start")),
@@ -101,6 +149,7 @@ export const commands = {
 	offset: unknown,
 } | null) => typedError<VisualRecord_Serialize[], AppError>(__TAURI_INVOKE("visuals_list", { query })),
 	visualsGet: (visualId: string) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_get", { visualId })),
+	visualsObservationReport: (observation: RenderedVisualObservation) => typedError<null, AppError>(__TAURI_INVOKE("visuals_observation_report", { observation })),
 	visualsRevisions: (visualId: string) => typedError<VisualRevision_Serialize[], AppError>(__TAURI_INVOKE("visuals_revisions", { visualId })),
 	visualsAnnotationsList: (visualId: string) => typedError<VisualAnnotation[], AppError>(__TAURI_INVOKE("visuals_annotations_list", { visualId })),
 	visualsAnnotationCreate: (visualId: string, request: VisualAnnotationCreate) => typedError<VisualAnnotation, AppError>(__TAURI_INVOKE("visuals_annotation_create", { visualId, request })),
@@ -529,25 +578,14 @@ export type CodexSessionRecord = {
 	status: string,
 	title?: string | null,
 	titleOrigin?: string | null,
+	presentationEmotion?: string | null,
+	presentationSummary?: string | null,
 	approvalPolicy?: string,
 	sandbox?: string,
 };
 
 export type CodexSessionRequest = {
 	sessionId: string,
-};
-
-export type CodexThreadReadRequest = {
-	sessionId: string,
-	threadId: string,
-	includeTurns?: boolean,
-};
-
-export type CodexThreadItemsRequest = {
-	sessionId: string,
-	threadId: string,
-	cursor?: string | null,
-	limit?: number | null,
 };
 
 export type CodexSessionStartRequest = {
@@ -575,6 +613,19 @@ export type CodexSessionStartRequest = {
 export type CodexSteerRequest = {
 	sessionId: string,
 	text: string,
+};
+
+export type CodexThreadItemsRequest = {
+	sessionId: string,
+	threadId: string,
+	cursor?: string | null,
+	limit?: number | null,
+};
+
+export type CodexThreadReadRequest = {
+	sessionId: string,
+	threadId: string,
+	includeTurns?: boolean,
 };
 
 /**
@@ -741,11 +792,58 @@ export type DesktopPermissionUpdate = {
 	sandboxMode: string,
 };
 
+/**
+ *  One structured diagnostic from the renderer.
+ *
+ *  The renderer is the only surface whose failures were previously invisible
+ *  to everything else — a `console.error` in a webview reaches no journal, no
+ *  index, and no agent. This is the narrow command that ends that: it carries
+ *  the same envelope every other emitter uses, and the backend validates,
+ *  redacts, and correlates it exactly as if it had originated in Rust.
+ */
+export type DiagnosticReportRequest = {
+	severity: string,
+	component: string,
+	event: string,
+	code: string,
+	message: string,
+	retryable?: boolean,
+	sessionId?: string | null,
+	turnId?: string | null,
+	toolCallId?: string | null,
+	commandId?: string | null,
+	visualId?: string | null,
+	visualRevision?: unknown,
+	containerId?: string | null,
+	rolloutId?: string | null,
+	streamId?: string | null,
+	optimizerRunId?: string | null,
+	traceId?: string | null,
+	details?: unknown,
+};
+
 export type EntityCount = {
 	found: unknown,
 	imported: unknown,
 	existing: unknown,
 	skipped: unknown,
+};
+
+/**
+ *  One staged policy. `path` is relative to the session's workspace: absolute
+ *  paths and parent traversal are refused rather than sanitized.
+ */
+export type EvalCandidateSource = {
+	label: string,
+	path: string,
+	entrypoint?: string | null,
+	kind?: string | null,
+	baseline?: boolean | null,
+};
+
+export type EvalStageCandidatesRequest = {
+	sessionRef: string,
+	candidates: EvalCandidateSource[],
 };
 
 export type EventSource = "local" | "remote" | "intern" | "codex" | "system" | "mlx" | "visual" | "report";
@@ -819,6 +917,7 @@ export type InstanceDiagnostics = {
 	sourceRevision: string,
 	buildRevision: string,
 	buildTimestamp: string,
+	executableDigest: string | null,
 	processId: number,
 	executable: string,
 	dataRoot: string,
@@ -1132,6 +1231,19 @@ export type ModelPerformanceSummary = {
 	lastObservedAt: string,
 };
 
+/**
+ *  One authoritative request measurement for reconstructing per-user-turn
+ *  throughput in the transcript. The renderer groups these rows between user
+ *  message timestamps; it must never substitute the model's lifetime p50.
+ */
+export type ModelPerformanceTurnSample = {
+	runId: string | null,
+	measurementKind: MeasurementKind,
+	startedAtMs: unknown,
+	completedAtMs: unknown,
+	outputTps: number | null,
+};
+
 export type MultiAgentVersion = "none" | "v1" | "v2";
 
 export type OptimizerCapabilities = {
@@ -1282,6 +1394,12 @@ export type OptimizerRecipeRunRequest = {
 	 *  `limits.datasetShards`. Selecting a shard is not supplying a path.
 	 */
 	datasetShard?: string | null,
+	/**
+	 *  Immutable candidate set staged before the run. Required by `eval.*`
+	 *  recipes and ignored elsewhere. This is an id, never a path: policy
+	 *  source is content-addressed at staging time, not at launch.
+	 */
+	candidateSetId?: string | null,
 };
 
 export type OptimizerReconcileRequest = {
@@ -1463,6 +1581,20 @@ export type PluginStatus_Serialize = {
 	templates: string[],
 	lastActionReceiptId?: string | null,
 	detail?: string | null,
+};
+
+export type RenderedVisualObservation = {
+	schemaVersion: string,
+	visualId: string,
+	renderedRevision: unknown,
+	bindingsDigest: string,
+	transportState: string,
+	rolloutCount: unknown,
+	renderedFrameCount: unknown,
+	semanticEventCount: unknown,
+	terminal: boolean,
+	error: string | null,
+	observedAt: string,
 };
 
 export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic";
@@ -1885,6 +2017,31 @@ export type RollbackMetadata = {
 	deleteOrder: string[],
 };
 
+/**
+ *  One About row. Serialised from the same table the code enforces — a
+ *  hand-maintained list in the renderer would be another copy, and the drift it
+ *  exists to expose would be invisible again.
+ */
+export type RuntimeContractView = {
+	runtimeId: string,
+	package: string,
+	/**  Version found on disk, when Desktop manages the install. */
+	installed: string | null,
+	/**  Version Desktop pins for the active channel. */
+	expected: string,
+	minSupported: string,
+	releaseChannel: string,
+	workshopCompat: string,
+	algorithms: string[],
+	/**  False when the installed version is below the floor, or absent. */
+	meetsFloor: boolean,
+	/**
+	 *  False when nothing in Desktop installs this runtime, so `expected` is a
+	 *  statement of intent rather than a fact and About should say so.
+	 */
+	managed: boolean,
+};
+
 export type RuntimeKind = "sync" | "async";
 
 export type SignInBegin = {
@@ -1941,6 +2098,20 @@ export type TemplateMeta = {
 	shellPath?: string | null,
 	exampleBinding?: unknown,
 	slots?: unknown,
+	observationContract?: TemplateObservationContract | null,
+};
+
+export type TemplateObservationContract = {
+	schemaVersion: string,
+	readiness: TemplateReadinessContract,
+};
+
+export type TemplateReadinessContract = {
+	rejectTransportStates?: string[],
+	minimumRolloutCount?: unknown,
+	minimumRenderedFrameCount?: unknown,
+	minimumSemanticEventCount?: unknown,
+	requireTerminal?: boolean,
 };
 
 export type TerminalCreateRequest = {
@@ -2042,6 +2213,16 @@ export type UsageBreakdown = {
 	perfSampleCount: unknown,
 };
 
+/**
+ *  One local calendar day for one provider. Reduced from the same ledger rows
+ *  as `totals`, by the same `Bucket`, so a daily chart can never disagree with
+ *  the headline it sits under. The provider rides on `totals.provider`.
+ */
+export type UsageDayPoint = {
+	day: string,
+	totals: UsageBreakdown,
+};
+
 export type UsageEntry = {
 	id: string,
 	provider: string,
@@ -2059,6 +2240,11 @@ export type UsageSummary = {
 	window: string,
 	totals: UsageBreakdown,
 	models: UsageBreakdown[],
+	/**
+	 *  Ascending by day, then provider. Days with no requests are absent
+	 *  rather than zero-filled — the caller owns the calendar it draws.
+	 */
+	days: UsageDayPoint[],
 	generatedAt: string,
 };
 
@@ -2286,6 +2472,13 @@ export type VisualSealBundle = {
 
 export type VisualStatus = "draft" | "live" | "saved" | "failed" | "archived";
 
+export type VisualStreamPollRequest = {
+	visualId: string,
+	pollUrl: string,
+	after: number,
+	limit: number,
+};
+
 export type VisualUpdateRequest = {
 	title: string | null,
 	bindings: unknown,
@@ -2375,4 +2568,3 @@ async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; dat
         return { status: "error", error: e as any };
     }
 }
-

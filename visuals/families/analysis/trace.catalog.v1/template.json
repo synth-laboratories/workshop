@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "trace.catalog.v1",
+  "title": "Trace catalog",
+  "genre": "trace",
+  "version": "1.0.0",
+  "description": "An immutable trace query result: the rows that matched, the question that produced them, and when it was asked. Rows drill into the digest-bound rollout inspector.",
+  "accent": "#F05F22",
+  "shell": "shell.tsx",
+  "tags": ["trace-v5", "catalog", "query", "snapshot"],
+  "slots": [
+    {
+      "name": "result",
+      "description": "Immutable synth.trace-query-result.v1 snapshot",
+      "accepts": ["inline", "query_snapshot", "fixture"],
+      "required": true,
+      "schema": "synth.trace-query-result.v1"
+    }
+  ]
+}

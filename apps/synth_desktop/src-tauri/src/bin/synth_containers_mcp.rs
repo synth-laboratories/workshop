@@ -33,15 +33,34 @@ fn display_err(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+/// A non-2xx IPC response is a **tool failure**, never a successful result that
+/// happens to carry an `error` field: the shared stdio layer turns `Err` into
+/// `isError: true` so the transcript renders the call as failed. Structured
+/// application failures (`{"code": …}`) are passed through verbatim so the
+/// agent receives the code, the missing capabilities, and the remediation.
 fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
-    request_inner(method, path, body).map_err(display_err)
+    match request_inner(method, path, body) {
+        Ok((status, value)) if (200..300).contains(&status) => Ok(value),
+        Ok((status, value)) => Err(application_failure(status, &value)),
+        Err(error) => Err(display_err(error)),
+    }
+}
+
+fn application_failure(status: u16, body: &Value) -> String {
+    if body.get("code").and_then(Value::as_str).is_some() {
+        return serde_json::to_string(body).unwrap_or_else(|_| format!("IPC status {status}"));
+    }
+    body.get("error")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("IPC status {status}: {body}"))
 }
 
 fn request_inner(
     method: &str,
     path: &str,
     body: Option<Value>,
-) -> Result<Value, synth_desktop_lib::error::AppError> {
+) -> Result<(u16, Value), synth_desktop_lib::error::AppError> {
     let connection: Connection = serde_json::from_str(
         &fs::read_to_string(connection_file()).map_err(synth_desktop_lib::error::AppError::from)?,
     )
@@ -67,22 +86,38 @@ fn request_inner(
     let mut response = String::new();
     io::Read::read_to_string(&mut stream, &mut response)
         .map_err(synth_desktop_lib::error::AppError::from)?;
-    serde_json::from_str(
-        response
-            .split("\r\n\r\n")
-            .nth(1)
-            .ok_or_else(|| synth_desktop_lib::error::AppError::message("empty IPC response"))?,
-    )
-    .map_err(synth_desktop_lib::error::AppError::from)
+    let (head, payload) = response
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| synth_desktop_lib::error::AppError::message("empty IPC response"))?;
+    let status = parse_status_code(head)
+        .ok_or_else(|| synth_desktop_lib::error::AppError::message("malformed IPC status line"))?;
+    match serde_json::from_str::<Value>(payload) {
+        Ok(value) => Ok((status, value)),
+        // A non-2xx response with an unparseable body is still a failure; do
+        // not let a decode error hide the status the host actually returned.
+        Err(error) if (200..300).contains(&status) => {
+            Err(synth_desktop_lib::error::AppError::from(error))
+        }
+        Err(_) => Ok((status, json!({"error": payload.trim()}))),
+    }
+}
+
+fn parse_status_code(head: &str) -> Option<u16> {
+    head.lines()
+        .next()?
+        .split_whitespace()
+        .nth(1)?
+        .parse::<u16>()
+        .ok()
 }
 
 fn tools() -> Value {
     json!({"tools":[
-        {"name":"container_list","description":"List registered local containers with cached readiness and task family","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+        {"name":"container_list","description":"List registered local containers with cached readiness, task family, and the typed live-eval capability projection (operations, advertised policy_refs, capability source, observation time)","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
         {"name":"container_register","description":"Register and hydrate one container URL explicitly supplied by the user or workspace. This does not scan or guess ports.","inputSchema":{"type":"object","properties":{"base_url":{"type":"string"},"name":{"type":"string"},"location":{"type":"string","default":"local"},"task_family":{"type":"string"},"metadata":{"type":"object"}},"required":["base_url"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}},
-        {"name":"container_get","description":"Get a container including cached health and hydrated /info metadata","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
-        {"name":"container_probe","description":"Probe one registered container and refresh /health and /info; never scans ports","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
-        ,{"name":"container_prepare_rollout","description":"Idempotently prepare one caller-stable rollout identity and return its declared stream descriptor. Repeating the same rollout_id restores the same preparation; changed transport or retention conflicts.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"},"task_instance_id":{"type":"string"},"seed":{"type":"integer"},"policy_ref":{"type":"object","properties":{"harness":{"type":"string"},"config":{"type":"string"},"code":{}},"additionalProperties":true},"telemetry":{"type":"object"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}}
+        {"name":"container_get","description":"Get a container including cached health, hydrated /info metadata, and metadata.capabilities: the typed live-eval capability state. Health proves liveness only; read capabilities.operations before planning a prepared-rollout workflow.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+        {"name":"container_probe","description":"Probe one registered container and refresh /health, /info, and the typed capability projection. Read-only against the container; never scans ports and never issues a rollout to discover support.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
+        ,{"name":"container_prepare_rollout","description":"Idempotently prepare one caller-stable rollout identity and return its declared stream descriptor. Fails locally before any request when the record is unhealthy (container_unhealthy), its capability observation is stale (container_capabilities_stale), or it does not advertise the prepared-rollout workflow or the requested policy_ref (container_capability_mismatch). Repeating the same rollout_id restores the same preparation; changed transport or retention conflicts.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"},"task_instance_id":{"type":"string"},"seed":{"type":"integer"},"policy_ref":{"type":"object","properties":{"harness":{"type":"string"},"config":{"type":"string"},"code":{}},"additionalProperties":true},"require_trace_v5":{"type":"boolean","default":false,"description":"Set true when this workflow promises sealed Trace V5 evidence; preflight then also requires an explicitly advertised trace_v5.capture."},"telemetry":{"type":"object"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}}
         ,{"name":"container_start_prepared_rollout","description":"Idempotently start the exact prepared rollout after stream.subscribed and a current visual.ready receipt. A reconnect replays the same immutable rollout identity; changed task or policy conflicts. The host does not pick luna_med.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"},"stream":{"type":"object"},"visual_id":{"type":"string"},"seed":{"type":"integer"},"task_instance_id":{"type":"string"},"policy_ref":{"type":"object","properties":{"harness":{"type":"string"},"config":{"type":"string"},"code":{}},"required":["harness"],"additionalProperties":true},"telemetry":{"type":"object"}},"required":["container_id","rollout_id","stream","visual_id","policy_ref"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}}
         ,{"name":"container_get_rollout","description":"Restore authoritative rollout lifecycle state after a timeout or reconnect without starting work.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"}},"required":["container_id","rollout_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
         ,{"name":"container_poll_rollout","description":"Resume the exact declared poll stream after a sequence cursor. Returns events plus authoritative high_water and closed cursor state; it never re-executes the rollout.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"},"stream":{"type":"object"},"after":{"type":"integer","minimum":0}},"required":["container_id","rollout_id","stream"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
@@ -160,7 +195,7 @@ fn main() {
     run_stdio_server(
         McpServerInfo {
             name: "synth-containers-mcp",
-            version: "0.1.0",
+            version: env!("CARGO_PKG_VERSION"),
         },
         tools,
         |name, args| call_tool(name, args),
@@ -211,6 +246,37 @@ mod tests {
             .unwrap()
             .contains("does not pick luna_med"));
         assert_eq!(start["annotations"]["idempotentHint"], true);
+        let prepare = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "container_prepare_rollout")
+            .unwrap();
+        let description = prepare["description"].as_str().unwrap();
+        for code in [
+            "container_unhealthy",
+            "container_capabilities_stale",
+            "container_capability_mismatch",
+        ] {
+            assert!(description.contains(code), "prepare must announce {code}");
+        }
+        assert!(description.contains("Fails locally before any request"));
+        assert_eq!(
+            prepare["inputSchema"]["properties"]["require_trace_v5"]["type"],
+            "boolean"
+        );
+        for name in ["container_list", "container_get", "container_probe"] {
+            let tool = catalog["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap();
+            assert!(
+                tool["description"].as_str().unwrap().contains("capabilit"),
+                "{name} must surface the typed capability projection"
+            );
+        }
         for name in ["container_get_rollout", "container_poll_rollout"] {
             let tool = catalog["tools"]
                 .as_array()

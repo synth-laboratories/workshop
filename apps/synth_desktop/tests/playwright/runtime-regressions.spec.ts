@@ -70,6 +70,150 @@ test("native Laguna readiness overrides missing legacy runtime health", async ({
 	await expect(page.getByTestId("runtime-status")).toHaveCount(0);
 });
 
+test("an empty Laguna chat gives the first prompt to atomic sendTurn", async ({ page }) => {
+	await page.addInitScript(() => {
+		const calls = { starts: 0, sends: [] as string[] };
+		(window as typeof window & { __firstLagunaCalls?: typeof calls }).__firstLagunaCalls = calls;
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [],
+			start: async () => {
+				calls.starts += 1;
+				throw new Error("first send must not pre-start a detached session");
+			},
+			startTurn: async () => { throw new Error("sendTurn owns the first send"); },
+			sendTurn: async (request: { sessionId: string }, prompt: string) => {
+				calls.sends.push(prompt);
+				return { sessionId: request.sessionId, threadId: "laguna-first-thread", turnId: "laguna-first-turn" };
+			},
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+	});
+	await installLagunaFixture(page, "ready");
+
+	await page.getByTestId("composer-input").fill("first Laguna message");
+	await page.getByTestId("composer-send").click();
+	await expect.poll(() => page.evaluate(() =>
+		(window as typeof window & { __firstLagunaCalls: { starts: number; sends: string[] } }).__firstLagunaCalls
+	)).toEqual({ starts: 0, sends: ["first Laguna message"] });
+	await expect(page.getByText("first Laguna message")).toBeVisible();
+	await expect(page.getByText("Loading conversation history…")).toHaveCount(0);
+});
+
+test("transcript and Advanced share one durable journal hydration", async ({ page }) => {
+	await page.addInitScript(() => {
+		const sessionId = "shared-hydration-session";
+		const testWindow = window as typeof window & {
+			__tailHydrationCalls?: number;
+			__tailHydrationLimits?: number[];
+			__releaseTailHydration?: () => void;
+			synthLaguna?: unknown;
+			synthCodex?: unknown;
+			synthCore?: unknown;
+		};
+		testWindow.__tailHydrationCalls = 0;
+		testWindow.__tailHydrationLimits = [];
+		const pendingTailReads: Array<() => void> = [];
+		testWindow.__releaseTailHydration = () => pendingTailReads.splice(0).forEach((resolve) => resolve());
+		testWindow.synthLaguna = {
+			getStatus: async () => ({ phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm", loadedModel: "poolside/Laguna-XS-2.1-NVFP4-mlx", detail: "Laguna XS ready", memoryBytes: null, updatedAt: Date.now() }),
+			onStatus: () => () => undefined,
+			listModels: async () => []
+		};
+		testWindow.synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "shared-hydration-thread", workspace: "/workspaces/default",
+				model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
+				providerTitle: "Laguna XS", baseUrl: "http://127.0.0.1:7333/v1", status: "ready",
+				title: "Shared hydration fixture"
+			}],
+			start: async () => ({ sessionId, threadId: "shared-hydration-thread" }),
+			startTurn: async () => ({ sessionId, threadId: "shared-hydration-thread", turnId: "turn-shared" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		const rows = [
+			...Array.from({ length: 213 }, (_, index) => ({
+				sequence: index + 1,
+				sessionSequence: index + 1,
+				kind: index === 199 ? "item/completed" : "account/rateLimits/updated",
+				payload: index === 199
+					? { item: { id: "large-command", output: "x".repeat(145_000) } }
+					: { primary: { usedPercent: index % 100 } }
+			})),
+			{ sequence: 214, sessionSequence: 214, kind: "message.created", payload: { messageId: "shared-user", role: "user", content: "hydrate this once" } },
+			{ sequence: 215, sessionSequence: 215, kind: "message.created", payload: { messageId: "shared-assistant", role: "assistant", content: "hydrated without interference" } }
+		].map((row) => ({
+			schemaVersion: "synth.desktop-app-event.v1" as const,
+			eventId: `shared-event-${row.sequence}`,
+			sessionId,
+			source: "codex" as const,
+			createdAt: `2026-08-15T17:12:2${row.sequence}.000Z`,
+			...row
+		}));
+		testWindow.synthCore = {
+			diagnostics: async () => ({ databasePath: "/tmp/core.sqlite3", schemaVersion: 1, integrityOk: true, contentStorePath: "/tmp/content", journalHead: 215, sessionCount: 1, runCount: 0, visualCount: 0, migrationComplete: true }),
+			eventsAfter: async () => [],
+			sessionEventsAfter: async () => rows,
+			sessionEventsTail: async (_sessionId: string, limit: number) => {
+				testWindow.__tailHydrationCalls! += 1;
+				testWindow.__tailHydrationLimits!.push(limit);
+				await new Promise<void>((resolve) => pendingTailReads.push(resolve));
+				return rows;
+			},
+			sessionEventsBefore: async () => [],
+			onEvent: () => () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-shared-hydration-session").click();
+
+	await expect(page.getByText("Loading conversation history…")).toBeVisible();
+	// Leave while the read is pending. View lifecycle cleanup must not cancel a
+	// session-owned journal hydration or force a competing Advanced replay.
+	await openSettings(page);
+	await page.evaluate(() =>
+		(window as typeof window & { __releaseTailHydration: () => void }).__releaseTailHydration()
+	);
+	await page.getByRole("button", { name: "← Back" }).click();
+	await page.getByRole("button", { name: "Shared hydration fixture", exact: true }).click();
+	await expect(page.getByText("hydrated without interference")).toBeVisible();
+	await expect(page.getByText("Loading conversation history…")).toHaveCount(0);
+	await expect.poll(() => page.evaluate(() =>
+		({
+			calls: (window as typeof window & { __tailHydrationCalls: number }).__tailHydrationCalls,
+			limits: (window as typeof window & { __tailHydrationLimits: number[] }).__tailHydrationLimits
+		})
+	)).toEqual({ calls: 1, limits: [251] });
+
+	const advancedOpenMs = await page.evaluate(async () => {
+		const trigger = document.querySelector<HTMLButtonElement>('button[aria-label="Open advanced trace"]');
+		if (!trigger) throw new Error("Advanced trigger missing");
+		const startedAt = performance.now();
+		trigger.click();
+		await new Promise(requestAnimationFrame);
+		await new Promise(requestAnimationFrame);
+		return performance.now() - startedAt;
+	});
+	expect(advancedOpenMs).toBeLessThan(250);
+	const advanced = page.getByTestId("workbench-side-panel");
+	await expect(advanced).toContainText("message.created");
+	await expect(advanced).not.toContainText(/loading/i);
+	const virtualRows = advanced.locator(".responses-trace-row");
+	await expect(virtualRows).not.toHaveCount(0);
+	expect(await virtualRows.count()).toBeLessThanOrEqual(18);
+	await expect(advanced).not.toContainText("hydrate this once");
+	const accessibilityStartedAt = Date.now();
+	await advanced.ariaSnapshot();
+	expect(Date.now() - accessibilityStartedAt).toBeLessThan(1_000);
+	await virtualRows.last().click();
+	await expect(advanced).toContainText("hydrated without interference");
+});
+
 test("new conversation keeps the configured machine permission defaults", async ({ page }) => {
 	await page.evaluate(() => {
 		const adapter = window.__synthPreferences;
@@ -282,7 +426,7 @@ test("Settings can force and reset a model multi-agent preset", async ({ page })
 	});
 	await installLagunaFixture(page, "ready");
 	await openSettings(page);
-	await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
+	await page.getByTestId("settings-page").getByRole("button", { name: "Context" }).click();
 
 	const controls = page.getByRole("group", { name: "Laguna XS 2.1 multi-agent compatibility" });
 	const row = controls.locator("..");
@@ -637,7 +781,7 @@ test("Rust Inventory navigation never replaces native Codex sessions with legacy
 	});
 	await installLagunaFixture(page, "ready");
 	await expect(page.getByTestId("local-chat-native-session")).toBeVisible();
-	await page.getByRole("button", { name: "Containers · Traces · Usage" }).click();
+	await page.getByTestId("open-inventory").click();
 	await page.waitForTimeout(3_000);
 	await expect(page.getByTestId("local-chat-native-session")).toBeVisible();
 });
@@ -892,12 +1036,15 @@ test("native Codex deltas form one readable message with working and stop state"
 	await page.addInitScript(() => {
 		let listener: ((event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) | undefined;
 		let interrupts = 0;
+		let subscriptions = 0;
 		const testWindow = window as typeof window & {
 			__emitConversationCodex?: typeof listener;
 			__conversationInterrupts?: () => number;
+			__conversationSubscriptions?: () => number;
 			synthCodex?: unknown;
 		};
 		testWindow.__conversationInterrupts = () => interrupts;
+		testWindow.__conversationSubscriptions = () => subscriptions;
 		testWindow.synthCodex = {
 			defaultWorkspace: async () => "/workspaces/default",
 			list: async () => [{
@@ -910,6 +1057,7 @@ test("native Codex deltas form one readable message with working and stop state"
 			interrupt: async () => { interrupts += 1; },
 			close: async () => undefined,
 			onEvent: (next: typeof listener) => {
+				subscriptions += 1;
 				listener = next;
 				testWindow.__emitConversationCodex = next;
 				return () => { listener = undefined; };
@@ -918,6 +1066,9 @@ test("native Codex deltas form one readable message with working and stop state"
 	});
 	await installLagunaFixture(page, "ready");
 	await page.getByTestId("local-chat-stream-session").click();
+	const subscriptionCountAfterMount = await page.evaluate(() =>
+		(window as typeof window & { __conversationSubscriptions: () => number }).__conversationSubscriptions()
+	);
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitConversationCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitConversationCodex;
@@ -986,6 +1137,10 @@ test("native Codex deltas form one readable message with working and stop state"
 	await expect(transcript).not.toContainText("remoteControl/status/changed");
 	await expect(transcript).not.toContainText("model-metadata");
 	await expect(transcript).not.toContainText("account/rateLimits/updated");
+	// Rendering each event must not tear down and asynchronously recreate the
+	// native listener. That race dropped burst completions in the desktop app
+	// even though CoreRuntime had durably journaled them.
+	expect(await page.evaluate(() => (window as typeof window & { __conversationSubscriptions: () => number }).__conversationSubscriptions())).toBe(subscriptionCountAfterMount);
 	await expect(thought).toBeVisible();
 	await expect(transcript).toContainText("Checking the relevant renderer state.");
 
@@ -1043,6 +1198,11 @@ test("native Codex deltas form one readable message with working and stop state"
 	const secondCommand = transcript.locator(".command-activity").last();
 	await expect(secondCommand).toContainText("pwd");
 	expect((await secondCommand.boundingBox())!.y).toBeGreaterThan((await secondUser.boundingBox())!.y);
+	await page.evaluate(() => {
+		const emit = (window as typeof window & { __emitConversationCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitConversationCodex;
+		emit({ sessionId: "stream-session", method: "turn/started", params: { turn: { id: "turn-stream-2" } } });
+	});
+	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
 	await page.getByRole("button", { name: "Stop generating" }).click();
 	expect(await page.evaluate(() => (window as typeof window & { __conversationInterrupts: () => number }).__conversationInterrupts())).toBe(1);
 	await expect(page.getByTestId("workbench-side-panel")).toBeVisible();
@@ -1378,9 +1538,10 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(transcript.getByText("App.tsx")).toBeVisible();
 	await expect(transcript.getByText("Searched the web")).toBeVisible();
 	await expect(transcript.locator("code.mcp-activity-name").getByText("synth_containers.container_probe")).toBeVisible();
-	await expect(transcript.locator("code.mcp-activity-name").getByText("synth_visuals.visual_create")).toHaveCount(2);
-	await expect(transcript.getByText("Completed")).toHaveCount(2);
-	await expect(transcript.getByText("Failed")).toBeVisible();
+	await expect(transcript.getByText("Visual update failed", { exact: true })).toBeVisible();
+	await expect(transcript.getByText("Visual draft created", { exact: true })).toBeVisible();
+	await expect(transcript.getByText("Completed", { exact: true })).toHaveCount(2);
+	await expect(transcript.getByText("Needs attention", { exact: true })).toBeVisible();
 	await expect(transcript).toContainText("template id craftax.rollout.v1 · title Craftax rollout · 2ms");
 	await transcript.getByTestId("resource-shelf-trigger").click();
 	const resourceShelf = page.getByTestId("resource-shelf");
@@ -1397,11 +1558,9 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(visualPane.getByTestId("visual-craftax-eval-matrix")).toBeVisible();
 	await page.getByTestId("activity-mode-menu-trigger").click();
 	await page.getByTestId("activity-mode-option-grouped").click();
-	const groupedWithContext = transcript.locator(".activity-group").first();
-	await groupedWithContext.locator(".activity-group-toggle").click();
-	const contextualStep = groupedWithContext.locator(".activity-group-step.has-context").first();
-	expect((await contextualStep.locator(".activity-group-action").boundingBox())!.y)
-		.toBeGreaterThanOrEqual((await contextualStep.locator(".activity-group-context").boundingBox())!.y);
+	const groupedActions = transcript.locator(".activity-group").first();
+	await groupedActions.locator(".activity-group-toggle").click();
+	await expect(groupedActions.locator(".activity-group-step")).toHaveCount(4);
 	await expect(transcript.getByText(/Worked .*ran 1 command, read 1 file, searched once, used 4 tools/)).toBeVisible();
 	await expect(transcript).not.toContainText("super-secret-value");
 	await expect(transcript).not.toContainText("raw command output");

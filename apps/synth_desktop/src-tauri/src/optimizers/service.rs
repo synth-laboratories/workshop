@@ -20,6 +20,33 @@ const GEPA_FIXTURE_ID: &str = "opt_gepa_fixture";
 const SFT_FIXTURE_ID: &str = "opt_sft_fixture";
 const GOEX_FIXTURE_ID: &str = "opt_goex_fixture";
 
+fn validate_control(run: &OptimizerRunRecord, command: &str) -> Result<()> {
+    match command {
+        "cancel" if !run.capabilities.cancel => bail!("cancel is not available for this run"),
+        "pause" if !run.capabilities.pause => bail!("pause is not available for this run"),
+        "resume" if !run.capabilities.resume => bail!("resume is not available for this run"),
+        _ => {}
+    }
+    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+        bail!("{command} is not available for a {} run", run.status);
+    }
+    match command {
+        "pause" if run.status != "running" => {
+            bail!(
+                "pause requires a running optimizer; current status is {}",
+                run.status
+            )
+        }
+        "resume" if run.status != "paused" => {
+            bail!(
+                "resume requires a paused optimizer; current status is {}",
+                run.status
+            )
+        }
+        _ => Ok(()),
+    }
+}
+
 #[derive(Clone)]
 pub struct OptimizerService {
     db: Arc<Database>,
@@ -29,6 +56,11 @@ pub struct OptimizerService {
     local_recipes: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
     events_tx: broadcast::Sender<AppEvent>,
     manager: Arc<super::OptimizerManager>,
+    /// Attached once by the composition root. Optimizer lifecycle failures are
+    /// already recorded as bounded run evidence; this lets the same failure
+    /// also be correlated with the container, stream, and visual around it —
+    /// without inventing a second source of truth for the run itself.
+    diagnostics: Arc<std::sync::OnceLock<Arc<crate::diagnostics::DiagnosticsService>>>,
 }
 
 impl OptimizerService {
@@ -61,6 +93,7 @@ impl OptimizerService {
             local_recipes: Arc::new(Mutex::new(HashMap::new())),
             events_tx,
             manager,
+            diagnostics: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -68,11 +101,24 @@ impl OptimizerService {
         &self.manager
     }
 
+    /// Wire diagnostics in after both services exist. Idempotent; a service
+    /// that is never attached simply emits nothing.
+    pub fn attach_diagnostics(&self, service: Arc<crate::diagnostics::DiagnosticsService>) {
+        let _ = self.diagnostics.set(service);
+    }
+
+    pub(crate) fn diagnostics(&self) -> Option<&Arc<crate::diagnostics::DiagnosticsService>> {
+        self.diagnostics.get()
+    }
+
     pub fn list_algorithms(&self) -> Vec<Value> {
         vec![
             json!({"id":"gepa","title":"GEPA","availability":"available","description":"Genetic-Pareto prompt optimization"}),
             json!({"id":"go-ex","title":"GELO / Go-Ex","availability":"available","description":"Hosted exploration with optional local slot binding"}),
-            json!({"id":"sft","title":"SFT","availability":"available","description":"Hosted fine-tuning from optimizers-beta, streamed live into optimizer.sft visuals"}),
+            json!({"id":"sft","title":"SFT","availability":"available","description":"Hosted fine-tuning through the public Optimizers SFT service, streamed live into optimizer.sft visuals"}),
+            // Local only, and only when its own runtime and a pinned target
+            // recipe preflight. `eval` is never hosted.
+            super::eval_recipes::algorithm_entry(),
         ]
     }
 
@@ -81,6 +127,7 @@ impl OptimizerService {
         recipes.push(super::hosted_gelo::recipe_catalog());
         recipes.push(super::sft_recipes::recipe_catalog());
         recipes.extend(super::hosted_sft::recipe_catalog());
+        recipes.extend(super::eval_recipes::recipe_catalog());
         recipes
     }
 
@@ -106,8 +153,20 @@ impl OptimizerService {
             | super::hosted_sft::HOSTED_SFT_BANKING77_RECIPE => {
                 super::hosted_sft::start(self, request).await
             }
+            id if super::eval_recipes::is_eval_recipe(id) => {
+                super::eval_recipes::start(self, request).await
+            }
             _ => bail!("unknown optimizer recipe: {}", request.recipe_id),
         }
+    }
+
+    /// Freeze workspace policy source into an immutable content-addressed set
+    /// before any local eval recipe can start.
+    pub async fn stage_eval_candidates(
+        &self,
+        request: super::eval_candidates::EvalStageCandidatesRequest,
+    ) -> Result<Value> {
+        super::eval_candidates::stage(&self.db, request).await
     }
 
     pub async fn prepare_recipe(
@@ -153,16 +212,37 @@ impl OptimizerService {
         {
             bail!("compute approval receipt is required before starting paid compute");
         }
+        // Both digests must be present and equal. Treating either absence as
+        // "nothing to compare" fails open: a run prepared without a proven
+        // handshake would start unguarded, which is the case the pin exists for.
         let current_caps = self.manager.advertised_capabilities();
-        if let Some(prepared_caps) = run
+        let prepared_digest = run
             .summary
             .get("capabilitiesDigest")
             .and_then(Value::as_str)
-        {
-            if current_caps.get("digest").and_then(Value::as_str) != Some(prepared_caps) {
-                bail!("optimizer capability digest changed since prepare; refusing to start");
-            }
+            .ok_or_else(|| {
+                anyhow!(
+                    "run was prepared without a proven optimizer capability digest; \
+                     re-prepare it against a started sidecar before starting paid compute"
+                )
+            })?;
+        let current_digest = current_caps
+            .get("digest")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow!(
+                    "optimizer capabilities are not proven; the sidecar must complete a \
+                     capability handshake before starting paid compute"
+                )
+            })?;
+        if current_digest != prepared_digest {
+            bail!("optimizer capability digest changed since prepare; refusing to start");
         }
+        // A matching digest proves the capabilities are unchanged, not that they
+        // cover this run. Shape-validation alone would accept a handshake
+        // advertising a wholly unrelated algorithm, so check the one claim that
+        // matters before paying for rollouts.
+        require_advertised_algorithm(&current_caps, &run.algorithm_id)?;
         super::recipes::start_prepared(self, &optimizer_run_id).await
     }
 
@@ -602,16 +682,53 @@ impl OptimizerService {
                     })
                     .await;
             }
+            if run.source == "hosted" && run.algorithm_id == "sft" {
+                // A restarted desktop has no in-memory recipe worker, but cancellation
+                // must still reach the canonical public SFT run. Do not fall back to
+                // Optimizers-beta: it is an executor, not a Workshop control plane.
+                super::sft_client::SftOptimizerClient::from_env()?
+                    .cancel(&id)
+                    .await?;
+                return self.command(id, "cancel", "cancelled").await;
+            }
         }
         self.command(id, "cancel", "cancelled").await
     }
 
     pub async fn pause(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
-        self.command(id, "pause", "paused").await
+        let run = self.get(id.clone()).await?;
+        validate_control(&run, "pause")?;
+        let is_eval = run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID;
+        if is_eval {
+            super::eval_recipes::set_paused(&id, true)?;
+        }
+        match self.command(id.clone(), "pause", "paused").await {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                if is_eval {
+                    let _ = super::eval_recipes::set_paused(&id, false);
+                }
+                Err(error)
+            }
+        }
     }
 
     pub async fn resume(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
-        self.command(id, "resume", "running").await
+        let run = self.get(id.clone()).await?;
+        validate_control(&run, "resume")?;
+        let is_eval = run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID;
+        if is_eval {
+            super::eval_recipes::set_paused(&id, false)?;
+        }
+        match self.command(id.clone(), "resume", "running").await {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                if is_eval {
+                    let _ = super::eval_recipes::set_paused(&id, true);
+                }
+                Err(error)
+            }
+        }
     }
 
     pub async fn open_visual(
@@ -650,8 +767,16 @@ impl OptimizerService {
             .iter()
             .find(|r| r.kind == "visual")
             .map(|r| r.id.clone());
-        let template_id =
-            negotiate_visual_template(&run.algorithm_id, &self.manager.advertised_capabilities());
+        // Public SFT and local eval are controlled outside the optional
+        // Optimizers plugin, and their visuals are bundled with Workshop.
+        // Neither may depend on plugin installation or advertised templates.
+        //
+        // That independence used to need an explicit bypass around a
+        // negotiation step that consulted the plugin. It is now structural: no
+        // run's visual consults the plugin, because template ids were never the
+        // plugin's to grant. Keep it that way — reintroducing a capability
+        // lookup here re-couples eval and SFT to plugin installation.
+        let template_id = negotiate_visual_template(&run.algorithm_id);
         let template_digest = self.manager.status().await.digest;
         let visual = if let Some(visual_id) = existing {
             self.visuals.get(visual_id).await?
@@ -1030,16 +1155,7 @@ impl OptimizerService {
         let db = self.db.clone();
         db.run_transaction(move |conn| {
             let mut run = load_run(conn, &optimizer_run_id)?;
-            match command.as_str() {
-                "cancel" if !run.capabilities.cancel => {
-                    bail!("cancel is not available for this run")
-                }
-                "pause" if !run.capabilities.pause => bail!("pause is not available for this run"),
-                "resume" if !run.capabilities.resume => {
-                    bail!("resume is not available for this run")
-                }
-                _ => {}
-            }
+            validate_control(&run, &command)?;
             run.status = next_status;
             if command == "resume" && run.started_at.is_none() {
                 run.started_at = Some(Utc::now().to_rfc3339());
@@ -1100,43 +1216,60 @@ fn algorithm_label(algorithm_id: &str) -> &'static str {
         "gepa" => "GEPA",
         "go-ex" => "GELO",
         "sft" => "SFT",
+        "eval" => "Eval",
         id if id == "dag" || id.starts_with("dag.") => "DAG",
         _ => "Optimizer",
     }
 }
 
-fn primary_visual_template(algorithm_id: &str) -> &'static str {
+pub(in crate::optimizers) fn primary_visual_template(algorithm_id: &str) -> &'static str {
     match algorithm_id {
         "sft" => "optimizer.sft.live.v1",
         "gepa" => "optimizer.gepa.live.v1",
+        "eval" => "optimizer.eval.live.v1",
         id if id == "dag" || id.starts_with("dag.") => "optimizer.dag.live.v1",
         _ => "optimizer.run.v1",
     }
 }
 
-fn negotiate_visual_template(algorithm_id: &str, advertised: &Value) -> String {
-    let preferred: &[&str] = match algorithm_id {
-        "sft" => &["optimizer.sft.live.v1", "optimizer.run.v1"],
-        "gepa" => &["optimizer.gepa.live.v1", "optimizer.run.v1"],
-        id if id == "dag" || id.starts_with("dag.") => {
-            &["optimizer.dag.live.v1", "optimizer.run.v1"]
-        }
-        _ => &["optimizer.run.v1", "optimizer.run.v1"],
-    };
-    let installed = advertised
-        .get("compatibleTemplateIds")
+/// Cross-check that the runtime actually claims the algorithm about to run.
+///
+/// This replaces an intersection against `compatibleTemplateIds`, which could
+/// not fail informatively: template ids are Desktop vocabulary that the plugin
+/// only knew because Desktop's own install payload told it, so the check
+/// compared a host constant against a round-trip of that same constant. The
+/// algorithm list is a fact the runtime owns, so comparing against it is real.
+fn require_advertised_algorithm(advertised: &Value, algorithm_id: &str) -> Result<()> {
+    let algorithms = advertised
+        .get("algorithms")
         .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    for candidate in preferred {
-        if installed
-            .iter()
-            .any(|value| value.as_str() == Some(candidate))
-        {
-            return (*candidate).to_owned();
-        }
+        .filter(|items| !items.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "optimizer capabilities advertise no algorithms; the sidecar must complete a \
+                 capability handshake before a run is opened"
+            )
+        })?;
+    // Namespaced ids (`dag.foo`) are served by their root algorithm.
+    let root = algorithm_id.split('.').next().unwrap_or(algorithm_id);
+    if algorithms
+        .iter()
+        .filter_map(Value::as_str)
+        .any(|advertised| advertised == algorithm_id || advertised == root)
+    {
+        return Ok(());
     }
-    primary_visual_template(algorithm_id).into()
+    bail!("optimizer runtime does not advertise algorithm `{algorithm_id}`")
+}
+
+/// Which visual Desktop renders for a run. Deliberately does not consult the
+/// runtime: template ids are host vocabulary, and picking a visual is not a
+/// capability decision. Gating rendering on the handshake also breaks runs the
+/// managed sidecar does not serve at all — hosted SFT among them, since the
+/// real plugin advertises only `gepa`. Whether a runtime can *execute* an
+/// algorithm is enforced at the paid gate by `require_advertised_algorithm`.
+fn negotiate_visual_template(algorithm_id: &str) -> String {
+    primary_visual_template(algorithm_id).to_owned()
 }
 
 async fn materialize_optimizer_result(
@@ -1726,6 +1859,22 @@ fn project_from_events(
     let mut compute = json!({ "provider": null });
     let mut examples = Vec::new();
     let mut checkpoint_evals = Vec::new();
+    let mut eval_trials: BTreeMap<String, Value> = BTreeMap::new();
+    let mut eval_scorecards: BTreeMap<String, Value> = BTreeMap::new();
+    let mut eval_runtime = json!({
+        "parallelism": Value::Null,
+        "globalCapacity": Value::Null,
+        "cancelling": false,
+        "plannedTrials": 0
+    });
+    let mut eval_evidence = json!({
+        "manifestDigest": Value::Null,
+        "candidateSetId": Value::Null,
+        "seedLedger": Value::Null,
+        "selection": Value::Null,
+        "evidenceDir": Value::Null,
+        "artifacts": []
+    });
     let mut usage = OptimizerUsageSummary::default();
 
     for event in events {
@@ -1978,8 +2127,123 @@ fn project_from_events(
                     artifacts.push(item.clone());
                 }
             }
+            "eval.run.planned" => {
+                if let Some(snapshot) = &event.snapshot {
+                    for (from, to) in [
+                        ("parallelism", "parallelism"),
+                        ("global_capacity", "globalCapacity"),
+                        ("planned_trials", "plannedTrials"),
+                    ] {
+                        if let (Some(value), Some(target)) =
+                            (snapshot.get(from), eval_runtime.as_object_mut())
+                        {
+                            target.insert(to.into(), value.clone());
+                        }
+                    }
+                    if let Some(target) = eval_evidence.as_object_mut() {
+                        if let Some(value) = snapshot.get("manifest_digest") {
+                            target.insert("manifestDigest".into(), value.clone());
+                        }
+                        if let Some(value) = snapshot.get("candidate_set_id") {
+                            target.insert("candidateSetId".into(), value.clone());
+                        }
+                        if let Some(value) = snapshot.get("candidates") {
+                            target.insert("candidates".into(), value.clone());
+                        }
+                    }
+                }
+            }
+            "eval.seed_ledger.sealed" => {
+                if let (Some(snapshot), Some(target)) =
+                    (&event.snapshot, eval_evidence.as_object_mut())
+                {
+                    if let Some(value) = snapshot.get("seedLedger") {
+                        target.insert("seedLedger".into(), value.clone());
+                    }
+                }
+            }
+            "eval.trial.queued" | "eval.trial.started" => {
+                if let Some(id) = event.delta.get("trial_id").and_then(Value::as_str) {
+                    let row = eval_trials
+                        .entry(id.to_string())
+                        .or_insert_with(|| json!({"id": id}));
+                    if let Some(object) = row.as_object_mut() {
+                        for key in ["candidate_id", "seed", "scenario", "stage"] {
+                            if let Some(value) = event.delta.get(key) {
+                                object.insert(key.into(), value.clone());
+                            }
+                        }
+                        object.insert(
+                            "status".into(),
+                            json!(if event.event_type.ends_with("started") {
+                                "running"
+                            } else {
+                                "queued"
+                            }),
+                        );
+                    }
+                }
+            }
+            "eval.trial.terminal" => {
+                if let Some(item) = &event.item {
+                    if let Some(id) = item.get("id").and_then(Value::as_str) {
+                        eval_trials.insert(id.to_string(), item.clone());
+                    }
+                }
+            }
+            "eval.candidate.scored" => {
+                if let Some(item) = &event.item {
+                    let candidate = item.get("id").and_then(Value::as_str).unwrap_or("");
+                    let stage = item.get("stage").and_then(Value::as_str).unwrap_or("");
+                    eval_scorecards.insert(format!("{stage}:{candidate}"), item.clone());
+                }
+            }
+            "eval.selection.completed" => {
+                if let (Some(snapshot), Some(target)) =
+                    (&event.snapshot, eval_evidence.as_object_mut())
+                {
+                    if let Some(value) = snapshot.get("selection") {
+                        target.insert("selection".into(), value.clone());
+                    }
+                }
+            }
             _ => {}
         }
+    }
+
+    if let Some(target) = eval_evidence.as_object_mut() {
+        if let Some(dir) = events
+            .iter()
+            .rev()
+            .find_map(|event| event.delta.get("evidenceDir").cloned())
+        {
+            target.insert("evidenceDir".into(), dir);
+        }
+        target.insert("artifacts".into(), json!(artifacts));
+    }
+    if let Some(target) = eval_runtime.as_object_mut() {
+        let counts = |status: &str| {
+            eval_trials
+                .values()
+                .filter(|row| row.get("status").and_then(Value::as_str) == Some(status))
+                .count()
+        };
+        target.insert("queued".into(), json!(counts("queued")));
+        target.insert("running".into(), json!(counts("running")));
+        target.insert("evaluated".into(), json!(counts("evaluated")));
+        target.insert(
+            "failed".into(),
+            json!(eval_trials.len() - counts("queued") - counts("running") - counts("evaluated")),
+        );
+        // A trial holds exactly one semaphore lease while it runs, so the
+        // running count is the run's share of the machine-wide ceiling.
+        target.insert("leasesHeld".into(), json!(counts("running")));
+        target.insert(
+            "cancelling".into(),
+            json!(events
+                .iter()
+                .any(|event| event.event_type == "optimizer.run.cancelled")),
+        );
     }
 
     let mut projected_run = run.clone();
@@ -2095,6 +2359,20 @@ fn project_from_events(
                 "sft.examples.v1",
                 json!({ "examples": examples }),
             ));
+        }
+        "eval" => {
+            slices.push(mk("eval.runtime", "eval.runtime.v1", eval_runtime));
+            slices.push(mk(
+                "eval.trials",
+                "eval.trials.v1",
+                json!({ "trials": eval_trials.values().cloned().collect::<Vec<_>>() }),
+            ));
+            slices.push(mk(
+                "eval.scorecard",
+                "eval.scorecard.v1",
+                json!({ "candidates": eval_scorecards.values().cloned().collect::<Vec<_>>() }),
+            ));
+            slices.push(mk("eval.evidence", "eval.evidence.v1", eval_evidence));
         }
         _ => {}
     }
@@ -2750,7 +3028,7 @@ fn map_from(value: Value) -> Map<String, Value> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::optimizers) mod tests {
     use super::*;
     use crate::storage::{ContentStore, Storage};
     use tempfile::tempdir;
@@ -2773,7 +3051,36 @@ mod tests {
         );
     }
 
-    async fn service() -> (
+    #[tokio::test]
+    async fn optimizer_controls_require_a_valid_lifecycle_transition() {
+        let (svc, _dir, _) = service().await;
+        let (mut run, _) = svc
+            .seed_fixture("gepa", Some("session_controls".into()))
+            .await
+            .unwrap();
+        run.capabilities.cancel = true;
+        run.capabilities.pause = true;
+        run.capabilities.resume = true;
+
+        run.status = "running".into();
+        assert!(validate_control(&run, "pause").is_ok());
+        assert!(validate_control(&run, "resume").is_err());
+
+        run.status = "paused".into();
+        assert!(validate_control(&run, "resume").is_ok());
+        assert!(validate_control(&run, "pause").is_err());
+
+        for terminal in ["completed", "failed", "cancelled"] {
+            run.status = terminal.into();
+            assert!(validate_control(&run, "cancel").is_err());
+            assert!(validate_control(&run, "pause").is_err());
+            assert!(validate_control(&run, "resume").is_err());
+        }
+    }
+
+    /// Shared with `eval_recipes::tests`, which replays a real worker stream
+    /// through the same service to prove the projection.
+    pub(in crate::optimizers) async fn service() -> (
         OptimizerService,
         tempfile::TempDir,
         tokio::sync::broadcast::Receiver<AppEvent>,
@@ -2784,8 +3091,39 @@ mod tests {
         let content = ContentStore::new(storage.content_root());
         let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
         let (events_tx, events_rx) = tokio::sync::broadcast::channel(16);
+        let manager = Arc::new(crate::optimizers::OptimizerManager::with_home(
+            dir.path().join("optimizer-home"),
+        ));
+        std::fs::create_dir_all(manager.home()).unwrap();
+        std::fs::write(
+            manager.home().join("capabilities.json"),
+            // Mirrors what a real handshake now stores: runtime-owned facts.
+            // Template ids are resolved host-side and are no longer requested
+            // from, or answered by, the runtime.
+            //
+            // `gepa` alone, because that is what the Desktop-managed sidecar
+            // actually serves. Local eval is a separate runtime that bypasses
+            // negotiation entirely, and sft's control plane is its own surface.
+            // The list this replaced was derived from `compatibleTemplateIds`
+            // and carried `optimizer.dag.live.v1` — an id with no implementation
+            // behind it — so translating it wholesale would have had the fake
+            // advertise an algorithm no runtime can run.
+            serde_json::to_vec(&json!({
+                "algorithms": ["gepa"],
+                "replay": true,
+                "cancellation": true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         (
-            OptimizerService::new(storage.database().clone(), journal, visuals, events_tx),
+            OptimizerService::new_with_manager(
+                storage.database().clone(),
+                journal,
+                visuals,
+                events_tx,
+                manager,
+            ),
             dir,
             events_rx,
         )
@@ -2874,6 +3212,43 @@ mod tests {
             second_event.unwrap().session_id.as_deref(),
             Some("session_current")
         );
+    }
+
+    #[test]
+    fn visual_selection_is_host_owned_and_capability_checks_guard_execution() {
+        // Visual selection never consults the plugin. It used to intersect
+        // against `compatibleTemplateIds` — host vocabulary the plugin only
+        // knew because Desktop's install payload told it — so the check
+        // compared a host constant against a round-trip of that same constant.
+        // Worse, tightening it would have broken every run the managed sidecar
+        // does not serve: the real plugin advertises only `gepa`, so hosted SFT
+        // and local eval would have lost their visuals entirely.
+        assert_eq!(negotiate_visual_template("gepa"), "optimizer.gepa.live.v1");
+        assert_eq!(negotiate_visual_template("sft"), "optimizer.sft.live.v1");
+        assert_eq!(negotiate_visual_template("eval"), "optimizer.eval.live.v1");
+
+        // Execution is where a capability claim has to hold up.
+        let serves_sft_only = json!({ "algorithms": ["sft"] });
+        let error = require_advertised_algorithm(&serves_sft_only, "gepa").unwrap_err();
+        assert!(
+            error.to_string().contains("does not advertise algorithm"),
+            "got: {error}"
+        );
+
+        // Absent capabilities refuse rather than waving the run through.
+        let absent = require_advertised_algorithm(&json!({}), "gepa").unwrap_err();
+        assert!(
+            absent.to_string().contains("advertise no algorithms"),
+            "got: {absent}"
+        );
+
+        let serves_gepa = json!({ "algorithms": ["gepa"] });
+        require_advertised_algorithm(&serves_gepa, "gepa").unwrap();
+        // Namespaced ids resolve through their root algorithm. Asserted with a
+        // fabricated id on purpose: the only namespaced arm in the tree is
+        // `dag.*`, which has no implementation behind it, and naming it here
+        // would document dead code as a supported capability.
+        require_advertised_algorithm(&serves_gepa, "gepa.variant").unwrap();
     }
 
     #[tokio::test]
@@ -3181,7 +3556,7 @@ mod tests {
             .find(|item| item.get("id") == Some(&json!("sft.craftax.nemotron-nano.tinker.v1")))
             .unwrap();
         assert_eq!(recipe.get("algorithmId"), Some(&json!("sft")));
-        if std::env::var("OPTIMIZERS_BETA_SERVICE_TOKEN")
+        if std::env::var("SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .is_none()
@@ -3195,6 +3570,7 @@ mod tests {
                 open_visual: Some(false),
                 base_model: Some("nvidia/nemotron-3-nano-30b-a3b".into()),
                 dataset_shard: None,
+                candidate_set_id: None,
             })
             .await
             .unwrap_err()
@@ -3471,6 +3847,171 @@ mod tests {
             .await
             .unwrap_err();
         assert!(missing_approval.to_string().contains("approval"));
+    }
+
+    /// A4. Absent capabilities must refuse, not skip.
+    ///
+    /// Before this gate closed, a run prepared while no handshake had ever
+    /// succeeded carried no `capabilitiesDigest`, so start's comparison was a
+    /// skipped `if let` and paid compute began entirely unguarded — the anti-swap
+    /// pin was inert in exactly the case it exists to catch. The three existing
+    /// `start_prepared` assertions all trip earlier gates (preparation digest,
+    /// visual readiness, approval) and never reach this check, so it needs its
+    /// own coverage.
+    #[tokio::test]
+    async fn absent_capabilities_refuse_paid_start_instead_of_skipping_the_pin() {
+        async fn run_past_earlier_gates(
+            svc: &OptimizerService,
+            id: &str,
+            summary: Value,
+        ) -> String {
+            let (run, _) = svc
+                .create(
+                    serde_json::from_value(json!({
+                        "algorithmId": "gepa",
+                        "id": id,
+                        "openVisual": false
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let mut stored = run.clone();
+            stored.status = "waiting_for_viewer".into();
+            stored.summary = summary;
+            svc.persist_run(stored).await.unwrap();
+            svc.record_visual_ready(
+                run.id.clone(),
+                json!({
+                    "schemaVersion": "synth.visual-subscription-receipt.v1",
+                    "visualId": format!("visual_{id}"),
+                    "optimizerRunId": run.id,
+                    "templateId": "optimizer.gepa.live.v1",
+                    "replayedThrough": 0,
+                    "subscribedFrom": 1
+                }),
+            )
+            .await
+            .unwrap();
+            run.id
+        }
+
+        let (svc, _dir, _) = service().await;
+        let home = svc.manager.home().to_path_buf();
+        let write_caps = |digest: Option<&str>, algorithms: &[&str]| {
+            let mut caps = json!({
+                "algorithms": algorithms,
+                "replay": true,
+                "cancellation": true
+            });
+            if let Some(digest) = digest {
+                caps.as_object_mut()
+                    .unwrap()
+                    .insert("digest".into(), json!(digest));
+            }
+            std::fs::write(
+                home.join("capabilities.json"),
+                serde_json::to_vec(&caps).unwrap(),
+            )
+            .unwrap();
+        };
+
+        // The run was prepared against a proven handshake, but the sidecar is no
+        // longer proving anything. Previously: skipped. Now: refused.
+        write_caps(None, &["gepa"]);
+        let id = run_past_earlier_gates(
+            &svc,
+            "caps_absent_live",
+            json!({
+                "recipeId": "gepa.banking77.smoke.v1",
+                "preparationDigest": "sha256:prepare",
+                "capabilitiesDigest": "sha256:caps"
+            }),
+        )
+        .await;
+        let error = svc
+            .start_prepared(id, Some("sha256:prepare".into()), Some("approval-1".into()))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("capabilities are not proven"),
+            "live capabilities absent must refuse, got: {error}"
+        );
+
+        // The run was prepared while nothing was proven. This is the fails-open
+        // case: no pin was ever recorded, so there was nothing to compare.
+        write_caps(Some("sha256:caps"), &["gepa"]);
+        let id = run_past_earlier_gates(
+            &svc,
+            "caps_absent_prepared",
+            json!({
+                "recipeId": "gepa.banking77.smoke.v1",
+                "preparationDigest": "sha256:prepare"
+            }),
+        )
+        .await;
+        let error = svc
+            .start_prepared(id, Some("sha256:prepare".into()), Some("approval-1".into()))
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("prepared without a proven optimizer capability digest"),
+            "a run with no recorded pin must refuse, got: {error}"
+        );
+
+        // A3: matching digests prove capabilities are unchanged, not that they
+        // cover this run. A handshake advertising an unrelated algorithm passes
+        // both shape-validation and the digest pin, and must still be refused.
+        write_caps(Some("sha256:caps"), &["sft"]);
+        let id = run_past_earlier_gates(
+            &svc,
+            "caps_wrong_algorithm",
+            json!({
+                "recipeId": "gepa.banking77.smoke.v1",
+                "preparationDigest": "sha256:prepare",
+                "capabilitiesDigest": "sha256:caps"
+            }),
+        )
+        .await;
+        let error = svc
+            .start_prepared(id, Some("sha256:prepare".into()), Some("approval-1".into()))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("does not advertise algorithm"),
+            "a runtime that does not serve this algorithm must refuse, got: {error}"
+        );
+
+        // Both present and equal, and the algorithm is served: the capability
+        // gate is satisfied and control reaches the recipe. Whatever fails past
+        // here, it is not this gate.
+        write_caps(Some("sha256:caps"), &["gepa"]);
+        let id = run_past_earlier_gates(
+            &svc,
+            "caps_matched",
+            json!({
+                "recipeId": "gepa.banking77.smoke.v1",
+                "preparationDigest": "sha256:prepare",
+                "capabilitiesDigest": "sha256:caps"
+            }),
+        )
+        .await;
+        let outcome = svc
+            .start_prepared(id, Some("sha256:prepare".into()), Some("approval-1".into()))
+            .await;
+        if let Err(error) = outcome {
+            let text = error.to_string();
+            assert!(
+                !text.contains("capabilities are not proven")
+                    && !text.contains("prepared without a proven")
+                    && !text.contains("capability digest changed")
+                    && !text.contains("does not advertise algorithm")
+                    && !text.contains("advertise no algorithms"),
+                "matching digests and a served algorithm must clear the capability gate, got: {text}"
+            );
+        }
     }
 
     #[tokio::test]

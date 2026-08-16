@@ -755,44 +755,20 @@ impl Manager {
         self.status()
     }
 
-    /// Adopt tokens refreshed by Codex, then remove the session copy.
+    /// Remove the bounded session credential. The shell-enabled child is not
+    /// an authority for native credential rotation, so child-written tokens
+    /// are never adopted into the Keychain.
     pub fn sync_from_session(&self, session_id: &str) -> Result<()> {
         let path = crate::session::codex::oauth_auth_path(session_id);
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            return Ok(());
-        };
-        let value: serde_json::Value =
-            serde_json::from_str(&body).context("Codex session auth file was invalid")?;
-        if value.get("auth_mode").and_then(|v| v.as_str()) != Some("chatgpt") {
-            return Ok(());
-        }
-        let tokens = value
-            .get("tokens")
-            .and_then(|v| v.as_object())
-            .ok_or_else(|| anyhow!("Codex session auth file omitted tokens"))?;
-        let mut credential = self
-            .store
-            .load()?
-            .ok_or_else(|| anyhow!("ChatGPT subscription was disconnected"))?;
-        let required = |name: &str| {
-            tokens
-                .get(name)
-                .and_then(|v| v.as_str())
-                .filter(|v| !v.is_empty())
-                .map(str::to_owned)
-                .ok_or_else(|| anyhow!("Codex session auth file omitted {name}"))
-        };
-        let account_id = required("account_id")?;
-        if account_id != credential.account_id {
-            bail!("Codex refreshed credentials for a different ChatGPT account");
-        }
-        credential.id_token = required("id_token")?;
-        credential.access_token = required("access_token")?;
-        credential.refresh_token = required("refresh_token")?;
-        credential.last_refresh_ms = Utc::now().timestamp_millis();
-        self.store.save(&credential)?;
-        std::fs::remove_file(path)?;
-        Ok(())
+        remove_session_auth_file(&path)
+    }
+}
+
+fn remove_session_auth_file(path: &std::path::Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -1129,6 +1105,22 @@ mod tests {
         let json = serde_json::to_string(&manager.status().unwrap()).unwrap();
         assert!(!json.contains("secret"));
         assert!(json.contains("person@example.com"));
+    }
+
+    #[test]
+    fn child_auth_is_deleted_instead_of_becoming_a_native_credential_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth_path = temp.path().join("auth.json");
+        std::fs::write(
+            &auth_path,
+            r#"{"tokens":{"refresh_token":"attacker-controlled"}}"#,
+        )
+        .unwrap();
+
+        remove_session_auth_file(&auth_path).unwrap();
+
+        assert!(!auth_path.exists());
+        remove_session_auth_file(&auth_path).unwrap();
     }
 
     #[test]

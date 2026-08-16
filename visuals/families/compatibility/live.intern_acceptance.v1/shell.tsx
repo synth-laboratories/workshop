@@ -1,18 +1,17 @@
 import { useMemo } from "react";
 import { VisualChrome, MetricStrip } from "../../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
-import { bindingSlots } from "../../../runtime/bind.ts";
+import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../../runtime/types.ts";
 
 type StreamPayload = { events?: LiveEvalEvent[]; sse_url?: string };
 
-export type ShellProps = {
+export type ShellProps = LiveTemplateProps & {
   title?: string;
   lede?: string;
   acceptance?: StreamPayload;
   data?: StreamPayload;
   bindings?: VisualBinding[] | { slots?: VisualBinding[] };
-  sseUrl?: string;
 };
 
 function asStream(raw: unknown): StreamPayload {
@@ -29,18 +28,20 @@ const DECISION_COLOR: Record<string, string> = {
 
 export function Shell(props: ShellProps) {
   const stream = asStream(props.data ?? props.acceptance);
-  const sseUrl =
-    props.sseUrl ??
-    stream.sse_url ??
-    bindingSlots(props.bindings).find((binding) => binding.slot === "acceptance" && binding.kind === "live_sse")?.source;
-
+  const declaredStreamCount = props.replay?.streams.length ?? 0;
   const fixtureEvents = useMemo(
-    () => (sseUrl ? undefined : stream.events),
-    [sseUrl, stream.events]
+    () => (declaredStreamCount > 0 ? undefined : stream.events),
+    [declaredStreamCount, stream.events]
   );
-  const hasSource = Boolean(sseUrl || stream.events);
+  const hasSource = declaredStreamCount > 0 || Boolean(stream.events);
 
-  const { events, live, error } = useLiveEvalStream({ sseUrl, fixtureEvents });
+  const { events, state, error } = useLiveEvalStream({
+    replay: props.replay,
+    fixtureEvents,
+    visualId: props.visualId,
+    revision: props.revision
+  });
+  const live = state === "live";
   const cells = events.filter((e) => e.kind === "acceptance");
   const passes = cells.filter((e) => e.payload.decision === "pass").length;
   const fails = cells.filter((e) => e.payload.decision === "fail").length;

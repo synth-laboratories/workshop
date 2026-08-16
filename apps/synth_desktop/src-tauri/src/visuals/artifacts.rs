@@ -1135,8 +1135,12 @@ mod tests {
             .get_seal(sealed.receipt_digest.clone())
             .await
             .unwrap();
-        assert_eq!(bundle.data["bindings"]["payload"]["kind"], "inline");
-        assert!(bundle.data["bindings"]["payload"]["data"]["reward"].is_null());
+        // Bindings are sealed in the canonical envelope, and the live stream
+        // is frozen to inline evidence so the bundle opens offline.
+        let sealed_slot = &bundle.data["bindings"]["slots"][0];
+        assert_eq!(sealed_slot["slot"], "payload");
+        assert_eq!(sealed_slot["kind"], "inline");
+        assert!(sealed_slot["data"]["reward"].is_null());
         assert_eq!(bundle.data["overlays"][0]["id"], annotation.id);
         assert!(!bundle.index_html.contains("private-stream"));
         assert!(!bundle.index_html.contains("EventSource"));
@@ -1175,7 +1179,7 @@ mod tests {
             .await
             .unwrap();
         let reopened = registry.get_seal(sealed.receipt_digest).await.unwrap();
-        assert!(reopened.data["bindings"]["payload"]["data"]["reward"].is_null());
+        assert!(reopened.data["bindings"]["slots"][0]["data"]["reward"].is_null());
         assert!(registry.seal(created.id, 2).await.is_err());
     }
 }

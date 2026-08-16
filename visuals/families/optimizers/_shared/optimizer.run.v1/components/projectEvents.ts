@@ -300,6 +300,72 @@ export type GepaState = {
   };
 };
 
+export type EvalTrial = {
+  id: string;
+  candidateId?: string;
+  stage?: string;
+  seed?: number;
+  scenario?: string;
+  status: string;
+  benchmarkStatus?: string | null;
+  /** Gate- and artifact-complete evidence. Only valid trials may be scored. */
+  valid?: boolean;
+  metrics: Record<string, number>;
+  missingGates: string[];
+  missingArtifacts: string[];
+  evidenceDir?: string;
+};
+
+export type EvalScorecard = {
+  candidateId: string;
+  label: string;
+  stage: string;
+  isBaseline: boolean;
+  trials: { total: number; valid: number; failed: number };
+  metrics: Array<{ metric: string; mean: number | null; min: number | null; max: number | null; count: number }>;
+  gateFailures: Record<string, number>;
+  /** Mean signed difference against the baseline over shared seeds. */
+  pairedLift: number | null;
+  pairedTrials: number;
+  eliminatedAt: string | null;
+  eliminationReason: string | null;
+  costUsd: number | null;
+  /**
+   * Share of the scored episodes this candidate's own policy chose. A policy
+   * that spends its budget is replaced by a fallback for the rest of the
+   * episode, so a mean read without this can be mostly the fallback's score
+   * under the candidate's name. `null` when nothing reported coverage — a code
+   * policy has no budget to exhaust, which is absence, not zero.
+   */
+  policyStepFraction: number | null;
+  budgetExhaustedTrials: number;
+};
+
+export type EvalSelection = {
+  status: string;
+  winnerId: string | null;
+  baselineId: string | null;
+  primaryMetric: string;
+  lift: number | null;
+  minLift: number;
+  reason: string;
+};
+
+export type EvalState = {
+  candidates: Array<{ id: string; label: string; isBaseline: boolean }>;
+  scorecards: EvalScorecard[];
+  trials: EvalTrial[];
+  selection: EvalSelection | null;
+  seedLedger: { screening: number[]; confirmation: number[]; scenarios: string[] } | null;
+  manifestDigest: string | null;
+  candidateSetId: string | null;
+  evidenceDir: string | null;
+  plannedTrials: number;
+  parallelism: number | null;
+  globalCapacity: number | null;
+  paused: boolean;
+};
+
 export type ProjectedState = {
   cursorSeq: number;
   summary: Record<string, unknown>;
@@ -309,6 +375,7 @@ export type ProjectedState = {
   artifacts: unknown[];
   execution: { bindings: Array<Record<string, unknown>> };
   gepa?: GepaState;
+  eval?: EvalState;
   goex?: {
     board: Record<string, unknown>;
     themes: Array<Record<string, unknown>>;
@@ -538,6 +605,29 @@ function stringList(value: unknown): string[] | undefined {
   return value.map((entry) => String(entry));
 }
 
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function numberList(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => Number(entry)).filter((entry) => Number.isFinite(entry));
+}
+
+/**
+ * Numeric map that drops non-numbers rather than coercing them. A metric the
+ * producer did not report stays absent, so the UI can render "—" instead of a
+ * zero nobody measured.
+ */
+function numberRecord(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object") return {};
+  const out: Record<string, number> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === "number" && Number.isFinite(entry)) out[key] = entry;
+  }
+  return out;
+}
+
 /**
  * Normalize one evaluated seed. Reward is deliberately `null` — not `0` — when
  * the producer did not report an authoritative score, so a missing measurement
@@ -652,6 +742,13 @@ export function projectAtCursor(
   const logs: Array<Record<string, unknown>> = [];
   const artifacts: unknown[] = [];
   const candidates = new Map<string, Record<string, unknown>>();
+  const evalTrials = new Map<string, EvalTrial>();
+  const evalScorecards = new Map<string, EvalScorecard>();
+  let evalSelection: EvalSelection | null = null;
+  let evalLedger: EvalState["seedLedger"] = null;
+  let evalPlan: Record<string, unknown> = {};
+  let evalEvidenceDir: string | null = null;
+  let evalPaused = false;
   let frontier: Array<Record<string, unknown>> = [];
   const reflections: Array<Record<string, unknown>> = [];
   const gepaEvaluations: GepaEvaluation[] = [];
@@ -979,6 +1076,110 @@ export function projectAtCursor(
         dagSequence = event.sequenceNumber;
       }
     }
+    if (event.type.startsWith("eval.")) {
+      if (event.type === "eval.run.planned") {
+        evalPlan = event.snapshot ?? {};
+      } else if (event.type === "eval.seed_ledger.sealed") {
+        const ledger = (event.snapshot?.seedLedger ?? {}) as Record<string, unknown>;
+        evalLedger = {
+          screening: numberList(ledger.screening),
+          confirmation: numberList(ledger.confirmation),
+          scenarios: stringList(ledger.scenarios) ?? []
+        };
+      } else if (event.type === "eval.trial.queued" || event.type === "eval.trial.started") {
+        const id = String(event.delta?.trial_id ?? "");
+        if (id) {
+          const existing = evalTrials.get(id);
+          evalTrials.set(id, {
+            ...(existing ?? { id, status: "queued", metrics: {}, missingGates: [], missingArtifacts: [] }),
+            id,
+            candidateId: optionalString(event.delta?.candidate_id) ?? existing?.candidateId,
+            stage: optionalString(event.delta?.stage) ?? existing?.stage,
+            seed: optionalNumber(event.delta?.seed) ?? existing?.seed,
+            scenario: optionalString(event.delta?.scenario) ?? existing?.scenario,
+            status: event.type.endsWith("started") ? "running" : "queued"
+          });
+        }
+      } else if (event.type === "eval.trial.terminal" && event.item) {
+        const item = event.item as Record<string, unknown>;
+        const id = String(item.id ?? "");
+        if (id) {
+          evalTrials.set(id, {
+            id,
+            candidateId: optionalString(item.candidateId),
+            stage: optionalString(item.stage),
+            seed: optionalNumber(item.seed),
+            scenario: optionalString(item.scenario),
+            status: String(item.status ?? "unknown"),
+            benchmarkStatus: optionalString(item.benchmarkStatus) ?? null,
+            valid: item.valid === true,
+            metrics: numberRecord(item.metrics),
+            missingGates: stringList(item.missingGates) ?? [],
+            missingArtifacts: stringList(item.missingArtifacts) ?? [],
+            evidenceDir: optionalString(item.evidenceDir)
+          });
+        }
+      } else if (event.type === "eval.candidate.scored" && event.item) {
+        const item = event.item as Record<string, unknown>;
+        const trials = (item.trials ?? {}) as Record<string, unknown>;
+        const card: EvalScorecard = {
+          candidateId: String(item.id ?? ""),
+          label: String(item.label ?? item.id ?? ""),
+          stage: String(item.stage ?? ""),
+          isBaseline: item.isBaseline === true,
+          trials: {
+            total: optionalNumber(trials.total) ?? 0,
+            valid: optionalNumber(trials.valid) ?? 0,
+            failed: optionalNumber(trials.failed) ?? 0
+          },
+          metrics: Array.isArray(item.metrics)
+            ? (item.metrics as Array<Record<string, unknown>>).map((entry) => ({
+                metric: String(entry.metric ?? ""),
+                mean: numberOrNull(entry.mean),
+                min: numberOrNull(entry.min),
+                max: numberOrNull(entry.max),
+                count: optionalNumber(entry.count) ?? 0
+              }))
+            : [],
+          gateFailures: numberRecord(item.gateFailures),
+          pairedLift: numberOrNull(item.pairedLift),
+          pairedTrials: optionalNumber(item.pairedTrials) ?? 0,
+          policyStepFraction: numberOrNull(item.policyStepFraction),
+          budgetExhaustedTrials:
+            optionalNumber(trials.budget_exhausted)
+            ?? optionalNumber(item.budgetExhaustedTrials)
+            ?? 0,
+          eliminatedAt: optionalString(item.eliminatedAt) ?? null,
+          eliminationReason: optionalString(item.eliminationReason) ?? null,
+          costUsd: numberOrNull(item.costUsd)
+        };
+        // One row per candidate per stage; a later scoring of the same pair
+        // supersedes the earlier one (elimination is applied as a rescore).
+        evalScorecards.set(`${card.stage}:${card.candidateId}`, card);
+      } else if (event.type === "eval.selection.completed") {
+        const sel = (event.snapshot?.selection ?? {}) as Record<string, unknown>;
+        evalSelection = {
+          status: String(sel.status ?? "inconclusive"),
+          winnerId: optionalString(sel.winner_id) ?? null,
+          baselineId: optionalString(sel.baseline_id) ?? null,
+          primaryMetric: String(sel.primary_metric ?? ""),
+          lift: numberOrNull(sel.lift),
+          minLift: optionalNumber(sel.min_lift) ?? 0,
+          reason: String(sel.reason ?? "")
+        };
+      } else if (event.type === "eval.run.paused") {
+        evalPaused = true;
+      } else if (event.type === "eval.run.resumed") {
+        evalPaused = false;
+      }
+    }
+    if (event.type === "optimizer.run.completed" || event.type === "optimizer.run.failed"
+      || event.type === "optimizer.run.cancelled") {
+      evalPaused = false;
+      const dir = optionalString(event.delta?.evidenceDir);
+      if (dir) evalEvidenceDir = dir;
+    }
+
     // Item lifecycle events also carry `status`; those describe candidates,
     // checkpoints, or child rollouts and must never overwrite the run status.
     const runLifecycleEvent = event.type.startsWith("optimizer.run.")
@@ -2426,6 +2627,34 @@ export function projectAtCursor(
       dataEngine: goexDataEngine,
       agents: goexAgents,
       rollouts
+    };
+  } else if (run.algorithmId === "eval") {
+    const planCandidates = Array.isArray(evalPlan.candidates)
+      ? (evalPlan.candidates as Array<Record<string, unknown>>).map((entry) => ({
+          id: String(entry.id ?? ""),
+          label: String(entry.label ?? entry.id ?? ""),
+          isBaseline: entry.is_baseline === true
+        }))
+      : [];
+    projected.eval = {
+      candidates: planCandidates,
+      // Stable order: screening before confirmation, baseline first inside a
+      // stage, so a candidate does not jump rows as later events land.
+      scorecards: [...evalScorecards.values()].sort((a, b) => {
+        if (a.stage !== b.stage) return a.stage === "screen" ? -1 : 1;
+        if (a.isBaseline !== b.isBaseline) return a.isBaseline ? -1 : 1;
+        return a.label.localeCompare(b.label);
+      }),
+      trials: [...evalTrials.values()].sort((a, b) => a.id.localeCompare(b.id)),
+      selection: evalSelection,
+      seedLedger: evalLedger,
+      manifestDigest: optionalString(evalPlan.manifest_digest) ?? null,
+      candidateSetId: optionalString(evalPlan.candidate_set_id) ?? null,
+      evidenceDir: evalEvidenceDir,
+      plannedTrials: optionalNumber(evalPlan.planned_trials) ?? 0,
+      parallelism: numberOrNull(evalPlan.parallelism),
+      globalCapacity: numberOrNull(evalPlan.global_capacity),
+      paused: evalPaused
     };
   } else if (run.algorithmId === "sft") {
     const candidates = [...curationCandidates.values()];

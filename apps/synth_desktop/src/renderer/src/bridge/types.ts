@@ -340,6 +340,8 @@ export type CoreBridge = {
 	diagnostics(): Promise<CoreDiagnostics>;
 	eventsAfter(afterSequence?: number, limit?: number): Promise<AppEvent[]>;
 	sessionEventsAfter(sessionId: string, afterSequence?: number, limit?: number): Promise<AppEvent[]>;
+	sessionEventsTail(sessionId: string, limit?: number): Promise<AppEvent[]>;
+	sessionEventsBefore(sessionId: string, beforeSequence: number, limit?: number): Promise<AppEvent[]>;
 	onEvent(listener: (event: AppEvent) => void): () => void;
 };
 
@@ -378,8 +380,17 @@ export type ModelPerformanceSummary = {
 	lastObservedAt: string;
 };
 
+export type ModelPerformanceTurnSample = {
+	runId: string | null;
+	measurementKind: ModelPerformanceSummary["measurementKind"];
+	startedAtMs: number;
+	completedAtMs: number;
+	outputTps: number;
+};
+
 export type ModelPerformanceBridge = {
 	summaries(): Promise<ModelPerformanceSummary[]>;
+	turnSamples(sessionId: string): Promise<ModelPerformanceTurnSample[]>;
 };
 
 /** Device-wide usage dashboard, aggregated natively over `usage_records`. */
@@ -489,6 +500,19 @@ export type VisualsBridge = {
 		offset?: number;
 	}): Promise<VisualRecord[]>;
 	get(visualId: string): Promise<VisualRecord>;
+	reportObservation(observation: {
+		schemaVersion: "synth.rendered-visual-observation.v1";
+		visualId: string;
+		renderedRevision: number;
+		bindingsDigest: string;
+		transportState: string;
+		rolloutCount: number;
+		renderedFrameCount: number;
+		semanticEventCount: number;
+		terminal: boolean;
+		error?: string | null;
+		observedAt: string;
+	}): Promise<void>;
 	revisions(visualId: string): Promise<VisualRevision[]>;
 	annotations(visualId: string): Promise<VisualAnnotation[]>;
 	createAnnotation(visualId: string, request: {
@@ -546,7 +570,8 @@ export type VisualsBridge = {
 		base64: string;
 	}>;
 	render(visualId: string): Promise<VisualRecord>;
-	onEvent(listener: (event: AppEvent) => void): () => void;
+	pollStream(request: { visualId: string; pollUrl: string; after: number; limit: number }): Promise<unknown>;
+	onEvent(listener: (event: AppEvent) => void, onAttached?: () => void): () => void;
 	onShow(listener: (event: AppEvent) => void): () => void;
 };
 
@@ -568,10 +593,52 @@ export type PluginStatus = {
 	detail?: string | null;
 };
 
+/** Mirrors the operations `PluginService::manage` accepts. */
+export type PluginLifecycleOperation =
+	| "enable"
+	| "disable"
+	| "install"
+	| "start"
+	| "stop"
+	| "update"
+	| "remove";
+
+/** `PluginActionReceipt` from src-tauri/src/plugins/types.rs. */
+export type PluginActionReceipt = {
+	schemaVersion: string;
+	receiptId?: string;
+	pluginId: string;
+	action: string;
+	version?: string | null;
+	digest?: string | null;
+	approvalReceiptId?: string | null;
+	startedAt?: string;
+	finishedAt?: string;
+	result: string;
+	retainedData?: string;
+	status?: PluginStatus | null;
+	error?: string | null;
+};
+
 export type PluginsBridge = {
 	status(pluginId?: string | null): Promise<PluginStatus>;
 	list(): Promise<PluginStatus[]>;
 	setReleaseChannel(pluginId: "optimizers", channel: "official" | "dev"): Promise<PluginStatus>;
+	/**
+	 * Human-triggered lifecycle. Approval policy, active-run guards, retention
+	 * classes, and receipts are enforced natively — the renderer never decides
+	 * whether an action is permitted, only whether to offer it.
+	 */
+	manage?(
+		operation: PluginLifecycleOperation,
+		pluginId: string,
+		version?: string | null
+	): Promise<PluginActionReceipt>;
+	/**
+	 * Fires whenever the native sidecar status changes. Subscribing is what
+	 * replaces polling the registry: every poll runs a live sidecar probe.
+	 */
+	onStatusChanged?(listener: () => void): () => void;
 };
 
 export type ReportStatus = "draft" | "sealed";
@@ -848,17 +915,40 @@ export type ReportsBridge = {
 	onEvent?(listener: (event: AppEvent) => void): () => void;
 };
 
+export type OptimizerRecipeInfo = {
+	id: string;
+	title: string;
+	algorithmId: string;
+	task?: string;
+	availability: string;
+	availabilityReason?: string | null;
+	description?: string;
+	limits?: Record<string, unknown>;
+	prerequisites?: string[];
+};
+
 export type OptimizersBridge = {
 	listAlgorithms(): Promise<OptimizerAlgorithmInfo[]>;
-	listRecipes(): Promise<Array<{
-		id: string;
-		title: string;
-		algorithmId: string;
-		task: string;
-		availability: string;
-		limits: Record<string, number>;
-	}>>;
-	startRecipe(request: { recipeId: string; sessionRef?: string; openVisual?: boolean; baseModel?: string }): Promise<OptimizerRunRecord>;
+	listRecipes(): Promise<OptimizerRecipeInfo[]>;
+	startRecipe(request: {
+		recipeId: string;
+		sessionRef?: string;
+		openVisual?: boolean;
+		baseModel?: string;
+		/** Required by `eval.*` recipes. An id from `stageEvalCandidates`, never a path. */
+		candidateSetId?: string;
+	}): Promise<OptimizerRunRecord>;
+	stageEvalCandidates(request: {
+		sessionRef: string;
+		candidates: Array<{
+			label: string;
+			/** Workspace-relative file or directory. */
+			path: string;
+			entrypoint?: string;
+			kind?: string;
+			baseline?: boolean;
+		}>;
+	}): Promise<{ id: string; candidates: Array<{ id: string; label: string }> }>;
 	list(query?: {
 		status?: string;
 		algorithmId?: string;

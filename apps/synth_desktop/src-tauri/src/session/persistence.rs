@@ -70,6 +70,13 @@ impl SessionPersistence {
         let session_id = session_id.into();
         let method = method.into();
         let origin = origin_for_boundary_kind(&method);
+        // Every Codex boundary notification passes through here, which makes it
+        // the one place a provider going unhealthy can be recorded without
+        // instrumenting each caller. Only the unhealthy transitions are worth a
+        // diagnostic; the healthy ones are the transcript.
+        if method == "session/unhealthy" {
+            self.diagnose_unhealthy(&session_id, &params);
+        }
         match self
             .append_and_emit(
                 app,
@@ -83,6 +90,47 @@ impl SessionPersistence {
                 let _ = app.emit(EventChannel::RUNTIME, &tag_event(origin, event));
             }
         }
+    }
+
+    /// Local diagnostics, when a runtime is bound.
+    pub fn diagnostics(&self) -> Option<&Arc<crate::diagnostics::DiagnosticsService>> {
+        match self {
+            Self::Core(core) => Some(core.diagnostics_service()),
+            Self::Null => None,
+        }
+    }
+
+    fn diagnose_unhealthy(&self, session_id: &str, params: &Value) {
+        let Some(service) = self.diagnostics() else {
+            return;
+        };
+        let reason = params
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("unhealthy");
+        // A stalled provider and a dropped connection are different failures
+        // with different remediations; keep them apart at the code.
+        let stalled = reason.contains("stall") || reason.contains("idle");
+        let mut input = crate::diagnostics::DiagnosticInput::new(
+            crate::diagnostics::Severity::Error,
+            "provider",
+            "provider.session.unhealthy",
+            if stalled {
+                crate::diagnostics::codes::PROVIDER_STALLED
+            } else {
+                crate::diagnostics::codes::PROVIDER_DISCONNECTED
+            },
+            params
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("the provider session became unhealthy"),
+        )
+        .retryable(true);
+        input.correlation.session_id = Some(session_id.to_owned());
+        input
+            .details
+            .insert("reason".into(), Value::String(reason.to_owned()));
+        service.emit(input);
     }
 
     /// Strict persist-before-publish boundary used by the approval broker.

@@ -32,7 +32,9 @@ from .responses_api.ids import new_id
 from .settings import SETTINGS_SCHEMA_VERSION, SettingsError, SettingsStore
 from .responses_api.backends.mlx import (
     _MIN_SYSTEM_MEMORY_BYTES,
+    _available_memory_bytes,
     _physical_memory_bytes,
+    _required_available_memory_bytes,
     _required_system_memory_bytes,
 )
 
@@ -174,7 +176,7 @@ class HuggingFaceDownloader:
         destination: Path,
         progress: Callable[[int | None, int | None], None],
     ) -> None:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import HfApi, snapshot_download
 
         destination.mkdir(parents=True, exist_ok=True)
         # snapshot_download exposes no byte-level callback through this API,
@@ -182,6 +184,54 @@ class HuggingFaceDownloader:
         snapshot_download(
             repo_id=model, revision=self.revision, local_dir=str(destination)
         )
+        _verify_huggingface_shards(
+            model, self.revision, destination, api=HfApi()
+        )
+
+
+def _verify_huggingface_shards(
+    model: str,
+    revision: str | None,
+    destination: Path,
+    *,
+    api: Any,
+) -> None:
+    """Hash every indexed weight shard against provider LFS metadata."""
+    index_path = destination / "model.safetensors.index.json"
+    if not index_path.is_file():
+        return
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    shards = {
+        value
+        for value in (index.get("weight_map") or {}).values()
+        if isinstance(value, str) and value.endswith(".safetensors")
+    }
+    if not shards:
+        raise RuntimeError("model index references no safetensor shards")
+    info = api.model_info(model, revision=revision, files_metadata=True)
+    provider_hashes: dict[str, str] = {}
+    for sibling in info.siblings:
+        lfs = getattr(sibling, "lfs", None)
+        digest = (
+            lfs.get("sha256")
+            if isinstance(lfs, dict)
+            else getattr(lfs, "sha256", None)
+        )
+        if isinstance(digest, str) and len(digest) == 64:
+            provider_hashes[sibling.rfilename] = digest.lower()
+    for shard in sorted(shards):
+        if "/" in shard or "\\" in shard:
+            raise RuntimeError(f"unsafe indexed model shard: {shard}")
+        expected = provider_hashes.get(shard)
+        if expected is None:
+            raise RuntimeError(f"provider omitted a SHA-256 for model shard: {shard}")
+        hasher = hashlib.sha256()
+        with (destination / shard).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+                hasher.update(chunk)
+        actual = hasher.hexdigest()
+        if actual != expected:
+            raise RuntimeError(f"provider checksum mismatch for model shard: {shard}")
 
 
 @dataclass(slots=True)
@@ -258,6 +308,7 @@ class SynthControl:
         *,
         downloader: Downloader | None = None,
         system_memory_bytes: int | None = None,
+        available_memory_bytes: int | None = None,
         settings: SettingsStore | None = None,
     ) -> None:
         self.config = config
@@ -272,6 +323,7 @@ class SynthControl:
             if system_memory_bytes is not None
             else _physical_memory_bytes()
         )
+        self.available_memory_bytes = available_memory_bytes
         self._state = "starting"
         self._state_since = time.time()
         self._load_lock = asyncio.Lock()
@@ -321,22 +373,30 @@ class SynthControl:
         return _required_system_memory_bytes(path)
 
     def _free_memory_bytes(self) -> int | None:
-        # Unified memory: total capacity is the stable admission fact; macOS
-        # "free pages" exclude reclaimable cache and mislead. Capacity minus
-        # the daemon's own measured allocation is honest; anything unmeasured
-        # stays null.
+        available = (
+            self.available_memory_bytes
+            if self.available_memory_bytes is not None
+            else _available_memory_bytes()
+        )
+        if available is None:
+            return self.system_memory_bytes
         if self.system_memory_bytes is None:
-            return None
-        measured = self.service.memory_bytes()
-        if measured is None:
-            return None
-        return max(0, self.system_memory_bytes - measured)
+            return available
+        return min(available, self.system_memory_bytes)
 
     def _admission_allowed(self) -> bool:
-        # Mirrors the backend's real gate: unknown capacity does not block.
-        if self.system_memory_bytes is None:
-            return True
-        return self.system_memory_bytes >= self._required_bytes()
+        capacity_ok = (
+            self.system_memory_bytes is None
+            or self.system_memory_bytes >= self._required_bytes()
+        )
+        available = self._free_memory_bytes()
+        path = self._model_path()
+        available_ok = (
+            path is None
+            or available is None
+            or available >= _required_available_memory_bytes(path)
+        )
+        return capacity_ok and available_ok
 
     # -- canonical state -------------------------------------------------------
 
@@ -692,7 +752,8 @@ class SynthControl:
                     "resident": True,
                     "already_resident": True,
                 }
-            if self._model_path() is None:
+            model_path = self._model_path()
+            if model_path is None:
                 raise ControlError(
                     "model_not_found",
                     f"No weights for {canonical!r} on disk; download them first.",
@@ -716,7 +777,10 @@ class SynthControl:
                     503,
                     details={
                         "required_bytes": self._required_bytes(),
-                        "available_bytes": self.system_memory_bytes,
+                        "required_available_bytes": _required_available_memory_bytes(
+                            model_path
+                        ),
+                        "available_bytes": self._free_memory_bytes(),
                     },
                 )
             self._set_state("loading", operation_id)
@@ -731,7 +795,10 @@ class SynthControl:
                         503,
                         details={
                             "required_bytes": self._required_bytes(),
-                            "available_bytes": self.system_memory_bytes,
+                            "required_available_bytes": _required_available_memory_bytes(
+                                model_path
+                            ),
+                            "available_bytes": self._free_memory_bytes(),
                         },
                     ) from error
                 self._last_error = {"code": error.code, "message": error.message}

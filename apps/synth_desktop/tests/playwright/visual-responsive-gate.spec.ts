@@ -328,7 +328,14 @@ test.describe("Craftax semantic viewer", () => {
 		const traceButtons = viewer.locator(".cv-trace li button");
 		const rowCount = await traceButtons.count();
 		expect(rowCount, `trace rows should be folded, got ${rowCount}`).toBeLessThan(20);
-		await expect(viewer).not.toContainText("token25");
+		// Transcript renders one normalized call card while preserving every
+		// delta under expandable Trace V5 evidence.
+		await expect(viewer.locator(".cv-call-list > li")).toHaveCount(1);
+		await expect(viewer.getByRole("heading", { name: "Agent transcript" })).toBeVisible();
+		const rawEvidence = viewer.getByText("Raw Trace V5 evidence (34 envelopes)");
+		await expect(rawEvidence).toHaveCount(1);
+		await viewer.getByRole("button", { name: "Focus", exact: true }).click();
+		await expect(viewer.locator(".cv-call-list button[aria-current=true]")).toContainText("Call 1");
 		await expect(viewer).toContainText("Step 0");
 		await expect(viewer).toContainText("collect_wood");
 

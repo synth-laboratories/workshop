@@ -34,11 +34,18 @@ use tauri::State;
 use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
-pub const OFFICIAL_SIDECAR_VERSION: &str = "0.2.5";
-pub const DEV_SIDECAR_VERSION: &str = "0.2.9.dev20260814";
+// Channel pins, the floor, and the vocabulary lists all resolve from the one
+// contract table so a version has a single place to be read and changed.
+use crate::contract::runtimes::{ReleaseChannel, OPTIMIZERS as OPTIMIZERS_CONTRACT};
+
+pub const OFFICIAL_SIDECAR_VERSION: &str = OPTIMIZERS_CONTRACT.official;
+pub const DEV_SIDECAR_VERSION: &str = OPTIMIZERS_CONTRACT.dev;
 pub const DEFAULT_SIDECAR_VERSION: &str = OFFICIAL_SIDECAR_VERSION;
-pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.5";
-pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = "gepa.recipe.v1";
+pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = OPTIMIZERS_CONTRACT.recipe_schema;
+/// `{package}-{official}`. Spelled out because `format!` is not const and ten
+/// call sites want `&'static str`; `algorithm_version_matches_the_contract`
+/// fails if it drifts from the table.
+pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.14";
 /// Optimizer-family visuals bind this slot. `live` and `jobs` are refused.
 pub const OPTIMIZER_VISUAL_SLOT: &str = "optimizer_run";
 const SELECTED_VERSION_FILE: &str = "selected_version";
@@ -156,17 +163,26 @@ fn catalog_spec(version: &str) -> OptimizerSidecarInstallSpec {
         recipe_schema_version: DEFAULT_RECIPE_SCHEMA_VERSION.into(),
         payload: json!({
             "sidecarVersion": version,
-            "algorithms": [{
-                "id": "gepa",
-                "version": algorithm_version
-            }],
+            "algorithms": OPTIMIZERS_CONTRACT
+                .algorithms
+                .iter()
+                .map(|id| json!({ "id": id, "version": algorithm_version }))
+                .collect::<Vec<_>>(),
             "recipeSchemaVersion": DEFAULT_RECIPE_SCHEMA_VERSION,
-            "templates": ["optimizer.gepa.live.v1", "optimizer.run.v1"],
+            "templates": OPTIMIZERS_CONTRACT.templates,
+            // Desktop's expectation of the pinned version, not a claim about
+            // the artifact on disk. The install payload asserting
+            // `eventReplay: true` for a wheel that served no events route is
+            // how this incident was seeded; only the handshake settles it.
             "health": true,
             "cancellation": true,
             "eventReplay": true,
         }),
-        template_ids: vec!["optimizer.gepa.live.v1".into(), "optimizer.run.v1".into()],
+        template_ids: OPTIMIZERS_CONTRACT
+            .templates
+            .iter()
+            .map(|id| (*id).to_owned())
+            .collect(),
     }
 }
 
@@ -201,6 +217,8 @@ pub struct OptimizerManager {
     gepa_workers: Mutex<HashMap<String, GepaWorkerState>>,
     run_spools: Arc<Mutex<HashMap<String, RunSpoolState>>>,
     client: Client,
+    /// Attached by the composition root once diagnostics exist.
+    diagnostics: Arc<std::sync::OnceLock<Arc<crate::diagnostics::DiagnosticsService>>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -234,7 +252,13 @@ impl OptimizerManager {
             gepa_workers: Mutex::new(HashMap::new()),
             run_spools: Arc::new(Mutex::new(HashMap::new())),
             client: crate::http::http_client(),
+            diagnostics: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// Wire diagnostics in after both services exist. Idempotent.
+    pub fn attach_diagnostics(&self, service: Arc<crate::diagnostics::DiagnosticsService>) {
+        let _ = self.diagnostics.set(service);
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<OptimizerSidecarStatus> {
@@ -291,6 +315,12 @@ impl OptimizerManager {
             .await
             .context("decode managed optimizer event page")?;
         if status == StatusCode::NOT_FOUND {
+            if events_not_found_is_missing_route(&body) {
+                bail!(
+                    "optimizer runtime does not serve the optimizer-events route; \
+                     install a sidecar version that implements it"
+                );
+            }
             return Err(OptimizerEventRunNotFound {
                 run_id: run_id.to_string(),
             }
@@ -319,8 +349,59 @@ impl OptimizerManager {
 
     pub async fn set_status(&self, mut status: OptimizerSidecarStatus) {
         status.updated_at = now_ms();
-        *self.status.write().await = status.clone();
+        let previous = {
+            let mut current = self.status.write().await;
+            let previous = current.phase.clone();
+            *current = status.clone();
+            previous
+        };
+        // This runs on every renderer poll. Only a *transition* is news; the
+        // steady state is what `diagnostics_status` is for.
+        if previous != status.phase {
+            self.diagnose_phase(&previous, &status);
+        }
         let _ = self.updates.send(status);
+    }
+
+    fn diagnose_phase(&self, previous: &str, status: &OptimizerSidecarStatus) {
+        let Some(service) = self.diagnostics.get() else {
+            return;
+        };
+        let unavailable = matches!(
+            status.phase.as_str(),
+            "failed" | "error" | "unavailable" | "crashed" | "stopped"
+        );
+        let mut input = crate::diagnostics::DiagnosticInput::new(
+            if unavailable {
+                crate::diagnostics::Severity::Error
+            } else {
+                crate::diagnostics::Severity::Info
+            },
+            "optimizer-sidecar",
+            "optimizer.sidecar.phase",
+            if unavailable {
+                crate::diagnostics::codes::OPTIMIZER_SIDECAR_UNAVAILABLE
+            } else {
+                "optimizer_sidecar_phase"
+            },
+            status
+                .detail
+                .clone()
+                .unwrap_or_else(|| format!("optimizer sidecar is {}", status.phase)),
+        )
+        .retryable(unavailable);
+        input
+            .details
+            .insert("phase".into(), serde_json::json!(status.phase));
+        input
+            .details
+            .insert("previous_phase".into(), serde_json::json!(previous));
+        if let Some(version) = status.version.as_ref() {
+            input
+                .details
+                .insert("version".into(), serde_json::json!(version));
+        }
+        service.emit(input);
     }
 
     /// Discover installed versions, then probe a live sidecar if one is running.
@@ -332,7 +413,14 @@ impl OptimizerManager {
                 self.set_status(probed).await;
                 return self.status().await;
             }
-            self.abort_runtime().await;
+            // Status is a read path. A transient missed probe must not SIGTERM
+            // a live paid run merely because the renderer polls this method.
+            // Explicit start/stop and process-exit reconciliation own teardown.
+            let mut current = self.status().await;
+            current.detail =
+                Some("Optimizer health probe was missed; retaining the managed runtime".into());
+            self.set_status(current).await;
+            return self.status().await;
         }
         let phase = if selected.is_some() {
             "stopped"
@@ -395,6 +483,7 @@ impl OptimizerManager {
     }
 
     pub fn select_version(&self, version: &str) -> Result<OptimizerSidecarVersion> {
+        enforce_version_floor(version)?;
         let hit = self
             .discover()?
             .into_iter()
@@ -405,6 +494,11 @@ impl OptimizerManager {
             self.home.join(SELECTED_VERSION_FILE),
             format!("{version}\n"),
         )?;
+        // The stored handshake belongs to the version that proved it. Leaving it
+        // behind lets a previous install's capabilities satisfy the digest pin
+        // and template negotiation for a version that never completed a
+        // handshake of its own.
+        clear_stored_capabilities(&self.home);
         Ok(OptimizerSidecarVersion {
             selected: true,
             ..hit
@@ -431,7 +525,14 @@ impl OptimizerManager {
     }
 
     pub fn advertised_capabilities(&self) -> Value {
-        read_capabilities(&self.home).unwrap_or_else(default_capabilities)
+        read_capabilities(&self.home).unwrap_or_else(|| {
+            json!({
+                "algorithms": [],
+                "controls": [],
+                "replay": false,
+                "cancellation": false
+            })
+        })
     }
 
     pub fn has_offline_runtime(&self, version: &str) -> bool {
@@ -443,6 +544,7 @@ impl OptimizerManager {
         spec: OptimizerSidecarInstallSpec,
     ) -> Result<OptimizerSidecarVersion> {
         validate_version_id(&spec.version)?;
+        enforce_version_floor(&spec.version)?;
         fs::create_dir_all(&self.home)?;
         let previous_selected = read_selected_version(&self.home)?;
         let staging_name = format!(
@@ -538,12 +640,41 @@ impl OptimizerManager {
             version: hit.version.clone(),
             digest: hit.digest.clone(),
         });
-        write_env_sh(&self.home, &api_key, &base_url, &hit.version)?;
+        // env.sh is written after the handshake, not here. Publishing the
+        // address before the service has proven anything is what left a
+        // convincing file pointing at a dead port.
+        let runtime_epoch = uuid::Uuid::new_v4().simple().to_string();
         let deadline = tokio::time::Instant::now() + crate::limits::OPTIMIZER_SIDECAR_READY_WAIT;
         while tokio::time::Instant::now() < deadline {
             if let Some(status) = self.probe().await {
                 if status.phase == "ready" {
-                    self.store_handshake_capabilities(&hit).await;
+                    let capabilities = match self.fetch_handshake_capabilities().await {
+                        Ok(capabilities) => capabilities,
+                        Err(error) => {
+                            self.abort_runtime().await;
+                            self.set_status(OptimizerSidecarStatus {
+                                phase: "error".into(),
+                                base_url: None,
+                                version: Some(hit.version.clone()),
+                                digest: Some(hit.digest.clone()),
+                                detail: Some(format!(
+                                    "Capability check failed: {}",
+                                    diagnostic_error_message(&error)
+                                )),
+                                updated_at: now_ms(),
+                            })
+                            .await;
+                            return Err(error);
+                        }
+                    };
+                    self.store_handshake_capabilities(&capabilities)?;
+                    write_env_sh(
+                        &self.home,
+                        &api_key,
+                        &base_url,
+                        &hit.version,
+                        &runtime_epoch,
+                    )?;
                     self.set_status(status).await;
                     return Ok(self.status().await);
                 }
@@ -563,12 +694,80 @@ impl OptimizerManager {
         bail!("Timed out waiting for optimizer sidecar");
     }
 
-    async fn store_handshake_capabilities(&self, hit: &OptimizerSidecarVersion) {
-        let capabilities = default_capabilities_for(hit);
-        let _ = fs::write(
+    async fn fetch_handshake_capabilities(&self) -> Result<Value> {
+        let (base_url, api_key) = {
+            let runtime = self.runtime.lock().await;
+            let runtime = runtime
+                .as_ref()
+                .ok_or_else(|| anyhow!("optimizer runtime disappeared before handshake"))?;
+            (runtime.base_url.clone(), runtime.api_key.clone())
+        };
+        let response = self
+            .client
+            .get(format!("{base_url}/v1/optimizer/capabilities"))
+            .bearer_auth(api_key)
+            .send()
+            .await
+            .context("read optimizer capability handshake")?;
+        if !response.status().is_success() {
+            // A bare status was what made this failure so expensive to read:
+            // "HTTP 502" named neither the missing route nor the runtime that
+            // lacked it. Carry the proxy's reason through.
+            let status = response.status();
+            let detail = upstream_failure_detail(response).await;
+            if status == StatusCode::NOT_FOUND {
+                bail!(
+                    "optimizer_capability_route_missing: this sidecar version does not serve \
+                     /v1/optimizer/capabilities; install a version that does ({detail})"
+                );
+            }
+            bail!("optimizer capability handshake failed: {detail}");
+        }
+        let mut capabilities: Value = response
+            .json()
+            .await
+            .context("parse optimizer capability handshake")?;
+        {
+            let object = capabilities
+                .as_object_mut()
+                .ok_or_else(|| anyhow!("optimizer capability handshake was not an object"))?;
+            // A runtime answers only for itself. `recipes` and
+            // `compatibleTemplateIds` are Desktop vocabulary — those recipe ids
+            // and visual template ids are defined here and appear nowhere in
+            // the plugin — so requiring a runtime to echo them back proves only
+            // that it was told what to say, and would force a plugin release
+            // for every new host template. They are resolved host-side now;
+            // ask the runtime for the one list it can actually own.
+            let algorithms_valid = object
+                .get("algorithms")
+                .and_then(Value::as_array)
+                .is_some_and(|items| {
+                    !items.is_empty() && items.iter().all(|item| item.as_str().is_some())
+                });
+            if !algorithms_valid {
+                bail!("optimizer capability handshake omitted algorithms");
+            }
+            for field in ["replay", "cancellation"] {
+                if object.get(field).and_then(Value::as_bool).is_none() {
+                    bail!("optimizer capability handshake omitted {field}");
+                }
+            }
+            object.remove("digest");
+        }
+        let digest = sha256_hex(&serde_json::to_vec(&capabilities)?);
+        capabilities
+            .as_object_mut()
+            .expect("validated capability object")
+            .insert("digest".into(), json!(format!("sha256:{digest}")));
+        Ok(capabilities)
+    }
+
+    fn store_handshake_capabilities(&self, capabilities: &Value) -> Result<()> {
+        fs::write(
             self.home.join("capabilities.json"),
-            serde_json::to_vec_pretty(&capabilities).unwrap_or_default(),
-        );
+            serde_json::to_vec_pretty(capabilities)?,
+        )?;
+        Ok(())
     }
 
     /// Install the product-pinned sidecar when needed and return only after
@@ -714,6 +913,18 @@ impl OptimizerManager {
     }
 
     async fn ensure_memory_spool(&self, run_id: &str) {
+        // The in-process sidecar stand-in registers a run the instant it is
+        // spawned, so under test every run is indexed immediately and the
+        // "service never sees this run" failure is unreachable — the same shape
+        // of blind spot as a fake that serves an endpoint the real artifact
+        // lacks. This makes the stand-in *less* generous on request, so that
+        // failure can be exercised. It only ever withholds; it never invents.
+        #[cfg(test)]
+        {
+            if std::env::var("SYNTH_OPTIMIZER_TEST_SUPPRESS_SPOOL").as_deref() == Ok("1") {
+                return;
+            }
+        }
         let mut spools = self.run_spools.lock().await;
         spools.entry(run_id.to_string()).or_insert(RunSpoolState {
             events: Vec::new(),
@@ -751,6 +962,10 @@ impl OptimizerManager {
         }
         if selected.as_deref() == Some(version) {
             let _ = fs::remove_file(self.home.join(SELECTED_VERSION_FILE));
+            // Uninstalling the version that proved these capabilities must not
+            // leave them behind to vouch for whatever is installed next.
+            clear_stored_capabilities(&self.home);
+            clear_env_sh(&self.home);
         }
         Ok(self.refresh().await)
     }
@@ -891,6 +1106,9 @@ impl OptimizerManager {
     }
 
     async fn abort_runtime(&self) {
+        // The exported address describes a service that is about to stop
+        // existing. Every teardown goes through here.
+        clear_env_sh(&self.home);
         let worker_pids = self
             .gepa_workers
             .lock()
@@ -1014,6 +1232,14 @@ fn optimizer_command(home: &Path, version: &str) -> Result<Command> {
     Ok(Command::new(bin))
 }
 
+fn optimizer_gepa_home(home: &Path) -> PathBuf {
+    home.join("runtime/gepa-home")
+}
+
+fn optimizer_gepa_db(home: &Path) -> PathBuf {
+    home.join("runtime/gepa.sqlite")
+}
+
 fn developer_uv_mode() -> Result<bool> {
     if env::var("SYNTH_OPTIMIZER_DEV_MODE").as_deref() == Ok("1") {
         return Ok(true);
@@ -1049,7 +1275,17 @@ fn launch_gepa_recipe_process(
     {
         if env::var("SYNTH_OPTIMIZER_LIVE_SIDECAR").as_deref() != Ok("1") {
             let _ = (home, version, cookbook, openai_api_key, config_path);
-            let mut command = Command::new("/usr/bin/true");
+            // The stand-in normally exits at once. Tests that need to observe
+            // what the supervisor does to a *live* child — the never-indexed
+            // bound, cancellation — ask for one that outlives the assertion.
+            let mut command = match env::var("SYNTH_OPTIMIZER_TEST_CHILD_SLEEP_SECS") {
+                Ok(seconds) if !seconds.is_empty() => {
+                    let mut sleeper = Command::new("/bin/sleep");
+                    sleeper.arg(seconds);
+                    sleeper
+                }
+                _ => Command::new("/usr/bin/true"),
+            };
             command
                 .stdin(Stdio::null())
                 .stdout(Stdio::from(stdout))
@@ -1066,6 +1302,10 @@ fn launch_gepa_recipe_process(
         .args(["gepa", "run", "--config"])
         .arg(config_path)
         .current_dir(cookbook)
+        // The service discovers live child runs through GEPA_HOME/index.jsonl.
+        // Pin both processes to the same instance-owned directory instead of
+        // relying on whichever user-global HOME the Desktop inherited.
+        .env("GEPA_HOME", optimizer_gepa_home(home))
         .env("OPENAI_API_KEY", openai_api_key)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
@@ -1101,24 +1341,15 @@ async fn launch_sidecar_upstream(
                         if request.method == hyper::Method::GET && path == "/health" {
                             JsonHttpResponse::ok(body)
                         } else if request.method == hyper::Method::GET
-                            && (path == "/v1/optimizer/capabilities"
-                                || path == "/v1/optimizer/status")
+                            && path == "/v1/optimizer/capabilities"
                         {
                             JsonHttpResponse::ok(json!({
                                 "status": "ok",
-                                "algorithms": ["gepa"],
-                                "recipes": [
-                                    "gepa.banking77.smoke.v1",
-                                    "gepa.banking77.luna.v1",
-                                    "gepa.banking77.sol.v1",
-                                    "gepa.craftax.smoke.v1"
-                                ],
+                                "algorithms": OPTIMIZERS_CONTRACT.algorithms,
+                                "contractVersion": "optimizer.contract.v1",
+                                "serviceVersion": OPTIMIZERS_CONTRACT.official,
                                 "replay": true,
-                                "cancellation": true,
-                                "compatibleTemplateIds": [
-                                    "optimizer.gepa.live.v1",
-                                    "optimizer.run.v1"
-                                ]
+                                "cancellation": true
                             }))
                         } else if request.method == hyper::Method::GET
                             && path.starts_with("/runs/")
@@ -1136,10 +1367,16 @@ async fn launch_sidecar_upstream(
         }
     }
     let _ = run_spools;
-
     drop(listener);
-    let runtime_dir = home.join("runtime");
-    fs::create_dir_all(&runtime_dir)?;
+    let _ = addr;
+    drop(upstream_base_url);
+
+    let gepa_home = optimizer_gepa_home(home);
+    let db_path = optimizer_gepa_db(home);
+    fs::create_dir_all(&gepa_home)?;
+    let api_key = ensure_api_key(home)?;
+    let heartbeat_path = optimizer_service_heartbeat_path(&gepa_home, &db_path);
+    let _ = fs::remove_file(&heartbeat_path);
     let log = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1148,18 +1385,91 @@ async fn launch_sidecar_upstream(
     isolate_process_group(&mut command);
     command
         .args(["gepa", "service", "--db"])
-        .arg(runtime_dir.join("gepa.sqlite"))
-        .arg("--bind")
-        .arg(addr.to_string())
-        .env("SYNTH_OPTIMIZER_API_KEY", ensure_api_key(home)?)
+        .arg(&db_path)
+        .args(["--bind", "127.0.0.1:0"])
+        .env("GEPA_HOME", &gepa_home)
+        .env("SYNTH_OPTIMIZER_API_KEY", &api_key)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log))
         .kill_on_drop(true);
-    let child = command
+    let mut child = command
         .spawn()
         .context("spawn allowlisted synth-optimizers GEPA service")?;
-    Ok((Some(child), upstream_base_url, None))
+    let child_pid = child
+        .id()
+        .ok_or_else(|| anyhow!("optimizer service started without a process id"))?;
+    let deadline = tokio::time::Instant::now() + crate::limits::OPTIMIZER_SIDECAR_READY_WAIT;
+    while tokio::time::Instant::now() < deadline {
+        if let Some(status) = child
+            .try_wait()
+            .context("poll optimizer service during address discovery")?
+        {
+            bail!(
+                "optimizer service exited before publishing its address ({status}); see {}",
+                home.join("sidecar.log").display()
+            );
+        }
+        if let Some(base_url) =
+            read_optimizer_service_address(&heartbeat_path, &db_path, child_pid, &hit.version)?
+        {
+            return Ok((Some(child), base_url, None));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    terminate_child(&mut child).await;
+    bail!(
+        "optimizer service did not publish its bound address within {:?}; see {}",
+        crate::limits::OPTIMIZER_SIDECAR_READY_WAIT,
+        home.join("sidecar.log").display()
+    )
+}
+
+fn optimizer_service_heartbeat_path(gepa_home: &Path, db_path: &Path) -> PathBuf {
+    gepa_home.join("services").join(format!(
+        "{}.json",
+        sha256_hex(db_path.to_string_lossy().as_bytes())
+    ))
+}
+
+fn read_optimizer_service_address(
+    heartbeat_path: &Path,
+    db_path: &Path,
+    child_pid: u32,
+    expected_version: &str,
+) -> Result<Option<String>> {
+    let body = match fs::read(heartbeat_path) {
+        Ok(body) => body,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("read optimizer service discovery heartbeat"),
+    };
+    let heartbeat: Value =
+        serde_json::from_slice(&body).context("parse optimizer service discovery heartbeat")?;
+    if heartbeat.get("schema").and_then(Value::as_str) != Some("synth.gepa_service.whoami.v1")
+        || heartbeat.get("pid").and_then(Value::as_u64) != Some(u64::from(child_pid))
+        || heartbeat.get("db_path").and_then(Value::as_str)
+            != Some(db_path.to_string_lossy().as_ref())
+        || heartbeat.get("version").and_then(Value::as_str) != Some(expected_version)
+    {
+        return Ok(None);
+    }
+    let service_url = heartbeat
+        .get("service_url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("optimizer service heartbeat omitted service_url"))?;
+    let parsed = reqwest::Url::parse(service_url)
+        .context("optimizer service heartbeat contained an invalid service_url")?;
+    let loopback = matches!(parsed.host_str(), Some("127.0.0.1") | Some("::1"));
+    if parsed.scheme() != "http"
+        || !loopback
+        || parsed.port().is_none()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        bail!("optimizer service heartbeat advertised a non-loopback HTTP address");
+    }
+    Ok(Some(service_url.trim_end_matches('/').to_owned()))
 }
 
 #[cfg(unix)]
@@ -1209,6 +1519,23 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Refuse a runtime older than the contract floor.
+///
+/// Install-time UX, not a safety property: it explains the refusal before a
+/// download instead of after a failed handshake. The handshake stays the gate,
+/// because a version number is the runtime's claim about itself and the
+/// capability response is the only thing that demonstrates anything.
+fn enforce_version_floor(version: &str) -> Result<()> {
+    if OPTIMIZERS_CONTRACT.meets_floor(version) {
+        return Ok(());
+    }
+    bail!(
+        "optimizer sidecar `{version}` is older than the supported floor \
+         `{floor}`; install {floor} or newer",
+        floor = OPTIMIZERS_CONTRACT.min_supported
+    )
 }
 
 fn validate_version_id(version: &str) -> Result<()> {
@@ -1418,13 +1745,43 @@ fn write_secret(path: &Path, value: &[u8], newline: bool) -> Result<()> {
     Ok(())
 }
 
-fn write_env_sh(home: &Path, api_key: &str, base_url: &str, version: &str) -> Result<()> {
+/// Export the live sidecar's address for a human or an agent to source.
+///
+/// Written only after the capability handshake succeeds, because this file is
+/// the most convincing thing in the directory and nothing else about it says
+/// whether the service behind it is alive. A copy left over from a previous
+/// run is what made the original incident read as "the sidecar never started":
+/// the port belonged to an in-process proxy that dies with the host, so after
+/// the fact it always looks dead. `writtenAt` and the epoch are here so a stale
+/// copy is self-evidently stale rather than merely wrong.
+///
+/// Mode 0600: it carries the bearer token in cleartext.
+fn write_env_sh(
+    home: &Path,
+    api_key: &str,
+    base_url: &str,
+    version: &str,
+    epoch: &str,
+) -> Result<()> {
     fs::create_dir_all(home)?;
+    let written_at = chrono::Utc::now().to_rfc3339();
     let body = format!(
-        "export SYNTH_OPTIMIZER_HOST=\"127.0.0.1\"\nexport SYNTH_OPTIMIZER_BASE_URL=\"{base_url}\"\nexport SYNTH_OPTIMIZER_API_KEY=\"{api_key}\"\nexport SYNTH_OPTIMIZER_VERSION=\"{version}\"\n"
+        "# Written after a successful capability handshake. Removed on stop.\n\
+         # A copy of this file is not evidence that the service is running.\n\
+         export SYNTH_OPTIMIZER_HOST=\"127.0.0.1\"\n\
+         export SYNTH_OPTIMIZER_BASE_URL=\"{base_url}\"\n\
+         export SYNTH_OPTIMIZER_API_KEY=\"{api_key}\"\n\
+         export SYNTH_OPTIMIZER_VERSION=\"{version}\"\n\
+         export SYNTH_OPTIMIZER_RUNTIME_EPOCH=\"{epoch}\"\n\
+         export SYNTH_OPTIMIZER_WRITTEN_AT=\"{written_at}\"\n"
     );
-    fs::write(home.join("env.sh"), body)?;
-    Ok(())
+    write_secret(&home.join("env.sh"), body.as_bytes(), false)
+}
+
+/// Remove the exported address. Paired with every teardown path, so the file
+/// never outlives the service it describes.
+fn clear_env_sh(home: &Path) {
+    let _ = fs::remove_file(home.join("env.sh"));
 }
 
 fn read_selected_version(home: &Path) -> Result<Option<String>> {
@@ -1578,7 +1935,7 @@ fn materialize_verified_distribution(
         "publisher": "Synth Laboratories",
         "networkHost": "pypi.org",
         "platform": std::env::consts::OS,
-        "workshopCompat": "0.3.0",
+        "workshopCompat": OPTIMIZERS_CONTRACT.workshop_compat,
     });
     fs::write(staging.join(PAYLOAD_FILE), &payload)?;
     fs::write(
@@ -1830,51 +2187,67 @@ fn prove_offline_version(staging: &Path, spec: &OptimizerSidecarInstallSpec) -> 
     Ok(())
 }
 
-fn default_capabilities() -> Value {
-    default_capabilities_for(&OptimizerSidecarVersion {
-        version: DEFAULT_SIDECAR_VERSION.into(),
-        digest: String::new(),
-        signature: String::new(),
-        algorithm_id: "gepa".into(),
-        algorithm_version: DEFAULT_ALGORITHM_VERSION.into(),
-        recipe_schema_version: DEFAULT_RECIPE_SCHEMA_VERSION.into(),
-        selected: false,
-        path: String::new(),
-    })
-}
-
-fn default_capabilities_for(hit: &OptimizerSidecarVersion) -> Value {
-    let body = json!({
-        "algorithms": ["gepa"],
-        "recipes": [
-            "gepa.banking77.smoke.v1",
-            "gepa.banking77.luna.v1",
-            "gepa.banking77.sol.v1",
-            "gepa.craftax.smoke.v1"
-        ],
-        "eventSchemas": ["optimizer_event.v1"],
-        "stateSchemas": ["optimizer_state_slice.v1"],
-        "replay": true,
-        "cancellation": true,
-        "controls": ["cancel"],
-        "limits": { "maxCostUsd": 2.45, "maxTotalRollouts": 240 },
-        "compatibleTemplateIds": [
-            "optimizer.gepa.live.v1",
-            "optimizer.sft.live.v1",
-            "optimizer.dag.live.v1",
-            "optimizer.run.v1"
-        ],
-        "sidecarVersion": hit.version,
-        "algorithmVersion": hit.algorithm_version,
-    });
-    let digest = sha256_hex(&serde_json::to_vec(&body).unwrap_or_default());
-    let mut object = body.as_object().cloned().unwrap_or_default();
-    object.insert("digest".into(), json!(format!("sha256:{digest}")));
-    Value::Object(object)
-}
-
 fn read_capabilities(home: &Path) -> Option<Value> {
     serde_json::from_slice(&fs::read(home.join("capabilities.json")).ok()?).ok()
+}
+
+/// Drop the stored handshake. Capabilities are evidence about one installed
+/// version; they are lifecycle state, not durable configuration, and outliving
+/// their version is how a stale attestation keeps satisfying gates.
+fn clear_stored_capabilities(home: &Path) {
+    let _ = fs::remove_file(home.join("capabilities.json"));
+}
+
+/// Does this 404 mean "no such route" rather than "no such run"?
+///
+/// The two arrive as the same status but mean opposite things for a live run:
+/// a run that is not indexed yet may appear at any moment, while a route that
+/// does not exist will never appear, so retrying it only pays for rollouts
+/// nobody can ingest. `synth-optimizers` 0.2.5 labels both `run_not_found` —
+/// its unknown-route fallback reuses the run code — so the distinction is only
+/// available from runtimes that report it, and absence means "assume the
+/// retryable one" rather than guessing.
+fn events_not_found_is_missing_route(body: &Value) -> bool {
+    body.get("error")
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_str)
+        == Some("route_not_found")
+}
+
+/// Bound a diagnostic string and strip anything credential-shaped. Upstream
+/// bodies are echoed into errors and logs, and the sidecar's bearer token is
+/// the one secret in scope, so a stack trace that quotes a request must not
+/// carry it along.
+fn truncate_detail(detail: &str) -> String {
+    const LIMIT: usize = 320;
+    let redacted = redact_optimizer_secrets(detail.trim());
+    if redacted.chars().count() <= LIMIT {
+        return redacted;
+    }
+    let head: String = redacted.chars().take(LIMIT).collect();
+    format!("{head}… (truncated)")
+}
+
+fn redact_optimizer_secrets(detail: &str) -> String {
+    let mut out = detail.to_owned();
+    // The key is minted by this process, so redact the live value rather than
+    // pattern-matching a format that may change.
+    if let Ok(key) = env::var("SYNTH_OPTIMIZER_API_KEY") {
+        if key.len() >= 8 {
+            out = out.replace(&key, "[redacted]");
+        }
+    }
+    out
+}
+
+async fn upstream_failure_detail(response: reqwest::Response) -> String {
+    let status = response.status();
+    match response.text().await {
+        Ok(text) if !text.trim().is_empty() => {
+            format!("upstream {status}: {}", truncate_detail(&text))
+        }
+        _ => format!("upstream {status}"),
+    }
 }
 
 fn health_body(hit: &OptimizerSidecarVersion) -> Value {
@@ -1886,6 +2259,18 @@ fn health_body(hit: &OptimizerSidecarVersion) -> Value {
         "algorithmVersion": hit.algorithm_version,
         "recipeSchemaVersion": hit.recipe_schema_version,
     })
+}
+
+fn truncate_diagnostic(value: &str, max_chars: usize) -> String {
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        truncated.push_str("… (truncated)");
+    }
+    truncated
+}
+
+fn diagnostic_error_message(error: &anyhow::Error) -> String {
+    truncate_diagnostic(&error.to_string(), 2_000)
 }
 
 async fn route_sidecar(
@@ -1908,7 +2293,7 @@ async fn route_sidecar(
         .next()
         .unwrap_or(request.path.as_str());
     match (request.method.as_str(), path) {
-        ("GET", "/health") | ("GET", "/v1/optimizer/capabilities") => {
+        ("GET", "/health") => {
             let upstream = client
                 .get(format!("{upstream_base_url}/health"))
                 .timeout(crate::limits::OPTIMIZER_SIDECAR_HEALTH_TIMEOUT)
@@ -1944,6 +2329,44 @@ async fn route_sidecar(
             }
             JsonHttpResponse::ok(health)
         }
+        ("GET", "/v1/optimizer/capabilities") => {
+            let upstream = client
+                .get(format!("{upstream_base_url}/v1/optimizer/capabilities"))
+                .timeout(crate::limits::OPTIMIZER_SIDECAR_HEALTH_TIMEOUT)
+                .send()
+                .await;
+            let Ok(upstream) = upstream else {
+                return JsonHttpResponse::error(
+                    StatusCode::BAD_GATEWAY,
+                    "optimizer capability endpoint is unavailable",
+                );
+            };
+            // Preserve the upstream status. Collapsing everything to 502 made a
+            // runtime that never implemented this route indistinguishable from
+            // one that had crashed — the difference between "upgrade the
+            // plugin" and "restart the service", reported identically.
+            let status = upstream.status();
+            if !status.is_success() {
+                let detail = upstream_failure_detail(upstream).await;
+                if status == StatusCode::NOT_FOUND {
+                    return JsonHttpResponse::error(
+                        StatusCode::NOT_FOUND,
+                        format!("optimizer_capability_route_missing: {detail}"),
+                    );
+                }
+                return JsonHttpResponse::error(
+                    status,
+                    format!("optimizer capability endpoint failed: {detail}"),
+                );
+            }
+            match upstream.json::<Value>().await {
+                Ok(body) => JsonHttpResponse::ok(body),
+                Err(_) => JsonHttpResponse::error(
+                    StatusCode::BAD_GATEWAY,
+                    "optimizer service returned invalid capabilities",
+                ),
+            }
+        }
         ("GET", path) if path.starts_with("/runs/") && path.ends_with("/optimizer-events") => {
             let upstream = client
                 .get(format!("{upstream_base_url}{}", request.path))
@@ -1956,17 +2379,21 @@ async fn route_sidecar(
                     "optimizer event endpoint is unavailable",
                 );
             };
+            // A non-JSON body must not rewrite the status. Reporting a plain
+            // 404 as 502 turned a retryable "run not indexed yet" into a fatal
+            // error on the poll loop's first tick, killing runs that were only
+            // a moment from registering.
             let status = upstream.status();
-            let Ok(body) = upstream.json::<Value>().await else {
-                return JsonHttpResponse::error(
+            let text = upstream.text().await.unwrap_or_default();
+            let parsed = serde_json::from_str::<Value>(&text).ok();
+            match (status.is_success(), parsed) {
+                (true, Some(body)) => JsonHttpResponse::ok(body),
+                (true, None) => JsonHttpResponse::error(
                     StatusCode::BAD_GATEWAY,
                     "optimizer event endpoint returned invalid JSON",
-                );
-            };
-            if status.is_success() {
-                JsonHttpResponse::ok(body)
-            } else {
-                JsonHttpResponse::error(status, body.to_string())
+                ),
+                (false, Some(body)) => JsonHttpResponse::error(status, body.to_string()),
+                (false, None) => JsonHttpResponse::error(status, truncate_detail(&text)),
             }
         }
         _ => JsonHttpResponse::error(StatusCode::NOT_FOUND, "not found"),
@@ -2135,6 +2562,55 @@ mod tests {
         (OptimizerManager::with_home(dir.path().to_path_buf()), dir)
     }
 
+    #[test]
+    fn service_discovery_accepts_only_the_spawned_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager_home = dir.path().join("manager");
+        let gepa_home = optimizer_gepa_home(&manager_home);
+        let db_path = optimizer_gepa_db(&manager_home);
+        let heartbeat_path = optimizer_service_heartbeat_path(&gepa_home, &db_path);
+        fs::create_dir_all(heartbeat_path.parent().unwrap()).unwrap();
+        let heartbeat = json!({
+            "schema": "synth.gepa_service.whoami.v1",
+            "pid": 4242,
+            "db_path": db_path.to_string_lossy(),
+            "version": DEFAULT_SIDECAR_VERSION,
+            "service_url": "http://127.0.0.1:49152"
+        });
+        fs::write(&heartbeat_path, serde_json::to_vec(&heartbeat).unwrap()).unwrap();
+
+        assert_eq!(
+            read_optimizer_service_address(
+                &heartbeat_path,
+                &db_path,
+                4242,
+                DEFAULT_SIDECAR_VERSION,
+            )
+            .unwrap()
+            .as_deref(),
+            Some("http://127.0.0.1:49152")
+        );
+        assert!(read_optimizer_service_address(
+            &heartbeat_path,
+            &db_path,
+            4243,
+            DEFAULT_SIDECAR_VERSION,
+        )
+        .unwrap()
+        .is_none());
+
+        let mut remote = heartbeat;
+        remote["service_url"] = json!("http://example.com:49152");
+        fs::write(&heartbeat_path, serde_json::to_vec(&remote).unwrap()).unwrap();
+        assert!(read_optimizer_service_address(
+            &heartbeat_path,
+            &db_path,
+            4242,
+            DEFAULT_SIDECAR_VERSION,
+        )
+        .is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn optimizer_launcher_survives_staging_activation() {
@@ -2231,9 +2707,22 @@ mod tests {
         let (mgr, _home) = manager();
         let run = seed_run(&svc).await;
         mgr.install(None).unwrap();
+        assert!(!mgr.home().join("env.sh").exists());
         let started = mgr.start().await.unwrap();
         assert_eq!(started.phase, "ready");
         assert!(started.base_url.is_some());
+        let env_path = mgr.home().join("env.sh");
+        let env_body = fs::read_to_string(&env_path).unwrap();
+        assert!(env_body.contains("SYNTH_OPTIMIZER_RUNTIME_EPOCH"));
+        assert!(env_body.contains("SYNTH_OPTIMIZER_WRITTEN_AT"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&env_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         let (pinned, pin) = mgr
             .pin_run(&svc, &run.id, "gepa.banking77.smoke.v1")
             .await
@@ -2242,6 +2731,7 @@ mod tests {
         assert!(Path::new(&pin.spool_path).join("identity.json").is_file());
         let stopped = mgr.stop().await.unwrap();
         assert_ne!(stopped.phase, "ready");
+        assert!(!env_path.exists());
         let kept = svc.get(run.id.clone()).await.unwrap();
         assert_eq!(kept.id, run.id);
         assert!(kept.cursor_seq >= 1);
@@ -2393,6 +2883,8 @@ mod tests {
         let visual_id = run.visual_refs[0].id.clone();
         mgr.install(None).unwrap();
         mgr.start().await.unwrap();
+        assert!(mgr.home().join("capabilities.json").is_file());
+        assert!(mgr.home().join("env.sh").is_file());
         let (pinned, pin) = mgr
             .pin_run(&svc, &run.id, "gepa.banking77.smoke.v1")
             .await
@@ -2411,6 +2903,8 @@ mod tests {
         svc.persist_run(completed).await.unwrap();
         mgr.uninstall(DEFAULT_SIDECAR_VERSION, &svc).await.unwrap();
         assert!(mgr.discover().unwrap().is_empty());
+        assert!(!mgr.home().join("capabilities.json").exists());
+        assert!(!mgr.home().join("env.sh").exists());
         let kept = svc.get(run.id.clone()).await.unwrap();
         assert_eq!(kept.id, run.id);
         let events = svc.events_after(run.id.clone(), 0, None).await.unwrap();
@@ -2581,6 +3075,55 @@ mod tests {
         assert!(error.to_string().contains("not_indexed_yet"));
 
         let _ = mgr.stop().await;
+    }
+
+    /// A5. A missing route and a missing run share a status and must not share
+    /// a fate: one is worth retrying, the other is worth failing on. 0.2.5
+    /// cannot express the difference — its unknown-route fallback reuses the
+    /// `run_not_found` code — so an unlabelled 404 stays retryable and only an
+    /// explicit `route_not_found` short-circuits.
+    ///
+    /// Classification is asserted directly rather than through the in-process
+    /// fake: teaching the fake to emit a code the pinned artifact never emits
+    /// would make it diverge from the thing it stands in for, which is how this
+    /// subsystem's suite came to pass over a missing endpoint in the first
+    /// place. End-to-end coverage belongs to the real-artifact contract test.
+    #[test]
+    fn a_missing_route_is_distinguished_from_a_missing_run() {
+        assert!(events_not_found_is_missing_route(&json!({
+            "error": { "code": "route_not_found", "message": "route not found: GET /runs/x" }
+        })));
+
+        // What 0.2.5 actually returns for BOTH cases — verified live against the
+        // installed wheel. Must stay retryable, or every run on a current
+        // sidecar dies on its first poll.
+        assert!(!events_not_found_is_missing_route(&json!({
+            "error": { "code": "run_not_found", "message": "route not found: GET /runs/x" }
+        })));
+
+        // Nothing to go on: assume the retryable reading.
+        assert!(!events_not_found_is_missing_route(&json!({})));
+        assert!(!events_not_found_is_missing_route(&json!({ "error": {} })));
+    }
+
+    /// A5. Diagnostics quote upstream bodies, and the sidecar bearer token is
+    /// the one secret in scope.
+    #[test]
+    fn upstream_detail_is_bounded_and_redacted() {
+        let key = "synth-opt-0123456789abcdef0123456789abcdef";
+        env::set_var("SYNTH_OPTIMIZER_API_KEY", key);
+        let detail = truncate_detail(&format!("unauthorized for bearer {key} on /health"));
+        assert!(
+            !detail.contains(key),
+            "token leaked into a diagnostic: {detail}"
+        );
+        assert!(detail.contains("[redacted]"));
+        env::remove_var("SYNTH_OPTIMIZER_API_KEY");
+
+        let long = "x".repeat(4096);
+        let bounded = truncate_detail(&long);
+        assert!(bounded.chars().count() < 400);
+        assert!(bounded.ends_with("… (truncated)"));
     }
 
     #[tokio::test]
@@ -2867,11 +3410,13 @@ mod tests {
         assert_eq!(started.phase, "ready");
         let caps = mgr.advertised_capabilities();
         assert_eq!(caps["algorithms"][0], "gepa");
-        assert!(caps["compatibleTemplateIds"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|value| value == "optimizer.gepa.live.v1"));
+        assert!(
+            caps.get("compatibleTemplateIds").is_none() && caps.get("recipes").is_none(),
+            "the runtime-authored handshake must not echo Desktop vocabulary"
+        );
+        assert_eq!(caps["contractVersion"], "optimizer.contract.v1");
+        assert_eq!(caps["serviceVersion"], OPTIMIZERS_CONTRACT.official);
+        assert!(caps["digest"].as_str().unwrap().starts_with("sha256:"));
     }
 
     #[test]

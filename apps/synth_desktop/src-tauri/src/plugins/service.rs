@@ -27,6 +27,7 @@ const RETAIN_AFTER_REMOVE: &str =
     "Removes the installed runtime only. Mirrored runs, results, artifacts, and retained templates stay.";
 const ENABLE_RETENTION: &str =
     "Does not start, stop, install, or delete the optimizer service or retained data.";
+const PLUGIN_APPROVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 #[derive(Clone)]
 pub struct PluginService {
@@ -93,7 +94,7 @@ impl PluginService {
                         .map(str::to_string)
                         .collect()
                 })
-                .unwrap_or_else(|| vec!["gepa".into()]),
+                .unwrap_or_default(),
             templates: capabilities
                 .get("compatibleTemplateIds")
                 .and_then(Value::as_array)
@@ -104,9 +105,7 @@ impl PluginService {
                         .map(str::to_string)
                         .collect()
                 })
-                .unwrap_or_else(|| {
-                    vec!["optimizer.gepa.live.v1".into(), "optimizer.run.v1".into()]
-                }),
+                .unwrap_or_default(),
             last_action_receipt_id: None,
             detail: sidecar.detail.as_deref().map(redact_secrets),
         };
@@ -330,21 +329,22 @@ impl PluginService {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow!("plugin mutations require a session to request approval"))?;
         let (resolver, rx) = HostDecisionResolver::pair();
-        let approval_id = broker
-            .request(
-                app,
-                ApprovalOrigin {
-                    session_id: session_id.into(),
-                    instance_id: format!("desktop-{}", std::process::id()),
-                },
-                kind,
-                resolver,
-            )
-            .await?;
-        let decision = rx
-            .await
-            .map_err(|_| anyhow!("plugin approval waiter closed"))?
-            .map_err(|reason| anyhow!("plugin approval expired: {reason}"))?;
+        let origin = ApprovalOrigin {
+            session_id: session_id.into(),
+            instance_id: format!("desktop-{}", std::process::id()),
+        };
+        let approval_id = broker.request(app, origin.clone(), kind, resolver).await?;
+        let decision = match tokio::time::timeout(PLUGIN_APPROVAL_TIMEOUT, rx).await {
+            Ok(result) => result,
+            Err(_) => {
+                broker
+                    .expire_origin(app, &origin, "approval_timed_out")
+                    .await?;
+                bail!("plugin approval timed out");
+            }
+        }
+        .map_err(|_| anyhow!("plugin approval waiter closed"))?
+        .map_err(|reason| anyhow!("plugin approval expired: {reason}"))?;
         Ok(Authorization {
             approval_id,
             rejected: matches!(decision, ApprovalDecision::Reject),
@@ -430,5 +430,30 @@ mod tests {
             &json!({"plugin_id":"optimizers","version":"0.2.0"}),
         )
         .unwrap();
+    }
+
+    /// The renderer and the MCP facade reach the same lifecycle surface, so the
+    /// set of operations must not drift apart between them.
+    #[test]
+    fn lifecycle_operations_match_the_agent_facing_surface() {
+        let advertised = [
+            "list",
+            "status",
+            "capabilities",
+            "enable",
+            "disable",
+            "install",
+            "start",
+            "stop",
+            "update",
+            "remove",
+        ];
+        let mcp_schema = include_str!("../bin/synth_plugins_mcp.rs");
+        for operation in advertised {
+            assert!(
+                mcp_schema.contains(&format!("\"{operation}\"")),
+                "`{operation}` is reachable natively but absent from the MCP schema"
+            );
+        }
     }
 }

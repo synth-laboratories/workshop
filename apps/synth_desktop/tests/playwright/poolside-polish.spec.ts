@@ -22,8 +22,9 @@ test.describe("preferences persistence", () => {
 		await page.getByTestId("theme-dark").click();
 		await page.getByTestId("tool-activity-compact").click();
 		await page.getByTestId("active-enter-steer").click();
+		await page.getByTestId("chat-font-size-trigger").click();
 		await page.getByTestId("chat-font-size").fill("18");
-		await page.getByTestId("chat-font-size").blur();
+		await page.getByRole("button", { name: "Apply", exact: true }).click();
 		await page.getByTestId("save-layout-default").click();
 
 		const stored = await page.evaluate(() => window.localStorage.getItem("synth.preferences.v1"));
@@ -67,10 +68,11 @@ test.describe("preferences persistence", () => {
 
 	test("invalid font size is rejected with feedback", async ({ page }) => {
 		await openSettings(page);
+		await page.getByTestId("chat-font-size-trigger").click();
 		await page.getByTestId("chat-font-size").fill("99");
-		await page.getByTestId("chat-font-size").blur();
+		await page.getByRole("button", { name: "Apply", exact: true }).click();
 		await expect(page.getByTestId("chat-font-size-error")).toBeVisible();
-		await expect(page.getByTestId("chat-font-size")).toHaveValue("14");
+		await expect(page.getByTestId("chat-font-size-trigger")).toContainText("14");
 	});
 });
 
@@ -189,7 +191,7 @@ test.describe("steer and enqueue", () => {
 			noHorizontalOverflow: true
 		});
 		await page.getByTestId("composer-input").fill("queued one");
-		await page.getByTestId("composer-send").click();
+		await page.getByTestId("composer-input").press("Enter");
 		await expect(page.getByTestId("prompt-queue")).toBeVisible();
 		await expect(page.locator('[data-testid^="queued-prompt-"] input')).toHaveValue("queued one");
 		await expect(page.getByTestId("prompt-queue")).toContainText("Next turns");
@@ -255,7 +257,7 @@ test.describe("steer and enqueue", () => {
 		await page.reload();
 		await page.getByTestId("local-chat-queue-failure-chat").click();
 		await page.getByTestId("composer-input").fill("must survive rejection");
-		await page.getByTestId("composer-send").click();
+		await page.getByTestId("composer-input").press("Enter");
 		await page.getByRole("button", { name: "Stop" }).click();
 		await expect(page.getByTestId("prompt-queue-after-stop")).toBeVisible();
 		await page.getByTestId("send-next-queued").click();
@@ -305,7 +307,7 @@ test.describe("steer and enqueue", () => {
 		const supported = await page.evaluate(() => Boolean((window as typeof window & { synthCodex?: { steerTurn?: unknown } }).synthCodex?.steerTurn));
 		expect(supported).toBe(true);
 		await page.getByTestId("composer-input").fill("nudge the active turn");
-		await page.getByTestId("composer-send").click();
+		await page.getByTestId("composer-input").press("Enter");
 		await expect(page.getByTestId("composer-input")).toHaveValue("");
 		const calls = await page.evaluate(() => (window as typeof window & { __steerCalls?: Array<{ sessionId: string; text: string }> }).__steerCalls ?? []);
 		expect(calls).toEqual([{ sessionId: "steer-session", text: "nudge the active turn" }]);
@@ -318,6 +320,42 @@ test.describe("steer and enqueue", () => {
 		expect(promotedCalls).toEqual([
 			{ sessionId: "steer-session", text: "nudge the active turn" },
 			{ sessionId: "steer-session", text: "push this through now" }
+		]);
+	});
+
+	test("double Return in the working composer promotes the prompt without focusing the queue", async ({ page }) => {
+		await page.addInitScript(() => {
+			const calls: Array<{ sessionId: string; text: string }> = [];
+			const testWindow = window as typeof window & { __steerCalls?: typeof calls; synthCodex?: unknown; synthLaguna?: unknown };
+			testWindow.__steerCalls = calls;
+			testWindow.synthLaguna = {
+				getStatus: async () => ({ phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm", loadedModel: "poolside/Laguna-XS-2.1-NVFP4-mlx", detail: "ready", memoryBytes: null, updatedAt: Date.now() }),
+				onStatus: () => () => undefined, listModels: async () => [], chooseModelDirectory: async () => null,
+				setModelDirectory: async () => undefined, clearModelDirectory: async () => undefined
+			};
+			testWindow.synthCodex = {
+				defaultWorkspace: async () => "/workspaces/default",
+				list: async () => [{ sessionId: "composer-steer-session", threadId: "thread-steer", workspace: "/workspaces/default", model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna", providerTitle: "Laguna XS", baseUrl: "http://127.0.0.1:7333", status: "running" }],
+				start: async () => ({ sessionId: "composer-steer-session", threadId: "thread-steer" }),
+				startTurn: async () => ({ sessionId: "composer-steer-session", threadId: "thread-steer", turnId: "turn-steer" }),
+				steerTurn: async (sessionId: string, text: string) => { calls.push({ sessionId, text }); },
+				interrupt: async () => undefined, close: async () => undefined, onEvent: () => () => undefined
+			};
+			window.localStorage.setItem("synth.preferences.v1", JSON.stringify({ schemaVersion: 1, submission: { activeEnterAction: "enqueue" } }));
+		});
+		await page.reload();
+		await page.getByTestId("local-chat-composer-steer-session").click();
+		const composer = page.getByTestId("composer-input");
+		await composer.fill("steer without queue focus");
+		await composer.press("Enter");
+		await expect(page.getByTestId("prompt-queue")).toContainText("Return again to steer now");
+		await expect(page.getByTestId("composer-steer-hint")).toHaveText("Queued — Return again to steer");
+		await expect(composer).toBeFocused();
+		await composer.press("Enter");
+		await expect(page.getByTestId("prompt-queue")).toBeHidden();
+		await expect(page.getByTestId("composer-steer-hint")).toBeHidden();
+		await expect.poll(() => page.evaluate(() => (window as typeof window & { __steerCalls?: Array<{ sessionId: string; text: string }> }).__steerCalls ?? [])).toEqual([
+			{ sessionId: "composer-steer-session", text: "steer without queue focus" }
 		]);
 	});
 });

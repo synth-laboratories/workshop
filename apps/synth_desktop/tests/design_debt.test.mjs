@@ -176,12 +176,22 @@ test("Trace V5 viewer keeps async resolution revision-safe and failures explicit
 });
 
 test("Data Inspect persists trace identity and digest binding without projection payload", () => {
+	// The binding shape itself moved to runtime/traceInspector.ts and is now
+	// asserted behaviourally in trace_inspector_identity.test.mjs — including
+	// that a re-sealed trace does not reuse the old archive's inspector, which
+	// matching source text could never have caught. What remains DataPage's own
+	// responsibility is checked here.
+	const inspector = read("runtime/traceInspector.ts");
+	assert.match(inspector, /templateId: TRACE_INSPECTOR_TEMPLATE/);
+	assert.match(inspector, /slot: "projection"/);
+	assert.match(inspector, /kind: "trace_v5"/);
+	assert.match(inspector, /source: trace\.digest/);
+	assert.match(inspector, /traceRecordId: trace\.id/);
+
 	const inventory = read("components/DataPage.tsx");
-	assert.match(inventory, /templateId: TRACE_INSPECTOR_TEMPLATE/);
-	assert.match(inventory, /slot: "projection"/);
-	assert.match(inventory, /kind: "trace_v5"/);
-	assert.match(inventory, /source: trace\.digest/);
-	assert.match(inventory, /traceRecordId: trace\.id/);
 	assert.match(inventory, /bridges\.visuals\.list\(\{ templateId: TRACE_INSPECTOR_TEMPLATE/);
+	// A projection payload must never be inlined into the visual: the sealed
+	// archive stays the source and the projection is resolved on demand.
 	assert.doesNotMatch(inventory, /payload:\s*projection/);
+	assert.doesNotMatch(inspector, /payload:\s*projection/);
 });

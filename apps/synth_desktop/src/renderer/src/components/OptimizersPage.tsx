@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { OptimizerAlgorithmInfo, OptimizerRunRecord } from "@synth/runtime-protocol";
-import type { PluginStatus } from "../bridge/types";
+import type { OptimizerRecipeInfo, PluginActionReceipt, PluginLifecycleOperation, PluginStatus } from "../bridge/types";
 import { bridges } from "../runtime/desktopBridge";
+import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
 
 type OptimizerGuide = {
-	id: "gepa" | "go-ex" | "sft";
+	id: "gepa" | "go-ex" | "sft" | "eval";
 	label: string;
 	name: string;
 	description: string;
@@ -43,6 +44,9 @@ type Props = {
 	onOpenVisual: (visualId: string) => void;
 	onStartAgent: (guide: OptimizerGuide) => Promise<void>;
 	onBack: () => void;
+	/** Owned by useAppController; this page no longer reads the registry itself. */
+	pluginStatuses?: readonly PluginStatus[] | null;
+	onRefreshPlugins?: () => Promise<void>;
 };
 
 function formatWhen(iso: string): string {
@@ -57,7 +61,51 @@ function algorithmLabel(id: string): string {
 	if (id === "gepa") return "GEPA";
 	if (id === "go-ex") return "GELO";
 	if (id === "sft") return "SFT";
+	if (id === "eval") return "Eval";
 	return id;
+}
+
+type EvalScorecard = {
+	id: string;
+	label: string;
+	stage: string;
+	isBaseline: boolean;
+	trials?: { total: number; valid: number; failed: number };
+	metrics?: Array<{ metric: string; mean: number | null; count: number }>;
+	pairedLift?: number | null;
+	pairedTrials?: number;
+	eliminationReason?: string | null;
+};
+
+type EvalSelection = {
+	status: string;
+	winner_id: string | null;
+	primary_metric: string;
+	lift: number | null;
+	min_lift: number;
+	reason: string;
+};
+
+type EvalState = {
+	scorecards: EvalScorecard[];
+	selection: EvalSelection | null;
+	runtime: Record<string, unknown>;
+	evidenceDir: string | null;
+};
+
+function sliceData(slice: unknown): Record<string, unknown> {
+	const data = (slice as { data?: unknown })?.data;
+	return (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+}
+
+function formatMetric(value: number | null | undefined): string {
+	// A metric no valid trial produced is unknown, not zero.
+	return value == null ? "—" : value.toFixed(3);
+}
+
+function formatLift(value: number | null | undefined): string {
+	if (value == null) return "—";
+	return `${value > 0 ? "+" : ""}${value.toFixed(3)}`;
 }
 
 type OptimizerDiagnostic = {
@@ -67,6 +115,39 @@ type OptimizerDiagnostic = {
 	raw?: string;
 	logPath?: string;
 };
+
+type ErrorPresentation = {
+	message: string;
+	details?: string;
+};
+
+function stringifyDiagnostic(value: unknown): string | undefined {
+	if (typeof value === "string") return value;
+	if (value == null) return undefined;
+	try {
+		return JSON.stringify(value, null, 2);
+	} catch {
+		return undefined;
+	}
+}
+
+/** Tauri errors are structured objects, never strings. Do not coerce one with
+ * `String(error)`, which is how lifecycle failures became `[object Object]`. */
+function presentError(reason: unknown): ErrorPresentation {
+	if (reason instanceof Error) return { message: reason.message };
+	if (typeof reason === "string") return { message: reason };
+	if (reason && typeof reason === "object") {
+		const value = reason as Record<string, unknown>;
+		const message = [value.safeMessage, value.safe_message, value.message, value.error]
+			.find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)
+			?? "The optimizer operation failed.";
+		const details = [value.responseBody, value.response_body, value.detail]
+			.map(stringifyDiagnostic)
+			.find((candidate): candidate is string => Boolean(candidate) && candidate !== message);
+		return { message, details };
+	}
+	return { message: "The optimizer operation failed." };
+}
 
 function optimizerDiagnostic(error: unknown): OptimizerDiagnostic | null {
 	if (!error) return null;
@@ -98,6 +179,70 @@ function fileName(path: string): string {
 	return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
 
+/**
+ * Lifecycle actions offered to the human, mirroring what `plugin_manage`
+ * already exposes to agents. Availability here only decides what to *offer*;
+ * whether an action is permitted is decided natively by the approval broker and
+ * the active-run guards, and every outcome comes back as a receipt.
+ */
+type LifecycleAction = {
+	operation: PluginLifecycleOperation;
+	label: string;
+	destructive?: boolean;
+	/** Confirmation copy; omitted for reversible actions. */
+	confirm?: (status: PluginStatus, presentation: PluginPresentation) => string;
+	available: (status: PluginStatus, presentation: PluginPresentation) => boolean;
+};
+
+const LIFECYCLE_ACTIONS: readonly LifecycleAction[] = [
+	{
+		operation: "install",
+		label: "Install",
+		available: (status) => status.phase === "not_installed"
+	},
+	{
+		operation: "enable",
+		label: "Enable",
+		available: (status) => status.phase !== "not_installed" && !status.enabled
+	},
+	{
+		operation: "start",
+		label: "Start",
+		available: (status) => status.enabled && (status.phase === "installed" || status.phase === "stopped")
+	},
+	{
+		operation: "stop",
+		label: "Stop",
+		confirm: (_status, presentation) => presentation.activeRuns > 0
+			? `Stop the optimizer service while ${presentation.activeRuns} run(s) are active? The service refuses this until they finish.`
+			: "Stop the optimizer service? Runs and their artifacts are retained.",
+		available: (status) => status.enabled && (status.phase === "ready" || status.phase === "degraded")
+	},
+	{
+		operation: "update",
+		label: "Update",
+		available: (status) => status.enabled && status.installedVersion != null
+			&& status.installedVersion !== status.catalogVersion
+	},
+	{
+		operation: "disable",
+		label: "Disable",
+		// `disable` clears the registry flag only — the sidecar keeps running
+		// and there is no native active-run guard on it, so say so plainly.
+		confirm: (_status, presentation) => presentation.activeRuns > 0
+			? `Disable Optimizers? ${presentation.activeRuns} run(s) keep running; only the plugin is turned off.`
+			: "Disable Optimizers? Installed files and runs are retained.",
+		available: (status) => status.phase !== "not_installed" && status.enabled
+	},
+	{
+		operation: "remove",
+		label: "Remove",
+		destructive: true,
+		confirm: () => "Remove the installed optimizer distribution? Runs and artifacts are retained; the distribution is deleted and must be downloaded again.",
+		available: (status) => status.installedVersion != null
+	}
+];
+
 function runTitle(run: OptimizerRunRecord): string {
 	const objective = run.objective ?? run.id;
 	const importedPath = objective.startsWith("imported from ")
@@ -117,7 +262,13 @@ function runTitle(run: OptimizerRunRecord): string {
 		.replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
-export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
+export function OptimizersPage({
+	onOpenVisual,
+	onStartAgent,
+	onBack,
+	pluginStatuses = null,
+	onRefreshPlugins
+}: Props) {
 	const [runs, setRuns] = useState<OptimizerRunRecord[]>([]);
 	const [algorithms, setAlgorithms] = useState<OptimizerAlgorithmInfo[]>([]);
 	const [search, setSearch] = useState("");
@@ -125,17 +276,50 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 	const [algorithm, setAlgorithm] = useState("all");
 	const [source, setSource] = useState("all");
 	const [error, setError] = useState<string | null>(null);
+	const [errorDetails, setErrorDetails] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [startingAgent, setStartingAgent] = useState<OptimizerGuide["id"] | null>(null);
-	const [plugin, setPlugin] = useState<PluginStatus | null>(null);
+	const [startingSftFixture, setStartingSftFixture] = useState(false);
+	const [evalRecipes, setEvalRecipes] = useState<OptimizerRecipeInfo[]>([]);
+	const [evalState, setEvalState] = useState<EvalState | null>(null);
+	// Set only by setReleaseChannel, which returns a fresh status; otherwise the
+	// app controller's listing is the source of truth.
+	const [pluginOverride, setPluginOverride] = useState<PluginStatus | null>(null);
 	const [changingReleaseChannel, setChangingReleaseChannel] = useState(false);
+	const plugin = pluginOverride ?? findPluginStatus(pluginStatuses, "optimizers");
+	const presentation = pluginPresentation(plugin);
+
+	const [lifecycleBusy, setLifecycleBusy] = useState<PluginLifecycleOperation | null>(null);
+	const [receipt, setReceipt] = useState<PluginActionReceipt | null>(null);
 
 	const refreshPlugin = useCallback(async () => {
-		if (!bridges.plugins) return;
-		const status = await bridges.plugins.status("optimizers");
-		setPlugin(status);
-	}, []);
+		setPluginOverride(null);
+		await onRefreshPlugins?.();
+	}, [onRefreshPlugins]);
+
+	const runLifecycle = async (action: LifecycleAction) => {
+		if (!bridges.plugins?.manage || !plugin) return;
+		const question = action.confirm?.(plugin, presentation);
+		if (question && !window.confirm(question)) return;
+		setLifecycleBusy(action.operation);
+		setError(null);
+		setErrorDetails(null);
+		try {
+			const next = await bridges.plugins.manage(action.operation, "optimizers");
+			setReceipt(next);
+			// The native side may have rejected the approval rather than acted;
+			// the receipt says which, so surface it rather than assuming success.
+			if (next.error) setError(next.error);
+			await refreshPlugin();
+		} catch (reason) {
+			const failure = presentError(reason);
+			setError(failure.message);
+			setErrorDetails(failure.details ?? null);
+		} finally {
+			setLifecycleBusy(null);
+		}
+	};
 
 	const refresh = useCallback(async () => {
 		if (!bridges.optimizers) {
@@ -143,69 +327,79 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 			return;
 		}
 		setError(null);
-		const [nextRuns, nextAlgorithms] = await Promise.all([
+		const [nextRuns, nextAlgorithms, nextRecipes] = await Promise.all([
 			bridges.optimizers.list({
 				search: search.trim() || undefined,
 				status: status === "all" ? undefined : status,
 				algorithmId: algorithm === "all" ? undefined : algorithm,
 				source: source === "all" ? undefined : source
 			}),
-			bridges.optimizers.listAlgorithms()
+			bridges.optimizers.listAlgorithms(),
+			bridges.optimizers.listRecipes().catch(() => [] as OptimizerRecipeInfo[])
 		]);
 		setRuns(nextRuns);
 		setAlgorithms(nextAlgorithms);
+		setEvalRecipes(nextRecipes.filter((recipe) => recipe.algorithmId === "eval"));
 		if (!selectedId && nextRuns[0]) setSelectedId(nextRuns[0].id);
 	}, [algorithm, search, selectedId, source, status]);
 
+	// No plugin poller here. Registry status arrives from useAppController,
+	// which subscribes to `optimizer:status`; this page polled it every 750 ms
+	// and each poll re-probed the live sidecar.
 	useEffect(() => {
-		void refresh().catch((reason) => setError(String(reason)));
-		void refreshPlugin().catch(() => undefined);
+		void refresh().catch((reason) => setError(presentError(reason).message));
 		const unlisten = bridges.optimizers?.onEvent?.(() => {
 			void refresh().catch(() => undefined);
 			void refreshPlugin().catch(() => undefined);
 		});
-		const timer = window.setInterval(() => {
-			void refreshPlugin().catch(() => undefined);
-		}, 750);
-		return () => {
-			unlisten?.();
-			window.clearInterval(timer);
-		};
+		return () => unlisten?.();
 	}, [refresh, refreshPlugin]);
 
 	const selected = useMemo(
 		() => runs.find((run) => run.id === selectedId) ?? null,
 		[runs, selectedId]
 	);
+
+	useEffect(() => {
+		if (!selected || selected.algorithmId !== "eval" || !bridges.optimizers) {
+			setEvalState(null);
+			return;
+		}
+		let live = true;
+		void bridges.optimizers
+			.getStateBatch(selected.id, ["eval.scorecard", "eval.evidence", "eval.runtime"])
+			.then((slices) => {
+				if (!live) return;
+				const byId = new Map(
+					(slices as Array<{ sliceId?: string }>).map((slice) => [slice?.sliceId, slice])
+				);
+				const evidence = sliceData(byId.get("eval.evidence"));
+				setEvalState({
+					scorecards: (sliceData(byId.get("eval.scorecard")).candidates ?? []) as EvalScorecard[],
+					selection: (evidence.selection ?? null) as EvalSelection | null,
+					runtime: sliceData(byId.get("eval.runtime")),
+					evidenceDir: (evidence.evidenceDir ?? null) as string | null
+				});
+			})
+			.catch(() => undefined);
+		return () => {
+			live = false;
+		};
+	}, [selected]);
 	const setReleaseChannel = async (channel: "official" | "dev") => {
 		if (!bridges.plugins) return;
 		setChangingReleaseChannel(true);
 		setError(null);
 		try {
-			setPlugin(await bridges.plugins.setReleaseChannel("optimizers", channel));
+			setPluginOverride(await bridges.plugins.setReleaseChannel("optimizers", channel));
+			void onRefreshPlugins?.();
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(presentError(reason).message);
 		} finally {
 			setChangingReleaseChannel(false);
 		}
 	};
-	const pluginPhaseLabel = plugin
-		? ({
-			not_installed: "Not installed",
-			downloading: "Downloading",
-			verifying: "Verifying",
-			installed: "Installed",
-			starting: "Starting",
-			ready: "Ready",
-			stopping: "Stopping",
-			stopped: "Stopped",
-			updating: "Updating",
-			removing: "Removing",
-			degraded: "Degraded",
-			error: "Error",
-			disabled: "Disabled"
-		}[plugin.phase] ?? plugin.phase)
-		: null;
+	const pluginPhaseLabel = presentation.label;
 
 	const startAgent = async (guide: OptimizerGuide) => {
 		setStartingAgent(guide.id);
@@ -213,9 +407,29 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 		try {
 			await onStartAgent(guide);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(presentError(reason).message);
 		} finally {
 			setStartingAgent(null);
+		}
+	};
+
+	const startSftFixture = async () => {
+		if (!bridges.optimizers) return;
+		setStartingSftFixture(true);
+		setError(null);
+		try {
+			const run = await bridges.optimizers.startRecipe({
+				recipeId: "sft.hosted.fixture.v1",
+				openVisual: true
+			});
+			setSelectedId(run.id);
+			await refresh();
+			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
+			if (visualId) onOpenVisual(visualId);
+		} catch (reason) {
+			setError(presentError(reason).message);
+		} finally {
+			setStartingSftFixture(false);
 		}
 	};
 
@@ -228,7 +442,7 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 			if (visualId) onOpenVisual(visualId);
 			await refresh();
 		} catch (reason) {
-			setError(String(reason));
+			setError(presentError(reason).message);
 		} finally {
 			setBusy(false);
 		}
@@ -237,7 +451,7 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 	const importLocal = async () => {
 		if (!bridges.optimizers) return;
 		const path = window.prompt(
-			"Local OSS GEPA or optimizers-beta run path (workspace, run dir, or events.jsonl)"
+			"Local OSS GEPA or legacy optimizer run path (workspace, run dir, or events.jsonl)"
 		);
 		if (!path?.trim()) return;
 		setBusy(true);
@@ -252,7 +466,7 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
 			if (visualId) onOpenVisual(visualId);
 		} catch (reason) {
-			setError(String(reason));
+			setError(presentError(reason).message);
 		} finally {
 			setBusy(false);
 		}
@@ -282,7 +496,7 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 			}
 			await refresh();
 		} catch (reason) {
-			setError(String(reason));
+			setError(presentError(reason).message);
 		} finally {
 			setBusy(false);
 		}
@@ -292,7 +506,7 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 		? selected.executionBindings.length > 0
 			? selected.executionBindings.map((binding) => binding.label ?? binding.kind).join(" · ")
 			: selected.source === "hosted"
-				? "optimizers-beta"
+				? "Hosted service"
 				: selected.source === "cloud"
 					? "Cloud managed"
 					: "Local process"
@@ -316,7 +530,7 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 			}
 			await refresh();
 		} catch (reason) {
-			setError(String(reason));
+			setError(presentError(reason).message);
 		} finally {
 			setBusy(false);
 		}
@@ -331,7 +545,7 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 			setSelectedId(run.id);
 			await refresh();
 		} catch (reason) {
-			setError(String(reason));
+			setError(presentError(reason).message);
 		} finally {
 			setBusy(false);
 		}
@@ -352,7 +566,17 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 				</div>
 			</header>
 
-			{error ? <p className="inventory-error" role="alert" data-testid="optimizer-error">{error}</p> : null}
+			{error ? (
+				<section className="inventory-error" role="alert" data-testid="optimizer-error">
+					<p>{error}</p>
+					{errorDetails ? (
+						<details data-testid="optimizer-error-details">
+							<summary>Show technical details</summary>
+							<pre>{errorDetails}</pre>
+						</details>
+					) : null}
+				</section>
+			) : null}
 			{plugin ? (
 				<section className="optimizer-plugin-status" data-testid="optimizer-plugin-status" data-phase={plugin.phase}>
 					<div className="optimizer-plugin-summary">
@@ -381,6 +605,32 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 						</p>
 					) : null}
 					{plugin.detail ? <p>{plugin.detail}</p> : null}
+					{presentation.activeRuns > 0 ? (
+						<p className="optimizer-plugin-active-runs" data-testid="optimizer-plugin-active-runs">
+							{presentation.activeRuns} run{presentation.activeRuns === 1 ? "" : "s"} still active.
+						</p>
+					) : null}
+					<div className="optimizer-plugin-actions" data-testid="optimizer-plugin-actions">
+						{LIFECYCLE_ACTIONS.filter((action) => action.available(plugin, presentation)).map((action) => (
+							<button
+								key={action.operation}
+								type="button"
+								className={`secondary-button${action.destructive ? " optimizer-danger-button" : ""}`}
+								data-testid={`plugin-${action.operation}`}
+								disabled={lifecycleBusy !== null}
+								onClick={() => void runLifecycle(action)}
+							>
+								{lifecycleBusy === action.operation ? `${action.label}…` : action.label}
+							</button>
+						))}
+					</div>
+					{receipt ? (
+						<p className="optimizer-plugin-receipt" data-testid="plugin-action-receipt" role="status">
+							{receipt.action} · {receipt.result}
+							{receipt.error ? ` · ${receipt.error}` : ""}
+							{receipt.retainedData ? ` · retained: ${receipt.retainedData}` : ""}
+						</p>
+					) : null}
 				</section>
 			) : null}
 
@@ -396,13 +646,85 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 							<h3 id={`optimizer-guide-${guide.id}`}>{guide.name}</h3>
 							<p>{guide.description}</p>
 							<div className="optimizer-recipe-flow" aria-label={`${guide.name} workflow`}>{guide.flow.map((step) => <span key={step}>{step}</span>)}</div>
-							<button className="secondary-button" type="button" disabled={startingAgent !== null} onClick={() => void startAgent(guide)} data-testid={`start-${guide.id}-agent`}>
+							<button
+								className="secondary-button"
+								type="button"
+								// A plugin that is disabled, stopped, uninstalled, or
+								// unhealthy cannot take work; offering the launch would
+								// fail deep inside the sidecar instead of here.
+								disabled={startingAgent !== null || (plugin != null && !presentation.isUsable)}
+								title={plugin != null && !presentation.isUsable && presentation.label
+									? `Optimizers: ${presentation.label}`
+									: undefined}
+								onClick={() => void startAgent(guide)}
+								data-testid={`start-${guide.id}-agent`}
+							>
 								{startingAgent === guide.id ? "Opening agent…" : "Plan with agent"}
 							</button>
+							{guide.id === "sft" ? (
+								<>
+									<button className="secondary-button" type="button" disabled={startingSftFixture} onClick={() => void startSftFixture()} data-testid="start-sft-fixture">
+										{startingSftFixture ? "Starting fixture…" : "Run free fixture"}
+									</button>
+									<small>Public Optimizers fixture · no provider charges</small>
+								</>
+							) : null}
 						</article>
 					))}
 				</div>
 			</section>
+
+			{evalRecipes.length > 0 ? (
+				<section className="optimizer-recipes optimizer-eval-catalog" aria-labelledby="optimizer-eval-title">
+					<div className="optimizer-recipes-head">
+						<div><span className="optimizer-eyebrow">Eval · local</span><h2 id="optimizer-eval-title">Score staged policies</h2></div>
+						<p>Fixed recipes run against pinned local container targets and do not install the Optimizers plugin.</p>
+					</div>
+					<div className="optimizer-recipe-grid">
+						{evalRecipes.map((recipe) => {
+							const limits = (recipe.limits ?? {}) as Record<string, unknown>;
+							const screening = (limits.screeningSeeds as number[] | undefined) ?? [];
+							const confirmation = (limits.confirmationSeeds as number[] | undefined) ?? [];
+							const selection = (limits.selection as Record<string, unknown> | undefined) ?? {};
+							const available = recipe.availability === "available";
+							return (
+								<article className="optimizer-recipe-card" aria-labelledby={`optimizer-eval-${recipe.id}`} data-testid={`optimizer-eval-recipe-${recipe.id}`} key={recipe.id}>
+									<div className="optimizer-recipe-top">
+										<span className="optimizer-recipe-mark">EV</span>
+										<span className={`optimizer-status ${available ? "completed" : "failed"}`}>{recipe.availability}</span>
+									</div>
+									<h3 id={`optimizer-eval-${recipe.id}`}>{recipe.title}</h3>
+									<code className="optimizer-eval-id">{recipe.id}</code>
+									<dl className="optimizer-eval-limits">
+										<dt>Screen</dt><dd>{screening.join(", ") || "—"}</dd>
+										<dt>Confirm</dt><dd>{confirmation.join(", ") || "—"}</dd>
+										<dt>Primary</dt><dd>{String(selection.primary_metric ?? "—")}</dd>
+										<dt>Decision</dt><dd>{String(selection.decision_mode ?? "—")}</dd>
+										<dt>Parallel</dt><dd>{String(limits.max_parallel_trials ?? "—")}</dd>
+									</dl>
+									{recipe.availabilityReason ? <small data-testid={`optimizer-eval-blocked-${recipe.id}`}>{recipe.availabilityReason}</small> : null}
+									<button
+										className="secondary-button"
+										type="button"
+										disabled={!available || startingAgent !== null}
+										data-testid={`start-eval-${recipe.id}`}
+										onClick={() => void startAgent({
+											id: "eval",
+											label: "EV",
+											name: recipe.title,
+											description: recipe.description ?? "",
+											flow: ["Stage", "Score", "Select"],
+											prompt: `Run the Workshop eval recipe ${recipe.id} on policy variants in this project. Stage the policy files with optimizer_stage_eval_candidates using workspace-relative paths, kind python-code.v1, entrypoint policy:Policy, one labelled candidate each, marking the baseline; then call optimizer_start_recipe with the recipe id and returned candidate_set_id. Never replace a policy on your own. Report the run status and selection status separately, the per-candidate scorecard, and the evidence directory.`
+										})}
+									>
+										{startingAgent === "eval" ? "Opening agent…" : "Set up run"}
+									</button>
+								</article>
+							);
+						})}
+					</div>
+				</section>
+			) : null}
 
 			<div className="optimizer-toolbar" data-testid="optimizer-toolbar">
 				<div className="optimizer-filters">
@@ -478,6 +800,42 @@ export function OptimizersPage({ onOpenVisual, onStartAgent, onBack }: Props) {
 									<code>{selectedRunDirectory}</code>
 									<ul><li>workshop.stdout.log</li><li>workshop.stderr.log</li><li>events.jsonl</li><li>result_manifest.json</li></ul>
 								</details>
+							) : null}
+							{evalState ? (
+								<section className="optimizer-eval-scorecard" data-testid="optimizer-eval-scorecard">
+									<span className="optimizer-eyebrow">Scorecard</span>
+									<table>
+										<thead>
+											<tr><th>Candidate</th><th>Stage</th><th>Valid</th><th>Failed</th><th>Primary</th><th>Lift</th></tr>
+										</thead>
+										<tbody>
+											{evalState.scorecards.map((card) => {
+												const primary = evalState.selection?.primary_metric;
+												const metric = card.metrics?.find((entry) => entry.metric === primary);
+												return (
+													<tr key={`${card.stage}:${card.id}`} data-testid={`eval-scorecard-row-${card.id}-${card.stage}`}>
+														<td>{card.label}{card.isBaseline ? " · baseline" : ""}</td>
+														<td>{card.stage}</td>
+														<td>{card.trials?.valid ?? 0}</td>
+														<td>{card.trials?.failed ?? 0}</td>
+														<td>{formatMetric(metric?.mean)}</td>
+														<td>{formatLift(card.pairedLift)}</td>
+													</tr>
+												);
+											})}
+										</tbody>
+									</table>
+									{evalState.selection ? (
+										<dl className="optimizer-eval-selection" data-testid="optimizer-eval-selection">
+											<dt>Selection</dt><dd>{evalState.selection.status}</dd>
+											<dt>Lift</dt><dd>{formatLift(evalState.selection.lift)} / {evalState.selection.min_lift}</dd>
+											<dt>Why</dt><dd>{evalState.selection.reason}</dd>
+										</dl>
+									) : null}
+									{evalState.evidenceDir ? (
+										<code className="optimizer-eval-evidence" data-testid="optimizer-eval-evidence">{evalState.evidenceDir}</code>
+									) : null}
+								</section>
 							) : null}
 							<div className="optimizer-inspector-actions">
 								<button className="primary-button" type="button" disabled={busy} onClick={() => void openSelectedVisual()} data-testid="open-optimizer-visual">Open visual</button>

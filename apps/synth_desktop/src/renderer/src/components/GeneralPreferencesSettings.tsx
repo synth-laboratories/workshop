@@ -115,6 +115,7 @@ function NumericInput({
 		<OptionModal
 			label={label}
 			value={value.toLocaleString()}
+			triggerTestId={`${testId}-trigger`}
 			open={open}
 			onOpen={() => { setDraft(String(value)); setError(null); setOpen(true); }}
 			onClose={() => setOpen(false)}
@@ -130,14 +131,14 @@ function NumericInput({
 	);
 }
 
-function OptionModal({ label, value, open, onOpen, onClose, onApply, children }: { label: string; value: string; open: boolean; onOpen: () => void; onClose: () => void; onApply?: () => void; children: ReactNode }) {
+function OptionModal({ label, value, open, onOpen, onClose, onApply, triggerTestId, children }: { label: string; value: string; open: boolean; onOpen: () => void; onClose: () => void; onApply?: () => void; triggerTestId?: string; children: ReactNode }) {
 	const dialog = useRef<HTMLDialogElement>(null);
 	useEffect(() => {
 		if (open && !dialog.current?.open) dialog.current?.showModal();
 		if (!open && dialog.current?.open) dialog.current.close();
 	}, [open]);
 	return <div className="settings-option-control">
-		<button type="button" className="settings-option-trigger" aria-haspopup="dialog" onClick={onOpen}><span>{value}</span><em>Change</em></button>
+		<button type="button" className="settings-option-trigger" data-testid={triggerTestId} aria-haspopup="dialog" onClick={onOpen}><span>{value}</span><em>Change</em></button>
 		<dialog ref={dialog} className="settings-option-dialog" aria-label={`Change ${label}`} onCancel={(event) => { event.preventDefault(); onClose(); }} onClose={onClose}>
 			<header><div><span>Preference</span><h3>{label}</h3></div><button type="button" aria-label="Close" onClick={onClose}>×</button></header>
 			<div className="settings-option-dialog-body">{children}</div>

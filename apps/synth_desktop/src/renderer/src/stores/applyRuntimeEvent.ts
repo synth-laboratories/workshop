@@ -36,6 +36,45 @@ const TERMINAL_RUN_KINDS = new Set([
 	"run.cancelled"
 ]);
 
+function runIdentity(event: RuntimeEvent): string | undefined {
+	const payload = event.payload ?? {};
+	for (const value of [payload.runId, payload.turnId, payload.run_id, payload.turn_id]) {
+		if (typeof value === "string" && value) return value;
+	}
+	for (const nested of [payload.turn, payload.run]) {
+		if (!nested || typeof nested !== "object") continue;
+		const id = (nested as Record<string, unknown>).id;
+		if (typeof id === "string" && id) return id;
+	}
+	return undefined;
+}
+
+/**
+ * `sendTurn` resolves only after Rust has persisted the run. A fast provider
+ * can publish its terminal while that promise is still pending, so the later
+ * acceptance callback must not resurrect Working. Exact turn identity is the
+ * primary fence; old envelopes without an id are fenced only when their
+ * terminal follows the latest operator message.
+ */
+function acceptedTurnAlreadyTerminal(
+	state: SessionStoreState,
+	sessionId: string,
+	turnId: string
+): boolean {
+	const events = state.eventsBySession[sessionId] ?? [];
+	const latestUserSequence = [...events]
+		.reverse()
+		.find((event) =>
+			event.eventKind === "message.created" && event.payload?.role === "user"
+		)?.sequence;
+	return events.some((event) => {
+		if (!TERMINAL_RUN_KINDS.has(event.eventKind)) return false;
+		const terminalTurnId = runIdentity(event);
+		if (terminalTurnId) return terminalTurnId === turnId;
+		return latestUserSequence !== undefined && event.sequence > latestUserSequence;
+	});
+}
+
 function payloadId(value: RuntimeEvent): string {
 	const payload = value.payload ?? {};
 	return typeof payload.messageId === "string"
@@ -206,11 +245,16 @@ export function applyTurnAccepted(
 	sessionId: string,
 	patch: { target: ExecutionTarget; turnId?: string | null; updatedAt?: string }
 ): SessionStoreState {
+	const terminalAlreadyApplied = patch.turnId
+		? acceptedTurnAlreadyTerminal(state, sessionId, patch.turnId)
+		: false;
 	const nextSessions = patchSession(state.sessions, sessionId, (session) => ({
 		...session,
 		target: patch.target,
-		status: patch.turnId ? "running" : session.status,
-		updatedAt: patch.updatedAt ?? new Date().toISOString()
+		status: patch.turnId && !terminalAlreadyApplied ? "running" : session.status,
+		updatedAt: terminalAlreadyApplied
+			? session.updatedAt
+			: patch.updatedAt ?? new Date().toISOString()
 	}));
 	if (nextSessions === state.sessions) return state;
 	return { ...state, sessions: nextSessions };

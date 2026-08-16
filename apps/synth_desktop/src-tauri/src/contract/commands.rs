@@ -11,6 +11,8 @@ impl Commands {
     pub const CORE_DIAGNOSTICS: &'static str = "core_diagnostics";
     pub const CORE_EVENTS_AFTER: &'static str = "core_events_after";
     pub const CORE_SESSION_EVENTS_AFTER: &'static str = "core_session_events_after";
+    pub const CORE_SESSION_EVENTS_TAIL: &'static str = "core_session_events_tail";
+    pub const CORE_SESSION_EVENTS_BEFORE: &'static str = "core_session_events_before";
     pub const INTERN_SESSIONS_LIST: &'static str = "intern_sessions_list";
     pub const INTERN_SESSION_CREATE: &'static str = "intern_session_create";
     pub const INTERN_SESSION_SEND: &'static str = "intern_session_send";
@@ -90,6 +92,7 @@ impl Commands {
     pub const DATA_USAGE_LIST: &'static str = "data_usage_list";
     pub const DATA_COUNTS: &'static str = "data_counts";
     pub const MODEL_PERFORMANCE_SUMMARY: &'static str = "model_performance_summary";
+    pub const MODEL_PERFORMANCE_TURN_SAMPLES: &'static str = "model_performance_turn_samples";
     pub const MODEL_PERFORMANCE_GET: &'static str = "model_performance_get";
     pub const USAGE_SUMMARY: &'static str = "usage_summary";
     pub const TARIFF_CATALOG: &'static str = "tariff_catalog";
@@ -108,6 +111,7 @@ impl Commands {
     pub const VISUALS_TEMPLATES_GET: &'static str = "visuals_templates_get";
     pub const VISUALS_LIST: &'static str = "visuals_list";
     pub const VISUALS_GET: &'static str = "visuals_get";
+    pub const VISUALS_OBSERVATION_REPORT: &'static str = "visuals_observation_report";
     pub const VISUALS_REVISIONS: &'static str = "visuals_revisions";
     pub const VISUALS_ANNOTATIONS_LIST: &'static str = "visuals_annotations_list";
     pub const VISUALS_ANNOTATION_CREATE: &'static str = "visuals_annotation_create";
@@ -154,6 +158,7 @@ impl Commands {
     pub const OPTIMIZERS_ALGORITHMS_LIST: &'static str = "optimizers_algorithms_list";
     pub const OPTIMIZERS_RECIPES_LIST: &'static str = "optimizers_recipes_list";
     pub const OPTIMIZERS_RECIPE_START: &'static str = "optimizers_recipe_start";
+    pub const OPTIMIZERS_STAGE_EVAL_CANDIDATES: &'static str = "optimizers_stage_eval_candidates";
     pub const OPTIMIZERS_LIST: &'static str = "optimizers_list";
     pub const OPTIMIZERS_GET: &'static str = "optimizers_get";
     pub const OPTIMIZERS_CREATE: &'static str = "optimizers_create";
@@ -170,8 +175,16 @@ impl Commands {
     pub const OPTIMIZERS_LIST_CLOUD: &'static str = "optimizers_list_cloud";
     pub const PLUGINS_STATUS: &'static str = "plugins_status";
     pub const PLUGINS_LIST: &'static str = "plugins_list";
+    pub const PLUGINS_MANAGE: &'static str = "plugins_manage";
     pub const PLUGINS_SET_RELEASE_CHANNEL: &'static str = "plugins_set_release_channel";
     pub const VISUAL_SUBSCRIPTION_READY: &'static str = "visual_subscription_ready";
+    pub const VISUAL_STREAM_POLL: &'static str = "visual_stream_poll";
+    pub const DIAGNOSTICS_REPORT: &'static str = "diagnostics_report";
+    pub const DIAGNOSTICS_STATUS: &'static str = "diagnostics_status";
+    pub const DIAGNOSTICS_QUERY: &'static str = "diagnostics_query";
+    pub const DIAGNOSTICS_EXPLAIN: &'static str = "diagnostics_explain";
+    pub const DIAGNOSTICS_BUNDLE: &'static str = "diagnostics_bundle";
+    pub const DIAGNOSTICS_CLEAR_INDEX: &'static str = "diagnostics_clear_index";
     pub const OPTIMIZER_SIDECAR_STATUS: &'static str = "optimizer_sidecar_status";
     pub const OPTIMIZER_SIDECAR_INSTALL: &'static str = "optimizer_sidecar_install";
     pub const OPTIMIZER_SIDECAR_START: &'static str = "optimizer_sidecar_start";
