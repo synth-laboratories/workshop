@@ -238,12 +238,25 @@ fn paid_compute_bounds_for_candidate_count(
     recipe: &Value,
     candidate_count: u64,
 ) -> Result<(f64, u64)> {
-    let per_trial_usd = recipe
-        .pointer("/budget/max_usd")
-        .or_else(|| recipe.pointer("/budget/maxUsd"))
-        .and_then(Value::as_f64)
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .ok_or_else(|| anyhow!("eval recipe is missing budget.max_usd"))?;
+    // Only a recipe that publishes a model allowlist can reach a paid provider.
+    // A code-policy recipe runs the candidate's own code in a network-less
+    // container, so demanding a dollar budget from it would block a run that
+    // cannot spend a cent — and the trial count is then the bound that means
+    // something. A recipe that *does* declare models still fails closed.
+    let declares_paid_models = recipe
+        .get("models")
+        .and_then(Value::as_array)
+        .is_some_and(|models| !models.is_empty());
+    let per_trial_usd = if declares_paid_models {
+        recipe
+            .pointer("/budget/max_usd")
+            .or_else(|| recipe.pointer("/budget/maxUsd"))
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .ok_or_else(|| anyhow!("eval recipe is missing budget.max_usd"))?
+    } else {
+        0.0
+    };
     let trials_per_candidate = recipe
         .pointer("/limits/trials")
         .and_then(Value::as_u64)
@@ -253,7 +266,7 @@ fn paid_compute_bounds_for_candidate_count(
         .checked_mul(candidate_count)
         .ok_or_else(|| anyhow!("eval trial count overflow"))?;
     let total_usd = per_trial_usd * total_trials as f64;
-    if !total_usd.is_finite() || total_usd <= 0.0 {
+    if !total_usd.is_finite() || total_usd < 0.0 {
         bail!("eval paid-compute cap is invalid");
     }
     Ok((total_usd, total_trials))
@@ -1370,6 +1383,7 @@ mod tests {
     fn paid_eval_cap_aggregates_per_trial_budget_across_candidates() {
         let (max_usd, max_trials) = paid_compute_bounds_for_candidate_count(
             &json!({
+                "models": [{"id": "gpt-5.6-luna"}],
                 "budget": {"max_usd": 0.30},
                 "limits": {"trials": 4}
             }),
@@ -1382,15 +1396,41 @@ mod tests {
 
     #[test]
     fn paid_eval_cap_fails_closed_without_recipe_owned_bounds() {
+        // A recipe that publishes a model allowlist can bill, so it must say
+        // what it may spend.
         assert!(paid_compute_bounds_for_candidate_count(
-            &json!({"budget": {}, "limits": {"trials": 4}}),
+            &json!({"models": [{"id": "gpt-5.6-luna"}], "budget": {}, "limits": {"trials": 4}}),
             2,
         )
         .is_err());
         assert!(paid_compute_bounds_for_candidate_count(
-            &json!({"budget": {"max_usd": 0.30}, "limits": {}}),
+            &json!({"models": [], "budget": {"max_usd": 0.30}, "limits": {}}),
             2,
         )
         .is_err());
+    }
+
+    /// A code-policy recipe declares no models and runs with `network = none`.
+    /// Its dollar cap is genuinely zero, and the trial count is the bound the
+    /// approval surface should carry — refusing to start it would be gating a
+    /// run that cannot spend anything.
+    #[test]
+    fn free_eval_recipe_is_bounded_by_its_trial_count_not_a_budget() {
+        let (max_usd, max_trials) = paid_compute_bounds_for_candidate_count(
+            &json!({
+                "models": [],
+                "budget": null,
+                "limits": {"trials": 2}
+            }),
+            2,
+        )
+        .unwrap();
+        assert_eq!(max_usd, 0.0);
+        assert_eq!(max_trials, 4);
+        let cap = crate::session::approval::PaidComputeCap {
+            max_cost_usd_micros: Some((max_usd * 1_000_000.0).round() as u64),
+            max_rollouts: Some(max_trials),
+        };
+        assert!(cap.is_bounded(), "a trial-capped free run is bounded");
     }
 }
