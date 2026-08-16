@@ -870,6 +870,25 @@ fn craftax_recipe_limits() -> serde_json::Value {
     })
 }
 
+/// How long a live child may run without its run becoming visible.
+///
+/// Overridable only under `cfg(test)`: the bound is worth 90 seconds in
+/// production and worth milliseconds in a test that has to observe it expire.
+fn run_index_wait() -> Duration {
+    // Runtime `cfg!` rather than a test-only compile attribute: a
+    // source-inspection guard below splits this file on that attribute's text,
+    // so introducing one above the recipe entry points — or even quoting it in
+    // a comment up here — silently shortens the region that guard checks.
+    if cfg!(test) {
+        if let Ok(millis) = std::env::var("SYNTH_OPTIMIZER_TEST_INDEX_WAIT_MS") {
+            if let Ok(millis) = millis.parse::<u64>() {
+                return Duration::from_millis(millis);
+            }
+        }
+    }
+    crate::limits::OPTIMIZER_RUN_INDEX_WAIT
+}
+
 async fn run_recipe_worker(
     service: OptimizerService,
     run_id: String,
@@ -903,7 +922,8 @@ async fn run_recipe_worker(
     // or a service that does not serve the events route at all), so the wait is
     // capped and the child is killed rather than allowed to spend to term.
     let mut indexed = false;
-    let index_deadline = tokio::time::Instant::now() + crate::limits::OPTIMIZER_RUN_INDEX_WAIT;
+    let index_wait = run_index_wait();
+    let index_deadline = tokio::time::Instant::now() + index_wait;
     loop {
         match ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await {
             Ok(()) => indexed = true,
@@ -919,7 +939,7 @@ async fn run_recipe_worker(
                     if child.try_wait()?.is_none() {
                         let _ = child.kill().await;
                     }
-                    let waited = crate::limits::OPTIMIZER_RUN_INDEX_WAIT.as_secs();
+                    let waited = index_wait.as_secs_f32();
                     append_terminal_event(
                         &service,
                         &run_id,
@@ -2492,6 +2512,106 @@ namespace = "base"
             service.get(runs[1].0.id.clone()).await.unwrap().id,
             runs[1].0.id
         );
+    }
+
+    /// A10 / test 1b. The failing-path twin of run→poll visibility.
+    ///
+    /// A run the polled service can never see used to be waited out until the
+    /// child exited on its own — every rollout paid for, every event
+    /// unreachable, and the failure delivered at the end. The bound turns that
+    /// into a known, small cost. This drives the real supervisor loop against a
+    /// child that stays alive, so it exercises the kill path rather than a
+    /// predicate.
+    #[tokio::test]
+    async fn a_run_that_never_indexes_is_killed_within_the_bound() {
+        use super::super::OptimizerManager;
+        use std::sync::Arc;
+
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path().join("core")).unwrap();
+        let journal = EventJournal::new(storage.database().clone());
+        let content = ContentStore::new(storage.content_root());
+        let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
+        let (events_tx, _) = tokio::sync::broadcast::channel(16);
+        let manager = Arc::new(OptimizerManager::with_home(dir.path().join("manager")));
+        manager.install(None).unwrap();
+        manager.start().await.unwrap();
+        let service = OptimizerService::new_with_manager(
+            storage.database().clone(),
+            journal,
+            visuals,
+            events_tx,
+            manager.clone(),
+        );
+
+        // No spool is ever opened for this run, so the events endpoint 404s for
+        // its whole life — exactly the shape of a service pointed at a database
+        // the child never writes.
+        let (run, _) = service
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "never_indexed_run",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        std::env::set_var("OPENAI_API_KEY", "sk-test");
+        std::env::set_var("SYNTH_OPTIMIZER_TEST_INDEX_WAIT_MS", "250");
+        // Without this the stand-in registers the run the moment it is spawned,
+        // so it is indexed before the first poll and this failure cannot happen.
+        std::env::set_var("SYNTH_OPTIMIZER_TEST_SUPPRESS_SPOOL", "1");
+        // Outlives the bound by orders of magnitude: if the supervisor did not
+        // kill it, this test would hang rather than pass.
+        std::env::set_var("SYNTH_OPTIMIZER_TEST_CHILD_SLEEP_SECS", "120");
+
+        let run_dir = dir.path().join("run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let config_path = run_dir.join("recipe.toml");
+        fs::write(&config_path, "").unwrap();
+        let (_cancel_tx, cancel_rx) = watch::channel(false);
+
+        let started = std::time::Instant::now();
+        let error = run_recipe_worker(
+            service.clone(),
+            run.id.clone(),
+            run_dir.clone(),
+            config_path,
+            run_dir.clone(),
+            manager.clone(),
+            cancel_rx,
+        )
+        .await
+        .unwrap_err();
+        let elapsed = started.elapsed();
+
+        std::env::remove_var("SYNTH_OPTIMIZER_TEST_INDEX_WAIT_MS");
+        std::env::remove_var("SYNTH_OPTIMIZER_TEST_CHILD_SLEEP_SECS");
+        std::env::remove_var("SYNTH_OPTIMIZER_TEST_SUPPRESS_SPOOL");
+
+        assert!(
+            error.to_string().contains("run_never_indexed"),
+            "expected a bounded never-indexed failure, got: {error}"
+        );
+        // The point of the bound is that it fires on its own schedule rather
+        // than on the child's. A 120s child that returned in under 30s can only
+        // have been terminated.
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "the bound did not fire; waited {elapsed:?}"
+        );
+        assert!(
+            manager.active_gepa_run_ids().await.is_empty(),
+            "the terminated child was left registered"
+        );
+        // The run is closed out as failed rather than left running forever.
+        let stored = service.get(run.id.clone()).await.unwrap();
+        assert_eq!(stored.status, "failed");
+
+        let _ = manager.stop().await;
     }
 
     #[test]

@@ -846,6 +846,18 @@ impl OptimizerManager {
     }
 
     async fn ensure_memory_spool(&self, run_id: &str) {
+        // The in-process sidecar stand-in registers a run the instant it is
+        // spawned, so under test every run is indexed immediately and the
+        // "service never sees this run" failure is unreachable — the same shape
+        // of blind spot as a fake that serves an endpoint the real artifact
+        // lacks. This makes the stand-in *less* generous on request, so that
+        // failure can be exercised. It only ever withholds; it never invents.
+        #[cfg(test)]
+        {
+            if std::env::var("SYNTH_OPTIMIZER_TEST_SUPPRESS_SPOOL").as_deref() == Ok("1") {
+                return;
+            }
+        }
         let mut spools = self.run_spools.lock().await;
         spools.entry(run_id.to_string()).or_insert(RunSpoolState {
             events: Vec::new(),
@@ -1184,7 +1196,17 @@ fn launch_gepa_recipe_process(
     {
         if env::var("SYNTH_OPTIMIZER_LIVE_SIDECAR").as_deref() != Ok("1") {
             let _ = (home, version, cookbook, openai_api_key, config_path);
-            let mut command = Command::new("/usr/bin/true");
+            // The stand-in normally exits at once. Tests that need to observe
+            // what the supervisor does to a *live* child — the never-indexed
+            // bound, cancellation — ask for one that outlives the assertion.
+            let mut command = match env::var("SYNTH_OPTIMIZER_TEST_CHILD_SLEEP_SECS") {
+                Ok(seconds) if !seconds.is_empty() => {
+                    let mut sleeper = Command::new("/bin/sleep");
+                    sleeper.arg(seconds);
+                    sleeper
+                }
+                _ => Command::new("/usr/bin/true"),
+            };
             command
                 .stdin(Stdio::null())
                 .stdout(Stdio::from(stdout))
