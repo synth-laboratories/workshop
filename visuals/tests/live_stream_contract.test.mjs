@@ -165,6 +165,27 @@ test("normalized live bindings retain the declared poll endpoint for recovery", 
   assert.equal(result.slots.stream.data.poll_url, binding.poll_url);
 });
 
+test("multi-source slots are explicit and single-source slots reject duplicates", async () => {
+  const { bindTemplateSlots } = await import("../runtime/bind.ts");
+  const bindings = [
+    { slot: "stream", kind: "live_sse", source: "http://127.0.0.1:8098/rollouts/r1/stream", poll_url: "http://127.0.0.1:8098/rollouts/r1/events" },
+    { slot: "stream", kind: "live_sse", source: "http://127.0.0.1:8098/rollouts/r2/stream", poll_url: "http://127.0.0.1:8098/rollouts/r2/events" },
+  ];
+  const accepted = await bindTemplateSlots({
+    id: "live.craftax.v1",
+    slots: [{ name: "stream", accepts: ["live_sse"], required: true, multiple: true }],
+  }, bindings);
+  assert.equal(accepted.errors.length, 0);
+  assert.equal(accepted.slots.stream.source, "multiple");
+  assert.equal(accepted.slots.stream.data.length, 2);
+
+  const rejected = await bindTemplateSlots({
+    id: "live.harbor_eval.v1",
+    slots: [{ name: "stream", accepts: ["live_sse"], required: true }],
+  }, bindings);
+  assert.match(rejected.errors[0], /accepts one binding, received 2/);
+});
+
 test("live stream recovery also runs after EventSource reaches CLOSED", () => {
   const hook = readFileSync(join(root, "chrome/useLiveEvalStream.ts"), "utf8");
   assert.match(hook, /es\.onerror = \(\) => \{\s*if \(!abort\.signal\.aborted\)/);

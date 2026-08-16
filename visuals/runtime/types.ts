@@ -41,6 +41,8 @@ export type VisualTemplateSlot = {
   /** Accepted binding kinds for this slot. */
   accepts: VisualBindingKind[];
   required?: boolean;
+  /** Allow several independently declared sources to feed one semantic slot. */
+  multiple?: boolean;
   schema?: string;
 };
 

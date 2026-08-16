@@ -130,7 +130,12 @@ export async function bindTemplateSlots(
   ctx: BindContext = {}
 ): Promise<BindResult> {
   const bindingSlots = Array.isArray(bindings) ? bindings : bindings.slots;
-  const bySlot = new Map(bindingSlots.map((b) => [b.slot, b]));
+  const bySlot = new Map<string, VisualBinding[]>();
+  for (const binding of bindingSlots) {
+    const existing = bySlot.get(binding.slot) ?? [];
+    existing.push(binding);
+    bySlot.set(binding.slot, existing);
+  }
   const slots: Record<string, BoundSlotPayload> = {};
   const errors: string[] = [];
 
@@ -142,30 +147,39 @@ export async function bindTemplateSlots(
   for (const slot of template.slots) {
     const slotError = assertLiveEvalSlot(slot.name, template.id);
     if (slotError) errors.push(slotError);
-    const binding = bySlot.get(slot.name);
+    const candidates = bySlot.get(slot.name) ?? [];
     const required = slot.required !== false;
-    if (!binding) {
+    if (candidates.length === 0) {
       if (required && !ctx.skipOptional) {
         errors.push(`Missing required binding for slot "${slot.name}"`);
       }
       continue;
     }
-    if (!slot.accepts.includes(binding.kind)) {
-      errors.push(
-        `Slot "${slot.name}" does not accept kind "${binding.kind}" (accepts: ${slot.accepts.join(", ")})`
-      );
+    if (candidates.length > 1 && !slot.multiple) {
+      errors.push(`Slot "${slot.name}" accepts one binding, received ${candidates.length}`);
       continue;
     }
-    try {
-      const data = await resolveBinding(binding, ctx);
-      slots[slot.name] = {
-        slot: slot.name,
-        kind: binding.kind,
-        source: binding.source ?? "inline",
-        data
-      };
-    } catch (err) {
-      errors.push(err instanceof Error ? err.message : String(err));
+    const resolved: BoundSlotPayload[] = [];
+    for (const binding of candidates) {
+      if (!slot.accepts.includes(binding.kind)) {
+        errors.push(`Slot "${slot.name}" does not accept kind "${binding.kind}" (accepts: ${slot.accepts.join(", ")})`);
+        continue;
+      }
+      try {
+        resolved.push({
+          slot: slot.name,
+          kind: binding.kind,
+          source: binding.source ?? "inline",
+          data: await resolveBinding(binding, ctx)
+        });
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
+    }
+    if (resolved.length > 0) {
+      slots[slot.name] = slot.multiple
+        ? { slot: slot.name, kind: resolved[0].kind, source: "multiple", data: resolved.map((item) => item.data) }
+        : resolved[0];
     }
   }
 

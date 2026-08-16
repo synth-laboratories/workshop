@@ -14,6 +14,7 @@
       "description": "Declared live SSE or fixture with Craftax C7-W04 kinds",
       "accepts": ["live_sse", "fixture", "inline"],
       "required": true,
+      "multiple": true,
       "schema": "synth.trace-stream-event.v1"
     }
   ]
