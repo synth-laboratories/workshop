@@ -15,7 +15,7 @@ const MAX_HEAP_DELTA_BYTES = 256 * 1024 * 1024;
 const MAX_LONG_TASK_MS = 1_000;
 const MAX_SCRUB_MS = 750;
 
-function visualRecord(sseUrl: string): VisualRecord {
+function visualRecord(baseUrl: string): VisualRecord {
   return {
     schemaVersion: "synth.desktop-visual.v1",
     id: "vis_craftax_v5_acceptance",
@@ -24,20 +24,30 @@ function visualRecord(sseUrl: string): VisualRecord {
     templateId: "live.craftax.v1",
     status: "saved",
     rendererKind: "template",
+    // Transport is a declared live binding with its durable poll authority.
+    // Inline data carrying an `sse_url` is not a transport: a template that
+    // reads one out of its own payload is inferring, not being told.
     bindings: {
       schemaVersion: "synth.visual-bindings.v1",
-      slots: [{
-        slot: "stream",
-        kind: "inline",
-        data: {
-          sse_url: sseUrl,
-          scope: {
-            campaign_id: "v5_browser_acceptance",
-            rollout_ids: Array.from({ length: LANE_COUNT }, (_, index) => `rollout_perf_${index}`),
-            selection: { initial_rollout_id: "rollout_perf_0" }
+      slots: [
+        {
+          slot: "stream",
+          kind: "live_sse",
+          source: `${baseUrl}/stream`,
+          poll_url: `${baseUrl}/events`
+        },
+        {
+          slot: "stream",
+          kind: "inline",
+          data: {
+            scope: {
+              campaign_id: "v5_browser_acceptance",
+              rollout_ids: Array.from({ length: LANE_COUNT }, (_, index) => `rollout_perf_${index}`),
+              selection: { initial_rollout_id: "rollout_perf_0" }
+            }
           }
         }
-      }]
+      ]
     },
     sessionId: null,
     messageId: null,
@@ -75,13 +85,18 @@ async function installVisual(page: Page, record: VisualRecord): Promise<void> {
   await page.getByTestId("titlebar").waitFor();
 }
 
-function stressEnvelope(index: number, laneSequences: number[]): Record<string, unknown> {
+/**
+ * The corpus is a pure function of the envelope offset, so any page can be
+ * generated without replaying the ones before it. Poll pages are served that
+ * way, which keeps the stress server O(page) instead of O(offset) per request.
+ */
+function stressEnvelope(index: number): Record<string, unknown> {
   if (index === 0) {
     return { kind: "stream.subscribed", control: true, occurred_at: "2026-08-12T20:00:00.000Z" };
   }
   const laneIndex = (index - 1) % LANE_COUNT;
   const lane = `rollout_perf_${laneIndex}`;
-  const sequence = ++laneSequences[laneIndex];
+  const sequence = Math.floor((index - 1) / LANE_COUNT) + 1;
   const occurredAt = new Date(Date.UTC(2026, 7, 12, 20, 0, 0) + index * 36).toISOString();
   const base = { event_id: String(sequence), sequence, occurred_at: occurredAt, rollout_id: lane, lane };
   if (sequence <= 1_000) {
@@ -103,33 +118,37 @@ function stressEnvelope(index: number, laneSequences: number[]): Record<string, 
   };
 }
 
+/**
+ * Serve the stress corpus over the durable poll authority the replay client
+ * actually uses. Pages are the same 500 envelopes the client asks for, so this
+ * exercises the real ingest path rather than an SSE route nothing reads.
+ */
 async function startStressSse(): Promise<{ server: Server; url: string }> {
   const server = createServer((request, response) => {
-    if (request.url !== "/stream") {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (url.pathname !== "/events") {
       response.writeHead(404).end();
       return;
     }
+    const after = Number(url.searchParams.get("after") ?? 0);
+    const limit = Math.min(Number(url.searchParams.get("limit") ?? 500), 500);
+    // `after` is an envelope offset into the deterministic corpus: the stress
+    // fixture's per-lane sequences are generated, not stored, so the offset is
+    // the only stable cursor over it.
+    const events: Array<Record<string, unknown>> = [];
+    for (let index = after; index < Math.min(ENVELOPE_COUNT, after + limit); index += 1) {
+      events.push(stressEnvelope(index));
+    }
+    const next = Math.min(ENVELOPE_COUNT, after + limit);
     response.writeHead(200, {
-      "Content-Type": "text/event-stream",
+      "Content-Type": "application/json",
       "Cache-Control": "no-cache",
-      "Access-Control-Allow-Origin": "*",
-      Connection: "keep-alive"
+      "Access-Control-Allow-Origin": "*"
     });
-    const laneSequences = Array.from({ length: LANE_COUNT }, () => 0);
-    let index = 0;
-    const writeChunk = () => {
-      const stop = Math.min(ENVELOPE_COUNT, index + 500);
-      while (index < stop) {
-        const ok = response.write(`data: ${JSON.stringify(stressEnvelope(index, laneSequences))}\n\n`);
-        index += 1;
-        if (!ok) {
-          response.once("drain", writeChunk);
-          return;
-        }
-      }
-      if (index < ENVELOPE_COUNT) setImmediate(writeChunk);
-    };
-    writeChunk();
+    response.end(JSON.stringify({
+      page: { events },
+      cursor: { next, high_water: ENVELOPE_COUNT, has_more: next < ENVELOPE_COUNT, closed: next >= ENVELOPE_COUNT }
+    }));
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -137,7 +156,7 @@ async function startStressSse(): Promise<{ server: Server; url: string }> {
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("stress SSE did not bind TCP");
-  return { server, url: `http://127.0.0.1:${address.port}/stream` };
+  return { server, url: `http://127.0.0.1:${address.port}` };
 }
 
 async function closeServer(server: Server): Promise<void> {

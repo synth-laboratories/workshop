@@ -81,6 +81,16 @@ fn capture_observation_receipt(screenshot: &str) -> Result<VisualCaptureObservat
     Ok(receipt)
 }
 
+/// Rendered transport states that can carry evidence.
+///
+/// `live` is caught up with at least one stream open; `terminal` is every
+/// declared stream closed. Every other state — including `connecting` from the
+/// pre-state-machine vocabulary — means the pane is not showing a settled
+/// answer, whether or not a template's own contract remembered to list it.
+///
+/// See: docs/contracts/visual_replay_transport.md.
+const READY_TRANSPORT_STATES: &[&str] = &["live", "terminal"];
+
 fn validate_readiness_observation(
     contract: &TemplateObservationContract,
     visual_id: &str,
@@ -99,6 +109,18 @@ fn validate_readiness_observation(
         anyhow::bail!("captured bindings do not match the current durable revision");
     }
     let readiness = &contract.readiness;
+    // Readiness is decided by an allowlist, not a denylist. A denylist accepts
+    // every state nobody thought to list, including a state a future template
+    // invents — and "unknown" is exactly the case where a pane is least likely
+    // to be showing real evidence.
+    if !READY_TRANSPORT_STATES.contains(&observation.transport_state.as_str()) {
+        anyhow::bail!(
+            "visual readiness rejects rendered transport state {}; \
+             a ready visual is one of {}",
+            observation.transport_state,
+            READY_TRANSPORT_STATES.join(", ")
+        );
+    }
     if readiness
         .reject_transport_states
         .iter()
@@ -518,7 +540,15 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
         .to_logical::<f64>(scale);
     Ok(json!({
         "previous": {"width": previous.width.round() as u64, "height": previous.height.round() as u64},
-        "current": {"width": current.width.round() as u64, "height": current.height.round() as u64}
+        "current": {"width": current.width.round() as u64, "height": current.height.round() as u64},
+        // Identity of the window this call actually resized. Capture verifies
+        // it instead of re-resolving one by name and size, which is how a
+        // compact review lost its own window to a minimum-size filter. The
+        // process id is exact and free: several named instances of this app run
+        // at once and share a bundle prefix, so a name is not an identity.
+        "scaleFactor": scale,
+        "windowLabel": window.label(),
+        "processId": std::process::id(),
     }))
 }
 
@@ -2780,6 +2810,31 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("frame evidence"));
+    }
+
+    /// A state machine gains states. Readiness must not silently accept one
+    /// because no template contract listed it — that is how a pane that is not
+    /// showing evidence gets marked ready.
+    #[test]
+    fn readiness_rejects_every_transport_state_that_is_not_settled_evidence() {
+        for state in ["idle", "declared", "replaying", "connecting", "reconnecting", "error", "surprise"] {
+            let mut observation = rendered_observation();
+            observation.transport_state = state.into();
+            let error = validate_readiness_observation(
+                &live_contract(), "vis_1", 14, "bindings-14", &observation
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("transport state"), "{state} must be rejected: {error}");
+        }
+        for state in ["live", "terminal"] {
+            let mut observation = rendered_observation();
+            observation.transport_state = state.into();
+            validate_readiness_observation(
+                &live_contract(), "vis_1", 14, "bindings-14", &observation
+            )
+            .unwrap_or_else(|error| panic!("{state} must be able to carry evidence: {error}"));
+        }
     }
 
     #[test]
