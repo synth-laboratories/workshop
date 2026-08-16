@@ -321,15 +321,18 @@ async fn hydrate_container(
                 .json::<serde_json::Value>()
                 .await
                 .unwrap_or_else(|_| serde_json::json!({}));
-            let ok =
-                code.is_success() && payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
+            let status = crate::container_capabilities::observed_status(code.as_u16(), &payload);
             (
-                if ok { "ready" } else { "unhealthy" }.to_string(),
-                serde_json::json!({"ok": ok, "status": code.as_u16(), "payload": payload}),
+                status.to_string(),
+                serde_json::json!({
+                    "ok": status == crate::container_capabilities::READY_STATUS,
+                    "status": code.as_u16(),
+                    "payload": payload
+                }),
             )
         }
         Err(error) => (
-            "unhealthy".into(),
+            crate::container_capabilities::UNHEALTHY_STATUS.into(),
             serde_json::json!({"ok": false, "error": error.to_string()}),
         ),
     };
@@ -379,9 +382,11 @@ async fn hydrate_container(
     // `container_get`, and `container_probe` must never disagree about what a
     // record can do. Reusing a cached `/info` body keeps the earlier
     // observation time so a health-only refresh cannot launder a stale one.
+    let declared = synth_config::container_capability_declaration(base_url).unwrap_or_default();
     crate::container_capabilities::write_capability_metadata(
         &mut metadata,
         info.as_ref(),
+        declared.as_ref(),
         refresh_metadata,
         chrono::Utc::now(),
     );

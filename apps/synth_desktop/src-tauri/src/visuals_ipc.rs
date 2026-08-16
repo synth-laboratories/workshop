@@ -552,6 +552,28 @@ fn require_scripted_stream_slot(body: &Value) -> Result<()> {
     Ok(())
 }
 
+/// One health interpretation for every registry write. HTTP success alone is
+/// not readiness: a service answering `200 {"ok": false}` must be recorded as
+/// unhealthy, or it passes the health half of the prepare preflight.
+async fn probe_health(client: &reqwest::Client, base: &str) -> (&'static str, Value) {
+    use crate::container_capabilities::{observed_status, READY_STATUS, UNHEALTHY_STATUS};
+    match client.get(format!("{base}/health")).send().await {
+        Ok(response) => {
+            let code = response.status();
+            let payload = response.json::<Value>().await.unwrap_or(json!({}));
+            let status = observed_status(code.as_u16(), &payload);
+            (
+                status,
+                json!({"ok": status == READY_STATUS, "status": code.as_u16(), "payload": payload}),
+            )
+        }
+        Err(error) => (
+            UNHEALTHY_STATUS,
+            json!({"ok": false, "error": error.to_string()}),
+        ),
+    }
+}
+
 async fn register_hydrated_container(
     core: &CoreRuntime,
     request: ContainerRegisterRequest,
@@ -561,22 +583,7 @@ async fn register_hydrated_container(
     }
     let base = request.base_url.trim_end_matches('/');
     let client = crate::http::http_client_with_timeout(limits::CONTAINER_PROBE_TIMEOUT);
-    let health_response = client.get(format!("{base}/health")).send().await;
-    let (status, health) = match health_response {
-        Ok(response) => {
-            let code = response.status();
-            let payload = response.json::<Value>().await.unwrap_or(json!({}));
-            (
-                if code.is_success() {
-                    "ready"
-                } else {
-                    "unhealthy"
-                },
-                json!({"ok":code.is_success(),"status":code.as_u16(),"payload":payload}),
-            )
-        }
-        Err(error) => ("unhealthy", json!({"ok":false,"error":error.to_string()})),
-    };
+    let (status, health) = probe_health(&client, base).await;
     let mut info = None;
     for route in ["info", "metadata"] {
         if let Ok(response) = client.get(format!("{base}/{route}")).send().await {
@@ -628,9 +635,11 @@ async fn register_hydrated_container(
             )?,
         );
     }
+    let declared = crate::synth_config::container_capability_declaration(base).unwrap_or_default();
     crate::container_capabilities::write_capability_metadata(
         &mut metadata,
         info.as_ref(),
+        declared.as_ref(),
         true,
         chrono::Utc::now(),
     );
@@ -832,22 +841,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(limits::CONTAINER_PROBE_TIMEOUT)
                 .build()?;
-            let health_response = client.get(format!("{base}/health")).send().await;
-            let (status, health) = match health_response {
-                Ok(response) => {
-                    let code = response.status();
-                    let payload = response.json::<Value>().await.unwrap_or(json!({}));
-                    (
-                        if code.is_success() {
-                            "ready"
-                        } else {
-                            "unhealthy"
-                        },
-                        json!({"ok":code.is_success(),"status":code.as_u16(),"payload":payload}),
-                    )
-                }
-                Err(error) => ("unhealthy", json!({"ok":false,"error":error.to_string()})),
-            };
+            let (status, health) = probe_health(&client, base).await;
             // Same discovery order as register/hydrate: `/info` first, then the
             // `/metadata` fallback, so a probe cannot see fewer capabilities
             // than registration did.
@@ -866,9 +860,12 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             metadata.insert("hydratedAt".into(), json!(chrono::Utc::now().to_rfc3339()));
             // A probe refreshes the typed capability projection without
             // mutating the remote workload: `/health` and `/info` only.
+            let declared =
+                crate::synth_config::container_capability_declaration(base).unwrap_or_default();
             crate::container_capabilities::write_capability_metadata(
                 &mut metadata,
                 info.as_ref(),
+                declared.as_ref(),
                 true,
                 chrono::Utc::now(),
             );

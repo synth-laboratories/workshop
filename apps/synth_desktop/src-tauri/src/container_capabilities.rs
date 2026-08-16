@@ -11,8 +11,11 @@
 //! Support is therefore tri-state. `Unknown` is not `Unsupported`, and neither
 //! is ever inferred from task family, endpoint name, SSE support, or a
 //! successful health probe. The only sources are an explicit service
-//! advertisement, an explicit operator declaration at registration, and a
-//! narrow compatibility mapping over well-known *explicit* advertisements.
+//! advertisement, an operator declaration in `config.toml`, and a narrow
+//! compatibility mapping over well-known *explicit* advertisements. No caller
+//! can assert its own capabilities: registration metadata reaches Workshop
+//! through an agent-callable MCP tool, so any capability claim it carries is
+//! stripped rather than trusted.
 
 use crate::data::ContainerDeployment;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -24,17 +27,27 @@ use std::time::Duration;
 /// Normalized live-eval protocol identifier services advertise.
 pub const LIVE_EVAL_PROTOCOL: &str = "synth.container.live-eval.v1";
 
-/// Registry metadata key holding the computed projection.
+/// Registry metadata key holding the computed projection. Host-owned: the
+/// hydration writer always overwrites it, so a caller-supplied value can never
+/// survive into the record.
 pub const CAPABILITIES_KEY: &str = "capabilities";
 
-/// Registry metadata key an operator may set at `container_register` time to
-/// declare a known-good pool that predates service-side advertisement.
-pub const DECLARED_CAPABILITIES_KEY: &str = "declaredCapabilities";
+/// Registry metadata keys a caller might try to use to assert its own
+/// capabilities. `container_register.metadata` is agent-reachable through MCP,
+/// so these are stripped rather than read: the only non-service capability
+/// authority is `synth_config::container_capability_declaration`, which lives
+/// in operator-owned `config.toml`.
+const CALLER_ASSERTED_KEYS: [&str; 3] = [
+    "declaredCapabilities",
+    "declared_capabilities",
+    "capabilities",
+];
 
 /// Registry metadata key holding the last health observation timestamp.
 pub const HEALTH_CHECKED_AT_KEY: &str = "healthCheckedAt";
 
-const READY_STATUS: &str = "ready";
+pub const READY_STATUS: &str = "ready";
+pub const UNHEALTHY_STATUS: &str = "unhealthy";
 
 // ---------------------------------------------------------------------------
 // Operations
@@ -124,8 +137,8 @@ impl CapabilityState {
 }
 
 /// Where the projection came from. `Info` is the service's own normalized
-/// block, `Metadata` an operator declaration at registration, `Compatibility` a
-/// mapping over well-known explicit advertisements, `None` nothing at all.
+/// block, `Metadata` an operator declaration in `config.toml`, `Compatibility`
+/// a mapping over well-known explicit advertisements, `None` nothing at all.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilitySource {
@@ -289,6 +302,7 @@ pub fn project_capabilities(
         capabilities.recompute_complete();
         return capabilities;
     }
+    // Operator-declared, from `config.toml` only — never from a caller.
     if let Some(mut capabilities) = declared
         .and_then(normalized_block)
         .map(|block| parse_normalized_block(&block, CapabilitySource::Metadata))
@@ -440,18 +454,25 @@ fn merge_policy_refs(capabilities: &mut ContainerCapabilities, info: Option<&Val
 /// metadata object. Every hydration path calls this so `container_list`,
 /// `container_get`, and `container_probe` cannot disagree.
 ///
+/// `declared` comes from operator-owned `config.toml`, never from the metadata
+/// map: registration metadata arrives through an agent-callable MCP tool, so
+/// any capability claim it carries is stripped before the record is stored.
+///
 /// `info_refreshed` is false when the caller reused a cached `/info` body; the
 /// previous `observed_at` is then preserved rather than restamped, so a stale
 /// observation cannot be laundered into a fresh one by a health-only probe.
 pub fn write_capability_metadata(
     metadata: &mut Map<String, Value>,
     info: Option<&Value>,
+    declared: Option<&Value>,
     info_refreshed: bool,
     observed_at: DateTime<Utc>,
 ) {
-    let declared = metadata.get(DECLARED_CAPABILITIES_KEY).cloned();
     let previous = ContainerCapabilities::from_metadata(&Value::Object(metadata.clone()));
-    let mut capabilities = project_capabilities(info, declared.as_ref(), observed_at);
+    for key in CALLER_ASSERTED_KEYS {
+        metadata.remove(key);
+    }
+    let mut capabilities = project_capabilities(info, declared, observed_at);
     if !info_refreshed {
         if let Some(previous_observed_at) = previous.observed_at {
             capabilities.observed_at = Some(previous_observed_at);
@@ -462,6 +483,36 @@ pub fn write_capability_metadata(
         HEALTH_CHECKED_AT_KEY.into(),
         json!(observed_at.to_rfc3339()),
     );
+}
+
+/// Registry status from one health observation. HTTP success alone is not
+/// readiness: a service that answers `200 {"ok": false}` (or
+/// `{"healthy": false}`, or `{"status": "unhealthy"}`) is unhealthy, and a
+/// record that reads `ready` would otherwise pass the health half of preflight.
+///
+/// Only an explicit negative demotes the record — an unfamiliar payload stays
+/// `ready` so this cannot invent failures for services that report nothing.
+pub fn observed_status(http_status: u16, payload: &Value) -> &'static str {
+    if !(200..300).contains(&http_status) {
+        return UNHEALTHY_STATUS;
+    }
+    for key in ["ok", "healthy", "ready"] {
+        if payload.get(key).and_then(Value::as_bool) == Some(false) {
+            return UNHEALTHY_STATUS;
+        }
+    }
+    let reported = payload
+        .get("status")
+        .or_else(|| payload.get("state"))
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase);
+    if matches!(
+        reported.as_deref(),
+        Some("unhealthy" | "error" | "fail" | "failed" | "degraded" | "down" | "stopped")
+    ) {
+        return UNHEALTHY_STATUS;
+    }
+    READY_STATUS
 }
 
 // ---------------------------------------------------------------------------
@@ -645,8 +696,11 @@ pub fn preflight_prepare(
         ));
     }
 
-    // 2. Status is currently healthy.
-    if container.status != READY_STATUS {
+    // 2. Status is currently healthy. The stored health envelope is checked
+    //    too, so a record whose status was written by some other path cannot
+    //    present as ready while its last observation says otherwise.
+    let health_denies = container.health.get("ok").and_then(Value::as_bool) == Some(false);
+    if container.status != READY_STATUS || health_denies {
         return Err(ContainerPreflightError::new(
             CODE_UNHEALTHY,
             container,
@@ -853,7 +907,7 @@ mod tests {
 
     fn hydrated(info: Option<&Value>, at: DateTime<Utc>) -> Value {
         let mut metadata = Map::new();
-        write_capability_metadata(&mut metadata, info, true, at);
+        write_capability_metadata(&mut metadata, info, None, true, at);
         Value::Object(metadata)
     }
 
@@ -911,6 +965,111 @@ mod tests {
         }
     }
 
+    /// `container_register.metadata` is agent-reachable through MCP. A caller
+    /// that asserts a full normalized block must not be able to talk its way
+    /// past the gate this module exists to hold.
+    #[test]
+    fn container_caller_asserted_capabilities_are_stripped_not_trusted() {
+        let asserted = json!({
+            "protocol": LIVE_EVAL_PROTOCOL,
+            "operations": {
+                "rollouts.prepare": true,
+                "rollouts.start_prepared": true,
+                "rollouts.get": true,
+                "rollouts.poll": true,
+                "reward.get": true,
+                "trace_v5.capture": true
+            },
+            "policy_refs": [{"harness": "react", "config": "luna_low"}]
+        });
+        let mut metadata = Map::new();
+        metadata.insert("declaredCapabilities".into(), asserted.clone());
+        metadata.insert("declared_capabilities".into(), asserted.clone());
+        metadata.insert("capabilities".into(), asserted);
+        metadata.insert("note".into(), json!("caller metadata is otherwise kept"));
+
+        write_capability_metadata(&mut metadata, Some(&raw_gold_info()), None, true, now());
+
+        assert!(metadata.get("declaredCapabilities").is_none());
+        assert!(metadata.get("declared_capabilities").is_none());
+        assert_eq!(metadata["note"], json!("caller metadata is otherwise kept"));
+        let capabilities = ContainerCapabilities::from_metadata(&Value::Object(metadata.clone()));
+        assert_eq!(capabilities.source, CapabilitySource::None);
+        assert_eq!(
+            capabilities.state(ContainerOperation::RolloutsPrepare),
+            CapabilityState::Unknown
+        );
+
+        let record = container(READY_STATUS, Value::Object(metadata));
+        let error = preflight_prepare(&record, &prepare_request(), now()).unwrap_err();
+        assert_eq!(error.code, CODE_CAPABILITY_MISMATCH);
+    }
+
+    /// The operator declaration is honoured, but only when it arrives from
+    /// `config.toml` through the `declared` argument.
+    #[test]
+    fn container_operator_declaration_arrives_only_as_an_explicit_argument() {
+        let declared = json!({
+            "protocol": LIVE_EVAL_PROTOCOL,
+            "operations": {
+                "rollouts.prepare": true,
+                "rollouts.start_prepared": true,
+                "rollouts.get": true,
+                "rollouts.poll": true,
+                "reward.get": true,
+                "trace_v5.capture": false
+            },
+            "policy_refs": [{"harness": "react", "config": "luna_low"}]
+        });
+        let mut metadata = Map::new();
+        write_capability_metadata(
+            &mut metadata,
+            Some(&raw_gold_info()),
+            Some(&declared),
+            true,
+            now(),
+        );
+        let record = container(READY_STATUS, Value::Object(metadata));
+        let capabilities = preflight_prepare(&record, &prepare_request(), now()).unwrap();
+        assert_eq!(capabilities.source, CapabilitySource::Metadata);
+    }
+
+    #[test]
+    fn container_health_status_reads_the_payload_not_just_the_http_code() {
+        assert_eq!(observed_status(200, &json!({"ok": true})), READY_STATUS);
+        assert_eq!(observed_status(200, &json!({"status": "ok"})), READY_STATUS);
+        // Nothing reported stays ready: only an explicit negative demotes.
+        assert_eq!(observed_status(200, &json!({})), READY_STATUS);
+        assert_eq!(
+            observed_status(200, &json!({"detail": "warming up"})),
+            READY_STATUS
+        );
+        for payload in [
+            json!({"ok": false}),
+            json!({"healthy": false}),
+            json!({"ready": false}),
+            json!({"status": "unhealthy"}),
+            json!({"status": "DEGRADED"}),
+            json!({"ok": true, "healthy": false}),
+        ] {
+            assert_eq!(
+                observed_status(200, &payload),
+                UNHEALTHY_STATUS,
+                "{payload} must not read as ready"
+            );
+        }
+        assert_eq!(observed_status(503, &json!({"ok": true})), UNHEALTHY_STATUS);
+    }
+
+    #[test]
+    fn container_stored_health_denial_overrides_a_ready_status() {
+        let mut record = container(READY_STATUS, hydrated(Some(&normalized_info()), now()));
+        record.health = json!({"ok": false, "status": 200, "payload": {"ok": false}});
+        let error = preflight_prepare(&record, &prepare_request(), now()).unwrap_err();
+        assert_eq!(error.code, CODE_UNHEALTHY);
+        assert!(error.retryable);
+    }
+
     #[test]
     fn container_never_projected_record_has_no_observation() {
         let capabilities = ContainerCapabilities::from_metadata(&json!({"contractHint": "info"}));
@@ -925,6 +1084,7 @@ mod tests {
             "operations": {"rollouts.prepare": true},
             "policy_refs": [{"harness": "react", "config": "luna_low"}]
         });
+        // `declared` here stands for the operator-owned config.toml entry.
         let capabilities = project_capabilities(Some(&raw_gold_info()), Some(&declared), now());
         assert_eq!(capabilities.source, CapabilitySource::Metadata);
         assert_eq!(
@@ -1078,8 +1238,14 @@ mod tests {
     fn container_cached_info_keeps_the_original_observation_time() {
         let observed = now() - ChronoDuration::seconds(200);
         let mut metadata = Map::new();
-        write_capability_metadata(&mut metadata, Some(&normalized_info()), true, observed);
-        write_capability_metadata(&mut metadata, Some(&normalized_info()), false, now());
+        write_capability_metadata(
+            &mut metadata,
+            Some(&normalized_info()),
+            None,
+            true,
+            observed,
+        );
+        write_capability_metadata(&mut metadata, Some(&normalized_info()), None, false, now());
         let capabilities = ContainerCapabilities::from_metadata(&Value::Object(metadata.clone()));
         assert_eq!(
             capabilities.observed_at.as_deref(),

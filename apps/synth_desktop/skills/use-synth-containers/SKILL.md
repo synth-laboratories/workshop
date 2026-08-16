@@ -61,6 +61,13 @@ Pass `require_trace_v5: true` when the request promises sealed Trace V5
 evidence; preflight then also requires an explicitly advertised
 `trace_v5.capture` rather than assuming SSE implies capture.
 
+You cannot declare a container's capabilities. Capability claims in
+`container_register` metadata are discarded: only the service's own `/info` or
+`/metadata` advertisement counts, or an operator's `config.toml` entry that you
+have no way to write. If a pool is genuinely compatible but silent, report that
+and ask the user to publish the advertisement or add the declaration — do not
+attempt a workaround.
+
 For a bounded **engine acceptance** run (fixed actions, not a model eval), call
 `container_run_rollouts` once with the registered `container_id`, an exact
 `count`, optional integer `seeds`, and 1-64 **explicit** action names. The host

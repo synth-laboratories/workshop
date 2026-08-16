@@ -356,6 +356,48 @@ pub fn allowed_workspace_roots() -> Result<Vec<String>> {
     Ok(workspace_access_settings()?.allowed_roots)
 }
 
+/// Operator-declared live-eval capabilities for a container base URL.
+///
+/// This is the **only** way a capability claim enters Workshop without the
+/// service itself advertising it, and it is deliberately here rather than in
+/// registration metadata: `config.toml` is written by Tauri commands (the
+/// person at the keyboard) and is unreachable from the loopback IPC the MCP
+/// adapters speak, so an agent cannot assert that an incompatible engine
+/// supports the prepared-rollout workflow.
+///
+/// ```toml
+/// [[containers.capability_declaration]]
+/// base_url = "http://127.0.0.1:8104"
+/// protocol = "synth.container.live-eval.v1"
+/// operations = { "rollouts.prepare" = true, "reward.get" = true }
+/// policy_refs = [{ harness = "react", config = "luna_low" }]
+/// ```
+pub fn container_capability_declaration(base_url: &str) -> Result<Option<serde_json::Value>> {
+    Ok(declaration_for(&read_toml(&config_path())?, base_url))
+}
+
+fn declaration_for(document: &toml::Value, base_url: &str) -> Option<serde_json::Value> {
+    let wanted = base_url.trim().trim_end_matches('/');
+    if wanted.is_empty() {
+        return None;
+    }
+    let entries = document
+        .get("containers")
+        .and_then(|value| value.get("capability_declaration"))
+        .and_then(toml::Value::as_array)?;
+    let entry = entries.iter().find(|entry| {
+        entry
+            .get("base_url")
+            .and_then(toml::Value::as_str)
+            .map(|declared| declared.trim().trim_end_matches('/'))
+            == Some(wanted)
+    })?;
+    let mut block = serde_json::to_value(entry).ok()?;
+    // `base_url` is the key, not part of the capability projection.
+    block.as_object_mut()?.remove("base_url");
+    Some(block)
+}
+
 pub(crate) fn select_default_workspace_path(
     allowed_roots: &[String],
     sandbox_mode: &str,
@@ -1001,6 +1043,42 @@ mod tests {
         assert!(!debug.contains("renderer-secret"));
         assert!(!debug.contains("renderer-openrouter-secret"));
         assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
+    fn container_capability_declaration_matches_one_operator_owned_base_url() {
+        let document = r#"
+[[containers.capability_declaration]]
+base_url = "http://127.0.0.1:8104/"
+protocol = "synth.container.live-eval.v1"
+operations = { "rollouts.prepare" = true, "trace_v5.capture" = false }
+policy_refs = [{ harness = "react", config = "luna_low" }]
+
+[[containers.capability_declaration]]
+base_url = "http://127.0.0.1:9000"
+protocol = "synth.container.live-eval.v1"
+operations = { "rollouts.prepare" = false }
+"#
+        .parse::<toml::Value>()
+        .unwrap();
+
+        let declared = declaration_for(&document, "http://127.0.0.1:8104").unwrap();
+        assert_eq!(declared["protocol"], "synth.container.live-eval.v1");
+        assert_eq!(declared["operations"]["rollouts.prepare"], true);
+        assert_eq!(declared["operations"]["trace_v5.capture"], false);
+        assert_eq!(declared["policy_refs"][0]["config"], "luna_low");
+        // The key is not part of the projection.
+        assert!(declared.get("base_url").is_none());
+
+        // Trailing-slash difference still matches; a different port does not.
+        assert!(declaration_for(&document, "http://127.0.0.1:8104/").is_some());
+        assert!(declaration_for(&document, "http://127.0.0.1:8105").is_none());
+        assert!(declaration_for(&document, "").is_none());
+        assert!(declaration_for(
+            &toml::Value::Table(Default::default()),
+            "http://127.0.0.1:8104"
+        )
+        .is_none());
     }
 
     #[test]

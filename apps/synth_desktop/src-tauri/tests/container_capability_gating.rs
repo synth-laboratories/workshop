@@ -37,7 +37,19 @@ impl FakeService {
     }
 }
 
+fn healthy() -> Value {
+    json!({"ok": true, "status": "ok"})
+}
+
 async fn spawn_service(info: Value, supports_prepare: bool) -> FakeService {
+    spawn_service_with_health(info, supports_prepare, healthy()).await
+}
+
+async fn spawn_service_with_health(
+    info: Value,
+    supports_prepare: bool,
+    health: Value,
+) -> FakeService {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let prepares = Arc::new(AtomicUsize::new(0));
@@ -48,9 +60,10 @@ async fn spawn_service(info: Value, supports_prepare: bool) -> FakeService {
                 return;
             };
             let info = info.clone();
+            let health = health.clone();
             let counter = counter.clone();
             tokio::spawn(async move {
-                let _ = serve_once(stream, info, supports_prepare, counter).await;
+                let _ = serve_once(stream, info, health, supports_prepare, counter).await;
             });
         }
     });
@@ -60,6 +73,7 @@ async fn spawn_service(info: Value, supports_prepare: bool) -> FakeService {
 async fn serve_once(
     mut stream: TcpStream,
     info: Value,
+    health: Value,
     supports_prepare: bool,
     prepares: Arc<AtomicUsize>,
 ) -> std::io::Result<()> {
@@ -86,7 +100,9 @@ async fn serve_once(
     let path = parts.next().unwrap_or_default();
 
     let (status, payload) = match (method, path) {
-        ("GET", "/health") => (200, json!({"ok": true, "status": "ok"})),
+        // Always HTTP 200: the point is that the payload, not the status
+        // code, decides readiness.
+        ("GET", "/health") => (200, health),
         ("GET", "/info") => (200, info),
         ("POST", "/rollouts/prepare") if supports_prepare => {
             prepares.fetch_add(1, Ordering::SeqCst);
@@ -267,6 +283,122 @@ async fn container_unhealthy_pool_is_rejected_before_any_prepare_request() {
         Some("connection refused")
     );
     assert_eq!(pool.prepare_count(), 0);
+}
+
+/// HTTP 200 is not readiness. A pool that answers `200 {"ok": false}` must be
+/// recorded unhealthy by **both** writers — registration and probe — or it
+/// passes the health half of preflight and reaches a mutating call.
+#[tokio::test]
+async fn container_unhealthy_payload_under_http_200_is_never_ready() {
+    for payload in [json!({"ok": false}), json!({"healthy": false})] {
+        let pool = spawn_service_with_health(normalized_pool_info(), true, payload.clone()).await;
+        let dir = tempdir().unwrap();
+        let core = CoreRuntime::open(dir.path()).unwrap();
+
+        let registered = register(&core, &pool.base_url(), "sick-pool").await;
+        let container_id = registered["container"]["id"].as_str().unwrap().to_string();
+        assert_eq!(
+            registered["container"]["status"], "unhealthy",
+            "registration accepted {payload} as ready"
+        );
+        assert_eq!(registered["container"]["health"]["ok"], false);
+        assert_eq!(registered["container"]["health"]["status"], 200);
+
+        let probed = dispatch(
+            "POST",
+            &format!("/v1/containers/{container_id}/probe"),
+            json!({}),
+            &core,
+        )
+        .await
+        .expect("probe");
+        assert_eq!(
+            probed["container"]["status"], "unhealthy",
+            "probe accepted {payload} as ready"
+        );
+        assert_eq!(probed["container"]["health"]["ok"], false);
+
+        // Capabilities are still projected — the pool advertises them — but
+        // health closes the door first.
+        assert_eq!(
+            probed["container"]["metadata"]["capabilities"]["operations"]["rollouts.prepare"],
+            "supported"
+        );
+        let failure = dispatch(
+            "POST",
+            &format!("/v1/containers/{container_id}/rollouts/prepare"),
+            json!({"rollout_id": "roll_sick_1"}),
+            &core,
+        )
+        .await
+        .expect_err("unhealthy payload must not prepare");
+        let error = preflight_error(&failure);
+        assert_eq!(error.code, "container_unhealthy");
+        assert!(error.retryable);
+        assert_eq!(pool.prepare_count(), 0);
+    }
+}
+
+/// `container_register.metadata` is agent-reachable through MCP. A caller
+/// claiming the full protocol on a raw engine must not get past the gate.
+#[tokio::test]
+async fn container_caller_asserted_capabilities_do_not_unlock_a_raw_engine() {
+    let raw = spawn_service(raw_engine_info(), true).await;
+    let dir = tempdir().unwrap();
+    let core = CoreRuntime::open(dir.path()).unwrap();
+
+    let asserted = json!({
+        "protocol": LIVE_EVAL_PROTOCOL,
+        "operations": {
+            "rollouts.prepare": true,
+            "rollouts.start_prepared": true,
+            "rollouts.get": true,
+            "rollouts.poll": true,
+            "reward.get": true,
+            "trace_v5.capture": true
+        },
+        "policy_refs": [{"harness": "react", "config": "luna_low"}]
+    });
+    let registered = dispatch(
+        "POST",
+        "/v1/containers",
+        json!({
+            "baseUrl": raw.base_url(),
+            "name": "raw-gold-claiming-everything",
+            "location": "local",
+            "metadata": {
+                "declaredCapabilities": asserted,
+                "capabilities": asserted,
+                "note": "unrelated caller metadata survives"
+            }
+        }),
+        &core,
+    )
+    .await
+    .expect("register");
+    let container_id = registered["container"]["id"].as_str().unwrap().to_string();
+    let metadata = &registered["container"]["metadata"];
+    assert!(metadata.get("declaredCapabilities").is_none());
+    assert_eq!(metadata["note"], "unrelated caller metadata survives");
+    assert_eq!(metadata["capabilities"]["source"], "none");
+    assert_eq!(
+        metadata["capabilities"]["operations"]["rollouts.prepare"],
+        "unknown"
+    );
+
+    let failure = dispatch(
+        "POST",
+        &format!("/v1/containers/{container_id}/rollouts/prepare"),
+        json!({
+            "rollout_id": "roll_claimed_1",
+            "policy_ref": {"harness": "react", "config": "luna_low"}
+        }),
+        &core,
+    )
+    .await
+    .expect_err("a self-asserted capability must not unlock prepare");
+    assert_eq!(preflight_error(&failure).code, CODE_CAPABILITY_MISMATCH);
+    assert_eq!(raw.prepare_count(), 0);
 }
 
 #[tokio::test]

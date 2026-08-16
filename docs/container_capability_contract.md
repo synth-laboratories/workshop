@@ -56,9 +56,29 @@ Workshop projects this into `container.metadata.capabilities`, adding
 | `source` | Meaning |
 |---|---|
 | `info` | The service's own normalized block from `/info` or `/metadata`. |
-| `metadata` | An operator declaration passed as `metadata.declaredCapabilities` at `container_register`, for a known-good pool that predates service-side advertisement. Same shape as the block above. |
+| `metadata` | An operator declaration in `config.toml` (see below), for a known-good pool that predates service-side advertisement. |
 | `compatibility` | Mapped from a well-known **explicit** advertisement: a `capabilities.operations` / `operations` object, or a `features` / `routes` / `endpoints` array naming an operation outright (`"rollouts.prepare"`, `"POST /rollouts/prepare"`). A bare `/rollouts` route maps to nothing. |
 | `none` | Nothing was advertised. Every operation is `unknown`. |
+
+### No caller may assert its own capabilities
+
+`container_register.metadata` arrives through an agent-callable MCP tool. A
+capability claim there would let an agent register an incompatible raw engine
+while declaring every operation supported — defeating this gate entirely. So
+registration metadata is never read as a capability source: `capabilities`,
+`declaredCapabilities`, and `declared_capabilities` are **stripped** from the
+metadata map before the record is stored, and the host-computed projection is
+written in their place. Unrelated caller metadata is preserved.
+
+### Health
+
+Readiness is HTTP status **and** payload. A service that answers
+`200 {"ok": false}` — or `{"healthy": false}`, `{"ready": false}`, or
+`{"status": "unhealthy"}` — is recorded `unhealthy`, because a record that read
+`ready` would pass the health half of preflight. Only an explicit negative
+demotes a record; an unfamiliar payload stays `ready`, so this cannot invent
+failures for services that report nothing. Registration, probe, and the Tauri
+hydration path share one interpretation.
 
 ### Freshness
 
@@ -123,31 +143,24 @@ existing keys must be merged into the same object rather than replaced.
 
 ## Until the pool ships it
 
-Register the pool with an explicit operator declaration:
+An operator — the person at the keyboard, not an agent — may declare the pool in
+`config.toml`. That file is written only by Tauri commands and is unreachable
+from the loopback IPC the MCP adapters speak, so this authority cannot be
+reached from a session:
 
-```json
-{
-  "base_url": "http://127.0.0.1:8104",
-  "task_family": "craftax",
-  "metadata": {
-    "declaredCapabilities": {
-      "protocol": "synth.container.live-eval.v1",
-      "operations": {
-        "rollouts.prepare": true,
-        "rollouts.start_prepared": true,
-        "rollouts.get": true,
-        "rollouts.poll": true,
-        "reward.get": true,
-        "trace_v5.capture": false
-      },
-      "policy_refs": [{"harness": "react", "config": "luna_low"}]
-    }
-  }
-}
+```toml
+[[containers.capability_declaration]]
+base_url = "http://127.0.0.1:8104"
+protocol = "synth.container.live-eval.v1"
+operations = { "rollouts.prepare" = true, "rollouts.start_prepared" = true, "rollouts.get" = true, "rollouts.poll" = true, "reward.get" = true, "trace_v5.capture" = false }
+policy_refs = [{ harness = "react", config = "luna_low" }]
 ```
 
-The record then reports `source: "metadata"`, which is honest about who made the
-claim. A service-side block always wins over an operator declaration.
+Entries are matched on `base_url` (trailing slash ignored) and applied at
+register and probe. The record then reports `source: "metadata"`, which is
+honest about who made the claim. A service-side block always wins over an
+operator declaration, so shipping the GameBench patch supersedes this entry
+without needing it removed.
 
 ## Failure codes
 
