@@ -412,6 +412,11 @@ impl OptimizerManager {
             self.home.join(SELECTED_VERSION_FILE),
             format!("{version}\n"),
         )?;
+        // The stored handshake belongs to the version that proved it. Leaving it
+        // behind lets a previous install's capabilities satisfy the digest pin
+        // and template negotiation for a version that never completed a
+        // handshake of its own.
+        clear_stored_capabilities(&self.home);
         Ok(OptimizerSidecarVersion {
             selected: true,
             ..hit
@@ -635,16 +640,21 @@ impl OptimizerManager {
             let object = capabilities
                 .as_object_mut()
                 .ok_or_else(|| anyhow!("optimizer capability handshake was not an object"))?;
-            for field in ["algorithms", "recipes", "compatibleTemplateIds"] {
-                let valid = object
-                    .get(field)
-                    .and_then(Value::as_array)
-                    .is_some_and(|items| {
-                        !items.is_empty() && items.iter().all(|item| item.as_str().is_some())
-                    });
-                if !valid {
-                    bail!("optimizer capability handshake omitted {field}");
-                }
+            // A runtime answers only for itself. `recipes` and
+            // `compatibleTemplateIds` are Desktop vocabulary — those recipe ids
+            // and visual template ids are defined here and appear nowhere in
+            // the plugin — so requiring a runtime to echo them back proves only
+            // that it was told what to say, and would force a plugin release
+            // for every new host template. They are resolved host-side now;
+            // ask the runtime for the one list it can actually own.
+            let algorithms_valid = object
+                .get("algorithms")
+                .and_then(Value::as_array)
+                .is_some_and(|items| {
+                    !items.is_empty() && items.iter().all(|item| item.as_str().is_some())
+                });
+            if !algorithms_valid {
+                bail!("optimizer capability handshake omitted algorithms");
             }
             for field in ["replay", "cancellation"] {
                 if object.get(field).and_then(Value::as_bool).is_none() {
@@ -849,6 +859,9 @@ impl OptimizerManager {
         }
         if selected.as_deref() == Some(version) {
             let _ = fs::remove_file(self.home.join(SELECTED_VERSION_FILE));
+            // Uninstalling the version that proved these capabilities must not
+            // leave them behind to vouch for whatever is installed next.
+            clear_stored_capabilities(&self.home);
         }
         Ok(self.refresh().await)
     }
@@ -1930,6 +1943,13 @@ fn prove_offline_version(staging: &Path, spec: &OptimizerSidecarInstallSpec) -> 
 
 fn read_capabilities(home: &Path) -> Option<Value> {
     serde_json::from_slice(&fs::read(home.join("capabilities.json")).ok()?).ok()
+}
+
+/// Drop the stored handshake. Capabilities are evidence about one installed
+/// version; they are lifecycle state, not durable configuration, and outliving
+/// their version is how a stale attestation keeps satisfying gates.
+fn clear_stored_capabilities(home: &Path) {
+    let _ = fs::remove_file(home.join("capabilities.json"));
 }
 
 fn health_body(hit: &OptimizerSidecarVersion) -> Value {

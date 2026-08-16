@@ -222,6 +222,11 @@ impl OptimizerService {
         if current_digest != prepared_digest {
             bail!("optimizer capability digest changed since prepare; refusing to start");
         }
+        // A matching digest proves the capabilities are unchanged, not that they
+        // cover this run. Shape-validation alone would accept a handshake
+        // advertising a wholly unrelated algorithm, so check the one claim that
+        // matters before paying for rollouts.
+        require_advertised_algorithm(&current_caps, &run.algorithm_id)?;
         super::recipes::start_prepared(self, &optimizer_run_id).await
     }
 
@@ -746,21 +751,16 @@ impl OptimizerService {
             .iter()
             .find(|r| r.kind == "visual")
             .map(|r| r.id.clone());
-        let public_sft = run.algorithm_id == "sft"
-            && run
-                .execution_bindings
-                .iter()
-                .any(|binding| binding.kind == "synth_optimizers_sft");
-        let app_owned_visual =
-            public_sft || run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID;
-        let template_id = if app_owned_visual {
-            // Public SFT and local eval are controlled outside the optional
-            // Optimizers plugin, and their visuals are bundled with Workshop.
-            // Neither may depend on plugin installation or advertised templates.
-            primary_visual_template(&run.algorithm_id).to_owned()
-        } else {
-            negotiate_visual_template(&run.algorithm_id, &self.manager.advertised_capabilities())?
-        };
+        // Public SFT and local eval are controlled outside the optional
+        // Optimizers plugin, and their visuals are bundled with Workshop.
+        // Neither may depend on plugin installation or advertised templates.
+        //
+        // That independence used to need an explicit bypass around a
+        // negotiation step that consulted the plugin. It is now structural: no
+        // run's visual consults the plugin, because template ids were never the
+        // plugin's to grant. Keep it that way — reintroducing a capability
+        // lookup here re-couples eval and SFT to plugin installation.
+        let template_id = negotiate_visual_template(&run.algorithm_id);
         let template_digest = self.manager.status().await.digest;
         let visual = if let Some(visual_id) = existing {
             self.visuals.get(visual_id).await?
@@ -1216,30 +1216,44 @@ pub(in crate::optimizers) fn primary_visual_template(algorithm_id: &str) -> &'st
     }
 }
 
-fn negotiate_visual_template(algorithm_id: &str, advertised: &Value) -> Result<String> {
-    let preferred: &[&str] = match algorithm_id {
-        "sft" => &["optimizer.sft.live.v1", "optimizer.run.v1"],
-        "gepa" => &["optimizer.gepa.live.v1", "optimizer.run.v1"],
-        "eval" => &["optimizer.eval.live.v1", "optimizer.run.v1"],
-        id if id == "dag" || id.starts_with("dag.") => {
-            &["optimizer.dag.live.v1", "optimizer.run.v1"]
-        }
-        _ => &["optimizer.run.v1", "optimizer.run.v1"],
-    };
-    let installed = advertised
-        .get("compatibleTemplateIds")
+/// Cross-check that the runtime actually claims the algorithm about to run.
+///
+/// This replaces an intersection against `compatibleTemplateIds`, which could
+/// not fail informatively: template ids are Desktop vocabulary that the plugin
+/// only knew because Desktop's own install payload told it, so the check
+/// compared a host constant against a round-trip of that same constant. The
+/// algorithm list is a fact the runtime owns, so comparing against it is real.
+fn require_advertised_algorithm(advertised: &Value, algorithm_id: &str) -> Result<()> {
+    let algorithms = advertised
+        .get("algorithms")
         .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    for candidate in preferred {
-        if installed
-            .iter()
-            .any(|value| value.as_str() == Some(candidate))
-        {
-            return Ok((*candidate).to_owned());
-        }
+        .filter(|items| !items.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "optimizer capabilities advertise no algorithms; the sidecar must complete a \
+                 capability handshake before a run is opened"
+            )
+        })?;
+    // Namespaced ids (`dag.foo`) are served by their root algorithm.
+    let root = algorithm_id.split('.').next().unwrap_or(algorithm_id);
+    if algorithms
+        .iter()
+        .filter_map(Value::as_str)
+        .any(|advertised| advertised == algorithm_id || advertised == root)
+    {
+        return Ok(());
     }
-    bail!("optimizer sidecar did not advertise a compatible visual template")
+    bail!("optimizer runtime does not advertise algorithm `{algorithm_id}`")
+}
+
+/// Which visual Desktop renders for a run. Deliberately does not consult the
+/// runtime: template ids are host vocabulary, and picking a visual is not a
+/// capability decision. Gating rendering on the handshake also breaks runs the
+/// managed sidecar does not serve at all — hosted SFT among them, since the
+/// real plugin advertises only `gepa`. Whether a runtime can *execute* an
+/// algorithm is enforced at the paid gate by `require_advertised_algorithm`.
+fn negotiate_visual_template(algorithm_id: &str) -> String {
+    primary_visual_template(algorithm_id).to_owned()
 }
 
 async fn materialize_optimizer_result(
@@ -3067,13 +3081,21 @@ pub(in crate::optimizers) mod tests {
         std::fs::create_dir_all(manager.home()).unwrap();
         std::fs::write(
             manager.home().join("capabilities.json"),
+            // Mirrors what a real handshake now stores: runtime-owned facts.
+            // Template ids are resolved host-side and are no longer requested
+            // from, or answered by, the runtime.
+            //
+            // `gepa` alone, because that is what the Desktop-managed sidecar
+            // actually serves. Local eval is a separate runtime that bypasses
+            // negotiation entirely, and sft's control plane is its own surface.
+            // The list this replaced was derived from `compatibleTemplateIds`
+            // and carried `optimizer.dag.live.v1` — an id with no implementation
+            // behind it — so translating it wholesale would have had the fake
+            // advertise an algorithm no runtime can run.
             serde_json::to_vec(&json!({
-                "compatibleTemplateIds": [
-                    "optimizer.gepa.live.v1",
-                    "optimizer.sft.live.v1",
-                    "optimizer.dag.live.v1",
-                    "optimizer.run.v1"
-                ]
+                "algorithms": ["gepa"],
+                "replay": true,
+                "cancellation": true
             }))
             .unwrap(),
         )
@@ -3177,15 +3199,40 @@ pub(in crate::optimizers) mod tests {
     }
 
     #[test]
-    fn visual_negotiation_refuses_unadvertised_templates() {
-        let error = negotiate_visual_template(
-            "gepa",
-            &json!({
-                "compatibleTemplateIds": ["optimizer.sft.live.v1"]
-            }),
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("did not advertise"));
+    fn visual_selection_is_host_owned_and_capability_checks_guard_execution() {
+        // Visual selection never consults the plugin. It used to intersect
+        // against `compatibleTemplateIds` — host vocabulary the plugin only
+        // knew because Desktop's install payload told it — so the check
+        // compared a host constant against a round-trip of that same constant.
+        // Worse, tightening it would have broken every run the managed sidecar
+        // does not serve: the real plugin advertises only `gepa`, so hosted SFT
+        // and local eval would have lost their visuals entirely.
+        assert_eq!(negotiate_visual_template("gepa"), "optimizer.gepa.live.v1");
+        assert_eq!(negotiate_visual_template("sft"), "optimizer.sft.live.v1");
+        assert_eq!(negotiate_visual_template("eval"), "optimizer.eval.live.v1");
+
+        // Execution is where a capability claim has to hold up.
+        let serves_sft_only = json!({ "algorithms": ["sft"] });
+        let error = require_advertised_algorithm(&serves_sft_only, "gepa").unwrap_err();
+        assert!(
+            error.to_string().contains("does not advertise algorithm"),
+            "got: {error}"
+        );
+
+        // Absent capabilities refuse rather than waving the run through.
+        let absent = require_advertised_algorithm(&json!({}), "gepa").unwrap_err();
+        assert!(
+            absent.to_string().contains("advertise no algorithms"),
+            "got: {absent}"
+        );
+
+        let serves_gepa = json!({ "algorithms": ["gepa"] });
+        require_advertised_algorithm(&serves_gepa, "gepa").unwrap();
+        // Namespaced ids resolve through their root algorithm. Asserted with a
+        // fabricated id on purpose: the only namespaced arm in the tree is
+        // `dag.*`, which has no implementation behind it, and naming it here
+        // would document dead code as a supported capability.
+        require_advertised_algorithm(&serves_gepa, "gepa.variant").unwrap();
     }
 
     #[tokio::test]
@@ -3835,9 +3882,11 @@ pub(in crate::optimizers) mod tests {
 
         let (svc, _dir, _) = service().await;
         let home = svc.manager.home().to_path_buf();
-        let write_caps = |digest: Option<&str>| {
+        let write_caps = |digest: Option<&str>, algorithms: &[&str]| {
             let mut caps = json!({
-                "compatibleTemplateIds": ["optimizer.gepa.live.v1", "optimizer.run.v1"]
+                "algorithms": algorithms,
+                "replay": true,
+                "cancellation": true
             });
             if let Some(digest) = digest {
                 caps.as_object_mut()
@@ -3850,7 +3899,7 @@ pub(in crate::optimizers) mod tests {
 
         // The run was prepared against a proven handshake, but the sidecar is no
         // longer proving anything. Previously: skipped. Now: refused.
-        write_caps(None);
+        write_caps(None, &["gepa"]);
         let id = run_past_earlier_gates(
             &svc,
             "caps_absent_live",
@@ -3872,7 +3921,7 @@ pub(in crate::optimizers) mod tests {
 
         // The run was prepared while nothing was proven. This is the fails-open
         // case: no pin was ever recorded, so there was nothing to compare.
-        write_caps(Some("sha256:caps"));
+        write_caps(Some("sha256:caps"), &["gepa"]);
         let id = run_past_earlier_gates(
             &svc,
             "caps_absent_prepared",
@@ -3893,8 +3942,33 @@ pub(in crate::optimizers) mod tests {
             "a run with no recorded pin must refuse, got: {error}"
         );
 
-        // Both present and equal: the capability gate is satisfied and control
-        // reaches the recipe. Whatever fails past here, it is not this gate.
+        // A3: matching digests prove capabilities are unchanged, not that they
+        // cover this run. A handshake advertising an unrelated algorithm passes
+        // both shape-validation and the digest pin, and must still be refused.
+        write_caps(Some("sha256:caps"), &["sft"]);
+        let id = run_past_earlier_gates(
+            &svc,
+            "caps_wrong_algorithm",
+            json!({
+                "recipeId": "gepa.banking77.smoke.v1",
+                "preparationDigest": "sha256:prepare",
+                "capabilitiesDigest": "sha256:caps"
+            }),
+        )
+        .await;
+        let error = svc
+            .start_prepared(id, Some("sha256:prepare".into()), Some("approval-1".into()))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("does not advertise algorithm"),
+            "a runtime that does not serve this algorithm must refuse, got: {error}"
+        );
+
+        // Both present and equal, and the algorithm is served: the capability
+        // gate is satisfied and control reaches the recipe. Whatever fails past
+        // here, it is not this gate.
+        write_caps(Some("sha256:caps"), &["gepa"]);
         let id = run_past_earlier_gates(
             &svc,
             "caps_matched",
@@ -3913,8 +3987,10 @@ pub(in crate::optimizers) mod tests {
             assert!(
                 !text.contains("capabilities are not proven")
                     && !text.contains("prepared without a proven")
-                    && !text.contains("capability digest changed"),
-                "matching digests must clear the capability gate, got: {text}"
+                    && !text.contains("capability digest changed")
+                    && !text.contains("does not advertise algorithm")
+                    && !text.contains("advertise no algorithms"),
+                "matching digests and a served algorithm must clear the capability gate, got: {text}"
             );
         }
     }
