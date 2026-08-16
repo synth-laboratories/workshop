@@ -57,6 +57,8 @@ export {
   isNeverDeclaredStreamUrl
 } from "./liveStream.ts";
 export { projectLiveEval, displayReward, rewardFromEnvStatus } from "./liveEvalReducer.ts";
+export { projectAgentTurns, reconcileCallSelection, callForSequence } from "./agentTranscript.ts";
+export type { AgentTurnProjection, ModelCall, EvidenceField, EvidenceState } from "./agentTranscript.ts";
 export {
   saveVisualInstanceTsx,
   renderInstanceTsx,

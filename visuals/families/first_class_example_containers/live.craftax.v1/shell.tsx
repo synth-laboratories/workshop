@@ -3,6 +3,7 @@ import { Identifier } from "../../../chrome/Identifier.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber, formatMissingUsd } from "../../../runtime/liveStream.ts";
 import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
+import { callForSequence, projectAgentTurns, reconcileCallSelection, type EvidenceField } from "../../../runtime/agentTranscript.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../../runtime/types.ts";
 import {
   craftaxEventLane,
@@ -68,6 +69,7 @@ const DEFAULT_CONFIG: ViewerConfig = {
 
 /** Bound number of step groups rendered before the "Show earlier" expander. */
 const TRACE_GROUP_WINDOW = 30;
+const TRANSCRIPT_CALL_WINDOW = 200;
 
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -151,6 +153,16 @@ function traceText(value: unknown): string {
   if (typeof value === "string") return value;
   try { return JSON.stringify(value, null, 2); }
   catch { return String(value); }
+}
+
+const EVIDENCE_LABELS: Record<EvidenceField["state"], string> = {
+  visible: "Recorded and visible", redacted: "Recorded but redacted", not_emitted: "Not emitted by provider",
+  not_applicable: "Not applicable to this call", contract_defect: "Missing: producer-contract defect", pending: "Awaiting durable evidence"
+};
+
+function Evidence({ label, field }: { label: string; field: EvidenceField }) {
+  return <section className={`cv-evidence state-${field.state}`}><div><h5>{label}</h5><span>{EVIDENCE_LABELS[field.state]}</span></div>
+    {field.state === "visible" ? <pre>{traceText(field.value)}</pre> : <p>{field.detail ?? EVIDENCE_LABELS[field.state]}</p>}</section>;
 }
 
 function semanticTraceText(item: CraftaxSemanticTraceItem | undefined, field: "input" | "thinking" | "output" | "tools"): string {
@@ -243,6 +255,9 @@ export function Shell(props: ShellProps) {
   const [speed, setSpeed] = useState(1);
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [traceMode, setTraceMode] = useState<"focus" | "full">("full");
+  const [surface, setSurface] = useState<"replay" | "transcript" | "raw" | "metrics" | "integrity">("transcript");
+  const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
+  const [transcriptMode, setTranscriptMode] = useState<"focus" | "full">("full");
   const [showEarlierGroups, setShowEarlierGroups] = useState(false);
   const [framePlaying, setFramePlaying] = useState(false);
   const [frameFps, setFrameFps] = useState(4);
@@ -267,7 +282,13 @@ export function Shell(props: ShellProps) {
   const inspectedItems = traceMode === "focus"
     ? semanticTrace.filter((item) => item.category === "policy" || item.category === "evidence")
     : semanticTrace;
-  const selectedTrace = inspectedItems.find((item) => item.id === selectedTraceId) ?? inspectedItems.at(-1);
+  const selectedTrace = inspectedItems.find((item) => item.id === selectedTraceId) ?? (traceMode === "focus" ? inspectedItems.find((item) => item.category === "policy") : inspectedItems.at(-1));
+  const turns = useMemo(() => projectAgentTurns(visibleEvents), [visibleEvents]);
+  const selectedCall = turns.calls.find((call) => call.id === selectedCallId) ?? turns.calls.find((call) => call.id === reconcileCallSelection(turns.calls, selectedCallId, transcriptMode === "focus"));
+  const renderedCalls = turns.calls.length <= TRANSCRIPT_CALL_WINDOW ? turns.calls : (() => {
+    const recent = turns.calls.slice(-TRANSCRIPT_CALL_WINDOW);
+    return selectedCall && !recent.some((call) => call.id === selectedCall.id) ? [selectedCall, ...recent.slice(1)] : recent;
+  })();
   const traceGroups = useMemo(() => groupTraceByStep(inspectedItems), [inspectedItems]);
   const visibleGroups = showEarlierGroups || traceGroups.length <= TRACE_GROUP_WINDOW
     ? traceGroups
@@ -341,6 +362,10 @@ export function Shell(props: ShellProps) {
   }, [traceMode, selectedLane]);
 
   useEffect(() => {
+    setSelectedCallId((current) => reconcileCallSelection(turns.calls, current, transcriptMode === "focus"));
+  }, [turns.calls, transcriptMode, props.visualMetadata?.qualityGate?.revision]);
+
+  useEffect(() => {
     if (!framePlaying || !frameEvents.length) return;
     const timer = window.setInterval(() => {
       const currentSequence = craftaxEventSequence(visibleEvents.at(-1) ?? frameEvents[0], -1);
@@ -363,13 +388,19 @@ export function Shell(props: ShellProps) {
 		data-visual-semantic-event-count={semanticTrace.length}
 		data-visual-terminal={allLanesTerminal ? "true" : "false"}
 		data-visual-error={bindingError ?? error ?? ""}
+		data-active-surface={surface}
 	>
       <header className="cv-topbar">
         <div><p className="cv-eyebrow">Live eval · Craftax{scope?.campaign_id ? <> · <Identifier value={scope.campaign_id} label="campaign" max={18} copy={false} /></> : null}</p><h2>{props.title ?? "Policy through time"}</h2>{props.lede ? <p className="cv-lede">{props.lede}</p> : null}</div>
         <div className="cv-connection" role="status"><span className={visualLive ? "live" : ready ? "ready" : ""} />{connectionState}</div>
       </header>
 
-      <section className="cv-summary" aria-label="Run summary">
+      <nav className="cv-surfaces" aria-label="Trace viewer surfaces">
+        {([ ["replay", "Replay"], ["transcript", "Agent transcript"], ["raw", "Raw trace"], ["metrics", "Metrics"], ["integrity", "Integrity"] ] as const).map(([id, label]) =>
+          <button key={id} type="button" aria-current={surface === id ? "page" : undefined} onClick={() => setSurface(id)}>{label}</button>)}
+      </nav>
+
+      <section className="cv-summary cv-surface-replay" aria-label="Run summary">
         <Metric label="Rollouts" value={String(lanes.length || "—")} />
         <Metric label="Selected step" value={latest ? String(eventStep(latest, visibleIndex)) : "—"} />
         <Metric label="Reward" value={truthNumber(viewer.reward, viewer.terminal, (value) => formatMissingNumber(value))} />
@@ -379,7 +410,7 @@ export function Shell(props: ShellProps) {
       </section>
 
       {bindingError || error ? <p role="alert" className="cv-error">{bindingError ?? error}</p> : null}
-      <nav className="cv-lanes" aria-label="Rollout lanes">
+      <nav className="cv-lanes cv-surface-replay" aria-label="Rollout lanes">
         {lanes.map((lane) => {
           const summary = laneSummaries.get(lane);
           return <button key={lane} type="button" aria-current={lane === selectedLane} aria-label={`Select rollout ${lane}`} onClick={() => { setChosenLane(lane); setLaneCutoff(null); }}>
@@ -389,7 +420,7 @@ export function Shell(props: ShellProps) {
         })}
       </nav>
 
-      <section className="cv-workspace" data-visual-landmark="primary-surface">
+      <section className="cv-workspace cv-surface-replay" data-visual-landmark="primary-surface">
         <article className="cv-panel cv-game">
           <div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>{selectedLane ? <Identifier value={selectedLane} max={30} style={{ font: "inherit" }} /> : "Waiting for events"}</h3></div><span>{viewer.terminal ? "finished" : visualLive ? "live" : "waiting"}</span></div>
           <div className="cv-frame">
@@ -418,7 +449,7 @@ export function Shell(props: ShellProps) {
         </aside>
       </section>
 
-      <section className="cv-panel cv-timeline" data-visual-landmark="temporal-controls">
+      <section className="cv-panel cv-timeline cv-shared-cursor" data-visual-landmark="temporal-controls">
         <div className="cv-heading"><div><p className="cv-eyebrow">Evaluation time</p><h3>{Math.max(0, checkpointPosition) + 1} / {checkpoints.length || 0} checkpoints · {timeLabel(fullProjection.ordered[evaluationIndex], true)}</h3></div><div className="cv-replay"><button onClick={() => setPlaying(!playing)} disabled={!checkpoints.length}>{playing ? "Pause" : "Play"}</button><select aria-label="Replay speed" value={speed} onChange={(event) => setSpeed(Number(event.currentTarget.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select><button onClick={() => { setEvaluationCutoff(null); setLaneCutoff(null); setPlaying(false); }}>{visualLive ? "Follow live" : "Jump to end"}</button></div></div>
         <input
           aria-label="Replay evaluation through semantic checkpoints"
@@ -431,14 +462,23 @@ export function Shell(props: ShellProps) {
         <div className="cv-lane-timeline"><span>Rollout time (raw events)</span><input aria-label="Replay selected rollout by raw event" type="range" min={0} max={Math.max(0, laneEvents.length - 1)} value={Math.max(0, visibleIndex)} onChange={(event) => setLaneCutoff(Number(event.currentTarget.value))} /></div>
       </section>
 
-      {config.showPlots ? <section className="cv-plots" data-visual-landmark="outcome-plots">
+      {config.showPlots ? <section className="cv-plots cv-surface-replay" data-visual-landmark="outcome-plots">
         <article className="cv-panel"><div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>Cumulative reward</h3></div><strong>{formatMissingNumber(viewer.cumulativeReward)}</strong></div><svg viewBox="0 0 640 190" role="img" aria-label="Cumulative reward by step"><line x1="28" y1="166" x2="612" y2="166"/><polyline points={sparkline(rewardSeries)} /></svg></article>
         <article className="cv-panel"><div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>Achievements through time</h3></div><strong>{achievements.length}</strong></div><svg viewBox="0 0 640 190" role="img" aria-label="Cumulative achievements by step"><line x1="28" y1="166" x2="612" y2="166"/><polyline className="secondary" points={sparkline(achievementSeries)} /></svg></article>
       </section> : null}
 
-      {config.showActivity ? <section className="cv-panel cv-activity" data-visual-landmark="ordered-activity"><div className="cv-heading"><div><p className="cv-eyebrow">Semantic activity</p><h3>Recent activity</h3></div><span>{semanticTrace.length} events · {visibleEvents.length} raw</span></div><ol>{semanticTrace.slice(-12).reverse().map((item) => <li key={item.id}><time>seq {item.sequenceEnd}</time><strong>{item.category}</strong><span>{item.kind}</span><p>{item.label}</p></li>)}</ol></section> : null}
+      <section className="cv-panel cv-transcript cv-surface-transcript" data-visual-landmark="agent-transcript">
+        <div className="cv-heading"><div><p className="cv-eyebrow">Chronological model calls</p><h3>Agent transcript</h3></div><div className="cv-trace-mode"><button type="button" aria-pressed={transcriptMode === "focus"} onClick={() => setTranscriptMode("focus")}>Focus</button><button type="button" aria-pressed={transcriptMode === "full"} onClick={() => setTranscriptMode("full")}>Full</button><span>{turns.calls.length} calls · cutoff seq {craftaxEventSequence(visibleEvents.at(-1) ?? ({} as LiveEvalEvent), 0)}</span></div></div>
+        <div className="cv-step-links" aria-label="Environment step to policy navigation">{semanticTrace.filter((item) => item.kind === "environment.step").slice(-40).map((item) => { const callId = item.step == null ? callForSequence(turns.calls, item.sequenceStart)?.id : turns.callIdByEnvironmentStep.get(item.step); return <button type="button" key={item.id} disabled={!callId} onClick={() => { if (callId) setSelectedCallId(callId); }}>step {item.step ?? "—"}</button>; })}</div>
+        <div className="cv-transcript-grid"><ol className="cv-call-list" aria-label="Model calls">{turns.calls.length > renderedCalls.length ? <li className="cv-call-window">Showing {renderedCalls.length} of {turns.calls.length} calls at this cutoff</li> : null}{renderedCalls.map((call) => <li key={call.id}><button type="button" aria-current={call.id === selectedCall?.id} onClick={() => setSelectedCallId(call.id)}><span>Call {call.callNumber}</span><strong>{call.model ?? "Model not recorded"}</strong><small>steps {call.environmentStepStart ?? "—"}{call.environmentStepEnd !== call.environmentStepStart ? `–${call.environmentStepEnd ?? "—"}` : ""} · seq {call.sourceSequenceStart}–{call.sourceSequenceEnd}</small></button></li>)}</ol>
+          <article className="cv-call-card" aria-live="polite">{selectedCall ? <><header><div><p className="cv-eyebrow">Call {selectedCall.callNumber} · environment steps {selectedCall.environmentStepStart ?? "—"}–{selectedCall.environmentStepEnd ?? "—"}</p><h4>{selectedCall.model ?? "Model identity not recorded"}</h4></div><span>{selectedCall.complete ? "complete" : "streaming"}</span></header><dl><div><dt>Provider</dt><dd>{selectedCall.provider ?? "not emitted"}</dd></div><div><dt>Authority</dt><dd>{selectedCall.authority ?? "not emitted"}</dd></div><div><dt>Source</dt><dd>seq {selectedCall.sourceSequenceStart}–{selectedCall.sourceSequenceEnd}</dd></div><div><dt>Envelopes</dt><dd>{selectedCall.rawEvents.length}</dd></div></dl>
+            <Evidence label="Input / observation" field={selectedCall.input}/><Evidence label="Reasoning" field={selectedCall.reasoning}/><Evidence label="Output / actions" field={selectedCall.output}/><Evidence label="Tool calls" field={selectedCall.toolCalls}/><Evidence label="Tool results" field={selectedCall.toolResults}/>
+            <details><summary>Raw Trace V5 evidence ({selectedCall.rawEvents.length} envelopes)</summary><pre>{JSON.stringify(selectedCall.rawEvents, null, 2)}</pre></details></> : <p>No policy.call has been emitted at this temporal cutoff.</p>}</article></div>
+      </section>
 
-      {config.showTraceInspector ? <section className="cv-panel cv-trace" data-visual-landmark="trace-inspector">
+      {config.showActivity ? <section className="cv-panel cv-activity cv-surface-raw" data-visual-landmark="ordered-activity"><div className="cv-heading"><div><p className="cv-eyebrow">Semantic activity</p><h3>Recent activity</h3></div><span>{semanticTrace.length} events · {visibleEvents.length} raw</span></div><ol>{semanticTrace.slice(-12).reverse().map((item) => <li key={item.id}><time>seq {item.sequenceEnd}</time><strong>{item.category}</strong><span>{item.kind}</span><p>{item.label}</p></li>)}</ol></section> : null}
+
+      {config.showTraceInspector ? <section className="cv-panel cv-trace cv-surface-raw" data-visual-landmark="trace-inspector">
         <div className="cv-heading"><div><p className="cv-eyebrow">Same temporal cutoff</p><h3>Trace V5 viewer</h3></div><div className="cv-trace-mode"><button type="button" aria-pressed={traceMode === "focus"} onClick={() => setTraceMode("focus")}>Policy focus</button><button type="button" aria-pressed={traceMode === "full"} onClick={() => setTraceMode("full")}>Full trace</button><button type="button" onClick={() => setSelectedTraceId(inspectedItems.at(-1)?.id ?? null)} disabled={!inspectedItems.length}>Jump to latest</button><span>{viewer.terminal ? "sealed/reconciled" : "live · unsealed"}</span></div></div>
         <p className="cv-trace-summary">{traceMode === "full" ? `${semanticTrace.length} semantic events folded from ${visibleEvents.length} durable envelopes, grouped by environment step.` : `${inspectedItems.length} policy calls and trace-authority events; ${traceEvents.length} raw policy partials are folded.`}</p>
         <div className="cv-trace-grid">
@@ -485,6 +525,9 @@ export function Shell(props: ShellProps) {
           </aside>
         </div>
       </section> : null}
+
+      <section className="cv-panel cv-surface-metrics cv-facts"><div className="cv-heading"><div><p className="cv-eyebrow">At current cutoff</p><h3>Metrics</h3></div></div><dl><div><dt>Model calls</dt><dd>{turns.calls.length}</dd></div><div><dt>Total tokens</dt><dd>{formatMissingNumber(turns.calls.reduce((sum, call) => sum + (finite(call.usage.total_tokens) ?? 0), 0), 0)}</dd></div><div><dt>Latency</dt><dd>{formatMissingNumber(turns.calls.reduce((sum, call) => sum + (call.latencyMs ?? 0), 0), 0)} ms</dd></div><div><dt>Cost</dt><dd>{formatMissingUsd(turns.calls.reduce((sum, call) => sum + (call.costUsd ?? 0), 0))}</dd></div><div><dt>Reward</dt><dd>{truthNumber(viewer.reward, viewer.terminal, formatMissingNumber)}</dd></div><div><dt>Authority</dt><dd>{[...new Set(turns.calls.map((call) => call.authority).filter(Boolean))].join(", ") || "not emitted"}</dd></div></dl></section>
+      <section className="cv-panel cv-surface-integrity cv-integrity"><div className="cv-heading"><div><p className="cv-eyebrow">Evidence health</p><h3>Integrity</h3></div><span>{viewer.terminal ? "sealed/reconciled" : "live · unsealed"}</span></div><ul><li><strong>Reconciliation</strong><span>{semanticTrace.some((item) => item.kind === "trace.reconciled") ? "recorded and visible" : viewer.terminal ? "missing due to producer-contract defect" : "pending"}</span></li><li><strong>Model identity</strong><span>{turns.calls.every((call) => call.model && call.provider) ? "recorded and visible" : "missing on one or more calls"}</span></li><li><strong>Repairs / fallbacks</strong><span>{policy.fallback ? "recorded fallback" : "none recorded"}</span></li><li><strong>Malformed calls</strong><span>{turns.missingPolicyEnvelopeCount || "none"}</span></li><li><strong>Reasoning disclosure</strong><span>{turns.calls.some((call) => call.reasoning.state === "visible") ? "provider emitted visible reasoning evidence" : "Thinking not emitted"}</span></li></ul></section>
 
       <footer>live.craftax.v1 · synth.trace-stream-event.v1 · {props.visualMetadata?.qualityGate?.ready ? `ready rev ${props.visualMetadata.qualityGate.revision ?? "—"}` : "draft visual"}</footer>
     </div>
