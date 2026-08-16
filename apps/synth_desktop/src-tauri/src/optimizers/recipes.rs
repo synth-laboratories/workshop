@@ -2656,6 +2656,83 @@ namespace = "base"
         }
     }
 
+    /// Release receipt for the bounded Craftax product recipe. Unlike the unit
+    /// stand-in, this installs the pinned wheel, starts its real service, and
+    /// requires the real child event feed to remain visible through Desktop.
+    #[tokio::test]
+    #[ignore = "paid Craftax acceptance; requires ChatGPT auth and OPENAI_API_KEY"]
+    async fn paid_craftax_smoke_reaches_terminal_through_the_real_sidecar() {
+        assert_eq!(
+            std::env::var("SYNTH_OPTIMIZER_LIVE_SIDECAR").as_deref(),
+            Ok("1"),
+            "Craftax acceptance must exercise the installed sidecar"
+        );
+        assert_eq!(
+            std::env::var("SYNTH_OPTIMIZER_LIVE_INSTALL").as_deref(),
+            Ok("1"),
+            "Craftax acceptance must install the published wheel"
+        );
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path().join("core")).unwrap();
+        let journal = EventJournal::new(storage.database().clone());
+        let content = ContentStore::new(storage.content_root());
+        let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
+        let (events_tx, _) = tokio::sync::broadcast::channel(64);
+        let manager = Arc::new(super::super::OptimizerManager::with_home(
+            dir.path().join("manager"),
+        ));
+        manager.install(None).unwrap();
+        let ready = manager.start().await.unwrap();
+        assert_eq!(ready.phase, "ready");
+        let service = OptimizerService::new_with_manager(
+            storage.database().clone(),
+            journal,
+            visuals,
+            events_tx,
+            manager.clone(),
+        );
+        let run = service
+            .start_recipe(OptimizerRecipeRunRequest {
+                recipe_id: CRAFTAX_GEPA_SMOKE_RECIPE.into(),
+                session_ref: Some("v04-craftax-release-receipt".into()),
+                open_visual: Some(true),
+                base_model: None,
+                dataset_shard: None,
+                candidate_set_id: None,
+            })
+            .await
+            .unwrap()
+            .0;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1_800);
+        let terminal = loop {
+            let current = service.get(run.id.clone()).await.unwrap();
+            if matches!(current.status.as_str(), "completed" | "failed" | "cancelled") {
+                break current;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "Craftax smoke timed out at status {} cursor {}",
+                current.status,
+                current.cursor_seq
+            );
+            sleep(Duration::from_secs(2)).await;
+        };
+        let page = manager
+            .optimizer_events_after(&run.id, 0, 2_000)
+            .await
+            .unwrap();
+        assert!(
+            !page["events"].as_array().unwrap().is_empty(),
+            "real Craftax child produced no pollable optimizer events"
+        );
+        let _ = manager.stop().await;
+        assert_eq!(
+            terminal.status, "completed",
+            "Craftax smoke failed: {:?}",
+            terminal.error
+        );
+    }
+
     /// Manual A3 receipt. This is ignored in normal CI because it performs two
     /// paid Banking77 runs through the same Desktop service and manager. Run it
     /// with SYNTH_OPTIMIZER_PROJECT_ROOT pointed at the reviewed G1 checkout.
