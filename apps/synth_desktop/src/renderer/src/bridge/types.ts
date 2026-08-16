@@ -575,6 +575,18 @@ export type VisualsBridge = {
 	onShow(listener: (event: AppEvent) => void): () => void;
 };
 
+/** `PluginPermission` from src-tauri/src/plugins/types.rs. */
+export type PluginPermissionState = "granted" | "denied" | "not_determined" | "not_applicable";
+
+export type PluginPermission = {
+	id: string;
+	/** What macOS calls this in System Settings. */
+	label: string;
+	state: PluginPermissionState;
+	settingsUrl?: string | null;
+	detail?: string | null;
+};
+
 export type PluginStatus = {
 	schemaVersion: string;
 	pluginId: string;
@@ -589,6 +601,8 @@ export type PluginStatus = {
 	capabilitiesDigest?: string | null;
 	algorithms: string[];
 	templates: string[];
+	/** Omitted entirely for plugins that need no OS grants. */
+	permissions?: PluginPermission[];
 	lastActionReceiptId?: string | null;
 	detail?: string | null;
 };

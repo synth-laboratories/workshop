@@ -106,6 +106,8 @@ impl PluginService {
                         .collect()
                 })
                 .unwrap_or_default(),
+            // Optimizers is a pip sidecar and asks the OS for nothing.
+            permissions: Vec::new(),
             last_action_receipt_id: None,
             detail: sidecar.detail.as_deref().map(redact_secrets),
         };
