@@ -1,0 +1,74 @@
+{
+  "stream": [
+    {
+      "kind": "live_sse",
+      "poll_url": "http://127.0.0.1:8114/rollouts/roll_711deeafb63544dcb630d05382bf6d3f/events",
+      "schema": "synth.trace-stream-event.v1",
+      "slot": "stream",
+      "source": "http://127.0.0.1:8114/rollouts/roll_711deeafb63544dcb630d05382bf6d3f/stream"
+    },
+    {
+      "kind": "live_sse",
+      "poll_url": "http://127.0.0.1:8114/rollouts/roll_4684fa1c895245ec815fd5d1b991a0c0/events",
+      "schema": "synth.trace-stream-event.v1",
+      "slot": "stream",
+      "source": "http://127.0.0.1:8114/rollouts/roll_4684fa1c895245ec815fd5d1b991a0c0/stream"
+    },
+    {
+      "kind": "live_sse",
+      "poll_url": "http://127.0.0.1:8114/rollouts/roll_68333fcf719946c598994c4f8741b8f8/events",
+      "schema": "synth.trace-stream-event.v1",
+      "slot": "stream",
+      "source": "http://127.0.0.1:8114/rollouts/roll_68333fcf719946c598994c4f8741b8f8/stream"
+    },
+    {
+      "kind": "live_sse",
+      "poll_url": "http://127.0.0.1:8114/rollouts/roll_771da2c311254a8f874b70d501a484fb/events",
+      "schema": "synth.trace-stream-event.v1",
+      "slot": "stream",
+      "source": "http://127.0.0.1:8114/rollouts/roll_771da2c311254a8f874b70d501a484fb/stream"
+    },
+    {
+      "kind": "live_sse",
+      "poll_url": "http://127.0.0.1:8114/rollouts/roll_2748911a132244a4b834e2fab31bbb6f/events",
+      "schema": "synth.trace-stream-event.v1",
+      "slot": "stream",
+      "source": "http://127.0.0.1:8114/rollouts/roll_2748911a132244a4b834e2fab31bbb6f/stream"
+    },
+    {
+      "kind": "live_sse",
+      "poll_url": "http://127.0.0.1:8114/rollouts/roll_33bd795aaa834be8ad786061e371710f/events",
+      "schema": "synth.trace-stream-event.v1",
+      "slot": "stream",
+      "source": "http://127.0.0.1:8114/rollouts/roll_33bd795aaa834be8ad786061e371710f/stream"
+    },
+    {
+      "kind": "live_sse",
+      "poll_url": "http://127.0.0.1:8114/rollouts/roll_ca812b42ee424e58a3b237e04e719a79/events",
+      "schema": "synth.trace-stream-event.v1",
+      "slot": "stream",
+      "source": "http://127.0.0.1:8114/rollouts/roll_ca812b42ee424e58a3b237e04e719a79/stream"
+    },
+    {
+      "kind": "live_sse",
+      "poll_url": "http://127.0.0.1:8114/rollouts/roll_1d1a5b3d9f4b44a682ec2cbe7d77547a/events",
+      "schema": "synth.trace-stream-event.v1",
+      "slot": "stream",
+      "source": "http://127.0.0.1:8114/rollouts/roll_1d1a5b3d9f4b44a682ec2cbe7d77547a/stream"
+    },
+    {
+      "kind": "live_sse",
+      "poll_url": "http://127.0.0.1:8114/rollouts/roll_9f984114fdb043de83bf7eb874c83304/events",
+      "schema": "synth.trace-stream-event.v1",
+      "slot": "stream",
+      "source": "http://127.0.0.1:8114/rollouts/roll_9f984114fdb043de83bf7eb874c83304/stream"
+    },
+    {
+      "kind": "live_sse",
+      "poll_url": "http://127.0.0.1:8114/rollouts/roll_d6bb07086177471f8f6979f8ea7b332b/events",
+      "schema": "synth.trace-stream-event.v1",
+      "slot": "stream",
+      "source": "http://127.0.0.1:8114/rollouts/roll_d6bb07086177471f8f6979f8ea7b332b/stream"
+    }
+  ]
+}

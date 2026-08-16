@@ -1,7 +1,7 @@
 use super::mermaid::{self, Theme};
 use super::models::{
-    validate_bindings, RendererKind, VisualCreateRequest, VisualQuery, VisualRecord,
-    VisualRevision, VisualStatus, VisualUpdateRequest, VISUAL_SCHEMA_VERSION,
+    canonicalize_bindings, BindingsForm, RendererKind, VisualCreateRequest, VisualQuery,
+    VisualRecord, VisualRevision, VisualStatus, VisualUpdateRequest, VISUAL_SCHEMA_VERSION,
 };
 use super::renditions::{self, VisualAsset, VisualRendition};
 use super::systems::{self, SystemsKind};
@@ -83,6 +83,58 @@ impl VisualRegistry {
         service.emit(input);
     }
 
+    /// Report that a writer sent bindings in a shape this build had to upgrade.
+    ///
+    /// COMPAT: loud on purpose. A silently accepted legacy shape is how ten
+    /// declared streams became an empty pane with no error — the upgrade has to
+    /// be visible to an operator long before a rendered acceptance fails.
+    fn report_bindings_upgrade(
+        &self,
+        visual_id: &str,
+        revision: i64,
+        session_id: Option<&str>,
+        template_id: &str,
+        form: &BindingsForm,
+        upgraded_slots: &[String],
+    ) {
+        if !form.is_upgrade() {
+            return;
+        }
+        eprintln!(
+            "synth-desktop: upgraded {} visual bindings for {visual_id} rev {revision} \
+             (template {template_id}, slots {upgraded_slots:?}); writers must send {}",
+            form.as_str(),
+            super::models::VISUAL_BINDINGS_SCHEMA_VERSION
+        );
+        let Some(service) = self.diagnostics.get() else {
+            return;
+        };
+        let mut input = crate::diagnostics::DiagnosticInput::new(
+            crate::diagnostics::Severity::Warn,
+            "visual-registry",
+            "visual.bindings.upgraded",
+            crate::diagnostics::codes::VISUAL_BINDINGS_UPGRADED,
+            format!(
+                "upgraded {} visual bindings to {}",
+                form.as_str(),
+                super::models::VISUAL_BINDINGS_SCHEMA_VERSION
+            ),
+        );
+        input.correlation.visual_id = Some(visual_id.to_string());
+        input.correlation.visual_revision = Some(revision);
+        input.correlation.session_id = session_id.map(str::to_string);
+        input
+            .details
+            .insert("template_id".into(), json!(template_id));
+        input.details.insert("form".into(), json!(form.as_str()));
+        // Slot names come from a template contract, not from free text, so the
+        // cardinality here is bounded by the template's declared slots.
+        input
+            .details
+            .insert("slots".into(), json!(upgraded_slots));
+        service.emit(input);
+    }
+
     pub async fn list(&self, query: VisualQuery) -> Result<Vec<VisualRecord>> {
         let db = self.db.clone();
         db.run(move |conn| list_visuals(conn, &query)).await
@@ -109,8 +161,11 @@ impl VisualRegistry {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| format!("vis_{}", Uuid::new_v4().simple()));
         validate_visual_id(&id)?;
-        let bindings = request.bindings.unwrap_or_else(|| json!({}));
-        validate_bindings(&bindings)?;
+        let authored_bindings = request.bindings.unwrap_or_else(|| json!({}));
+        let canonical = canonicalize_bindings(&authored_bindings)?;
+        let bindings_form = canonical.form.clone();
+        let upgraded_slots = canonical.upgraded_slots.clone();
+        let bindings = canonical.value;
         let is_mermaid = mermaid::is_mermaid_template(&template.id);
         let systems_kind = systems::template_kind(&template.id);
         if is_mermaid {
@@ -250,6 +305,14 @@ impl VisualRegistry {
                 Ok((inserted, event))
             })
             .await?;
+        self.report_bindings_upgrade(
+            &record.id,
+            record.current_revision,
+            record.session_id.as_deref(),
+            &record.template_id,
+            &bindings_form,
+            &upgraded_slots,
+        );
         if mermaid::is_mermaid_template(&record.template_id) {
             let rendered = self.render_mermaid(&record.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
@@ -276,6 +339,18 @@ impl VisualRegistry {
             if let Some(kind) = systems::template_kind(&existing.template_id) {
                 systems::validate_source(source, kind)?;
             }
+        }
+        // Canonicalise before anything reads the bindings. The mermaid and
+        // systems guards below match on the canonical slots array, so a legacy
+        // shape used to walk straight past them.
+        let mut request = request;
+        let mut bindings_form = BindingsForm::Canonical;
+        let mut upgraded_slots = Vec::new();
+        if let Some(bindings) = request.bindings.as_ref() {
+            let canonical = canonicalize_bindings(bindings)?;
+            bindings_form = canonical.form.clone();
+            upgraded_slots = canonical.upgraded_slots.clone();
+            request.bindings = Some(canonical.value);
         }
         if let Some(bindings) = request.bindings.as_ref() {
             let existing = self.get(id.clone()).await?;
@@ -317,7 +392,8 @@ impl VisualRegistry {
                 }
                 let mut new_bindings = None;
                 if let Some(bindings) = request.bindings {
-                    validate_bindings(&bindings)?;
+                    // Already canonical: `update` canonicalises before the
+                    // transaction so every guard above reads the same shape.
                     current.bindings = bindings.clone();
                     new_bindings = Some(bindings);
                     bumped = true;
@@ -372,6 +448,14 @@ impl VisualRegistry {
                 Ok((current, event))
             })
             .await?;
+        self.report_bindings_upgrade(
+            &updated.id,
+            updated.current_revision,
+            updated.session_id.as_deref(),
+            &updated.template_id,
+            &bindings_form,
+            &upgraded_slots,
+        );
         if content_changed && mermaid::is_mermaid_template(&updated.template_id) {
             let rendered = self.render_mermaid(&updated.id).await?;
             return Ok((rendered, serde_json::to_value(event)?));
@@ -996,7 +1080,7 @@ fn validate_visual_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn digest_json(value: &Value) -> String {
+pub(super) fn digest_json(value: &Value) -> String {
     let encoded = serde_json::to_vec(value).unwrap_or_default();
     let mut hasher = Sha256::new();
     hasher.update(encoded);

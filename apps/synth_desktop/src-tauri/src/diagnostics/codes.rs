@@ -23,14 +23,24 @@ pub const DEFAULT_RANK: u8 = RANK_CONTRACT;
 // Visuals.
 pub const UNSUPPORTED_TRACE_PROJECTION_SCHEMA: &str = "unsupported_trace_projection_schema";
 pub const VISUAL_BINDING_UNRESOLVED: &str = "visual_binding_unresolved";
+pub const VISUAL_BINDINGS_UPGRADED: &str = "visual_bindings_upgraded";
+pub const VISUAL_BINDINGS_INVALID: &str = "visual_bindings_invalid";
 pub const VISUAL_TEMPLATE_UNAVAILABLE: &str = "visual_template_unavailable";
 pub const VISUAL_SHELL_LOAD_FAILED: &str = "visual_shell_load_failed";
 pub const VISUAL_RENDER_FAILED: &str = "visual_render_failed";
 
 // Live streams.
+/// A poll that succeeded. Recorded so "the renderer never asked" and "the
+/// stream returned nothing" are two different answers to the same question.
+pub const STREAM_POLL_OBSERVED: &str = "stream_poll_observed";
 pub const STREAM_INTERRUPTED: &str = "stream_interrupted";
 pub const STREAM_SUBSCRIBE_TIMEOUT: &str = "stream_subscribe_timeout";
 pub const STREAM_REPLAY_GAP: &str = "stream_replay_gap";
+
+// Desktop window capture.
+pub const DESKTOP_WINDOW_NOT_FOUND: &str = "desktop_window_not_found";
+pub const DESKTOP_WINDOW_AMBIGUOUS: &str = "desktop_window_ambiguous";
+pub const CAPTURE_RESTORE_FAILED: &str = "capture_restore_failed";
 
 // Containers.
 pub const CONTAINER_CAPABILITY_REJECTED: &str = "container_capability_rejected";
@@ -65,7 +75,14 @@ const RANKS: &[(&str, u8)] = &[
     (OPTIMIZER_WORKER_FAILED, RANK_TRANSPORT),
     (UNSUPPORTED_TRACE_PROJECTION_SCHEMA, RANK_CONTRACT),
     (VISUAL_BINDING_UNRESOLVED, RANK_CONTRACT),
+    // Upstream of every transport symptom: bindings the renderer cannot read
+    // mean no stream is ever opened, so this must outrank stream failures.
+    (VISUAL_BINDINGS_INVALID, RANK_INFRASTRUCTURE),
+    (VISUAL_BINDINGS_UPGRADED, RANK_INFRASTRUCTURE),
     (VISUAL_TEMPLATE_UNAVAILABLE, RANK_CONTRACT),
+    (DESKTOP_WINDOW_NOT_FOUND, RANK_TRANSPORT),
+    (DESKTOP_WINDOW_AMBIGUOUS, RANK_CONTRACT),
+    (CAPTURE_RESTORE_FAILED, RANK_SYMPTOM),
     (STREAM_REPLAY_GAP, RANK_CONTRACT),
     (PROVIDER_STALLED, RANK_CONTRACT),
     (VISUAL_SHELL_LOAD_FAILED, RANK_SYMPTOM),
@@ -89,6 +106,26 @@ const REMEDIATIONS: &[(&str, &str)] = &[
     (
         VISUAL_BINDING_UNRESOLVED,
         "A declared slot resolved to nothing. Check the binding's source id against the rollout, trace, or optimizer run it names, then re-bind the visual.",
+    ),
+    (
+        VISUAL_BINDINGS_UPGRADED,
+        "A writer sent bindings in a legacy shape and this build upgraded them to synth.visual-bindings.v1. Fix the writer: the upgrade is compatibility code and will be removed.",
+    ),
+    (
+        VISUAL_BINDINGS_INVALID,
+        "The visual's bindings are not readable as synth.visual-bindings.v1 and could not be upgraded. Re-bind the visual with an explicit slots array; nothing downstream can render until then.",
+    ),
+    (
+        DESKTOP_WINDOW_NOT_FOUND,
+        "No on-screen window matched the expected bundle id. Confirm the named instance is running and its window is not minimised; window size is not a matching criterion.",
+    ),
+    (
+        DESKTOP_WINDOW_AMBIGUOUS,
+        "More than one on-screen window matched and none was the window the resize returned. Capture through the resize receipt's window number rather than re-resolving by identity alone.",
+    ),
+    (
+        CAPTURE_RESTORE_FAILED,
+        "The review capture could not restore the window to its previous size. The Desktop window is left at the review viewport; resize it manually and check the receipt for the previous size.",
     ),
     (
         VISUAL_TEMPLATE_UNAVAILABLE,
