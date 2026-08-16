@@ -165,6 +165,7 @@ export default function App() {
 						transcriptHistoryBySession={c.transcriptHistoryBySession}
 						loadOlderTranscript={c.loadOlderTranscript}
 						inferenceMonitor={c.inferenceMonitor}
+						selectedModelMedianTpsLabel={c.selectedModelMedianTpsLabel}
 						persistedPerformanceByTarget={c.persistedPerformanceByTarget}
 						preferences={c.preferences}
 						setPreferences={c.setPreferences}

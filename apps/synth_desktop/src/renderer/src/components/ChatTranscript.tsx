@@ -29,6 +29,8 @@ type Props = {
 	onAdvanced?: () => void;
 	activityMode?: ToolActivityMode;
 	onActivityModeChange?: (mode: ToolActivityMode) => void;
+	/** Rolling model p50 throughput, shared by the live row and completed responses. */
+	medianTpsLabel?: string | null;
 	outputsOpen?: boolean;
 	onToggleOutputs?: () => void;
 	showMascot?: boolean;
@@ -612,6 +614,7 @@ export function ChatTranscript({
 	onAdvanced,
 	activityMode = "grouped",
 	onActivityModeChange,
+	medianTpsLabel = null,
 	outputsOpen = false,
 	onToggleOutputs,
 	showMascot = false,
@@ -633,6 +636,7 @@ export function ChatTranscript({
 	const artifacts = chat.artifacts ?? [];
 	const containerIds = outputContainerIds(chat);
 	const hasResources = containerIds.length > 0 || artifacts.length > 0;
+	const transcriptMedianTpsLabel = medianTpsLabel?.replace(/\bp50\b/g, "median") ?? null;
 	const finalAssistantMessageId = useMemo(() => {
 		for (let index = chat.messages.length - 1; index >= 0; index -= 1) {
 			if (chat.messages[index]?.role === "assistant") return chat.messages[index]!.id;
@@ -879,7 +883,10 @@ export function ChatTranscript({
 											<p>{m.body}</p>
 											{showAdvancedAtMessage ? <button type="button" className="message-advanced" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
 										</div>
-										<div className="message-actions"><CopyMessageButton body={m.body} /></div>
+										<div className="assistant-message-footer">
+											{transcriptMedianTpsLabel ? <small className="message-throughput" data-testid={`assistant-median-tps-${m.id}`}>{transcriptMedianTpsLabel}</small> : null}
+											<div className="message-actions"><CopyMessageButton body={m.body} /></div>
+										</div>
 									</div>
 								)}
 								{m.role === "assistant" ? renderPresented(presentedAfter, [], false, running) : null}
@@ -900,6 +907,7 @@ export function ChatTranscript({
 							<div className="model-working" role="status" aria-live="polite" data-testid="model-working">
 								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>
 								<span>{warmingUp ? "Warming up…" : "Working…"}</span>
+								{transcriptMedianTpsLabel ? <small className="model-working-throughput" data-testid="model-working-median-tps">{transcriptMedianTpsLabel}</small> : null}
 								{onStop ? <button type="button" onClick={onStop} aria-label="Stop generating">Stop</button> : null}
 								{onAdvanced ? <button type="button" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
 							</div>

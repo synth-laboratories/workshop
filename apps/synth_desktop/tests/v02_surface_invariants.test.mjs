@@ -26,6 +26,18 @@ test("v0.2 pending approval cards pin above Working in ChatTranscript", () => {
 	assert.doesNotMatch(source, /if \(!running\) return \[\];/);
 });
 
+test("v0.4 transcript shows median throughput while working and after assistant messages", () => {
+	const source = read("components/ChatTranscript.tsx");
+	const labels = read("runtime/modelPerformanceLabels.ts");
+	assert.match(source, /data-testid="model-working-median-tps"/);
+	assert.match(source, /data-testid={`assistant-median-tps-\${m\.id}`}/);
+	assert.match(source, /medianTpsLabel\?\.replace\(\/\\bp50\\b\/g, "median"\)/);
+	assert.match(labels, /summary\.provider === "openai-codex-oauth"/);
+	assert.match(labels, /CHATGPT_LUNA_MODEL\) return "chatgpt-luna"/);
+	assert.match(labels, /CHATGPT_SOL_MODEL\) return "chatgpt-sol"/);
+	assert.match(labels, /CHATGPT_TERRA_MODEL\) return "chatgpt-terra"/);
+});
+
 test("paid-compute approval is a cap-scoped modal, not a transcript card", () => {
 	const transcript = read("components/ChatTranscript.tsx");
 	assert.match(transcript, /data-testid="paid-compute-approval-modal"/);

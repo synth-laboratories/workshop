@@ -71,6 +71,7 @@ export type MainRoutesProps = {
 	loadOlderTranscript: () => void;
 	setSidePanelOpen: (open: boolean) => void;
 	inferenceMonitor: InferenceMonitor;
+	selectedModelMedianTpsLabel: string | null;
 	persistedPerformanceByTarget: Map<string, ModelPerformanceSummary>;
 	preferences: DesktopPreferences;
 	setPreferences: (next: DesktopPreferences) => void;
@@ -135,6 +136,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		setSidePanelTab,
 		setSidePanelOpen,
 		inferenceMonitor,
+		selectedModelMedianTpsLabel,
 		persistedPerformanceByTarget,
 		preferences,
 		setPreferences,
@@ -369,6 +371,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						}}
 						activityMode={preferences.toolActivity.mode}
 						onActivityModeChange={onActivityModeChange}
+						medianTpsLabel={selectedModelMedianTpsLabel}
 						outputsOpen={showSidePanel && sidePanelTab === "outputs"}
 						onToggleOutputs={() => {
 							const next = !(showSidePanel && sidePanelTab === "outputs");

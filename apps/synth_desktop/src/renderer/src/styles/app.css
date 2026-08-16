@@ -2757,6 +2757,12 @@ html.sidebar-hidden .titlebar {
 .local-assistant-content { display: contents; }
 .local-assistant-with-advanced .local-assistant-content { display: flex; align-items: flex-start; gap: 10px; }
 .local-assistant-with-advanced p { flex: 1 1 auto; min-width: 0; }
+
+.assistant-message-footer { display: flex; align-items: center; gap: var(--sp-2); min-height: var(--sp-5); margin-top: 2px; }
+.assistant-message-footer .message-actions { margin-top: 0; }
+.message-throughput,
+.model-working-throughput { color: var(--color-text-faint); font-variant-numeric: tabular-nums; }
+.model-working-throughput::before { content: "·"; margin-right: var(--sp-2); }
 .message-advanced {
 	flex: 0 0 auto;
 	margin-top: 2px;
