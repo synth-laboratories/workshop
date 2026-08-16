@@ -77,12 +77,27 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
 		await page.addInitScript(() => {
 			let coreBridge: Record<string, unknown>;
 			const coreDefaults = {
+				diagnostics: async () => ({
+					databasePath: "browser-memory://core-runtime",
+					schemaVersion: 0,
+					integrityOk: true,
+					contentStorePath: "browser-memory://content",
+					journalHead: 0,
+					sessionCount: 0,
+					runCount: 0,
+					visualCount: 0,
+					migrationComplete: true
+				}),
+				eventsAfter: async () => [],
+				sessionEventsAfter: async () => [],
 				sessionEventsTail: async (sessionId: string, limit = 200) => {
 					const legacy = coreBridge.sessionEventsAfter;
 					return typeof legacy === "function"
 						? await (legacy as (id: string, after: number, cap: number) => Promise<unknown[]>)(sessionId, 0, limit)
 						: [];
-				}
+				},
+				sessionEventsBefore: async () => [],
+				onEvent: () => () => undefined
 			};
 			coreBridge = coreDefaults;
 			Object.defineProperty(window, "synthCore", {
