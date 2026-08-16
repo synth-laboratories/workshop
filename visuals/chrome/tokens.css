@@ -59,6 +59,9 @@
 
 .synth-visual-root {
   box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   color: var(--sv-text);
   background: var(--sv-surface);
   font-family: var(--sv-font);
@@ -72,6 +75,7 @@
 .synth-visual-root *::before,
 .synth-visual-root *::after {
   box-sizing: border-box;
+  min-width: 0;
 }
 
 .sv-kicker {
