@@ -180,9 +180,11 @@ test("V5: actual Craftax viewer sustains 10 lanes and 100k envelopes with bounde
     await page.getByTestId("visuals-card-vis_craftax_v5_acceptance").getByRole("button", { name: "Open" }).click();
     const viewer = page.getByTestId("visual-pane").getByTestId("visual-live-craftax");
     await expect(viewer).toBeVisible();
+    await viewer.getByRole("button", { name: "Replay", exact: true }).click();
     await expect(viewer.getByRole("navigation", { name: "Rollout lanes" }).getByRole("button")).toHaveCount(LANE_COUNT, { timeout: 180_000 });
     await expect(viewer).toContainText("sealed/reconciled", { timeout: 180_000 });
 
+    await viewer.getByRole("button", { name: "Raw trace", exact: true }).click();
     const traceMode = viewer.getByRole("button", { name: "Full trace" });
     await traceMode.click();
     await expect(viewer.locator(".cv-trace-summary")).toContainText("durable envelopes");
