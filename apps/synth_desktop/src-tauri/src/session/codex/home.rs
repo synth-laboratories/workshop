@@ -937,7 +937,10 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         // tools callable for other MCP clients, while visual_manage routes the
         // same operations after the visual skill is loaded.
         "synth_visuals" => "enabled_tools = [\"visual_manage\"]\n",
-        "synth_optimizers" => "enabled_tools = [\"optimizer_manage\"]\n",
+        // Keep the compact facade and the two eval-specific aliases visible.
+        // Some models reliably select a dedicated schema while others follow
+        // the facade; both route through the same production adapter.
+        "synth_optimizers" => "enabled_tools = [\"optimizer_manage\", \"optimizer_stage_eval_candidates\", \"optimizer_start_recipe\"]\n",
         "synth_plugins" => "enabled_tools = [\"plugin_manage\"]\n",
         "synth_session" => "enabled_tools = [\"session_present\"]\n",
         _ => "",

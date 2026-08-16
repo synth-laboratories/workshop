@@ -1555,7 +1555,7 @@ fn advertises_only_the_compact_visual_tool_to_codex() {
     assert_eq!(mcp_enabled_tools("synth_containers"), "");
     assert_eq!(
         mcp_enabled_tools("synth_optimizers"),
-        "enabled_tools = [\"optimizer_manage\"]\n"
+        "enabled_tools = [\"optimizer_manage\", \"optimizer_stage_eval_candidates\", \"optimizer_start_recipe\"]\n"
     );
     assert_eq!(
         mcp_enabled_tools("synth_session"),

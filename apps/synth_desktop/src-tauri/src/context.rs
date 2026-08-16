@@ -198,7 +198,14 @@ fn mcp_groups(current: &ContextSettings) -> Vec<McpContextGroup> {
             &[
                 ("synth_containers", &[]),
                 ("synth_visuals", &["visual_manage"]),
-                ("synth_optimizers", &["optimizer_manage"]),
+                (
+                    "synth_optimizers",
+                    &[
+                        "optimizer_manage",
+                        "optimizer_stage_eval_candidates",
+                        "optimizer_start_recipe",
+                    ],
+                ),
             ],
         ),
         group("productivity", "Productivity", &[], &[]),
