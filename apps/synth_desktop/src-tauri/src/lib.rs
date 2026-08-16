@@ -1477,24 +1477,25 @@ async fn visual_stream_poll(
         .get(request.visual_id)
         .await
         .map_err(AppError::from)?;
-    let declared = visual
-        .bindings
-        .get("slots")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|slots| {
-            slots.iter().any(|binding| {
-                binding.get("kind").and_then(serde_json::Value::as_str) == Some("live_sse")
-                    && binding.get("poll_url").and_then(serde_json::Value::as_str)
-                        == Some(request.poll_url.as_str())
-            })
-        });
+    // One authority decides what this visual declared. Reading the raw
+    // `slots` key here is what let a visual hold ten poll URLs the poll
+    // command would have rejected.
+    let declared_urls = visuals::declared_poll_urls(&visual.bindings);
+    let declared = declared_urls
+        .iter()
+        .any(|url| url == request.poll_url.as_str());
     // Every renderer poll of a live stream lands here, so this is where a live
     // stream going quiet becomes a record rather than an empty pane.
-    let diagnose = |code: &str, message: String, retryable: bool, details: serde_json::Value| {
+    let diagnose_at = |severity: diagnostics::Severity,
+                       event: &str,
+                       code: &str,
+                       message: String,
+                       retryable: bool,
+                       details: serde_json::Value| {
         let mut input = diagnostics::DiagnosticInput::new(
-            diagnostics::Severity::Error,
+            severity,
             "container-stream",
-            "stream.poll.failed",
+            event,
             code,
             message,
         )
@@ -1509,17 +1510,29 @@ async fn visual_stream_poll(
         }
         state.diagnostics_service().emit(input);
     };
+    let fail = |code: &str, message: String, retryable: bool, details: serde_json::Value| {
+        diagnose_at(
+            diagnostics::Severity::Error,
+            "stream.poll.failed",
+            code,
+            message,
+            retryable,
+            details,
+        );
+    };
     if !declared {
         // An undeclared URL is a binding defect, not a transport failure: the
         // visual is asking for a stream it never declared.
-        diagnose(
+        fail(
             diagnostics::codes::VISUAL_BINDING_UNRESOLVED,
             "visual stream poll URL is not declared on this visual".into(),
             false,
-            serde_json::json!({}),
+            serde_json::json!({"declared_stream_count": declared_urls.len()}),
         );
         return Err(AppError::from(anyhow::anyhow!(
-            "visual stream poll URL is not declared on this visual"
+            "visual stream poll URL is not declared on this visual; \
+             the visual declares {} live stream(s)",
+            declared_urls.len()
         )));
     }
     let limit = request.limit.clamp(1, 500);
@@ -1538,10 +1551,51 @@ async fn visual_stream_poll(
     }
     .await;
     match response {
-        Ok(page) => Ok(contract::specta::OpaqueJson(page)),
+        Ok(page) => {
+            // A successful poll has to be as visible as a failing one. Without
+            // this, "the renderer never asked" and "the stream returned
+            // nothing" are the same empty pane and the same empty query.
+            let cursor = page.get("cursor");
+            let rows = page
+                .get("events")
+                .or_else(|| page.pointer("/page/events"))
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len);
+            let closed = cursor
+                .and_then(|cursor| cursor.get("closed"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            diagnose_at(
+                diagnostics::Severity::Debug,
+                if closed {
+                    "stream.poll.closed"
+                } else {
+                    "stream.poll.page"
+                },
+                diagnostics::codes::STREAM_POLL_OBSERVED,
+                format!(
+                    "polled {} row(s) after sequence {}",
+                    rows.unwrap_or(0),
+                    request.after
+                ),
+                false,
+                // Identifiers and counts only. Envelope bodies never enter a
+                // diagnostic: they carry model output and rollout payloads.
+                serde_json::json!({
+                    "after": request.after,
+                    "limit": limit,
+                    "row_count": rows,
+                    "next": cursor.and_then(|cursor| cursor.get("next")),
+                    "high_water": cursor.and_then(|cursor| cursor.get("high_water")),
+                    "closed": closed,
+                    "duration_ms": started.elapsed().as_millis() as u64,
+                }),
+            );
+            Ok(contract::specta::OpaqueJson(page))
+        }
         Err(error) => {
             let status = error.status().map(|status| status.as_u16());
-            diagnose(
+            fail(
                 diagnostics::codes::STREAM_INTERRUPTED,
                 error.to_string(),
                 // A refused or 5xx poll may recover; a 4xx says the stream is
