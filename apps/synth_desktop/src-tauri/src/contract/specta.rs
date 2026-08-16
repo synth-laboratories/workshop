@@ -343,10 +343,10 @@ mod tests {
         // Hand-maintained on purpose: the exporter dropping commands must fail
         // here rather than pass quietly. Bump it only alongside a reviewed
         // `collect_commands!` change.
-        // 189 → 190: `runtime_contracts`, which backs the Settings → About
+        // 190 → 191: `runtime_contracts`, which backs the Settings → About
         // runtime version rows.
         assert_eq!(
-            exported, 190,
+            exported, 191,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(
