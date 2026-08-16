@@ -291,6 +291,12 @@ impl OptimizerManager {
             .await
             .context("decode managed optimizer event page")?;
         if status == StatusCode::NOT_FOUND {
+            if events_not_found_is_missing_route(&body) {
+                bail!(
+                    "optimizer runtime does not serve the optimizer-events route; \
+                     install a sidecar version that implements it"
+                );
+            }
             return Err(OptimizerEventRunNotFound {
                 run_id: run_id.to_string(),
             }
@@ -619,18 +625,18 @@ impl OptimizerManager {
             .await
             .context("read optimizer capability handshake")?;
         if !response.status().is_success() {
+            // A bare status was what made this failure so expensive to read:
+            // "HTTP 502" named neither the missing route nor the runtime that
+            // lacked it. Carry the proxy's reason through.
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            let body = truncate_diagnostic(&body, 2_000);
-            bail!(
-                "optimizer capability handshake returned HTTP {}{}",
-                status,
-                if body.is_empty() {
-                    String::new()
-                } else {
-                    format!(": {body}")
-                }
-            );
+            let detail = upstream_failure_detail(response).await;
+            if status == StatusCode::NOT_FOUND {
+                bail!(
+                    "optimizer_capability_route_missing: this sidecar version does not serve \
+                     /v1/optimizer/capabilities; install a version that does ({detail})"
+                );
+            }
+            bail!("optimizer capability handshake failed: {detail}");
         }
         let mut capabilities: Value = response
             .json()
@@ -1952,6 +1958,58 @@ fn clear_stored_capabilities(home: &Path) {
     let _ = fs::remove_file(home.join("capabilities.json"));
 }
 
+/// Does this 404 mean "no such route" rather than "no such run"?
+///
+/// The two arrive as the same status but mean opposite things for a live run:
+/// a run that is not indexed yet may appear at any moment, while a route that
+/// does not exist will never appear, so retrying it only pays for rollouts
+/// nobody can ingest. `synth-optimizers` 0.2.5 labels both `run_not_found` —
+/// its unknown-route fallback reuses the run code — so the distinction is only
+/// available from runtimes that report it, and absence means "assume the
+/// retryable one" rather than guessing.
+fn events_not_found_is_missing_route(body: &Value) -> bool {
+    body.get("error")
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_str)
+        == Some("route_not_found")
+}
+
+/// Bound a diagnostic string and strip anything credential-shaped. Upstream
+/// bodies are echoed into errors and logs, and the sidecar's bearer token is
+/// the one secret in scope, so a stack trace that quotes a request must not
+/// carry it along.
+fn truncate_detail(detail: &str) -> String {
+    const LIMIT: usize = 320;
+    let redacted = redact_optimizer_secrets(detail.trim());
+    if redacted.chars().count() <= LIMIT {
+        return redacted;
+    }
+    let head: String = redacted.chars().take(LIMIT).collect();
+    format!("{head}… (truncated)")
+}
+
+fn redact_optimizer_secrets(detail: &str) -> String {
+    let mut out = detail.to_owned();
+    // The key is minted by this process, so redact the live value rather than
+    // pattern-matching a format that may change.
+    if let Ok(key) = env::var("SYNTH_OPTIMIZER_API_KEY") {
+        if key.len() >= 8 {
+            out = out.replace(&key, "[redacted]");
+        }
+    }
+    out
+}
+
+async fn upstream_failure_detail(response: reqwest::Response) -> String {
+    let status = response.status();
+    match response.text().await {
+        Ok(text) if !text.trim().is_empty() => {
+            format!("upstream {status}: {}", truncate_detail(&text))
+        }
+        _ => format!("upstream {status}"),
+    }
+}
+
 fn health_body(hit: &OptimizerSidecarVersion) -> Value {
     json!({
         "status": "ok",
@@ -2043,10 +2101,22 @@ async fn route_sidecar(
                     "optimizer capability endpoint is unavailable",
                 );
             };
-            if !upstream.status().is_success() {
+            // Preserve the upstream status. Collapsing everything to 502 made a
+            // runtime that never implemented this route indistinguishable from
+            // one that had crashed — the difference between "upgrade the
+            // plugin" and "restart the service", reported identically.
+            let status = upstream.status();
+            if !status.is_success() {
+                let detail = upstream_failure_detail(upstream).await;
+                if status == StatusCode::NOT_FOUND {
+                    return JsonHttpResponse::error(
+                        StatusCode::NOT_FOUND,
+                        format!("optimizer_capability_route_missing: {detail}"),
+                    );
+                }
                 return JsonHttpResponse::error(
-                    StatusCode::BAD_GATEWAY,
-                    "optimizer capability endpoint failed",
+                    status,
+                    format!("optimizer capability endpoint failed: {detail}"),
                 );
             }
             match upstream.json::<Value>().await {
@@ -2069,17 +2139,21 @@ async fn route_sidecar(
                     "optimizer event endpoint is unavailable",
                 );
             };
+            // A non-JSON body must not rewrite the status. Reporting a plain
+            // 404 as 502 turned a retryable "run not indexed yet" into a fatal
+            // error on the poll loop's first tick, killing runs that were only
+            // a moment from registering.
             let status = upstream.status();
-            let Ok(body) = upstream.json::<Value>().await else {
-                return JsonHttpResponse::error(
+            let text = upstream.text().await.unwrap_or_default();
+            let parsed = serde_json::from_str::<Value>(&text).ok();
+            match (status.is_success(), parsed) {
+                (true, Some(body)) => JsonHttpResponse::ok(body),
+                (true, None) => JsonHttpResponse::error(
                     StatusCode::BAD_GATEWAY,
                     "optimizer event endpoint returned invalid JSON",
-                );
-            };
-            if status.is_success() {
-                JsonHttpResponse::ok(body)
-            } else {
-                JsonHttpResponse::error(status, body.to_string())
+                ),
+                (false, Some(body)) => JsonHttpResponse::error(status, body.to_string()),
+                (false, None) => JsonHttpResponse::error(status, truncate_detail(&text)),
             }
         }
         _ => JsonHttpResponse::error(StatusCode::NOT_FOUND, "not found"),
@@ -2694,6 +2768,52 @@ mod tests {
         assert!(error.to_string().contains("not_indexed_yet"));
 
         let _ = mgr.stop().await;
+    }
+
+    /// A5. A missing route and a missing run share a status and must not share
+    /// a fate: one is worth retrying, the other is worth failing on. 0.2.5
+    /// cannot express the difference — its unknown-route fallback reuses the
+    /// `run_not_found` code — so an unlabelled 404 stays retryable and only an
+    /// explicit `route_not_found` short-circuits.
+    ///
+    /// Classification is asserted directly rather than through the in-process
+    /// fake: teaching the fake to emit a code the pinned artifact never emits
+    /// would make it diverge from the thing it stands in for, which is how this
+    /// subsystem's suite came to pass over a missing endpoint in the first
+    /// place. End-to-end coverage belongs to the real-artifact contract test.
+    #[test]
+    fn a_missing_route_is_distinguished_from_a_missing_run() {
+        assert!(events_not_found_is_missing_route(&json!({
+            "error": { "code": "route_not_found", "message": "route not found: GET /runs/x" }
+        })));
+
+        // What 0.2.5 actually returns for BOTH cases — verified live against the
+        // installed wheel. Must stay retryable, or every run on a current
+        // sidecar dies on its first poll.
+        assert!(!events_not_found_is_missing_route(&json!({
+            "error": { "code": "run_not_found", "message": "route not found: GET /runs/x" }
+        })));
+
+        // Nothing to go on: assume the retryable reading.
+        assert!(!events_not_found_is_missing_route(&json!({})));
+        assert!(!events_not_found_is_missing_route(&json!({ "error": {} })));
+    }
+
+    /// A5. Diagnostics quote upstream bodies, and the sidecar bearer token is
+    /// the one secret in scope.
+    #[test]
+    fn upstream_detail_is_bounded_and_redacted() {
+        let key = "synth-opt-0123456789abcdef0123456789abcdef";
+        env::set_var("SYNTH_OPTIMIZER_API_KEY", key);
+        let detail = truncate_detail(&format!("unauthorized for bearer {key} on /health"));
+        assert!(!detail.contains(key), "token leaked into a diagnostic: {detail}");
+        assert!(detail.contains("[redacted]"));
+        env::remove_var("SYNTH_OPTIMIZER_API_KEY");
+
+        let long = "x".repeat(4096);
+        let bounded = truncate_detail(&long);
+        assert!(bounded.chars().count() < 400);
+        assert!(bounded.ends_with("… (truncated)"));
     }
 
     #[tokio::test]
