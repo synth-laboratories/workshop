@@ -285,9 +285,21 @@ pub(super) async fn prepare(
     let mut summary = run.summary.as_object().cloned().unwrap_or_default();
     summary.insert("preparationDigest".into(), json!(digest));
     summary.insert("waitingForViewer".into(), json!(true));
-    if let Some(digest) = manager.advertised_capabilities().get("digest").cloned() {
-        summary.insert("capabilitiesDigest".into(), digest);
-    }
+    // A missing digest is a refusal, never a skipped pin. Without this, prepare
+    // records no `capabilitiesDigest`, start's comparison is a skipped `if let`,
+    // and the anti-swap guard is inert in exactly the case it exists to catch:
+    // capabilities that were never proven by a live handshake.
+    let capabilities_digest = manager
+        .advertised_capabilities()
+        .get("digest")
+        .cloned()
+        .ok_or_else(|| {
+            anyhow!(
+                "optimizer capabilities are not proven; the sidecar must complete a capability \
+                 handshake before a run is prepared"
+            )
+        })?;
+    summary.insert("capabilitiesDigest".into(), capabilities_digest);
     run.summary = serde_json::Value::Object(summary);
     run.status = "waiting_for_viewer".into();
     let run = service.persist_run(run).await?;
@@ -883,15 +895,50 @@ async fn run_recipe_worker(
         .await?;
 
     let mut upstream_cursor = 0;
+    // A run that never becomes visible is bounded, not waited out. Retrying an
+    // unindexed run until the child exits on its own turns a contract failure
+    // into a full-budget one: the rollouts are still paid for, and their events
+    // can never be ingested. `run_not_found` cannot distinguish "not registered
+    // yet" from "this service will never see this run" (a mismatched database,
+    // or a service that does not serve the events route at all), so the wait is
+    // capped and the child is killed rather than allowed to spend to term.
+    let mut indexed = false;
+    let index_deadline = tokio::time::Instant::now() + crate::limits::OPTIMIZER_RUN_INDEX_WAIT;
     loop {
-        if let Err(error) =
-            ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await
-        {
-            // The producer registers its durable index shortly after spawn.
-            // A 404 is retryable only while the child is demonstrably alive;
-            // it is not a successful empty event page.
-            if !super::OptimizerManager::optimizer_run_not_indexed(&error) {
-                return Err(error);
+        match ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await {
+            Ok(()) => indexed = true,
+            Err(error) => {
+                // The producer registers its durable index shortly after spawn.
+                // A 404 is retryable only while the child is demonstrably alive;
+                // it is not a successful empty event page.
+                if !super::OptimizerManager::optimizer_run_not_indexed(&error) {
+                    return Err(error);
+                }
+                if !indexed && tokio::time::Instant::now() >= index_deadline {
+                    manager.terminate_gepa_recipe(&run_id).await;
+                    if child.try_wait()?.is_none() {
+                        let _ = child.kill().await;
+                    }
+                    let waited = crate::limits::OPTIMIZER_RUN_INDEX_WAIT.as_secs();
+                    append_terminal_event(
+                        &service,
+                        &run_id,
+                        true,
+                        format!(
+                            "run_never_indexed: the optimizer service never reported run {run_id} \
+                             after {waited}s of a live recipe process; the child was terminated \
+                             before spending further"
+                        ),
+                    )
+                    .await?;
+                    bail!(
+                        "run_never_indexed: optimizer run {run_id} was never visible to the \
+                         polled service after {waited}s; terminated the recipe process. The \
+                         service and the recipe child are not sharing a run index — verify the \
+                         sidecar serves /runs/{{id}}/optimizer-events and that the child writes \
+                         the database the service was started with"
+                    );
+                }
             }
         }
         tokio::select! {

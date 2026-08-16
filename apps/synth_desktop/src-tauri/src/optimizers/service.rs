@@ -196,15 +196,31 @@ impl OptimizerService {
         {
             bail!("compute approval receipt is required before starting paid compute");
         }
+        // Both digests must be present and equal. Treating either absence as
+        // "nothing to compare" fails open: a run prepared without a proven
+        // handshake would start unguarded, which is the case the pin exists for.
         let current_caps = self.manager.advertised_capabilities();
-        if let Some(prepared_caps) = run
+        let prepared_digest = run
             .summary
             .get("capabilitiesDigest")
             .and_then(Value::as_str)
-        {
-            if current_caps.get("digest").and_then(Value::as_str) != Some(prepared_caps) {
-                bail!("optimizer capability digest changed since prepare; refusing to start");
-            }
+            .ok_or_else(|| {
+                anyhow!(
+                    "run was prepared without a proven optimizer capability digest; \
+                     re-prepare it against a started sidecar before starting paid compute"
+                )
+            })?;
+        let current_digest = current_caps
+            .get("digest")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow!(
+                    "optimizer capabilities are not proven; the sidecar must complete a \
+                     capability handshake before starting paid compute"
+                )
+            })?;
+        if current_digest != prepared_digest {
+            bail!("optimizer capability digest changed since prepare; refusing to start");
         }
         super::recipes::start_prepared(self, &optimizer_run_id).await
     }
@@ -3768,6 +3784,139 @@ pub(in crate::optimizers) mod tests {
             .await
             .unwrap_err();
         assert!(missing_approval.to_string().contains("approval"));
+    }
+
+    /// A4. Absent capabilities must refuse, not skip.
+    ///
+    /// Before this gate closed, a run prepared while no handshake had ever
+    /// succeeded carried no `capabilitiesDigest`, so start's comparison was a
+    /// skipped `if let` and paid compute began entirely unguarded — the anti-swap
+    /// pin was inert in exactly the case it exists to catch. The three existing
+    /// `start_prepared` assertions all trip earlier gates (preparation digest,
+    /// visual readiness, approval) and never reach this check, so it needs its
+    /// own coverage.
+    #[tokio::test]
+    async fn absent_capabilities_refuse_paid_start_instead_of_skipping_the_pin() {
+        async fn run_past_earlier_gates(
+            svc: &OptimizerService,
+            id: &str,
+            summary: Value,
+        ) -> String {
+            let (run, _) = svc
+                .create(
+                    serde_json::from_value(json!({
+                        "algorithmId": "gepa",
+                        "id": id,
+                        "openVisual": false
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let mut stored = run.clone();
+            stored.status = "waiting_for_viewer".into();
+            stored.summary = summary;
+            svc.persist_run(stored).await.unwrap();
+            svc.record_visual_ready(
+                run.id.clone(),
+                json!({
+                    "schemaVersion": "synth.visual-subscription-receipt.v1",
+                    "visualId": format!("visual_{id}"),
+                    "optimizerRunId": run.id,
+                    "templateId": "optimizer.gepa.live.v1",
+                    "replayedThrough": 0,
+                    "subscribedFrom": 1
+                }),
+            )
+            .await
+            .unwrap();
+            run.id
+        }
+
+        let (svc, _dir, _) = service().await;
+        let home = svc.manager.home().to_path_buf();
+        let write_caps = |digest: Option<&str>| {
+            let mut caps = json!({
+                "compatibleTemplateIds": ["optimizer.gepa.live.v1", "optimizer.run.v1"]
+            });
+            if let Some(digest) = digest {
+                caps.as_object_mut()
+                    .unwrap()
+                    .insert("digest".into(), json!(digest));
+            }
+            std::fs::write(home.join("capabilities.json"), serde_json::to_vec(&caps).unwrap())
+                .unwrap();
+        };
+
+        // The run was prepared against a proven handshake, but the sidecar is no
+        // longer proving anything. Previously: skipped. Now: refused.
+        write_caps(None);
+        let id = run_past_earlier_gates(
+            &svc,
+            "caps_absent_live",
+            json!({
+                "recipeId": "gepa.banking77.smoke.v1",
+                "preparationDigest": "sha256:prepare",
+                "capabilitiesDigest": "sha256:caps"
+            }),
+        )
+        .await;
+        let error = svc
+            .start_prepared(id, Some("sha256:prepare".into()), Some("approval-1".into()))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("capabilities are not proven"),
+            "live capabilities absent must refuse, got: {error}"
+        );
+
+        // The run was prepared while nothing was proven. This is the fails-open
+        // case: no pin was ever recorded, so there was nothing to compare.
+        write_caps(Some("sha256:caps"));
+        let id = run_past_earlier_gates(
+            &svc,
+            "caps_absent_prepared",
+            json!({
+                "recipeId": "gepa.banking77.smoke.v1",
+                "preparationDigest": "sha256:prepare"
+            }),
+        )
+        .await;
+        let error = svc
+            .start_prepared(id, Some("sha256:prepare".into()), Some("approval-1".into()))
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("prepared without a proven optimizer capability digest"),
+            "a run with no recorded pin must refuse, got: {error}"
+        );
+
+        // Both present and equal: the capability gate is satisfied and control
+        // reaches the recipe. Whatever fails past here, it is not this gate.
+        let id = run_past_earlier_gates(
+            &svc,
+            "caps_matched",
+            json!({
+                "recipeId": "gepa.banking77.smoke.v1",
+                "preparationDigest": "sha256:prepare",
+                "capabilitiesDigest": "sha256:caps"
+            }),
+        )
+        .await;
+        let outcome = svc
+            .start_prepared(id, Some("sha256:prepare".into()), Some("approval-1".into()))
+            .await;
+        if let Err(error) = outcome {
+            let text = error.to_string();
+            assert!(
+                !text.contains("capabilities are not proven")
+                    && !text.contains("prepared without a proven")
+                    && !text.contains("capability digest changed"),
+                "matching digests must clear the capability gate, got: {text}"
+            );
+        }
     }
 
     #[tokio::test]
