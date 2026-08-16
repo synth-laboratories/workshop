@@ -6,10 +6,11 @@ use super::home::{
     apply_brokered_credential, apply_local_laguna_catalog_metadata, apply_local_laguna_provider,
     apply_openrouter_provider, apply_synth_cloud_provider, auto_compact_token_limit,
     automatic_thread_title, ensure_home, install_local_laguna_catalog, local_laguna_catalog,
-    mcp_enabled_tools, mcp_ipc_env_key, multi_agent_flags, nested_id, normalize_gateway_origin,
-    provider_class, requires_disabled_response_storage, responses_base_url, safe_component,
-    supports_provider_compaction, toml_string, validate_reasoning_effort, validate_start,
-    workspace_write_config, ProviderClass, OPENROUTER_RESPONSES_BASE_URL,
+    mcp_enabled_tools, mcp_env_config, mcp_ipc_env_key, multi_agent_flags, nested_id,
+    normalize_gateway_origin, provider_class, requires_disabled_response_storage,
+    responses_base_url, safe_component, supports_provider_compaction, toml_string,
+    validate_reasoning_effort, validate_start, workspace_write_config, ProviderClass,
+    OPENROUTER_RESPONSES_BASE_URL,
 };
 
 use super::manager::CodexManager;
@@ -1596,6 +1597,18 @@ fn generated_mcp_configs_use_each_adapter_owned_ipc_variable() {
         "SYNTH_DESKTOP_IPC_FILE"
     );
     assert_eq!(mcp_ipc_env_key("synth_session"), "SYNTH_DESKTOP_IPC_FILE");
+}
+#[test]
+fn generated_mcp_configs_pass_desktop_identity_for_visual_capture() {
+    let config = mcp_env_config(
+        "synth_visuals",
+        Path::new("/tmp/visuals-ipc.json"),
+        "session-123",
+        "Synth Workshop v0.4 · cua",
+    );
+    assert!(config.contains("SYNTH_VISUALS_IPC_FILE = \"/tmp/visuals-ipc.json\""));
+    assert!(config.contains("SYNTH_SESSION_ID = \"session-123\""));
+    assert!(config.contains("SYNTH_DESKTOP_APP_NAME = \"Synth Workshop v0.4 · cua\""));
 }
 #[test]
 fn normalizes_responses_provider_base_url() {

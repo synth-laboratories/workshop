@@ -593,6 +593,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
     // Point Codex at the Rust noun adapters (all forward to CoreRuntime IPC).
     if let Ok(exe) = env::current_exe() {
         let ipc = crate::storage::app_data_root().join("visuals-ipc.json");
+        let app_name = crate::instance::display_name();
         let mut existing = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
         for (server, binary) in [
             ("synth_plugins", "synth-plugins-mcp"),
@@ -626,8 +627,8 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
                 continue;
             }
             existing.push_str(&format!(
-                "\n{heading}\ncommand = \"{}\"\nargs = []\n{}default_tools_approval_mode = \"approve\"\nenv = {{ {} = \"{}\", SYNTH_SESSION_ID = \"{}\" }}\n",
-                toml_string(&bin.display().to_string()), mcp_enabled_tools(server), mcp_ipc_env_key(server), toml_string(&ipc.display().to_string()), toml_string(&request.session_id),
+                "\n{heading}\ncommand = \"{}\"\nargs = []\n{}default_tools_approval_mode = \"approve\"\n{}",
+                toml_string(&bin.display().to_string()), mcp_enabled_tools(server), mcp_env_config(server, &ipc, &request.session_id, &app_name),
             ));
         }
         fs::write(home.join("config.toml"), existing)?;
@@ -933,6 +934,16 @@ pub(crate) fn mcp_ipc_env_key(server: &str) -> &'static str {
         "synth_visuals" => "SYNTH_VISUALS_IPC_FILE",
         _ => "SYNTH_DESKTOP_IPC_FILE",
     }
+}
+
+pub(crate) fn mcp_env_config(server: &str, ipc: &Path, session_id: &str, app_name: &str) -> String {
+    format!(
+        "env = {{ {} = \"{}\", SYNTH_SESSION_ID = \"{}\", SYNTH_DESKTOP_APP_NAME = \"{}\" }}\n",
+        mcp_ipc_env_key(server),
+        toml_string(&ipc.display().to_string()),
+        toml_string(session_id),
+        toml_string(app_name),
+    )
 }
 
 /// Codex appends `/responses` to the provider base URL. Laguna and standard
