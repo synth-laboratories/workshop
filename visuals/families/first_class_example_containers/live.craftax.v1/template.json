@@ -11,7 +11,7 @@
   "observationContract": {
     "schemaVersion": "synth.visual-observation-contract.v1",
     "readiness": {
-      "rejectTransportStates": ["connecting", "reconnecting", "error"],
+      "rejectTransportStates": ["idle", "declared", "replaying", "error", "connecting", "reconnecting"],
       "minimumRolloutCount": 1,
       "minimumRenderedFrameCount": 1,
       "minimumSemanticEventCount": 1,

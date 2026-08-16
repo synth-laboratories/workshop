@@ -12,6 +12,7 @@ import type {
   VisualBindingKind,
   VisualTemplateMeta
 } from "./types.ts";
+import { VISUAL_BINDINGS_SCHEMA_VERSION } from "./types.ts";
 import { assertDeclaredStreamSource, assertLiveEvalSlot } from "./liveStream.ts";
 
 export type BoundSlotPayload = {
@@ -129,7 +130,11 @@ export async function bindTemplateSlots(
   bindings: VisualBinding[] | VisualBindings,
   ctx: BindContext = {}
 ): Promise<BindResult> {
-  const bindingSlots = Array.isArray(bindings) ? bindings : bindings.slots;
+  const resolved = resolveVisualBindings(bindings);
+  if (resolved.status === "rejected") {
+    return { templateId: template.id, slots: {}, errors: [resolved.error ?? "Visual bindings are unreadable"] };
+  }
+  const bindingSlots = resolved.slots;
   const bySlot = new Map<string, VisualBinding[]>();
   for (const binding of bindingSlots) {
     const existing = bySlot.get(binding.slot) ?? [];
@@ -192,23 +197,122 @@ export function isVisualBindings(value: unknown): value is VisualBindings {
   return candidate.schemaVersion === "synth.visual-bindings.v1" && Array.isArray(candidate.slots);
 }
 
+const BINDING_KINDS: readonly string[] = [
+  "inline",
+  "trace_v5",
+  "local_cas",
+  "run_ref",
+  "live_sse",
+  "fixture",
+  "optimizer_run",
+  "query_snapshot"
+];
+
+export type VisualBindingsStatus = "canonical" | "upgraded" | "rejected";
+
+export type ResolvedVisualBindings = {
+  status: VisualBindingsStatus;
+  slots: VisualBinding[];
+  /** Present when status is `rejected`. Render it; never swallow it. */
+  error: string | null;
+  /** Slot names an upgrade touched. Empty when already canonical. */
+  upgradedSlots: string[];
+};
+
+function isBindingDescriptor(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.kind !== "string" || !BINDING_KINDS.includes(candidate.kind)) return false;
+  return ["slot", "source", "data", "poll_url"].some((field) => field in candidate);
+}
+
+function isDescriptorEntry(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0 && value.every(isBindingDescriptor);
+  return isBindingDescriptor(value);
+}
+
+/**
+ * Resolve any persisted bindings value into slots the renderer can read.
+ *
+ * Mirrors `visuals::models::canonicalize_bindings` in Rust; the two must agree,
+ * because Rust decides what is written and this decides what is rendered.
+ *
+ * Three outcomes and no fourth. In particular there is no "return an empty
+ * array and let the caller render nothing": a shape this cannot read produced
+ * a pane that sat at `connecting` with ten live streams bound to it and no
+ * error anywhere. An unreadable binding is a rejection, and a rejection is
+ * something a person can see.
+ */
+export function resolveVisualBindings(value: unknown): ResolvedVisualBindings {
+  if (Array.isArray(value)) {
+    return { status: "canonical", slots: value as VisualBinding[], error: null, upgradedSlots: [] };
+  }
+  if (isVisualBindings(value)) {
+    return { status: "canonical", slots: value.slots, error: null, upgradedSlots: [] };
+  }
+  if (!value || typeof value !== "object") {
+    return {
+      status: "rejected",
+      slots: [],
+      error: "Visual bindings are not an object",
+      upgradedSlots: []
+    };
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length === 0) {
+    return { status: "canonical", slots: [], error: null, upgradedSlots: [] };
+  }
+  if ("schemaVersion" in (value as Record<string, unknown>)) {
+    const version = (value as Record<string, unknown>).schemaVersion;
+    return {
+      status: "rejected",
+      slots: [],
+      error: `Unsupported visual bindings schemaVersion ${String(version)}; this build reads ${VISUAL_BINDINGS_SCHEMA_VERSION}`,
+      upgradedSlots: []
+    };
+  }
+  // COMPAT: a slot-keyed descriptor map, written before the envelope was
+  // enforced. Upgraded here so an existing visual still renders, reported so it
+  // does not stay invisible. Removed with the Rust upgrade path.
+  if (entries.some(([, entry]) => isDescriptorEntry(entry))) {
+    const unreadable = entries.filter(([, entry]) => !isDescriptorEntry(entry)).map(([slot]) => slot);
+    if (unreadable.length > 0) {
+      return {
+        status: "rejected",
+        slots: [],
+        error: `Visual bindings mix descriptors and inline data on ${unreadable.join(", ")}; re-bind with an explicit slots array`,
+        upgradedSlots: []
+      };
+    }
+    const slots = entries.flatMap(([slot, entry]) =>
+      (Array.isArray(entry) ? entry : [entry]).map(
+        (descriptor) => ({ ...(descriptor as VisualBinding), slot })
+      )
+    );
+    return { status: "upgraded", slots, error: null, upgradedSlots: entries.map(([slot]) => slot) };
+  }
+  // A legacy inline prop bag. Its values are data, not transports.
+  return {
+    status: "upgraded",
+    slots: entries.map(([slot, data]) => ({ slot, kind: "inline" as const, data })),
+    error: null,
+    upgradedSlots: entries.map(([slot]) => slot)
+  };
+}
+
 /** Desktop passes the bindings envelope; some hosts still pass a raw slot array. */
 export function bindingSlots(value: unknown): VisualBinding[] {
-  if (Array.isArray(value)) return value as VisualBinding[];
-  if (isVisualBindings(value)) return value.slots;
-  return [];
+  return resolveVisualBindings(value).slots;
 }
 
 export function propsFromBindings(value: unknown): { props: Record<string, unknown>; errors: string[] } {
-  if (!isVisualBindings(value)) {
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      return { props: value as Record<string, unknown>, errors: [] };
-    }
-    return { props: {}, errors: ["Visual bindings are not an object"] };
+  const resolved = resolveVisualBindings(value);
+  if (resolved.status === "rejected") {
+    return { props: {}, errors: [resolved.error ?? "Visual bindings are unreadable"] };
   }
   const props: Record<string, unknown> = {};
   const errors: string[] = [];
-  for (const binding of value.slots) {
+  for (const binding of resolved.slots) {
     if (!binding.slot || typeof binding.slot !== "string") {
       errors.push("A visual binding is missing its slot name");
       continue;

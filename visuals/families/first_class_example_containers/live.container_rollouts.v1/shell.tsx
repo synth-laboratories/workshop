@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { VisualChrome, MetricStrip } from "../../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber, formatMissingUsd, missingNumber } from "../../../runtime/liveStream.ts";
+import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
 import type { LiveEvalEvent } from "../../../runtime/types.ts";
 
 type StreamPayload = { run_id?: string; events?: LiveEvalEvent[]; sse_url?: string };
@@ -89,10 +90,20 @@ function LaneReplay({ laneEvents, streamBase }: { laneEvents: LiveEvalEvent[]; s
   </article>;
 }
 
-export function Shell(props: { title?: string; lede?: string; stream?: StreamPayload }) {
+export type ShellProps = LiveTemplateProps & { title?: string; lede?: string; stream?: StreamPayload };
+
+export function Shell(props: ShellProps) {
   const stream = props.stream ?? {};
-  const { events, live, error, ready } = useLiveEvalStream({ sseUrl: stream.sse_url, fixtureEvents: stream.sse_url ? undefined : stream.events, replayMs: 360 });
-  const hasSource = Boolean(stream.sse_url || stream.events);
+  const declaredStreamCount = props.replay?.streams.length ?? 0;
+  const { events, state, error, ready } = useLiveEvalStream({
+    replay: props.replay,
+    fixtureEvents: declaredStreamCount > 0 ? undefined : stream.events,
+    replayMs: 360,
+    visualId: props.visualId,
+    revision: props.revision
+  });
+  const live = state === "live";
+  const hasSource = declaredStreamCount > 0 || Boolean(stream.events);
   const [globalCursor, setGlobalCursor] = useState<number | null>(null);
   const selectedGlobal = globalCursor == null ? events.length - 1 : Math.max(0, Math.min(globalCursor, events.length - 1));
   const visibleEvents = events.slice(0, selectedGlobal + 1);

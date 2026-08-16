@@ -1,45 +1,59 @@
 import { useEffect, useRef, useState } from "react";
 import type { LiveEvalEvent } from "../runtime/types.ts";
+import { reportVisualDiagnostic, VISUAL_STREAM_CODES } from "../runtime/diagnostics.ts";
+import { emptyLiveIngest, ingestLiveEnvelopeBatch } from "../runtime/liveStream.ts";
 import {
-  emptyLiveIngest,
-  ingestLiveEnvelopeBatch,
-  type LiveEnvelope
-} from "../runtime/liveStream.ts";
+  REPLAY_FIRST_RESPONSE_TIMEOUT_MS,
+  REPLAY_PAGE_LIMIT,
+  REPLAY_PAGE_LIMIT_MAX,
+  type ReplayClient,
+  type TransportState
+} from "../runtime/replayClient.ts";
 
-export type DeclaredLiveStream = {
-  sseUrl?: string;
-  pollUrl: string;
-};
-
-/**
- * Fold several declared rollout streams into one viewer from their durable
- * poll authorities. A live visual has one semantic `stream` slot, but an eval
- * can bind several rollout-local descriptors to that slot. Polling each
- * descriptor avoids treating a terminal EventSource close as data loss and
- * makes completed evaluations reopenable without converting Trace V5 into a
- * different visual input schema.
- */
-export function useLiveEvalStreams(
-  streams: DeclaredLiveStream[],
-  options: { poll?: (pollUrl: string, after: number, limit: number) => Promise<unknown> } = {}
-): {
+export type LiveEvalStreamsView = {
   events: LiveEvalEvent[];
-  live: boolean;
+  state: TransportState;
+  /** Streams that have reported closed, out of `client.streams.length`. */
+  closed: number;
   ready: boolean;
-  recovering: boolean;
   recovered: number;
   error: string | null;
-} {
+};
+
+const POLL_INTERVAL_MS = 500;
+
+/**
+ * Fold every declared rollout stream into one viewer from its durable poll
+ * authority.
+ *
+ * A live visual has one semantic `stream` slot, but an eval can bind several
+ * rollout-local authorities to it. Polling each one means a terminal
+ * EventSource close is not data loss and a completed evaluation reopens without
+ * converting Trace V5 into a different input schema.
+ *
+ * The state it reports is a state machine, not a ladder of derived strings.
+ * That matters more than it sounds: the pane it replaces could rest forever at
+ * `connecting` with streams declared and no poll ever issued, and nothing in
+ * the type said that was impossible. Here it is impossible — `declared` without
+ * a first response inside `REPLAY_FIRST_RESPONSE_TIMEOUT_MS` becomes `error`.
+ *
+ * See: docs/contracts/visual_replay_transport.md.
+ */
+export function useLiveEvalStreams(
+  client: ReplayClient,
+  identity: { visualId?: string | null; revision?: number | null } = {}
+): LiveEvalStreamsView {
   const [events, setEvents] = useState<LiveEvalEvent[]>([]);
-  const [live, setLive] = useState(false);
+  const [state, setState] = useState<TransportState>("idle");
+  const [closed, setClosed] = useState(0);
   const [ready, setReady] = useState(false);
-  const [recovering, setRecovering] = useState(false);
   const [recovered, setRecovered] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const ingest = useRef(emptyLiveIngest());
-  const poll = useRef(options.poll);
-  poll.current = options.poll;
-  const streamKey = streams.map((stream) => `${stream.sseUrl ?? ""}\n${stream.pollUrl}`).join("\n\n");
+  const clientRef = useRef(client);
+  clientRef.current = client;
+  const streamKey = client.streams.map((stream) => stream.streamId).join("\n");
+  const { visualId, revision } = identity;
 
   useEffect(() => {
     ingest.current = emptyLiveIngest();
@@ -47,96 +61,111 @@ export function useLiveEvalStreams(
     setReady(false);
     setRecovered(0);
     setError(null);
+    setClosed(0);
+
+    const streams = clientRef.current.streams;
     if (streams.length === 0) {
-      setLive(false);
-      setRecovering(false);
+      setState("idle");
       return;
     }
+    setState("declared");
 
-    const abort = new AbortController();
-    let timer: number | undefined;
     let stopped = false;
-    const cursors = new Map(streams.map((stream) => [stream.pollUrl, 0]));
-    const closed = new Set<string>();
+    let answered = false;
+    let timer: number | undefined;
+    const cursors = new Map(streams.map((stream) => [stream.streamId, 0]));
+    const closedStreams = new Set<string>();
 
-    const publish = (rows: LiveEnvelope[]) => {
+    const fail = (message: string, code: string) => {
+      if (stopped) return;
+      setError(message);
+      setState("error");
+      reportVisualDiagnostic({
+        severity: "error",
+        event: "stream.replay.failed",
+        code,
+        message,
+        retryable: true,
+        visualId,
+        details: { revision, declaredStreams: streams.length, closed: closedStreams.size }
+      });
+    };
+
+    // A declared stream that never answers is the failure this hook exists to
+    // make impossible to sit in quietly.
+    const deadline = window.setTimeout(() => {
+      if (stopped || answered) return;
+      fail(
+        `No declared stream answered within ${Math.round(REPLAY_FIRST_RESPONSE_TIMEOUT_MS / 1000)}s (${streams.length} declared)`,
+        VISUAL_STREAM_CODES.streamSubscribeTimeout
+      );
+    }, REPLAY_FIRST_RESPONSE_TIMEOUT_MS);
+
+    const publish = (rows: Parameters<typeof ingestLiveEnvelopeBatch>[1]) => {
       const before = ingest.current.events.length;
       ingest.current = ingestLiveEnvelopeBatch(ingest.current, rows);
       setEvents(ingest.current.events as LiveEvalEvent[]);
       setReady(ingest.current.ready);
       setRecovered((value) => value + Math.max(0, ingest.current.events.length - before));
-      if (ingest.current.conflicts.length) setError(ingest.current.conflicts.at(-1) ?? "Conflicting replay envelope");
-      else if (ingest.current.gaps.length) setError(`Evidence gap after sequence ${ingest.current.gaps.at(-1)?.after}`);
-      else setError(null);
+      if (ingest.current.conflicts.length) {
+        setError(ingest.current.conflicts.at(-1) ?? "Conflicting replay envelope");
+      } else if (ingest.current.gaps.length) {
+        setError(`Evidence gap after sequence ${ingest.current.gaps.at(-1)?.after}`);
+      } else {
+        setError(null);
+      }
     };
 
-    const pollOne = async (stream: DeclaredLiveStream) => {
-      let after = cursors.get(stream.pollUrl) ?? 0;
-      for (let pageNumber = 0; pageNumber < 1000; pageNumber++) {
-        const url = new URL(stream.pollUrl, stream.sseUrl);
-        url.searchParams.set("after", String(after));
-        url.searchParams.set("limit", "500");
-        const body = (poll.current
-          ? await poll.current(stream.pollUrl, after, 500)
-          : await (async () => {
-              const response = await fetch(url, { signal: abort.signal, headers: { Accept: "application/json" } });
-              if (!response.ok) throw new Error(`poll recovery HTTP ${response.status} for ${stream.pollUrl}`);
-              return response.json();
-            })()) as {
-          events?: LiveEnvelope[];
-          page?: { events?: LiveEnvelope[] };
-          cursor?: { next?: number; high_water?: number; has_more?: boolean; closed?: boolean };
-        } | LiveEnvelope[];
-        const rows = Array.isArray(body) ? body : body.page?.events ?? body.events ?? [];
-        publish(rows);
-        if (Array.isArray(body)) break;
-        const cursor = body.cursor;
-        const sequences = rows.map((row) => Number(row.sequence_number ?? row.sequence)).filter(Number.isFinite);
-        const next = cursor?.next ?? (sequences.length ? Math.max(...sequences) : after);
-        const highWater = cursor?.high_water;
-        const hasMore = cursor?.has_more ?? (highWater != null && next < highWater);
-        if (next < after) throw new Error(`poll recovery cursor regressed from ${after} to ${next}`);
-        cursors.set(stream.pollUrl, next);
-        if (cursor?.closed) {
-          closed.add(stream.pollUrl);
-          break;
+    const pollOne = async (stream: (typeof streams)[number]) => {
+      let after = cursors.get(stream.streamId) ?? 0;
+      for (let pageNumber = 0; pageNumber < REPLAY_PAGE_LIMIT_MAX; pageNumber++) {
+        const page = await clientRef.current.poll(stream, after, REPLAY_PAGE_LIMIT);
+        answered = true;
+        publish(page.events);
+        const { next, hasMore, closed: streamClosed } = page.cursor;
+        if (next < after) {
+          throw new Error(`replay cursor regressed from ${after} to ${next} on ${stream.streamId}`);
         }
-        if (!hasMore) break;
-        if (next === after) throw new Error(`poll recovery made no progress after sequence ${after}`);
+        cursors.set(stream.streamId, next);
+        if (streamClosed) {
+          closedStreams.add(stream.streamId);
+          return;
+        }
+        if (!hasMore) return;
+        if (next === after) {
+          throw new Error(`replay made no progress after sequence ${after} on ${stream.streamId}`);
+        }
         after = next;
-        if (pageNumber === 999) throw new Error("poll recovery exceeded 1000 pages");
       }
+      throw new Error(`replay exceeded ${REPLAY_PAGE_LIMIT_MAX} pages on ${stream.streamId}`);
     };
 
     const pollAll = async () => {
       if (stopped) return;
-      setRecovering(true);
+      if (!answered) setState("replaying");
       try {
-        await Promise.all(streams.filter((stream) => !closed.has(stream.pollUrl)).map(pollOne));
-        const allClosed = closed.size === streams.length;
-        setLive(!allClosed);
-        if (!allClosed && !stopped) timer = window.setTimeout(() => void pollAll(), 500);
+        await Promise.all(
+          streams.filter((stream) => !closedStreams.has(stream.streamId)).map(pollOne)
+        );
+        if (stopped) return;
+        setClosed(closedStreams.size);
+        const allClosed = closedStreams.size === streams.length;
+        setState(allClosed ? "terminal" : "live");
+        if (!allClosed) timer = window.setTimeout(() => void pollAll(), POLL_INTERVAL_MS);
       } catch (reason) {
-        if (!abort.signal.aborted) {
-          setError(reason instanceof Error ? reason.message : "poll recovery error");
-          setLive(false);
-        }
-      } finally {
-        setRecovering(false);
+        fail(reason instanceof Error ? reason.message : "replay error", VISUAL_STREAM_CODES.streamInterrupted);
       }
     };
 
-    setLive(true);
     void pollAll();
     return () => {
       stopped = true;
+      window.clearTimeout(deadline);
       if (timer != null) window.clearTimeout(timer);
-      abort.abort();
-      setLive(false);
     };
-  // streamKey is the stable descriptor identity; callers often rebuild arrays.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamKey]);
+    // streamKey is the stable descriptor identity; hosts rebuild the array.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamKey, visualId, revision]);
 
-  return { events, live, ready, recovering, recovered, error };
+  return { events, state, closed, ready, recovered, error };
 }

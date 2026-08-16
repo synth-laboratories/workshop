@@ -24,8 +24,26 @@ export {
   createJsonFixtureLoader,
   isVisualBindings,
   bindingSlots,
-  propsFromBindings
+  propsFromBindings,
+  resolveVisualBindings
 } from "./bind.ts";
+export type { ResolvedVisualBindings, VisualBindingsStatus } from "./bind.ts";
+export {
+  createReplayClient,
+  parseReplayPage,
+  replayStreamsFromBindings,
+  REPLAY_FIRST_RESPONSE_TIMEOUT_MS,
+  REPLAY_PAGE_LIMIT,
+  REPLAY_PAGE_LIMIT_MAX
+} from "./replayClient.ts";
+export type {
+  LiveTemplateProps,
+  ReplayClient,
+  ReplayCursor,
+  ReplayPage,
+  ReplayStream,
+  TransportState
+} from "./replayClient.ts";
 export {
   LIVE_EVAL_SLOT,
   FORBIDDEN_LIVE_EVAL_SLOTS,

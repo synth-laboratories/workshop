@@ -115,6 +115,16 @@ export const TEMPLATE_IDS = ORDERED_ENTRIES.map((entry) => entry.meta.id);
 export const INTERNAL_TEMPLATE_IDS = [...INTERNAL_IDS].sort();
 
 export type { VisualTemplate, VisualTemplateMeta, VisualInstance, VisualBinding } from "../runtime/types.ts";
-export { bindTemplateSlots, subscribeLiveSlot, isVisualBindings, bindingSlots, propsFromBindings } from "../runtime/bind.ts";
+export { bindTemplateSlots, subscribeLiveSlot, isVisualBindings, bindingSlots, propsFromBindings, resolveVisualBindings } from "../runtime/bind.ts";
+export type { ResolvedVisualBindings, VisualBindingsStatus } from "../runtime/bind.ts";
+export {
+  createReplayClient,
+  parseReplayPage,
+  replayStreamsFromBindings,
+  REPLAY_FIRST_RESPONSE_TIMEOUT_MS,
+  REPLAY_PAGE_LIMIT,
+  REPLAY_PAGE_LIMIT_MAX
+} from "../runtime/replayClient.ts";
+export type { LiveTemplateProps, ReplayClient, ReplayCursor, ReplayPage, ReplayStream, TransportState } from "../runtime/replayClient.ts";
 export { ingestLiveEnvelopes, assertLiveEvalSlot, LIVE_EVAL_SLOT } from "../runtime/liveStream.ts";
 export { saveVisualInstanceTsx, renderInstanceTsx, markInstanceSaved } from "../runtime/save_tsx.ts";

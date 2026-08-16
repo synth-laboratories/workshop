@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { VisualChrome, MetricStrip } from "../../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
-import { bindingSlots } from "../../../runtime/bind.ts";
+import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../../runtime/types.ts";
 
 type StreamPayload = {
@@ -10,13 +10,12 @@ type StreamPayload = {
   sse_url?: string;
 };
 
-export type ShellProps = {
+export type ShellProps = LiveTemplateProps & {
   title?: string;
   lede?: string;
   stream?: StreamPayload;
   data?: StreamPayload;
   bindings?: VisualBinding[] | { slots?: VisualBinding[] };
-  sseUrl?: string;
 };
 
 function asStream(raw: unknown): StreamPayload {
@@ -26,21 +25,21 @@ function asStream(raw: unknown): StreamPayload {
 
 export function Shell(props: ShellProps) {
   const stream = asStream(props.data ?? props.stream);
-  const sseUrl =
-    props.sseUrl ??
-    stream.sse_url ??
-    bindingSlots(props.bindings).find((binding) => binding.slot === "stream" && binding.kind === "live_sse")?.source;
+  const declaredStreamCount = props.replay?.streams.length ?? 0;
 
   const fixtureEvents = useMemo(
-    () => (sseUrl ? undefined : stream.events),
-    [sseUrl, stream.events]
+    () => (declaredStreamCount > 0 ? undefined : stream.events),
+    [declaredStreamCount, stream.events]
   );
-  const hasSource = Boolean(sseUrl || stream.events);
+  const hasSource = declaredStreamCount > 0 || Boolean(stream.events);
 
-  const { events, live, error } = useLiveEvalStream({
-    sseUrl,
-    fixtureEvents
+  const { events, state, error } = useLiveEvalStream({
+    replay: props.replay,
+    fixtureEvents,
+    visualId: props.visualId,
+    revision: props.revision
   });
+  const live = state === "live";
 
   const finished = [...events].reverse().find((e) => e.kind === "run_finished");
   const metrics = finished?.payload ?? {};

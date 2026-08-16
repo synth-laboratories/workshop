@@ -1,7 +1,15 @@
 import { Component, useEffect, useMemo, useRef, useState, type ComponentType, type ErrorInfo, type ReactNode } from "react";
 import type { ArtifactRef } from "../types/landing";
 import type { VisualRecord } from "@synth/runtime-protocol";
-import { bindTemplateSlots, bindingSlots, isVisualBindings, propsFromBindings, resolveTemplate } from "@synth/visuals";
+import {
+	bindTemplateSlots,
+	createReplayClient,
+	isVisualBindings,
+	propsFromBindings,
+	replayStreamsFromBindings,
+	resolveTemplate,
+	resolveVisualBindings
+} from "@synth/visuals";
 import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } from "../bridge";
 import { loadVisualShell } from "../runtime/visualsLoader";
 import { bridges } from "../runtime/desktopBridge";
@@ -253,9 +261,29 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [optimizerPayload, setOptimizerPayload] = useState<Record<string, unknown> | null>(null);
 	const [optimizerLoadError, setOptimizerLoadError] = useState<string | null>(null);
 	const [comparisonPayload, setComparisonPayload] = useState<Record<string, unknown> | null>(null);
+	// One reader decides whether these bindings are legible, and it can say no.
+	// Returning an empty slot list for a shape it did not understand is how a
+	// visual with ten declared streams rendered an empty pane with no error.
+	const resolvedBindings = useMemo(() => resolveVisualBindings(artifact.bindings), [artifact.bindings]);
 	const traceBindings = useMemo(
-		() => bindingSlots(artifact.bindings).filter((binding) => binding.kind === "trace_v5"),
-		[artifact.bindings]
+		() => resolvedBindings.slots.filter((binding) => binding.kind === "trace_v5"),
+		[resolvedBindings]
+	);
+	const replay = useMemo(
+		() => replayStreamsFromBindings(resolvedBindings.slots),
+		[resolvedBindings]
+	);
+	const replayClient = useMemo(
+		() =>
+			// Native allowlisted polling when the host offers it. Outside the
+			// packaged app — browser preview, tests — the client falls back to
+			// fetch. The capability is checked, not assumed: a bridge without
+			// `pollStream` would otherwise throw on the first poll.
+			createReplayClient(replay.streams, typeof bridges.visuals?.pollStream === "function"
+				? (pollUrl, after, limit) =>
+						bridges.visuals!.pollStream({ visualId: artifact.id, pollUrl, after, limit })
+				: undefined),
+		[artifact.id, replay.streams]
 	);
 	const synchronouslyResolved = useMemo(() => {
 		if (!isVisualBindings(artifact.bindings) || traceBindings.length === 0) {
@@ -282,6 +310,33 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		}),
 		[artifact.id, artifact.visualId, artifact.revision]
 	);
+
+	useEffect(() => {
+		if (resolvedBindings.status === "canonical") return;
+		if (resolvedBindings.status === "rejected") {
+			reportDiagnostic({
+				...visualIdentity,
+				severity: "error",
+				component: "visual-host",
+				event: "visual.bindings.invalid",
+				code: DIAGNOSTIC_CODES.visualBindingsInvalid,
+				message: resolvedBindings.error ?? "Visual bindings are unreadable",
+				details: { templateId: artifact.templateId ?? null }
+			});
+			return;
+		}
+		// COMPAT: rendered from an upgraded legacy shape. Loud so the writer is
+		// fixed before the upgrade path is removed.
+		reportDiagnostic({
+			...visualIdentity,
+			severity: "warn",
+			component: "visual-host",
+			event: "visual.bindings.upgraded",
+			code: DIAGNOSTIC_CODES.visualBindingsUpgraded,
+			message: `Rendered from upgraded legacy bindings on ${resolvedBindings.upgradedSlots.join(", ")}`,
+			details: { templateId: artifact.templateId ?? null, slots: resolvedBindings.upgradedSlots }
+		});
+	}, [artifact.templateId, resolvedBindings, visualIdentity]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -615,6 +670,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	}, [boundRunId]);
 
 	if (failed) return <VisualInvalidState title="Template unavailable" detail={`No bundled shell is registered for ${artifact.templateId ?? "this visual"}.`} />;
+	if (resolvedBindings.status === "rejected") {
+		return <VisualInvalidState title="Visual bindings unreadable" detail={resolvedBindings.error ?? "This visual's bindings could not be read."} />;
+	}
 	if (synchronouslyResolved.errors.length > 0) return <VisualInvalidState title="Visual data unavailable" detail={synchronouslyResolved.errors.join(" · ")} />;
 	if (traceResolution.status === "loading") return <p className="visual-loading" role="status">Loading sealed trace…</p>;
 	if (traceResolution.status === "error") {
@@ -643,8 +701,10 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				{...(optimizerPayload ?? {})}
 				data={optimizerPayload ?? resolvedProps.optimizer_run}
 				comparison={comparisonPayload ?? undefined}
-				pollStream={bridges.visuals ? (pollUrl: string, after: number, limit: number) =>
-					bridges.visuals!.pollStream({ visualId: artifact.id, pollUrl, after, limit }) : undefined}
+				replay={replayClient}
+				replayMissingTransport={replay.missingTransport}
+				visualId={artifact.visualId ?? artifact.id}
+				revision={typeof artifact.revision === "number" ? artifact.revision : null}
 			/>
 		</div>
 	);

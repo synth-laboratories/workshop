@@ -49,6 +49,8 @@ export type DiagnosticReport = DiagnosticCorrelation & {
 export const DIAGNOSTIC_CODES = {
 	unsupportedTraceProjectionSchema: "unsupported_trace_projection_schema",
 	visualBindingUnresolved: "visual_binding_unresolved",
+	visualBindingsUpgraded: "visual_bindings_upgraded",
+	visualBindingsInvalid: "visual_bindings_invalid",
 	visualTemplateUnavailable: "visual_template_unavailable",
 	visualShellLoadFailed: "visual_shell_load_failed",
 	visualRenderFailed: "visual_render_failed",
