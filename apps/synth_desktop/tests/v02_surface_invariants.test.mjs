@@ -39,6 +39,15 @@ test("v0.4 transcript shows median throughput while working and after assistant 
 	assert.match(labels, /CHATGPT_TERRA_MODEL\) return "chatgpt-terra"/);
 });
 
+test("running tool calls show a compact progress icon before their tool icon", () => {
+	const transcript = read("components/ChatTranscript.tsx");
+	const css = read("styles/app.css");
+	assert.match(transcript, /line\.toolStatus === "running"[\s\S]*className="tool-running-indicator"/);
+	assert.match(transcript, /\{runningIndicator\}[\s\S]*className="tool-activity-icon"/);
+	assert.match(css, /\.tool-running-indicator[\s\S]*animation: tool-running-spin/);
+	assert.match(css, /prefers-reduced-motion: reduce[\s\S]*\.tool-running-indicator/);
+});
+
 test("paid-compute approval is a cap-scoped modal, not a transcript card", () => {
 	const transcript = read("components/ChatTranscript.tsx");
 	assert.match(transcript, /data-testid="paid-compute-approval-modal"/);

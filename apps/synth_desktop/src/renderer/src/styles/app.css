@@ -2850,6 +2850,31 @@ html.sidebar-hidden .titlebar {
 	padding: 3px 0;
 }
 
+.tool-running-indicator {
+	display: inline-block;
+	width: 10px;
+	height: 10px;
+	flex: 0 0 10px;
+	box-sizing: border-box;
+	border: 1.5px solid var(--color-accent-ring);
+	border-top-color: var(--color-accent);
+	border-radius:var(--radius-pill);
+	animation: tool-running-spin 0.75s linear infinite;
+}
+
+@keyframes tool-running-spin {
+	to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.tool-running-indicator {
+		animation: none;
+		border-color: var(--color-accent-ring);
+		background: var(--color-accent);
+		box-shadow: inset 0 0 0 2px var(--color-card);
+	}
+}
+
 .tool-activity-icon {
 	display: inline-flex;
 	align-items: center;
@@ -2872,7 +2897,7 @@ html.sidebar-hidden .titlebar {
 	gap: 7px;
 	margin: 8px 0;
 	color: var(--color-text-muted);
-	font-size: 12px;
+	font-size:var(--font-size-sm);
 }
 
 .context-compaction-divider::after {

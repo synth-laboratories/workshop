@@ -145,6 +145,9 @@ function ActivityLine({
 	const isFile =
 		Boolean(line.path) || line.kind === "file_read" || line.kind === "file_write";
 	const expandable = Boolean(line.detail) && !isVisualCue && !isFile;
+	const runningIndicator = line.toolStatus === "running"
+		? <span className="tool-running-indicator" role="img" aria-label="Tool call running" />
+		: null;
 	if (line.kind === "approval" && line.approvalId) {
 		const approvalId = line.approvalId ?? line.id;
 		return (
@@ -166,6 +169,7 @@ function ActivityLine({
 		const showVerb = /^(Read|Wrote|Edit)/i.test(verb) ? verb.split(/\s/)[0] : "Read";
 		return (
 			<div className="local-activity file-activity" data-testid={`activity-${line.id}`}>
+				{runningIndicator}
 				<FileTypeIcon path={line.path} />
 				<span className="file-activity-text">
 					<span className="file-activity-verb">{showVerb}</span>{" "}
@@ -254,6 +258,7 @@ function ActivityLine({
 	if (line.kind === "command") {
 		return (
 			<div className="local-activity tool-activity command-activity" data-testid={`activity-${line.id}`}>
+				{runningIndicator}
 				<span className="tool-activity-icon" aria-hidden>&gt;_</span>
 				<span className="tool-activity-body">
 					<span className="tool-activity-label">{line.label}</span>
@@ -266,6 +271,7 @@ function ActivityLine({
 	if (line.kind === "search") {
 		return (
 			<div className="local-activity tool-activity search-activity" data-testid={`activity-${line.id}`}>
+				{runningIndicator}
 				<span className="tool-activity-icon" aria-hidden>⌕</span>
 				<span className="tool-activity-body">
 					<span className="tool-activity-label">{line.label}</span>
@@ -278,6 +284,7 @@ function ActivityLine({
 	if (line.toolStatus) {
 		return (
 			<div className="local-activity tool-activity mcp-activity" data-testid={`activity-${line.id}`}>
+				{runningIndicator}
 				<span className="tool-activity-icon" aria-hidden>◆</span>
 				<span className="tool-activity-body">
 					<code className="mcp-activity-name">{line.label}</code>
