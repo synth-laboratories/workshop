@@ -10,6 +10,7 @@ use super::{
         OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
     },
     recipes::{BANKING77_EVAL_BASELINE_RECIPE, HEALTHBENCH_EVAL_SMOKE_RECIPE},
+    service::ChatVisualPublication,
     OptimizerService,
 };
 use crate::container_stream::{
@@ -17,9 +18,7 @@ use crate::container_stream::{
     refuse_auto_transport, resolve_declared_url, wait_for_stream_subscribed, StreamDiagnostics,
     SUBSCRIBE_READY_TIMEOUT,
 };
-use crate::visuals::{
-    VisualCreateRequest, VisualStatus, VisualUpdateRequest, VISUAL_BINDINGS_SCHEMA_VERSION,
-};
+use crate::visuals::{VisualStatus, VisualUpdateRequest, VISUAL_BINDINGS_SCHEMA_VERSION};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::time::{Duration, Instant};
@@ -34,6 +33,41 @@ const COST_CEILING_USD: f64 = 0.50;
 const POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
 const BLOCKING_EVAL_HTTP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// A failure of the evidence lane — durable events, projections, the terminal
+/// manifest, or the chat-owned visual — as opposed to a failure of the compute.
+///
+/// The distinction is the point of failing closed. A rollout that errored is a
+/// result; a rollout that succeeded and could not be recorded is a run with no
+/// evidence, and calling that `completed` is what let a 10/10 Banking77 campaign
+/// render as "0 trials" over an empty Outputs shelf.
+#[derive(Debug)]
+struct EvidenceLaneFailure {
+    stage: &'static str,
+    detail: String,
+}
+
+impl std::fmt::Display for EvidenceLaneFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} evidence failed: {}", self.stage, self.detail)
+    }
+}
+
+impl std::error::Error for EvidenceLaneFailure {}
+
+/// Run one evidence step, tagging its failure so the worker's terminal handler
+/// settles the run as degraded rather than as a compute failure.
+async fn evidence<T>(
+    stage: &'static str,
+    step: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    step.await.map_err(|error| {
+        anyhow::Error::new(EvidenceLaneFailure {
+            stage,
+            detail: format!("{error:#}"),
+        })
+    })
+}
 
 #[derive(Clone, Copy)]
 struct EvalSpec {
@@ -218,11 +252,35 @@ pub(super) async fn start(
         )
         .await
         {
-            let _ = append_terminal(&worker, &worker_run_id, true, error.to_string()).await;
+            settle_worker_failure(&worker, &worker_run_id, error).await;
         }
         worker.unregister_local_recipe(&worker_run_id).await;
     });
     Ok((service.get(run.id).await?, event))
+}
+
+/// Settle a worker that did not reach its own terminal event.
+///
+/// A compute failure is a failed run and says why. An evidence failure is not:
+/// the rollouts may all have succeeded and been paid for, so the run settles as
+/// `degraded` with a named, retryable diagnostic, and the records it did gather
+/// stay in the summary. Either way the run reaches a terminal state — a worker
+/// that dies silently leaves a card spinning forever.
+async fn settle_worker_failure(service: &OptimizerService, run_id: &str, error: anyhow::Error) {
+    if let Some(failure) = error.downcast_ref::<EvidenceLaneFailure>() {
+        let stage = failure.stage;
+        let detail = failure.detail.clone();
+        if service
+            .settle_evidence_degraded(run_id.to_string(), stage, detail)
+            .await
+            .is_ok()
+        {
+            return;
+        }
+        // The degraded settlement itself failed. Fall through: a terminal event
+        // the user can see beats a run stuck at `running` with no explanation.
+    }
+    let _ = append_terminal(service, run_id, true, format!("{error:#}")).await;
 }
 
 async fn mint_experiment_visual(
@@ -231,61 +289,26 @@ async fn mint_experiment_visual(
     spec: EvalSpec,
     total: usize,
 ) -> Result<String> {
-    let existing = run
-        .visual_refs
-        .iter()
-        .find(|r| r.kind == "visual")
-        .map(|r| r.id.clone());
-    if let Some(visual_id) = existing {
-        service
-            .visuals()
-            .show(visual_id.clone(), run.session_ref.clone())
-            .await?;
-        return Ok(visual_id);
-    }
-    let bindings = experiment_bindings(spec, "running", 0, total, &[], None);
-    let (created, _) = service
-        .visuals()
-        .create(VisualCreateRequest {
+    // One publication, not five calls: mint-or-reuse, bind to the run, publish
+    // the durable show, select it for the owning chat, and shelve it in that
+    // chat's Outputs. Repeating it returns the same visual.
+    let (visual_id, _event) = service
+        .publish_chat_owned_visual(ChatVisualPublication {
+            run_id: run.id.clone(),
+            session_ref: run.session_ref.clone(),
             template_id: EXPERIMENT_TEMPLATE.into(),
-            title: Some(spec.title.into()),
-            bindings: Some(bindings),
-            id: None,
-            status: Some(VisualStatus::Live),
-            renderer_kind: None,
-            session_id: run.session_ref.clone(),
-            message_id: None,
-            run_id: None,
-            trace_id: None,
-            parent_visual_id: None,
-            source_agent_id: None,
-            source_model: None,
-            content: None,
-            metadata: Some(json!({
+            title: spec.title.into(),
+            bindings: experiment_bindings(spec, "running", 0, total, &[], None),
+            metadata: json!({
                 "optimizerRunId": run.id,
                 "recipeId": spec.recipe_id,
                 "semantics": "baseline_eval",
-            })),
+            }),
+            status: VisualStatus::Live,
+            role: "primary".into(),
         })
         .await?;
-    let mut stored = service.get(run.id.clone()).await?;
-    stored.visual_refs.push(OptimizerResourceRef {
-        kind: "visual".into(),
-        id: created.id.clone(),
-        digest: None,
-        role: Some("primary".into()),
-        title: Some(created.title.clone()),
-        metadata: json!({ "templateId": EXPERIMENT_TEMPLATE }),
-    });
-    let mut summary = stored.summary.as_object().cloned().unwrap_or_default();
-    summary.insert("visualId".into(), json!(created.id));
-    stored.summary = Value::Object(summary);
-    service.persist_run(stored).await?;
-    service
-        .visuals()
-        .show(created.id.clone(), run.session_ref.clone())
-        .await?;
-    Ok(created.id)
+    Ok(visual_id)
 }
 
 fn experiment_bindings(
@@ -358,8 +381,19 @@ async fn run_eval_worker(
     visual_id: String,
     cancel: watch::Receiver<bool>,
 ) -> Result<()> {
-    append_status(&service, &run_id, "optimizer.run.started", "running").await?;
-    append_eval_plan(&service, &run_id, spec, &examples).await?;
+    evidence(
+        "run_started",
+        append_status(&service, &run_id, "optimizer.run.started", "running"),
+    )
+    .await?;
+    // The plan is written before the first rollout, so a campaign that dies
+    // mid-flight still has a denominator and the card can say 3 / 10 rather
+    // than inventing a total or reporting nothing.
+    evidence(
+        "run_plan",
+        append_eval_plan(&service, &run_id, spec, &examples),
+    )
+    .await?;
     // These recipes intentionally use the container's blocking rollout mode.
     // HealthBench can make one policy call plus many rubric-grader calls, so
     // the generic UI HTTP timeout is not an honest bound for this endpoint.
@@ -425,10 +459,17 @@ async fn run_eval_worker(
                 "policyRef": policy_pin,
             }),
         };
-        append_eval_terminal(&service, &run_id, spec, &record).await?;
+        evidence(
+            "trial_terminal",
+            append_eval_terminal(&service, &run_id, spec, &record),
+        )
+        .await?;
         records.push(record);
-        persist_progress(
-            &service, &run_id, spec, &visual_id, &records, total, "running",
+        evidence(
+            "progress_projection",
+            persist_progress(
+                &service, &run_id, spec, &visual_id, &records, total, "running",
+            ),
         )
         .await?;
     }
@@ -453,8 +494,16 @@ async fn run_eval_worker(
     } else {
         "failed"
     };
-    persist_progress(&service, &run_id, spec, &visual_id, &records, total, status).await?;
-    append_eval_selection(&service, &run_id, status, mean_reward(&records)).await?;
+    evidence(
+        "progress_projection",
+        persist_progress(&service, &run_id, spec, &visual_id, &records, total, status),
+    )
+    .await?;
+    evidence(
+        "selection",
+        append_eval_selection(&service, &run_id, status, mean_reward(&records)),
+    )
+    .await?;
     let mut detail = String::new();
     if status == "failed" {
         let mut parts = Vec::new();
@@ -469,7 +518,11 @@ async fn run_eval_worker(
         }
         detail = parts.join("; ");
     }
-    append_terminal(&service, &run_id, status == "failed", detail).await?;
+    evidence(
+        "run_terminal",
+        append_terminal(&service, &run_id, status == "failed", detail),
+    )
+    .await?;
     Ok(())
 }
 
@@ -483,18 +536,20 @@ async fn append_eval_plan(
     spec: EvalSpec,
     examples: &[EvalExample],
 ) -> Result<()> {
-    let mut drafts = vec![OptimizerEventDraft::new("eval.run.planned", EVAL_ALGORITHM_ID)
-        .idempotency_key("eval:plan")
-        .snapshot(Map::from_iter([
-            ("parallelism".into(), json!(spec.concurrency)),
-            ("global_capacity".into(), json!(spec.concurrency)),
-            ("planned_trials".into(), json!(examples.len())),
-            (
-                "candidates".into(),
-                json!([{"id": spec.policy_config, "label": spec.policy_config}]),
-            ),
-        ]))
-        .raw(json!({ "source": "container_eval" }))];
+    let mut drafts = vec![
+        OptimizerEventDraft::new("eval.run.planned", EVAL_ALGORITHM_ID)
+            .idempotency_key("eval:plan")
+            .snapshot(Map::from_iter([
+                ("parallelism".into(), json!(spec.concurrency)),
+                ("global_capacity".into(), json!(spec.concurrency)),
+                ("planned_trials".into(), json!(examples.len())),
+                (
+                    "candidates".into(),
+                    json!([{"id": spec.policy_config, "label": spec.policy_config}]),
+                ),
+            ]))
+            .raw(json!({ "source": "container_eval" })),
+    ];
     for example in examples {
         let trial_id = format!("trial:{}:{}", spec.family, example.seed);
         drafts.push(
@@ -630,12 +685,16 @@ async fn persist_policy_pin(
     run_id: &str,
     policy_pin: &Value,
 ) -> Result<()> {
-    let mut run = service.get(run_id.to_string()).await?;
-    let mut summary = run.summary.as_object().cloned().unwrap_or_default();
-    summary.insert("policyPin".into(), policy_pin.clone());
-    summary.insert("policyRef".into(), policy_pin.clone());
-    run.summary = Value::Object(summary);
-    service.persist_run(run).await?;
+    let policy_pin = policy_pin.clone();
+    service
+        .patch_run(run_id.to_string(), move |run| {
+            let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+            summary.insert("policyPin".into(), policy_pin.clone());
+            summary.insert("policyRef".into(), policy_pin);
+            run.summary = Value::Object(summary);
+            Ok(())
+        })
+        .await?;
     Ok(())
 }
 
@@ -695,36 +754,48 @@ async fn persist_progress(
 ) -> Result<()> {
     let completed = records.len();
     let mean = mean_for_pool(records, "train").or_else(|| mean_reward(records));
-    let mut run = service.get(run_id.to_string()).await?;
     let usage = usage_from_records(records);
-    let mut summary = run.summary.as_object().cloned().unwrap_or_default();
-    summary.insert("records".into(), json!(records));
-    summary.insert(
-        "progress".into(),
-        json!({
-            "completed": completed,
-            "total": total,
-            "failed": records.iter().filter(|row| !is_successful_eval_record(row)).count()
-        }),
-    );
-    if let Some(mean) = mean {
-        summary.insert("meanReward".into(), json!(mean));
-    }
-    summary.insert("evalStatus".into(), json!(status));
-    summary.insert("costCeilingUsd".into(), json!(COST_CEILING_USD));
-    if let Some(cost) = usage.cost_usd {
-        summary.insert("costUsd".into(), json!(cost));
-    }
-    summary.insert(
-        "usageLanes".into(),
-        json!({
-            "policy": usage.extra.get("policyUsage").cloned().unwrap_or(Value::Null),
-            "grader": usage.extra.get("graderUsage").cloned().unwrap_or(Value::Null),
-        }),
-    );
-    run.summary = Value::Object(summary);
-    run.usage = usage;
-    service.persist_run(run).await?;
+    let failed_count = records
+        .iter()
+        .filter(|row| !is_successful_eval_record(row))
+        .count();
+    let records_value = json!(records);
+    let status_value = status.to_string();
+    // Patched under the durable record rather than written from a snapshot: a
+    // worker that read the run before its own `started` event must not restore
+    // that reading over the events it has since appended.
+    service
+        .patch_run(run_id.to_string(), move |run| {
+            let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+            summary.insert("records".into(), records_value);
+            summary.insert(
+                "progress".into(),
+                json!({
+                    "completed": completed,
+                    "total": total,
+                    "failed": failed_count
+                }),
+            );
+            if let Some(mean) = mean {
+                summary.insert("meanReward".into(), json!(mean));
+            }
+            summary.insert("evalStatus".into(), json!(status_value));
+            summary.insert("costCeilingUsd".into(), json!(COST_CEILING_USD));
+            if let Some(cost) = usage.cost_usd {
+                summary.insert("costUsd".into(), json!(cost));
+            }
+            summary.insert(
+                "usageLanes".into(),
+                json!({
+                    "policy": usage.extra.get("policyUsage").cloned().unwrap_or(Value::Null),
+                    "grader": usage.extra.get("graderUsage").cloned().unwrap_or(Value::Null),
+                }),
+            );
+            run.summary = Value::Object(summary);
+            run.usage = usage;
+            Ok(())
+        })
+        .await?;
 
     let visual_status = if status == "failed" {
         VisualStatus::Failed
@@ -754,11 +825,15 @@ async fn persist_progress(
         )
         .await
     {
-        let mut run = service.get(run_id.to_string()).await?;
-        let mut summary = run.summary.as_object().cloned().unwrap_or_default();
-        summary.insert("visualProjectionError".into(), json!(error.to_string()));
-        run.summary = Value::Object(summary);
-        service.persist_run(run).await?;
+        let message = error.to_string();
+        service
+            .patch_run(run_id.to_string(), move |run| {
+                let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+                summary.insert("visualProjectionError".into(), json!(message));
+                run.summary = Value::Object(summary);
+                Ok(())
+            })
+            .await?;
         if status != "running" {
             bail!("experiment visual projection failed: {error}");
         }
@@ -1135,8 +1210,14 @@ async fn append_terminal(
     failed: bool,
     detail: String,
 ) -> Result<()> {
-    let run = service.get(run_id.to_string()).await?;
-    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+    // Settled is settled *when there is a manifest*. Testing `run.status` alone
+    // was how a run whose status had been rewritten without an event skipped its
+    // own terminal event and left the log ending at `optimizer.run.started`.
+    if service
+        .terminal_manifest(run_id.to_string())
+        .await?
+        .is_some()
+    {
         return Ok(());
     }
     append_status(
@@ -1154,13 +1235,12 @@ async fn append_terminal(
         service
             .append_event_payloads(
                 run_id.to_string(),
-                vec![OptimizerEventDraft::new(
-                    "optimizer.run.error",
-                    EVAL_ALGORITHM_ID,
-                )
-                .level("error")
-                .error(json!({ "message": detail }))
-                .raw(json!({ "source": "container_eval" }))],
+                vec![
+                    OptimizerEventDraft::new("optimizer.run.error", EVAL_ALGORITHM_ID)
+                        .level("error")
+                        .error(json!({ "message": detail }))
+                        .raw(json!({ "source": "container_eval" })),
+                ],
             )
             .await?;
     }

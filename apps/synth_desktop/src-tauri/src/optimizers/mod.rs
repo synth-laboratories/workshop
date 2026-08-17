@@ -14,6 +14,7 @@ pub(crate) mod manager;
 mod models;
 mod normalize;
 mod recipes;
+mod results;
 mod service;
 mod sft_client;
 mod sft_recipes;

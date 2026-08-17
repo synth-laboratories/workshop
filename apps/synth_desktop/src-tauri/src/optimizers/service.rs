@@ -5,6 +5,7 @@ use super::models::{
     OptimizerUsageSummary, OPTIMIZER_EVENT_SCHEMA_VERSION, OPTIMIZER_RUN_SCHEMA_VERSION,
     OPTIMIZER_STATE_SLICE_SCHEMA_VERSION,
 };
+use super::results;
 use super::terminal;
 use crate::storage::{append_event, AppEvent, Database, EventAppend, EventJournal, EventSource};
 use crate::visuals::{VisualCreateRequest, VisualRegistry, VISUAL_BINDINGS_SCHEMA_VERSION};
@@ -179,6 +180,26 @@ fn validate_control(run: &OptimizerRunRecord, command: &str) -> Result<()> {
         }
         _ => Ok(()),
     }
+}
+
+/// One chat-owned artifact publication: mint-or-reuse, bind, show, select, and
+/// shelve, under a single run identity. See
+/// [`OptimizerService::publish_chat_owned_visual`].
+#[derive(Clone)]
+pub(super) struct ChatVisualPublication {
+    pub run_id: String,
+    /// The conversation that owns the artifact. `None` falls back to the run's
+    /// own `session_ref`; it never means "whichever chat is focused".
+    pub session_ref: Option<String>,
+    pub template_id: String,
+    pub title: String,
+    pub bindings: Value,
+    pub metadata: Value,
+    pub status: crate::visuals::VisualStatus,
+    /// Which visual of the run this is. Reuse is keyed on it, so a run may own a
+    /// `primary` pane and, later, a distinct report without either replacing the
+    /// other.
+    pub role: String,
 }
 
 #[derive(Clone)]
@@ -443,24 +464,58 @@ impl OptimizerService {
         }
     }
 
+    /// The run's typed result, dispatched on its authoritative `algorithm_id`.
+    ///
+    /// Never on which files happen to exist on disk: reading a baseline eval
+    /// through GEPA's candidate-materialization path is what answered a
+    /// successful 10/10 campaign with "completed GEPA result omitted a
+    /// materialized prompt".
     pub async fn get_result(&self, optimizer_run_id: String) -> Result<Value> {
         let run = self.get(optimizer_run_id.clone()).await?;
+        let manifest = self.terminal_manifest(optimizer_run_id.clone()).await?;
         if let Some(existing) = run.summary.get("optimizerResult").cloned() {
-            if existing.get("schemaVersion").and_then(Value::as_str) == Some("optimizer_result.v1")
-                && (run.algorithm_id != "gepa"
+            let fresh = existing.get("schemaVersion").and_then(Value::as_str)
+                == Some(results::RESULT_SCHEMA_VERSION)
+                && existing.get("resultKind").and_then(Value::as_str)
+                    == Some(results::result_kind(&run.algorithm_id))
+                // A result cached before the run settled is a live reading. Once
+                // a manifest exists, the answer has to come from it.
+                && (manifest.is_none()
+                    || existing
+                        .get("terminalManifest")
+                        .is_some_and(|value| !value.is_null()))
+                && (!results::materializes_candidate(&run.algorithm_id)
                     || existing
                         .pointer("/metrics/heldoutMeasurement")
-                        .is_some_and(|value| !value.is_null()))
-            {
+                        .is_some_and(|value| !value.is_null()));
+            if fresh {
                 return Ok(existing);
             }
         }
-        let result = materialize_optimizer_result(self, &run).await?;
-        let mut stored = run.clone();
-        let mut summary = stored.summary.as_object().cloned().unwrap_or_default();
-        summary.insert("optimizerResult".into(), result.clone());
-        stored.summary = Value::Object(summary);
-        self.persist_run(stored).await?;
+        let manifest_ref = manifest.as_ref();
+        let result = if results::materializes_candidate(&run.algorithm_id) {
+            let materialized = materialize_optimizer_result(self, &run).await?;
+            merge_typed_envelope(materialized, &run, manifest_ref)
+        } else {
+            match run.algorithm_id.as_str() {
+                "eval" => results::eval_result(&run, manifest_ref)?,
+                "sft" => results::sft_result(&run, manifest_ref)?,
+                "environment" => results::environment_result(&run, manifest_ref)?,
+                _ => results::generic_result(&run, manifest_ref)?,
+            }
+        };
+        let result = match manifest_ref {
+            Some(manifest) => results::with_manifest(result, manifest),
+            None => result,
+        };
+        let stored = result.clone();
+        self.patch_run(optimizer_run_id, move |run| {
+            let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+            summary.insert("optimizerResult".into(), stored);
+            run.summary = Value::Object(summary);
+            Ok(())
+        })
+        .await?;
         Ok(result)
     }
 
@@ -823,6 +878,122 @@ impl OptimizerService {
             let _ = self.events_tx.send(event.clone());
         }
         Ok(result)
+    }
+
+    /// Create-or-reuse a run's chat-owned visual, bind it to the run, publish
+    /// the durable `visual.show`, and select it for the owning conversation —
+    /// as one operation with one identity.
+    ///
+    /// These used to be five calls in three files, each able to succeed alone:
+    /// a visual could be minted and never bound, bound and never shown, shown
+    /// into whichever chat happened to be focused, or lost from Outputs after a
+    /// restart because only the pane knew about it. Repeating this is safe: an
+    /// existing primary visual is reused, never duplicated, and the show is
+    /// addressed to the run's own session so a second call cannot move another
+    /// chat's pane.
+    pub(super) async fn publish_chat_owned_visual(
+        &self,
+        request: ChatVisualPublication,
+    ) -> Result<(String, Option<AppEvent>)> {
+        let run = self.get(request.run_id.clone()).await?;
+        let session_ref = request
+            .session_ref
+            .clone()
+            .or_else(|| run.session_ref.clone());
+        let existing = run
+            .visual_refs
+            .iter()
+            .find(|reference| {
+                reference.kind == "visual"
+                    && reference.role.as_deref() == Some(request.role.as_str())
+            })
+            .map(|reference| reference.id.clone());
+
+        let visual_id = match existing {
+            Some(visual_id) => visual_id,
+            None => {
+                let (created, _) = self
+                    .visuals
+                    .create(VisualCreateRequest {
+                        template_id: request.template_id.clone(),
+                        title: Some(request.title.clone()),
+                        bindings: Some(request.bindings.clone()),
+                        id: None,
+                        status: Some(request.status),
+                        renderer_kind: None,
+                        session_id: session_ref.clone(),
+                        message_id: None,
+                        run_id: None,
+                        trace_id: None,
+                        parent_visual_id: None,
+                        source_agent_id: None,
+                        source_model: None,
+                        content: None,
+                        metadata: Some(request.metadata.clone()),
+                    })
+                    .await
+                    .context("create chat-owned optimizer visual")?;
+                created.id
+            }
+        };
+
+        // Bind before showing. A visual the renderer opens but the run does not
+        // reference is a visual that disappears on restart.
+        let bound_id = visual_id.clone();
+        let template_id = request.template_id.clone();
+        let title = request.title.clone();
+        let role = request.role.clone();
+        let bind = self
+            .patch_run(request.run_id.clone(), move |run| {
+                if !run
+                    .visual_refs
+                    .iter()
+                    .any(|reference| reference.id == bound_id)
+                {
+                    run.visual_refs.push(OptimizerResourceRef {
+                        kind: "visual".into(),
+                        id: bound_id.clone(),
+                        digest: None,
+                        role: Some(role),
+                        title: Some(title),
+                        metadata: json!({ "templateId": template_id }),
+                    });
+                }
+                let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+                summary.insert("visualId".into(), json!(bound_id));
+                summary.remove("visualProjectionError");
+                run.summary = Value::Object(summary);
+                Ok(())
+            })
+            .await;
+        if let Err(error) = bind {
+            self.record_visual_projection_error(&request.run_id, &format!("{error:#}"))
+                .await;
+            return Err(error.context("bind chat-owned optimizer visual"));
+        }
+
+        match self.visuals.show(visual_id.clone(), session_ref).await {
+            Ok((_, event)) => Ok((visual_id, serde_json::from_value::<AppEvent>(event).ok())),
+            Err(error) => {
+                // The visual exists and is bound, but nothing told the chat about
+                // it. Say so durably rather than reporting an opened output.
+                self.record_visual_projection_error(&request.run_id, &format!("{error:#}"))
+                    .await;
+                Err(error.context("publish chat-owned optimizer visual"))
+            }
+        }
+    }
+
+    async fn record_visual_projection_error(&self, run_id: &str, message: &str) {
+        let message = message.to_string();
+        let _ = self
+            .patch_run(run_id.to_string(), move |run| {
+                let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+                summary.insert("visualProjectionError".into(), json!(message));
+                run.summary = Value::Object(summary);
+                Ok(())
+            })
+            .await;
     }
 
     /// The sealed terminal manifest for a run, or `None` while it is live.
@@ -1592,10 +1763,58 @@ fn negotiate_visual_template(algorithm_id: &str) -> String {
     primary_visual_template(algorithm_id).to_owned()
 }
 
+/// Give a GEPA-materialized result the same typed envelope every other
+/// algorithm gets, so callers can branch on `resultKind` instead of guessing
+/// from which keys happen to be present.
+fn merge_typed_envelope(
+    materialized: Value,
+    run: &OptimizerRunRecord,
+    manifest: Option<&Value>,
+) -> Value {
+    let mut out = results::envelope(run, manifest);
+    if let Some(object) = materialized.as_object() {
+        for (key, value) in object {
+            // The envelope owns identity, status, cursor, and usage; the
+            // materializer owns the candidate and its measurements.
+            if matches!(
+                key.as_str(),
+                "schemaVersion"
+                    | "resultKind"
+                    | "optimizerRunId"
+                    | "algorithmId"
+                    | "status"
+                    | "finalCursor"
+                    | "usage"
+                    | "completionReceiptId"
+            ) {
+                continue;
+            }
+            out.insert(key.clone(), value.clone());
+        }
+    }
+    Value::Object(out)
+}
+
 async fn materialize_optimizer_result(
     service: &OptimizerService,
     run: &OptimizerRunRecord,
 ) -> Result<Value> {
+    // Results are algorithm nouns, not a GEPA filesystem convention. Baseline
+    // evals, SFT jobs, and environment campaigns must remain readable without
+    // inventing a selected prompt or a `best_candidate.json` artifact.
+    if run.algorithm_id != "gepa" {
+        let manifest = service.terminal_manifest(run.id.clone()).await?;
+        let result = match run.algorithm_id.as_str() {
+            "eval" => super::results::eval_result(run, manifest.as_ref())?,
+            "sft" => super::results::sft_result(run, manifest.as_ref())?,
+            "environment" => super::results::environment_result(run, manifest.as_ref())?,
+            _ => super::results::generic_result(run, manifest.as_ref())?,
+        };
+        return Ok(match manifest.as_ref() {
+            Some(manifest) => super::results::with_manifest(result, manifest),
+            None => result,
+        });
+    }
     let run_dir = run
         .summary
         .get("runDirectory")
