@@ -258,7 +258,11 @@ impl StructuredFailure {
 
 impl fmt::Display for StructuredFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}: {} — {}", self.code, self.message, self.remediation)
+        write!(
+            formatter,
+            "{}: {} — {}",
+            self.code, self.message, self.remediation
+        )
     }
 }
 

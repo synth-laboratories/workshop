@@ -565,9 +565,7 @@ async fn terminate_process_group(pid: u32) {
         (pgid > 1 && pgid == pid && pgid != libc::getpgrp()).then_some(pgid)
     };
     let Some(pgid) = isolated_group else {
-        eprintln!(
-            "refusing to terminate diagnostics sidecar with unsafe or unowned pid {pid}"
-        );
+        eprintln!("refusing to terminate diagnostics sidecar with unsafe or unowned pid {pid}");
         return;
     };
     unsafe {

@@ -15,7 +15,6 @@ pub mod intern_protocol_test_support {
     };
 }
 pub mod campaigns;
-pub mod experiments;
 mod codex;
 mod codex_oauth;
 pub mod container_capabilities;
@@ -30,6 +29,7 @@ pub mod diagnostics;
 mod domain;
 pub mod error;
 mod eval_driver;
+pub mod experiments;
 mod http;
 mod instance;
 mod intern_api;

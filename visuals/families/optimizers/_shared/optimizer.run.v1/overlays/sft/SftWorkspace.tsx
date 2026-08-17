@@ -36,10 +36,21 @@ import {
 
 const TERMINAL_STATUSES = SFT_TERMINAL_STATUSES;
 
-function statusChip(status: string): { text: string; tone?: "live" | "ok" | "bad" | "warn"; dot: boolean } {
+function statusChip(
+  status: string,
+  verdict?: string
+): { text: string; tone?: "live" | "ok" | "bad" | "warn"; dot: boolean } {
   if (status === "failed") return { text: "Failed", tone: "bad", dot: false };
   if (["canceled", "cancelled"].includes(status)) return { text: "Canceled", tone: "warn", dot: false };
-  if (TERMINAL_STATUSES.includes(status)) return { text: "Completed", tone: "ok", dot: false };
+  if (TERMINAL_STATUSES.includes(status)) {
+    if (verdict === "improvement_demonstrated") {
+      return { text: "Completed · improvement demonstrated", tone: "ok", dot: false };
+    }
+    if (verdict === "inconclusive") {
+      return { text: "Completed · evaluation inconclusive", tone: "warn", dot: false };
+    }
+    return { text: "Completed · no measured improvement", tone: "warn", dot: false };
+  }
   if (status === "queued") return { text: "Queued", tone: "warn", dot: false };
   if (["created", "pending", "loading"].includes(status)) {
     return { text: status[0].toUpperCase() + status.slice(1), dot: false };
@@ -334,10 +345,11 @@ function CheckpointRail({ sft, promotedCheckpointId }: { sft: SftState; promoted
         <div role="list" className="sv-stack-tight sv-stack">
           {sft.checkpoints.map((ckpt) => {
             const id = String(ckpt.id ?? "");
-            const promoted = ckpt.promoted === true || id === promotedCheckpointId;
+            const claimed = ckpt.promoted === true;
+            const selected = ckpt.selected === true || claimed || id === promotedCheckpointId;
             const ready = ckpt.ready === true;
             return (
-              <div key={id} role="listitem" className="sv-rail-row" data-promoted={promoted}>
+              <div key={id} role="listitem" className="sv-rail-row" data-promoted={claimed}>
                 <Identifier value={id} max={30} />
                 {ckpt.step != null ? <span className="sv-mono">step {String(ckpt.step)}</span> : null}
                 <span className="sv-rail-row-end">
@@ -346,10 +358,10 @@ function CheckpointRail({ sft, promotedCheckpointId }: { sft: SftState; promoted
                   </span>
                   <span
                     className="sv-chip"
-                    data-tone={promoted ? "ok" : undefined}
-                    title="Promotion is a distinct decision; a ready checkpoint is not promoted."
+                    data-tone={claimed ? "ok" : selected ? "warn" : undefined}
+                    title="Selection is not uplift. A green Promoted chip requires improvement_demonstrated."
                   >
-                    {promoted ? "Promoted" : "Not promoted"}
+                    {claimed ? "Promoted · uplift claimed" : selected ? "Selected" : "Not selected"}
                   </span>
                 </span>
               </div>
@@ -641,18 +653,25 @@ export function SftWorkspace({
 
   if (!sft) return null;
 
-  const chip = statusChip(status);
+  const improvementVerdict = typeof nested.improvementVerdict === "string"
+    ? nested.improvementVerdict
+    : undefined;
+  const chip = statusChip(status, improvementVerdict);
   const terminal = TERMINAL_STATUSES.includes(status);
   const latest = sft.points.at(-1);
   const readyCount = sft.checkpoints.filter((ckpt) => ckpt.ready === true || ckpt.promoted === true).length;
   const costUsd = projected.usage.costUsd;
   const activeStage = stages.find((stage) => stage.status === "active");
+  const upliftClaimed = sft.checkpoints.some((ckpt) => ckpt.promoted === true) || improvementVerdict === "improvement_demonstrated";
+  const selectedId = typeof nested.selectedCheckpointId === "string" ? nested.selectedCheckpointId : promotedCheckpointId;
   const headline = terminal
     ? status === "failed"
       ? "Training failed"
-      : comparison
+      : upliftClaimed && comparison
         ? `Heldout uplift ${signed(comparison.absoluteUplift)} over ${comparison.paired} paired seeds`
-        : "Run complete — no heldout comparison yet, so no uplift is claimed"
+        : improvementVerdict === "inconclusive"
+          ? "Completed · evaluation inconclusive — no uplift claimed"
+          : "Completed · no measured improvement — selection is not uplift"
     : status === "queued"
       ? "Waiting for an accelerator — queued honestly, not running"
       : activeStage
@@ -679,9 +698,14 @@ export function SftWorkspace({
     { label: "Val loss", value: formatMissingNumber(latest?.validationLoss) },
     { label: "Checkpoints", value: sft.checkpoints.length ? `${readyCount}/${sft.checkpoints.length} ready` : "—" },
     {
-      label: "Promoted",
-      value: promotedCheckpointId ?? (sft.checkpoints.some((ckpt) => ckpt.promoted === true) ? "yes" : "none yet"),
-      title: "Promotion requires an explicit event; ready checkpoints are not promoted."
+      label: "Selected",
+      value: selectedId ?? "none yet",
+      title: "Selection retains a checkpoint. It is not an uplift claim."
+    },
+    {
+      label: "Uplift",
+      value: upliftClaimed ? "demonstrated" : "not claimed",
+      title: "Green only when improvement_verdict is improvement_demonstrated. Zero-score or no-baseline cohorts cannot claim uplift."
     },
     {
       label: "Cost",

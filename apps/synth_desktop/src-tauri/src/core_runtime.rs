@@ -639,6 +639,7 @@ impl CoreRuntime {
         )
         .await
         .context("emit runtime.ready")?;
+        self.optimizers.restore_hosted_sft_mirrors().await;
         Ok(())
     }
 

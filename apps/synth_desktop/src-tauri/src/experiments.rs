@@ -77,8 +77,9 @@ pub fn attach(
             },
         )?;
     }
-    load_for_session(conn, session_id)?
-        .ok_or_else(|| anyhow::anyhow!("experiment group for {session_id} disappeared after attach"))
+    load_for_session(conn, session_id)?.ok_or_else(|| {
+        anyhow::anyhow!("experiment group for {session_id} disappeared after attach")
+    })
 }
 
 pub fn load_for_session(conn: &Connection, session_id: &str) -> Result<Option<ExperimentGroup>> {
@@ -185,12 +186,11 @@ mod tests {
                 .members
                 .iter()
                 .all(|member| member.member_id.ends_with(&index.to_string())));
-            assert!(!group
-                .members
-                .iter()
-                .any(|member| member.member_id.contains(&(index % 5 + 1).to_string())
-                    && member.member_id != format!("camp_{index}")
-                    && member.member_id != format!("opt_{index}")));
+            assert!(!group.members.iter().any(|member| member
+                .member_id
+                .contains(&(index % 5 + 1).to_string())
+                && member.member_id != format!("camp_{index}")
+                && member.member_id != format!("opt_{index}")));
         }
         let session_1 = load_for_session(&conn, "session_1").unwrap().unwrap();
         assert!(!session_1

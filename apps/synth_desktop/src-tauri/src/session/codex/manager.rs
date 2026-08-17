@@ -17,10 +17,9 @@ use crate::storage::{AppEvent, EventAppend, EventSource};
 
 use super::event_pump::{spawn_server, EventPumpState, SpawnServerRequest};
 use super::home::{
-    apply_brokered_credential, auto_compact_token_limit, automatic_thread_title, uniquify_title,
-    codex_root,
+    apply_brokered_credential, auto_compact_token_limit, automatic_thread_title, codex_root,
     ensure_home, install_local_laguna_catalog, nested_id, responses_base_url, safe_component,
-    session_info, validate_reasoning_effort, validate_start,
+    session_info, uniquify_title, validate_reasoning_effort, validate_start,
 };
 use super::proto::{
     default_approval_policy, default_sandbox, is_detached_failure, is_not_recorded_failure,
@@ -358,7 +357,8 @@ impl CodexManager {
         } else {
             request.model.clone()
         };
-        let title = if let Some(title) = remembered.as_ref().and_then(|record| record.title.clone()) {
+        let title = if let Some(title) = remembered.as_ref().and_then(|record| record.title.clone())
+        {
             title
         } else {
             let taken = self

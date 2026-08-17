@@ -64,10 +64,11 @@ fn breaker_key(tool: &str, args: &Value) -> String {
         }
     }
     for field in BREAKER_TARGET_FIELDS {
-        let target = identity
-            .get(field)
-            .and_then(Value::as_str)
-            .or_else(|| identity.pointer(&format!("/arguments/{field}")).and_then(Value::as_str));
+        let target = identity.get(field).and_then(Value::as_str).or_else(|| {
+            identity
+                .pointer(&format!("/arguments/{field}"))
+                .and_then(Value::as_str)
+        });
         if let Some(target) = target.map(str::trim).filter(|value| !value.is_empty()) {
             key.push('#');
             key.push_str(target);
@@ -152,7 +153,8 @@ fn normalize_error(error: &str) -> String {
             while end < chars.len() && chars[end].is_ascii_digit() {
                 end += 1;
             }
-            let next_ident = end < chars.len() && (chars[end].is_ascii_alphabetic() || chars[end] == '_');
+            let next_ident =
+                end < chars.len() && (chars[end].is_ascii_alphabetic() || chars[end] == '_');
             if prev_ident || next_ident {
                 normalized.extend(chars[index..end].iter());
             } else {
@@ -316,11 +318,19 @@ mod tests {
     fn breaker_ignores_changing_numeric_arguments_and_resets_on_success() {
         let args = json!({"visual_id": "vis_1"});
         let mut breaker = ToolLoopBreaker::default();
-        breaker.record_failure("visual_capture_review", &args, "viewport 640 failed: denied");
+        breaker.record_failure(
+            "visual_capture_review",
+            &args,
+            "viewport 640 failed: denied",
+        );
         assert!(breaker
             .terminal_error("visual_capture_review", &args)
             .is_none());
-        breaker.record_failure("visual_capture_review", &args, "viewport 800 failed: denied");
+        breaker.record_failure(
+            "visual_capture_review",
+            &args,
+            "viewport 800 failed: denied",
+        );
         let terminal = breaker
             .terminal_error("visual_capture_review", &args)
             .unwrap();
@@ -342,8 +352,7 @@ mod tests {
         breaker.record_failure("visual_manage", &capture, "no rendered observation");
         assert!(breaker.terminal_error("visual_manage", &capture).is_some());
 
-        let other_operation =
-            json!({"operation": "show", "arguments": {"visual_id": "vis_a"}});
+        let other_operation = json!({"operation": "show", "arguments": {"visual_id": "vis_a"}});
         let other_visual =
             json!({"operation": "capture_review", "arguments": {"visual_id": "vis_b"}});
         assert!(breaker
@@ -385,8 +394,12 @@ mod tests {
         let mut breaker = ToolLoopBreaker::default();
         breaker.record_failure("visual_manage", &capture_r1, "no rendered observation");
         breaker.record_failure("visual_manage", &capture_r1, "no rendered observation");
-        assert!(breaker.terminal_error("visual_manage", &capture_r1).is_some());
-        assert!(breaker.terminal_error("visual_manage", &capture_r2).is_none());
+        assert!(breaker
+            .terminal_error("visual_manage", &capture_r1)
+            .is_some());
+        assert!(breaker
+            .terminal_error("visual_manage", &capture_r2)
+            .is_none());
     }
 
     #[test]
@@ -406,7 +419,9 @@ mod tests {
             &capture_a,
             &json!({"code": "visual_observation_unavailable"}).to_string(),
         );
-        assert!(breaker.terminal_error("visual_manage", &capture_a).is_some());
+        assert!(breaker
+            .terminal_error("visual_manage", &capture_a)
+            .is_some());
 
         for operation in ["get", "show", "bind"] {
             let neighbor = json!({
@@ -422,12 +437,16 @@ mod tests {
             "operation": "capture_review",
             "arguments": {"visual_id": "vis_b", "revision": 4}
         });
-        assert!(breaker.terminal_error("visual_manage", &capture_b).is_none());
+        assert!(breaker
+            .terminal_error("visual_manage", &capture_b)
+            .is_none());
         let next_revision = json!({
             "operation": "capture_review",
             "arguments": {"visual_id": "vis_a", "revision": 5}
         });
-        assert!(breaker.terminal_error("visual_manage", &next_revision).is_none());
+        assert!(breaker
+            .terminal_error("visual_manage", &next_revision)
+            .is_none());
     }
 
     #[test]

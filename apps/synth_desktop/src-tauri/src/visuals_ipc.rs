@@ -2484,6 +2484,34 @@ async fn dispatch_optimizer(
             Ok(json!({ "events": events }))
         }
         ("GET", path)
+            if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/milestone") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/milestone");
+            let after_seq = body
+                .get("after_seq")
+                .or_else(|| body.get("afterSeq"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let timeout_ms = body
+                .get("timeout_ms")
+                .or_else(|| body.get("timeoutMs"))
+                .and_then(Value::as_u64)
+                .unwrap_or(30_000);
+            let mut kinds = Vec::new();
+            if let Some(kind) = body.get("kind").and_then(Value::as_str) {
+                kinds.push(kind.to_string());
+            }
+            if let Some(array) = body.get("kinds").and_then(Value::as_array) {
+                kinds.extend(array.iter().filter_map(Value::as_str).map(str::to_string));
+            }
+            let page = optimizers
+                .wait_milestone(id.to_string(), after_seq, kinds, timeout_ms)
+                .await?;
+            Ok(page)
+        }
+        ("GET", path)
             if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/state/batch") =>
         {
             let id = path
@@ -2828,7 +2856,10 @@ async fn import_container_trace(
 
 /// Capture-supervisor bundle first (Lane E `/rollouts/{id}/trace/bundle`),
 /// then any announced `bundle_url`. Duplicate URLs are collapsed.
-pub(crate) fn sealed_trace_bundle_routes(rollout_id: &str, reference: Option<&Value>) -> Vec<String> {
+pub(crate) fn sealed_trace_bundle_routes(
+    rollout_id: &str,
+    reference: Option<&Value>,
+) -> Vec<String> {
     let mut routes = Vec::new();
     let mut push = |route: String| {
         if !route.is_empty() && !routes.iter().any(|existing| existing == &route) {
@@ -2975,7 +3006,9 @@ async fn dispatch_campaigns(
                 .await
         }
         ("GET", path) if path.starts_with("/v1/campaigns/") => {
-            let id = path.trim_start_matches("/v1/campaigns/").trim_end_matches('/');
+            let id = path
+                .trim_start_matches("/v1/campaigns/")
+                .trim_end_matches('/');
             Ok(json!({"campaign": core.data().campaign_get(id.to_string()).await?}))
         }
         _ => anyhow::bail!("unsupported campaign IPC route {method} {path}"),
@@ -3114,17 +3147,16 @@ async fn reconcile_campaign(core: &CoreRuntime, id: &str) -> Result<crate::campa
         // Consume the sealed-trace announcement even after local terminal
         // settlement: a capture-supervisor bundle can appear after the
         // rollout record itself went terminal.
-        if state.get("trace").filter(|value| value.is_object()).is_some()
+        if state
+            .get("trace")
+            .filter(|value| value.is_object())
+            .is_some()
             || state.get("terminated").and_then(Value::as_bool) == Some(true)
             || already_settled
         {
-            let _ = import_terminal_trace(
-                core,
-                &campaign.container_id,
-                &rollout.rollout_id,
-                &state,
-            )
-            .await;
+            let _ =
+                import_terminal_trace(core, &campaign.container_id, &rollout.rollout_id, &state)
+                    .await;
         }
     }
     core.data().campaign_get(id.to_string()).await
@@ -3604,12 +3636,7 @@ mod tests {
         let failed_compact = review(640, false, Some(&pre_start));
         let passed_wide = review(1280, true, Some(&terminal));
         let passed_compact = review(640, true, Some(&terminal));
-        let history = vec![
-            &failed_wide,
-            &failed_compact,
-            &passed_wide,
-            &passed_compact,
-        ];
+        let history = vec![&failed_wide, &failed_compact, &passed_wide, &passed_compact];
 
         let receipts = certification_receipts(
             "vis_1",

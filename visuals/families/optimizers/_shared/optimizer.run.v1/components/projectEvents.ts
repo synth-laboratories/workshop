@@ -2167,6 +2167,7 @@ export function projectAtCursor(
         id: event.item.id,
         status: event.item.status ?? "created",
         ready: false,
+        selected: false,
         promoted: false,
         ...(event.item.raw ?? {})
       });
@@ -2178,19 +2179,35 @@ export function projectAtCursor(
         existing.status = event.item.status ?? "ready";
         existing.ready = true;
       } else {
-        checkpoints.push({ id, status: "ready", ready: true, promoted: false, ...(event.item.raw ?? {}) });
+        checkpoints.push({ id, status: "ready", ready: true, selected: false, promoted: false, ...(event.item.raw ?? {}) });
       }
     }
-    if (event.type === "sft.checkpoint.promoted" && event.item) {
-      const id = event.item.id;
-      const existing = checkpoints.find((ckpt) => ckpt.id === id);
-      if (existing) {
-        existing.status = "promoted";
-        existing.promoted = true;
-      } else {
-        checkpoints.push({ id, status: "promoted", promoted: true, ...(event.item.raw ?? {}) });
+    if (event.type === "sft.checkpoint.selected" || event.type === "sft.checkpoint.promoted") {
+      const id = String(event.item?.id ?? event.delta?.checkpoint_id ?? "");
+      if (id) {
+        const claimed = event.delta?.uplift_claimed === true
+          || event.delta?.improvement_verdict === "improvement_demonstrated";
+        const existing = checkpoints.find((ckpt) => ckpt.id === id);
+        if (existing) {
+          existing.selected = true;
+          existing.promoted = claimed;
+          if (claimed) existing.status = "promoted";
+        } else {
+          checkpoints.push({
+            id,
+            status: claimed ? "promoted" : (event.item?.status ?? "selected"),
+            selected: true,
+            promoted: claimed,
+            ...(event.item?.raw ?? {})
+          });
+        }
+        summary = {
+          ...summary,
+          selectedCheckpointId: id,
+          improvementVerdict: event.delta?.improvement_verdict ?? summary.improvementVerdict,
+          ...(claimed ? { promotedCheckpointId: id } : {})
+        };
       }
-      summary = { ...summary, promotedCheckpointId: id };
     }
     if (event.type === "sft.step.metrics" || event.type === "sft.training.metrics") {
       const step = missingNumber(event.delta?.step ?? event.delta?.global_step);

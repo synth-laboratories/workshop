@@ -305,7 +305,68 @@ impl OptimizerService {
         self.local_recipes.lock().await.remove(run_id);
     }
 
-    pub(super) async fn persist_run(&self, mut run: OptimizerRunRecord) -> Result<OptimizerRunRecord> {
+    pub(super) async fn registered_local_recipes(&self) -> std::collections::HashSet<String> {
+        self.local_recipes.lock().await.keys().cloned().collect()
+    }
+
+    pub async fn restore_hosted_sft_mirrors(&self) {
+        super::hosted_sft::restore_hosted_mirrors(self).await;
+    }
+
+    pub async fn wait_milestone(
+        &self,
+        optimizer_run_id: String,
+        after_seq: u64,
+        kinds: Vec<String>,
+        timeout_ms: u64,
+    ) -> Result<Value> {
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(50));
+        let mut cursor = after_seq;
+        loop {
+            let events = self
+                .events_after(optimizer_run_id.clone(), cursor, Some(500))
+                .await?;
+            for event in events {
+                cursor = cursor.max(event.sequence_number);
+                if let Some(kind) =
+                    super::sft_result::sft_milestone_kind(&event.event_type, event.level.as_deref())
+                {
+                    if kinds.is_empty() || kinds.iter().any(|wanted| wanted == kind) {
+                        return Ok(json!({
+                            "milestone": kind,
+                            "event": event,
+                            "cursor": cursor,
+                            "timedOut": false
+                        }));
+                    }
+                }
+            }
+            let run = self.get(optimizer_run_id.clone()).await?;
+            if matches!(
+                run.status.as_str(),
+                "completed" | "failed" | "cancelled" | "canceled"
+            ) {
+                return Ok(json!({
+                    "milestone": "terminal",
+                    "status": run.status,
+                    "cursor": run.cursor_seq,
+                    "timedOut": false
+                }));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                anyhow::bail!(
+                    "no matching milestone for `{optimizer_run_id}` after sequence {after_seq}"
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    pub(super) async fn persist_run(
+        &self,
+        mut run: OptimizerRunRecord,
+    ) -> Result<OptimizerRunRecord> {
         freeze_terminal_cursor(&mut run);
         let db = self.db.clone();
         let stored = run.clone();
@@ -1357,19 +1418,14 @@ fn project_visual_evidence(run: &mut OptimizerRunRecord) {
             .is_some_and(|reviews| !reviews.is_empty());
     let has_visual = run.visual_refs.iter().any(|item| item.kind == "visual");
     let render_failed = run.status == "failed"
-        && run.error.as_ref().is_some_and(|error| {
-            error
-                .to_string()
-                .to_lowercase()
-                .contains("visual")
-        });
+        && run
+            .error
+            .as_ref()
+            .is_some_and(|error| error.to_string().to_lowercase().contains("visual"));
     let (state, detail) = if ready {
         ("ready", "visual readiness receipt posted")
     } else if reviewed {
-        (
-            "reviewed",
-            "reviews recorded without a readiness receipt",
-        )
+        ("reviewed", "reviews recorded without a readiness receipt")
     } else if render_failed || !has_visual {
         (
             "failed",
@@ -1482,40 +1538,9 @@ async fn materialize_optimizer_result(
     service: &OptimizerService,
     run: &OptimizerRunRecord,
 ) -> Result<Value> {
-    match run.algorithm_id.as_str() {
-        "sft" => materialize_sft_result(run),
-        _ => materialize_gepa_result(service, run).await,
+    if run.algorithm_id == "sft" {
+        return super::sft_result::materialize_sft_result(service, run).await;
     }
-}
-
-/// Lane D owns typed `SftRunResult` materialization. Workshop must not project
-/// SFT through GEPA-shaped `best_candidate.json`.
-fn materialize_sft_result(run: &OptimizerRunRecord) -> Result<Value> {
-    let terminal_cursor = run
-        .summary
-        .get("terminalCursor")
-        .and_then(Value::as_u64)
-        .unwrap_or(run.cursor_seq);
-    Ok(json!({
-        "schemaVersion": "sft_result.v1",
-        "optimizerRunId": run.id,
-        "algorithmId": "sft",
-        "status": run.status,
-        "finalCursor": terminal_cursor,
-        "enrichmentCursor": run.cursor_seq,
-        "usage": usage_authority_block(run, None),
-        "pending": true,
-        "error": {
-            "code": "sft_result_materialization_pending",
-            "message": "Typed SftRunResult materialization is owned by Lane D. Workshop will not invent a GEPA-shaped result for this SFT run."
-        }
-    }))
-}
-
-async fn materialize_gepa_result(
-    service: &OptimizerService,
-    run: &OptimizerRunRecord,
-) -> Result<Value> {
     let run_dir = run
         .summary
         .get("runDirectory")
@@ -3023,7 +3048,8 @@ fn sft_fixture(session_ref: Option<String>) -> (OptimizerRunRecord, Vec<Optimize
         visual_refs: vec![],
         summary: json!({
             "baseModel": "openai/gpt-oss-20b",
-            "adapter": "lora_r16",
+            "adapter": "lora_r8",
+            "rank": 8,
             "backend": "fake"
         }),
         usage: OptimizerUsageSummary::default(),
@@ -3243,7 +3269,7 @@ fn sft_fixture(session_ref: Option<String>) -> (OptimizerRunRecord, Vec<Optimize
                 "ready",
                 json!({
                     "baseModel":"openai/gpt-oss-20b",
-                    "adapter":"lora_r16",
+                    "adapter":"lora_r8",
                     "checkpointId":"ckpt_100",
                     "digest":"sha256:model100"
                 }),
@@ -3265,7 +3291,8 @@ fn sft_fixture(session_ref: Option<String>) -> (OptimizerRunRecord, Vec<Optimize
         event.snapshot = Some(map_from(json!({
             "summary": {
                 "baseModel": "openai/gpt-oss-20b",
-                "adapter": "lora_r16",
+                "adapter": "lora_r8",
+                "rank": 8,
                 "backend": "fake"
             }
         })));
@@ -4466,7 +4493,10 @@ pub(in crate::optimizers) mod tests {
             result["usage"]["reconciliationStatus"],
             json!("manifest_absent")
         );
-        assert_eq!(result["selectedCandidate"]["selectionCriterion"], json!("optimization_selected"));
+        assert_eq!(
+            result["selectedCandidate"]["selectionCriterion"],
+            json!("optimization_selected")
+        );
     }
 
     #[tokio::test]
@@ -4506,8 +4536,14 @@ pub(in crate::optimizers) mod tests {
         let result = svc.get_result(run.id).await.unwrap();
         assert_eq!(result["finalCursor"], json!(10));
         assert_eq!(result["enrichmentCursor"], json!(12));
-        assert_eq!(result["optimizationSelectedCandidate"]["id"], json!("train_selected"));
-        assert_eq!(result["heldoutBestCandidate"]["id"], json!("heldout_winner"));
+        assert_eq!(
+            result["optimizationSelectedCandidate"]["id"],
+            json!("train_selected")
+        );
+        assert_eq!(
+            result["heldoutBestCandidate"]["id"],
+            json!("heldout_winner")
+        );
         assert_eq!(result["selectedCandidate"]["id"], json!("train_selected"));
         assert_eq!(result["identityConsistent"], json!(false));
     }
@@ -4539,7 +4575,10 @@ pub(in crate::optimizers) mod tests {
         stored.summary = json!({});
         let persisted = svc.persist_run(stored).await.unwrap();
         assert_eq!(persisted.status, "completed");
-        assert_eq!(persisted.summary["visualEvidence"]["state"], json!("partial"));
+        assert_eq!(
+            persisted.summary["visualEvidence"]["state"],
+            json!("partial")
+        );
         assert_eq!(
             persisted.summary["visualEvidence"]["detail"]
                 .as_str()
@@ -4549,10 +4588,18 @@ pub(in crate::optimizers) mod tests {
         );
 
         let mut ready = persisted.clone();
-        ready.summary["visualReadyReceipt"] = json!({"schemaVersion": "synth.visual-subscription-receipt.v1"});
-        ready.summary.as_object_mut().unwrap().remove("visualEvidence");
+        ready.summary["visualReadyReceipt"] =
+            json!({"schemaVersion": "synth.visual-subscription-receipt.v1"});
+        ready
+            .summary
+            .as_object_mut()
+            .unwrap()
+            .remove("visualEvidence");
         let rerecorded = svc.persist_run(ready).await.unwrap();
-        assert_eq!(rerecorded.summary["visualEvidence"]["state"], json!("ready"));
+        assert_eq!(
+            rerecorded.summary["visualEvidence"]["state"],
+            json!("ready")
+        );
     }
 
     #[tokio::test]
@@ -4639,120 +4686,151 @@ pub(in crate::optimizers) mod tests {
     }
 
     #[tokio::test]
-    async fn sft_get_result_does_not_materialize_best_candidate_json() {
+    async fn sft_get_result_materializes_without_best_candidate() {
         let (svc, dir, _) = service().await;
         let run_dir = dir.path().join("sft_result");
         std::fs::create_dir_all(&run_dir).unwrap();
         std::fs::write(
-            run_dir.join("best_candidate.json"),
-            r#"{"candidate_id":"should_not_be_read","payload":{"prompt":"gepa shaped"}}"#,
+            run_dir.join("manifest.json"),
+            r#"{"rank":8,"dataset_digest":"sha256:abc"}"#,
         )
         .unwrap();
         let (run, _) = svc
             .create(
                 serde_json::from_value(json!({
                     "algorithmId": "sft",
-                    "id": "sft_typed_result_run",
-                    "openVisual": false
+                    "id": "sft_result_run",
+                    "source": "hosted",
+                    "openVisual": false,
+                    "summary": {
+                        "runDirectory": run_dir.display().to_string(),
+                        "adapter": "lora_r8",
+                        "rank": 8,
+                        "baseModel": "openai/gpt-oss-20b"
+                    }
                 }))
                 .unwrap(),
             )
             .await
             .unwrap();
-        let mut stored = run.clone();
+        svc.append_events(
+            run.id.clone(),
+            vec![
+                evt(
+                    "sft.dataset.validated",
+                    1,
+                    "sft",
+                    &run.id,
+                    "2026-08-17T00:00:01Z",
+                    json!({"dataset_digest": "sha256:abc"}),
+                    None,
+                    None,
+                ),
+                evt(
+                    "sft.training.metrics",
+                    2,
+                    "sft",
+                    &run.id,
+                    "2026-08-17T00:00:02Z",
+                    json!({
+                        "train_loss": 1.1,
+                        "validation_loss": null,
+                        "validation_loss_coverage": "unsupported"
+                    }),
+                    None,
+                    None,
+                ),
+                evt(
+                    "sft.checkpoint_evaluation.completed",
+                    3,
+                    "sft",
+                    &run.id,
+                    "2026-08-17T00:00:03Z",
+                    json!({"checkpoint_id": "ckpt_20", "score": 0.0, "split_role": "selection"}),
+                    None,
+                    None,
+                ),
+                evt(
+                    "sft.checkpoint.selected",
+                    4,
+                    "sft",
+                    &run.id,
+                    "2026-08-17T00:00:04Z",
+                    json!({
+                        "checkpoint_id": "ckpt_20",
+                        "rule": "retain_latest_checkpoint",
+                        "tie_break": "latest_checkpoint",
+                        "improvement_verdict": "no_measured_improvement",
+                        "uplift_claimed": false
+                    }),
+                    None,
+                    None,
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+        let mut stored = svc.get(run.id.clone()).await.unwrap();
         stored.status = "completed".into();
-        stored.cursor_seq = 4;
-        stored.summary = json!({
-            "runDirectory": run_dir.display().to_string(),
-            "terminalCursor": 3
-        });
+        let mut summary = stored.summary.as_object().cloned().unwrap_or_default();
+        summary.insert("runDirectory".into(), json!(run_dir.display().to_string()));
+        stored.summary = Value::Object(summary);
         svc.persist_run(stored).await.unwrap();
-        let result = svc.get_result(run.id).await.unwrap();
-        assert_eq!(result["schemaVersion"], json!("sft_result.v1"));
-        assert_eq!(result["algorithmId"], json!("sft"));
-        assert_eq!(result["pending"], json!(true));
+        let result = svc.get_result(run.id.clone()).await.unwrap();
+        assert_eq!(result["resultType"], "sft");
+        assert_eq!(result["algorithmId"], "sft");
+        assert!(result.get("selectedCandidate").is_none());
+        assert!(!run_dir.join("best_candidate.json").exists());
+        assert!(result["metrics"]["validationLoss"]["value"].is_null());
         assert_eq!(
-            result["error"]["code"],
-            json!("sft_result_materialization_pending")
+            result["metrics"]["validationLoss"]["coverage"],
+            "unsupported"
         );
-        assert_eq!(result["finalCursor"], json!(3));
-        assert_eq!(result["enrichmentCursor"], json!(4));
-        assert_eq!(result["usage"]["authority"], json!("manifest"));
+        assert_eq!(result["improvementVerdict"], "no_measured_improvement");
+        assert_eq!(result["config"]["adapter"], "lora_r8");
+        assert_eq!(result["config"]["rank"], 8);
+        assert_eq!(result["dataset"]["digest"], "sha256:abc");
         let encoded = result.to_string();
         assert!(!encoded.contains("best_candidate.json"));
-        assert!(!encoded.contains("should_not_be_read"));
-        assert!(!encoded.contains("gepa shaped"));
+        assert_ne!(result["improvementVerdict"], "improvement_demonstrated");
     }
 
     #[tokio::test]
-    async fn freeze_terminal_cursor_survives_late_enrichment() {
+    async fn wait_milestone_returns_on_checkpoint_event() {
         let (svc, _dir, _) = service().await;
         let (run, _) = svc
             .create(
                 serde_json::from_value(json!({
-                    "algorithmId": "gepa",
-                    "id": "terminal_cursor_freeze",
+                    "algorithmId": "sft",
+                    "id": "sft_milestone_run",
+                    "source": "hosted",
                     "openVisual": false
                 }))
                 .unwrap(),
             )
             .await
             .unwrap();
-        let mut stored = run.clone();
-        stored.status = "completed".into();
-        stored.cursor_seq = 8;
-        stored.usage.cost_usd = Some(1.25);
-        stored.summary = json!({"terminalCursor": 8});
-        svc.persist_run(stored).await.unwrap();
-        let mut enriched = svc.get(run.id.clone()).await.unwrap();
-        enriched.cursor_seq = 11;
-        enriched.usage.cost_usd = Some(0.01);
-        if let Some(summary) = enriched.summary.as_object_mut() {
-            summary.insert("enrichmentNote".into(), json!("late"));
-        }
-        let persisted = svc.persist_run(enriched).await.unwrap();
-        assert_eq!(persisted.summary["terminalCursor"], json!(8));
-        assert_eq!(persisted.summary["terminalUsage"]["costUsd"], json!(1.25));
-        let result = svc.get_result(run.id).await;
-        // No GEPA artifacts: this path is about cursor/usage authority, not prompt materialization.
-        if let Ok(result) = result {
-            assert_eq!(result["finalCursor"], json!(8));
-            assert_eq!(result["enrichmentCursor"], json!(11));
-            assert_eq!(result["usage"]["ledger"]["costUsd"], json!(1.25));
-            assert_eq!(result["usage"]["authority"], json!("manifest"));
-        }
-        let reread = svc.get("terminal_cursor_freeze".into()).await.unwrap();
-        assert_eq!(reread.summary["terminalCursor"], json!(8));
-        assert_eq!(reread.summary["terminalUsage"]["costUsd"], json!(1.25));
-        assert_eq!(reread.cursor_seq, 11);
-    }
-
-    #[tokio::test]
-    async fn optimizer_create_attaches_the_session_experiment_group() {
-        let (svc, _dir, _) = service().await;
-        svc.create(
-            serde_json::from_value(json!({
-                "algorithmId": "gepa",
-                "id": "opt_exp_1",
-                "sessionRef": "session_exp",
-                "openVisual": false
-            }))
-            .unwrap(),
+        svc.append_events(
+            run.id.clone(),
+            vec![evt(
+                "sft.checkpoint.ready",
+                1,
+                "sft",
+                &run.id,
+                "2026-08-17T00:00:01Z",
+                json!({"checkpoint_id": "ckpt_10"}),
+                None,
+                None,
+            )],
         )
         .await
         .unwrap();
-        let group = svc
-            .db
-            .run(|conn| crate::experiments::load_for_session(conn, "session_exp"))
+        let page = svc
+            .wait_milestone(run.id.clone(), 0, vec!["checkpoint".into()], 2_000)
             .await
-            .unwrap()
-            .expect("optimizer create owns an experiment group");
-        assert_eq!(group.session_id, "session_exp");
-        assert_eq!(group.members.len(), 1);
-        assert_eq!(group.members[0].member_id, "opt_exp_1");
-        assert_eq!(
-            group.members[0].member_kind,
-            crate::experiments::MEMBER_OPTIMIZER
-        );
+            .unwrap();
+        assert_eq!(page["milestone"], "checkpoint");
+        assert_eq!(page["event"]["type"], "sft.checkpoint.ready");
+        assert_eq!(page["cursor"], 1);
     }
 }

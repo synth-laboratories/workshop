@@ -24,7 +24,7 @@
     },
     "summary": {
       "baseModel": "openai/gpt-oss-20b",
-      "adapter": "lora_r16",
+      "adapter": "lora_r8",
       "backend": "fake",
       "promotedCheckpointId": "ckpt_100",
       "step": 100,
@@ -51,7 +51,7 @@
       "snapshot": {
         "summary": {
           "baseModel": "openai/gpt-oss-20b",
-          "adapter": "lora_r16",
+          "adapter": "lora_r8",
           "backend": "fake"
         }
       }
@@ -335,7 +335,7 @@
         "status": "ready",
         "raw": {
           "baseModel": "openai/gpt-oss-20b",
-          "adapter": "lora_r16",
+          "adapter": "lora_r8",
           "checkpointId": "ckpt_100",
           "digest": "sha256:model100"
         }

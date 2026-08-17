@@ -1922,10 +1922,7 @@ fn materialize_config(
                 "/usr/bin/env",
                 "BANKING77_TRAIN_SAMPLE=50",
                 "BANKING77_TEST_SAMPLE=50",
-                &format!(
-                    "BANKING77_POLICY_CONCURRENCY={}",
-                    search.policy_concurrency
-                ),
+                &format!("BANKING77_POLICY_CONCURRENCY={}", search.policy_concurrency),
                 "BANKING77_POLICY_TIMEOUT_SECONDS=20",
                 "BANKING77_ROLLOUT_TIMEOUT_SECONDS=25",
                 &format!("BANKING77_STREAM_ROOT={}", container_stream_root.display()),
@@ -2568,7 +2565,10 @@ namespace = "base"
         assert_eq!(plan.pipeline_mode, "async_pipelined");
         let limits = plan.limits_json();
         assert_eq!(limits["pipeline"]["mode"], json!("async_pipelined"));
-        assert_eq!(limits["pipeline"]["adaptiveRolloutConcurrency"], json!(true));
+        assert_eq!(
+            limits["pipeline"]["adaptiveRolloutConcurrency"],
+            json!(true)
+        );
         assert!(RecipeSearchPlan::resolve(Some(&OptimizerSearchOverrides {
             proposals_per_generation: Some(11),
             ..Default::default()

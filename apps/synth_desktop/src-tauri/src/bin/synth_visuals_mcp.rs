@@ -364,7 +364,10 @@ mod tests {
         assert_eq!(labeled["visuals"][0]["foreign"], json!(false));
         assert_eq!(labeled["visuals"][1]["owned"], json!(false));
         assert_eq!(labeled["visuals"][1]["foreign"], json!(true));
-        assert_eq!(labeled["visuals"][1]["ownershipLabel"], json!("from another task"));
+        assert_eq!(
+            labeled["visuals"][1]["ownershipLabel"],
+            json!("from another task")
+        );
         assert_eq!(labeled["visuals"][1]["discovery"], json!("instance"));
     }
 

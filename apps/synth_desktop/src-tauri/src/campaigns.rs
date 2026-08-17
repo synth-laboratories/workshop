@@ -391,8 +391,10 @@ fn aggregate(terminal: &[&CampaignRolloutPlan]) -> Value {
         if let Some(latency) = number(record, &["/duration_ms", "/summary/duration_ms"]) {
             latencies.push(latency);
         }
-        if let Some(calls) = number(record, &["/model_calls", "/summary/model_calls", "/usage/requests"])
-        {
+        if let Some(calls) = number(
+            record,
+            &["/model_calls", "/summary/model_calls", "/usage/requests"],
+        ) {
             calls_total += calls;
             calls_reported += 1;
         }
@@ -419,11 +421,7 @@ fn aggregate(terminal: &[&CampaignRolloutPlan]) -> Value {
             let label = name
                 .as_str()
                 .map(str::to_owned)
-                .or_else(|| {
-                    name.get("name")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
+                .or_else(|| name.get("name").and_then(Value::as_str).map(str::to_owned))
                 .unwrap_or_else(|| "unnamed".into());
             *achievements.entry(label).or_insert(0) += 1;
         }
@@ -572,7 +570,10 @@ mod tests {
         assert_eq!(result["aggregate"]["reward"]["n"], 10);
         assert_eq!(result["aggregate"]["reward"]["min"], 0.1);
         assert_eq!(result["aggregate"]["reward"]["max"], 1.0);
-        assert_eq!(result["aggregate"]["achievementRates"]["collect_wood"]["count"], 10);
+        assert_eq!(
+            result["aggregate"]["achievementRates"]["collect_wood"]["count"],
+            10
+        );
         assert_eq!(result["aggregate"]["terminationReasons"]["max_steps"], 10);
         assert_eq!(result["aggregate"]["coverage"]["usageReportedBy"], 10);
     }
@@ -682,7 +683,10 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("2 rollouts"));
-        assert_eq!(resolve_seeds(None, Some(201), 3).unwrap(), vec![201, 202, 203]);
+        assert_eq!(
+            resolve_seeds(None, Some(201), 3).unwrap(),
+            vec![201, 202, 203]
+        );
     }
 
     #[test]

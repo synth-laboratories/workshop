@@ -104,7 +104,7 @@ fn request_inner(
 
 fn tools() -> Value {
     json!({"tools":[
-        {"name":"optimizer_manage","description":"Operate Synth optimizer runs. Load the use-synth-optimizers skill. Paid/plugin recipes enforce prepare, open_visual, await_ready, start. Local eval recipes enforce stage_eval_candidates, start_recipe. Never install the plugin from this tool.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_algorithms","list_recipes","prepare","open_visual","await_ready","start","start_recipe","stage_eval_candidates","list_runs","get_run","watch_run","get_state","get_result","reconcile_cloud","cancel_run","cancel","pause_run","resume_run","finalize"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+        {"name":"optimizer_manage","description":"Operate Synth optimizer runs. Load the use-synth-optimizers skill. Paid/plugin recipes enforce prepare, open_visual, await_ready, start. Local eval recipes enforce stage_eval_candidates, start_recipe. Never install the plugin from this tool.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_algorithms","list_recipes","prepare","open_visual","await_ready","start","start_recipe","stage_eval_candidates","list_runs","get_run","watch_run","wait_milestone","get_state","get_result","reconcile_cloud","cancel_run","cancel","pause_run","resume_run","finalize"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
         {"name":"optimizer_list_algorithms","description":"List optimizer algorithms and availability","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"optimizer_list_recipes","description":"List product-owned bounded optimizer recipes and their hard limits","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"optimizer_start_recipe","description":"Prepare an allowlisted paid/plugin recipe. For local eval.* recipes, start the fixed pinned recipe with a candidate_set_id staged by optimizer_stage_eval_candidates.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.smoke.v1","gepa.banking77.luna.v1","gepa.banking77.sol.v1","gepa.craftax.smoke.v1","gelo.craftax.hosted.v1","sft.craftax.gpt-oss.smoke.v1","sft.hosted.fixture.v1","sft.craftax.nemotron-nano.tinker.v1","sft.banking77.nemotron-lightning.tinker.v1","eval.fixture.policy-smoke.v1","eval.craftax.code-policy.smoke.v1","eval.gamebench.craftax-code-policy.confirm.v1","eval.craftax.llm-policy.smoke.v1","eval.gamebench.llm-policy.confirm.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string","description":"Required by eval.* recipes. An id returned by optimizer_stage_eval_candidates, never a path."}},"required":["recipe_id"],"additionalProperties":false}},
@@ -164,6 +164,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             "list_runs" => "optimizer_list_runs",
             "get_run" => "optimizer_get_run",
             "watch_run" => "optimizer_watch_run",
+            "wait_milestone" => "optimizer_wait_milestone",
             "get_state" => "optimizer_get_state",
             "reconcile_cloud" => "optimizer_reconcile_cloud",
             "cancel_run" | "cancel" => "optimizer_cancel_run",
@@ -311,6 +312,16 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 "limit": args.get("limit")
             })),
         ),
+        "optimizer_wait_milestone" => request(
+            "GET",
+            &format!("/v1/optimizers/runs/{}/milestone", id()?),
+            Some(json!({
+                "after_seq": args.get("after_seq").cloned().unwrap_or(json!(0)),
+                "kinds": args.get("kinds"),
+                "kind": args.get("kind"),
+                "timeout_ms": args.get("timeout_ms").cloned().unwrap_or(json!(30_000))
+            })),
+        ),
         "optimizer_cancel_run" => request(
             "POST",
             &format!("/v1/optimizers/runs/{}/cancel", id()?),
@@ -367,6 +378,7 @@ mod tests {
         assert!(encoded.contains("dataset_shard"));
         assert!(encoded.contains("optimizer_pause_run"));
         assert!(encoded.contains("optimizer_resume_run"));
+        assert!(encoded.contains("wait_milestone"));
         assert!(!encoded.contains("api_key"));
     }
 

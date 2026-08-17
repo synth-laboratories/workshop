@@ -1457,11 +1457,9 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
         let stamped: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM schema_migrations",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(stamped, LATEST_VERSION);
         let distinct: i64 = conn

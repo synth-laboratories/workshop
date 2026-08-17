@@ -1786,7 +1786,11 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            assert_eq!(listed.len(), 1, "{session} must not see another task's visuals");
+            assert_eq!(
+                listed.len(),
+                1,
+                "{session} must not see another task's visuals"
+            );
             assert_eq!(listed[0].id, format!("vis_{index}"));
             assert_eq!(listed[0].session_id.as_deref(), Some(session.as_str()));
         }

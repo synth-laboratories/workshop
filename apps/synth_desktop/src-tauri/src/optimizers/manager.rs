@@ -624,7 +624,11 @@ impl OptimizerManager {
                 .await
                 .as_ref()
                 .map(|runtime| runtime.version.clone());
-            if occupied > 0 && running.as_deref().is_some_and(|version| version != selected) {
+            if occupied > 0
+                && running
+                    .as_deref()
+                    .is_some_and(|version| version != selected)
+            {
                 let running = running.unwrap_or_else(|| "unknown".into());
                 bail!(
                     "refusing to start Optimizers `{selected}` while {occupied} run(s) are active on `{running}`"
@@ -1241,9 +1245,8 @@ fn acquire_service_lock(home: &Path) -> Result<fs::File> {
         .write(true)
         .open(&path)
         .with_context(|| format!("open optimizer service lock {}", path.display()))?;
-    file.try_lock_exclusive().map_err(|error| {
-        anyhow!("optimizer service.lock is held by another process ({error})")
-    })?;
+    file.try_lock_exclusive()
+        .map_err(|error| anyhow!("optimizer service.lock is held by another process ({error})"))?;
     Ok(file)
 }
 
@@ -3591,10 +3594,10 @@ mod tests {
         // Occupancy is the guard. Do not call release_gepa_recipe / abort_runtime
         // while this sentinel is present: pid 1 would become kill(-1) and
         // signal every process the test can reach.
-        mgr.gepa_workers.lock().await.insert(
-            "gepa_live".into(),
-            GepaWorkerState::Starting,
-        );
+        mgr.gepa_workers
+            .lock()
+            .await
+            .insert("gepa_live".into(), GepaWorkerState::Starting);
 
         let select = mgr.select_version(DEV_SIDECAR_VERSION).unwrap_err();
         assert!(
@@ -3653,8 +3656,7 @@ mod tests {
             "running sidecar must hold service.lock exclusively"
         );
         let _ = mgr.stop().await;
-        FileExt::try_lock_exclusive(&contender)
-            .expect("service.lock must be released after stop");
+        FileExt::try_lock_exclusive(&contender).expect("service.lock must be released after stop");
     }
 
     #[test]

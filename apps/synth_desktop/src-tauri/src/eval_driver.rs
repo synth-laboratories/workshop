@@ -1493,10 +1493,7 @@ async fn run_policy_rollout(
     // A policy-owned container may acknowledge the immutable rollout and run it
     // asynchronously. Persist provenance as soon as start is accepted so a
     // timeout or Desktop restart never makes the launched rollout undiscoverable.
-    let wait = body
-        .get("wait")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
+    let wait = body.get("wait").and_then(Value::as_bool).unwrap_or(true);
     core.update_container_last_rollout(container_id.to_string(), rollout_id.clone())
         .await?;
     let accepted_receipt = || {
