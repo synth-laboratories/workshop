@@ -250,8 +250,12 @@ export function projectEval(input: AdapterInput, projected: ProjectedState): Run
 	const failures = frozen?.failed ?? tally.failed;
 	const workEvidence = evidenceOf(input, state.trials.length + state.plannedTrials, "trial");
 	// The count is omitted, not zeroed, when nothing proves it. `0 / 10 trials`
-	// on a campaign that ran all ten is a worse answer than saying so.
-	const measured = workEvidence.state === "present";
+	// on a campaign that ran all ten is a worse answer than saying so — and a
+	// campaign that has not declared a plan yet has no denominator to count
+	// against either, so it reports neither rather than a bare `0 trials`.
+	const measured =
+		workEvidence.state === "present" &&
+		(frozen != null || state.plannedTrials > 0 || state.trials.length > 0);
 	const work: RunProgressWork = measured
 		? {
 				completed: settled,
