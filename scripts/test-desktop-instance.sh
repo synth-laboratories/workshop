@@ -96,10 +96,16 @@ jq -e '
   .version == "0.4.0" and
   (.bundle.icon | length) == 2 and
   .bundle.targets == ["app"] and
+  (.bundle.resources | to_entries | map(.value) | sort) == [
+    "cookbooks/optimizers/gepa/banking77_container",
+    "cookbooks/optimizers/gepa/crafter_container"
+  ] and
   .bundle.macOS.minimumSystemVersion == "14.0"
 ' \
   "$TEST_ROOT/instances/v04/alpha/generated/tauri.instance.json" >/dev/null
 jq -e '.bundle.macOS.minimumSystemVersion == "14.0"' \
+  "$ROOT/apps/synth_desktop/src-tauri/tauri.conf.json" >/dev/null
+jq -e '.bundle.resources["generated-resources/cookbooks"] == "cookbooks"' \
   "$ROOT/apps/synth_desktop/src-tauri/tauri.conf.json" >/dev/null
 
 # Local CUA builds must be passwordless by default. Certificate-backed

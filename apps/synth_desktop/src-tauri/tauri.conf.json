@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run frontend:dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "npm run frontend:build",
+    "beforeBuildCommand": "npm run package:prepare",
     "frontendDist": "../dist"
   },
   "app": {
@@ -46,7 +46,8 @@
       "../../../visuals/runtime": "visuals/runtime",
       "../../../visuals/ambient.d.ts": "visuals/ambient.d.ts",
       "../../../visuals/package.json": "visuals/package.json",
-      "../../../visuals/tsconfig.json": "visuals/tsconfig.json"
+      "../../../visuals/tsconfig.json": "visuals/tsconfig.json",
+      "generated-resources/cookbooks": "cookbooks"
     }
   }
 }

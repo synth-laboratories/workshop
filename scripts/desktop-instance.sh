@@ -3,6 +3,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_SIBLING_ROOT="$(dirname "$ROOT")"
+GIT_COMMON_DIR="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [[ -n "$GIT_COMMON_DIR" ]]; then
+  PRIMARY_REPO_SIBLING_ROOT="$(dirname "$(dirname "$GIT_COMMON_DIR")")"
+  if [[ -d "$PRIMARY_REPO_SIBLING_ROOT/synth-cookbooks-public" ]]; then
+    REPO_SIBLING_ROOT="$PRIMARY_REPO_SIBLING_ROOT"
+  fi
+fi
 COMMAND="${1:-dev}"
 NAME="${2:-${SYNTH_DESKTOP_INSTANCE:-codex}}"
 RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.4}"
@@ -207,6 +215,10 @@ EOF
   "bundle": {
     "targets": ["app"],
     "icon": ["$ICON_PNG", "$ICON_ICNS"],
+    "resources": {
+      "$INSTANCE_ROOT/runtime/gepa/banking77_container": "cookbooks/optimizers/gepa/banking77_container",
+      "$INSTANCE_ROOT/runtime/gepa/crafter_container": "cookbooks/optimizers/gepa/crafter_container"
+    },
     "macOS": {
       "minimumSystemVersion": "14.0"
     }
@@ -379,14 +391,14 @@ status_instance() {
 stage_gepa_runtime() {
   local runtime_root="$INSTANCE_ROOT/runtime/gepa"
   local banking_target="$runtime_root/banking77_container"
-  local banking_source="${SYNTH_BANKING77_GEPA_COOKBOOK_SOURCE:-$(dirname "$ROOT")/synth-cookbooks-public/cookbooks/optimizers/gepa/banking77_container}"
+  local banking_source="${SYNTH_BANKING77_GEPA_COOKBOOK_SOURCE:-$REPO_SIBLING_ROOT/synth-cookbooks-public/cookbooks/optimizers/gepa/banking77_container}"
   local craftax_target="$runtime_root/crafter_container"
-  local craftax_source="${SYNTH_CRAFTAX_GEPA_COOKBOOK_SOURCE:-$(dirname "$ROOT")/synth-cookbooks-public/cookbooks/optimizers/gepa/crafter_container}"
+  local craftax_source="${SYNTH_CRAFTAX_GEPA_COOKBOOK_SOURCE:-$REPO_SIBLING_ROOT/synth-cookbooks-public/cookbooks/optimizers/gepa/crafter_container}"
   local optimizer_target="$runtime_root/optimizer-project"
-  local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-$(dirname "$ROOT")/optimizers-g1}"
+  local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-$REPO_SIBLING_ROOT/optimizers-g1}"
   local use_local_optimizer="${SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0}"
   local secret_target="$DATA_ROOT/gepa-secret.env"
-  local secret_source="${SYNTH_GEPA_SECRET_ENV_SOURCE:-${SYNTH_BANKING77_SECRET_ENV_SOURCE:-$(dirname "$ROOT")/synth-ai/.env}}"
+  local secret_source="${SYNTH_GEPA_SECRET_ENV_SOURCE:-${SYNTH_BANKING77_SECRET_ENV_SOURCE:-$REPO_SIBLING_ROOT/synth-ai/.env}}"
 
   if [[ ! -f "$banking_source/gepa.toml" || ! -f "$banking_source/synth_service_app.py" ]]; then
     echo "[desktop:$NAME] ERROR Banking77 GEPA cookbook source is unavailable: $banking_source" >&2
