@@ -374,11 +374,32 @@ Phase 5 is the next unblocked lane: `ApprovalKind::ComputerUse` has a type and a
 policy but no producer, so the allowlist, terminal-class denial, and lock
 pause/resume can all be written and tested against it without a helper binary.
 
-Two things are unknown in a way no amount of planning resolves, and both are cheap
-to answer:
+### Open question 1 is answered: yes
 
-1. **Does a Tauri/WebKit window expose a usable AX tree?** If it does not, G9 —
-   pointing this at Workshop's own CUA gate — is unreachable, and driving third-party
-   apps stays fine. Worth knowing before Phase 2, not after.
-2. **Do TCC grants actually survive a Developer ID rebuild in our setup?** G1 is
-   release-blocking and asserts they do. Verify on the first signed build.
+Measured 2026-08-16 against a running Workshop instance, using the helper built
+on this branch:
+
+```
+elementCount: 1641 · truncated: false
+[1] AXWindow  "Synth Workshop v0.4 · gepa56-confirm"     actions=[AXRaise]
+[3] AXWebArea "Synth Workshop v0.4 · gepa56-confirm"     actions=[AXShowMenu,AXScrollToVisible]
+[6] AXButton  "New conversation"                          actions=[AXPress,…]
+[17] AXButton "Plugins"                                   actions=[AXPress,…]
+[24] AXPopUpButton "Synth Dev Signed in"                   actions=[AXPress,…]
+```
+
+A Tauri/WebKit window exposes a rich, element-indexed, actionable tree: the
+`AXWebArea` is traversed, controls carry their accessible names, and buttons
+expose `AXPress`. **G9 is reachable** — Workshop can be pointed at its own CUA
+gate. This also means the element-index-first rule of §5 is workable against our
+own UI, not only against native AppKit apps.
+
+Not yet measured: driving that tree. Reading is non-mutating; pressing a control
+in a live session is not, and was not done.
+
+### Still unknown
+
+**Do TCC grants survive a Developer ID rebuild in our setup?** G1 is
+release-blocking and asserts they do. This cannot be answered without a
+Developer ID, so it is Phase 0's first receipt: grant Accessibility, rebuild,
+reinstall, confirm the grant is still there and that `CDHash` is unchanged.

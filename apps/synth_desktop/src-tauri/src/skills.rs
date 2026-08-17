@@ -40,6 +40,10 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
         content: include_str!("../../skills/use-synth-plugins/SKILL.md"),
     },
     BundledSkill {
+        id: "use-computer-use",
+        content: include_str!("../../skills/use-computer-use/SKILL.md"),
+    },
+    BundledSkill {
         id: "use-synth-session",
         content: include_str!("../../skills/use-synth-session/SKILL.md"),
     },
