@@ -566,6 +566,11 @@ impl VisualRegistry {
                     "revision": record.current_revision,
                     "title": record.title,
                     "templateId": record.template_id,
+                    // Who *owns* this visual, which is not who opened it. The
+                    // registry is instance-global: without this, a chat that
+                    // displayed another chat's visual could not be told apart
+                    // from the chat that authored it.
+                    "ownerSessionId": record.session_id,
                 }),
                 remote_sequence: None,
                 command_id: None,

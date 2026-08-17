@@ -476,6 +476,27 @@ fn tools() -> Value {
     result
 }
 
+/// The session this MCP server was spawned for, which is the only session it
+/// may author into. Desktop writes `SYNTH_SESSION_ID` into each per-conversation
+/// server config; without it a created visual would have no owner, and an
+/// ownerless visual in an instance-global registry is adoptable by any chat.
+fn require_session_identity(session_env: &Option<String>, action: &str) -> Result<String, String> {
+    session_env
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            json!({
+                "code": "visual_session_identity_missing",
+                "error": format!("this visuals server has no bound session, so it cannot {action}"),
+                "retryable": false,
+                "remediation": "Chat-created visuals are owned by their conversation. Start this MCP server from a Desktop session so SYNTH_SESSION_ID is bound."
+            })
+            .to_string()
+        })
+}
+
 fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     let session_env = env::var("SYNTH_SESSION_ID").ok();
     match name {
@@ -501,12 +522,17 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             request("GET", &format!("/v1/visuals/{id}"), None)
         }
         "visual_create" | "visual_create_from_template" => {
+            // Ownership is bound by the host, not claimed by the caller. An
+            // agent-supplied `session_id` would let one chat author outputs
+            // into another chat's rail, and an unowned visual lands in an
+            // instance-global registry where every chat can adopt it.
+            let session_id = require_session_identity(&session_env, "create a visual")?;
             let body = json!({
                 "templateId": args.get("template_id"),
                 "title": args.get("title"),
                 "bindings": args.get("props").or_else(|| args.get("bindings")).cloned().unwrap_or(json!({})),
                 "id": args.get("instance_id"),
-                "sessionId": args.get("session_id").cloned().or_else(|| session_env.clone().map(Value::String)),
+                "sessionId": session_id,
                 "sourceAgentId": "mcp",
                 "content": args.get("content"),
                 "metadata": {
@@ -726,10 +752,15 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .get("visual_id")
                 .and_then(Value::as_str)
                 .ok_or("visual_id required")?;
+            // A fork is the explicit way to take another chat's visual as your
+            // own work, so the copy is owned by *this* session and keeps a
+            // record of what it came from. Adopting the original silently is
+            // what this replaces.
+            let session_id = require_session_identity(&session_env, "fork a visual")?;
             request(
                 "POST",
                 &format!("/v1/visuals/{id}/fork"),
-                Some(json!({"title": args.get("title")})),
+                Some(json!({"title": args.get("title"), "sessionId": session_id})),
             )
         }
         "visual_archive" => {
