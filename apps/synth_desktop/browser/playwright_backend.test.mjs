@@ -249,11 +249,16 @@ test("an enabled Chrome claim preserves the exact user tab", async (context) => 
   const endpoint = `http://127.0.0.1:${port}`;
   const client = backend(origin, root, undefined, { SYNTH_BROWSER_ENABLE_CHROME_CLAIM: "1" });
   context.after(async () => {
-    client.child.kill("SIGTERM");
+    const exited = (child) => child.exitCode !== null || child.signalCode !== null
+      ? Promise.resolve()
+      : new Promise((resolve) => child.once("exit", resolve));
+    client.child.stdin.end();
+    await exited(client.child);
     chrome.kill("SIGTERM");
+    await exited(chrome);
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   const claimed = await client.call("browser_claim_chrome", { cdp_endpoint: endpoint, url_contains: origin });

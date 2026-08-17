@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { performance } from "node:perf_hooks";
@@ -29,14 +30,18 @@ const html = `<!doctype html><html><body>
 <label>Password <input type="password" aria-label="Password" value="agent-must-never-see-this"></label>
 <button id="apply">Apply profile</button>
 <button id="modal">Open modal</button>
+<button id="native-dialog">Open native dialog</button>
 <button id="delete">Delete project</button>
+<label>Attachment <input id="attachment" type="file" aria-label="Attachment"></label>
 <a href="http://example.invalid/escape">Unapproved destination</a>
 <a href="/download" download>Download report</a>
 <script>
 document.querySelector('#persisted').textContent = localStorage.getItem('displayName') || 'No persisted value';
 document.querySelector('#apply').onclick = () => { localStorage.setItem('displayName', document.querySelector('[aria-label="Display name"]').value); document.querySelector('#persisted').textContent = localStorage.getItem('displayName'); };
 document.querySelector('#modal').onclick = () => { const el=document.createElement('section'); el.setAttribute('role','dialog'); el.innerHTML='<h2>Mutation complete</h2><button>Dismiss modal</button>'; document.body.append(el); };
+document.querySelector('#native-dialog').onclick = () => alert('Workshop native dialog');
 document.querySelector('#delete').onclick = () => { document.body.dataset.deleted = 'true'; };
+document.querySelector('#attachment').onchange = () => { const el=document.createElement('h2'); el.textContent='Upload executed'; document.body.append(el); };
 </script></body></html>`;
 
 const server = http.createServer((request, response) => {
@@ -109,6 +114,9 @@ function spawnSyncPs() {
 
 const report = { schema: "workshop.browser-full-path-acceptance.v1", origin };
 const profileName = `full-path-${Date.now()}`;
+const uploadRoot = fs.mkdtempSync(path.join(os.tmpdir(), "workshop-browser-upload-e2e-"));
+const uploadFixture = path.join(uploadRoot, "explicit-upload.txt");
+fs.writeFileSync(uploadFixture, "Workshop upload fixture\n", { mode: 0o600 });
 let sessionId;
 try {
   const initialized = await rpc("initialize");
@@ -148,6 +156,20 @@ try {
   await tool("browser_click", { session_id: sessionId, tab_id: tabId, target: { ref: modalRef } }, /stale_ref/);
   const mutated = await tool("browser_query", { session_id: sessionId, tab_id: tabId, role: "heading", name: "Mutation complete" });
   assert(mutated.result.text.includes("Mutation complete"), JSON.stringify(mutated));
+
+  await tool("browser_click", { session_id: sessionId, tab_id: tabId, target: { locator: { role: "button", name: "Open native dialog", exact: true } } });
+  const dialogs = await tool("browser_list_dialogs", { session_id: sessionId, tab_id: tabId });
+  assert.equal(dialogs.result.dialogs.length, 1);
+  assert.equal(dialogs.result.dialogs[0].message, "Workshop native dialog");
+  await tool("browser_handle_dialog", { session_id: sessionId, tab_id: tabId, dialog_id: dialogs.result.dialogs[0].dialogId, accept: false });
+  const dismissedDialogs = await tool("browser_list_dialogs", { session_id: sessionId, tab_id: tabId });
+  assert.equal(dismissedDialogs.result.dialogs.length, 0);
+
+  const upload = await tool("browser_query", { session_id: sessionId, tab_id: tabId, name: "Attachment" });
+  const uploadRef = { session_id: sessionId, tab_id: tabId, document_revision: upload.meta.documentRevision, element_id: "e1" };
+  await tool("browser_upload", { session_id: sessionId, tab_id: tabId, target: { ref: uploadRef }, file_paths: [uploadFixture] }, /require an agent session/);
+  const uploadExecuted = await tool("browser_query", { session_id: sessionId, tab_id: tabId, role: "heading", name: "Upload executed" });
+  assert.equal(uploadExecuted.result.elementCount, 0, "unapproved upload executed");
 
   await tool("browser_click", { session_id: sessionId, tab_id: tabId, target: { locator: { role: "button", name: "Delete project", exact: true } } }, /require an agent session/);
   const stillPresent = await tool("browser_query", { session_id: sessionId, tab_id: tabId, role: "button", name: "Delete project" });
@@ -204,7 +226,8 @@ try {
 
   report.protocolVersion = snapshot.protocolVersion;
   report.snapshot = { chars: snapshot.result.text.length, truncated: snapshot.meta.truncated };
-  report.security = { passwordRedacted: true, consequentialActionRefused: true, crossOriginBlocked: true, auditRedacted: true };
+  report.security = { passwordRedacted: true, consequentialActionRefused: true, uploadRefused: true, crossOriginBlocked: true, auditRedacted: true };
+  report.dialogs = { dismissed: true, pendingAfterDismiss: 0 };
   report.profilePersistence = true;
   report.downloadAndScreenshot = true;
   report.passed = true;
@@ -214,4 +237,5 @@ try {
   child.kill("SIGTERM");
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
+  fs.rmSync(uploadRoot, { recursive: true, force: true });
 }

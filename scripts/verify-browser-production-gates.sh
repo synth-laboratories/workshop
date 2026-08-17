@@ -100,10 +100,21 @@ verify_updater() {
   verify_installed "$after"
   after_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$after/Contents/Info.plist")"
   [[ "$before_version" != "$after_version" ]] || die "updater did not change the app version"
+  "$before/Contents/Resources/browser/runtime/node/bin/node" "$ROOT/scripts/browser-profile-compat.mjs" \
+    --before "$before" --after "$after" --require-version-change
   jq -n --arg gate updater --arg beforeVersion "$before_version" --arg afterVersion "$after_version" \
     --arg sentinel "$sentinel" --arg sentinelSha256 "$expected" --arg checkedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     '{schema:"workshop.browser-production-gate.v1",gate:$gate,passed:true,beforeVersion:$beforeVersion,afterVersion:$afterVersion,profileSentinel:$sentinel,profileSentinelSha256:$sentinelSha256,checkedAt:$checkedAt}' > "$RECEIPT"
   note "updater/profile gate passed; receipt: $RECEIPT"
+}
+
+verify_profile_compat() {
+  local before="$2" after="$3"
+  [[ -d "$before" && -d "$after" ]] || die "profile compatibility needs before and after .app bundles"
+  verify_development_installed "$before"
+  verify_development_installed "$after"
+  "$before/Contents/Resources/browser/runtime/node/bin/node" "$ROOT/scripts/browser-profile-compat.mjs" \
+    --before "$before" --after "$after"
 }
 
 verify_helper_live() {
@@ -124,10 +135,11 @@ verify_helper_live() {
 case "$COMMAND" in
   installed) verify_installed "$APP" ;;
   development-installed) verify_development_installed "$APP" ;;
+  profile-compat) [[ $# -eq 3 ]] || die "usage: $0 profile-compat BEFORE.app AFTER.app"; verify_profile_compat "$@" ;;
   updater) [[ $# -eq 4 ]] || die "usage: $0 updater BEFORE.app AFTER.app PROFILE_SENTINEL"; verify_updater "$@" ;;
   helper-live) verify_helper_live "$@" ;;
   help|-h|--help)
-    echo "Usage: $0 installed [APP] | development-installed [APP] | updater BEFORE.app AFTER.app PROFILE_SENTINEL | helper-live [HELPER.app]"
+    echo "Usage: $0 installed [APP] | development-installed [APP] | profile-compat BEFORE.app AFTER.app | updater BEFORE.app AFTER.app PROFILE_SENTINEL | helper-live [HELPER.app]"
     ;;
   *) die "unknown command: $COMMAND" ;;
 esac
