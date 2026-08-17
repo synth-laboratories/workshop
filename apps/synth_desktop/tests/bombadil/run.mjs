@@ -434,7 +434,13 @@ const craftaxVisual = {
     schemaVersion: "synth.visual-bindings.v1",
     slots: [{
       slot: "stream", kind: "inline", schema: "synth.trace-stream-event.v1",
-      data: { events: [] }
+      data: {
+        events: [
+          { ts: "2026-08-13T13:58:00Z", kind: "stream.subscribed", payload: { "stream.id": "stream_craftax_w1", next_sequence: 1 } },
+          { ts: "2026-08-13T13:58:01Z", kind: "observation", payload: { text: "You see a tree.", step: 0 } },
+          { ts: "2026-08-13T13:58:02Z", kind: "action", payload: { name: "collect_wood", step: 1 } }
+        ]
+      }
     }]
   }
 };

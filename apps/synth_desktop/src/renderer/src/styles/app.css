@@ -3719,16 +3719,14 @@ html.sidebar-hidden .titlebar {
 
 /*
  * The transcript column carries the composer, whose usable floor is 320px plus
- * 24px gutters. Side panes therefore yield (min 0) while the transcript holds a
- * 380px floor: at a 960px window with a pane open the old split left a 293px
- * composer. Never give a side pane a hard min here — its min plus the
- * transcript floor overflows the workbench and breaks horizontal containment.
+ * 24px gutters. Certification reviews the compact visual at 320px, so the pane
+ * keeps that floor instead of collapsing to a blank sliver.
  */
 .workbench.with-visual {
 	grid-template-columns:
-		minmax(380px, 1fr)
+		minmax(320px, 1fr)
 		7px
-		minmax(260px, min(var(--visual-pane-width, 480px), calc(100% - 387px)));
+		minmax(320px, min(var(--visual-pane-width, 480px), calc(100% - 327px)));
 }
 .workbench.with-container { grid-template-columns: minmax(380px, 1fr) minmax(0, 420px); }
 .workbench.with-container.container-expanded { grid-template-columns: minmax(380px, .8fr) minmax(0, 1.2fr); }
@@ -4042,7 +4040,7 @@ html.sidebar-hidden .titlebar {
 }
 
 .visual-pane {
-	min-width: 0;
+	min-width: 320px;
 	min-height: 0;
 	display: flex;
 	flex-direction: column;
