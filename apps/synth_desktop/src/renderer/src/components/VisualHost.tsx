@@ -760,6 +760,13 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			data-visual-error={optimizerLoadError ?? (liveFailed ? traceResolution.error : undefined)}
 			data-visual-projection-source={selected.source ?? "live"}
 			data-visual-projection-stale={selected.stale ? "true" : undefined}
+			data-visual-subscription={connectionState}
+			data-visual-compute={transportTerminal ? "terminal" : "running"}
+			data-visual-review={artifact.status === "review" || artifact.status === "ready" ? artifact.status : "none"}
+			data-visual-readiness={artifact.status === "ready" ? "ready" : "waiting"}
+			data-visual-pinning={artifact.metadata?.pinned === true ? "pinned" : "unpinned"}
+			data-visual-sealing={artifact.metadata?.sealed === true || artifact.metadata?.seal ? "sealed" : "unsealed"}
+			data-visual-sharing={typeof artifact.metadata?.visibility === "string" ? String(artifact.metadata.visibility) : "private"}
 		>
 			{selected.stale ? (
 				<p className="visual-stale-projection" role="status" data-testid="visual-last-known-good">
@@ -908,9 +915,12 @@ class VisualErrorBoundary extends Component<
 	}
 	render() {
 		if (this.state.error) {
+			const presented = toPublicError(this.state.error, "Visual failed to render");
 			return <VisualInvalidState
 				title="Visual failed to render"
-				detail={this.state.error.message}
+				detail={presented.message}
+				code={presented.code}
+				remediation={presented.remediation}
 				onRetry={() => this.setState((current) => ({ error: null, retry: current.retry + 1 }))}
 			/>;
 		}

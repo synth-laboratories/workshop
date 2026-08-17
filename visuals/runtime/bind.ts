@@ -14,6 +14,7 @@ import type {
 } from "./types.ts";
 import { VISUAL_BINDINGS_SCHEMA_VERSION } from "./types.ts";
 import { assertDeclaredStreamSource, assertLiveEvalSlot } from "./liveStream.ts";
+import { presentRuntimeErrorMessage } from "./presentError.ts";
 
 export type BoundSlotPayload = {
   slot: string;
@@ -139,9 +140,7 @@ async function resolveBinding(
 }
 
 function describeError(err: unknown): string {
-  if (err instanceof Error && err.message.trim()) return err.message;
-  if (typeof err === "string" && err.trim()) return err;
-  return "Binding resolution failed";
+  return presentRuntimeErrorMessage(err, "Binding resolution failed");
 }
 
 /**

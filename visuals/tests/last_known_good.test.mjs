@@ -30,3 +30,18 @@ test("a failed live value never overwrites last-known-good", () => {
   assert.equal(rememberLastKnownGood(previous, { revision: 4, events: [] }, true), previous);
   assert.equal(rememberLastKnownGood(null, null, true), null);
 });
+
+test("retry remounts the same identity and revision and restores live when it recovers", () => {
+  const identity = { visualId: "vis_recover", revision: 7 };
+  const good = { ...identity, events: [1, 2, 3] };
+  let lastKnownGood = rememberLastKnownGood(null, good, false);
+  let selected = selectRenderedProjection({ live: null, lastKnownGood, liveFailed: true });
+  assert.equal(selected.source, "lastKnownGood");
+  assert.equal(selected.projection, good);
+  const recovered = { ...identity, events: [1, 2, 3, 4] };
+  lastKnownGood = rememberLastKnownGood(lastKnownGood, recovered, false);
+  selected = selectRenderedProjection({ live: recovered, lastKnownGood, liveFailed: false });
+  assert.equal(selected.source, "live");
+  assert.equal(selected.stale, false);
+  assert.equal(selected.projection, recovered);
+});
