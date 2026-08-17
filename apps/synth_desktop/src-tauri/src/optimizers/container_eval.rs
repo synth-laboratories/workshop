@@ -4,10 +4,10 @@
 //! `experiment.overview.v1` visual. They do not require the Optimizers sidecar.
 
 use super::{
+    events::OptimizerEventDraft,
     models::{
-        OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope,
-        OptimizerExecutionBinding, OptimizerRecipeRunRequest, OptimizerResourceRef,
-        OptimizerRunRecord, OPTIMIZER_EVENT_SCHEMA_VERSION,
+        OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding,
+        OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
     },
     recipes::{BANKING77_EVAL_BASELINE_RECIPE, HEALTHBENCH_EVAL_SMOKE_RECIPE},
     OptimizerService,
@@ -473,25 +473,19 @@ async fn run_eval_worker(
     Ok(())
 }
 
+/// The campaign plan and one queued event per planned trial, appended as one
+/// batch. The service allocates the sequence numbers: this worker never reads
+/// the run's cursor, so it cannot compute numbers a concurrent writer has
+/// already taken.
 async fn append_eval_plan(
     service: &OptimizerService,
     run_id: &str,
     spec: EvalSpec,
     examples: &[EvalExample],
 ) -> Result<()> {
-    let mut run = service.get(run_id.to_string()).await?;
-    let mut events = vec![OptimizerEventEnvelope {
-        schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-        event_id: Some(format!("{run_id}:eval:{}", run.cursor_seq + 1)),
-        event_type: "eval.run.planned".into(),
-        sequence_number: run.cursor_seq + 1,
-        occurred_at: chrono::Utc::now().to_rfc3339(),
-        optimizer_run_id: run_id.into(),
-        algorithm_id: EVAL_ALGORITHM_ID.into(),
-        level: None,
-        item: None,
-        delta: Map::new(),
-        snapshot: Some(Map::from_iter([
+    let mut drafts = vec![OptimizerEventDraft::new("eval.run.planned", EVAL_ALGORITHM_ID)
+        .idempotency_key("eval:plan")
+        .snapshot(Map::from_iter([
             ("parallelism".into(), json!(spec.concurrency)),
             ("global_capacity".into(), json!(spec.concurrency)),
             ("planned_trials".into(), json!(examples.len())),
@@ -499,42 +493,26 @@ async fn append_eval_plan(
                 "candidates".into(),
                 json!([{"id": spec.policy_config, "label": spec.policy_config}]),
             ),
-        ])),
-        usage_delta: None,
-        artifact_refs: vec![],
-        error: None,
-        raw: json!({ "source": "container_eval" }),
-    }];
+        ]))
+        .raw(json!({ "source": "container_eval" }))];
     for example in examples {
-        run.cursor_seq += 1;
-        events.push(OptimizerEventEnvelope {
-            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-            event_id: Some(format!("{run_id}:eval:{}", run.cursor_seq + 1)),
-            event_type: "eval.trial.queued".into(),
-            sequence_number: run.cursor_seq + 1,
-            occurred_at: chrono::Utc::now().to_rfc3339(),
-            optimizer_run_id: run_id.into(),
-            algorithm_id: EVAL_ALGORITHM_ID.into(),
-            level: None,
-            item: None,
-            delta: Map::from_iter([
-                (
-                    "trial_id".into(),
-                    json!(format!("trial:{}:{}", spec.family, example.seed)),
-                ),
-                ("candidate_id".into(), json!(spec.policy_config)),
-                ("seed".into(), json!(example.seed)),
-                ("scenario".into(), json!(spec.family)),
-                ("stage".into(), json!("screen")),
-            ]),
-            snapshot: None,
-            usage_delta: None,
-            artifact_refs: vec![],
-            error: None,
-            raw: json!({ "source": "container_eval" }),
-        });
+        let trial_id = format!("trial:{}:{}", spec.family, example.seed);
+        drafts.push(
+            OptimizerEventDraft::new("eval.trial.queued", EVAL_ALGORITHM_ID)
+                .idempotency_key(format!("eval:queued:{trial_id}"))
+                .delta(Map::from_iter([
+                    ("trial_id".into(), json!(trial_id)),
+                    ("candidate_id".into(), json!(spec.policy_config)),
+                    ("seed".into(), json!(example.seed)),
+                    ("scenario".into(), json!(spec.family)),
+                    ("stage".into(), json!("screen")),
+                ]))
+                .raw(json!({ "source": "container_eval" })),
+        );
     }
-    service.append_events(run_id.to_string(), events).await?;
+    service
+        .append_event_payloads(run_id.to_string(), drafts)
+        .await?;
     Ok(())
 }
 
@@ -544,42 +522,31 @@ async fn append_eval_terminal(
     spec: EvalSpec,
     record: &Value,
 ) -> Result<()> {
-    let run = service.get(run_id.to_string()).await?;
     let seed = record.get("seed").cloned().unwrap_or(Value::Null);
     let id = format!("trial:{}:{}", spec.family, seed);
     let valid = is_successful_eval_record(record);
+    let mut draft = OptimizerEventDraft::new("eval.trial.terminal", EVAL_ALGORITHM_ID)
+        // One settlement per trial. A retried append of the same trial is the
+        // same fact, not a second completion.
+        .idempotency_key(format!("eval:terminal:{id}"))
+        .item(json!({
+            "kind": "trial",
+            "id": id,
+            "status": if valid { "evaluated" } else { "failed" },
+            "valid": valid,
+            "candidateId": spec.policy_config,
+            "stage": "screen",
+            "seed": seed,
+            "scenario": spec.family,
+            "metrics": { "reward": record.get("reward").cloned().unwrap_or(Value::Null) },
+            "raw": record,
+        }))
+        .raw(json!({ "source": "container_eval" }));
+    if !valid {
+        draft = draft.level("warn");
+    }
     service
-        .append_events(
-            run_id.to_string(),
-            vec![OptimizerEventEnvelope {
-                schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                event_id: Some(format!("{run_id}:eval:{}", run.cursor_seq + 1)),
-                event_type: "eval.trial.terminal".into(),
-                sequence_number: run.cursor_seq + 1,
-                occurred_at: chrono::Utc::now().to_rfc3339(),
-                optimizer_run_id: run_id.into(),
-                algorithm_id: EVAL_ALGORITHM_ID.into(),
-                level: (!valid).then_some("warn".into()),
-                item: Some(json!({
-                    "kind": "trial",
-                    "id": id,
-                    "status": if valid { "evaluated" } else { "failed" },
-                    "valid": valid,
-                    "candidateId": spec.policy_config,
-                    "stage": "screen",
-                    "seed": seed,
-                    "scenario": spec.family,
-                    "metrics": { "reward": record.get("reward").cloned().unwrap_or(Value::Null) },
-                    "raw": record,
-                })),
-                delta: Map::new(),
-                snapshot: None,
-                usage_delta: None,
-                artifact_refs: vec![],
-                error: None,
-                raw: json!({ "source": "container_eval" }),
-            }],
-        )
+        .append_event_payloads(run_id.to_string(), vec![draft])
         .await?;
     Ok(())
 }
@@ -601,25 +568,14 @@ async fn append_eval_selection(
         "reason": "baseline-only evaluation; no promotion decision",
     });
     service
-        .append_events(
+        .append_event_payloads(
             run_id.to_string(),
-            vec![OptimizerEventEnvelope {
-                schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                event_id: Some(format!("{run_id}:eval:{}", run.cursor_seq + 1)),
-                event_type: "eval.selection.completed".into(),
-                sequence_number: run.cursor_seq + 1,
-                occurred_at: chrono::Utc::now().to_rfc3339(),
-                optimizer_run_id: run_id.into(),
-                algorithm_id: EVAL_ALGORITHM_ID.into(),
-                level: None,
-                item: None,
-                delta: Map::new(),
-                snapshot: Some(Map::from_iter([("selection".into(), selection)])),
-                usage_delta: None,
-                artifact_refs: vec![],
-                error: None,
-                raw: json!({ "source": "container_eval" }),
-            }],
+            vec![
+                OptimizerEventDraft::new("eval.selection.completed", EVAL_ALGORITHM_ID)
+                    .idempotency_key("eval:selection")
+                    .snapshot(Map::from_iter([("selection".into(), selection)]))
+                    .raw(json!({ "source": "container_eval" })),
+            ],
         )
         .await?;
     Ok(())
@@ -1158,27 +1114,16 @@ async fn append_status(
     event_type: &str,
     status: &str,
 ) -> Result<()> {
-    let run = service.get(run_id.to_string()).await?;
     service
-        .append_events(
+        .append_event_payloads(
             run_id.to_string(),
-            vec![OptimizerEventEnvelope {
-                schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                event_id: Some(format!("{run_id}:eval:{}", run.cursor_seq + 1)),
-                event_type: event_type.into(),
-                sequence_number: run.cursor_seq + 1,
-                occurred_at: chrono::Utc::now().to_rfc3339(),
-                optimizer_run_id: run_id.into(),
-                algorithm_id: EVAL_ALGORITHM_ID.into(),
-                level: None,
-                item: None,
-                delta: Map::from_iter([("status".into(), json!(status))]),
-                snapshot: None,
-                usage_delta: None,
-                artifact_refs: vec![],
-                error: None,
-                raw: json!({ "source": "container_eval" }),
-            }],
+            vec![OptimizerEventDraft::new(event_type, EVAL_ALGORITHM_ID)
+                // A lifecycle transition happens once. Keying it means a retry
+                // after a transport failure re-offers the same event instead of
+                // minting a second `started` at a new sequence.
+                .idempotency_key(format!("eval:lifecycle:{event_type}"))
+                .delta(Map::from_iter([("status".into(), json!(status))]))
+                .raw(json!({ "source": "container_eval" }))],
         )
         .await?;
     Ok(())
@@ -1206,27 +1151,16 @@ async fn append_terminal(
     )
     .await?;
     if failed && !detail.is_empty() {
-        let run = service.get(run_id.to_string()).await?;
         service
-            .append_events(
+            .append_event_payloads(
                 run_id.to_string(),
-                vec![OptimizerEventEnvelope {
-                    schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                    event_id: Some(format!("{run_id}:eval:{}", run.cursor_seq + 1)),
-                    event_type: "optimizer.run.error".into(),
-                    sequence_number: run.cursor_seq + 1,
-                    occurred_at: chrono::Utc::now().to_rfc3339(),
-                    optimizer_run_id: run_id.into(),
-                    algorithm_id: EVAL_ALGORITHM_ID.into(),
-                    level: Some("error".into()),
-                    item: None,
-                    delta: Map::new(),
-                    snapshot: None,
-                    usage_delta: None,
-                    artifact_refs: vec![],
-                    error: Some(json!({ "message": detail })),
-                    raw: json!({ "source": "container_eval" }),
-                }],
+                vec![OptimizerEventDraft::new(
+                    "optimizer.run.error",
+                    EVAL_ALGORITHM_ID,
+                )
+                .level("error")
+                .error(json!({ "message": detail }))
+                .raw(json!({ "source": "container_eval" }))],
             )
             .await?;
     }
