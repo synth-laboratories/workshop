@@ -61,4 +61,14 @@ Candidates:
 No candidate advances by demo quality alone; it must pass the same acceptance suite and publish the same measurements.
 The machine-checkable receipt gate is `scripts/check-embedded-browser-bakeoff.sh RECEIPT.json`; it requires all embedding, input, persistence, signing/updater, stability, protocol, and measurement fields above.
 
-CEF remains **not production-ready** in this branch: no CEF distribution, signing identity, notarization profile, or installed updater pair is present in the worktree, and no child-surface/GPU/crash-isolation receipt exists. Those are evidence gates, not safe assumptions the implementation can substitute for.
+CEF remains **not production-ready** in this branch: no CEF distribution, Developer ID identity, notarization profile, or installed updater pair is present in the worktree, and no child-surface/GPU/crash-isolation receipt exists. Those are evidence gates, not safe assumptions the implementation can substitute for.
+
+The executable preflight is `scripts/cef-workshop-poc.sh preflight`. It records host/toolchain/signing blockers as a machine-readable receipt and intentionally exits non-zero until all inputs exist. On the August 17 development host, macOS ARM64 and Rust are available, but only Command Line Tools are selected: `xcodebuild` reports that full Xcode is required. A development signing identity exists, but there is no notary profile. The current `cef-rs` release supports macOS ARM64, but downloading or running `cefsimple` alone would not satisfy this gate; the first accepted receipt must come from a child surface inside Workshop and cover the measurements above.
+
+## Production acceptance evidence (August 17)
+
+- The pinned runtime passes checksum verification plus executable Node, Chromium, and one-page Playwright browser/renderer probes.
+- A locally staged 0.5.0 application contains the runtime, backend and `synth-browser-mcp`; its development-installed receipt passed. This is an ad-hoc, non-notarized packaging smoke only. The staged app was 774 MiB on disk and the runtime reported 749,674,496 installed bytes.
+- Claimed Chrome passed a live loopback-CDP test: claims are disabled by default, require one exact title/URL match, reject non-loopback discovery, and preserve the user's tab during session cleanup.
+- The staged native helper reports Accessibility and Screen Recording granted on this host. It is ad-hoc signed, so `helper-live` correctly refuses to issue the signed/notarized production receipt.
+- Developer ID/notarization, a real installed updater before/after pair, and the CEF Workshop embedding receipt remain external evidence gates. No production-readiness claim is made for them.

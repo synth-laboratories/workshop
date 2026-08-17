@@ -251,6 +251,7 @@ test("an enabled Chrome claim preserves the exact user tab", async (context) => 
   context.after(async () => {
     client.child.kill("SIGTERM");
     chrome.kill("SIGTERM");
+    server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(root, { recursive: true, force: true });
   });

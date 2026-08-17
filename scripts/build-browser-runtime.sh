@@ -9,6 +9,9 @@ CACHE="${SYNTH_BROWSER_RUNTIME_CACHE:-$ROOT/apps/synth_desktop/src-tauri/target/
 COMMAND="${1:-help}"
 SIGN_IDENTITY="${SYNTH_SIGN_IDENTITY:-}"
 TEAM_ID="${SYNTH_TEAM_ID:-}"
+SIGN_TIMESTAMP="${SYNTH_SIGN_TIMESTAMP:-secure}"
+SIGN_MODE="${SYNTH_BROWSER_SIGN_MODE:-production}"
+ENTITLEMENTS_DIR="$ROOT/apps/synth_desktop/browser/signing"
 
 note() { echo "[browser-runtime] $*"; }
 die() { echo "[browser-runtime] ERROR: $*" >&2; exit 1; }
@@ -32,6 +35,29 @@ runtime_node() { echo "$OUTPUT/node/bin/node"; }
 
 chromium_executable() {
   find "$OUTPUT/browsers" -type f -path '*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing' -print -quit
+}
+
+write_manifest() {
+  "$(runtime_node)" - "$OUTPUT" "$LOCK" <<'NODE'
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const [root, lockPath] = process.argv.slice(2);
+const digest = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+  const item = path.join(dir, entry.name);
+  return entry.isDirectory() ? walk(item) : [item];
+});
+const important = [path.join(root, 'node/bin/node'), path.join(root, 'node_modules/playwright/package.json'), path.join(root, 'node_modules/playwright-core/browsers.json')];
+const chrome = walk(path.join(root, 'browsers')).find((file) => file.endsWith('/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'));
+important.push(chrome);
+const manifest = {
+  schemaVersion: 'workshop.browser-runtime.v1',
+  lock: JSON.parse(fs.readFileSync(lockPath, 'utf8')),
+  files: important.map((file) => ({ path: path.relative(root, file), sha256: digest(file), bytes: fs.statSync(file).size })),
+};
+fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 });
+NODE
 }
 
 assemble() {
@@ -84,30 +110,11 @@ assemble() {
   chromium="$(find "$stage/browsers" -type f -path '*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing' -print -quit)"
   [[ -n "$chromium" && -x "$chromium" ]] || die "Playwright did not install full headed Chromium"
 
-  "$stage/node/bin/node" - "$stage" "$LOCK" <<'NODE'
-const crypto = require('node:crypto');
-const fs = require('node:fs');
-const path = require('node:path');
-const [root, lockPath] = process.argv.slice(2);
-const digest = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-  const item = path.join(dir, entry.name);
-  return entry.isDirectory() ? walk(item) : [item];
-});
-const important = [path.join(root, 'node/bin/node'), path.join(root, 'node_modules/playwright/package.json'), path.join(root, 'node_modules/playwright-core/browsers.json')];
-const chrome = walk(path.join(root, 'browsers')).find((file) => file.endsWith('/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'));
-important.push(chrome);
-const manifest = {
-  schemaVersion: 'workshop.browser-runtime.v1',
-  lock: JSON.parse(fs.readFileSync(lockPath, 'utf8')),
-  files: important.map((file) => ({ path: path.relative(root, file), sha256: digest(file), bytes: fs.statSync(file).size })),
-};
-fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 });
-NODE
   rm -rf "$OUTPUT"
   mkdir -p "$(dirname "$OUTPUT")"
   mv "$stage" "$OUTPUT"
   trap - RETURN
+  write_manifest
   note "assembled $(du -sh "$OUTPUT" | awk '{print $1}') at $OUTPUT"
   verify
 }
@@ -132,10 +139,29 @@ for (const item of manifest.files) {
 NODE
   SYNTH_BROWSER_RUNTIME_ROOT="$OUTPUT" PLAYWRIGHT_BROWSERS_PATH="$OUTPUT/browsers" \
     "$(runtime_node)" --input-type=module -e "import fs from 'node:fs'; import path from 'node:path'; import { createRequire } from 'node:module'; const require=createRequire(import.meta.url); const { chromium }=require(path.join(process.env.SYNTH_BROWSER_RUNTIME_ROOT,'node_modules/playwright')); if (!fs.existsSync(chromium.executablePath())) process.exit(9)"
+  [[ "$("$chrome" --version)" == "Google Chrome for Testing "* ]] || die "bundled Chromium cannot launch"
+  # A signature can pass codesign verification and still fail at process load
+  # time (for example, from a nested Team ID/library-validation mismatch). The
+  # one-page smoke probe exercises Chromium's browser and renderer processes.
+  SYNTH_BROWSER_RUNTIME_ROOT="$OUTPUT" PLAYWRIGHT_BROWSERS_PATH="$OUTPUT/browsers" \
+    "$(runtime_node)" --input-type=module <<'NODE'
+import path from 'node:path';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const { chromium } = require(path.join(process.env.SYNTH_BROWSER_RUNTIME_ROOT, 'node_modules/playwright'));
+const browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath() });
+try {
+  const page = await browser.newPage();
+  await page.setContent('<h1>Workshop browser runtime</h1>');
+  if (await page.locator('h1').textContent() !== 'Workshop browser runtime') process.exitCode = 10;
+} finally {
+  await browser.close();
+}
+NODE
   if [[ -n "$TEAM_ID" ]]; then
     /usr/bin/codesign --verify --strict "$OUTPUT/node/bin/node"
     /usr/bin/codesign --verify --strict "$chrome"
-    /usr/bin/codesign --verify -R "anchor apple generic and certificate leaf[subject.OU] = \"$TEAM_ID\"" "$OUTPUT/node/bin/node"
+    /usr/bin/codesign --verify -R "anchor apple generic and certificate leaf[subject.OU] = \"$TEAM_ID\"" "$chrome"
   fi
   note "runtime verified"
 }
@@ -145,12 +171,43 @@ sign_runtime() {
   verify
   local chrome_app
   chrome_app="$(dirname "$(dirname "$(dirname "$(chromium_executable)")")")"
-  note "signing Chromium nested code with hardened runtime"
-  while IFS= read -r executable; do
-    /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp "$executable"
-  done < <(find "$chrome_app/Contents" -type f -perm +111 | sort -r)
-  /usr/bin/codesign --force --deep --sign "$SIGN_IDENTITY" --options runtime --timestamp "$chrome_app"
-  /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp "$OUTPUT/node/bin/node"
+  local -a timestamp_args
+  if [[ "$SIGN_TIMESTAMP" == "none" ]]; then timestamp_args=(--timestamp=none); else timestamp_args=(--timestamp); fi
+  if [[ "$SIGN_MODE" == "development" ]]; then
+    [[ "$SIGN_IDENTITY" == "-" ]] || die "development signing is ad-hoc only; set SYNTH_SIGN_IDENTITY=-"
+    note "ad-hoc signing Chromium for local packaging smoke (not production/notarization eligible)"
+    /usr/bin/codesign --force --deep --sign - "$chrome_app"
+  elif [[ "$SIGN_MODE" == "production" ]]; then
+    [[ "$SIGN_IDENTITY" != "-" ]] || die "production signing requires a Developer ID identity, not ad-hoc '-'"
+    local framework helpers helper
+    framework="$(find "$chrome_app/Contents/Frameworks" -maxdepth 1 -type d -name '*.framework' -print -quit)"
+    [[ -n "$framework" ]] || die "Chromium framework is missing"
+    helpers="$(find "$framework/Versions" -type d -path '*/Helpers' -print -quit)"
+    [[ -n "$helpers" ]] || die "Chromium helpers are missing"
+    note "Developer-ID signing Chromium nested code with hardened runtime"
+    # Chromium's helpers are distinct signed products. Renderer and GPU
+    # processes require allow-jit; applying one blanket --deep signature can
+    # produce a bundle that verifies statically but is killed at process load.
+    for helper in "$helpers/Google Chrome for Testing Helper (Renderer).app" "$helpers/Google Chrome for Testing Helper (GPU).app"; do
+      [[ -d "$helper" ]] && /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --options runtime "${timestamp_args[@]}" --entitlements "$ENTITLEMENTS_DIR/helper-jit-entitlements.plist" "$helper"
+    done
+    for helper in "$helpers/Google Chrome for Testing Helper.app" "$helpers/Google Chrome for Testing Helper (Alerts).app"; do
+      [[ -d "$helper" ]] && /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --options runtime "${timestamp_args[@]}" "$helper"
+    done
+    while IFS= read -r executable; do
+      /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --options runtime "${timestamp_args[@]}" "$executable"
+    done < <(find "$framework" -type f \( -name '*.dylib' -o -name chrome_crashpad_handler -o -name app_mode_loader -o -name web_app_shortcut_copier \) | sort)
+    # The framework is loaded into multiple Chromium processes and is signed
+    # as library code, while the outer application receives hardened runtime.
+    /usr/bin/codesign --force --sign "$SIGN_IDENTITY" "${timestamp_args[@]}" "$framework"
+    /usr/bin/codesign --force --sign "$SIGN_IDENTITY" --options runtime "${timestamp_args[@]}" "$chrome_app"
+  else
+    die "SYNTH_BROWSER_SIGN_MODE must be production or development"
+  fi
+  # Keep Node's pinned upstream Developer ID signature. Re-signing the V8 host
+  # without its vendor signing contract can make hardened-runtime JIT startup
+  # fail, and nested code may legitimately retain a different trusted team.
+  write_manifest
   verify
   note "runtime signed"
 }

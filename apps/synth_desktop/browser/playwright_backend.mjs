@@ -458,7 +458,20 @@ async function handle(operation, args = {}) {
     if (endpoint.protocol !== "http:" || !["127.0.0.1", "localhost", "::1"].includes(endpoint.hostname)) {
       throw new Error("chrome_claim_refused: CDP endpoint must be loopback HTTP");
     }
-    const browser = await chromium.connectOverCDP(endpoint.href);
+    let websocket;
+    try {
+      const discovery = await fetch(new URL("/json/version", endpoint.origin), {
+        signal: AbortSignal.timeout(3_000),
+      });
+      if (!discovery.ok) throw new Error(`HTTP ${discovery.status}`);
+      websocket = new URL(String((await discovery.json()).webSocketDebuggerUrl ?? ""));
+    } catch (error) {
+      throw new Error(`chrome_claim_unavailable: CDP discovery failed: ${error.message}`);
+    }
+    if (!["ws:", "wss:"].includes(websocket.protocol) || !["127.0.0.1", "localhost", "::1"].includes(websocket.hostname)) {
+      throw new Error("chrome_claim_refused: CDP discovery returned a non-loopback WebSocket");
+    }
+    const browser = await chromium.connectOverCDP(websocket.href, { timeout: 5_000 });
     const contexts = browser.contexts();
     if (contexts.length !== 1) throw new Error(`chrome_claim_ambiguous: expected one Chrome context, found ${contexts.length}`);
     const context = contexts[0];

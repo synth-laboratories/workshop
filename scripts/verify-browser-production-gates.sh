@@ -14,9 +14,9 @@ note() { echo "[browser-production] $*"; }
 sha256() { /usr/bin/shasum -a 256 "$1" | awk '{print $1}'; }
 
 verify_code() {
-  local target="$1"
+  local target="$1" require_workshop_team="${2:-yes}"
   /usr/bin/codesign --verify --strict --deep "$target"
-  if [[ -n "$TEAM_ID" ]]; then
+  if [[ -n "$TEAM_ID" && "$require_workshop_team" == yes ]]; then
     /usr/bin/codesign --verify -R "anchor apple generic and certificate leaf[subject.OU] = \"$TEAM_ID\"" "$target"
   fi
 }
@@ -42,7 +42,10 @@ verify_installed() {
   [[ -f "$resources/browser/playwright_backend.mjs" ]] || die "browser backend is missing"
   [[ -x "$node" && -x "$chrome" ]] || die "pinned Node/full Chromium runtime is incomplete"
   verify_code "$app"
-  verify_code "$node"
+  # Node retains the pinned upstream Node.js Foundation Developer ID. It is a
+  # separately launched runtime, so require a valid signature but do not
+  # pretend it belongs to Workshop's signing team.
+  verify_code "$node" no
   verify_code "$(dirname "$(dirname "$(dirname "$chrome")")")"
   verify_notary "$app"
   SYNTH_BROWSER_RUNTIME_OUTPUT="$runtime" "$ROOT/scripts/build-browser-runtime.sh" verify
@@ -57,6 +60,28 @@ verify_installed() {
     --arg nodeVersion "$("$node" --version)" --arg checkedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     '{schema:"workshop.browser-production-gate.v1",gate:$gate,passed:true,app:$app,version:$version,nodeVersion:$nodeVersion,runtimeBytes:$runtimeBytes,checkedAt:$checkedAt}' > "$RECEIPT"
   note "installed-app gate passed; receipt: $RECEIPT"
+}
+
+verify_development_installed() {
+  local app="$1" resources runtime node chrome version runtime_bytes
+  [[ -d "$app" ]] || die "installed app is missing: $app"
+  resources="$app/Contents/Resources"
+  runtime="$resources/browser/runtime"
+  node="$runtime/node/bin/node"
+  chrome="$(find "$runtime/browsers" -type f -path '*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing' -print -quit)"
+  [[ -x "$app/Contents/MacOS/synth-desktop" ]] || die "Desktop executable is missing"
+  [[ -x "$app/Contents/MacOS/synth-browser-mcp" ]] || die "browser MCP adapter is missing"
+  [[ -f "$resources/browser/playwright_backend.mjs" && -x "$node" && -x "$chrome" ]] \
+    || die "managed browser resources are incomplete"
+  verify_code "$app"
+  SYNTH_BROWSER_RUNTIME_OUTPUT="$runtime" "$ROOT/scripts/build-browser-runtime.sh" verify
+  version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+  runtime_bytes="$(du -sk "$runtime" | awk '{print $1 * 1024}')"
+  jq -n --arg gate development-installed --arg app "$app" --arg version "$version" \
+    --argjson runtimeBytes "$runtime_bytes" --arg nodeVersion "$("$node" --version)" \
+    --arg checkedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '{schema:"workshop.browser-production-gate.v1",gate:$gate,passed:true,productionEligible:false,notarized:false,app:$app,version:$version,nodeVersion:$nodeVersion,runtimeBytes:$runtimeBytes,checkedAt:$checkedAt}' > "$RECEIPT"
+  note "development installed-app smoke passed (not a production/notarization gate); receipt: $RECEIPT"
 }
 
 verify_updater() {
@@ -94,10 +119,11 @@ verify_helper_live() {
 
 case "$COMMAND" in
   installed) verify_installed "$APP" ;;
+  development-installed) verify_development_installed "$APP" ;;
   updater) [[ $# -eq 4 ]] || die "usage: $0 updater BEFORE.app AFTER.app PROFILE_SENTINEL"; verify_updater "$@" ;;
   helper-live) verify_helper_live "$@" ;;
   help|-h|--help)
-    echo "Usage: $0 installed [APP] | updater BEFORE.app AFTER.app PROFILE_SENTINEL | helper-live [HELPER.app]"
+    echo "Usage: $0 installed [APP] | development-installed [APP] | updater BEFORE.app AFTER.app PROFILE_SENTINEL | helper-live [HELPER.app]"
     ;;
   *) die "unknown command: $COMMAND" ;;
 esac
