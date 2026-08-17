@@ -38,13 +38,20 @@ const GEPA_COMPLETION_TYPES = [
 	"optimizer.child_rollout.completed"
 ];
 
-/** Events that invalidate earlier timing samples: the rig changed under us. */
+/**
+ * Events that invalidate earlier timing samples: the rig changed under us.
+ *
+ * `optimizer.rollout_queue.updated` is deliberately *not* here. It is routine
+ * telemetry — a real Banking77 run emits it every few seconds — and treating it
+ * as a disruption reset the sample window continuously, so the estimate thrashed
+ * between "Estimating…" and a number 113 times across one run and never settled.
+ * A changed queue depth is not a changed rig.
+ */
 const GEPA_DISRUPTION_TYPES = [
 	"optimizer.child_rollout.failed",
 	"optimizer.child_rollout.retried",
 	"optimizer.rollout.retried",
-	"rollout.circuit_breaker.tripped",
-	"optimizer.rollout_queue.updated"
+	"rollout.circuit_breaker.tripped"
 ];
 
 function gepaPhases(gepa: GepaState): RunProgressPhase[] {
@@ -196,9 +203,28 @@ export function projectGepa(input: AdapterInput, projected: ProjectedState): Run
 		completions: rolloutCompletionTimes(input.events, GEPA_COMPLETION_TYPES),
 		remainingUnits: remaining,
 		unit: "rollout",
+		nowMs: input.now,
 		disruptedAtMs: lastDisruptionMs(input.events, GEPA_DISRUPTION_TYPES),
 		paused: base.status === "paused",
-		unavailableReason: determinate ? undefined : "no rollout budget was declared for this run"
+		/*
+		 * GEPA does not get a time estimate, and this is not a gap to be filled
+		 * later — it is what the run's shape allows.
+		 *
+		 * The rollout budget is a truthful denominator for *progress*: 68 of 100
+		 * rollouts is a fact. It is not a basis for *time*, because a GEPA run
+		 * alternates rollout evaluation with proposer calls that complete no
+		 * rollouts at all. On the captured Banking77 run the largest such gap is
+		 * 150 seconds of a 223-second run, and rollouts arrive 13ms apart inside
+		 * bursts. Extrapolating remaining time from rollout throughput therefore
+		 * missed by a median of 4.7× and by 11× at the p90 — worse than saying
+		 * nothing, which is what the card now does.
+		 *
+		 * The counts, the phase, and the observed rollout rate are all still
+		 * shown; only the promise about the clock is withheld.
+		 */
+		unavailableReason: determinate
+			? "a GEPA run alternates rollouts with proposer calls that complete none, so rollout throughput does not predict when it finishes"
+			: "no rollout budget was declared for this run"
 	};
 
 	const warnings = [...base.warnings];

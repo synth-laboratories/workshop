@@ -69,14 +69,36 @@ export function capabilitiesOf(run: RunRecord): RunProgressCapabilities {
 	};
 }
 
-/** Completion timestamps, in event order, for the named producer event types. */
-export function rolloutCompletionTimes(events: OptimizerEvent[], types: string[]): number[] {
+/**
+ * First-completion timestamps for the named producer event types, one per unit of
+ * work.
+ *
+ * The de-duplication is not defensive tidying — it is required. A real GEPA run
+ * emits `optimizer.evaluation_result.received` **twice** per rollout (480 events
+ * for 240 rollouts), and `projectEvents` counts only the first, so a naive
+ * timestamp list doubles the apparent throughput and halves every estimate.
+ * `idKeys` names the delta fields that identify the unit; when a producer omits
+ * them the event is kept, since a missing id is not evidence of a duplicate.
+ */
+export function rolloutCompletionTimes(
+	events: OptimizerEvent[],
+	types: string[],
+	idKeys: string[] = ["rollout_id", "rolloutId", "trial_id", "trialId"]
+): number[] {
 	const wanted = new Set(types);
+	const seen = new Set<string>();
 	const times: number[] = [];
 	for (const event of events) {
 		if (!wanted.has(event.type)) continue;
 		const at = parseTime(event.occurredAt);
-		if (at != null) times.push(at);
+		if (at == null) continue;
+		const delta = event.delta ?? {};
+		const id = idKeys.map((key) => delta[key]).find((value) => typeof value === "string" && value.length > 0);
+		if (typeof id === "string") {
+			if (seen.has(id)) continue;
+			seen.add(id);
+		}
+		times.push(at);
 	}
 	return times;
 }

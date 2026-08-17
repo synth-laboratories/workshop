@@ -262,6 +262,7 @@ export function projectEval(input: AdapterInput, projected: ProjectedState): Run
 		completions: rolloutCompletionTimes(input.events, EVAL_COMPLETION_TYPES),
 		remainingUnits: determinate ? Math.max(0, planned! - tally.terminal) : undefined,
 		unit: "trial",
+		nowMs: input.now,
 		disruptedAtMs: (() => {
 			const breaker = lastDisruptionMs(input.events, ["rollout.circuit_breaker.tripped"]);
 			if (breaker == null) return lastRequeueMs;

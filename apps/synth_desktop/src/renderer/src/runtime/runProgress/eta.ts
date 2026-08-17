@@ -10,16 +10,25 @@
  * the timestamps at which comparable units of work completed inside the
  * current phase. That choice carries the rules the brief demands:
  *
- *   · Effective, not configured, concurrency. Intervals between completions
- *     already contain however many workers were really running; nothing is
- *     divided by a configured semaphore size that may not be staffed.
+ *   · Effective, not configured, concurrency. Observed completion rates already
+ *     contain however many workers were really running; nothing is divided by a
+ *     configured semaphore size that may not be staffed.
  *   · Phase-local samples only. A caller passes completions for one phase, so
  *     a phase transition resets the evidence rather than blending a fast
  *     minibatch into a slow full-train.
- *   · Robust, not extrapolated. The median interval decides; one unusually
- *     fast or slow rollout cannot move the estimate far.
+ *   · Rates over sub-windows, not gaps between completions. Real producers
+ *     report in bursts: sixteen rollouts finish and land milliseconds apart.
+ *     The gap between two of those is the reporting burst, not the work, and
+ *     taking its median once produced a 23ms-per-rollout estimate on a real
+ *     Banking77 run. Each sub-window instead spans real time and yields
+ *     `intervals ÷ elapsed`, which a burst cannot deflate.
+ *   · Robust, not extrapolated. The median sub-window rate decides, so one
+ *     stalled or unusually fast stretch cannot move the estimate — it widens
+ *     the range and drops the confidence instead.
  *   · Disruption widens. Retries, throttling, and worker loss drop the samples
- *     that preceded them, which drops confidence back to a range.
+ *     that preceded them, which drops confidence back to a range. Routine
+ *     telemetry is not disruption: a queue-depth update every few seconds must
+ *     not keep resetting the window, or the estimate never settles at all.
  *   · Queue time is never execution evidence. A caller measuring training
  *     passes only training completions; queue elapsed is displayed separately.
  *   · Chat elapsed time and tool-call silence are not inputs. They are not
@@ -28,17 +37,35 @@
 
 import type { RunEtaConfidence, RunEtaProjection } from "./types";
 
-/** Newest completions only; older intervals describe a run that no longer exists. */
-const SAMPLE_WINDOW = 12;
+/**
+ * How much recent wall clock the rate is measured over. Wide enough to contain
+ * the idle stretches between bursts — the observed worst case is a 150s proposer
+ * call — so a window that happens to end mid-burst is not mistaken for speed.
+ */
+const WINDOW_MS = 600_000;
 
-/** Below this many intervals there is no estimate at all, only "Estimating…". */
-const MIN_INTERVALS_FOR_RANGE = 1;
+/** Completions a window needs before its rate is worth reporting at all. */
+const MIN_COMPLETIONS = 2;
 
-/** A point estimate needs a third completion and a settled spread. */
-const MIN_INTERVALS_FOR_POINT = 3;
+/** Completions a window needs before it can state a single number. */
+const MIN_FOR_POINT = 12;
 
-/** Interquartile spread over the median above which a range is still the honest answer. */
-const POINT_SPREAD_CEILING = 0.45;
+/**
+ * The largest idle stretch a window may contain, as a share of its span, before
+ * its completions stop being evidence about time.
+ *
+ * Measured against real runs, this is the rule that matters most. A window whose
+ * biggest gap is most of its span is not watching a steady pipeline; it is
+ * watching a run that spends long stretches doing work the completion counter
+ * cannot see, and completions per second says nothing about when that finishes.
+ * On the captured runs: GEPA's largest gap is 150s of a 223s run (67%), the eval
+ * campaign's is 111s of 136s (82%). Both refuse, correctly — extrapolating from
+ * them gave a median error of 4.7× and a p90 of 11×.
+ */
+const MAX_IDLE_SHARE = 0.25;
+
+/** Half-to-half disagreement, over the window rate, above which a range is the honest answer. */
+const POINT_SPREAD_CEILING = 0.5;
 
 export type EtaEvidence = {
 	/** Phase these completions belong to. Mixing phases is the caller's bug. */
@@ -53,6 +80,13 @@ export type EtaEvidence = {
 	/** Unit noun for the basis line: "rollout", "trial", "step". */
 	unit: string;
 	/**
+	 * Wall clock at the moment of projection. The window ends here, not at the
+	 * last completion, so a run currently sitting in a proposer call is measured
+	 * as the slower thing it presently is. Defaults to the last completion when a
+	 * caller has no clock, which only under-counts trailing idle time.
+	 */
+	nowMs?: number;
+	/**
 	 * Epoch-ms of the newest retry, throttle, or worker-loss event. Completions
 	 * at or before it are discarded, because they measured a rig that changed.
 	 */
@@ -65,17 +99,6 @@ export type EtaEvidence = {
 	 */
 	unavailableReason?: string;
 };
-
-function median(sorted: number[]): number {
-	const middle = Math.floor(sorted.length / 2);
-	return sorted.length % 2 === 0 ? (sorted[middle - 1]! + sorted[middle]!) / 2 : sorted[middle]!;
-}
-
-/** Quantile by nearest rank; exact enough for a spread over ≤12 samples. */
-function quantile(sorted: number[], fraction: number): number {
-	const index = Math.min(sorted.length - 1, Math.max(0, Math.round(fraction * (sorted.length - 1))));
-	return sorted[index]!;
-}
 
 function plural(count: number, unit: string): string {
 	return `${count} ${unit}${count === 1 ? "" : "s"}`;
@@ -91,48 +114,136 @@ function unavailable(basis: string, reason: string, sampleCount: number): RunEta
 	};
 }
 
-/**
- * Intervals between consecutive completions, after windowing and disruption
- * pruning. Exported for tests: the sampling rule is the part most likely to be
- * quietly wrong.
- */
-export function completionIntervals(evidence: EtaEvidence): number[] {
-	const usable = evidence.completions
+/** A duration for a basis line, in the coarsest unit that stays legible. */
+function formatSpan(ms: number): string {
+	if (ms >= 60_000) return `${(ms / 60_000).toFixed(1)}min`;
+	if (ms >= 1_000) return `${(ms / 1_000).toFixed(1)}s`;
+	return `${Math.round(ms)}ms`;
+}
+
+/** Completions in the current window, ordered, after disruption pruning. */
+export function usableCompletions(evidence: EtaEvidence): number[] {
+	const nowMs = evidence.nowMs;
+	return evidence.completions
 		.filter((value) => Number.isFinite(value))
 		.filter((value) => evidence.disruptedAtMs == null || value > evidence.disruptedAtMs)
-		.sort((left, right) => left - right)
-		.slice(-SAMPLE_WINDOW);
-	const intervals: number[] = [];
-	for (let index = 1; index < usable.length; index += 1) {
-		const gap = usable[index]! - usable[index - 1]!;
-		if (gap > 0) intervals.push(gap);
+		.filter((value) => nowMs == null || value <= nowMs)
+		.sort((left, right) => left - right);
+}
+
+/**
+ * Completions per millisecond across a run of timestamps, or null when they do
+ * not span measurable time.
+ *
+ * `n - 1` intervals over the elapsed span: a burst raises the count and the span
+ * together, so it cannot inflate the rate.
+ */
+export function completionRate(completions: number[]): number | null {
+	if (completions.length < 2) return null;
+	const span = completions.at(-1)! - completions[0]!;
+	if (span <= 0) return null;
+	return (completions.length - 1) / span;
+}
+
+export type EtaWindow = {
+	/** Completions per millisecond over the window, or null when unmeasurable. */
+	overall: number | null;
+	first: number | null;
+	second: number | null;
+	/** Completions inside the window. */
+	samples: number;
+	/** Wall time the window covers, idle included. */
+	spanMs: number;
+	/** The longest stretch with no completion, including the tail up to now. */
+	longestIdleMs: number;
+};
+
+/**
+ * The window rate and its two half rates.
+ *
+ * The window runs from the first usable completion (or `WINDOW_MS` ago, whichever
+ * is later) to *now*, and the rate is completions ÷ that elapsed time. Idle
+ * stretches are inside the span on purpose: while a GEPA run is in a proposer
+ * call it really is completing no rollouts, and an estimate that ignored the gap
+ * would promise a finish time the run cannot meet.
+ */
+export function windowRates(evidence: EtaEvidence): EtaWindow {
+	const usable = usableCompletions(evidence);
+	const empty: EtaWindow = {
+		overall: null,
+		first: null,
+		second: null,
+		samples: 0,
+		spanMs: 0,
+		longestIdleMs: 0
+	};
+	if (usable.length === 0) return empty;
+	const nowMs = evidence.nowMs ?? usable.at(-1)!;
+	const earliest = Math.max(
+		usable[0]!,
+		nowMs - WINDOW_MS,
+		evidence.disruptedAtMs ?? Number.NEGATIVE_INFINITY
+	);
+	const inWindow = usable.filter((value) => value >= earliest);
+	const spanMs = nowMs - earliest;
+	// The tail counts: a run that completed nothing for the last two minutes is
+	// idle now, whatever it was doing before.
+	let longestIdleMs = inWindow.length > 0 ? nowMs - inWindow.at(-1)! : spanMs;
+	for (let index = 1; index < inWindow.length; index += 1) {
+		longestIdleMs = Math.max(longestIdleMs, inWindow[index]! - inWindow[index - 1]!);
 	}
-	return intervals;
+	if (inWindow.length < MIN_COMPLETIONS || spanMs <= 0) {
+		return { ...empty, samples: inWindow.length, spanMs: Math.max(0, spanMs), longestIdleMs };
+	}
+	const midpoint = earliest + spanMs / 2;
+	const firstHalf = inWindow.filter((value) => value < midpoint).length;
+	const secondHalf = inWindow.length - firstHalf;
+	const halfSpan = spanMs / 2;
+	// When the window opens on a completion, that completion marks a boundary
+	// rather than a unit of work inside the span, so the span holds one fewer
+	// interval than it holds completions. When the window opens on the clock
+	// instead, every completion inside it counts.
+	const anchored = inWindow[0] === earliest;
+	return {
+		overall: (inWindow.length - (anchored ? 1 : 0)) / spanMs,
+		// A half with no completions has a real rate of zero, which is honest but
+		// unusable as a bound; it is dropped so the range widens instead.
+		first: firstHalf > 0 ? firstHalf / halfSpan : null,
+		second: secondHalf > 0 ? secondHalf / halfSpan : null,
+		samples: inWindow.length,
+		spanMs,
+		longestIdleMs
+	};
 }
 
 /**
  * Estimate the time remaining in one bounded, homogeneous phase.
  *
- * Returns `undefined` only for a terminal run — a finished run has no ETA, it
- * has a wall time. Every other case returns a projection whose `state` says
- * what the caller may display.
+ * Every case returns a projection whose `state` says what the caller may
+ * display: a number, a range, "Estimating…", "Unavailable", or "Paused".
  */
 export function estimatePhaseEta(evidence: EtaEvidence): RunEtaProjection {
-	const intervals = completionIntervals(evidence);
-	const samples = intervals.length + (intervals.length > 0 ? 1 : 0);
+	const { overall, first, second, samples, spanMs, longestIdleMs } = windowRates(evidence);
 	const phaseBasis = `phase ${evidence.phaseId}`;
 
 	if (evidence.paused) {
 		return {
 			state: "paused",
-			confidence: intervals.length >= MIN_INTERVALS_FOR_POINT ? "medium" : "low",
-			basis: `paused with ${plural(intervals.length, `${evidence.unit} interval`)} observed in ${phaseBasis}`,
+			confidence: samples >= MIN_FOR_POINT ? "medium" : "low",
+			basis: `paused with ${plural(samples, `completed ${evidence.unit}`)} observed in ${phaseBasis}`,
 			sampleCount: samples
 		};
 	}
 
+	// A caller that already knows no estimate is possible says so, and its reason
+	// is used verbatim. The basis still reports what was observed rather than
+	// asserting a missing denominator the run may well have.
 	if (evidence.unavailableReason) {
-		return unavailable(`no denominator in ${phaseBasis}`, evidence.unavailableReason, samples);
+		return unavailable(
+			`${plural(samples, `completed ${evidence.unit}`)} observed in ${phaseBasis}`,
+			evidence.unavailableReason,
+			samples
+		);
 	}
 
 	const remaining = evidence.remainingUnits;
@@ -154,57 +265,72 @@ export function estimatePhaseEta(evidence: EtaEvidence): RunEtaProjection {
 		};
 	}
 
-	if (intervals.length < MIN_INTERVALS_FOR_RANGE) {
+	if (overall == null || !(overall > 0)) {
 		return {
 			state: "estimating",
 			confidence: "warming",
-			basis: `${plural(evidence.completions.length, `completed ${evidence.unit}`)} in ${phaseBasis}; two are needed before an estimate`,
+			basis: `${plural(samples, `completed ${evidence.unit}`)} in ${phaseBasis}; two spanning real time are needed before an estimate`,
 			sampleCount: samples
 		};
 	}
 
-	const sorted = [...intervals].sort((left, right) => left - right);
-	const typical = median(sorted);
-	const low = quantile(sorted, 0.25);
-	const high = quantile(sorted, 0.75);
-	const spread = typical > 0 ? (high - low) / typical : Number.POSITIVE_INFINITY;
-	const settled = intervals.length >= MIN_INTERVALS_FOR_POINT && spread <= POINT_SPREAD_CEILING;
+	// The evidence-quality gate. Completions are only evidence about *time* when
+	// they arrive steadily enough that the gaps between them are small next to the
+	// window. Otherwise the run is spending its wall clock somewhere this counter
+	// cannot see, and any number derived from the counter would be fiction.
+	const idleShare = longestIdleMs / spanMs;
+	if (idleShare > MAX_IDLE_SHARE) {
+		return unavailable(
+			`${plural(samples, `completed ${evidence.unit}`)} in ${formatSpan(spanMs)} of ${phaseBasis}, but its longest idle stretch is ${formatSpan(longestIdleMs)}`,
+			`the longest stretch with no completed ${evidence.unit} is ${formatSpan(longestIdleMs)} of a ${formatSpan(spanMs)} window, so ${evidence.unit} throughput does not predict when this run finishes`,
+			samples
+		);
+	}
+
+	// Faster means less time left, so the faster half gives the low bound.
+	const halves = [first, second].filter((rate): rate is number => rate != null && rate > 0);
+	const bounded = halves.length === 2;
+	const fastest = bounded ? Math.max(...halves) : overall;
+	const slowest = bounded ? Math.min(...halves) : overall;
+	const spread = bounded ? (fastest - slowest) / overall : Number.POSITIVE_INFINITY;
+	const settled = samples >= MIN_FOR_POINT && bounded && spread <= POINT_SPREAD_CEILING;
 
 	const confidence: RunEtaConfidence = settled
 		? "high"
-		: intervals.length >= MIN_INTERVALS_FOR_POINT
+		: samples >= MIN_FOR_POINT
 			? "medium"
 			: "low";
 	const basis = [
-		`median of ${plural(intervals.length, `${evidence.unit} interval`)} in ${phaseBasis}`,
-		`${Math.round(typical)}ms per ${evidence.unit}`,
+		`${plural(samples, `completed ${evidence.unit}`)} in ${formatSpan(spanMs)} of ${phaseBasis}`,
+		`${formatSpan(1 / overall)} each`,
 		`${plural(remaining, evidence.unit)} remaining`,
+		bounded && !settled ? "throughput is still changing" : null,
 		evidence.disruptedAtMs != null ? "samples restarted after a disruption" : null
 	]
 		.filter(Boolean)
 		.join(" · ");
 
+	const remainingMs = remaining / overall;
 	if (settled) {
 		return {
 			state: "point",
-			remainingMs: typical * remaining,
-			lowMs: low * remaining,
-			highMs: high * remaining,
+			remainingMs,
+			lowMs: remaining / fastest,
+			highMs: remaining / slowest,
 			confidence,
 			basis,
 			sampleCount: samples
 		};
 	}
 
-	// Widen a low-evidence range rather than presenting a narrow one: with two
-	// intervals the quartiles are the two values themselves, which understates
-	// how little is known.
-	const widen = intervals.length >= MIN_INTERVALS_FOR_POINT ? 1 : 1.5;
+	// Widen a low-evidence range rather than presenting a narrow one: a window
+	// with only one usable half knows nothing about its own trend.
+	const widen = bounded ? 1 : 1.5;
 	return {
 		state: "range",
-		remainingMs: typical * remaining,
-		lowMs: (low / widen) * remaining,
-		highMs: high * widen * remaining,
+		remainingMs,
+		lowMs: remaining / (fastest * widen),
+		highMs: (remaining / slowest) * widen,
 		confidence,
 		basis,
 		sampleCount: samples
