@@ -334,17 +334,34 @@ pure Rust and TypeScript and do not wait on it. Phases 3, 4, and the G1 receipt 
 | Phase | Work | Est. | Status |
 |---|---|---|---|
 | **0** | Developer ID, hardened runtime, notarization, stapling, stable helper bundle ID. **Blocking for 3/4/G1; external lead time** | ~1 wk | Not started — needs an operator |
-| **1** | Spike: drive the installed Synth Desktop.app. *Does a Tauri/WebKit window expose a usable AX tree?* | ~2 d | Needs an operator TCC grant |
-| **2** | Generalize `plugins/` to N; add `needs_permissions` and permission rows; add `PluginRisk::HandOff` | ~1 wk | **4 of 5 done**; install-as-strategy deferred to Phase 3 |
-| **3** | Helper app + MCP proxy + caller authentication (`SecCode` / audit token against our team ID) | ~2–3 wk | Blocked on Phase 0 |
-| **4** | Permission wizard from plugin phases; install / uninstall including `tccutil reset` | ~1 wk | Blocked on Phase 0 |
-| **5** | `ApprovalKind::ComputerUse` with payload; app allowlist; terminal-class denial; lock pause/resume | ~1.5 wk | Unblocked |
-| **6** | Trajectory capture into `event_journal` + `content_store`, redacted | ~1 wk | Unblocked |
-| **7** | Point it at the 37-item CUA manual gate | — | Blocked on 3 |
+| **1** | Spike: read the installed Synth Desktop.app's AX tree | ~2 d | **Done.** 1641 elements, `AXPress` on controls — see §11 |
+| **2** | Generalize `plugins/` to N; add `needs_permissions` and permission rows; add `PluginRisk::HandOff` | ~1 wk | **Done.** Install-as-strategy folded into Phase 3 |
+| **3** | Helper app + MCP proxy + caller authentication (`SecCode` / audit token against our team ID) | ~2–3 wk | **Code done, verified enforcing.** Signing is Phase 0 |
+| **4** | Permission wizard from plugin phases; install / uninstall including `tccutil reset` | ~1 wk | **Code done.** Grant survival needs Phase 0 |
+| **5** | `ApprovalKind::ComputerUse` with payload; app allowlist; terminal-class denial; lock pause/resume | ~1.5 wk | **Done** |
+| **6** | Trajectory capture into `content_store`, redacted | ~1 wk | **Done** |
+| **7** | Point it at the 37-item CUA manual gate | — | **Blocked on Phase 0 and a second repo** — see below |
 
-**~5–7 weeks.** Signing is the long pole; the driver is the easy part. The reference
-service binary is 20 MB and most of it is permission state machines, focus-steal
-prevention, and a synthetic cursor — not the automation itself.
+**Signing was the long pole and still is.** The driver was the easy part, exactly as
+predicted: the reference service binary is 20 MB and most of it is permission state
+machines, focus-steal prevention, and a synthetic cursor, not the automation.
+
+### What is left, precisely
+
+Everything that can be built without an Apple Developer ID is built and tested.
+Three things remain and none of them is engineering:
+
+1. **Phase 0 — Developer ID, notarization, stapling.** `scripts/build-computer-use-helper.sh`
+   is written and its `verify` runs exactly the checks Desktop runs at launch.
+   It needs `SYNTH_TEAM_ID`, `SYNTH_SIGN_IDENTITY`, and `SYNTH_NOTARY_PROFILE`.
+   Until then the helper can only be ad-hoc signed, which is the G1 failure
+   itself — the script says so out loud rather than letting it pass.
+2. **G1's receipt.** Grant Accessibility, rebuild, reinstall, confirm the grant
+   survived and `CDHash` is unchanged. Cannot be run before (1).
+3. **G9's other half.** The 37-item checklist lives in
+   `~/Documents/GitHub/evals/workshop/manual/CUA_MANUAL_GATE.md` — a different
+   repository, outside this branch's scope per the v0.5 handoff. Phase 1 proved
+   the app is drivable; wiring the gate to drive it is a PR against `evals`.
 
 ---
 
@@ -367,12 +384,13 @@ prevention, and a synthetic cursor — not the automation itself.
 | Design | Settled. §5 and §7 are normative; §3 is gradeable |
 | Phase 0 (Developer ID) | **Not started, external lead time, needs an operator.** Nothing an engineer can unblock |
 | Phase 1 (AX spike) | Ready to run; needs a TCC grant from the operator and approval to install a third-party helper for comparison |
-| Phase 2 | 4 of 5 landed on `v0.5/cua`, tested. Item 5 folded into Phase 3 |
-| Phases 3–7 | Ready to write; 3, 4, and 7 land after Phase 0 |
+| Phases 1–6 | **Implemented and tested on `v0.5/cua`** |
+| Phase 7 | Needs Phase 0, and a PR against the `evals` repository |
 
-Phase 5 is the next unblocked lane: `ApprovalKind::ComputerUse` has a type and a
-policy but no producer, so the allowlist, terminal-class denial, and lock
-pause/resume can all be written and tested against it without a helper binary.
+Caller authentication is verified live, not asserted. The helper answers
+`tools/list` to any caller and refuses `tools/call` from an unsigned parent with
+`OSStatus -67050` (`errSecCSReqFailed`) — the same split the reference
+implementation makes, now ours.
 
 ### Open question 1 is answered: yes
 
