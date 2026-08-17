@@ -17,7 +17,9 @@ import { publicError, toPublicError, type PublicError } from "../runtime/publicE
 import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } from "../bridge";
 import { loadVisualShell } from "../runtime/visualsLoader";
 import { bridges } from "../runtime/desktopBridge";
-import { mergeOptimizerEventPage, type OptimizerEventCursorState } from "../runtime/optimizerEventCursor";
+import { subscribeToRun } from "../runtime/runProgress/subscription";
+import { progressAgreement, projectRunProgress, splitSnapshotEvents } from "../runtime/runProgress/project";
+import type { ProgressAgreement } from "../runtime/runProgress/project";
 import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
 import { MermaidVisual } from "./MermaidVisual";
 import { SystemsMapVisual } from "./SystemsMapVisual";
@@ -265,6 +267,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [optimizerPayload, setOptimizerPayload] = useState<Record<string, unknown> | null>(null);
 	const [optimizerLoadError, setOptimizerLoadError] = useState<string | null>(null);
 	const [comparisonPayload, setComparisonPayload] = useState<Record<string, unknown> | null>(null);
+	const [progressView, setProgressView] = useState<ProgressAgreement | null>(null);
 	// One reader decides whether these bindings are legible, and it can say no.
 	// Returning an empty slot list for a shape it did not understand is how a
 	// visual with ten declared streams rendered an empty pane with no error.
@@ -329,7 +332,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	}>({ status: "idle", props: {} });
 	const [lastKnownGoodProps, setLastKnownGoodProps] = useState<Record<string, unknown> | null>(null);
 	const [connectionState, setConnectionState] = useState<
-		"loading" | "replaying" | "bootstrapping" | "subscribed" | "stale" | "reconnecting" | "terminal" | "failed"
+		"loading" | "replaying" | "bootstrapping" | "subscribed" | "stale" | "reconnecting" | "terminal" | "failed" | "interrupted"
 	>("loading");
 
 	const visualIdentity = useMemo(
@@ -542,140 +545,109 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		return () => { cancelled = true; };
 	}, [artifact.id, artifact.revision, artifact.templateId, artifact.bindings, asyncBindings.length, traceBindings.length]);
 
+	/*
+	 * The optimizer stream is read through the shared `RunProgressSubscription`
+	 * store, not a private loop here. One run can be open in the transcript card,
+	 * its dialog, and this pane at once; the store gives all three the same
+	 * cursor, the same gap recovery, and one set of upstream reads.
+	 *
+	 * What stays local to the pane is what is genuinely the visual's: the ready
+	 * receipt, and a visual-scoped copy of a stream failure so a blank pane and
+	 * the run behind it remain joinable by visual id.
+	 */
 	useEffect(() => {
-		let cancelled = false;
 		const bindings = artifact.bindings as { slots?: Array<{ slot?: string; kind?: string; source?: string }> } | undefined;
 		const slot = bindings?.slots?.find((entry) => entry.slot === "optimizer_run" && entry.kind === "optimizer_run");
 		const optimizerRunId = slot?.source;
-		if (!optimizerRunId || !bridges.optimizers) {
+		if (!optimizerRunId) {
 			setOptimizerPayload(null);
-			setOptimizerLoadError(optimizerRunId ? "Optimizer bridge is unavailable" : null);
-			if (optimizerRunId) setConnectionState("failed");
+			setOptimizerLoadError(null);
+			setProgressView(null);
 			return;
 		}
-		const pageSize = 500;
-		let current: OptimizerEventCursorState = { events: [], cursor: 0, gap: false };
-		let pending = Promise.resolve();
-		let stopPolling = false;
 		let postedReady = false;
-		let poll = 0;
-		let lastCursor = Number.NaN;
-		let lastStatus = "";
-		const terminal = new Set(["completed", "failed", "cancelled", "succeeded"]);
-		const readPersistedEvents = async (after: number) => {
-			let state: OptimizerEventCursorState = {
-				events: after === 0 ? [] : current.events,
-				cursor: after,
-				gap: false
-			};
-			for (;;) {
-				const page = await bridges.optimizers!.eventsAfter(optimizerRunId, state.cursor, pageSize);
-				if (!Array.isArray(page) || page.length === 0) return state;
-				const before = state.cursor;
-				state = mergeOptimizerEventPage(state, page);
-				if (state.gap || state.cursor === before || page.length < pageSize) return state;
-			}
-		};
-		const load = async (snapshot = false) => {
-			try {
-				if (!snapshot) setConnectionState((current) => current === "subscribed" || current === "bootstrapping" ? "reconnecting" : current);
-				else setConnectionState("replaying");
-				const run = await bridges.optimizers!.get(optimizerRunId);
-				let next = await readPersistedEvents(snapshot ? 0 : current.cursor);
-				const runCursor = typeof run.cursorSeq === "number" ? run.cursorSeq : next.cursor;
-				if (!snapshot && (next.gap || runCursor < current.cursor || next.cursor < runCursor)) {
-					// A missed notification, truncated page, or replaced local import requires
-					// a durable snapshot reload. Never patch over a sequence hole.
-					next = await readPersistedEvents(0);
+		return subscribeToRun(optimizerRunId, (snapshot) => {
+			const projection = projectRunProgress(snapshot, Date.now());
+			setProgressView(projection ? progressAgreement(projection) : null);
+			const lanes = snapshot.run ? splitSnapshotEvents(snapshot.run, snapshot.events) : null;
+			const payload = snapshot.run && lanes
+				? {
+					run: snapshot.run,
+					events: lanes.terminalEvents,
+					enrichmentEvents: lanes.enrichmentEvents,
+					terminalCursor: lanes.terminalCursor,
+					enrichmentCursor: lanes.enrichmentCursor
 				}
-				if (next.gap || next.cursor < runCursor) {
-					setConnectionState("stale");
-					reportDiagnostic({
-						...visualIdentity,
-						optimizerRunId,
-						streamId: optimizerRunId,
-						severity: "warn",
-						component: "visual-host",
-						event: "stream.replay.gap",
-						code: DIAGNOSTIC_CODES.streamReplayGap,
-						message: `Optimizer event history is incomplete at ${next.cursor}/${runCursor}`,
-						retryable: true,
-						details: { cursor: next.cursor, runCursor, gap: next.gap },
-					});
-					throw new Error(`Optimizer event history is incomplete at ${next.cursor}/${runCursor}`);
-				}
-				current = next;
-				const runStatus = typeof run.status === "string" ? run.status : "";
-				const isTerminal = terminal.has(runStatus);
-				if (isTerminal) {
-					stopPolling = true;
-					if (poll) window.clearInterval(poll);
-				}
-				if (!cancelled) {
-					if (lastCursor !== current.cursor || lastStatus !== runStatus) {
-						lastCursor = current.cursor;
-						lastStatus = runStatus;
-						setOptimizerPayload({ run, events: current.events });
-					}
-					setOptimizerLoadError(null);
-					setConnectionState(isTerminal ? "terminal" : current.events.length === 0 ? "bootstrapping" : "subscribed");
-					if (!postedReady) {
-						postedReady = true;
-						void bridges.optimizers?.recordVisualReady?.({
-							visualId: artifact.id,
-							optimizerRunId,
-							templateId: artifact.templateId ?? "optimizer.run.v1",
-							replayedThrough: current.cursor,
-							subscribedFrom: current.cursor + 1,
-							templateDigest: typeof artifact.metadata?.templateDigest === "string"
-								? artifact.metadata.templateDigest
-								: undefined
-						}).catch(() => undefined);
-					}
-				}
-			} catch (reason) {
-				if (!cancelled) {
-					const message = publicError(reason);
-					setOptimizerPayload(null);
-					setOptimizerLoadError(message);
-					setConnectionState("failed");
-					reportDiagnostic({
-						...visualIdentity,
-						optimizerRunId,
-						streamId: optimizerRunId,
-						severity: "error",
-						component: "visual-host",
-						event: "stream.interrupted",
-						code: DIAGNOSTIC_CODES.streamInterrupted,
-						message,
-						retryable: true,
-					});
-				}
-			}
-		};
-		const enqueue = (snapshot = false) => {
-			pending = pending.then(() => load(snapshot));
-		};
-		enqueue(true);
-		const unlisten = bridges.optimizers.onEvent((event) => {
-			const eventRunId = typeof event.payload?.optimizerRunId === "string"
-				? event.payload.optimizerRunId
-				: typeof event.payload?.optimizer_run_id === "string" ? event.payload.optimizer_run_id : null;
-			if (eventRunId === optimizerRunId) enqueue(false);
-		});
-		poll = window.setInterval(() => {
-			if (stopPolling) {
-				window.clearInterval(poll);
+				: null;
+
+			if (snapshot.state === "unavailable") {
+				setOptimizerPayload(payload);
+				setOptimizerLoadError(snapshot.error ?? "Optimizer bridge is unavailable");
+				setConnectionState("failed");
 				return;
 			}
-			void bridges.optimizers!.refresh(optimizerRunId).catch(() => undefined);
-		}, 750);
-		return () => {
-			cancelled = true;
-			window.clearInterval(poll);
-			unlisten?.();
-		};
-	}, [artifact.bindings, artifact.id, artifact.templateId, artifact.metadata]);
+			if (snapshot.state === "interrupted" || snapshot.state === "failed") {
+				if (payload) setOptimizerPayload(payload);
+				setOptimizerLoadError(snapshot.error ?? "Optimizer stream interrupted");
+				setConnectionState("interrupted");
+				reportDiagnostic({
+					...visualIdentity,
+					optimizerRunId,
+					streamId: optimizerRunId,
+					severity: "error",
+					component: "visual-host",
+					event: "stream.interrupted",
+					code: DIAGNOSTIC_CODES.streamInterrupted,
+					message: snapshot.error ?? "Optimizer stream interrupted",
+					retryable: true,
+				});
+				return;
+			}
+			if (snapshot.state === "stale") {
+				if (payload) setOptimizerPayload(payload);
+				setOptimizerLoadError(null);
+				setConnectionState("stale");
+				reportDiagnostic({
+					...visualIdentity,
+					optimizerRunId,
+					streamId: optimizerRunId,
+					severity: "warn",
+					component: "visual-host",
+					event: "stream.replay.gap",
+					code: DIAGNOSTIC_CODES.streamReplayGap,
+					message: `Optimizer event history is incomplete at ${snapshot.cursor}`,
+					retryable: true,
+					details: { cursor: snapshot.cursor, gap: snapshot.gap },
+				});
+				return;
+			}
+			if (!snapshot.run || !payload) {
+				setConnectionState(snapshot.state === "loading" ? "loading" : "replaying");
+				return;
+			}
+			setOptimizerPayload(payload);
+			setOptimizerLoadError(null);
+			setConnectionState(
+				snapshot.state === "terminal" ? "terminal"
+					: snapshot.state === "reconnecting" ? "reconnecting"
+						: snapshot.state === "replaying" ? "replaying"
+							: "subscribed"
+			);
+			if (!postedReady) {
+				postedReady = true;
+				void bridges.optimizers?.recordVisualReady?.({
+					visualId: artifact.id,
+					optimizerRunId,
+					templateId: artifact.templateId ?? "optimizer.run.v1",
+					replayedThrough: snapshot.cursor,
+					subscribedFrom: snapshot.cursor + 1,
+					templateDigest: typeof artifact.metadata?.templateDigest === "string"
+						? artifact.metadata.templateDigest
+						: undefined
+				}).catch(() => undefined);
+			}
+		});
+	}, [artifact.bindings, artifact.id, artifact.templateId, artifact.metadata, visualIdentity]);
 
 	const boundRun = optimizerPayload?.run as { id?: string; algorithmId?: string } | undefined;
 	const boundRunId = boundRun?.algorithmId === "gepa" ? boundRun.id ?? null : null;
@@ -781,6 +753,15 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			data-visual-pinning={artifact.metadata?.pinned === true ? "pinned" : "unpinned"}
 			data-visual-sealing={artifact.metadata?.sealed === true || artifact.metadata?.seal ? "sealed" : "unsealed"}
 			data-visual-sharing={typeof artifact.metadata?.visibility === "string" ? String(artifact.metadata.visibility) : "private"}
+			data-progress-phase={progressView?.phaseId}
+			data-progress-phase-label={progressView?.phaseLabel}
+			data-progress-status={progressView?.status}
+			data-progress-completed={progressView?.completed != null ? String(progressView.completed) : undefined}
+			data-progress-total={progressView?.total != null ? String(progressView.total) : undefined}
+			data-progress-cost={progressView ? (progressView.costUsd == null ? "unavailable" : String(progressView.costUsd)) : undefined}
+			data-progress-tokens={progressView ? (progressView.promptTokens == null ? "unavailable" : String(progressView.promptTokens)) : undefined}
+			data-progress-terminal={progressView ? String(progressView.terminal) : undefined}
+			data-progress-result={progressView?.resultHeadline ?? progressView?.resultAbsentReason}
 		>
 			{selected.stale ? (
 				<p className="visual-stale-projection" role="status" data-testid="visual-last-known-good">

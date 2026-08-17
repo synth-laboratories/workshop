@@ -1,0 +1,197 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Live in-chat run progress — the transcript card and its expanded dialog.
+
+   Token-only by construction, so it lives outside app.css (see the styles
+   README). It composes the `.ws-*` primitives for buttons, badges, notes, and
+   the dialog shell, and adds only the geometry those primitives do not cover:
+   the card itself, the progress bar, the phase timeline, and the coverage line.
+
+   Two behavioural rules are enforced here rather than in the component:
+
+     · An indeterminate bar animates a travelling band and has no fill width,
+       so it cannot read as a percentage.
+     · Under `prefers-reduced-motion` the band stops moving and becomes a
+       static striped track. Progress is still visibly indeterminate; nothing
+       moves.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.run-progress-card {
+	display: flex;
+	flex-direction: column;
+	gap: var(--sp-3);
+	max-width: var(--measure-prose);
+	margin: var(--sp-3) 0;
+	padding: var(--sp-4) var(--sp-5);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-md);
+	background: var(--surface-raised);
+	font-size: var(--fs-meta);
+	line-height: var(--lh-body);
+}
+
+.run-progress-card.is-terminal { background: var(--surface-page); }
+.run-progress-card.is-interrupted { border-color: var(--border-warn, var(--border-subtle)); }
+.run-progress-card.is-unavailable,
+.run-progress-card.is-loading { color: var(--color-text-muted); }
+
+.run-progress-head {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: var(--sp-4);
+}
+
+.run-progress-title {
+	font-size: var(--fs-strong);
+	font-weight: var(--fw-semi);
+	letter-spacing: var(--tracking-tight);
+}
+
+.run-progress-phase {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--sp-2) var(--sp-3);
+	align-items: baseline;
+}
+
+.run-progress-faint { color: var(--color-text-muted); }
+
+/* The explanation under a value: coverage, ETA basis, or a source note. */
+.run-progress-coverage {
+	display: block;
+	margin-top: var(--sp-1);
+	color: var(--color-text-faint);
+	font-size: var(--fs-micro);
+}
+
+.run-progress-metrics {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--sp-2) var(--sp-4);
+	align-items: baseline;
+}
+
+.run-progress-milestone,
+.run-progress-result {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--sp-2);
+	align-items: baseline;
+	margin: 0;
+}
+
+.run-progress-result { font-weight: var(--fw-medium); }
+.run-progress-partial { margin-left: var(--sp-1); }
+
+.run-progress-unavailable {
+	margin: 0;
+	color: var(--color-text-muted);
+}
+
+.run-progress-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--sp-2);
+	align-items: center;
+}
+
+/* ── Progress bar ──────────────────────────────────────────────────────── */
+
+.run-progress-bar {
+	position: relative;
+	height: var(--sp-2);
+	overflow: hidden;
+	border-radius: var(--radius-pill);
+	background: var(--surface-sunken);
+}
+
+.run-progress-bar-fill {
+	position: absolute;
+	inset: 0 auto 0 0;
+	width: 0;
+	border-radius: var(--radius-pill);
+	background: var(--color-accent);
+	transition: width 240ms linear;
+}
+
+/* No width, no percentage: a travelling band says "working" and nothing more. */
+.run-progress-bar.is-indeterminate .run-progress-bar-fill {
+	width: 35%;
+	animation: run-progress-sweep 1400ms ease-in-out infinite;
+	transition: none;
+}
+
+@keyframes run-progress-sweep {
+	0% { transform: translateX(-100%); }
+	100% { transform: translateX(320%); }
+}
+
+/* ── Dialog ────────────────────────────────────────────────────────────── */
+
+.run-progress-dialog { width: min(680px, 100%); }
+
+.run-progress-dialog-head-aside {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-3);
+}
+
+.run-progress-section {
+	display: flex;
+	flex-direction: column;
+	gap: var(--sp-3);
+	font-size: var(--fs-meta);
+}
+
+.run-progress-timeline {
+	display: flex;
+	flex-direction: column;
+	gap: var(--sp-2);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.run-progress-timeline li {
+	display: grid;
+	grid-template-columns: auto minmax(0, 10rem) minmax(0, 1fr);
+	gap: var(--sp-3);
+	align-items: baseline;
+}
+
+.run-progress-timeline li[data-phase-status="pending"],
+.run-progress-timeline li[data-phase-status="skipped"] { color: var(--color-text-faint); }
+
+.run-progress-timeline-label { font-weight: var(--fw-medium); }
+
+.run-progress-milestones {
+	display: flex;
+	flex-direction: column;
+	gap: var(--sp-2);
+	margin: 0;
+	padding-left: var(--sp-5);
+}
+
+/* ── Narrow transcript widths ──────────────────────────────────────────── */
+
+@media (max-width: 620px) {
+	.run-progress-card { padding: var(--sp-4); }
+	.run-progress-head { flex-direction: column; gap: var(--sp-2); }
+	.run-progress-timeline li { grid-template-columns: auto minmax(0, 1fr); }
+	.run-progress-timeline li > .run-progress-faint { grid-column: 2; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.run-progress-bar-fill { transition: none; }
+	.run-progress-bar.is-indeterminate .run-progress-bar-fill {
+		width: 100%;
+		animation: none;
+		background: repeating-linear-gradient(
+			135deg,
+			var(--color-accent-subtle) 0,
+			var(--color-accent-subtle) var(--sp-2),
+			transparent var(--sp-2),
+			transparent var(--sp-4)
+		);
+	}
+}

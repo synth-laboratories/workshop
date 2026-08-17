@@ -3324,6 +3324,60 @@ fn a_tool_call_ends_the_segment_and_output_after_it_starts_a_new_one() {
 }
 
 #[test]
+fn interleaved_generation_and_tool_calls_exclude_interruptions_and_tool_time() {
+    // Generation → tool (18s) → generation → interrupted generation.
+    // TPS must come from contiguous non-interrupted generation deltas only.
+    let mut events = clean_segment("msg_pre", 0);
+    events.pop();
+    events.push(("item/started", tool_started("exec-1"), 2_000_000));
+    events.push((
+        "item/completed",
+        json!({"item": {"id": "exec-1", "type": "commandExecution"}}),
+        20_000_000,
+    ));
+    events.extend(clean_segment("msg_mid", 21_000_000));
+    let mut cut = clean_segment("msg_cut", 30_000_000);
+    cut.pop();
+    cut.push(("turn/interrupted", json!({}), 31_300_000));
+    events.extend(cut);
+
+    let measurements = replay(&events);
+    assert_eq!(measurements.len(), 3, "tool time or the interrupt merged segments");
+
+    let pre = measurements
+        .iter()
+        .find(|measurement| measurement.key.item_id == "msg_pre")
+        .expect("pre-tool generation segment");
+    let mid = measurements
+        .iter()
+        .find(|measurement| measurement.key.item_id == "msg_mid")
+        .expect("post-tool generation segment");
+    let interrupted = measurements
+        .iter()
+        .find(|measurement| measurement.key.item_id == "msg_cut")
+        .expect("interrupted generation segment");
+
+    assert_eq!(pre.duration_ms, 1_200.0);
+    assert_eq!(mid.duration_ms, 1_200.0);
+    assert!((pre.tps.unwrap() - 50.0).abs() < 1e-9);
+    assert!((mid.tps.unwrap() - 50.0).abs() < 1e-9);
+    assert!(
+        pre.duration_ms < 5_000.0 && mid.duration_ms < 5_000.0,
+        "18s of tool execution leaked into generation TPS"
+    );
+    assert_eq!(interrupted.status, SegmentStatus::Partial);
+    assert!(
+        interrupted.duration_ms < 5_000.0,
+        "tool time leaked into the interrupted segment: {}",
+        interrupted.duration_ms
+    );
+    assert!(
+        !interrupted.is_publishable(),
+        "an interrupted segment must not become the headline rate"
+    );
+}
+
+#[test]
 fn two_model_responses_in_one_turn_never_share_a_numerator_or_a_denominator() {
     let mut events = clean_segment("msg_first", 0);
     events.extend(clean_segment("msg_second", 10_000_000));
