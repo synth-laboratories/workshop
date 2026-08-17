@@ -421,14 +421,28 @@ async fn dead_approval_origin_expires_and_drains_pending_state() {
     })
     .await
     .expect("dead origin left an approval pending");
-    let events = core
-        .journal()
-        .session_events_after(request.session_id, 0, 100)
-        .await
-        .unwrap();
-    assert!(events.iter().any(|event| {
-        event.kind == "approval.expired" && event.payload["reason"] == "origin_process_exited"
-    }));
+    // Wait on the durable record, not only on the in-memory counter: the broker
+    // removes a request from `pending` before it journals the expiry, so
+    // `pending_len() == 0` is reached first and reading the journal right then
+    // is a race.
+    tokio::time::timeout(SETTLE_TIMEOUT, async {
+        loop {
+            let events = core
+                .journal()
+                .session_events_after(request.session_id.clone(), 0, 100)
+                .await
+                .unwrap();
+            if events.iter().any(|event| {
+                event.kind == "approval.expired"
+                    && event.payload["reason"] == "origin_process_exited"
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("dead origin never journalled its approval expiry");
 }
 
 #[tokio::test]
@@ -1043,6 +1057,7 @@ async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() 
         presentation_summary: None,
         approval_policy: "never".into(),
         sandbox: "workspace-write".into(),
+        recovery: None,
     };
     fs::write(
         codex_root.join("threads.json"),
@@ -2725,4 +2740,140 @@ async fn a_late_receipt_is_never_misattributed_to_the_next_turn() {
     assert_eq!(totals.billed_cost_usd, None);
     assert_eq!(totals.cost_source, CostSource::None);
     assert_eq!(receipts.drain(session).len(), 1);
+}
+
+/// The renderer lists Codex chats from this JSON cache, not from SQLite, so a
+/// database-only reconciliation still left the sidebar showing Working. The
+/// cache must be corrected before `list()` can be called at all.
+#[tokio::test]
+async fn a_running_record_left_by_a_dead_process_never_lists_as_running() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    fs::create_dir_all(&codex_root).unwrap();
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let sessions = SessionService::new(core.storage().database().clone());
+    let mut records = HashMap::new();
+    for seed in 201..=205 {
+        let session_id = format!("crashed-{seed}");
+        sessions
+            .create_or_update(SessionCreate {
+                id: session_id.clone(),
+                title: format!("Craftax seed {seed}"),
+                kind: SessionKind::Codex,
+                target: RuntimeTarget::from_codex_provider("openrouter", "gpt-5.6-luna"),
+                project_id: None,
+                remote_id: None,
+                codex_thread_id: Some(format!("thread-{seed}")),
+                status: SessionStatus::Ready,
+                state_generation: None,
+                metadata: json!({"titleOrigin": "automatic"}),
+                source: EventSource::Codex,
+            })
+            .await
+            .unwrap();
+        RunService::new(core.storage().database().clone())
+            .start(RunCreate {
+                id: format!("turn-{seed}"),
+                session_id: session_id.clone(),
+                mode: "codex_turn".into(),
+                model: Some("gpt-5.6-luna".into()),
+                adapter: None,
+                metadata: json!({"threadId": format!("thread-{seed}")}),
+                source: EventSource::Codex,
+            })
+            .await
+            .unwrap();
+        records.insert(
+            session_id.clone(),
+            CodexSessionRecord {
+                session_id,
+                thread_id: format!("thread-{seed}"),
+                workspace: temp.path().display().to_string(),
+                model: "gpt-5.6-luna".into(),
+                provider_name: "openrouter".into(),
+                provider_title: "OpenRouter Responses".into(),
+                base_url: "https://openrouter.ai/api/v1".into(),
+                status: SessionStatus::Running.as_str().into(),
+                title: Some(format!("Craftax seed {seed}")),
+                title_origin: Some("automatic".into()),
+                presentation_emotion: None,
+                presentation_summary: None,
+                approval_policy: "never".into(),
+                sandbox: "workspace-write".into(),
+                recovery: None,
+            },
+        );
+    }
+    fs::write(
+        codex_root.join("threads.json"),
+        serde_json::to_vec_pretty(&records).unwrap(),
+    )
+    .unwrap();
+
+    // One chat had actually claimed its turn before the crash; the other four
+    // died between `turn/start` and the claim. Both shapes must recover.
+    core.storage()
+        .database()
+        .transaction(|conn| {
+            crate::recovery::ownership::claim(
+                conn,
+                "crashed-201",
+                "turn-201",
+                "inst_previous_process",
+                Some("attach-dead"),
+                0,
+                chrono::Utc::now(),
+            )
+        })
+        .unwrap();
+    drop(core);
+
+    // The relaunch, through the production path: reconciliation happens inside
+    // CoreRuntime::open, before anything can read a session, and the manager is
+    // built afterward exactly as `setup` builds it.
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+
+    let listed = manager.list().await;
+    assert_eq!(listed.len(), 5);
+    for record in &listed {
+        assert_eq!(
+            record.status,
+            SessionStatus::Interrupted.as_str(),
+            "{} still lists as running",
+            record.session_id
+        );
+        let notice = record
+            .recovery
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} lost its recovery notice", record.session_id));
+        assert_eq!(notice.reason, "workshop_restarted");
+        assert!(notice.restartable);
+        assert_eq!(notice.recovery_attempt, 1);
+    }
+    let claimed = listed
+        .iter()
+        .find(|record| record.session_id == "crashed-201")
+        .unwrap();
+    assert_eq!(
+        claimed
+            .recovery
+            .as_ref()
+            .unwrap()
+            .previous_owner_instance_id
+            .as_deref(),
+        Some("inst_previous_process")
+    );
+
+    // The correction is durable: a second process reading the same file sees it.
+    let reread: HashMap<String, CodexSessionRecord> =
+        serde_json::from_slice(&fs::read(codex_root.join("threads.json")).unwrap()).unwrap();
+    assert!(reread
+        .values()
+        .all(|record| record.status == SessionStatus::Interrupted.as_str()));
 }

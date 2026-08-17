@@ -10,6 +10,17 @@ import { ProviderMark } from "./ProviderMark";
 import { PLUGIN_NAV, type PluginNavEntry } from "../runtime/pluginNav";
 import { findPluginStatus, pluginPresentation } from "../runtime/pluginPresentation";
 import type { PluginStatus } from "../bridge/types";
+import type { ChatPresence } from "@synth/runtime-protocol";
+
+/** One word per state. The chat row has no room for, and no need of, more. */
+const PRESENCE_LABELS: Record<ChatPresence, string> = {
+	idle: "Idle",
+	starting: "Starting",
+	working: "Working",
+	recovering: "Recovering",
+	interrupted: "Interrupted",
+	needsAttention: "Needs attention"
+};
 
 type CodexUsageSnapshot = {
 	usedPercent: number;
@@ -27,6 +38,12 @@ type Props = {
 	reportsActive?: boolean;
 	optimizersActive?: boolean;
 	workingChatIds?: ReadonlySet<string>;
+	/**
+	 * What each chat is doing, as opposed to what its stored status says. Only
+	 * `working` may render the live indicator; a chat whose owner died lands on
+	 * `recovering` / `needsAttention` and stays archivable.
+	 */
+	chatPresence?: Record<string, ChatPresence>;
 	activeLocalDecodeTps?: string | null;
 	unreadChatIds?: ReadonlySet<string>;
 	pinnedChatIds?: ReadonlySet<string>;
@@ -192,6 +209,7 @@ export function Sidebar({
 	reportsActive = false,
 	optimizersActive = false,
 	workingChatIds = new Set<string>(),
+	chatPresence = {},
 	activeLocalDecodeTps = null,
 	unreadChatIds = new Set<string>(),
 	pinnedChatIds = new Set<string>(),
@@ -364,6 +382,9 @@ export function Sidebar({
 									const title = conversationTitles[chat.id] ?? chat.title;
 									const pinned = pinnedChatIds.has(chat.id);
 									const working = workingChatIds.has(chat.id);
+								const presence = chatPresence[chat.id] ?? "idle";
+								const stalled =
+									presence === "recovering" || presence === "needsAttention" || presence === "interrupted";
 									const sectionLabel = chatIndex === firstPinnedIndex
 										? "Pinned"
 										: chatIndex === firstRecentIndex ? "Recents" : null;
@@ -438,6 +459,14 @@ export function Sidebar({
 														<span className="chat-working-rate" data-testid={`chat-working-rate-${chat.id}`}>{activeLocalDecodeTps}</span>
 													) : null}
 												</>
+											) : stalled ? (
+												<span
+													className={`chat-stalled-indicator${presence === "needsAttention" ? " attention" : ""}`}
+													aria-label={PRESENCE_LABELS[presence]}
+													title={PRESENCE_LABELS[presence]}
+													data-presence={presence}
+													data-testid={`chat-stalled-${chat.id}`}
+												/>
 											) : unreadChatIds.has(chat.id) ? (
 												<span className="chat-unread-indicator" aria-label="Finished, unviewed" title="Finished, unviewed" data-testid={`chat-unread-${chat.id}`} />
 											) : null}

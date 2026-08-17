@@ -66,9 +66,12 @@ function event(overrides = {}) {
 	};
 }
 
-function emptyState(sessions = [session()]) {
-	return { sessions, eventsBySession: {} };
+function emptyState(sessions = [session()], liveTurns = {}) {
+	return { sessions, eventsBySession: {}, liveTurns };
 }
+
+/** A session this renderer has watched a turn start on. */
+const OWNED = { "sess-1": "turn-1" };
 
 test("statusFromRuntimeEvent maps run lifecycle kinds", () => {
 	assert.equal(statusFromRuntimeEvent("ready", "run.started"), "running");
@@ -189,10 +192,13 @@ test("legacy terminal without an id fences only the turn after the latest user m
 	assert.equal(state.sessions[0].status, "ready");
 });
 
-test("selectSessionRunning trusts restored session status over stale run.started", () => {
+test("selectSessionRunning requires a live turn, not just a restored running status", () => {
 	const events = [event({ sequence: 1, eventKind: "run.started" })];
-	assert.equal(selectSessionRunning(session({ status: "ready" }), events), false);
-	assert.equal(selectSessionRunning(session({ status: "running" }), events), true);
+	assert.equal(selectSessionRunning(session({ status: "ready" }), events, OWNED), false);
+	assert.equal(selectSessionRunning(session({ status: "running" }), events, OWNED), true);
+	// The crash case: the row still says running, but nothing in this process
+	// owns the turn, so Stop would have nothing to stop.
+	assert.equal(selectSessionRunning(session({ status: "running" }), events, {}), false);
 	assert.equal(selectSessionRunning(undefined, events), true);
 });
 
@@ -206,8 +212,8 @@ test("selectSessionRunning keeps Stop when a newer user turn follows a terminal 
 			payload: { messageId: "m1", role: "user", content: "next" }
 		})
 	];
-	assert.equal(selectSessionRunning(session({ status: "running" }), events), true);
-	assert.equal(selectSessionRunning(session({ status: "ready" }), events), false);
+	assert.equal(selectSessionRunning(session({ status: "running" }), events, OWNED), true);
+	assert.equal(selectSessionRunning(session({ status: "ready" }), events, OWNED), false);
 });
 
 test("selectSessionRunning clears Stop on a terminal run without a newer user turn", () => {
@@ -215,8 +221,8 @@ test("selectSessionRunning clears Stop on a terminal run without a newer user tu
 		event({ sequence: 1, eventKind: "run.started" }),
 		event({ sequence: 2, eventKind: "run.failed" })
 	];
-	assert.equal(selectSessionRunning(session({ status: "running" }), events), false);
-	assert.equal(selectSessionRunning(session({ status: "failed" }), events), false);
+	assert.equal(selectSessionRunning(session({ status: "running" }), events, OWNED), false);
+	assert.equal(selectSessionRunning(session({ status: "failed" }), events, OWNED), false);
 });
 
 test("session.presented patches mascot overlay metadata without changing status", () => {

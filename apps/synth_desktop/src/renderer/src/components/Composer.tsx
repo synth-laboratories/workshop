@@ -69,8 +69,13 @@ export type ComposerTurn = {
 	steerError?: string | null;
 	onSteer?: (text: string) => void | Promise<void>;
 	onStop?: () => void;
-	/** Recoverable turn-start failure, rendered above the input inside its dock. */
-	sendFailure?: { message: string; onRetry: () => void } | null;
+	/**
+	 * Recoverable turn-start failure, or a turn a dead process abandoned,
+	 * rendered above the input inside its dock. `onRetry` is absent when
+	 * retrying could duplicate work that may already have happened — the state
+	 * is still shown, without an action that would be unsafe to take.
+	 */
+	sendFailure?: { message: string; onRetry?: () => void; actionLabel?: string } | null;
 };
 
 export type ComposerWorkspace = {
@@ -1251,7 +1256,11 @@ export function Composer({
 			{sendFailure ? (
 				<div className="composer-send-retry" role="status" data-testid="send-retry">
 					<span>{sendFailure.message}</span>
-					<button type="button" data-testid="send-retry-button" onClick={sendFailure.onRetry}>Retry</button>
+					{sendFailure.onRetry ? (
+						<button type="button" data-testid="send-retry-button" onClick={sendFailure.onRetry}>
+							{sendFailure.actionLabel ?? "Retry"}
+						</button>
+					) : null}
 				</div>
 			) : null}
 			{voiceError ? (

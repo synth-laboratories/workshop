@@ -123,6 +123,56 @@ export type Session = {
   metadata: Record<string, unknown>;
 };
 
+/** The last thing an abandoned turn durably did before its owner disappeared. */
+export type RecoveryActivity = {
+  kind: string;
+  label?: string | null;
+  at: string;
+};
+
+/** The operator prompt that produced an abandoned turn, so Restart can reuse it. */
+export type RecoveryPrompt = {
+  text: string;
+  clientMessageId?: string | null;
+};
+
+/**
+ * Written by the host when a previous process died holding a turn. Delivered
+ * both on `session.metadata.recovery` and as a `session/recovery_required`
+ * event, so a client that missed the event still learns what happened.
+ */
+export type RecoveryNotice = {
+  sessionId: string;
+  runId?: string | null;
+  reason: string;
+  previousOwnerInstanceId?: string | null;
+  lastHeartbeatAt?: string | null;
+  recoveryAttempt: number;
+  /** Replaying the prompt is safe: nothing consequential escaped. */
+  restartable: boolean;
+  /** An external action's outcome is unknown; retrying could duplicate it. */
+  needsAttention: boolean;
+  externalObjectId?: string | null;
+  lastActivity?: RecoveryActivity | null;
+  lastUserMessage?: RecoveryPrompt | null;
+  recoveredAt: string;
+};
+
+/**
+ * What a chat is *doing*, as opposed to what its last persisted status was.
+ *
+ * `working` is deliberately unreachable from stored state alone: it requires a
+ * live turn owned by the current Workshop instance. Everything a crash can
+ * leave behind lands on `interrupted` or `needsAttention` instead.
+ */
+export type ChatPresence =
+  | "idle"
+  | "starting"
+  | "working"
+  | "recovering"
+  | "interrupted"
+  | "needsAttention";
+
 export type Run = {
   id: string;
   sessionId: string;

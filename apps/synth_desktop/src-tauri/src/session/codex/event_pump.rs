@@ -205,6 +205,9 @@ async fn read_stdout<R: tauri::Runtime>(
         // inference from response text, so EOF must not overwrite it as an
         // unhealthy local agent.
         let final_answer = is_final_agent_message(&method, &params);
+        if final_answer {
+            crate::recovery::crash_checkpoint(crate::recovery::checkpoints::BEFORE_FINAL_MESSAGE);
+        }
         if is_context_compaction_notification(&method, &params) {
             if let Some(source) = persistence
                 .pending_compact_sources
@@ -296,6 +299,12 @@ async fn read_stdout<R: tauri::Runtime>(
             .persistence
             .notify_codex_event(&app, session_id.clone(), method.clone(), params.clone())
             .await;
+        // Live provider traffic is the proof that this process still owns the
+        // turn. Refreshing here — rather than on a timer the renderer holds —
+        // is what keeps a long XHigh turn from being reconciled away while it
+        // is genuinely thinking, and what makes a dead one expire on its own.
+        persistence.persistence.heartbeat_turn(&session_id).await;
+        crate::recovery::crash_checkpoint(crate::recovery::checkpoints::AFTER_FIRST_ACTIVITY);
         track_performance_event(
             &persistence.persistence,
             &persistence.performance_trackers,
@@ -384,6 +393,9 @@ async fn read_stdout<R: tauri::Runtime>(
                 record.status = status.as_str().into();
             }
             let _ = persist_records(&persistence.records, &persistence.state_path).await;
+            // The turn is over; drop the claim before the durable run settles,
+            // so no window exists where a finished turn still looks live.
+            persistence.persistence.release_turn(&session_id).await;
             if let Ok(Some(session)) = persistence
                 .persistence
                 .get_session(session_id.clone())
@@ -439,6 +451,11 @@ async fn read_stdout<R: tauri::Runtime>(
         owns_current
     };
     if owned_attachment {
+        // The app-server is gone, so this process can no longer advance the
+        // turn whatever its records say. Release first: the durable
+        // interruption below is best-effort, and an unreleased claim would
+        // outlive it.
+        persistence.persistence.release_turn(&session_id).await;
         let was_running = {
             let mut records = persistence.records.write().await;
             records.get_mut(&session_id).is_some_and(|record| {

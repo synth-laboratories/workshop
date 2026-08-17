@@ -161,11 +161,24 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             &format!("/v1/containers/{}/rollouts/prepare", id()?),
             Some(args.clone()),
         ),
-        "container_start_prepared_rollout" => request(
-            "POST",
-            &format!("/v1/containers/{}/rollouts/start", id()?),
-            Some(args.clone()),
-        ),
+        "container_start_prepared_rollout" => {
+            // The host opens a durable receipt for this launch so a crash
+            // cannot lead to a second paid rollout. That receipt has to be
+            // attributable, and only this process knows which chat it serves.
+            let mut args = args.clone();
+            if let (Some(object), Ok(session_id)) =
+                (args.as_object_mut(), env::var("SYNTH_SESSION_ID"))
+            {
+                if !session_id.trim().is_empty() {
+                    object.insert("sessionRef".into(), json!(session_id));
+                }
+            }
+            request(
+                "POST",
+                &format!("/v1/containers/{}/rollouts/start", id()?),
+                Some(args),
+            )
+        }
         "container_get_rollout" => {
             let rollout_id = args
                 .get("rollout_id")

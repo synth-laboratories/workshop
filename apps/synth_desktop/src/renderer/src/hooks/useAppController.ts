@@ -11,6 +11,8 @@ import type {
 	ContainerDeployment,
 	RuntimeControlKind,
 	RuntimeEvent,
+	ChatPresence,
+	RecoveryNotice,
 	RuntimeHealth,
 	Session,
 	VisualInstanceRecord,
@@ -25,10 +27,13 @@ import {
 	mergeSessionReplay,
 	patchSessionMetadata,
 	replaceSessions,
+	selectChatPresence,
 	selectSessionRunning,
 	selectWorkingChatIds,
+	sessionRecoveryNotice,
 	upsertSession,
 	useEventsBySession,
+	useLiveTurns,
 	useSessions
 } from "../stores/sessionStore";
 import {
@@ -153,6 +158,7 @@ export function useAppController() {
 	const [health, setHealth] = useState<RuntimeHealth | null>(null);
 	const [laguna, setLaguna] = useState<LagunaStatus | null>(null);
 	const sessions = useSessions();
+	const liveTurns = useLiveTurns();
 	const sessionsRef = useRef<Session[]>(sessions);
 	const eventsBySession = useEventsBySession();
 	const [codexActivityBySession, setCodexActivityBySession] = useState<Record<string, CodexActivityEvent[]>>({});
@@ -751,7 +757,29 @@ export function useAppController() {
 		sessions
 	]);
 
-	const workingChatIds = useMemo(() => selectWorkingChatIds(sessions), [sessions]);
+	// Working requires a live turn owned by this instance, never a stored status.
+	const workingChatIds = useMemo(
+		() => selectWorkingChatIds(sessions, liveTurns),
+		[liveTurns, sessions]
+	);
+
+	const chatPresence = useMemo(() => {
+		const presence: Record<string, ChatPresence> = {};
+		for (const session of sessions) {
+			presence[session.id] = selectChatPresence(session, liveTurns);
+		}
+		return presence;
+	}, [liveTurns, sessions]);
+
+	/** Durable notices left by turns a previous Workshop process abandoned. */
+	const recoveryNotices = useMemo(() => {
+		const notices: Record<string, RecoveryNotice> = {};
+		for (const session of sessions) {
+			const notice = sessionRecoveryNotice(session);
+			if (notice) notices[session.id] = notice;
+		}
+		return notices;
+	}, [sessions]);
 
 	const pinnedChatIds = useMemo(() => new Set(
 		Object.entries(preferences.conversations)
@@ -988,7 +1016,7 @@ export function useAppController() {
 	}, [activeChat?.id, activeChatTargetId]);
 	// Session status + event arbitration — single selector, not an App.tsx IIFE.
 	const activeChatRunning = activeChat
-		? selectSessionRunning(activeChatSession, eventsBySession[activeChat.id] ?? [])
+		? selectSessionRunning(activeChatSession, eventsBySession[activeChat.id] ?? [], liveTurns)
 		: false;
 	const activeChatWarmingUp = Boolean(
 		activeChatRunning &&
@@ -1502,6 +1530,32 @@ export function useAppController() {
 		void sendToSession(pending.sessionId, pending.text, { messageId: pending.messageId });
 	}, [failedSend, sendToSession]);
 
+	/**
+	 * Send the abandoned turn's original prompt again as a new attempt.
+	 *
+	 * A fresh message id, deliberately: reusing the crashed turn's id would
+	 * merge the retry into the bubble that failed, and the whole point is that
+	 * the interrupted attempt stays visible in history. The host records the
+	 * link (`recoveredFromRunId`) on the new run.
+	 */
+	const restartRecoveredChat = useCallback((sessionId: string) => {
+		const notice = recoveryNotices[sessionId];
+		const prompt = notice?.lastUserMessage?.text;
+		if (!notice || !prompt) {
+			showToast("This chat has no recorded message to restart from.");
+			return;
+		}
+		if (!notice.restartable) {
+			showToast(
+				notice.needsAttention
+					? "Check whether the previous work completed before retrying."
+					: "This task already started work that would be duplicated by a retry."
+			);
+			return;
+		}
+		void sendToSession(sessionId, prompt);
+	}, [recoveryNotices, sendToSession, showToast]);
+
 	const onComposerSend = useCallback(
 		async (text: string, images: ComposerImageAttachment[] = []) => {
 			try {
@@ -1865,6 +1919,9 @@ export function useAppController() {
 		pinnedChatIds,
 		conversationTitles,
 		workingChatIds,
+		chatPresence,
+		recoveryNotices,
+		restartRecoveredChat,
 		selectedTargetId,
 		onSelectTarget,
 		onNewConversation,

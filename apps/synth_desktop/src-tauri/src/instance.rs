@@ -1,7 +1,7 @@
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use specta::Type;
-use std::{env, fs, io, path::PathBuf};
+use std::{env, fs, io, path::PathBuf, sync::OnceLock};
 
 pub const INSTANCE_ENV: &str = "SYNTH_DESKTOP_INSTANCE";
 pub const DATA_ROOT_ENV: &str = "SYNTH_DESKTOP_DATA_ROOT";
@@ -25,6 +25,18 @@ pub struct InstanceDiagnostics {
     pub data_root: String,
     pub vite_url: Option<String>,
     pub manifest: Option<String>,
+}
+
+/// Identity of *this run of the backend*, not of the installation.
+///
+/// A durable row that says a turn is `running` proves only what was true when
+/// it was written. Stamping the owner with this value is what lets a later boot
+/// tell "a live worker in this process owns that turn" apart from "a previous
+/// process died holding it". A new value every start is the point: the previous
+/// owner can never accidentally match.
+pub fn boot_epoch() -> &'static str {
+    static BOOT_EPOCH: OnceLock<String> = OnceLock::new();
+    BOOT_EPOCH.get_or_init(|| format!("inst_{}", uuid::Uuid::new_v4().simple()))
 }
 
 pub fn name() -> Option<String> {
