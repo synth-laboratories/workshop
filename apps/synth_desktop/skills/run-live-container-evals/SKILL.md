@@ -158,6 +158,23 @@ again. Resume evidence with `container_poll_rollout(after=<last sequence>)`,
 advance to `next_cursor`, de-duplicate `(stream_id, sequence)`, and stop retrying
 when `cursor.closed` is true. SSE may then reattach with `Last-Event-ID`.
 
+## Sealed traces
+
+Sealing happens in the container; indexing happens in Workshop. They are two
+authorities, and a trace that exists in one is not automatically in the other.
+
+- A terminal rollout record carries a `trace` reference: id, content digest,
+  event count, and where to fetch it.
+- `container_get_rollout` on a terminal rollout imports that seal into the
+  Workshop trace index and reports what happened under `trace_import`.
+- If a sealed trace id is one `trace_manage get` cannot find, import it by
+  identity: `trace_manage({operation: "import", arguments: {container_id,
+  rollout_id}})`. Never pass a path or a URL; Workshop resolves the container's
+  address from its own registry.
+- `inspectable: false` on an import is a real answer, not a retry signal: the
+  container returned a lite seal rather than a self-contained Trace V5 bundle,
+  so it is kept as provenance but cannot be projected into the inspector.
+
 ## Replay checks
 
 - The evaluation-time slider replays the complete multi-rollout view up to the

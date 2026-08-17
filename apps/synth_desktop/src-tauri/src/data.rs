@@ -245,6 +245,13 @@ impl DataStore {
         Self { db, content }
     }
 
+    /// Where an import may stage bytes before the format authority inspects
+    /// them. Callers use this instead of inventing a temp directory, so staged
+    /// trace bytes live under the same instance root as what they become.
+    pub fn staging_root(&self) -> std::path::PathBuf {
+        self.content.root().join(".trace-staging")
+    }
+
     pub async fn list_containers(&self) -> Result<Vec<ContainerDeployment>> {
         self.db.clone().run(|conn| list_containers(conn)).await
     }

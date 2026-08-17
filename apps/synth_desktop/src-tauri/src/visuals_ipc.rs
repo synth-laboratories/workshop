@@ -1472,7 +1472,29 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let state = get_rollout_status(&client, &base, rollout_id)
                 .await?
                 .context("unknown rollout")?;
-            Ok(json!({"container_id": id, "rollout_id": rollout_id, "state": state}))
+            // A terminal rollout that names its seal gets imported here, on the
+            // authoritative reconciliation an agent already performs. Sealing
+            // and discoverability were two separate authorities with no edge
+            // between them: Containers held a complete sealed trace and
+            // Workshop's index stayed empty, so the inspector could not resolve
+            // a trace that demonstrably existed.
+            let import = if state.get("terminated").and_then(Value::as_bool) == Some(true) {
+                match import_terminal_trace(core, id, rollout_id, &state).await {
+                    Ok(value) => value,
+                    // Import is reconciliation, not the answer to this call.
+                    // A failure here must not hide the rollout state the caller
+                    // asked for; it is reported beside it.
+                    Err(error) => json!({"indexed": false, "error": error.to_string()}),
+                }
+            } else {
+                Value::Null
+            };
+            Ok(json!({
+                "container_id": id,
+                "rollout_id": rollout_id,
+                "state": state,
+                "trace_import": import,
+            }))
         }
         ("POST", path)
             if path.starts_with("/v1/containers/") && path.ends_with("/rollouts/poll") =>
@@ -2502,6 +2524,184 @@ async fn dispatch_diagnostics(
     }
 }
 
+/// Fail an inspector request with a code that names the recovery, not with
+/// "trace not found".
+///
+/// Containers sealed a trace and Workshop's index did not have it, because
+/// nothing carries a sealed trace across that boundary on its own. The agent
+/// could only guess at binding shapes and paths. Say which side is missing it,
+/// and which call fixes that.
+async fn require_indexed_trace(core: &CoreRuntime, trace_id: &str) -> Result<()> {
+    if core.data().get_trace(trace_id.to_string()).await.is_ok() {
+        return Ok(());
+    }
+    Err(anyhow::Error::new(
+        crate::error::StructuredFailure::new(
+            "trace_not_indexed",
+            format!("{trace_id} is not in this Workshop's trace index"),
+            "A container can hold a sealed trace this Workshop has never imported. Import it by identity with trace_manage import {container_id, rollout_id}, then open it.",
+        )
+        .retryable(false)
+        .with_details(json!({"traceId": trace_id})),
+    ))
+}
+
+/// Import the seal a terminal rollout record names, unless it is already
+/// indexed. Silent when the container announces no trace: a rollout that sealed
+/// nothing is not a failure.
+async fn import_terminal_trace(
+    core: &CoreRuntime,
+    container_id: &str,
+    rollout_id: &str,
+    state: &Value,
+) -> Result<Value> {
+    let Some(reference) = state.get("trace").filter(|value| value.is_object()) else {
+        return Ok(Value::Null);
+    };
+    if let Some(trace_id) = reference.get("trace_id").and_then(Value::as_str) {
+        if core.data().get_trace(trace_id.to_string()).await.is_ok() {
+            return Ok(json!({"indexed": true, "duplicate": true, "traceId": trace_id}));
+        }
+    }
+    import_container_trace(core, container_id, rollout_id).await
+}
+
+/// Import a container's sealed trace by identity.
+///
+/// The container registry is the trusted side of this call: the agent names a
+/// container and a rollout, and Workshop resolves the URL itself. No path or
+/// URL crosses the agent boundary, which is the reason the trace tools reject
+/// those arguments in the first place.
+///
+/// Preference order is deliberate. A full Trace V5 bundle archive is the only
+/// input that can be *trusted*, indexed, and projected for the inspector; a
+/// lite seal document is recorded as a provenance-bearing import but cannot be
+/// projected, and this says so rather than reporting a success the inspector
+/// will contradict.
+async fn import_container_trace(
+    core: &CoreRuntime,
+    container_id: &str,
+    rollout_id: &str,
+) -> Result<Value> {
+    let container = core.data().get_container(container_id.to_string()).await?;
+    let base = validated_loopback_rollout_base(
+        container
+            .base_url
+            .as_deref()
+            .context("container has no base URL")?,
+    )?;
+    let client = crate::http::http_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
+        .build()?;
+    let state = get_rollout_status(&client, &base, rollout_id)
+        .await?
+        .context("unknown rollout")?;
+    let reference = state.get("trace").filter(|value| value.is_object());
+    let staging = core.data().staging_root().join("container-seals");
+    fs::create_dir_all(&staging)?;
+
+    // A bundle archive first: only a self-contained Trace V5 archive can be
+    // trusted, indexed, and projected into the inspector.
+    let bundle_url = reference
+        .and_then(|value| value.get("bundle_url"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("/rollouts/{rollout_id}/trace/bundle"));
+    let bundle = fetch_trace_artifact(&client, &base, &bundle_url).await?;
+    let (source_path, source_kind) = if let Some(bytes) = bundle {
+        let path = staging.join(format!("{rollout_id}.trace-bundle.zip"));
+        fs::write(&path, bytes)?;
+        (path, "container_bundle")
+    } else {
+        let seal_url = reference
+            .and_then(|value| value.get("url"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("/rollouts/{rollout_id}/trace"));
+        let Some(bytes) = fetch_trace_artifact(&client, &base, &seal_url).await? else {
+            return Err(anyhow::Error::new(
+                crate::error::StructuredFailure::new(
+                    "trace_not_sealed_by_container",
+                    format!("{container_id} has no sealed trace for rollout {rollout_id}"),
+                    "Wait for the rollout to reach a terminal state, then import again. A running rollout has sealed nothing yet.",
+                )
+                .retryable(true)
+                .with_details(json!({"containerId": container_id, "rolloutId": rollout_id})),
+            ));
+        };
+        let path = staging.join(format!("{rollout_id}.trace-v5.json"));
+        fs::write(&path, bytes)?;
+        (path, "container_seal")
+    };
+
+    let result = core
+        .data()
+        .ingest_trace_bundle(crate::trace_ingest::TraceBundleIngestRequest {
+            source_path: source_path.display().to_string(),
+            source_kind: Some(source_kind.to_owned()),
+            title: Some(format!("{rollout_id} · {container_id}")),
+            source_uri: Some(format!("{base}/rollouts/{rollout_id}")),
+        })
+        .await;
+    let _ = fs::remove_file(&source_path);
+    let (result, event) = result?;
+    core.broadcast_committed(event);
+
+    let indexed: Vec<Value> = result
+        .traces
+        .iter()
+        .map(|trace| json!({"traceId": trace.id, "digest": trace.digest}))
+        .collect();
+    Ok(json!({
+        "containerId": container_id,
+        "rolloutId": rollout_id,
+        "sourceKind": source_kind,
+        "compatibilityLevel": result.compatibility_level,
+        "trusted": result.trusted,
+        "duplicate": result.duplicate,
+        // Inspectable only when the import produced indexed trace records. A
+        // lite seal is retained with its provenance but cannot be projected,
+        // and saying otherwise is how an agent ends up retrying an inspector
+        // that can never render.
+        "inspectable": !indexed.is_empty(),
+        "traces": indexed,
+        "note": if indexed.is_empty() {
+            "Imported as a provenance record only: this container returned a lite seal, not a self-contained Trace V5 bundle, so it cannot be projected into the inspector."
+        } else {
+            "Sealed Trace V5 is now indexed in Workshop."
+        },
+    }))
+}
+
+/// Fetch one trace artifact, treating 404 as "this container does not offer it"
+/// rather than as a failure.
+async fn fetch_trace_artifact(
+    client: &reqwest::Client,
+    base: &str,
+    route: &str,
+) -> Result<Option<Vec<u8>>> {
+    let url = resolve_declared_url(base, route)?;
+    let response = client.get(url).send().await;
+    let response = match response {
+        Ok(response) => response,
+        // A container that never implemented the route is a fallback, not an
+        // error worth failing the whole import over.
+        Err(_) => return Ok(None),
+    };
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let bytes = response.error_for_status()?.bytes().await?;
+    if bytes.len() as u64 > limits::MAX_IMPORTED_TRACE_BYTES {
+        anyhow::bail!(
+            "container trace artifact exceeded {} bytes",
+            limits::MAX_IMPORTED_TRACE_BYTES
+        );
+    }
+    Ok(Some(bytes.to_vec()))
+}
+
 async fn dispatch_traces(
     method: &str,
     path: &str,
@@ -2587,8 +2787,26 @@ async fn dispatch_traces(
                 "visual": shown,
             }))
         }
+        ("POST", "/v1/traces/import") => {
+            let container_id = body
+                .get("container_id")
+                .or_else(|| body.get("containerId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .context("trace import requires container_id")?;
+            let rollout_id = body
+                .get("rollout_id")
+                .or_else(|| body.get("rolloutId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .context("trace import requires rollout_id")?;
+            import_container_trace(core, container_id, rollout_id).await
+        }
         ("POST", "/v1/traces/open") => {
             let id = trace_id()?;
+            require_indexed_trace(core, &id).await?;
             let visual = crate::presentation::ensure_trace_inspector(core, &id).await?;
             let session_id = body
                 .get("sessionRef")
