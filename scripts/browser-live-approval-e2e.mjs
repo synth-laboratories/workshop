@@ -31,9 +31,11 @@ function descriptor(name) {
   assert.equal(typeof parsed.token, "string");
   return parsed;
 }
-const evalDriver = descriptor("eval-driver.json");
 const ipc = descriptor("visuals-ipc.json");
-const sessionId = `approval-e2e-${Date.now()}`;
+const existingSessionId = argument("--session-id");
+const sessionTitle = argument("--session-title") ?? "Browser approval E2E";
+const evalDriver = existingSessionId ? undefined : descriptor("eval-driver.json");
+const sessionId = existingSessionId ?? `approval-e2e-${Date.now()}`;
 async function request(connection, route, body) {
   const response = await fetch(`${connection.url}${route}`, {
     method: "POST",
@@ -45,14 +47,16 @@ async function request(connection, route, body) {
   return payload;
 }
 
-await request(evalDriver, "/v1/sessions", {
-  sessionId,
-  model: "openai/gpt-5.6-luna",
-  provider: "openrouter",
-  approvalPolicy: "on-request",
-  sandbox: "workspace-write",
-});
-await request(ipc, "/v1/sessions/present", { sessionId, title: "Browser approval E2E" });
+if (evalDriver) {
+  await request(evalDriver, "/v1/sessions", {
+    sessionId,
+    model: "openai/gpt-5.6-luna",
+    provider: "openrouter",
+    approvalPolicy: "on-request",
+    sandbox: "workspace-write",
+  });
+  await request(ipc, "/v1/sessions/present", { sessionId, title: sessionTitle });
+}
 
 const html = `<!doctype html><html><body>
 <h1>Consequential approval fixture</h1>
@@ -107,7 +111,7 @@ try {
     tab_id: tabId,
     target: { locator: { role: "button", name: "Delete test project", exact: true } },
   });
-  console.log(JSON.stringify({ event: "ready_for_ui_approval", sessionId, title: "Browser approval E2E", expectedButton: "Approve once", expectedDetail: "Delete test project" }));
+  console.log(JSON.stringify({ event: "ready_for_ui_approval", sessionId, title: sessionTitle, expectedButton: "Approve once", expectedDetail: "Delete test project" }));
   const click = await Promise.race([
     pendingClick,
     new Promise((_, reject) => setTimeout(() => reject(new Error("timed out waiting for the live UI approval click")), 120_000)),
