@@ -15,6 +15,7 @@ mod recipes;
 mod service;
 mod sft_client;
 mod sft_recipes;
+mod sft_result;
 mod tinker_catalog;
 
 pub use eval_candidates::EvalStageCandidatesRequest;

@@ -2464,6 +2464,39 @@ async fn dispatch_optimizer(
             Ok(json!({ "events": events }))
         }
         ("GET", path)
+            if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/milestone") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/milestone");
+            let after_seq = body
+                .get("after_seq")
+                .or_else(|| body.get("afterSeq"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let timeout_ms = body
+                .get("timeout_ms")
+                .or_else(|| body.get("timeoutMs"))
+                .and_then(Value::as_u64)
+                .unwrap_or(30_000);
+            let mut kinds = Vec::new();
+            if let Some(kind) = body.get("kind").and_then(Value::as_str) {
+                kinds.push(kind.to_string());
+            }
+            if let Some(array) = body.get("kinds").and_then(Value::as_array) {
+                kinds.extend(
+                    array
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string),
+                );
+            }
+            let page = optimizers
+                .wait_milestone(id.to_string(), after_seq, kinds, timeout_ms)
+                .await?;
+            Ok(page)
+        }
+        ("GET", path)
             if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/state/batch") =>
         {
             let id = path

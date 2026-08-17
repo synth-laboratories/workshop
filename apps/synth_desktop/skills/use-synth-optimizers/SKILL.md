@@ -28,11 +28,10 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 1. For a run started from chat, pass `open_visual: true`. The host creates and binds the algorithm-family visual before starting compute, reuses one durable visual ID, and shows it in the current conversation's right pane. Do not create a second generic visual for the same run.
 2. For an existing or historical run, call `open_visual` with its `optimizer_run_id`. This reuses its primary visual and presents it in the current conversation without changing the run's original ownership.
 3. Record `run.id`, the primary visual ID in `run.visualRefs`, and `run.cursorSeq`. Keep the pane open while following the run; the visual reads the same durable event cursor and continues updating independently of tool polling.
-4. Call `watch_run` with `optimizer_run_id` and `after_seq` equal to the last processed sequence. Advance to the greatest returned sequence. Empty batches are normal.
-   - Wait for progress only by calling `watch_run` again (or `get_run` when a status snapshot is useful). Never run a shell or terminal command, including `sleep`, just to delay or poll an optimizer run; repeated optimizer MCP calls are the supported waiting mechanism.
+4. Wait for SFT progress with `wait_milestone` (`kind` or `kinds`: `validation`, `queue_transition`, `checkpoint`, `eval_phase`, `warning`, `failure`, `terminal`). One call per milestone. Do not poll `watch_run` in a tight loop; `watch_run` is for catching up a cursor, not for waiting. Never run a shell or terminal command, including `sleep`, just to delay or poll an optimizer run.
 5. Use `get_run` for status and summary, and `get_state` for the algorithm-specific slices in its reference.
 6. Stop only at `completed`, `failed`, or `cancelled`. Use `cancel_run` only when the user requests it.
-7. After a Desktop restart, recover with `list_runs`/`get_run`, call `open_visual`, and continue from the persisted cursor. Reconcile cloud runs before watching them. Local process records and events survive restart, but a process owned by the previous Desktop session is not reattached.
+7. After a Desktop restart, recover with `list_runs`/`get_run`, call `open_visual`, and continue from the persisted cursor. Hosted SFT mirrors reattach from `summary.hostedMirror.cursor` without resubmitting the job. Reconcile cloud runs before watching them. Local process records and events survive restart, but a process owned by the previous Desktop session is not reattached unless it is a hosted SFT mirror.
 
 ## Present the result
 
@@ -44,5 +43,5 @@ Show the visual before a chat-started run and whenever the user asks to inspect 
 - artifact titles and visual ID;
 - bounded failure diagnostic and log filename when failed.
 
-Distinguish measurement-only held-out evaluations from evidence used for selection or promotion. For `eval`, report the run status and selection status separately: a completed run that promoted nothing is a result, not a failure.
+Distinguish measurement-only held-out evaluations from evidence used for selection or promotion. Selection retains a checkpoint; it is not an uplift claim. Report the terminal as `Completed · improvement demonstrated`, `Completed · no measured improvement`, or `Completed · evaluation inconclusive`. Zero-score or no-baseline cohorts cannot produce `improvement_demonstrated`. For `eval`, report the run status and selection status separately: a completed run that promoted nothing is a result, not a failure.
 For GEPA, do not stop at `get_result`: retrieve both `gepa.candidates` and `gepa.frontier`, then explain the selected candidate against the seed and other proposals using the available train, minibatch, held-out, frontier, and rejection evidence.
