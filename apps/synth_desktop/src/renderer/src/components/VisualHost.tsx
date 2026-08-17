@@ -699,8 +699,21 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	if (!Shell) return <p className="visual-loading">Loading visual shell…</p>;
 	const resolvedProps = { ...synchronouslyResolved.props, ...traceResolution.props };
 	const showConnection = Boolean(optimizerPayload || optimizerLoadError || connectionState !== "loading");
+	const boundEvents = Array.isArray(optimizerPayload?.events) ? optimizerPayload.events as unknown[] : [];
+	const boundStatus = typeof (optimizerPayload?.run as { status?: string } | undefined)?.status === "string"
+		? (optimizerPayload?.run as { status?: string }).status ?? ""
+		: "";
+	const transportTerminal = connectionState === "terminal" || ["completed", "failed", "cancelled", "succeeded"].includes(boundStatus);
 	return (
-		<div data-testid="visual-template-shell" data-connection-state={showConnection ? connectionState : undefined}>
+		<div
+			data-testid="visual-template-shell"
+			data-connection-state={showConnection ? connectionState : undefined}
+			data-visual-transport-state={connectionState === "loading" ? "idle" : connectionState}
+			data-visual-terminal={transportTerminal ? "true" : "false"}
+			data-visual-semantic-event-count={String(boundEvents.length)}
+			data-visual-rollout-count={String(boundEvents.length)}
+			data-visual-error={optimizerLoadError ?? undefined}
+		>
 			{showConnection ? <p className="visual-connection-state" data-testid="visual-connection-state">{connectionState}</p> : null}
 			<Shell
 				{...(resolvedProps as ShellProps)}

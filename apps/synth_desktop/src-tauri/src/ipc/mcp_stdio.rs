@@ -100,16 +100,27 @@ impl ToolLoopBreaker {
 
 fn normalize_error(error: &str) -> String {
     let mut normalized = String::with_capacity(error.len());
-    let mut in_digits = false;
-    for character in error.chars() {
-        if character.is_ascii_digit() {
-            if !in_digits {
-                normalized.push('#');
-                in_digits = true;
+    let chars: Vec<char> = error.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index].is_ascii_digit() {
+            let prev_ident = index
+                .checked_sub(1)
+                .is_some_and(|prev| chars[prev].is_ascii_alphanumeric() || chars[prev] == '_');
+            let mut end = index;
+            while end < chars.len() && chars[end].is_ascii_digit() {
+                end += 1;
             }
+            let next_ident = end < chars.len() && (chars[end].is_ascii_alphabetic() || chars[end] == '_');
+            if prev_ident || next_ident {
+                normalized.extend(chars[index..end].iter());
+            } else {
+                normalized.push('#');
+            }
+            index = end;
         } else {
-            in_digits = false;
-            normalized.push(character);
+            normalized.push(chars[index]);
+            index += 1;
         }
     }
     normalized
@@ -300,6 +311,18 @@ mod tests {
         assert!(breaker
             .terminal_error("visual_manage", &other_visual)
             .is_none());
+    }
+
+    #[test]
+    fn breaker_preserves_digits_inside_identifiers() {
+        assert_eq!(
+            normalize_error("viewport 640 failed: denied"),
+            normalize_error("viewport 800 failed: denied")
+        );
+        assert_ne!(
+            normalize_error("capture vis_12 failed"),
+            normalize_error("capture vis_34 failed")
+        );
     }
 
     #[test]
