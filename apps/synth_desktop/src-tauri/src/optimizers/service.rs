@@ -1326,6 +1326,74 @@ fn freeze_terminal_cursor(run: &mut OptimizerRunRecord) {
             });
         }
     }
+    project_visual_evidence(run);
+}
+
+/// Write-once four-state visual verdict at terminal. Partial/failed never
+/// changes run status — the turn completes and the agent reports the state.
+fn project_visual_evidence(run: &mut OptimizerRunRecord) {
+    if !matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+        return;
+    }
+    if run
+        .summary
+        .get("visualEvidence")
+        .is_some_and(|value| value.is_object())
+    {
+        return;
+    }
+    let ready = run
+        .summary
+        .get("visualReadyReceipt")
+        .is_some_and(|value| !value.is_null());
+    let reviewed = run
+        .summary
+        .pointer("/visualReadyReceipt/qualityGate")
+        .is_some_and(|value| !value.is_null())
+        || run
+            .summary
+            .get("authoringReviews")
+            .and_then(Value::as_array)
+            .is_some_and(|reviews| !reviews.is_empty());
+    let has_visual = run.visual_refs.iter().any(|item| item.kind == "visual");
+    let render_failed = run.status == "failed"
+        && run.error.as_ref().is_some_and(|error| {
+            error
+                .to_string()
+                .to_lowercase()
+                .contains("visual")
+        });
+    let (state, detail) = if ready {
+        ("ready", "visual readiness receipt posted")
+    } else if reviewed {
+        (
+            "reviewed",
+            "reviews recorded without a readiness receipt",
+        )
+    } else if render_failed || !has_visual {
+        (
+            "failed",
+            "no usable product visual; this does not block task completion",
+        )
+    } else {
+        (
+            "partial",
+            "product visual exists but is not certified; this does not block task completion",
+        )
+    };
+    let evidence = json!({
+        "state": state,
+        "decidedAt": chrono::Utc::now().to_rfc3339(),
+        "detail": detail
+    });
+    match run.summary.as_object_mut() {
+        Some(summary) => {
+            summary.insert("visualEvidence".into(), evidence);
+        }
+        None => {
+            run.summary = json!({ "visualEvidence": evidence });
+        }
+    }
 }
 
 fn project_waiting_for_viewer(run: &mut OptimizerRunRecord) {
@@ -4442,6 +4510,49 @@ pub(in crate::optimizers) mod tests {
         assert_eq!(result["heldoutBestCandidate"]["id"], json!("heldout_winner"));
         assert_eq!(result["selectedCandidate"]["id"], json!("train_selected"));
         assert_eq!(result["identityConsistent"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn terminal_summary_records_visual_evidence_without_blocking_completion() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "visual_evidence_run",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = run.clone();
+        stored.status = "completed".into();
+        stored.visual_refs = vec![crate::optimizers::models::OptimizerResourceRef {
+            kind: "visual".into(),
+            id: "visual_evidence_1".into(),
+            digest: None,
+            role: None,
+            title: None,
+            metadata: json!({}),
+        }];
+        stored.summary = json!({});
+        let persisted = svc.persist_run(stored).await.unwrap();
+        assert_eq!(persisted.status, "completed");
+        assert_eq!(persisted.summary["visualEvidence"]["state"], json!("partial"));
+        assert_eq!(
+            persisted.summary["visualEvidence"]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("does not block"),
+            true
+        );
+
+        let mut ready = persisted.clone();
+        ready.summary["visualReadyReceipt"] = json!({"schemaVersion": "synth.visual-subscription-receipt.v1"});
+        ready.summary.as_object_mut().unwrap().remove("visualEvidence");
+        let rerecorded = svc.persist_run(ready).await.unwrap();
+        assert_eq!(rerecorded.summary["visualEvidence"]["state"], json!("ready"));
     }
 
     #[tokio::test]

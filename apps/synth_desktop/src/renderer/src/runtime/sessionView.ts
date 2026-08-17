@@ -1703,6 +1703,7 @@ function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 		bindings: objectValue(visual.bindings),
 		metadata,
 		status,
+		ownerSessionId: stringField(visual, "sessionId", "session_id", "ownerSessionId", "owner_session_id"),
 		preview: {
 			variant: templateId.includes("scrub") || templateId.includes("rollout")
 				? "craftax_frame"
@@ -1767,6 +1768,9 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 				? payload.templateId
 				: artifacts.get(id)?.templateId;
 		const prior = artifacts.get(id);
+		const ownerSessionId =
+			stringField(payload, "sessionId", "session_id", "ownerSessionId", "owner_session_id")
+			?? prior?.ownerSessionId;
 		artifacts.set(id, {
 			id,
 			kind: "report",
@@ -1778,6 +1782,7 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			shownByAgent: true,
 			templateId,
 			visualId: id,
+			ownerSessionId,
 			bindings:
 				payload.bindings && typeof payload.bindings === "object"
 					? (payload.bindings as Record<string, unknown>)
@@ -1806,6 +1811,24 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 	return result;
 }
 
+/** Keep an open pane only if that artifact still belongs to this chat. */
+export function openArtifactIdForChat(
+	openId: string | null,
+	artifacts: ArtifactRef[] | undefined
+): string | null {
+	if (!openId) return null;
+	return artifacts?.some((artifact) => artifact.id === openId) ? openId : null;
+}
+
+/** Outputs lists this chat's owned visuals. Foreign discovery is labeled, never adopted. */
+export function ownedChatArtifacts(chatId: string, artifacts: ArtifactRef[] | undefined): ArtifactRef[] {
+	return (artifacts ?? []).filter((artifact) => {
+		if (artifact.templateId === "synth.subagents.v1") return true;
+		if (!artifact.ownerSessionId) return true;
+		return artifact.ownerSessionId === chatId;
+	});
+}
+
 export function visualRecordToArtifact(visual: VisualInstanceRecord): ArtifactRef {
 	return {
 		id: visual.id,
@@ -1813,6 +1836,7 @@ export function visualRecordToArtifact(visual: VisualInstanceRecord): ArtifactRe
 		title: visual.title,
 		templateId: visual.templateId,
 		visualId: visual.id,
+		ownerSessionId: typeof visual.metadata?.sessionId === "string" ? visual.metadata.sessionId : undefined,
 		rendererKind: typeof visual.metadata?.rendererKind === "string" ? visual.metadata.rendererKind : undefined,
 		bindings: visual.bindings,
 		preview: {

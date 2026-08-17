@@ -1908,6 +1908,23 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let query: VisualQuery = serde_json::from_value(body.clone()).unwrap_or_default();
             Ok(json!({"visuals": registry.list(query).await?}))
         }
+        ("GET", path) if path.starts_with("/v1/cas/") => {
+            let digest = path
+                .trim_start_matches("/v1/cas/")
+                .trim_start_matches("sha256:");
+            if digest.is_empty() || digest.contains('/') {
+                anyhow::bail!("invalid content digest");
+            }
+            let bytes = registry.content().get_bytes("blobs", digest)?;
+            match serde_json::from_slice::<Value>(&bytes) {
+                Ok(value) => Ok(value),
+                Err(_) => Ok(json!({
+                    "digest": digest,
+                    "mediaType": "application/octet-stream",
+                    "base64": base64::engine::general_purpose::STANDARD.encode(bytes),
+                })),
+            }
+        }
         ("GET", "/v1/seals") => {
             let visual_id = body
                 .get("visual_id")

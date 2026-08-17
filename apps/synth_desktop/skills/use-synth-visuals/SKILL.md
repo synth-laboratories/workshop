@@ -7,7 +7,7 @@ description: Use when creating, updating, inspecting, or opening a Synth Desktop
 
 Choose the visual grammar from the evidence. Treat registered templates as optional shortcuts, not mandates. For ad-hoc analysis, prefer `analysis.visual.v1` and author its ordered `spec.blocks` at creation time. Use `blank.canvas.v1` when the composition cannot be expressed cleanly with those blocks. If the artifact is a system, UML, flow picture, or time-aware technical explainer, load `author-synth-diagrams`. It chooses among `diagram.mermaid.v1`, `diagram.systems.v1`, `diagram.systems.dynamic.v1`, or a focused combination; do not dump SVG/HTML/JavaScript into a canvas.
 
-Optimizer visuals are a strict exception to the authoring workflow below. They are product-owned and already configured by `use-synth-optimizers`: only call `show` when that workflow asks you to recover a missing subscription receipt. Never call `authoring_context`, `capture_review`, `review`, `update`, or `mark_ready` for an optimizer-owned visual.
+Optimizer visuals (`optimizer.*`) are a strict exception to the authoring workflow below. They are product-owned and already configured by `use-synth-optimizers`. Report `visualEvidence.state` (`ready` | `reviewed` | `partial` | `failed`); never loop capture/repair. `partial` and `failed` never block task completion. Only call `show` when that workflow asks you to recover a missing subscription receipt. Never call `authoring_context`, `capture_review`, `review`, `update`, or `mark_ready` for an optimizer-owned visual.
 
 ## Intended approach
 
@@ -33,7 +33,7 @@ or filesystem search to discover this tool.
 | Operation | Arguments |
 | --- | --- |
 | `list_templates` | `{ "genre"?: string }` |
-| `list` | `{ "search"?: string, "status"?: string, "session_id"?: string }` |
+| `list` | `{ "search"?: string, "status"?: string, "session_id"?: string, "scope"?: "session" \| "instance" }` — defaults to this task; `scope: "instance"` is labeled cross-task discovery |
 | `get` | `{ "visual_id": string }` |
 | `create` | `{ "template_id": string, "title"?: string, "content"?: string, "props"?: object, "session_id"?: string, "instance_id"?: string }` |
 | `update` | `{ "visual_id": string, "title"?: string, "content"?: string, "bindings"?: object, "status"?: string }` — `bindings` must be the canonical envelope; prefer `bind` |
@@ -61,7 +61,7 @@ other clients but are intentionally not advertised to Codex.
 5. Show exact units and provenance. Preserve small costs rather than rounding them to `$0.00`.
 6. Call the `show` operation after creation or update so the result opens in the Desktop pane.
 7. Inspect the rendered visual in Desktop canvas mode. Fix clipped labels, empty sections, misleading encodings, weak hierarchy, and excessive whitespace.
-8. Perform at least two explicit render-and-critique iterations at distinct viewport widths. Call `capture_review` for every visual family—evals (`analysis.*`, `live.*`, `craftax.*`), optimizers (`optimizer.*`), UML/Mermaid, static 2D systems maps, and Benjamin Dicken Style dynamic systems visuals. For each viewport inspect the PNG attached to the tool result. Pass its returned `screenshot_path` to `review`; never shell-search for captures, invent a path, or submit checks without looking at the image. Do not reuse a review after the visual revision changes. For systems visuals, resolve every deterministic finding returned by `authoring_context` before readiness.
+8. Perform at least two explicit render-and-critique iterations at distinct viewport widths. Call `capture_review` for authored visual families—evals (`analysis.*`, `live.*`, `craftax.*`), UML/Mermaid, static 2D systems maps, and Benjamin Dicken Style dynamic systems visuals. Do **not** capture, review, or `mark_ready` `optimizer.*` product visuals; report `visualEvidence.state` instead and never loop capture/repair. For each viewport inspect the PNG attached to the tool result. Pass its returned `screenshot_path` to `review`; never shell-search for captures, invent a path, or submit checks without looking at the image. Do not reuse a review after the visual revision changes. For systems visuals, resolve every deterministic finding returned by `authoring_context` before readiness.
 9. Call `mark_ready` only when all required landmarks pass. A trusted live template is configured through `visual_config`; saved arbitrary TSX is retained as source evidence but is never executed by Desktop.
 
 ## Composition rules

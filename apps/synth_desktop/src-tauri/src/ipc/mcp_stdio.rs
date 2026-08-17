@@ -31,20 +31,61 @@ const BREAKER_TARGET_FIELDS: [&str; 7] = [
     "id",
 ];
 
+const BREAKER_REVISION_FIELDS: [&str; 3] = ["revision", "currentRevision", "current_revision"];
+
+/// Unpack `visual_manage` so the breaker keys after facade dispatch: the inner
+/// operation, artifact identity, and revision — not the compact tool name.
+fn dispatched_breaker_args<'a>(tool: &'a str, args: &'a Value) -> (String, Value) {
+    if tool != "visual_manage" {
+        return (tool.to_string(), args.clone());
+    }
+    let operation = args
+        .get("operation")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let mut inner = args
+        .get("arguments")
+        .cloned()
+        .filter(|value| value.is_object())
+        .unwrap_or_else(|| json!({}));
+    if let Some(object) = inner.as_object_mut() {
+        object.insert("operation".into(), json!(operation));
+    }
+    (format!("visual_manage/{operation}"), inner)
+}
+
 fn breaker_key(tool: &str, args: &Value) -> String {
-    let mut key = tool.to_string();
-    if let Some(operation) = args.get("operation").and_then(Value::as_str) {
-        key.push('/');
-        key.push_str(operation);
+    let (dispatched, identity) = dispatched_breaker_args(tool, args);
+    let mut key = dispatched;
+    if let Some(operation) = identity.get("operation").and_then(Value::as_str) {
+        if !key.contains('/') {
+            key.push('/');
+            key.push_str(operation);
+        }
     }
     for field in BREAKER_TARGET_FIELDS {
-        let target = args
+        let target = identity
             .get(field)
             .and_then(Value::as_str)
-            .or_else(|| args.pointer(&format!("/arguments/{field}")).and_then(Value::as_str));
+            .or_else(|| identity.pointer(&format!("/arguments/{field}")).and_then(Value::as_str));
         if let Some(target) = target.map(str::trim).filter(|value| !value.is_empty()) {
             key.push('#');
             key.push_str(target);
+            break;
+        }
+    }
+    for field in BREAKER_REVISION_FIELDS {
+        let revision = identity
+            .get(field)
+            .and_then(|value| value.as_i64().or_else(|| value.as_u64().map(|n| n as i64)))
+            .or_else(|| {
+                identity
+                    .pointer(&format!("/arguments/{field}"))
+                    .and_then(|value| value.as_i64().or_else(|| value.as_u64().map(|n| n as i64)))
+            });
+        if let Some(revision) = revision {
+            key.push('@');
+            key.push_str(&revision.to_string());
             break;
         }
     }
@@ -311,6 +352,82 @@ mod tests {
         assert!(breaker
             .terminal_error("visual_manage", &other_visual)
             .is_none());
+        for operation in ["get", "show", "bind"] {
+            let recovery = json!({
+                "operation": operation,
+                "arguments": {"visual_id": "vis_a"}
+            });
+            assert!(
+                breaker.terminal_error("visual_manage", &recovery).is_none(),
+                "{operation} on A must survive two capture failures on A"
+            );
+            let other = json!({
+                "operation": operation,
+                "arguments": {"visual_id": "vis_b"}
+            });
+            assert!(
+                breaker.terminal_error("visual_manage", &other).is_none(),
+                "{operation} on B must survive two capture failures on A"
+            );
+        }
+    }
+
+    #[test]
+    fn breaker_keys_revision_separately_from_identity() {
+        let capture_r1 = json!({
+            "operation": "capture_review",
+            "arguments": {"visual_id": "vis_a", "revision": 1}
+        });
+        let capture_r2 = json!({
+            "operation": "capture_review",
+            "arguments": {"visual_id": "vis_a", "revision": 2}
+        });
+        let mut breaker = ToolLoopBreaker::default();
+        breaker.record_failure("visual_manage", &capture_r1, "no rendered observation");
+        breaker.record_failure("visual_manage", &capture_r1, "no rendered observation");
+        assert!(breaker.terminal_error("visual_manage", &capture_r1).is_some());
+        assert!(breaker.terminal_error("visual_manage", &capture_r2).is_none());
+    }
+
+    #[test]
+    fn breaker_keys_revision_after_facade_dispatch_and_does_not_poison_neighbors() {
+        let capture_a = json!({
+            "operation": "capture_review",
+            "arguments": {"visual_id": "vis_a", "revision": 4}
+        });
+        let mut breaker = ToolLoopBreaker::default();
+        breaker.record_failure(
+            "visual_manage",
+            &capture_a,
+            &json!({"code": "visual_observation_unavailable"}).to_string(),
+        );
+        breaker.record_failure(
+            "visual_manage",
+            &capture_a,
+            &json!({"code": "visual_observation_unavailable"}).to_string(),
+        );
+        assert!(breaker.terminal_error("visual_manage", &capture_a).is_some());
+
+        for operation in ["get", "show", "bind"] {
+            let neighbor = json!({
+                "operation": operation,
+                "arguments": {"visual_id": "vis_a", "revision": 4}
+            });
+            assert!(
+                breaker.terminal_error("visual_manage", &neighbor).is_none(),
+                "{operation} on A must survive capture failures"
+            );
+        }
+        let capture_b = json!({
+            "operation": "capture_review",
+            "arguments": {"visual_id": "vis_b", "revision": 4}
+        });
+        assert!(breaker.terminal_error("visual_manage", &capture_b).is_none());
+        let next_revision = json!({
+            "operation": "capture_review",
+            "arguments": {"visual_id": "vis_a", "revision": 5}
+        });
+        assert!(breaker.terminal_error("visual_manage", &next_revision).is_none());
     }
 
     #[test]

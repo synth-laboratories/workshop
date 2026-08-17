@@ -29,6 +29,25 @@ export {
 } from "./bind.ts";
 export type { ResolvedVisualBindings, VisualBindingsStatus } from "./bind.ts";
 export {
+  selectRenderedProjection,
+  rememberLastKnownGood
+} from "./lastKnownGood.ts";
+export type { ProjectionSource, SelectedProjection } from "./lastKnownGood.ts";
+export {
+  consumeInjectedRendererCrash,
+  resetInjectedRendererCrashes
+} from "./crashInject.ts";
+export { presentRuntimeError, presentRuntimeErrorMessage } from "./presentError.ts";
+export type { PresentedRuntimeError } from "./presentError.ts";
+export { captureEvidenceKind, CAPTURE_REVIEW_PRODUCT_CLASSES } from "./captureEvidence.ts";
+export type { CaptureEvidenceKind } from "./captureEvidence.ts";
+export {
+  decideVisualEvidence,
+  visualEvidenceBlocksCompletion,
+  VISUAL_EVIDENCE_STATES
+} from "./visualEvidence.ts";
+export type { VisualEvidence, VisualEvidenceState, VisualLifecycleFacets } from "./visualEvidence.ts";
+export {
   createReplayClient,
   parseReplayPage,
   replayStreamsFromBindings,

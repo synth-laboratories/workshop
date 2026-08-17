@@ -56,7 +56,8 @@ import {
 	sessionIsLocalChat,
 	sessionIsSync,
 	targetIdToExecutionTarget,
-	visualRecordToArtifact
+	visualRecordToArtifact,
+	openArtifactIdForChat
 } from "../runtime/sessionView";
 import { approvalModeFromConfig, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode, type ApprovalPolicy, type SandboxMode } from "../runtime/nativeCodex";
 import {
@@ -1087,6 +1088,18 @@ export function useAppController() {
 		setOpenContainer(null);
 		setContainerPaneExpanded(false);
 	}, [viewKey]);
+
+	useEffect(() => {
+		if (!openArtifactId) return;
+		const artifacts = activeChat?.artifacts ?? activeSync?.artifacts ?? [];
+		if (!openArtifactIdForChat(openArtifactId, artifacts)) {
+			setOpenArtifactId(null);
+			openArtifactIdRef.current = null;
+			visualRequestGenerationRef.current += 1;
+			pendingVisualRefreshRef.current = null;
+			dispatchVisualRevision({ type: "close" });
+		}
+	}, [openArtifactId, activeChat, activeSync]);
 
 	useEffect(() => {
 		if (openArtifactId || openContainer) return;
