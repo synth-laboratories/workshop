@@ -219,6 +219,9 @@ build_desktop() {
 	run_renderer_typecheck &
 	type_pid=$!
 	(cd "$ROOT/apps/synth_desktop" && npx tauri build --bundles app --config src-tauri/tauri.package.json) || build_status=$?
+	if [[ "$build_status" -eq 0 ]]; then
+		"$ROOT/scripts/finalize-browser-app.sh" "$BUNDLE_APP" || build_status=$?
+	fi
 	wait "$type_pid" || type_status=$?
 	[[ "$type_status" -eq 0 && "$build_status" -eq 0 ]]
 }

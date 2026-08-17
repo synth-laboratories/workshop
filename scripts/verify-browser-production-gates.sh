@@ -49,6 +49,7 @@ verify_installed() {
   verify_code "$(dirname "$(dirname "$(dirname "$chrome")")")"
   verify_notary "$app"
   SYNTH_BROWSER_RUNTIME_OUTPUT="$runtime" "$ROOT/scripts/build-browser-runtime.sh" verify
+  verify_code "$app"
   if [[ -d "$helper" ]]; then
     verify_code "$helper"
     verify_notary "$helper"
@@ -75,6 +76,9 @@ verify_development_installed() {
     || die "managed browser resources are incomplete"
   verify_code "$app"
   SYNTH_BROWSER_RUNTIME_OUTPUT="$runtime" "$ROOT/scripts/build-browser-runtime.sh" verify
+  # Chromium launch is part of the gate. Re-check the outer resource seal
+  # afterwards so framework-copy mutations cannot pass on first verification.
+  verify_code "$app"
   version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
   runtime_bytes="$(du -sk "$runtime" | awk '{print $1 * 1024}')"
   jq -n --arg gate development-installed --arg app "$app" --arg version "$version" \

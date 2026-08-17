@@ -1362,6 +1362,7 @@ dev_instance() {
       echo "[desktop:$NAME] expected CUA bundle executable missing: $app_executable" >&2
       exit 1
     fi
+    "$ROOT/scripts/finalize-browser-app.sh" "$app_bundle"
     revalidate_provenance "bundle-built" "$pre_build_revision"
     write_bundle_descriptor "$app_bundle"
     sign_cua_bundle "$app_bundle"

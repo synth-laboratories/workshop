@@ -70,7 +70,8 @@ The executable preflight is `scripts/cef-workshop-poc.sh preflight`. It records 
 ## Production acceptance evidence (August 17)
 
 - The pinned runtime passes checksum verification plus executable Node, Chromium, and one-page Playwright browser/renderer probes.
-- A freshly rebuilt 0.5.0 application contains the exact tested backend, runtime and `synth-browser-mcp`; its final ad-hoc resource seal and development-installed receipt passed. This is a non-notarized packaging smoke only. The staged app was 774 MiB on disk and the runtime reported 749,674,496 installed bytes.
+- A freshly rebuilt 0.5.0 application contains the exact tested backend, runtime and `synth-browser-mcp`; its final ad-hoc resource seal and development-installed receipt passed. This is a non-notarized packaging smoke only. After preserving framework symlinks, the staged app was 548 MiB on disk and the runtime reported 513,224,704 installed bytes.
+- The packaging smoke found that Tauri's generic resource copy dereferenced Chromium's versioned framework symlinks. `scripts/finalize-browser-app.sh` now replaces only the generated bundle copy using `ditto`, seals the outer app, launches Node/Chromium/browser-renderer probes, and then repeats strict deep verification. The npm build, canonical desktop build, and named CUA build paths all invoke this finalizer.
 - Claimed Chrome passed a live loopback-CDP test: claims are disabled by default, require one exact title/URL match, reject non-loopback discovery, and preserve the user's tab during session cleanup.
 - The staged native helper reports Accessibility and Screen Recording granted on this host. It is ad-hoc signed, so `helper-live` correctly refuses to issue the signed/notarized production receipt.
 - Developer ID/notarization, a real installed updater before/after pair, and the CEF Workshop embedding receipt remain external evidence gates. No production-readiness claim is made for them.

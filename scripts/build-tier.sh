@@ -84,6 +84,7 @@ build_one() {
 
   bundle_dir="$TARGET_ROOT/$PROFILE/bundle/macos"
   [[ -d "$bundle_dir/$product.app" ]] || { echo "[build-tier] expected bundle missing: $bundle_dir/$product.app" >&2; exit 1; }
+  "$ROOT/scripts/finalize-browser-app.sh" "$bundle_dir/$product.app"
   out_dir="$OUT_ROOT/$tier"
   rm -rf "$out_dir"
   mkdir -p "$out_dir"
