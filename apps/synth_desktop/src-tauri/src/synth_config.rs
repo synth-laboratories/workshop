@@ -847,7 +847,18 @@ fn resolve_openrouter_secret_from_paths(
 }
 
 fn read_env_value(path: &Path, key: &str) -> Option<String> {
-    fs::read_to_string(path)
+    let path = path.to_path_buf();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = sender.send(fs::read_to_string(path));
+    });
+    // Credential files can live in privacy-controlled or cloud-backed
+    // folders. macOS may suspend an open indefinitely while waiting for an
+    // unavailable provider or consent UI. Secret discovery is optional at
+    // startup, so fail closed instead of freezing the entire application.
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .ok()?
         .ok()?
         .lines()
         .find_map(|line| {
