@@ -38,13 +38,20 @@ const GEPA_COMPLETION_TYPES = [
 	"optimizer.child_rollout.completed"
 ];
 
-/** Events that invalidate earlier timing samples: the rig changed under us. */
+/**
+ * Events that invalidate earlier timing samples: the rig changed under us.
+ *
+ * `optimizer.rollout_queue.updated` is deliberately *not* here. It is routine
+ * telemetry — a real Banking77 run emits it every few seconds — and treating it
+ * as a disruption reset the sample window continuously, so the estimate thrashed
+ * between "Estimating…" and a number 113 times over one run and never settled.
+ * A changed queue depth is not a changed rig.
+ */
 const GEPA_DISRUPTION_TYPES = [
 	"optimizer.child_rollout.failed",
 	"optimizer.child_rollout.retried",
 	"optimizer.rollout.retried",
-	"rollout.circuit_breaker.tripped",
-	"optimizer.rollout_queue.updated"
+	"rollout.circuit_breaker.tripped"
 ];
 
 function gepaPhases(gepa: GepaState): RunProgressPhase[] {

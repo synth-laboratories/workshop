@@ -10,16 +10,25 @@
  * the timestamps at which comparable units of work completed inside the
  * current phase. That choice carries the rules the brief demands:
  *
- *   · Effective, not configured, concurrency. Intervals between completions
- *     already contain however many workers were really running; nothing is
- *     divided by a configured semaphore size that may not be staffed.
+ *   · Effective, not configured, concurrency. Observed completion rates already
+ *     contain however many workers were really running; nothing is divided by a
+ *     configured semaphore size that may not be staffed.
  *   · Phase-local samples only. A caller passes completions for one phase, so
  *     a phase transition resets the evidence rather than blending a fast
  *     minibatch into a slow full-train.
- *   · Robust, not extrapolated. The median interval decides; one unusually
- *     fast or slow rollout cannot move the estimate far.
+ *   · Rates over sub-windows, not gaps between completions. Real producers
+ *     report in bursts: sixteen rollouts finish and land milliseconds apart.
+ *     The gap between two of those is the reporting burst, not the work, and
+ *     taking its median once produced a 23ms-per-rollout estimate on a real
+ *     Banking77 run. Each sub-window instead spans real time and yields
+ *     `intervals ÷ elapsed`, which a burst cannot deflate.
+ *   · Robust, not extrapolated. The median sub-window rate decides, so one
+ *     stalled or unusually fast stretch cannot move the estimate — it widens
+ *     the range and drops the confidence instead.
  *   · Disruption widens. Retries, throttling, and worker loss drop the samples
- *     that preceded them, which drops confidence back to a range.
+ *     that preceded them, which drops confidence back to a range. Routine
+ *     telemetry is not disruption: a queue-depth update every few seconds must
+ *     not keep resetting the window, or the estimate never settles at all.
  *   · Queue time is never execution evidence. A caller measuring training
  *     passes only training completions; queue elapsed is displayed separately.
  *   · Chat elapsed time and tool-call silence are not inputs. They are not
@@ -28,17 +37,24 @@
 
 import type { RunEtaConfidence, RunEtaProjection } from "./types";
 
-/** Newest completions only; older intervals describe a run that no longer exists. */
-const SAMPLE_WINDOW = 12;
+/**
+ * Newest completions only; older rates describe a run that no longer exists.
+ * Wide enough to span several reporting bursts, because a burst contributes many
+ * completions and almost no elapsed time.
+ */
+const SAMPLE_WINDOW = 60;
 
-/** Below this many intervals there is no estimate at all, only "Estimating…". */
-const MIN_INTERVALS_FOR_RANGE = 1;
+/** Completions per sub-window. Below this a sub-window cannot span real work. */
+const MIN_PER_SUB_WINDOW = 3;
 
-/** A point estimate needs a third completion and a settled spread. */
-const MIN_INTERVALS_FOR_POINT = 3;
+/** Sub-windows to split the sample window into, at most. */
+const MAX_SUB_WINDOWS = 4;
 
-/** Interquartile spread over the median above which a range is still the honest answer. */
-const POINT_SPREAD_CEILING = 0.45;
+/** A point estimate needs this many independent rates and a settled spread. */
+const MIN_RATES_FOR_POINT = 3;
+
+/** Spread over the median above which a range is still the honest answer. */
+const POINT_SPREAD_CEILING = 0.5;
 
 export type EtaEvidence = {
 	/** Phase these completions belong to. Mixing phases is the caller's bug. */
@@ -71,7 +87,7 @@ function median(sorted: number[]): number {
 	return sorted.length % 2 === 0 ? (sorted[middle - 1]! + sorted[middle]!) / 2 : sorted[middle]!;
 }
 
-/** Quantile by nearest rank; exact enough for a spread over ≤12 samples. */
+/** Quantile by nearest rank; exact enough for a spread over a handful of rates. */
 function quantile(sorted: number[], fraction: number): number {
 	const index = Math.min(sorted.length - 1, Math.max(0, Math.round(fraction * (sorted.length - 1))));
 	return sorted[index]!;
@@ -91,42 +107,69 @@ function unavailable(basis: string, reason: string, sampleCount: number): RunEta
 	};
 }
 
-/**
- * Intervals between consecutive completions, after windowing and disruption
- * pruning. Exported for tests: the sampling rule is the part most likely to be
- * quietly wrong.
- */
-export function completionIntervals(evidence: EtaEvidence): number[] {
-	const usable = evidence.completions
+/** Duration formatted for a basis line, in the coarsest unit that stays exact-ish. */
+function perUnitLabel(msPerUnit: number, unit: string): string {
+	if (msPerUnit >= 60_000) return `${(msPerUnit / 60_000).toFixed(1)}min per ${unit}`;
+	if (msPerUnit >= 1_000) return `${(msPerUnit / 1_000).toFixed(1)}s per ${unit}`;
+	return `${Math.round(msPerUnit)}ms per ${unit}`;
+}
+
+/** Completions in the current window, ordered, after disruption pruning. */
+export function usableCompletions(evidence: EtaEvidence): number[] {
+	return evidence.completions
 		.filter((value) => Number.isFinite(value))
 		.filter((value) => evidence.disruptedAtMs == null || value > evidence.disruptedAtMs)
 		.sort((left, right) => left - right)
 		.slice(-SAMPLE_WINDOW);
-	const intervals: number[] = [];
-	for (let index = 1; index < usable.length; index += 1) {
-		const gap = usable[index]! - usable[index - 1]!;
-		if (gap > 0) intervals.push(gap);
+}
+
+/**
+ * Completion rates, in units per millisecond, over contiguous sub-windows of the
+ * sample window.
+ *
+ * Each sub-window holds at least `MIN_PER_SUB_WINDOW` completions and its rate is
+ * `intervals ÷ elapsed`, so it measures work over real time. A reporting burst
+ * inflates the count and the elapsed time of the *same* sub-window, which is why
+ * this survives bursts where per-completion gaps do not.
+ *
+ * Exported because the sampling rule is the part most likely to be quietly wrong.
+ */
+export function completionRates(evidence: EtaEvidence): number[] {
+	const usable = usableCompletions(evidence);
+	if (usable.length < 2) return [];
+	const subWindows = Math.max(1, Math.min(MAX_SUB_WINDOWS, Math.floor(usable.length / MIN_PER_SUB_WINDOW)));
+	const size = Math.floor(usable.length / subWindows);
+	const rates: number[] = [];
+	for (let index = 0; index < subWindows; index += 1) {
+		// The last sub-window absorbs the remainder so no completion is dropped.
+		const from = index * size;
+		const to = index === subWindows - 1 ? usable.length : from + size;
+		const slice = usable.slice(from, to);
+		if (slice.length < 2) continue;
+		const span = slice.at(-1)! - slice[0]!;
+		if (span <= 0) continue;
+		rates.push((slice.length - 1) / span);
 	}
-	return intervals;
+	return rates;
 }
 
 /**
  * Estimate the time remaining in one bounded, homogeneous phase.
  *
- * Returns `undefined` only for a terminal run — a finished run has no ETA, it
- * has a wall time. Every other case returns a projection whose `state` says
- * what the caller may display.
+ * Every case returns a projection whose `state` says what the caller may
+ * display: a number, a range, "Estimating…", "Unavailable", or "Paused".
  */
 export function estimatePhaseEta(evidence: EtaEvidence): RunEtaProjection {
-	const intervals = completionIntervals(evidence);
-	const samples = intervals.length + (intervals.length > 0 ? 1 : 0);
+	const usable = usableCompletions(evidence);
+	const rates = completionRates(evidence);
+	const samples = usable.length;
 	const phaseBasis = `phase ${evidence.phaseId}`;
 
 	if (evidence.paused) {
 		return {
 			state: "paused",
-			confidence: intervals.length >= MIN_INTERVALS_FOR_POINT ? "medium" : "low",
-			basis: `paused with ${plural(intervals.length, `${evidence.unit} interval`)} observed in ${phaseBasis}`,
+			confidence: rates.length >= MIN_RATES_FOR_POINT ? "medium" : "low",
+			basis: `paused with ${plural(samples, `completed ${evidence.unit}`)} observed in ${phaseBasis}`,
 			sampleCount: samples
 		};
 	}
@@ -154,57 +197,67 @@ export function estimatePhaseEta(evidence: EtaEvidence): RunEtaProjection {
 		};
 	}
 
-	if (intervals.length < MIN_INTERVALS_FOR_RANGE) {
+	if (rates.length === 0) {
 		return {
 			state: "estimating",
 			confidence: "warming",
-			basis: `${plural(evidence.completions.length, `completed ${evidence.unit}`)} in ${phaseBasis}; two are needed before an estimate`,
+			basis: `${plural(samples, `completed ${evidence.unit}`)} in ${phaseBasis}; two spanning real time are needed before an estimate`,
 			sampleCount: samples
 		};
 	}
 
-	const sorted = [...intervals].sort((left, right) => left - right);
-	const typical = median(sorted);
-	const low = quantile(sorted, 0.25);
-	const high = quantile(sorted, 0.75);
-	const spread = typical > 0 ? (high - low) / typical : Number.POSITIVE_INFINITY;
-	const settled = intervals.length >= MIN_INTERVALS_FOR_POINT && spread <= POINT_SPREAD_CEILING;
+	const sorted = [...rates].sort((left, right) => left - right);
+	const typicalRate = median(sorted);
+	if (!(typicalRate > 0)) {
+		return {
+			state: "estimating",
+			confidence: "warming",
+			basis: `${plural(samples, `completed ${evidence.unit}`)} in ${phaseBasis} arrived too close together to time`,
+			sampleCount: samples
+		};
+	}
+	// A faster rate means less time left, so the fastest rate is the low bound.
+	const fastest = quantile(sorted, 0.75);
+	const slowest = quantile(sorted, 0.25);
+	const spread = (fastest - slowest) / typicalRate;
+	const settled = rates.length >= MIN_RATES_FOR_POINT && spread <= POINT_SPREAD_CEILING;
 
 	const confidence: RunEtaConfidence = settled
 		? "high"
-		: intervals.length >= MIN_INTERVALS_FOR_POINT
+		: rates.length >= MIN_RATES_FOR_POINT
 			? "medium"
 			: "low";
 	const basis = [
-		`median of ${plural(intervals.length, `${evidence.unit} interval`)} in ${phaseBasis}`,
-		`${Math.round(typical)}ms per ${evidence.unit}`,
+		`median of ${plural(rates.length, "windowed rate")} over ${plural(samples, `completed ${evidence.unit}`)} in ${phaseBasis}`,
+		perUnitLabel(1 / typicalRate, evidence.unit),
 		`${plural(remaining, evidence.unit)} remaining`,
 		evidence.disruptedAtMs != null ? "samples restarted after a disruption" : null
 	]
 		.filter(Boolean)
 		.join(" · ");
 
+	const remainingMs = remaining / typicalRate;
 	if (settled) {
 		return {
 			state: "point",
-			remainingMs: typical * remaining,
-			lowMs: low * remaining,
-			highMs: high * remaining,
+			remainingMs,
+			lowMs: remaining / fastest,
+			highMs: remaining / slowest,
 			confidence,
 			basis,
 			sampleCount: samples
 		};
 	}
 
-	// Widen a low-evidence range rather than presenting a narrow one: with two
-	// intervals the quartiles are the two values themselves, which understates
-	// how little is known.
-	const widen = intervals.length >= MIN_INTERVALS_FOR_POINT ? 1 : 1.5;
+	// Widen a low-evidence range rather than presenting a narrow one: with a
+	// single rate the bounds are that rate itself, which understates how little
+	// is known.
+	const widen = rates.length >= MIN_RATES_FOR_POINT ? 1 : 1.5;
 	return {
 		state: "range",
-		remainingMs: typical * remaining,
-		lowMs: (low / widen) * remaining,
-		highMs: high * widen * remaining,
+		remainingMs,
+		lowMs: remaining / (fastest * widen),
+		highMs: (remaining / slowest) * widen,
 		confidence,
 		basis,
 		sampleCount: samples
