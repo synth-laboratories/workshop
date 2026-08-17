@@ -139,3 +139,19 @@ From the Containers repo, the cheap gate for the two CUA containers is:
 cd /Users/joshuapurtell/Documents/GitHub/containers
 uv run --with pytest pytest -q tests/test_banking77_platform.py tests/test_healthbench_platform.py tests/test_platform_leftovers.py
 ```
+
+Use `synth-optimizers==0.2.14` (`--prerelease=allow`) for GEPA v2 `[taskset]` configs. PyPI `0.2.0` only understands `[dataset]`.
+
+## Last local confirmation (2026-08-17)
+
+Paid GEPA/eval receipts used `synth-optimizers==0.2.14` against live loopback containers. Harbor, dig.bench, and `craftax_engine` have no GEPA recipe; they were scored with prepare / start / `/reward`.
+
+| Container | Eval | GEPA |
+| --- | --- | --- |
+| Banking77 cookbook `:18765` | 0-gen, 10 train + 1 heldout. Train mean **0.8**, `$0.0006`, 11 rollouts. | Seed eval + Codex proposal written. Optimizer then failed ingesting the proposal (`runtime job completed`). |
+| HealthBench platform `:18114` | 0-gen `eval_smoke` pool. Train **0.64**, heldout **0.67**, `$0.12`, 4 rollouts. | Same: seed eval + proposal written, then 0.2.14 proposal ingest failed. |
+| Crafter cookbook `:18768` | Fixture `craftax_engine` seed 0 scored **0.5**. | Needs `rollout_submission_mode = "sync"`. Seed episode scored **0.0**; proposal written; same 0.2.14 ingest failure. |
+| Harbor `harbor_public` | Fixture trial reward **1.0**. No GEPA contract. | — |
+| dig.bench `digbench_mock` | Mock trial reward **1.0**. No GEPA contract. | — |
+
+`capabilities.metadata.policy_ready` must be `true` or 0.2.14 refuses the container at preflight. Crafter `/rollout` only accepts `submission_mode=sync`.
