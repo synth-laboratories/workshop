@@ -35,7 +35,8 @@ No candidate generation. Workshop recipe `eval.banking77.baseline.v1`.
 
 ```bash
 cd /Users/joshuapurtell/Documents/GitHub/containers
-uv run python examples/serve_banking77.py --port 8106
+uv run python examples/serve_banking77.py --port 8106 \
+  --storage-root /tmp/banking77-workshop-runs
 ```
 
 Policy pin for the Workshop baseline is `harness=classify`, `config=classify`.
