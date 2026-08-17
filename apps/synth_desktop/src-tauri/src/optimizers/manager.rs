@@ -1401,9 +1401,7 @@ fn launch_gepa_recipe_process(
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .kill_on_drop(true);
-    command
-        .spawn()
-        .context("launch Desktop-managed Banking77 GEPA recipe")
+    spawn_command_with_retry(&mut command).context("launch Desktop-managed Banking77 GEPA recipe")
 }
 
 async fn launch_sidecar_upstream(
@@ -1479,8 +1477,7 @@ async fn launch_sidecar_upstream(
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log))
         .kill_on_drop(true);
-    let child = command
-        .spawn()
+    let child = spawn_command_with_retry(&mut command)
         .context("spawn allowlisted synth-optimizers GEPA service")?;
     Ok((Some(child), upstream_base_url, None))
 }
@@ -1493,6 +1490,28 @@ fn isolate_process_group(command: &mut Command) {
 
 #[cfg(not(unix))]
 fn isolate_process_group(_command: &mut Command) {}
+
+fn spawn_retry_would_block(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::WouldBlock || error.raw_os_error() == Some(35)
+}
+
+/// Three attempts with exponential backoff. macOS `fork` surfaces EAGAIN as
+/// `WouldBlock` / os error 35 under memory pressure; a single spawn failure
+/// there used to look like a recipe crash.
+fn spawn_command_with_retry(command: &mut Command) -> std::io::Result<Child> {
+    let mut last_error = None;
+    for attempt in 0..3u32 {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) if spawn_retry_would_block(&error) && attempt < 2 => {
+                last_error = Some(error);
+                std::thread::sleep(Duration::from_millis(25 * 2u64.pow(attempt)));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.expect("WouldBlock retry exhausted"))
+}
 
 #[cfg(unix)]
 async fn terminate_process_groups(pids: &[u32]) {
@@ -3508,5 +3527,15 @@ mod tests {
         let _ = mgr.stop().await;
         FileExt::try_lock_exclusive(&contender)
             .expect("service.lock must be released after stop");
+    }
+
+    #[test]
+    fn spawn_retry_recognizes_would_block_and_os_error_35() {
+        let would_block = std::io::Error::from(std::io::ErrorKind::WouldBlock);
+        assert!(spawn_retry_would_block(&would_block));
+        let eagain = std::io::Error::from_raw_os_error(35);
+        assert!(spawn_retry_would_block(&eagain));
+        let other = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert!(!spawn_retry_would_block(&other));
     }
 }

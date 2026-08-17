@@ -826,6 +826,7 @@ pub(super) async fn reconcile_persisted(
             service,
             run_id,
             "The local optimizer recipe failed; inspect the bounded stderr tail below.".into(),
+            None,
         )
         .await?;
     }
@@ -966,7 +967,23 @@ async fn run_recipe_worker(
                 let status = status.context("wait for product-owned GEPA process")?;
                 ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await?;
                 if !status.success() {
-                    bail!("GEPA recipe exited with {status}; see {}", run_dir.join("workshop.stderr.log").display());
+                    let (exit_code, signal) = recipe_exit_fields(&status);
+                    let log_path = run_dir.join("workshop.stderr.log");
+                    let detail = format!(
+                        "GEPA recipe exited with exitCode={} signal={}; see {}",
+                        exit_code.map(|code| code.to_string()).unwrap_or_else(|| "null".into()),
+                        signal.map(|code| code.to_string()).unwrap_or_else(|| "null".into()),
+                        log_path.display()
+                    );
+                    append_terminal_event_with_crash(
+                        &service,
+                        &run_id,
+                        true,
+                        detail.clone(),
+                        Some(RecipeCrash { exit_code, signal }),
+                    )
+                    .await?;
+                    bail!("{detail}");
                 }
                 append_recipe_artifacts(&service, &run_id, &run_dir).await?;
                 append_recipe_candidates(&service, &run_id, &run_dir).await?;
@@ -1534,6 +1551,48 @@ async fn append_terminal_event(
     failed: bool,
     detail: String,
 ) -> Result<()> {
+    append_terminal_event_with_crash(service, run_id, failed, detail, None).await
+}
+
+struct RecipeCrash {
+    exit_code: Option<i32>,
+    signal: Option<i32>,
+}
+
+fn recipe_exit_fields(status: &std::process::ExitStatus) -> (Option<i32>, Option<i32>) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        (status.code(), status.signal())
+    }
+    #[cfg(not(unix))]
+    {
+        (status.code(), None)
+    }
+}
+
+fn diagnostic_error_body(
+    detail: &str,
+    stderr_tail: Option<&str>,
+    log_path: Option<&Path>,
+    crash: Option<&RecipeCrash>,
+) -> serde_json::Value {
+    json!({
+        "message": detail.chars().take(1_000).collect::<String>(),
+        "stderrTail": stderr_tail,
+        "logPath": log_path,
+        "exitCode": crash.and_then(|value| value.exit_code),
+        "signal": crash.and_then(|value| value.signal),
+    })
+}
+
+async fn append_terminal_event_with_crash(
+    service: &OptimizerService,
+    run_id: &str,
+    failed: bool,
+    detail: String,
+    crash: Option<RecipeCrash>,
+) -> Result<()> {
     let run = service.get(run_id.to_string()).await?;
     if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
         return Ok(());
@@ -1551,7 +1610,7 @@ async fn append_terminal_event(
     )
     .await?;
     if failed {
-        append_diagnostic_event(service, run_id, detail).await?;
+        append_diagnostic_event(service, run_id, detail, crash.as_ref()).await?;
     }
     Ok(())
 }
@@ -1560,6 +1619,7 @@ async fn append_diagnostic_event(
     service: &OptimizerService,
     run_id: &str,
     detail: String,
+    crash: Option<&RecipeCrash>,
 ) -> Result<()> {
     // Preserve a bounded diagnostic in the run summary via an error event.
     let run = service.get(run_id.to_string()).await?;
@@ -1575,7 +1635,6 @@ async fn append_diagnostic_event(
         .as_ref()
         .and_then(|path| bounded_log_tail(path, 4_000).ok())
         .filter(|text| !text.trim().is_empty());
-    let display_message = stderr_tail.as_deref().unwrap_or(&detail);
     let mut event = OptimizerEventEnvelope {
         schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
         event_id: Some(format!("{run_id}:workshop:{}", run.cursor_seq + 1)),
@@ -1590,11 +1649,12 @@ async fn append_diagnostic_event(
         snapshot: None,
         usage_delta: None,
         artifact_refs: vec![],
-        error: Some(json!({
-            "message": display_message.chars().take(1_000).collect::<String>(),
-            "stderrTail": stderr_tail,
-            "logPath": stderr_path,
-        })),
+        error: Some(diagnostic_error_body(
+            &detail,
+            stderr_tail.as_deref(),
+            stderr_path.as_deref(),
+            crash,
+        )),
         raw: json!({}),
     };
     event.delta.insert("status".into(), json!("failed"));
@@ -1611,7 +1671,7 @@ async fn append_diagnostic_event(
             "optimizers",
             "optimizer.worker.failed",
             crate::diagnostics::codes::OPTIMIZER_WORKER_FAILED,
-            display_message.chars().take(500).collect::<String>(),
+            detail.chars().take(500).collect::<String>(),
         );
         input.correlation.optimizer_run_id = Some(run_id.to_owned());
         input.details.insert("algorithm".into(), json!("gepa"));
@@ -2186,6 +2246,27 @@ mod tests {
     use crate::storage::{ContentStore, EventJournal, Storage};
     use crate::visuals::VisualRegistry;
     use tempfile::tempdir;
+
+    #[test]
+    fn diagnostic_keeps_exit_detail_and_stderr_as_evidence() {
+        let body = diagnostic_error_body(
+            "GEPA recipe exited with exitCode=1 signal=null",
+            Some("telemetry warning: victoria"),
+            Some(Path::new("/tmp/workshop.stderr.log")),
+            Some(&RecipeCrash {
+                exit_code: Some(1),
+                signal: None,
+            }),
+        );
+        assert_eq!(
+            body["message"],
+            json!("GEPA recipe exited with exitCode=1 signal=null")
+        );
+        assert_eq!(body["stderrTail"], json!("telemetry warning: victoria"));
+        assert_eq!(body["exitCode"], json!(1));
+        assert_eq!(body["signal"], json!(null));
+        assert_ne!(body["message"], body["stderrTail"]);
+    }
 
     #[test]
     fn sealed_app_server_events_project_to_trace_v5_without_invented_reasoning() {
