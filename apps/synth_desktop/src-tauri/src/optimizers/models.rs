@@ -351,4 +351,25 @@ pub struct OptimizerRecipeRunRequest {
     /// source is content-addressed at staging time, not at launch.
     #[serde(default)]
     pub candidate_set_id: Option<String>,
+    /// Optional GEPA search overrides. Omitted fields keep the recipe defaults.
+    /// `proposalsPerGeneration` is capped at 10; `policyConcurrency` at 120.
+    #[serde(default)]
+    pub search: Option<OptimizerSearchOverrides>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OptimizerSearchOverrides {
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub proposals_per_generation: Option<i64>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub max_in_flight_candidates: Option<i64>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub policy_concurrency: Option<i64>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub rollout_concurrency: Option<i64>,
 }
