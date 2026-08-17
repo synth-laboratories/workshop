@@ -369,6 +369,10 @@ window.synthCore = {
   }),
   eventsAfter: async () => approvalEvents,
   sessionEventsAfter: async (sessionId) => sessionId === approvalSessionId ? approvalEvents : [],
+  sessionEventsTail: async (sessionId, limit) => sessionId === approvalSessionId ? approvalEvents.slice(-limit) : [],
+  sessionEventsBefore: async (sessionId, beforeSequence, limit) => sessionId === approvalSessionId
+    ? approvalEvents.filter((event) => event.sessionSequence < beforeSequence).slice(-limit)
+    : [],
   onEvent: () => () => undefined
 };
 window.synthCodexOauth = {
