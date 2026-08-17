@@ -192,7 +192,18 @@ pub fn create(conn: &Connection, request: CampaignCreate) -> Result<Campaign> {
             ],
         )?;
     }
-    load(conn, &request.id)
+    let campaign = load(conn, &request.id)?;
+    if let Some(session_id) = campaign.session_id.as_deref() {
+        crate::experiments::attach(
+            conn,
+            session_id,
+            crate::experiments::MEMBER_CAMPAIGN,
+            &campaign.id,
+            &campaign.created_at,
+            &campaign.title,
+        )?;
+    }
+    Ok(campaign)
 }
 
 pub fn load(conn: &Connection, id: &str) -> Result<Campaign> {
@@ -609,6 +620,56 @@ mod tests {
         // A finished experiment does not own seed 205 forever; a later study may
         // sample it again.
         create(&conn, request("camp_2", (205..=214).collect())).unwrap();
+    }
+
+    #[test]
+    fn crash_restart_preserves_campaign_terminal_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("campaigns.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            crate::storage::migrations::apply_migrations(&conn).unwrap();
+            create(&conn, request("camp_1", (201..=210).collect())).unwrap();
+            record_started(&conn, "camp_1_r01", "2026-08-17T00:01:00Z").unwrap();
+            record_terminal(
+                &conn,
+                "camp_1_r01",
+                &terminal_record(0.6, &["collect_wood"], "max_steps"),
+                "2026-08-17T00:02:00Z",
+            )
+            .unwrap();
+        }
+        let conn = Connection::open(&path).unwrap();
+        crate::storage::migrations::apply_migrations(&conn).unwrap();
+        let campaign = load(&conn, "camp_1").unwrap();
+        assert_eq!(campaign.expected_rollouts, 10);
+        assert_eq!(
+            campaign
+                .rollouts
+                .iter()
+                .filter(|rollout| rollout.status == "terminal")
+                .count(),
+            1
+        );
+        let result = settle(&conn, "camp_1", "2026-08-17T00:03:00Z").unwrap();
+        assert_eq!(result["status"], "partial");
+        assert_eq!(result["terminalRollouts"], 1);
+        assert_eq!(result["missing"].as_array().unwrap().len(), 9);
+    }
+
+    #[test]
+    fn campaign_create_attaches_the_session_experiment_group() {
+        let conn = database();
+        create(&conn, request("camp_1", vec![201, 202])).unwrap();
+        let group = crate::experiments::load_for_session(&conn, "session_1")
+            .unwrap()
+            .expect("campaign create owns an experiment group");
+        assert_eq!(group.members.len(), 1);
+        assert_eq!(group.members[0].member_id, "camp_1");
+        assert_eq!(
+            group.members[0].member_kind,
+            crate::experiments::MEMBER_CAMPAIGN
+        );
     }
 
     #[test]
