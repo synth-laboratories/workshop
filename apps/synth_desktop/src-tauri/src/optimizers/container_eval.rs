@@ -35,6 +35,7 @@ const EVAL_ALGORITHM_ID: &str = "eval";
 const COST_CEILING_USD: f64 = 0.50;
 const POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
+const BLOCKING_EVAL_HTTP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Clone, Copy)]
 struct EvalSpec {
@@ -363,7 +364,10 @@ async fn run_eval_worker(
     cancel: watch::Receiver<bool>,
 ) -> Result<()> {
     append_status(&service, &run_id, "optimizer.run.started", "running").await?;
-    let client = crate::http::http_client();
+    // These recipes intentionally use the container's blocking rollout mode.
+    // HealthBench can make one policy call plus many rubric-grader calls, so
+    // the generic UI HTTP timeout is not an honest bound for this endpoint.
+    let client = crate::http::http_client_with_timeout(BLOCKING_EVAL_HTTP_TIMEOUT);
     let info = match client.get(format!("{}/info", container.base_url)).send().await {
         Ok(response) if response.status().is_success() => {
             response.json::<Value>().await.unwrap_or(json!({}))
@@ -412,7 +416,12 @@ async fn run_eval_worker(
         };
         match joined {
             Ok((_example, Ok(record))) => records.push(record),
-            Ok((example, Err(error))) => records.push(failed_record(example, spec, &policy_pin, error.to_string())),
+            Ok((example, Err(error))) => records.push(failed_record(
+                example,
+                spec,
+                &policy_pin,
+                format!("{error:#}"),
+            )),
             Err(error) => records.push(json!({
                 "status": "failed",
                 "error": error.to_string(),
