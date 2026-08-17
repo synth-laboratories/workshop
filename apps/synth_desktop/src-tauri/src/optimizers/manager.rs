@@ -1329,6 +1329,25 @@ fn launch_gepa_recipe_process(
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .kill_on_drop(true);
+    // The proposer runs Codex one process below Workshop. A Finder-launched
+    // app cannot assume the user's shell PATH, and the JS launcher alone is
+    // insufficient because Codex's unified-exec helpers must link the native
+    // binary shipped in the npm package. Publish both authorities explicitly.
+    if let Some(codex_bin) = env::var_os("SYNTH_CODEX_BIN").map(PathBuf::from) {
+        if let Some(parent) = codex_bin.parent() {
+            let mut paths = vec![parent.to_path_buf()];
+            if let Some(inherited) = env::var_os("PATH") {
+                paths.extend(env::split_paths(&inherited));
+            }
+            command.env("PATH", env::join_paths(paths).context("build GEPA Codex PATH")?);
+        }
+        let resolved = codex_bin.canonicalize().unwrap_or(codex_bin);
+        if let Some(package_root) = resolved.parent().and_then(Path::parent) {
+            if package_root.join("package.json").is_file() {
+                command.env("CODEX_MANAGED_PACKAGE_ROOT", package_root);
+            }
+        }
+    }
     command
         .spawn()
         .context("launch Desktop-managed Banking77 GEPA recipe")
