@@ -309,7 +309,8 @@ impl OptimizerService {
         self.local_recipes.lock().await.remove(run_id);
     }
 
-    pub(super) async fn persist_run(&self, run: OptimizerRunRecord) -> Result<OptimizerRunRecord> {
+    pub(super) async fn persist_run(&self, mut run: OptimizerRunRecord) -> Result<OptimizerRunRecord> {
+        freeze_terminal_cursor(&mut run);
         let db = self.db.clone();
         let stored = run.clone();
         db.run_transaction(move |conn| {
@@ -479,6 +480,8 @@ impl OptimizerService {
         if run.source == "local"
             && matches!(run.status.as_str(), "completed" | "failed" | "cancelled")
         {
+            freeze_terminal_cursor(&mut run);
+            let _frozen = self.persist_run(run).await?;
             run = super::recipes::reconcile_persisted(self, &optimizer_run_id).await?;
         }
         let slices = self.project_slices(&run.id, run.cursor_seq, None).await?;
@@ -552,6 +555,7 @@ impl OptimizerService {
                     insert_event(conn, &event)?;
                     apply_event_to_run(&mut run, &event);
                     run.cursor_seq = event.sequence_number;
+                    freeze_terminal_cursor(&mut run);
                     upsert_cursor(conn, &run.id, run.cursor_seq, &event.occurred_at)?;
                 }
                 upsert_run(conn, &run)?;
@@ -1276,6 +1280,66 @@ fn negotiate_visual_template(algorithm_id: &str) -> String {
     primary_visual_template(algorithm_id).to_owned()
 }
 
+fn freeze_terminal_cursor(run: &mut OptimizerRunRecord) {
+    if !matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+        return;
+    }
+    match run.summary.as_object_mut() {
+        Some(summary) => {
+            if !summary.contains_key("terminalCursor") {
+                summary.insert("terminalCursor".into(), json!(run.cursor_seq));
+            }
+        }
+        None => {
+            run.summary = json!({ "terminalCursor": run.cursor_seq });
+        }
+    }
+}
+
+fn candidate_id_of(value: &Value) -> Option<&str> {
+    value
+        .get("id")
+        .or_else(|| value.get("candidateId"))
+        .or_else(|| value.get("candidate_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+}
+
+fn usage_authority_block(run: &OptimizerRunRecord, manifest: Option<&Value>) -> Value {
+    let ledger = serde_json::to_value(&run.usage).unwrap_or(Value::Null);
+    let manifest_usage = manifest.and_then(|value| {
+        value
+            .get("usage")
+            .cloned()
+            .or_else(|| value.get("cost_authority").cloned())
+            .or_else(|| {
+                let cost = value.get("cost_usd").cloned()?;
+                Some(json!({ "costUsd": cost }))
+            })
+    });
+    let ledger_cost = run.usage.cost_usd;
+    let manifest_cost = manifest_usage
+        .as_ref()
+        .and_then(|value| value.get("costUsd").or_else(|| value.get("cost_usd")))
+        .and_then(Value::as_f64);
+    let (reconciliation_status, divergence) = match (&manifest_usage, ledger_cost, manifest_cost) {
+        (None, _, _) => ("manifest_absent", Value::Null),
+        (_, Some(ledger), Some(manifest)) if (ledger - manifest).abs() > 1e-9 => (
+            "divergent",
+            json!({ "ledgerCostUsd": ledger, "manifestCostUsd": manifest }),
+        ),
+        _ => ("aligned", Value::Null),
+    };
+    json!({
+        "ledger": ledger,
+        "manifest": manifest_usage,
+        "authority": "manifest",
+        "reconciliationStatus": reconciliation_status,
+        "divergence": divergence
+    })
+}
+
 async fn materialize_optimizer_result(
     service: &OptimizerService,
     run: &OptimizerRunRecord,
@@ -1416,18 +1480,87 @@ async fn materialize_optimizer_result(
             })
         })
         .unwrap_or(Value::Null);
+    let mut heldout_best_candidate = selected_candidate.clone();
+    if let Some(o7) = manifest
+        .as_ref()
+        .and_then(|value| value.get("heldout_best_candidate"))
+        .filter(|value| value.is_object())
+    {
+        heldout_best_candidate = o7.clone();
+    }
+    let mut optimization_selected_candidate = manifest
+        .as_ref()
+        .and_then(|value| value.get("optimization_selected_candidate"))
+        .filter(|value| value.is_object())
+        .cloned()
+        .unwrap_or_else(|| {
+            let mut selected = json!({});
+            if let Some(id) = selection.get("candidateId").cloned() {
+                selected["id"] = id;
+            }
+            if let Some(parent) = selection.get("parentId").cloned() {
+                selected["parentId"] = parent;
+            }
+            if let Some(score) = selection
+                .get("acceptanceScore")
+                .or_else(|| selection.get("score"))
+                .cloned()
+            {
+                selected["score"] = score;
+            }
+            selected
+        });
+    if candidate_id_of(&optimization_selected_candidate).is_none()
+        && candidate_id_of(&heldout_best_candidate).is_some()
+        && selection.get("candidateId").is_none()
+    {
+        // Detection-only: when O-6/O-7 are absent and acceptance metadata has
+        // no distinct id, the materialized file is the only identity we have.
+        optimization_selected_candidate = heldout_best_candidate.clone();
+    }
+    if optimization_selected_candidate
+        .get("materializedValues")
+        .is_none()
+        && candidate_id_of(&optimization_selected_candidate)
+            == candidate_id_of(&heldout_best_candidate)
+    {
+        if let Some(values) = heldout_best_candidate.get("materializedValues").cloned() {
+            optimization_selected_candidate["materializedValues"] = values;
+        }
+        if let Some(digest) = heldout_best_candidate.get("materializedDigest").cloned() {
+            optimization_selected_candidate["materializedDigest"] = digest;
+        }
+    }
+    let opt_id = candidate_id_of(&optimization_selected_candidate).map(str::to_owned);
+    let heldout_id = candidate_id_of(&heldout_best_candidate).map(str::to_owned);
+    let identity_consistent = match (opt_id.as_deref(), heldout_id.as_deref()) {
+        (Some(left), Some(right)) => left == right,
+        (None, None) => true,
+        _ => false,
+    };
+    let mut selected_for_compat = optimization_selected_candidate.clone();
+    selected_for_compat["selectionCriterion"] = json!("optimization_selected");
+    let terminal_cursor = run
+        .summary
+        .get("terminalCursor")
+        .and_then(Value::as_u64)
+        .unwrap_or(run.cursor_seq);
     Ok(json!({
         "schemaVersion": "optimizer_result.v1",
         "optimizerRunId": run.id,
         "algorithmId": run.algorithm_id,
         "status": run.status,
-        "finalCursor": run.cursor_seq,
-        "selectedCandidate": selected_candidate,
+        "finalCursor": terminal_cursor,
+        "enrichmentCursor": run.cursor_seq,
+        "selectedCandidate": selected_for_compat,
+        "optimizationSelectedCandidate": optimization_selected_candidate,
+        "heldoutBestCandidate": heldout_best_candidate,
+        "identityConsistent": identity_consistent,
         "metrics": {
             "selection": selection,
             "heldoutMeasurement": heldout
         },
-        "usage": serde_json::to_value(&run.usage).unwrap_or(Value::Null),
+        "usage": usage_authority_block(run, manifest.as_ref()),
         "artifactRefs": artifact_refs,
         "completionReceiptId": format!("optimizer_completion_{}", run.id)
     }))
@@ -4137,6 +4270,64 @@ pub(in crate::optimizers) mod tests {
         assert!(!encoded.contains("runDirectory"));
         assert!(!encoded.contains(&run_dir.display().to_string()));
         assert!(!result["artifactRefs"][0]["id"].as_str().unwrap().is_empty());
+        assert_eq!(result["identityConsistent"], json!(true));
+        assert_eq!(
+            result["optimizationSelectedCandidate"]["id"],
+            json!("candidate_winner")
+        );
+        assert_eq!(
+            result["heldoutBestCandidate"]["id"],
+            json!("candidate_winner")
+        );
+        assert_eq!(result["usage"]["authority"], json!("manifest"));
+        assert_eq!(
+            result["usage"]["reconciliationStatus"],
+            json!("manifest_absent")
+        );
+        assert_eq!(result["selectedCandidate"]["selectionCriterion"], json!("optimization_selected"));
+    }
+
+    #[tokio::test]
+    async fn get_result_keeps_optimization_and_heldout_identities_distinct() {
+        let (svc, dir, _) = service().await;
+        let run_dir = dir.path().join("identity_split");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("best_candidate.json"),
+            r#"{"candidate_id":"heldout_winner","parent_id":"seed","payload":{"prompt":"heldout prompt"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            run_dir.join("result_manifest.json"),
+            r#"{"optimization_selected_candidate":{"id":"train_selected","score":0.7},"heldout_best_candidate":{"id":"heldout_winner","score":0.9}}"#,
+        )
+        .unwrap();
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "identity_split_run",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = run.clone();
+        stored.status = "completed".into();
+        stored.cursor_seq = 12;
+        stored.summary = json!({
+            "runDirectory": run_dir.display().to_string(),
+            "terminalCursor": 10
+        });
+        svc.persist_run(stored).await.unwrap();
+        let result = svc.get_result(run.id).await.unwrap();
+        assert_eq!(result["finalCursor"], json!(10));
+        assert_eq!(result["enrichmentCursor"], json!(12));
+        assert_eq!(result["optimizationSelectedCandidate"]["id"], json!("train_selected"));
+        assert_eq!(result["heldoutBestCandidate"]["id"], json!("heldout_winner"));
+        assert_eq!(result["selectedCandidate"]["id"], json!("train_selected"));
+        assert_eq!(result["identityConsistent"], json!(false));
     }
 
     #[tokio::test]
