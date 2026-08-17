@@ -22,9 +22,7 @@ use crate::visuals::{
 };
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
-use std::{
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use uuid::Uuid;
@@ -136,10 +134,7 @@ struct ReadyContainer {
 pub(super) async fn start(
     service: &OptimizerService,
     request: OptimizerRecipeRunRequest,
-) -> Result<(
-    OptimizerRunRecord,
-    Option<crate::storage::AppEvent>,
-)> {
+) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     let spec = EvalSpec::for_recipe(&request.recipe_id)?;
     let container = find_ready_container(service, spec.family).await?;
     let examples = spec.examples();
@@ -364,11 +359,16 @@ async fn run_eval_worker(
     cancel: watch::Receiver<bool>,
 ) -> Result<()> {
     append_status(&service, &run_id, "optimizer.run.started", "running").await?;
+    append_eval_plan(&service, &run_id, spec, &examples).await?;
     // These recipes intentionally use the container's blocking rollout mode.
     // HealthBench can make one policy call plus many rubric-grader calls, so
     // the generic UI HTTP timeout is not an honest bound for this endpoint.
     let client = crate::http::http_client_with_timeout(BLOCKING_EVAL_HTTP_TIMEOUT);
-    let info = match client.get(format!("{}/info", container.base_url)).send().await {
+    let info = match client
+        .get(format!("{}/info", container.base_url))
+        .send()
+        .await
+    {
         Ok(response) if response.status().is_success() => {
             response.json::<Value>().await.unwrap_or(json!({}))
         }
@@ -414,28 +414,21 @@ async fn run_eval_worker(
         let Some(joined) = tasks.join_next().await else {
             break;
         };
-        match joined {
-            Ok((_example, Ok(record))) => records.push(record),
-            Ok((example, Err(error))) => records.push(failed_record(
-                example,
-                spec,
-                &policy_pin,
-                format!("{error:#}"),
-            )),
-            Err(error) => records.push(json!({
+        let record = match joined {
+            Ok((_example, Ok(record))) => record,
+            Ok((example, Err(error))) => {
+                failed_record(example, spec, &policy_pin, format!("{error:#}"))
+            }
+            Err(error) => json!({
                 "status": "failed",
                 "error": error.to_string(),
                 "policyRef": policy_pin,
-            })),
-        }
+            }),
+        };
+        append_eval_terminal(&service, &run_id, spec, &record).await?;
+        records.push(record);
         persist_progress(
-            &service,
-            &run_id,
-            spec,
-            &visual_id,
-            &records,
-            total,
-            "running",
+            &service, &run_id, spec, &visual_id, &records, total, "running",
         )
         .await?;
     }
@@ -445,9 +438,8 @@ async fn run_eval_worker(
             example,
             spec,
             &policy_pin,
-            halt.clone().unwrap_or_else(|| {
-                "required rollout was not dispatched".into()
-            }),
+            halt.clone()
+                .unwrap_or_else(|| "required rollout was not dispatched".into()),
         ));
     }
 
@@ -461,16 +453,8 @@ async fn run_eval_worker(
     } else {
         "failed"
     };
-    persist_progress(
-        &service,
-        &run_id,
-        spec,
-        &visual_id,
-        &records,
-        total,
-        status,
-    )
-    .await?;
+    persist_progress(&service, &run_id, spec, &visual_id, &records, total, status).await?;
+    append_eval_selection(&service, &run_id, status, mean_reward(&records)).await?;
     let mut detail = String::new();
     if status == "failed" {
         let mut parts = Vec::new();
@@ -486,6 +470,158 @@ async fn run_eval_worker(
         detail = parts.join("; ");
     }
     append_terminal(&service, &run_id, status == "failed", detail).await?;
+    Ok(())
+}
+
+async fn append_eval_plan(
+    service: &OptimizerService,
+    run_id: &str,
+    spec: EvalSpec,
+    examples: &[EvalExample],
+) -> Result<()> {
+    let mut run = service.get(run_id.to_string()).await?;
+    let mut events = vec![OptimizerEventEnvelope {
+        schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+        event_id: Some(format!("{run_id}:eval:{}", run.cursor_seq + 1)),
+        event_type: "eval.run.planned".into(),
+        sequence_number: run.cursor_seq + 1,
+        occurred_at: chrono::Utc::now().to_rfc3339(),
+        optimizer_run_id: run_id.into(),
+        algorithm_id: EVAL_ALGORITHM_ID.into(),
+        level: None,
+        item: None,
+        delta: Map::new(),
+        snapshot: Some(Map::from_iter([
+            ("parallelism".into(), json!(spec.concurrency)),
+            ("global_capacity".into(), json!(spec.concurrency)),
+            ("planned_trials".into(), json!(examples.len())),
+            (
+                "candidates".into(),
+                json!([{"id": spec.policy_config, "label": spec.policy_config}]),
+            ),
+        ])),
+        usage_delta: None,
+        artifact_refs: vec![],
+        error: None,
+        raw: json!({ "source": "container_eval" }),
+    }];
+    for example in examples {
+        run.cursor_seq += 1;
+        events.push(OptimizerEventEnvelope {
+            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+            event_id: Some(format!("{run_id}:eval:{}", run.cursor_seq + 1)),
+            event_type: "eval.trial.queued".into(),
+            sequence_number: run.cursor_seq + 1,
+            occurred_at: chrono::Utc::now().to_rfc3339(),
+            optimizer_run_id: run_id.into(),
+            algorithm_id: EVAL_ALGORITHM_ID.into(),
+            level: None,
+            item: None,
+            delta: Map::from_iter([
+                (
+                    "trial_id".into(),
+                    json!(format!("trial:{}:{}", spec.family, example.seed)),
+                ),
+                ("candidate_id".into(), json!(spec.policy_config)),
+                ("seed".into(), json!(example.seed)),
+                ("scenario".into(), json!(spec.family)),
+                ("stage".into(), json!("screen")),
+            ]),
+            snapshot: None,
+            usage_delta: None,
+            artifact_refs: vec![],
+            error: None,
+            raw: json!({ "source": "container_eval" }),
+        });
+    }
+    service.append_events(run_id.to_string(), events).await?;
+    Ok(())
+}
+
+async fn append_eval_terminal(
+    service: &OptimizerService,
+    run_id: &str,
+    spec: EvalSpec,
+    record: &Value,
+) -> Result<()> {
+    let run = service.get(run_id.to_string()).await?;
+    let seed = record.get("seed").cloned().unwrap_or(Value::Null);
+    let id = format!("trial:{}:{}", spec.family, seed);
+    let valid = is_successful_eval_record(record);
+    service
+        .append_events(
+            run_id.to_string(),
+            vec![OptimizerEventEnvelope {
+                schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+                event_id: Some(format!("{run_id}:eval:{}", run.cursor_seq + 1)),
+                event_type: "eval.trial.terminal".into(),
+                sequence_number: run.cursor_seq + 1,
+                occurred_at: chrono::Utc::now().to_rfc3339(),
+                optimizer_run_id: run_id.into(),
+                algorithm_id: EVAL_ALGORITHM_ID.into(),
+                level: (!valid).then_some("warn".into()),
+                item: Some(json!({
+                    "kind": "trial",
+                    "id": id,
+                    "status": if valid { "evaluated" } else { "failed" },
+                    "valid": valid,
+                    "candidateId": spec.policy_config,
+                    "stage": "screen",
+                    "seed": seed,
+                    "scenario": spec.family,
+                    "metrics": { "reward": record.get("reward").cloned().unwrap_or(Value::Null) },
+                    "raw": record,
+                })),
+                delta: Map::new(),
+                snapshot: None,
+                usage_delta: None,
+                artifact_refs: vec![],
+                error: None,
+                raw: json!({ "source": "container_eval" }),
+            }],
+        )
+        .await?;
+    Ok(())
+}
+
+async fn append_eval_selection(
+    service: &OptimizerService,
+    run_id: &str,
+    status: &str,
+    mean: Option<f64>,
+) -> Result<()> {
+    let run = service.get(run_id.to_string()).await?;
+    let selection = json!({
+        "status": if status == "completed" { "inconclusive" } else { "failed" },
+        "winnerId": null,
+        "baselineId": run.summary.pointer("/policyRef/config").cloned().unwrap_or(Value::Null),
+        "primaryMetric": "mean_reward",
+        "lift": null,
+        "score": mean,
+        "reason": "baseline-only evaluation; no promotion decision",
+    });
+    service
+        .append_events(
+            run_id.to_string(),
+            vec![OptimizerEventEnvelope {
+                schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+                event_id: Some(format!("{run_id}:eval:{}", run.cursor_seq + 1)),
+                event_type: "eval.selection.completed".into(),
+                sequence_number: run.cursor_seq + 1,
+                occurred_at: chrono::Utc::now().to_rfc3339(),
+                optimizer_run_id: run_id.into(),
+                algorithm_id: EVAL_ALGORITHM_ID.into(),
+                level: None,
+                item: None,
+                delta: Map::new(),
+                snapshot: Some(Map::from_iter([("selection".into(), selection)])),
+                usage_delta: None,
+                artifact_refs: vec![],
+                error: None,
+                raw: json!({ "source": "container_eval" }),
+            }],
+        )
+        .await?;
     Ok(())
 }
 
@@ -509,7 +645,10 @@ async fn register_policy_pin(
         let text = response.text().await.unwrap_or_default();
         bail!("policy config registration failed: {status} {text}");
     }
-    let registered = response.json::<Value>().await.context("decode /policy-configs")?;
+    let registered = response
+        .json::<Value>()
+        .await
+        .context("decode /policy-configs")?;
     let returned_id = registered
         .get("config_id")
         .or_else(|| registered.get("configId"))
@@ -712,7 +851,9 @@ fn usage_from_records(records: &[Value]) -> super::models::OptimizerUsageSummary
             .extra
             .insert("costTelemetryComplete".into(), json!(cost_complete));
     }
-    usage.extra.insert("costCeilingUsd".into(), json!(COST_CEILING_USD));
+    usage
+        .extra
+        .insert("costCeilingUsd".into(), json!(COST_CEILING_USD));
     usage.extra.insert("policyUsage".into(), policy.to_json());
     usage.extra.insert("graderUsage".into(), grader.to_json());
     usage
@@ -754,7 +895,8 @@ fn add_lane(lane: &mut LaneUsage, blob: Option<&Value>) {
 }
 
 fn u64_field(blob: &Value, keys: &[&str]) -> Option<u64> {
-    keys.iter().find_map(|key| blob.get(*key).and_then(Value::as_u64))
+    keys.iter()
+        .find_map(|key| blob.get(*key).and_then(Value::as_u64))
 }
 
 fn mean_reward(records: &[Value]) -> Option<f64> {
@@ -806,8 +948,8 @@ async fn run_one_example(
         );
     }
     let prepared = prepare.json::<Value>().await?;
-    let stream = declared_stream_descriptor(&prepared)?
-        .context("prepare omitted stream descriptor")?;
+    let stream =
+        declared_stream_descriptor(&prepared)?.context("prepare omitted stream descriptor")?;
     let poll_url = resolve_declared_url(base, &declared_poll_url(&stream)?)?;
     wait_for_stream_subscribed(
         client,
@@ -836,7 +978,11 @@ async fn run_one_example(
     if !started.status().is_success() {
         let status = started.status();
         let body = started.text().await.unwrap_or_default();
-        bail!("POST /rollouts failed for {} seed {}: {status} {body}", example.pool, example.seed);
+        bail!(
+            "POST /rollouts failed for {} seed {}: {status} {body}",
+            example.pool,
+            example.seed
+        );
     }
     let mut state = started.json::<Value>().await?;
     if !rollout_terminal(&state) {
@@ -1361,7 +1507,9 @@ mod tests {
             .cloned()
             .unwrap_or_default();
         assert_eq!(records.len(), 10);
-        assert!(records.iter().all(|row| row.get("reward").and_then(Value::as_f64).is_some()));
+        assert!(records
+            .iter()
+            .all(|row| row.get("reward").and_then(Value::as_f64).is_some()));
         assert_eq!(starts.load(Ordering::SeqCst), 10);
         let visual_id = finished
             .summary
@@ -1382,6 +1530,25 @@ mod tests {
         assert_eq!(finished.usage.completion_tokens, 10);
         assert_eq!(finished.usage.rollouts, 10);
         assert_eq!(finished.usage.cost_usd, None);
+        let runtime = svc
+            .get_state(run.id.clone(), "eval.runtime".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(runtime.data["plannedTrials"], json!(10));
+        let progress = svc
+            .get_state(run.id.clone(), "eval.trials".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(progress.data["trials"].as_array().map(Vec::len), Some(10));
+        assert_eq!(
+            progress.data["trials"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|trial| trial["status"] == json!("evaluated"))
+                .count(),
+            10
+        );
         task.abort();
     }
 
@@ -1522,7 +1689,10 @@ mod tests {
         let (svc, _dir, _) = service().await;
         insert_container(&svc, "healthbench", &base, "ready").await;
         let (run, _) = svc
-            .start_recipe(recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_policy_mismatch"))
+            .start_recipe(recipe(
+                HEALTHBENCH_EVAL_SMOKE_RECIPE,
+                "sess_policy_mismatch",
+            ))
             .await
             .unwrap();
         let finished = wait_terminal(&svc, &run.id).await;
@@ -1533,9 +1703,7 @@ mod tests {
 
     #[tokio::test]
     async fn banking77_partial_failure_is_failed_not_completed() {
-        let rewards = (0..10)
-            .map(|seed| (("train".into(), seed), 1.0))
-            .collect();
+        let rewards = (0..10).map(|seed| (("train".into(), seed), 1.0)).collect();
         let (base, task, starts) = spawn_eval_mock_opts(MockEvalOptions {
             family: "banking77",
             rewards,

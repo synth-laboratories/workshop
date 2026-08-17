@@ -267,8 +267,25 @@ impl OptimizerService {
         recipes.push(super::hosted_gelo::recipe_catalog());
         recipes.push(super::sft_recipes::recipe_catalog());
         recipes.extend(super::hosted_sft::recipe_catalog());
+        // Local eval is the authority for eval.* admission. Older sidecar
+        // catalogs can carry compatibility copies of the same ids without the
+        // product-owned bounds; a plain concatenation made callers select the
+        // stale first copy and reject an otherwise valid recipe.
         recipes.extend(super::eval_recipes::recipe_catalog());
-        recipes.into_iter().map(project_recipe_readiness).collect()
+        let mut by_id = BTreeMap::new();
+        let mut anonymous = Vec::new();
+        for recipe in recipes {
+            if let Some(id) = recipe.get("id").and_then(Value::as_str) {
+                by_id.insert(id.to_string(), recipe);
+            } else {
+                anonymous.push(recipe);
+            }
+        }
+        anonymous
+            .into_iter()
+            .chain(by_id.into_values())
+            .map(project_recipe_readiness)
+            .collect()
     }
 
     pub async fn start_recipe(

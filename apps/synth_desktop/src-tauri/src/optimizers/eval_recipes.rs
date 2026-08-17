@@ -107,6 +107,29 @@ fn resolve_python() -> Result<PathBuf> {
             );
         }
     }
+    // The plugin installer stores immutable versioned runtimes and records
+    // the active selection. Eval must consume the same selected runtime as the
+    // sidecar instead of looking only at the obsolete unversioned layout.
+    let optimizers_root = crate::instance::data_root().join("optimizers");
+    if let Ok(selected) = fs::read_to_string(optimizers_root.join("selected_version")) {
+        let selected = selected.trim();
+        if !selected.is_empty()
+            && selected.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
+            })
+        {
+            for executable in ["python3", "python"] {
+                let path = optimizers_root
+                    .join("versions")
+                    .join(selected)
+                    .join("runtime/bin")
+                    .join(executable);
+                if path.is_file() {
+                    return Ok(path);
+                }
+            }
+        }
+    }
     let owned = crate::instance::data_root()
         .join("runtime")
         .join("optimizers")

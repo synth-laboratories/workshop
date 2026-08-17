@@ -1760,6 +1760,14 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
     let session_skill = fs::read_to_string(home.join("skills/use-synth-session/SKILL.md")).unwrap();
     let optimizers_skill =
         fs::read_to_string(home.join("skills/use-synth-optimizers/SKILL.md")).unwrap();
+    assert_eq!(
+        optimizers_skill,
+        fs::read_to_string(home.join("skills/.system/use-synth-optimizers/SKILL.md")).unwrap()
+    );
+    assert_eq!(
+        session_skill,
+        fs::read_to_string(home.join("skills/.system/use-synth-session/SKILL.md")).unwrap()
+    );
     assert!(session_skill.contains("tools.mcp__synth_session__session_present"));
     assert!(session_skill.contains("seven"));
     assert!(session_skill.contains("Manual"));
@@ -3278,7 +3286,11 @@ fn interleaved_generation_and_tool_calls_exclude_interruptions_and_tool_time() {
     events.extend(cut);
 
     let measurements = replay(&events);
-    assert_eq!(measurements.len(), 3, "tool time or the interrupt merged segments");
+    assert_eq!(
+        measurements.len(),
+        3,
+        "tool time or the interrupt merged segments"
+    );
 
     let pre = measurements
         .iter()

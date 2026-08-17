@@ -496,6 +496,19 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         fs::create_dir_all(&cookbook_skill)?;
         fs::write(cookbook_skill.join("SKILL.md"), body)?;
     }
+    // Codex advertises Workshop-owned skills as system skills. Keep the
+    // historical flat installation for compatibility, and mirror the final
+    // (including Context overrides) materialization into the authoritative
+    // `.system` namespace the agent is instructed to read.
+    let system_skills = home.join("skills/.system");
+    fs::create_dir_all(&system_skills)?;
+    for entry in fs::read_dir(home.join("skills"))? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() || entry.file_name() == ".system" {
+            continue;
+        }
+        mirror_skill_directory(&entry.path(), &system_skills.join(entry.file_name()))?;
+    }
     let provider = request.provider_name.as_deref().unwrap_or("custom");
     let title = request
         .provider_title
@@ -649,6 +662,23 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
             ));
         }
         fs::write(home.join("config.toml"), existing)?;
+    }
+    Ok(())
+}
+
+fn mirror_skill_directory(source: &Path, destination: &Path) -> Result<()> {
+    if destination.exists() {
+        fs::remove_dir_all(destination)?;
+    }
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let target = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            mirror_skill_directory(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
     }
     Ok(())
 }
