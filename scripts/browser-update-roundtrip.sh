@@ -22,7 +22,8 @@ trap cleanup EXIT
 mkdir -p "$GENERATED" "$ARTIFACTS" "$INSTALL_ROOT"
 
 build_version() {
-  local version="$1" destination="$2" config="$GENERATED/tauri-$version.json"
+  local version="$1" destination="$2" config
+  config="$GENERATED/tauri-$version.json"
   printf '{"version":"%s"}\n' "$version" > "$config"
   (cd "$ROOT/apps/synth_desktop" && npx tauri build --bundles app --config "$config")
   "$ROOT/scripts/finalize-browser-app.sh" "$BUNDLE"
