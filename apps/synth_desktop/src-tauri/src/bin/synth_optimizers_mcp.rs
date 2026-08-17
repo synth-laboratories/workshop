@@ -38,6 +38,14 @@ fn display_err(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+fn recipe_start_path(recipe_id: &str) -> &'static str {
+    if recipe_id.starts_with("eval.") || recipe_id.starts_with("sft.") {
+        "/v1/optimizers/recipes/run"
+    } else {
+        "/v1/optimizers/recipes/prepare"
+    }
+}
+
 fn resolved_session_ref(args: &Value, fallback: Option<&str>) -> Option<Value> {
     args.get("session_ref")
         .and_then(Value::as_str)
@@ -187,15 +195,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         ),
         "optimizer_start_recipe" => request(
             "POST",
-            if args
-                .get("recipe_id")
-                .and_then(Value::as_str)
-                .is_some_and(|id| id.starts_with("eval."))
-            {
-                "/v1/optimizers/recipes/run"
-            } else {
-                "/v1/optimizers/recipes/prepare"
-            },
+            recipe_start_path(args.get("recipe_id").and_then(Value::as_str).unwrap_or("")),
             Some(json!({
                 "recipeId": args.get("recipe_id"),
                 "sessionRef": session_ref(),
@@ -368,6 +368,26 @@ mod tests {
         assert!(encoded.contains("optimizer_pause_run"));
         assert!(encoded.contains("optimizer_resume_run"));
         assert!(!encoded.contains("api_key"));
+    }
+
+    #[test]
+    fn paid_sft_and_eval_recipes_start_on_the_run_endpoint() {
+        assert_eq!(
+            recipe_start_path("sft.hosted.fixture.v1"),
+            "/v1/optimizers/recipes/run"
+        );
+        assert_eq!(
+            recipe_start_path("sft.craftax.nemotron-nano.tinker.v1"),
+            "/v1/optimizers/recipes/run"
+        );
+        assert_eq!(
+            recipe_start_path("eval.craftax.llm-policy.smoke.v1"),
+            "/v1/optimizers/recipes/run"
+        );
+        assert_eq!(
+            recipe_start_path("gepa.banking77.smoke.v1"),
+            "/v1/optimizers/recipes/prepare"
+        );
     }
 
     #[test]
