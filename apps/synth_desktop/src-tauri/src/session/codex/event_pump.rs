@@ -3,10 +3,24 @@ use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{atomic::AtomicU64, Arc},
 };
+
+fn codex_child_path(binary: &Path, inherited: Option<&OsStr>) -> Result<Option<OsString>> {
+    let Some(parent) = binary.parent().filter(|parent| !parent.as_os_str().is_empty()) else {
+        return Ok(inherited.map(OsStr::to_os_string));
+    };
+    let mut entries = vec![parent.to_path_buf()];
+    if let Some(inherited) = inherited {
+        entries.extend(std::env::split_paths(inherited));
+    }
+    Ok(Some(
+        std::env::join_paths(entries).context("compose Codex child PATH")?,
+    ))
+}
 use tauri::AppHandle;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -120,6 +134,14 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // A configured Codex executable is commonly a `#!/usr/bin/env node`
+    // launcher. Finder launches do not inherit the operator's shell PATH, so
+    // resolving the launcher without also exposing its sibling `node` still
+    // fails at runtime. Prepend the resolved launcher's directory without
+    // discarding the packaged app's existing PATH.
+    if let Some(path) = codex_child_path(binary, std::env::var_os("PATH").as_deref())? {
+        command.env("PATH", path);
+    }
     if let Some((name, value)) = provider_child_env(request)? {
         command.env(name, value);
     }
@@ -1088,4 +1110,24 @@ pub(crate) async fn write_message(
     stdin.write_all(&encoded).await?;
     stdin.flush().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod child_path_tests {
+    use super::codex_child_path;
+    use std::{ffi::OsStr, path::Path};
+
+    #[test]
+    fn configured_launcher_directory_precedes_finder_path() {
+        let path = codex_child_path(
+            Path::new("/opt/synth/node/bin/codex"),
+            Some(OsStr::new("/usr/bin:/bin")),
+        )
+        .unwrap()
+        .unwrap();
+        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+        assert_eq!(entries[0], Path::new("/opt/synth/node/bin"));
+        assert_eq!(entries[1], Path::new("/usr/bin"));
+        assert_eq!(entries[2], Path::new("/bin"));
+    }
 }
