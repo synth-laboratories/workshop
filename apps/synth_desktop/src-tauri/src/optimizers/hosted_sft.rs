@@ -47,6 +47,12 @@ const MAX_DROPPED_FRACTION: &str = "0.05";
 /// Seconds one checkpoint rollout may take. A Craftax episode runs minutes; the
 /// evaluator's HTTP client would otherwise fall back to a 30s default.
 const CHECKPOINT_EVALUATION_TIMEOUT_S: u32 = 3600;
+/// The Workshop approval broker needs a hard per-run authorization ceiling.
+/// Hosted SFT recipes are fixed-shape (model, steps, checkpoints, and rollout
+/// counts are product-owned), so cap each paid launch at one fifth of the
+/// five-run acceptance budget. The public service remains the execution
+/// authority and Workshop reconciles actual usage from its event stream.
+const HOSTED_SFT_COST_CEILING_USD: f64 = 10.0;
 /// Allowlisted dataset shards. A caller selects one; it cannot supply a path.
 const BANKING77_SHARDS: [&str; 2] = ["train_a", "train_b"];
 /// Torn-tail reads while the producer appends are transient. Give up only
@@ -76,7 +82,7 @@ fn fixture_recipe() -> Value {
             "backend": "fixture",
             "checkpointSteps": [10, 20],
             "campaignRolloutsPerCheckpoint": 2,
-            "costCeilingUsd": null,
+            "costCeilingUsd": 0.0,
             "costNotice": "Fixture backend; no provider charges. Requires the public Optimizers SFT service."
         },
         "credentialInputs": [],
@@ -103,7 +109,7 @@ fn craftax_nemotron_recipe() -> Value {
             "trainingSteps": CRAFTAX_TRAINING_STEPS,
             "campaignRolloutsPerCheckpoint": 2,
             "evalSeeds": [501, 502],
-            "costCeilingUsd": null,
+            "costCeilingUsd": HOSTED_SFT_COST_CEILING_USD,
             "costNotice": "Hosted Tinker + local Craftax slot. Student id from docs/sft_tinker_base_models.toml (default 3.5 Lightning)."
         },
         "credentialInputs": [],
@@ -137,7 +143,7 @@ fn banking77_recipe() -> Value {
             "datasetShards": BANKING77_SHARDS,
             "evalSeeds": [1, 2],
             "evaluationPlanRef": BANKING77_PLAN_REF,
-            "costCeilingUsd": null,
+            "costCeilingUsd": HOSTED_SFT_COST_CEILING_USD,
             "costNotice": "Hosted Tinker training plus banking77_classify campaign rollouts. Provider charges apply."
         },
         "credentialInputs": [],
@@ -895,6 +901,23 @@ mod tests {
             .to_string();
         assert!(error.contains("unknown Banking77 dataset shard"), "{error}");
         assert_eq!(BANKING77_SHARDS.len(), 2);
+    }
+
+    #[test]
+    fn hosted_sft_recipes_declare_an_explicit_cost_ceiling() {
+        let fixture = fixture_recipe();
+        assert_eq!(fixture["limits"]["costCeilingUsd"], 0.0);
+        let craftax = craftax_nemotron_recipe();
+        assert_eq!(
+            craftax["limits"]["costCeilingUsd"],
+            HOSTED_SFT_COST_CEILING_USD
+        );
+        let banking77 = banking77_recipe();
+        assert_eq!(
+            banking77["limits"]["costCeilingUsd"],
+            HOSTED_SFT_COST_CEILING_USD
+        );
+        assert_eq!(HOSTED_SFT_COST_CEILING_USD, 10.0);
     }
 
     #[test]
