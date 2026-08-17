@@ -38,17 +38,48 @@ fn breaker_key(tool: &str, args: &Value) -> String {
         key.push_str(operation);
     }
     for field in BREAKER_TARGET_FIELDS {
-        let target = args
-            .get(field)
-            .and_then(Value::as_str)
-            .or_else(|| args.pointer(&format!("/arguments/{field}")).and_then(Value::as_str));
+        let target = args.get(field).and_then(Value::as_str).or_else(|| {
+            args.pointer(&format!("/arguments/{field}"))
+                .and_then(Value::as_str)
+        });
         if let Some(target) = target.map(str::trim).filter(|value| !value.is_empty()) {
             key.push('#');
             key.push_str(target);
             break;
         }
     }
+    if let Some(revision) = args
+        .get("revision")
+        .or_else(|| args.pointer("/arguments/revision"))
+        .and_then(Value::as_i64)
+    {
+        key.push('@');
+        key.push_str(&revision.to_string());
+    }
     key
+}
+
+fn breaker_target(args: &Value) -> Option<&str> {
+    BREAKER_TARGET_FIELDS.iter().find_map(|field| {
+        args.get(*field)
+            .and_then(Value::as_str)
+            .or_else(|| {
+                args.pointer(&format!("/arguments/{field}"))
+                    .and_then(Value::as_str)
+            })
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn visual_recovery_operation(tool: &str, args: &Value) -> bool {
+    if tool != "visual_manage" {
+        return false;
+    }
+    matches!(
+        args.get("operation").and_then(Value::as_str),
+        Some("capture_review" | "review" | "update")
+    )
 }
 
 /// A structured `{"code": …}` failure is the same failure however its message
@@ -95,6 +126,16 @@ impl ToolLoopBreaker {
 
     fn record_success(&mut self, tool: &str, args: &Value) {
         self.failures.remove(&breaker_key(tool, args));
+        // A successful review/capture/update changes the evidence that
+        // `mark_ready` evaluates. Keeping an earlier readiness failure armed
+        // after that recovery made the breaker replay stale prose before the
+        // readiness service could inspect the corrected reviews.
+        if visual_recovery_operation(tool, args) {
+            if let Some(target) = breaker_target(args) {
+                let prefix = format!("visual_manage/mark_ready#{target}");
+                self.failures.retain(|key, _| !key.starts_with(&prefix));
+            }
+        }
     }
 }
 
@@ -264,11 +305,19 @@ mod tests {
     fn breaker_ignores_changing_numeric_arguments_and_resets_on_success() {
         let args = json!({"visual_id": "vis_1"});
         let mut breaker = ToolLoopBreaker::default();
-        breaker.record_failure("visual_capture_review", &args, "viewport 640 failed: denied");
+        breaker.record_failure(
+            "visual_capture_review",
+            &args,
+            "viewport 640 failed: denied",
+        );
         assert!(breaker
             .terminal_error("visual_capture_review", &args)
             .is_none());
-        breaker.record_failure("visual_capture_review", &args, "viewport 800 failed: denied");
+        breaker.record_failure(
+            "visual_capture_review",
+            &args,
+            "viewport 800 failed: denied",
+        );
         let terminal = breaker
             .terminal_error("visual_capture_review", &args)
             .unwrap();
@@ -290,8 +339,7 @@ mod tests {
         breaker.record_failure("visual_manage", &capture, "no rendered observation");
         assert!(breaker.terminal_error("visual_manage", &capture).is_some());
 
-        let other_operation =
-            json!({"operation": "show", "arguments": {"visual_id": "vis_a"}});
+        let other_operation = json!({"operation": "show", "arguments": {"visual_id": "vis_a"}});
         let other_visual =
             json!({"operation": "capture_review", "arguments": {"visual_id": "vis_b"}});
         assert!(breaker
@@ -317,6 +365,46 @@ mod tests {
         breaker.record_failure("visual_capture_review", &args, &stale);
         assert!(breaker
             .terminal_error("visual_capture_review", &args)
+            .is_none());
+    }
+
+    #[test]
+    fn corrected_review_reopens_readiness_for_the_same_visual() {
+        let ready = json!({
+            "operation": "mark_ready",
+            "arguments": {"visual_id": "vis_1", "revision": 5}
+        });
+        let review = json!({
+            "operation": "review",
+            "arguments": {"visual_id": "vis_1", "revision": 5}
+        });
+        let mut breaker = ToolLoopBreaker::default();
+        breaker.record_failure("visual_manage", &ready, "screenshotInspected is missing");
+        breaker.record_failure("visual_manage", &ready, "screenshotInspected is missing");
+        assert!(breaker.terminal_error("visual_manage", &ready).is_some());
+
+        breaker.record_success("visual_manage", &review);
+        assert!(breaker.terminal_error("visual_manage", &ready).is_none());
+    }
+
+    #[test]
+    fn readiness_breaker_is_scoped_to_revision() {
+        let revision_five = json!({
+            "operation": "mark_ready",
+            "arguments": {"visual_id": "vis_1", "revision": 5}
+        });
+        let revision_six = json!({
+            "operation": "mark_ready",
+            "arguments": {"visual_id": "vis_1", "revision": 6}
+        });
+        let mut breaker = ToolLoopBreaker::default();
+        breaker.record_failure("visual_manage", &revision_five, "review failed");
+        breaker.record_failure("visual_manage", &revision_five, "review failed");
+        assert!(breaker
+            .terminal_error("visual_manage", &revision_five)
+            .is_some());
+        assert!(breaker
+            .terminal_error("visual_manage", &revision_six)
             .is_none());
     }
 
