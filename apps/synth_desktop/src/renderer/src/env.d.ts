@@ -17,6 +17,7 @@ import type {
 	ModelPerformanceBridge,
 	OptimizersBridge,
 	ComputerUseBridge,
+	BrowserAdminBridge,
 	PluginsBridge,
 	RuntimeBridge,
 	SemanticEvalApi,
@@ -65,6 +66,7 @@ declare global {
 		synthVisuals?: VisualsBridge;
 		synthPlugins?: PluginsBridge;
 		synthComputerUse?: ComputerUseBridge;
+		synthBrowserAdmin?: BrowserAdminBridge;
 		synthReports?: ReportsBridge;
 		synthOptimizers?: OptimizersBridge;
 		synthTerminal: TerminalBridge;

@@ -114,6 +114,12 @@ export const commands = {
 	computerUseRevokeApp: (bundleId: string) => typedError<number, AppError>(__TAURI_INVOKE("computer_use_revoke_app", { bundleId })),
 	/**  Open the exact Privacy & Security pane for one grant. */
 	computerUseOpenSettings: (permissionId: string) => typedError<null, AppError>(__TAURI_INVOKE("computer_use_open_settings", { permissionId })),
+	/**  Read-only managed-browser preflight plus the human-owned origin policy. */
+	browserRuntimeStatus: () => typedError<BrowserRuntimeStatus, AppError>(__TAURI_INVOKE("browser_runtime_status")),
+	/**  Human-only origin approval. Browser MCP deliberately has no equivalent tool. */
+	browserPolicyAllowOrigin: (origin: string) => typedError<BrowserRuntimeStatus, AppError>(__TAURI_INVOKE("browser_policy_allow_origin", { origin })),
+	/**  Revoke a persistent origin approval for future navigations. */
+	browserPolicyRevokeOrigin: (origin: string) => typedError<BrowserRuntimeStatus, AppError>(__TAURI_INVOKE("browser_policy_revoke_origin", { origin })),
 	visualSubscriptionReady: (request: VisualReadyRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_subscription_ready", { request })),
 	/**
 	 *  Fetch a visual's persisted, declaration-validated poll authority through
@@ -568,6 +574,20 @@ export type BeginResult = {
 };
 
 export type BillingAction = "upgrade" | "manage";
+
+export type BrowserRuntimeStatus = {
+	phase: string,
+	detail: string,
+	backendPresent: boolean,
+	nodePresent: boolean,
+	playwrightPresent: boolean,
+	chromiumPresent: boolean,
+	nodeVersion: string | null,
+	backendPath: string,
+	profileRoot: string,
+	allowedOrigins: string[],
+	defaultLocalOrigins: string[],
+};
 
 export type CodexApprovalDecisionRequest = {
 	sessionId: string,

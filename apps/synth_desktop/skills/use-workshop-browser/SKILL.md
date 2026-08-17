@@ -14,7 +14,7 @@ Routing is strict:
 - Native Computer Use: native macOS apps and explicitly requested Safari.
 - Screenshots: fallback for canvas/WebGL or when semantic reads are insufficient.
 
-Start with `browser_create_session`, reusing a named profile when persistence matters. Keep the returned `sessionId` and `tabId`. Navigate only to origins the operator has approved in Workshop settings; an `origin_not_approved` refusal is final until the human changes that setting.
+Call `browser_status` first when runtime readiness or origin approval is uncertain; it does not start Chromium and cannot change policy. Then use `browser_create_session`, reusing a named profile when persistence matters. Keep the returned `sessionId` and `tabId`. Navigate only to origins the operator has approved in Workshop settings; an `origin_not_approved` refusal is final until the human changes that setting.
 
 Read narrowly:
 

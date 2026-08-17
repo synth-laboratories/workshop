@@ -5,5 +5,7 @@
 //! an embedded CEF implementation must satisfy these same types and invariants.
 
 pub mod protocol;
+pub mod runtime;
 
 pub use protocol::*;
+pub use runtime::*;

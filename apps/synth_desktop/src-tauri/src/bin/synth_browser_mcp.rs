@@ -8,7 +8,6 @@ use serde_json::{json, Value};
 use std::{
     env,
     io::{self, BufRead, BufReader, BufWriter, Write},
-    path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
 };
 use synth_desktop_lib::browser::{DEFAULT_MAX_CHARS, HARD_MAX_CHARS};
@@ -22,21 +21,31 @@ struct Backend {
 
 impl Backend {
     fn spawn() -> Result<Self, String> {
-        let script = browser_script();
+        let script = synth_desktop_lib::browser::backend_script_path();
         if !script.is_file() {
             return Err(format!(
                 "Playwright backend is missing at {}",
                 script.display()
             ));
         }
-        let mut child =
-            Command::new(env::var_os("SYNTH_BROWSER_NODE").unwrap_or_else(|| "node".into()))
-                .arg(script)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .map_err(|error| format!("could not start Playwright backend: {error}"))?;
+        let mut command =
+            Command::new(env::var_os("SYNTH_BROWSER_NODE").unwrap_or_else(|| "node".into()));
+        command
+            .arg(script)
+            .env(
+                "SYNTH_BROWSER_POLICY_FILE",
+                synth_desktop_lib::browser::policy_path(),
+            )
+            .env(
+                "SYNTH_BROWSER_PROFILE_ROOT",
+                synth_desktop_lib::browser::profile_root(),
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("could not start Playwright backend: {error}"))?;
         let stdin = child
             .stdin
             .take()
@@ -93,21 +102,6 @@ impl Backend {
     }
 }
 
-fn browser_script() -> PathBuf {
-    if let Some(configured) = env::var_os("SYNTH_BROWSER_BACKEND_SCRIPT") {
-        return PathBuf::from(configured);
-    }
-    if let Ok(exe) = env::current_exe() {
-        if let Some(macos) = exe.parent() {
-            let bundled = macos.join("../Resources/browser/playwright_backend.mjs");
-            if bundled.is_file() {
-                return bundled;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../browser/playwright_backend.mjs")
-}
-
 impl Drop for Backend {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -159,6 +153,7 @@ fn schema(properties: serde_json::Map<String, Value>, required: &[&str]) -> Valu
 fn tools() -> Value {
     let bounded = || json!({"type":"integer","minimum":256,"maximum":HARD_MAX_CHARS,"default":DEFAULT_MAX_CHARS});
     let mut items = Vec::new();
+    items.push(json!({"name":"browser_status","description":"Check the local managed-browser runtime and list human-approved origins without starting Chromium.","inputSchema":schema(serde_json::Map::new(),&[]),"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}));
     items.push(json!({"name":"browser_create_session","description":"Create a visible Workshop-managed Chromium session using a dedicated persistent profile.","inputSchema":schema(serde_json::Map::from_iter([("profile".into(),json!({"type":"string"}))]),&[])}));
     items.push(json!({"name":"browser_close_session","description":"Close only this Workshop-managed session; never touches user browser tabs.","inputSchema":schema(base_properties(false),&["session_id"])}));
     items.push(json!({"name":"browser_list_tabs","description":"List stable tab identities in one managed session.","inputSchema":schema(base_properties(false),&["session_id"])}));
@@ -240,6 +235,9 @@ fn main() {
                     .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == name))
                 {
                     Err(format!("unknown browser tool {name}"))
+                } else if name == "browser_status" {
+                    serde_json::to_value(synth_desktop_lib::browser::runtime_status())
+                        .map_err(|error| error.to_string())
                 } else {
                     if backend.is_none() {
                         match Backend::spawn() {
@@ -285,6 +283,7 @@ mod tests {
     fn catalog_is_bounded_and_never_offers_raw_dom() {
         let catalog = tools().to_string();
         assert!(catalog.contains("browser_snapshot"));
+        assert!(catalog.contains("browser_status"));
         assert!(catalog.contains("browser_back"));
         assert!(catalog.contains("20000"));
         assert!(!catalog.contains("browser_dom"));

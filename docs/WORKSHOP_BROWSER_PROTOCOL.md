@@ -10,7 +10,7 @@ Every observation and action identifies `sessionId`, `tabId`, `documentRevision`
 
 Browser state—including Playwright handles, ref maps, profiles, tabs, dialogs, downloads, and canonical page state—remains in the browser process. The transcript receives only bounded semantic text and metadata. Snapshot/query text defaults to 16,000 characters, has a 20,000-character hard ceiling, and supports cursors and focused subtree reads. No raw DOM tool exists. Password values are omitted at the page boundary.
 
-The Playwright child receives no Tauri IPC credential. Navigation is restricted to an operator-configured origin allowlist. Localhost is allowed by host name with arbitrary development ports. Navigation, popups, dialogs, origins, and actions are written to the profile audit log. Uploads require explicit paths under a configured root; downloads use the managed profile directory. Consequential labels fail closed unless a future Workshop host confirmation broker authorizes the exact action.
+The Playwright child receives no Tauri IPC credential. Navigation is restricted to an operator-configured origin allowlist stored in a private Workshop app-data file and reloaded on every navigation. Only human-facing Tauri commands can mutate it; the agent's read-only `browser_status` tool can report but not change it. Localhost is allowed by host name with arbitrary development ports. Navigation, popups, dialogs, origins, and actions are written to the profile audit log. Uploads require explicit paths under a configured root; downloads use the managed profile directory. Consequential labels fail closed unless a future Workshop host confirmation broker authorizes the exact action.
 
 Routing is:
 
@@ -23,11 +23,11 @@ Routing is:
 
 `apps/synth_desktop/browser/playwright_backend.mjs` launches headed persistent Chromium by default. `SYNTH_BROWSER_HEADLESS=1` exists only for automated verification. Named profiles persist cookies/storage between sessions. Session closure touches only its own context and tabs.
 
-The reference backend is end-to-end viable in the development tree. Production packaging is not complete: Workshop still needs a signed, pinned Node/Playwright/Chromium runtime (or replacement host), resource lookup outside the source tree, updater integration, and a dedicated per-origin approval UI. Until the host confirmation broker is connected, consequential browser actions remain disabled rather than silently self-approved. Claimed existing Chrome tabs are also future work.
+The reference backend is end-to-end viable in the development tree. Context Settings now reports backend/Node/Playwright/Chromium readiness and provides the human-only per-origin approval UI. Production packaging is not complete: Workshop still needs a signed, pinned Node/Playwright/Chromium runtime (or replacement host), updater integration, and installed-app verification. Until the host confirmation broker is connected, consequential browser actions remain disabled rather than silently self-approved. Claimed existing Chrome tabs are also future work.
 
 ## Acceptance evidence (2026-08-16, Apple Silicon macOS)
 
-- Deterministic SPA test: bounded snapshot, password redaction, modal mutation, stale-ref refusal, ambiguous-locator refusal, fill, tab create/close/non-reuse, profile persistence, screenshot, and cleanup passed.
+- Deterministic SPA test: bounded snapshot, password redaction, modal mutation, stale-ref refusal, ambiguous-locator refusal, fill, tab create/close/non-reuse, profile persistence, screenshot, cleanup, live origin approval reload, and post-revocation refusal passed.
 - `example.com`: navigation, heading query, link click, and protocol `browser_back` passed.
 - `usesynth.ai/evals/craftax`: focused Craftax and Trajectories reads were 1,879 and 134 characters under a 4,000-character ceiling, without truncation.
 - Measured cold Chromium session startup: 277 ms. Warm navigation to the Craftax SPA: 2,375 ms.

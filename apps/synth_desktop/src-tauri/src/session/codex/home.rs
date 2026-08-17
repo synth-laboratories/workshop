@@ -982,7 +982,7 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         "synth_computer_use" => {
             "enabled_tools = [\"computer_use\", \"computer_use_status\"]\n"
         }
-        "synth_browser" => "enabled_tools = [\"browser_create_session\", \"browser_close_session\", \"browser_list_tabs\", \"browser_new_tab\", \"browser_close_tab\", \"browser_navigate\", \"browser_back\", \"browser_snapshot\", \"browser_query\", \"browser_subtree\", \"browser_click\", \"browser_fill\", \"browser_press\", \"browser_scroll\", \"browser_screenshot\", \"browser_upload\", \"browser_download\"]\n",
+        "synth_browser" => "enabled_tools = [\"browser_status\", \"browser_create_session\", \"browser_close_session\", \"browser_list_tabs\", \"browser_new_tab\", \"browser_close_tab\", \"browser_navigate\", \"browser_back\", \"browser_snapshot\", \"browser_query\", \"browser_subtree\", \"browser_click\", \"browser_fill\", \"browser_press\", \"browser_scroll\", \"browser_screenshot\", \"browser_upload\", \"browser_download\"]\n",
         _ => "",
     }
 }
@@ -1001,13 +1001,23 @@ pub(crate) fn mcp_env_config(
     app_name: &str,
     bundle_id: &str,
 ) -> String {
+    let browser_policy = (server == "synth_browser")
+        .then(|| {
+            format!(
+                ", SYNTH_BROWSER_POLICY_FILE = \"{}\", SYNTH_BROWSER_PROFILE_ROOT = \"{}\"",
+                toml_string(&crate::browser::policy_path().display().to_string()),
+                toml_string(&crate::browser::profile_root().display().to_string()),
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "env = {{ {} = \"{}\", SYNTH_SESSION_ID = \"{}\", SYNTH_DESKTOP_APP_NAME = \"{}\", SYNTH_DESKTOP_BUNDLE_ID = \"{}\" }}\n",
+        "env = {{ {} = \"{}\", SYNTH_SESSION_ID = \"{}\", SYNTH_DESKTOP_APP_NAME = \"{}\", SYNTH_DESKTOP_BUNDLE_ID = \"{}\"{} }}\n",
         mcp_ipc_env_key(server),
         toml_string(&ipc.display().to_string()),
         toml_string(session_id),
         toml_string(app_name),
         toml_string(bundle_id),
+        browser_policy,
     )
 }
 

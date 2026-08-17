@@ -23,19 +23,19 @@ apply.onclick = () => { localStorage.setItem('displayName', document.querySelect
 modal.onclick = () => { const dialog=document.createElement('div');dialog.setAttribute('role','dialog');dialog.innerHTML='<h2>Dynamic modal</h2><button>Dismiss modal</button>';document.body.append(dialog); };
 </script></body></html>`;
 
-function serve() {
+function serve(host = "127.0.0.1") {
   return new Promise((resolve) => {
     const server = http.createServer((request, response) => {
       response.setHeader("content-type", "text/html");
       response.end(request.url === "/next" ? "<h1>Next page</h1><a href='/'>Back home</a>" : html);
     });
-    server.listen(0, "127.0.0.1", () => resolve(server));
+    server.listen(0, host, () => resolve(server));
   });
 }
 
-function backend(origin, root) {
+function backend(origin, root, policyFile = undefined) {
   const child = spawn(process.execPath, [new URL("./playwright_backend.mjs", import.meta.url).pathname], {
-    env: { ...process.env, SYNTH_BROWSER_HEADLESS: "1", SYNTH_BROWSER_ALLOWED_ORIGINS: origin, SYNTH_BROWSER_PROFILE_ROOT: root },
+    env: { ...process.env, SYNTH_BROWSER_HEADLESS: "1", SYNTH_BROWSER_ALLOWED_ORIGINS: origin, SYNTH_BROWSER_PROFILE_ROOT: root, ...(policyFile ? { SYNTH_BROWSER_POLICY_FILE: policyFile } : {}) },
     stdio: ["pipe", "pipe", "inherit"],
   });
   const lines = readline.createInterface({ input: child.stdout });
@@ -118,4 +118,26 @@ test("Playwright backend satisfies bounded, stale-ref, tab, and profile invarian
   const screenshot = await client.call("browser_screenshot", { session_id: reopened.result.sessionId, tab_id: reopened.result.tabId });
   assert(fs.statSync(screenshot.result.path).size > 0);
   await client.call("browser_close_session", { session_id: reopened.result.sessionId });
+});
+
+test("origin policy reloads between navigations and revocation fails closed", async (context) => {
+  const server = await serve("0.0.0.0");
+  const address = server.address();
+  const origin = `http://0.0.0.0:${address.port}`;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "workshop-browser-policy-test-"));
+  const policyFile = path.join(root, "policy.json");
+  fs.writeFileSync(policyFile, JSON.stringify({ allowedOrigins: [origin] }));
+  const client = backend("", root, policyFile);
+  context.after(async () => {
+    client.child.kill("SIGTERM");
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const created = await client.call("browser_create_session", { profile: "policy" });
+  const target = { session_id: created.result.sessionId, tab_id: created.result.tabId, url: origin };
+  await client.call("browser_navigate", target);
+  fs.writeFileSync(policyFile, JSON.stringify({ allowedOrigins: [] }));
+  await assert.rejects(client.call("browser_navigate", target), /origin_not_approved/);
+  await client.call("browser_close_session", { session_id: created.result.sessionId });
 });

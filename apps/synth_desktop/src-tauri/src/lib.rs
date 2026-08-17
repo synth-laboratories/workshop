@@ -784,7 +784,13 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     let requesting_agent = session_id
         .map(|value| format!("Agent session {value}"))
         .unwrap_or_else(|| "Workshop operator".into());
-    let is_local_eval = recipe.get("algorithmId").and_then(Value::as_str) == Some("eval");
+    let algorithm_id = recipe.get("algorithmId").and_then(Value::as_str);
+    let is_local_eval = algorithm_id == Some("eval");
+    // Hosted SFT is owned by the public synth-optimizers control plane and
+    // does not use the optional local Optimizers sidecar. Requiring that
+    // sidecar made an otherwise configured public SFT recipe unreachable.
+    let is_hosted_sft =
+        algorithm_id == Some("sft") && request.recipe_id != "sft.craftax.gpt-oss.smoke.v1";
     let limits = recipe
         .get("limits")
         .cloned()
@@ -876,7 +882,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     }
 
     let sidecar_status = state.optimizers().manager().refresh().await;
-    if !is_local_eval && sidecar_status.phase != "ready" {
+    if !is_local_eval && !is_hosted_sft && sidecar_status.phase != "ready" {
         let action = if sidecar_status.phase == "not_installed" {
             "install_and_start"
         } else {
@@ -1370,6 +1376,33 @@ async fn computer_use_open_settings(
             AppError::from(anyhow::anyhow!("could not open System Settings: {error}"))
         })?;
     Ok(())
+}
+
+/// Read-only managed-browser preflight plus the human-owned origin policy.
+#[tauri::command]
+#[specta::specta]
+async fn browser_runtime_status() -> Result<browser::BrowserRuntimeStatus, AppError> {
+    Ok(browser::runtime_status())
+}
+
+/// Human-only origin approval. Browser MCP deliberately has no equivalent tool.
+#[tauri::command]
+#[specta::specta]
+async fn browser_policy_allow_origin(
+    origin: String,
+) -> Result<browser::BrowserRuntimeStatus, AppError> {
+    browser::allow_origin(&origin).map_err(AppError::from)?;
+    Ok(browser::runtime_status())
+}
+
+/// Revoke a persistent origin approval for future navigations.
+#[tauri::command]
+#[specta::specta]
+async fn browser_policy_revoke_origin(
+    origin: String,
+) -> Result<browser::BrowserRuntimeStatus, AppError> {
+    browser::revoke_origin(&origin).map_err(AppError::from)?;
+    Ok(browser::runtime_status())
 }
 
 /// The helper bundle shipped inside this application.

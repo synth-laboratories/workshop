@@ -8383,6 +8383,26 @@ html.sidebar-hidden .sidebar {
 .context-capability-list article > div:first-child span { display: -webkit-box; overflow: hidden; max-width: 650px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .context-capability-list article.disabled { opacity: .58; }
 .context-capability-actions { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; }
+.browser-setup-card .settings-card-body { display: grid; gap: 12px; padding-top: 12px; padding-bottom: 13px; }
+.browser-runtime-summary { display: grid; gap: 3px; }
+.browser-runtime-summary strong { color: var(--color-text); font: 750 12px/1.3 var(--font-sans); }
+.browser-runtime-summary[data-phase="ready"] strong { color: var(--color-success); }
+.browser-runtime-summary span, .browser-origin-policy span, .browser-origin-policy p { margin: 0; color: var(--color-text-muted); font: 400 10px/1.45 var(--font-sans); }
+.browser-runtime-checks { display: flex; flex-wrap: wrap; gap: 6px; }
+.browser-runtime-checks span { padding: 4px 7px; border: 1px solid var(--color-border); color: var(--color-text-muted); font: 700 9px/1 var(--font-sans); }
+.browser-runtime-checks span.ready { border-color: color-mix(in srgb, var(--color-success) 28%, var(--color-border)); color: var(--color-success); }
+.browser-runtime-checks span.missing { color: var(--color-danger); }
+.browser-origin-policy { display: grid; gap: 8px; padding-top: 11px; border-top: 1px solid var(--color-border); }
+.browser-origin-policy > div:first-child { display: grid; gap: 2px; }
+.browser-origin-policy strong { color: var(--color-text); font: 700 11px/1.3 var(--font-sans); }
+.browser-origin-policy ul { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.browser-origin-policy li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.browser-origin-policy code, .browser-runtime-paths code { overflow: hidden; color: var(--color-text-muted); font: 500 var(--fs-micro)/1.3 var(--code-font-family); text-overflow: ellipsis; white-space: nowrap; }
+.browser-origin-policy li button { border: 0; background: transparent; color: var(--color-danger); font: 700 9px/1.2 var(--font-sans); cursor: pointer; }
+.browser-origin-policy form { display: flex; gap: 8px; }
+.browser-origin-policy input { flex: 1; min-width: 0; padding: 7px 9px; border: 1px solid var(--color-border); background: var(--color-card); color: var(--color-text); font: 500 10px/1.3 var(--font-sans); }
+.browser-runtime-paths { color: var(--color-text-muted); font: 600 9px/1.4 var(--font-sans); }
+.browser-runtime-paths > code { display: block; margin-top: 4px; }
 .context-capabilities .context-toggle input:checked + span { background: var(--color-blue); }
 .context-not-configured { flex: 0 0 auto; color: var(--color-text-faint) !important; font-weight: 650 !important; }
 .context-cookbook-row { border: 0; }

@@ -660,6 +660,27 @@ export type ComputerUseBridge = {
 	openSettings(permissionId: string): Promise<void>;
 };
 
+export type BrowserRuntimeStatus = {
+	phase: "ready" | "not_ready";
+	detail: string;
+	backendPresent: boolean;
+	nodePresent: boolean;
+	playwrightPresent: boolean;
+	chromiumPresent: boolean;
+	nodeVersion?: string | null;
+	backendPath: string;
+	profileRoot: string;
+	allowedOrigins: string[];
+	defaultLocalOrigins: string[];
+};
+
+/** Human-only browser setup. Agent tools can consume policy but cannot mutate it. */
+export type BrowserAdminBridge = {
+	status(): Promise<BrowserRuntimeStatus>;
+	allowOrigin(origin: string): Promise<BrowserRuntimeStatus>;
+	revokeOrigin(origin: string): Promise<BrowserRuntimeStatus>;
+};
+
 export type PluginsBridge = {
 	status(pluginId?: string | null): Promise<PluginStatus>;
 	list(): Promise<PluginStatus[]>;

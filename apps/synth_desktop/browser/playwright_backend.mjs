@@ -10,12 +10,25 @@ const PROTOCOL_VERSION = "workshop.browser.v1";
 const DEFAULT_MAX_CHARS = 16_000;
 const HARD_MAX_CHARS = 20_000;
 const sessions = new Map();
-const allowedOrigins = new Set(
+const environmentAllowedOrigins = new Set(
   (process.env.SYNTH_BROWSER_ALLOWED_ORIGINS ?? "http://localhost,http://127.0.0.1")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean),
 );
+
+function allowedOrigins() {
+  const origins = new Set(environmentAllowedOrigins);
+  const policyFile = process.env.SYNTH_BROWSER_POLICY_FILE;
+  if (!policyFile) return origins;
+  try {
+    const policy = JSON.parse(fs.readFileSync(policyFile, "utf8"));
+    for (const origin of policy.allowedOrigins ?? []) origins.add(String(origin));
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw new Error(`browser_policy_invalid: ${error.message}`);
+  }
+  return origins;
+}
 
 function id(prefix) {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -42,8 +55,9 @@ function requireAllowed(url) {
   const parsed = new URL(url);
   if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("navigation allows only HTTP(S) URLs");
   const localBase = `${parsed.protocol}//${parsed.hostname}`;
-  const approved = allowedOrigins.has(parsed.origin)
-    || (["localhost", "127.0.0.1", "::1"].includes(parsed.hostname) && allowedOrigins.has(localBase));
+  const approvedOrigins = allowedOrigins();
+  const approved = approvedOrigins.has(parsed.origin)
+    || (["localhost", "127.0.0.1", "::1"].includes(parsed.hostname) && approvedOrigins.has(localBase));
   if (!approved) {
     throw new Error(`origin_not_approved: ${parsed.origin}; approve it in Workshop browser settings`);
   }

@@ -1666,6 +1666,20 @@ fn generated_mcp_configs_pass_desktop_identity_for_visual_capture() {
     assert!(config.contains("SYNTH_DESKTOP_BUNDLE_ID = \"com.synth.desktop.v04.dev.cua\""));
 }
 #[test]
+fn generated_browser_config_passes_human_owned_policy_and_profile_paths() {
+    let config = mcp_env_config(
+        "synth_browser",
+        Path::new("/tmp/desktop-ipc.json"),
+        "session-123",
+        "Synth Workshop v0.5 · cua",
+        "com.synth.desktop.v05.dev.cua",
+    );
+    assert!(config.contains("SYNTH_BROWSER_POLICY_FILE"));
+    assert!(config.contains("browser/policy.json"));
+    assert!(config.contains("SYNTH_BROWSER_PROFILE_ROOT"));
+    assert!(config.contains("browser-profiles"));
+}
+#[test]
 fn normalizes_responses_provider_base_url() {
     assert_eq!(
         responses_base_url("http://127.0.0.1:7333"),

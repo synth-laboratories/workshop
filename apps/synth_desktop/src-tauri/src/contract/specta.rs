@@ -133,6 +133,9 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::computer_use_remove,
         crate::computer_use_revoke_app,
         crate::computer_use_open_settings,
+        crate::browser_runtime_status,
+        crate::browser_policy_allow_origin,
+        crate::browser_policy_revoke_origin,
         crate::visual_subscription_ready,
         crate::visual_stream_poll,
         crate::diagnostics_report,
@@ -361,8 +364,9 @@ mod tests {
         // 198 → 203: the five Computer Use commands. All five are human-only —
         // status, install, remove, revoke an app, open the System Settings
         // pane — and none is reachable from the agent's MCP surface.
+        // 203 → 206: managed browser status plus human-only origin allow/revoke.
         assert_eq!(
-            exported, 203,
+            exported, 206,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(
