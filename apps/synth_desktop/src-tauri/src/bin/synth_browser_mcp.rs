@@ -1,8 +1,7 @@
 //! MCP adapter for the backend-neutral Workshop Browser Protocol.
 //!
-//! The reference backend is an unprivileged Playwright/Chromium child. It has
-//! no Tauri IPC token and therefore cannot turn hostile page content into a
-//! privileged Desktop command.
+//! This process is deliberately a thin authenticated proxy. Desktop owns the
+//! browser child, lifecycle, origin policy, and exact-action approval broker.
 
 #[allow(dead_code)]
 #[path = "../instance_paths.rs"]
@@ -10,106 +9,85 @@ mod instance_paths;
 
 use serde_json::{json, Value};
 use std::{
-    env,
-    io::{self, BufRead, BufReader, BufWriter, Write},
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    env, fs,
+    io::{self, BufRead, Write},
+    path::PathBuf,
+    time::Duration,
 };
 use synth_desktop_lib::browser::{DEFAULT_MAX_CHARS, HARD_MAX_CHARS};
 
-struct Backend {
-    child: Child,
-    stdin: BufWriter<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
-    next_id: u64,
+const IPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+#[derive(serde::Deserialize)]
+struct Connection {
+    url: String,
+    token: String,
 }
 
-impl Backend {
-    fn spawn() -> Result<Self, String> {
-        let script = synth_desktop_lib::browser::backend_script_path();
-        if !script.is_file() {
-            return Err(format!(
-                "Playwright backend is missing at {}",
-                script.display()
-            ));
-        }
-        let mut command =
-            Command::new(env::var_os("SYNTH_BROWSER_NODE").unwrap_or_else(|| "node".into()));
-        command
-            .arg(script)
-            .env(
-                "SYNTH_BROWSER_POLICY_FILE",
-                synth_desktop_lib::browser::policy_path(),
-            )
-            .env(
-                "SYNTH_BROWSER_PROFILE_ROOT",
-                synth_desktop_lib::browser::profile_root(),
-            )
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("could not start Playwright backend: {error}"))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or("browser backend stdin was not piped")?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or("browser backend stdout was not piped")?;
-        Ok(Self {
-            child,
-            stdin: BufWriter::new(stdin),
-            stdout: BufReader::new(stdout),
-            next_id: 0,
+fn connection_file() -> PathBuf {
+    env::var("SYNTH_DESKTOP_IPC_FILE")
+        .or_else(|_| env::var("SYNTH_VISUALS_IPC_FILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            env::var_os("SYNTH_DESKTOP_DATA_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    dirs::data_dir()
+                        .unwrap_or_else(|| PathBuf::from("."))
+                        .join("Synth Desktop")
+                })
+                .join("visuals-ipc.json")
         })
-    }
-
-    fn call(&mut self, operation: &str, arguments: Value) -> Result<Value, String> {
-        self.next_id += 1;
-        let id = self.next_id;
-        writeln!(
-            self.stdin,
-            "{}",
-            json!({"id": id, "operation": operation, "arguments": arguments})
-        )
-        .and_then(|_| self.stdin.flush())
-        .map_err(|error| format!("browser backend stopped while sending {operation}: {error}"))?;
-        loop {
-            let mut line = String::new();
-            if self
-                .stdout
-                .read_line(&mut line)
-                .map_err(|error| error.to_string())?
-                == 0
-            {
-                return Err(format!(
-                    "browser backend stopped while answering {operation}"
-                ));
-            }
-            let Ok(value) = serde_json::from_str::<Value>(&line) else {
-                continue;
-            };
-            if value.get("id").and_then(Value::as_u64) != Some(id) {
-                continue;
-            }
-            if value.get("ok").and_then(Value::as_bool) == Some(true) {
-                return Ok(value.get("response").cloned().unwrap_or_else(|| json!({})));
-            }
-            return Err(value
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("browser backend failed")
-                .to_owned());
-        }
-    }
 }
 
-impl Drop for Backend {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
+fn request(method: &str, path: &str, body: Value) -> Result<Value, String> {
+    let connection: Connection = serde_json::from_str(
+        &fs::read_to_string(connection_file()).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut body = body;
+    if let (Some(object), Ok(session)) = (body.as_object_mut(), env::var("SYNTH_SESSION_ID")) {
+        if !session.trim().is_empty() {
+            object.insert("sessionRef".into(), json!(session));
+        }
     }
+    let payload = serde_json::to_vec(&body).map_err(|error| error.to_string())?;
+    let addr = connection
+        .url
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .parse::<std::net::SocketAddr>()
+        .map_err(|error| error.to_string())?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, IPC_REQUEST_TIMEOUT)
+        .map_err(|error| format!("browser IPC connect failed: {error}"))?;
+    stream
+        .set_read_timeout(Some(IPC_REQUEST_TIMEOUT))
+        .map_err(|error| error.to_string())?;
+    stream
+        .set_write_timeout(Some(IPC_REQUEST_TIMEOUT))
+        .map_err(|error| error.to_string())?;
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        connection.token,
+        payload.len()
+    )
+    .and_then(|_| stream.write_all(&payload))
+    .map_err(|error| format!("browser IPC request failed: {error}"))?;
+    let mut response = String::new();
+    io::Read::read_to_string(&mut stream, &mut response)
+        .map_err(|error| format!("browser IPC response failed: {error}"))?;
+    let (headers, body) = response
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| "browser IPC returned a malformed response".to_owned())?;
+    let status = headers.lines().next().unwrap_or("HTTP status unavailable");
+    if !status.contains(" 2") {
+        return Err(format!("browser IPC returned {status}: {}", body.trim()));
+    }
+    serde_json::from_str(body)
+        .map_err(|error| format!("browser IPC returned invalid JSON: {error}"))
 }
 
 fn target_schema(optional: bool) -> Value {
@@ -159,6 +137,11 @@ fn tools() -> Value {
     let mut items = Vec::new();
     items.push(json!({"name":"browser_status","description":"Check the local managed-browser runtime and list human-approved origins without starting Chromium.","inputSchema":schema(serde_json::Map::new(),&[]),"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}));
     items.push(json!({"name":"browser_create_session","description":"Create a visible Workshop-managed Chromium session using a dedicated persistent profile.","inputSchema":schema(serde_json::Map::from_iter([("profile".into(),json!({"type":"string"}))]),&[])}));
+    items.push(json!({"name":"browser_claim_chrome","description":"With exact human approval, claim exactly one existing Chrome tab exposed on a loopback CDP endpoint. Disabled unless the operator explicitly enables Chrome claiming; the claimed user tab is never closed by Workshop.","inputSchema":schema(serde_json::Map::from_iter([
+        ("cdp_endpoint".into(),json!({"type":"string","default":"http://127.0.0.1:9222"})),
+        ("title_contains".into(),json!({"type":"string"})),
+        ("url_contains".into(),json!({"type":"string"}))
+    ]),&[])}));
     items.push(json!({"name":"browser_close_session","description":"Close only this Workshop-managed session; never touches user browser tabs.","inputSchema":schema(base_properties(false),&["session_id"])}));
     items.push(json!({"name":"browser_list_tabs","description":"List stable tab identities in one managed session.","inputSchema":schema(base_properties(false),&["session_id"])}));
     let mut new_tab = base_properties(false);
@@ -211,13 +194,24 @@ fn tools() -> Value {
     let mut shot = base_properties(true);
     shot.insert("full_page".into(), json!({"type":"boolean"}));
     items.push(json!({"name":"browser_screenshot","description":"Capture a screenshot into the managed profile; returns the controlled path.","inputSchema":schema(shot,&["session_id","tab_id"])}));
+    items.push(json!({"name":"browser_list_dialogs","description":"List pending browser dialogs without accepting them.","inputSchema":schema(base_properties(true),&["session_id","tab_id"])}));
+    let mut dialog = base_properties(true);
+    dialog.insert("dialog_id".into(), json!({"type":"string"}));
+    dialog.insert("accept".into(), json!({"type":"boolean"}));
+    dialog.insert("prompt_text".into(), json!({"type":"string"}));
+    items.push(json!({"name":"browser_handle_dialog","description":"Accept or dismiss one pending dialog. Accepting always requires exact human confirmation.","inputSchema":schema(dialog,&["session_id","tab_id","dialog_id","accept"])}));
+    let mut audit = base_properties(true);
+    audit.insert(
+        "limit".into(),
+        json!({"type":"integer","minimum":1,"maximum":500,"default":100}),
+    );
+    items.push(json!({"name":"browser_audit","description":"Read a bounded tail of this managed profile's browser audit events.","inputSchema":schema(audit,&["session_id","tab_id"]),"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true}}));
     json!({"tools":items})
 }
 
 fn main() {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
-    let mut backend: Option<Backend> = None;
     for line in stdin.lock().lines().map_while(Result::ok) {
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
             continue;
@@ -239,28 +233,20 @@ fn main() {
                     .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == name))
                 {
                     Err(format!("unknown browser tool {name}"))
-                } else if name == "browser_status" {
-                    serde_json::to_value(synth_desktop_lib::browser::runtime_status())
-                        .map_err(|error| error.to_string())
                 } else {
-                    if backend.is_none() {
-                        match Backend::spawn() {
-                            Ok(service) => backend = Some(service),
-                            Err(error) => {
-                                let payload = json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":error}],"isError":true}});
-                                let _ = writeln!(stdout, "{payload}");
-                                let _ = stdout.flush();
-                                continue;
-                            }
-                        }
+                    let arguments = params
+                        .get("arguments")
+                        .cloned()
+                        .unwrap_or_else(|| json!({}));
+                    if name == "browser_status" {
+                        request("GET", "/v1/browser/status", json!({}))
+                    } else {
+                        request(
+                            "POST",
+                            "/v1/browser/call",
+                            json!({ "operation": name, "arguments": arguments }),
+                        )
                     }
-                    backend.as_mut().expect("backend initialized").call(
-                        name,
-                        params
-                            .get("arguments")
-                            .cloned()
-                            .unwrap_or_else(|| json!({})),
-                    )
                 }
             }
             _ => Err(format!("unknown method {method}")),

@@ -970,8 +970,11 @@ window.synthProjectSources ??= isTauri
 		};
 		window.synthBrowserAdmin ??= {
 			status: () => fromGenerated(spectaCommands.browserRuntimeStatus()),
+			restart: () => fromGenerated(spectaCommands.browserServiceRestart()),
 			allowOrigin: (origin) => fromGenerated(spectaCommands.browserPolicyAllowOrigin(origin)),
-			revokeOrigin: (origin) => fromGenerated(spectaCommands.browserPolicyRevokeOrigin(origin))
+			revokeOrigin: (origin) => fromGenerated(spectaCommands.browserPolicyRevokeOrigin(origin)),
+			chooseUploadRoot: () => fromGenerated(spectaCommands.browserPolicyChooseUploadRoot()),
+			revokeUploadRoot: (path) => fromGenerated(spectaCommands.browserPolicyRevokeUploadRoot(path))
 		};
 		window.synthReports ??= {
 			list: (query) => fromGenerated(spectaCommands.reportsList(wire(query ?? null))),

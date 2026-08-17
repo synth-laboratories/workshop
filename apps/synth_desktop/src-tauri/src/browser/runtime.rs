@@ -13,6 +13,8 @@ const LOCAL_ORIGINS: [&str; 2] = ["http://localhost", "http://127.0.0.1"];
 pub struct BrowserPolicy {
     #[serde(default)]
     pub allowed_origins: Vec<String>,
+    #[serde(default)]
+    pub upload_roots: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
@@ -29,6 +31,10 @@ pub struct BrowserRuntimeStatus {
     pub profile_root: String,
     pub allowed_origins: Vec<String>,
     pub default_local_origins: Vec<String>,
+    pub upload_roots: Vec<String>,
+    pub service_running: bool,
+    pub crash_count: u32,
+    pub chrome_claim_enabled: bool,
 }
 
 pub fn policy_path() -> PathBuf {
@@ -37,6 +43,22 @@ pub fn policy_path() -> PathBuf {
 
 pub fn profile_root() -> PathBuf {
     crate::storage::app_data_root().join("browser-profiles")
+}
+
+pub fn bundled_runtime_root() -> Option<PathBuf> {
+    let exe = env::current_exe().ok()?;
+    let root = exe.parent()?.join("../Resources/browser/runtime");
+    root.join("manifest.json").is_file().then_some(root)
+}
+
+pub fn browser_node_path() -> PathBuf {
+    if let Some(configured) = env::var_os("SYNTH_BROWSER_NODE") {
+        return PathBuf::from(configured);
+    }
+    bundled_runtime_root()
+        .map(|root| root.join("node/bin/node"))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from("node"))
 }
 
 pub fn backend_script_path() -> PathBuf {
@@ -117,10 +139,32 @@ pub fn revoke_origin(value: &str) -> Result<BrowserPolicy> {
     Ok(policy)
 }
 
+pub fn allow_upload_root(value: &str) -> Result<BrowserPolicy> {
+    let path = fs::canonicalize(value).with_context(|| format!("resolve upload folder {value}"))?;
+    if !path.is_dir() {
+        return Err(anyhow!("upload root must be a directory"));
+    }
+    let value = path.display().to_string();
+    let mut policy = load_policy()?;
+    if !policy.upload_roots.contains(&value) {
+        policy.upload_roots.push(value);
+        policy.upload_roots.sort();
+    }
+    save_policy(&policy)?;
+    Ok(policy)
+}
+
+pub fn revoke_upload_root(value: &str) -> Result<BrowserPolicy> {
+    let mut policy = load_policy()?;
+    policy.upload_roots.retain(|candidate| candidate != value);
+    save_policy(&policy)?;
+    Ok(policy)
+}
+
 pub fn runtime_status() -> BrowserRuntimeStatus {
     let backend = backend_script_path();
     let backend_present = backend.is_file();
-    let node = env::var_os("SYNTH_BROWSER_NODE").unwrap_or_else(|| "node".into());
+    let node = browser_node_path();
     let node_probe = Command::new(&node).arg("--version").output();
     let node_present = node_probe
         .as_ref()
@@ -134,11 +178,18 @@ pub fn runtime_status() -> BrowserRuntimeStatus {
     let mut playwright_present = false;
     let mut chromium_present = false;
     if node_present && backend_present {
-        let probe = Command::new(&node)
+        let runtime_root = bundled_runtime_root();
+        let mut command = Command::new(&node);
+        if let Some(root) = runtime_root.as_ref() {
+            command
+                .env("SYNTH_BROWSER_RUNTIME_ROOT", root)
+                .env("PLAYWRIGHT_BROWSERS_PATH", root.join("browsers"));
+        }
+        let probe = command
             .args([
                 "--input-type=module",
                 "-e",
-                "import fs from 'node:fs'; import { chromium } from 'playwright'; process.stdout.write(JSON.stringify({chromium: fs.existsSync(chromium.executablePath())}));",
+                "import fs from 'node:fs'; import path from 'node:path'; import { createRequire } from 'node:module'; const require=createRequire(import.meta.url); const base=process.env.SYNTH_BROWSER_RUNTIME_ROOT; const {chromium}=require(base ? path.join(base,'node_modules/playwright') : 'playwright'); process.stdout.write(JSON.stringify({chromium: fs.existsSync(chromium.executablePath())}));",
             ])
             .current_dir(backend.parent().unwrap_or_else(|| Path::new(".")))
             .output();
@@ -174,10 +225,14 @@ pub fn runtime_status() -> BrowserRuntimeStatus {
         backend_path: backend.display().to_string(),
         profile_root: profile_root().display().to_string(),
         allowed_origins: policy.allowed_origins,
+        upload_roots: policy.upload_roots,
         default_local_origins: LOCAL_ORIGINS
             .iter()
             .map(|value| (*value).to_owned())
             .collect(),
+        service_running: false,
+        crash_count: 0,
+        chrome_claim_enabled: env::var("SYNTH_BROWSER_ENABLE_CHROME_CLAIM").as_deref() == Ok("1"),
     }
 }
 

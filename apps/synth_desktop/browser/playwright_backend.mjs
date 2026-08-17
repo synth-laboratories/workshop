@@ -1,15 +1,23 @@
 #!/usr/bin/env node
-import { chromium } from "playwright";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+
+const require = createRequire(import.meta.url);
+const playwrightModule = process.env.SYNTH_BROWSER_RUNTIME_ROOT
+  ? path.join(process.env.SYNTH_BROWSER_RUNTIME_ROOT, "node_modules", "playwright")
+  : "playwright";
+const { chromium } = require(playwrightModule);
 
 const PROTOCOL_VERSION = "workshop.browser.v1";
 const DEFAULT_MAX_CHARS = 16_000;
 const HARD_MAX_CHARS = 20_000;
 const sessions = new Map();
+const pendingActions = new Map();
+const blockedNavigations = new WeakMap();
 const environmentAllowedOrigins = new Set(
   (process.env.SYNTH_BROWSER_ALLOWED_ORIGINS ?? "http://localhost,http://127.0.0.1")
     .split(",")
@@ -28,6 +36,20 @@ function allowedOrigins() {
     if (error?.code !== "ENOENT") throw new Error(`browser_policy_invalid: ${error.message}`);
   }
   return origins;
+}
+
+function uploadRoots() {
+  const roots = new Set((process.env.SYNTH_BROWSER_UPLOAD_ROOTS ?? "").split(path.delimiter).filter(Boolean));
+  const policyFile = process.env.SYNTH_BROWSER_POLICY_FILE;
+  if (policyFile) {
+    try {
+      const policy = JSON.parse(fs.readFileSync(policyFile, "utf8"));
+      for (const root of policy.uploadRoots ?? []) roots.add(String(root));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw new Error(`browser_policy_invalid: ${error.message}`);
+    }
+  }
+  return [...roots].map((root) => fs.realpathSync(root));
 }
 
 function id(prefix) {
@@ -82,7 +104,7 @@ async function audit(session, event, details = {}) {
 
 function stateForPage(session, page) {
   for (const state of session.tabs.values()) if (state.page === page) return state;
-  const state = { id: id("tab"), page, nav: 0, refs: new Map(), refRevision: "", closed: false };
+  const state = { id: id("tab"), page, nav: 0, refs: new Map(), refRevision: "", lastKnownRevision: "", dialogs: new Map(), closed: false, owned: true };
   session.tabs.set(state.id, state);
   page.on("framenavigated", (frame) => {
     if (frame === page.mainFrame()) {
@@ -93,8 +115,9 @@ function stateForPage(session, page) {
   });
   page.on("close", () => { state.closed = true; });
   page.on("dialog", async (dialog) => {
-    await audit(session, "dialog.dismissed", { tabId: state.id, type: dialog.type(), message: dialog.message().slice(0, 500) });
-    await dialog.dismiss().catch(() => {});
+    const dialogId = id("dialog");
+    state.dialogs.set(dialogId, { dialog, createdAt: Date.now(), documentRevision: state.lastKnownRevision });
+    await audit(session, "dialog.opened", { tabId: state.id, dialogId, type: dialog.type(), message: dialog.message().slice(0, 500) });
   });
   return state;
 }
@@ -108,17 +131,40 @@ async function installRevisionTracking(context) {
   });
 }
 
+async function installNavigationGuard(scope) {
+  const handler = async (route) => {
+    const request = route.request();
+    const frame = request.frame();
+    if (request.isNavigationRequest() && (!frame || frame === frame.page().mainFrame())) {
+      const url = request.url();
+      if (url !== "about:blank" && !url.startsWith("data:")) {
+        try { requireAllowed(url); }
+        catch {
+          if (frame) blockedNavigations.set(frame.page(), url);
+          await route.abort("blockedbyclient");
+          return;
+        }
+      }
+    }
+    await route.continue();
+  };
+  await scope.route("**/*", handler);
+  return handler;
+}
+
 async function revision(state) {
   const mutation = await state.page.evaluate(() => Number(globalThis.__workshopMutationRevision ?? 0)).catch(() => 0);
   const digest = crypto.createHash("sha256").update(state.page.url()).digest("hex").slice(0, 10);
-  return `${state.nav}.${mutation}.${digest}`;
+  state.lastKnownRevision = `${state.nav}.${mutation}.${digest}`;
+  return state.lastKnownRevision;
 }
 
 async function meta(session, state, extra = {}) {
+  const documentRevision = extra.documentRevision ?? await revision(state);
   return {
     sessionId: session.id,
     tabId: state.id,
-    documentRevision: await revision(state),
+    documentRevision,
     origin: originOf(state.page.url()),
     truncated: false,
     stale: false,
@@ -246,27 +292,58 @@ async function resolveTarget(session, state, target) {
   throw new Error("target must contain ref or locator");
 }
 
-function consequential(descriptor) {
-  return /^(send|publish|purchase|buy|delete|remove|submit|confirm|place order|transfer)$/i.test(String(descriptor?.name ?? "").trim());
+function consequential(operation, descriptor, args) {
+  if (operation === "browser_upload") return true;
+  if (operation === "browser_press" && /^(enter|return)$/i.test(String(args.key ?? ""))) return true;
+  return /\b(send|publish|purchase|buy|delete|remove|submit|confirm|place order|transfer|pay|checkout|post|share)\b/i.test(String(descriptor?.name ?? "").trim());
 }
 
-async function act(operation, args) {
+async function act(operation, args, prepared = false) {
   const session = getSession(args);
   const state = getTab(session, args);
   if (operation === "browser_press" && !args.target) {
+    if (!prepared && process.env.SYNTH_BROWSER_REQUIRE_HOST_APPROVAL === "1") {
+      throw new Error("host_preparation_required: browser key presses must pass Workshop approval");
+    }
     await state.page.keyboard.press(String(args.key ?? ""));
     await audit(session, operation, { tabId: state.id, origin: originOf(state.page.url()), key: args.key });
     return response({ ok: true }, await meta(session, state));
   }
   const { locator, descriptor } = await resolveTarget(session, state, args.target);
-  if (consequential(descriptor) && process.env.SYNTH_BROWSER_ALLOW_CONSEQUENTIAL !== "1") {
+  if (!prepared && process.env.SYNTH_BROWSER_REQUIRE_HOST_APPROVAL === "1") {
+    throw new Error("host_preparation_required: browser actions must pass Workshop approval");
+  }
+  if (!prepared && consequential(operation, descriptor, args) && process.env.SYNTH_BROWSER_ALLOW_CONSEQUENTIAL !== "1") {
     throw new Error(`confirmation_required: ${descriptor.name}; approve this exact action in Workshop`);
   }
-  if (operation === "browser_click") await locator.click();
+  let suspendedRevision = null;
+  if (operation === "browser_click") {
+    blockedNavigations.delete(state.page);
+    const clickRevision = await revision(state);
+    let removeDialogListener = () => {};
+    const dialogOpened = new Promise((resolve) => {
+      const listener = () => {
+        state.page.off("dialog", listener);
+        resolve(true);
+      };
+      removeDialogListener = () => state.page.off("dialog", listener);
+      state.page.on("dialog", listener);
+    });
+    const click = locator.click();
+    const pausedOnDialog = await Promise.race([click.then(() => false), dialogOpened]);
+    removeDialogListener();
+    if (pausedOnDialog) {
+      click.catch(() => {});
+      suspendedRevision = clickRevision;
+    }
+    const blocked = blockedNavigations.get(state.page);
+    if (blocked) throw new Error(`navigation_blocked: ${originOf(blocked)} is not approved`);
+    if (/^https?:/.test(state.page.url())) requireAllowed(state.page.url());
+  }
   else if (operation === "browser_fill") await locator.fill(String(args.value ?? ""));
   else if (operation === "browser_press") await locator.press(String(args.key ?? ""));
   else if (operation === "browser_upload") {
-    const roots = (process.env.SYNTH_BROWSER_UPLOAD_ROOTS ?? "").split(path.delimiter).filter(Boolean).map((root) => path.resolve(root));
+    const roots = uploadRoots();
     const files = (args.file_paths ?? args.filePaths ?? []).map((file) => fs.realpathSync(file));
     if (!files.length || !roots.length || files.some((file) => !roots.some((root) => file === root || file.startsWith(`${root}${path.sep}`)))) {
       throw new Error("upload_refused: select explicit files from a Workshop-approved upload root");
@@ -274,21 +351,151 @@ async function act(operation, args) {
     await locator.setInputFiles(files);
   }
   await audit(session, operation, { tabId: state.id, origin: originOf(state.page.url()), role: descriptor.role, name: descriptor.name });
-  return response({ ok: true }, await meta(session, state));
+  return response({ ok: true }, await meta(session, state, suspendedRevision ? { documentRevision: suspendedRevision } : {}));
+}
+
+async function prepareAction(args) {
+  const operation = String(args.operation ?? "");
+  if (!["browser_click", "browser_fill", "browser_press", "browser_upload", "browser_download", "browser_scroll", "browser_handle_dialog"].includes(operation)) {
+    throw new Error(`unsupported prepared action ${operation}`);
+  }
+  const actionArgs = args.arguments ?? {};
+  const session = getSession(actionArgs);
+  const state = getTab(session, actionArgs);
+  let descriptor = { role: "page", name: operation === "browser_press" ? String(actionArgs.key ?? "") : "page" };
+  let documentRevision;
+  if (operation === "browser_handle_dialog") {
+    const pending = state.dialogs.get(String(actionArgs.dialog_id ?? actionArgs.dialogId ?? ""));
+    if (!pending) throw new Error("stale_dialog: dialog is unknown or already handled");
+    descriptor = { role: "dialog", name: pending.dialog.message().slice(0, 500) };
+    documentRevision = pending.documentRevision;
+  } else if (actionArgs.target) descriptor = (await resolveTarget(session, state, actionArgs.target)).descriptor;
+  documentRevision ??= await revision(state);
+  const actionToken = id("action");
+  for (const [existingToken, pending] of pendingActions) {
+    if (pending.expiresAt < Date.now()) pendingActions.delete(existingToken);
+  }
+  if (pendingActions.size >= 1_000) throw new Error("too_many_pending_actions: close stale sessions and retry");
+  pendingActions.set(actionToken, { operation, arguments: actionArgs, sessionId: session.id, tabId: state.id, documentRevision, expiresAt: Date.now() + 5 * 60_000 });
+  const actionDetails = {};
+  if (operation === "browser_press") actionDetails.key = String(actionArgs.key ?? "");
+  if (operation === "browser_fill") {
+    const value = String(actionArgs.value ?? "");
+    actionDetails.valueLength = value.length;
+    actionDetails.valueSha256 = crypto.createHash("sha256").update(value).digest("hex");
+  }
+  if (operation === "browser_upload") actionDetails.filePaths = [...(actionArgs.file_paths ?? actionArgs.filePaths ?? [])].map(String);
+  if (operation === "browser_scroll") {
+    actionDetails.deltaX = Number(actionArgs.delta_x ?? actionArgs.deltaX ?? 0);
+    actionDetails.deltaY = Number(actionArgs.delta_y ?? actionArgs.deltaY ?? 700);
+  }
+  if (operation === "browser_handle_dialog") {
+    actionDetails.accept = Boolean(actionArgs.accept);
+    const prompt = String(actionArgs.prompt_text ?? actionArgs.promptText ?? "");
+    if (prompt) actionDetails.promptTextSha256 = crypto.createHash("sha256").update(prompt).digest("hex");
+  }
+  return response({
+    actionToken,
+    consequential: operation === "browser_handle_dialog" ? Boolean(actionArgs.accept) : consequential(operation, descriptor, actionArgs),
+    role: descriptor.role,
+    name: descriptor.name,
+    origin: originOf(state.page.url()),
+    tabId: state.id,
+    documentRevision,
+    actionDetails,
+  }, await meta(session, state, { documentRevision }));
+}
+
+async function commitAction(args) {
+  const token = String(args.action_token ?? args.actionToken ?? "");
+  const pending = pendingActions.get(token);
+  pendingActions.delete(token);
+  if (!pending) throw new Error("stale_action_token: action token is unknown or already used");
+  if (pending.expiresAt < Date.now()) throw new Error("stale_action_token: action approval expired");
+  const session = getSession({ session_id: pending.sessionId });
+  const state = getTab(session, { tab_id: pending.tabId });
+  if (pending.operation === "browser_handle_dialog") {
+    const dialogId = String(pending.arguments.dialog_id ?? pending.arguments.dialogId ?? "");
+    const entry = state.dialogs.get(dialogId);
+    state.dialogs.delete(dialogId);
+    if (!entry) throw new Error("stale_dialog: dialog is unknown or already handled");
+    if (entry.documentRevision !== pending.documentRevision) throw new Error("stale_action_token: document changed after dialog action preparation");
+    if (pending.arguments.accept) await entry.dialog.accept(String(pending.arguments.prompt_text ?? pending.arguments.promptText ?? ""));
+    else await entry.dialog.dismiss();
+    await audit(session, pending.operation, { tabId: state.id, dialogId, accepted: Boolean(pending.arguments.accept), approved: true });
+    return response({ handled: true, accepted: Boolean(pending.arguments.accept) }, await meta(session, state));
+  }
+  if (await revision(state) !== pending.documentRevision) throw new Error("stale_action_token: document changed after action preparation");
+  if (pending.operation === "browser_download") {
+    const { locator, descriptor } = await resolveTarget(session, state, pending.arguments.target);
+    const [download] = await Promise.all([state.page.waitForEvent("download"), locator.click()]);
+    const dir = path.join(session.dir, "downloads");
+    await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
+    const output = path.join(dir, safeName(download.suggestedFilename()));
+    await download.saveAs(output);
+    await audit(session, pending.operation, { tabId: state.id, origin: originOf(state.page.url()), role: descriptor.role, name: descriptor.name, output, approved: true });
+    return response({ path: output, suggestedFilename: download.suggestedFilename() }, await meta(session, state));
+  }
+  if (pending.operation === "browser_scroll") {
+    const dx = Number(pending.arguments.delta_x ?? pending.arguments.deltaX ?? 0);
+    const dy = Number(pending.arguments.delta_y ?? pending.arguments.deltaY ?? 700);
+    if (pending.arguments.target) await (await resolveTarget(session, state, pending.arguments.target)).locator.evaluate((el, [x, y]) => el.scrollBy(x, y), [dx, dy]);
+    else await state.page.mouse.wheel(dx, dy);
+    await audit(session, pending.operation, { tabId: state.id, origin: originOf(state.page.url()), dx, dy, approved: true });
+    return response({ ok: true }, await meta(session, state));
+  }
+  return act(pending.operation, pending.arguments, true);
 }
 
 async function handle(operation, args = {}) {
+  if (operation === "browser_prepare_action") return prepareAction(args);
+  if (operation === "browser_commit_action") return commitAction(args);
+  if (operation === "browser_claim_chrome") {
+    if (process.env.SYNTH_BROWSER_ENABLE_CHROME_CLAIM !== "1") {
+      throw new Error("chrome_claim_disabled: enable the explicit Workshop Chrome claim setting first");
+    }
+    const endpoint = new URL(String(args.cdp_endpoint ?? args.cdpEndpoint ?? "http://127.0.0.1:9222"));
+    if (endpoint.protocol !== "http:" || !["127.0.0.1", "localhost", "::1"].includes(endpoint.hostname)) {
+      throw new Error("chrome_claim_refused: CDP endpoint must be loopback HTTP");
+    }
+    const browser = await chromium.connectOverCDP(endpoint.href);
+    const contexts = browser.contexts();
+    if (contexts.length !== 1) throw new Error(`chrome_claim_ambiguous: expected one Chrome context, found ${contexts.length}`);
+    const context = contexts[0];
+    const titleContains = String(args.title_contains ?? args.titleContains ?? "").toLowerCase();
+    const urlContains = String(args.url_contains ?? args.urlContains ?? "").toLowerCase();
+    if (!titleContains && !urlContains) throw new Error("chrome_claim_refused: specify title_contains or url_contains");
+    const matches = [];
+    for (const page of context.pages()) {
+      const title = await page.title();
+      if ((!titleContains || title.toLowerCase().includes(titleContains)) && (!urlContains || page.url().toLowerCase().includes(urlContains))) matches.push(page);
+    }
+    if (matches.length !== 1) throw new Error(`chrome_claim_ambiguous: expected exactly one matching tab, found ${matches.length}`);
+    requireAllowed(matches[0].url());
+    const navigationGuard = await installNavigationGuard(matches[0]);
+    const profileName = "claimed-chrome";
+    const dir = path.join(profileRoot(), profileName);
+    await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
+    const session = { id: id("browser_session"), profileName, dir, context, connection: browser, claimed: true, claimedPage: matches[0], navigationGuard, tabs: new Map(), auditPath: path.join(dir, "audit.jsonl") };
+    sessions.set(session.id, session);
+    const state = stateForPage(session, matches[0]);
+    state.owned = false;
+    await audit(session, "chrome.claimed", { tabId: state.id, url: state.page.url(), endpoint: endpoint.origin });
+    return response({ sessionId: session.id, profile: profileName, tabId: state.id, claimed: true }, await meta(session, state));
+  }
   if (operation === "browser_create_session") {
     const profileName = safeName(args.profile ?? "default");
     const dir = path.join(profileRoot(), profileName);
     await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
     const context = await chromium.launchPersistentContext(dir, {
       headless: process.env.SYNTH_BROWSER_HEADLESS === "1",
+      executablePath: process.env.SYNTH_BROWSER_EXECUTABLE || chromium.executablePath(),
       acceptDownloads: true,
       downloadsPath: path.join(dir, "downloads"),
     });
+    await installNavigationGuard(context);
     await installRevisionTracking(context);
-    const session = { id: id("browser_session"), profileName, dir, context, tabs: new Map(), auditPath: path.join(dir, "audit.jsonl") };
+    const session = { id: id("browser_session"), profileName, dir, context, connection: null, claimed: false, tabs: new Map(), auditPath: path.join(dir, "audit.jsonl") };
     sessions.set(session.id, session);
     context.on("page", (page) => { const tab = stateForPage(session, page); void audit(session, "popup", { tabId: tab.id, url: page.url() }); });
     const page = context.pages()[0] ?? await context.newPage();
@@ -299,7 +506,10 @@ async function handle(operation, args = {}) {
   const session = getSession(args);
   if (operation === "browser_close_session") {
     await audit(session, "session.closed");
-    await session.context.close();
+    if (session.claimed) {
+      await Promise.all([...session.tabs.values()].filter((tab) => tab.owned && !tab.page.isClosed()).map((tab) => tab.page.close().catch(() => {})));
+      if (!session.claimedPage.isClosed()) await session.claimedPage.unroute("**/*", session.navigationGuard).catch(() => {});
+    } else await session.context.close();
     sessions.delete(session.id);
     return response({ closed: true });
   }
@@ -310,21 +520,39 @@ async function handle(operation, args = {}) {
   }
   if (operation === "browser_new_tab") {
     const page = await session.context.newPage();
+    if (session.claimed) await installNavigationGuard(page);
     const state = stateForPage(session, page);
     if (args.url) { requireAllowed(args.url); await page.goto(args.url); }
     await audit(session, "tab.created", { tabId: state.id, url: page.url() });
     return response({ tabId: state.id, url: page.url() }, await meta(session, state));
   }
   const state = getTab(session, args);
+  if (operation === "browser_list_dialogs") {
+    const dialogs = [];
+    for (const [dialogId, entry] of state.dialogs) dialogs.push({ dialogId, type: entry.dialog.type(), message: entry.dialog.message().slice(0, 500), hasDefaultValue: Boolean(entry.dialog.defaultValue()) });
+    return response({ dialogs }, await meta(session, state, { documentRevision: state.lastKnownRevision }));
+  }
+  if (operation === "browser_audit") {
+    const limit = Math.max(1, Math.min(Number(args.limit ?? 100), 500));
+    let lines = [];
+    try { lines = (await fs.promises.readFile(session.auditPath, "utf8")).trim().split("\n").filter(Boolean).slice(-limit).map((line) => JSON.parse(line)); }
+    catch (error) { if (error?.code !== "ENOENT") throw error; }
+    return response({ events: lines }, await meta(session, state));
+  }
   if (operation === "browser_close_tab") {
+    if (session.claimed && !state.owned) throw new Error("claimed_tab_preserved: Workshop will not close the user's claimed Chrome tab");
     await audit(session, "tab.closed", { tabId: state.id, url: state.page.url() });
     await state.page.close();
     return response({ closed: true }, await meta(session, state).catch(() => ({ sessionId: session.id, tabId: state.id, documentRevision: "closed", origin: "closed", truncated: false, stale: false, continuationCursor: null })));
   }
   if (operation === "browser_navigate") {
     requireAllowed(args.url);
+    blockedNavigations.delete(state.page);
     await audit(session, "navigation.requested", { tabId: state.id, from: state.page.url(), to: args.url });
     await state.page.goto(args.url, { waitUntil: "domcontentloaded" });
+    const blocked = blockedNavigations.get(state.page);
+    if (blocked) throw new Error(`navigation_blocked: ${originOf(blocked)} is not approved`);
+    if (/^https?:/.test(state.page.url())) requireAllowed(state.page.url());
     await state.page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => {});
     return response({ url: state.page.url(), title: await state.page.title() }, await meta(session, state));
   }
@@ -347,7 +575,9 @@ async function handle(operation, args = {}) {
     return response({ text: limited.text, maxChars: limited.maxChars }, await meta(session, state, { truncated: limited.truncated, continuationCursor: limited.continuationCursor }));
   }
   if (["browser_click", "browser_fill", "browser_press", "browser_upload"].includes(operation)) return act(operation, args);
+  if (operation === "browser_handle_dialog") throw new Error("host_preparation_required: dialogs must pass Workshop action preparation");
   if (operation === "browser_scroll") {
+    if (process.env.SYNTH_BROWSER_REQUIRE_HOST_APPROVAL === "1") throw new Error("host_preparation_required: browser scroll must pass Workshop action preparation");
     const dx = Number(args.delta_x ?? args.deltaX ?? 0);
     const dy = Number(args.delta_y ?? args.deltaY ?? 700);
     if (args.target) await (await resolveTarget(session, state, args.target)).locator.evaluate((el, [x, y]) => el.scrollBy(x, y), [dx, dy]);
@@ -365,7 +595,8 @@ async function handle(operation, args = {}) {
   }
   if (operation === "browser_download") {
     const { locator, descriptor } = await resolveTarget(session, state, args.target);
-    if (consequential(descriptor)) throw new Error("confirmation_required: consequential downloads require Workshop approval");
+    if (process.env.SYNTH_BROWSER_REQUIRE_HOST_APPROVAL === "1") throw new Error("host_preparation_required: browser downloads must pass Workshop approval");
+    if (consequential(operation, descriptor, args)) throw new Error("confirmation_required: consequential downloads require Workshop approval");
     const [download] = await Promise.all([state.page.waitForEvent("download"), locator.click()]);
     const dir = path.join(session.dir, "downloads");
     await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
@@ -390,7 +621,7 @@ input.on("line", async (line) => {
 });
 
 async function shutdown() {
-  await Promise.all([...sessions.values()].map((session) => session.context.close().catch(() => {})));
+  await Promise.all([...sessions.values()].filter((session) => !session.claimed).map((session) => session.context.close().catch(() => {})));
   process.exit(0);
 }
 process.on("SIGTERM", shutdown);

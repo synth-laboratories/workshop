@@ -2237,28 +2237,72 @@ async fn computer_use_open_settings(
 /// Read-only managed-browser preflight plus the human-owned origin policy.
 #[tauri::command]
 #[specta::specta]
-async fn browser_runtime_status() -> Result<browser::BrowserRuntimeStatus, AppError> {
-    Ok(browser::runtime_status())
+async fn browser_runtime_status(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<browser::BrowserRuntimeStatus, AppError> {
+    Ok(state.browser().runtime_status().await)
+}
+
+/// Human-only lifecycle recovery. Active managed sessions are discarded.
+#[tauri::command]
+#[specta::specta]
+async fn browser_service_restart(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<browser::BrowserRuntimeStatus, AppError> {
+    state.browser().stop().await;
+    Ok(state.browser().runtime_status().await)
 }
 
 /// Human-only origin approval. Browser MCP deliberately has no equivalent tool.
 #[tauri::command]
 #[specta::specta]
 async fn browser_policy_allow_origin(
+    state: State<'_, Arc<CoreRuntime>>,
     origin: String,
 ) -> Result<browser::BrowserRuntimeStatus, AppError> {
     browser::allow_origin(&origin).map_err(AppError::from)?;
-    Ok(browser::runtime_status())
+    Ok(state.browser().runtime_status().await)
 }
 
 /// Revoke a persistent origin approval for future navigations.
 #[tauri::command]
 #[specta::specta]
 async fn browser_policy_revoke_origin(
+    state: State<'_, Arc<CoreRuntime>>,
     origin: String,
 ) -> Result<browser::BrowserRuntimeStatus, AppError> {
     browser::revoke_origin(&origin).map_err(AppError::from)?;
-    Ok(browser::runtime_status())
+    Ok(state.browser().runtime_status().await)
+}
+
+/// Human-only upload-folder selection. Pages and agents cannot widen this scope.
+#[tauri::command]
+#[specta::specta]
+async fn browser_policy_choose_upload_root(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<browser::BrowserRuntimeStatus, AppError> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Choose a folder containing files Workshop may upload")
+        .pick_folder(move |path| {
+            let _ = sender.send(path.map(|value| value.to_string()));
+        });
+    if let Some(path) = receiver.await.map_err(AppError::from)? {
+        browser::allow_upload_root(&path).map_err(AppError::from)?;
+    }
+    Ok(state.browser().runtime_status().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn browser_policy_revoke_upload_root(
+    state: State<'_, Arc<CoreRuntime>>,
+    path: String,
+) -> Result<browser::BrowserRuntimeStatus, AppError> {
+    browser::revoke_upload_root(&path).map_err(AppError::from)?;
+    Ok(state.browser().runtime_status().await)
 }
 
 /// The helper bundle shipped inside this application.
@@ -5651,6 +5695,7 @@ pub fn run() {
             supervisor.register(Arc::new(optimizers::mlx_runtime::MlxRuntimeService::new()));
             supervisor.register(whisper.clone());
             supervisor.register(core.diagnostics_service().sidecar().clone());
+            supervisor.register(core.browser().clone());
             app.manage(core.clone());
             app.manage(core.secrets().clone());
             app.manage(migration);

@@ -1046,7 +1046,7 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         "synth_computer_use" => {
             "enabled_tools = [\"computer_use\", \"computer_use_status\"]\n"
         }
-        "synth_browser" => "enabled_tools = [\"browser_status\", \"browser_create_session\", \"browser_close_session\", \"browser_list_tabs\", \"browser_new_tab\", \"browser_close_tab\", \"browser_navigate\", \"browser_back\", \"browser_snapshot\", \"browser_query\", \"browser_subtree\", \"browser_click\", \"browser_fill\", \"browser_press\", \"browser_scroll\", \"browser_screenshot\", \"browser_upload\", \"browser_download\"]\n",
+        "synth_browser" => "enabled_tools = [\"browser_status\", \"browser_create_session\", \"browser_claim_chrome\", \"browser_close_session\", \"browser_list_tabs\", \"browser_new_tab\", \"browser_close_tab\", \"browser_navigate\", \"browser_back\", \"browser_snapshot\", \"browser_query\", \"browser_subtree\", \"browser_click\", \"browser_fill\", \"browser_press\", \"browser_scroll\", \"browser_screenshot\", \"browser_upload\", \"browser_download\", \"browser_list_dialogs\", \"browser_handle_dialog\", \"browser_audit\"]\n",
         _ => "",
     }
 }

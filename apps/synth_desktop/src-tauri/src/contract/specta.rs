@@ -173,8 +173,11 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::computer_use_revoke_app,
             crate::computer_use_open_settings,
             crate::browser_runtime_status,
+            crate::browser_service_restart,
             crate::browser_policy_allow_origin,
             crate::browser_policy_revoke_origin,
+            crate::browser_policy_choose_upload_root,
+            crate::browser_policy_revoke_upload_root,
             crate::visual_subscription_ready,
             crate::visual_stream_poll,
             crate::visual_media_read,
@@ -496,7 +499,8 @@ mod tests {
         // 198 → 203: the five Computer Use commands. All five are human-only —
         // status, install, remove, revoke an app, open the System Settings
         // pane — and none is reachable from the agent's MCP surface.
-        // 203 → 206: managed browser status plus human-only origin allow/revoke.
+        // 203 → 209: managed browser status, lifecycle restart, and human-only
+        // origin/upload policy controls.
         // 206 → 220: local secrets vault + provider proxy (list/create/replace/
         // delete/test, request/grant/deny use, capabilities, env import, audit,
         // proxy status). No get/reveal/export/readValue command is included.
@@ -569,7 +573,7 @@ mod tests {
         // → 305: host-owned, enum-bounded starter telemetry; renderer cannot
         // submit event names, prompt text, run ids, paths, or properties.
         assert_eq!(
-            exported, 305,
+            exported, 308,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

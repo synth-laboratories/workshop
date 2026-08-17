@@ -1,5 +1,6 @@
 # Synth Desktop / workshop
 node_modules/
+apps/synth_desktop/browser/runtime/
 apps/*/node_modules/
 apps/*/out/
 apps/*/dist/

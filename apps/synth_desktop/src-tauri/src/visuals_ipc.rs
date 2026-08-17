@@ -830,6 +830,9 @@ async fn dispatch_request(
     if path.starts_with("/v1/approvals") {
         return dispatch_approvals(method, path, json_body, app).await;
     }
+    if path.starts_with("/v1/browser") {
+        return dispatch_browser(method, path, json_body, core, app).await;
+    }
     if path.starts_with("/v1/optimizers")
         || path.starts_with("/v1/training")
         || path.starts_with("/v1/mlx")
@@ -904,6 +907,42 @@ async fn dispatch_approvals(
             Ok(json!({ "approvalId": approval_id, "status": "approved" }))
         }
         _ => anyhow::bail!("unsupported approvals IPC route {method} {path}"),
+    }
+}
+
+async fn dispatch_browser(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+    app: &AppHandle,
+) -> Result<Value> {
+    let agent_session = body
+        .get("sessionRef")
+        .or_else(|| body.get("agent_session_id"))
+        .and_then(Value::as_str);
+    let broker = app
+        .try_state::<Arc<crate::session::approval::ApprovalBroker>>()
+        .ok_or_else(|| {
+            anyhow::anyhow!("the approval broker is unavailable; refusing browser access")
+        })?;
+    match (method, path) {
+        ("GET", "/v1/browser/status") => {
+            core.browser()
+                .call(app, broker.inner(), agent_session, "browser_status", json!({}))
+                .await
+        }
+        ("POST", "/v1/browser/call") => {
+            let operation = body
+                .get("operation")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("browser operation is required"))?;
+            let arguments = body.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            core.browser()
+                .call(app, broker.inner(), agent_session, operation, arguments)
+                .await
+        }
+        _ => anyhow::bail!("unsupported browser IPC route {method} {path}"),
     }
 }
 

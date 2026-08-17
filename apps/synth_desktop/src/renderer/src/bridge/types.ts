@@ -764,8 +764,11 @@ export type ComputerUseBridge = {
 /** Human-only browser setup. Agent tools can consume policy but cannot mutate it. */
 export type BrowserAdminBridge = {
 	status(): Promise<BrowserRuntimeStatus>;
+	restart(): Promise<BrowserRuntimeStatus>;
 	allowOrigin(origin: string): Promise<BrowserRuntimeStatus>;
 	revokeOrigin(origin: string): Promise<BrowserRuntimeStatus>;
+	chooseUploadRoot(): Promise<BrowserRuntimeStatus>;
+	revokeUploadRoot(path: string): Promise<BrowserRuntimeStatus>;
 };
 
 export type PluginsBridge = {

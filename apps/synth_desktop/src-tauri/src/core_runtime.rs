@@ -35,6 +35,7 @@ pub struct CoreRuntime {
     optimizers: OptimizerService,
     plugins: PluginService,
     computer_use: Arc<crate::computer_use::service::ComputerUseService>,
+    browser: Arc<crate::browser::service::BrowserService>,
     diagnostics: Arc<crate::diagnostics::DiagnosticsService>,
     intern: Arc<InternRuntime>,
     intern_provider: Arc<InternProviderManager>,
@@ -185,6 +186,7 @@ impl CoreRuntime {
                     .join("computer-use/allowlist.json"),
             ),
         ));
+        let browser = Arc::new(crate::browser::service::BrowserService::new());
         // Diagnostics share the journal's database and live beside the content
         // store, one directory per instance. The service is constructed here
         // but starts nothing: its writer and its index sidecar are started
@@ -217,6 +219,7 @@ impl CoreRuntime {
             optimizers,
             plugins,
             computer_use,
+            browser,
             diagnostics,
             intern,
             intern_provider,
@@ -274,6 +277,10 @@ impl CoreRuntime {
 
     pub fn computer_use(&self) -> &crate::computer_use::service::ComputerUseService {
         &self.computer_use
+    }
+
+    pub fn browser(&self) -> &Arc<crate::browser::service::BrowserService> {
+        &self.browser
     }
 
     pub fn plugins(&self) -> &PluginService {
