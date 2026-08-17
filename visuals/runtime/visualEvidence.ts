@@ -58,6 +58,6 @@ export function decideVisualEvidence(input: {
   };
 }
 
-export function visualEvidenceBlocksCompletion(evidence: VisualEvidence): boolean {
+export function visualEvidenceBlocksCompletion(_evidence: VisualEvidence): boolean {
   return false;
 }
