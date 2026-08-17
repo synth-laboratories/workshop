@@ -789,11 +789,28 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .map(|value| format!("Agent session {value}"))
         .unwrap_or_else(|| "Workshop operator".into());
     let is_local_eval = recipe.get("algorithmId").and_then(Value::as_str) == Some("eval");
+    let is_container_baseline_eval = matches!(
+        request.recipe_id.as_str(),
+        optimizers::BANKING77_EVAL_BASELINE_RECIPE
+            | optimizers::HEALTHBENCH_EVAL_SMOKE_RECIPE
+    );
     let limits = recipe
         .get("limits")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    let (max_cost_usd, max_rollouts) = if is_local_eval {
+    let (max_cost_usd, max_rollouts) = if is_container_baseline_eval {
+        // These recipes evaluate the policy already pinned by a registered
+        // container. They have no candidate set: requiring one here prevents
+        // the public MCP route from ever reaching `container_eval::start`.
+        (
+            limits
+                .get("maxCostUsd")
+                .or_else(|| limits.get("costCeilingUsd"))
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && *value > 0.0),
+            limits.get("maxTotalRollouts").and_then(Value::as_u64),
+        )
+    } else if is_local_eval {
         let (cost, trials) =
             optimizers::paid_compute_bounds(&recipe, request.candidate_set_id.as_deref())
                 .map_err(AppError::from)?;
