@@ -30,6 +30,7 @@ use tokio::{
     time::sleep,
 };
 
+use super::events::OptimizerEventDraft;
 use super::{
     models::{
         OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope,
@@ -1092,27 +1093,13 @@ async fn append_status(
     event_type: &str,
     status: &str,
 ) -> Result<()> {
-    let run = service.get(run_id.to_string()).await?;
     service
-        .append_events(
+        .append_event_payloads(
             run_id.to_string(),
-            vec![OptimizerEventEnvelope {
-                schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                event_id: Some(format!("{run_id}:host:{}", run.cursor_seq + 1)),
-                event_type: event_type.into(),
-                sequence_number: run.cursor_seq + 1,
-                occurred_at: chrono::Utc::now().to_rfc3339(),
-                optimizer_run_id: run_id.into(),
-                algorithm_id: EVAL_ALGORITHM_ID.into(),
-                level: None,
-                item: None,
-                delta: map_of("status", json!(status)),
-                snapshot: None,
-                usage_delta: None,
-                artifact_refs: vec![],
-                error: None,
-                raw: json!({"source": "eval_recipe"}),
-            }],
+            vec![OptimizerEventDraft::new(event_type, EVAL_ALGORITHM_ID)
+                .idempotency_key(format!("host:lifecycle:{event_type}"))
+                .delta(map_of("status", json!(status)))
+                .raw(json!({"source": "eval_recipe"}))],
         )
         .await?;
     Ok(())
@@ -1125,7 +1112,10 @@ async fn append_terminal(
     detail: String,
 ) -> Result<()> {
     let run = service.get(run_id.to_string()).await?;
-    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+    // Settled is settled when a manifest exists, not merely when the status
+    // string looks terminal: a status rewritten without an event must not let
+    // the run skip its own terminal event.
+    if service.terminal_manifest(run_id.to_string()).await?.is_some() {
         return Ok(());
     }
     let event_type = match status {
@@ -1142,31 +1132,21 @@ async fn append_terminal(
             .map(PathBuf::from)
             .map(|dir| dir.join("worker.stderr.log"));
         let tail = stderr.as_ref().and_then(|path| tail_text(path));
-        let run = service.get(run_id.to_string()).await?;
         service
-            .append_events(
+            .append_event_payloads(
                 run_id.to_string(),
-                vec![OptimizerEventEnvelope {
-                    schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                    event_id: Some(format!("{run_id}:diagnostic")),
-                    event_type: "optimizer.recipe.diagnostic".into(),
-                    sequence_number: run.cursor_seq + 1,
-                    occurred_at: chrono::Utc::now().to_rfc3339(),
-                    optimizer_run_id: run_id.into(),
-                    algorithm_id: EVAL_ALGORITHM_ID.into(),
-                    level: Some("error".into()),
-                    item: None,
-                    delta: map_of("status", json!("failed")),
-                    snapshot: None,
-                    usage_delta: None,
-                    artifact_refs: vec![],
-                    error: Some(json!({
-                        "message": tail.as_deref().unwrap_or(&detail),
-                        "stderrTail": tail,
-                        "logPath": stderr
-                    })),
-                    raw: json!({}),
-                }],
+                vec![OptimizerEventDraft::new(
+                    "optimizer.recipe.diagnostic",
+                    EVAL_ALGORITHM_ID,
+                )
+                .idempotency_key("diagnostic")
+                .level("error")
+                .delta(map_of("status", json!("failed")))
+                .error(json!({
+                    "message": tail.as_deref().unwrap_or(&detail),
+                    "stderrTail": tail,
+                    "logPath": stderr
+                }))],
             )
             .await?;
     }

@@ -3,6 +3,7 @@
 //! Optimizers-beta remains an internal training executor. Workshop starts, watches,
 //! cancels, and mirrors only public SFT runs before opening `optimizer.sft.live.v1`.
 
+use super::events::OptimizerEventDraft;
 use super::{
     ingest,
     models::{
@@ -729,30 +730,20 @@ lr = 0.001
 /// Terminal failure with a readable reason. `optimizer.run.failed` carrying an
 /// empty delta tells a viewer nothing and hides producer-side success.
 async fn append_failure(service: &OptimizerService, run_id: &str, reason: &str) -> Result<()> {
-    let mut run = service.get(run_id.to_string()).await?;
-    run.status = "failed".into();
-    service.persist_run(run).await?;
-    let seq = service.get(run_id.to_string()).await?.cursor_seq + 1;
+    // The event is what makes the run failed. Writing the status first and the
+    // event second let a status exist with no evidence behind it.
     service
-        .append_events(
+        .append_event_payloads(
             run_id.to_string(),
-            vec![super::models::OptimizerEventEnvelope {
-                schema_version: super::models::OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                event_id: Some(format!("{run_id}:hosted:optimizer.run.failed")),
-                event_type: "optimizer.run.failed".into(),
-                sequence_number: seq,
-                occurred_at: chrono::Utc::now().to_rfc3339(),
-                optimizer_run_id: run_id.into(),
-                algorithm_id: "sft".into(),
-                level: Some("error".into()),
-                item: None,
-                delta: serde_json::Map::from_iter([("status".into(), json!("failed"))]),
-                snapshot: None,
-                usage_delta: None,
-                artifact_refs: vec![],
-                error: Some(json!({ "message": reason })),
-                raw: json!({"source": "hosted_sft"}),
-            }],
+            vec![OptimizerEventDraft::new("optimizer.run.failed", "sft")
+                .idempotency_key("hosted:optimizer.run.failed")
+                .level("error")
+                .delta(serde_json::Map::from_iter([(
+                    "status".into(),
+                    json!("failed"),
+                )]))
+                .error(json!({ "message": reason }))
+                .raw(json!({"source": "hosted_sft"}))],
         )
         .await?;
     Ok(())
@@ -764,30 +755,17 @@ async fn append_status(
     event_type: &str,
     status: &str,
 ) -> Result<()> {
-    let mut run = service.get(run_id.to_string()).await?;
-    run.status = status.into();
-    service.persist_run(run).await?;
-    let seq = service.get(run_id.to_string()).await?.cursor_seq + 1;
     service
-        .append_events(
+        .append_event_payloads(
             run_id.to_string(),
-            vec![super::models::OptimizerEventEnvelope {
-                schema_version: super::models::OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                event_id: Some(format!("{run_id}:hosted:{event_type}")),
-                event_type: event_type.into(),
-                sequence_number: seq,
-                occurred_at: chrono::Utc::now().to_rfc3339(),
-                optimizer_run_id: run_id.into(),
-                algorithm_id: "sft".into(),
-                level: Some("info".into()),
-                item: None,
-                delta: serde_json::Map::from_iter([("status".into(), json!(status))]),
-                snapshot: None,
-                usage_delta: None,
-                artifact_refs: vec![],
-                error: None,
-                raw: json!({"source": "hosted_sft"}),
-            }],
+            vec![OptimizerEventDraft::new(event_type, "sft")
+                .idempotency_key(format!("hosted:{event_type}"))
+                .level("info")
+                .delta(serde_json::Map::from_iter([(
+                    "status".into(),
+                    json!(status),
+                )]))
+                .raw(json!({"source": "hosted_sft"}))],
         )
         .await?;
     Ok(())

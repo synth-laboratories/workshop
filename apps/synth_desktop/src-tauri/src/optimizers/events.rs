@@ -95,6 +95,11 @@ impl OptimizerEventDraft {
         self
     }
 
+    pub fn artifact_refs(mut self, refs: Vec<Value>) -> Self {
+        self.artifact_refs = refs;
+        self
+    }
+
     pub fn raw(mut self, raw: Value) -> Self {
         self.raw = raw;
         self

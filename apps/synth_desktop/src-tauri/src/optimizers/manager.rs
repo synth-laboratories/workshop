@@ -6,6 +6,7 @@
 //! [`super::OptimizerService`]. Stopping or uninstalling a sidecar version must
 //! not delete runs, events, visuals, or retained template packages.
 
+use super::events::OptimizerEventDraft;
 use super::models::{
     OptimizerEventEnvelope, OptimizerExecutionBinding, OptimizerRunRecord,
     OPTIMIZER_EVENT_SCHEMA_VERSION,
@@ -1022,42 +1023,37 @@ impl OptimizerManager {
         self.ensure_memory_spool(&pin.optimizer_run_id).await;
         merge_pin_into_run(&mut run, &pin);
         service.persist_run(run.clone()).await?;
-        let event = OptimizerEventEnvelope {
-            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-            event_id: Some(format!("{}:sidecar-pin", run.id)),
-            event_type: "optimizer.run.pinned".into(),
-            sequence_number: run.cursor_seq + 1,
-            occurred_at: chrono::Utc::now().to_rfc3339(),
-            optimizer_run_id: run.id.clone(),
-            algorithm_id: run.algorithm_id.clone(),
-            level: Some("info".into()),
-            item: None,
-            delta: json!({
-                "sidecarVersion": pin.sidecar_version,
-                "algorithmVersion": pin.algorithm_version,
-                "recipeVersion": pin.recipe_version,
-                "sidecarDigest": pin.digest,
-                "spoolPath": pin.spool_path,
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-            snapshot: Some(
+        let draft = OptimizerEventDraft::new("optimizer.run.pinned", run.algorithm_id.clone())
+            // One pin per run: re-pinning re-offers the same fact rather than
+            // minting a second sequence for it.
+            .idempotency_key("sidecar-pin")
+            .level("info")
+            .delta(
+                json!({
+                    "sidecarVersion": pin.sidecar_version,
+                    "algorithmVersion": pin.algorithm_version,
+                    "recipeVersion": pin.recipe_version,
+                    "sidecarDigest": pin.digest,
+                    "spoolPath": pin.spool_path,
+                })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            )
+            .snapshot(
                 json!({ "summary": run.summary.clone() })
                     .as_object()
                     .cloned()
                     .unwrap_or_default(),
-            ),
-            usage_delta: None,
-            artifact_refs: vec![],
-            error: None,
-            raw: json!({
+            )
+            .raw(json!({
                 "sidecarVersion": pin.sidecar_version,
                 "algorithmVersion": pin.algorithm_version,
                 "recipeVersion": pin.recipe_version
-            }),
-        };
-        let (run, _) = service.append_events(run.id.clone(), vec![event]).await?;
+            }));
+        let (run, _) = service
+            .append_event_payloads(run.id.clone(), vec![draft])
+            .await?;
         Ok((run, pin))
     }
 
