@@ -166,7 +166,16 @@ pub async fn start(
     }
 }
 
-/// Pinned Banking77 SFT corpus. The recipe owns the path; a caller picks only
+fn content_sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn dataset_digest_for_path(path: &std::path::Path) -> Result<String> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("read dataset bytes {}", path.display()))?;
+    Ok(content_sha256(&bytes))
+}
 /// which allowlisted shard to train on.
 fn banking77_source() -> Result<std::path::PathBuf> {
     let raw = std::env::var("SYNTH_SFT_BANKING77_TRAIN_JSONL")
@@ -242,6 +251,7 @@ async fn start_banking77(
         .unwrap_or(BANKING77_SHARDS[0])
         .to_string();
     let shard_path = materialize_banking77_shard(&shard)?;
+    let dataset_digest = dataset_digest_for_path(&shard_path)?;
     let container_url = banking77_slot_url();
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_banking77_{}_{}", shard, &suffix[..8]);
@@ -252,6 +262,7 @@ async fn start_banking77(
         &model_id,
         &container_url,
         &shard_path.to_string_lossy(),
+        &dataset_digest,
     );
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
@@ -301,10 +312,10 @@ async fn start_banking77(
             OptimizerResourceRef {
                 kind: "dataset".into(),
                 id: training_file.clone(),
-                digest: None,
+                digest: Some(dataset_digest.clone()),
                 role: Some("train".into()),
                 title: Some(format!("Banking77 SFT corpus · shard {shard}")),
-                metadata: json!({"shard": shard, "shards": BANKING77_SHARDS}),
+                metadata: json!({"shard": shard, "shards": BANKING77_SHARDS, "datasetDigest": dataset_digest}),
             },
         ]),
         capabilities: Some(OptimizerCapabilities::for_algorithm("sft")),
@@ -314,6 +325,7 @@ async fn start_banking77(
             "producer": "synth-optimizers",
             "baseModel": model_id,
             "datasetShard": shard,
+            "datasetDigest": dataset_digest,
             "localSlot": container_url,
             "checkpointSteps": BANKING77_CHECKPOINT_STEPS,
         })),
@@ -333,6 +345,7 @@ fn banking77_config_toml(
     model_id: &str,
     container_url: &str,
     training_jsonl: &str,
+    dataset_digest: &str,
 ) -> String {
     let steps = BANKING77_CHECKPOINT_STEPS
         .iter()
@@ -346,6 +359,7 @@ base_model = "{model_id}"
 adapter = "lora_r16"
 training_file_id = "{training_file}"
 training_jsonl = "{training_jsonl}"
+dataset_digest = "{dataset_digest}"
 selection_file_id = "file_selection"
 heldout_file_id = "file_heldout"
 accelerator_slots = 1
@@ -388,7 +402,8 @@ async fn start_fixture(
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_hosted_{}", &suffix[..8]);
     let training_file = format!("file_train_{}", &suffix[..8]);
-    let config_toml = fixture_config_toml(&run_id, &training_file);
+    let dataset_digest = content_sha256(b"hosted-sft-fixture-dataset.v1\n");
+    let config_toml = fixture_config_toml(&run_id, &training_file, &dataset_digest);
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
         algorithm_version: Some("hosted-fixture-v1".into()),
@@ -450,12 +465,17 @@ async fn start_craftax_nemotron(
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let dataset_digest = match training_jsonl.as_deref() {
+        Some(path) => dataset_digest_for_path(std::path::Path::new(path))?,
+        None => content_sha256(b"craftax-sft-unspecified-dataset.v1\n"),
+    };
     let config_toml = craftax_nemotron_config_toml(
         &run_id,
         &training_file,
         &model_id,
         &container_url,
         training_jsonl.as_deref(),
+        &dataset_digest,
     );
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
@@ -508,6 +528,7 @@ async fn start_craftax_nemotron(
             "localSlot": container_url,
             "checkpointSteps": CRAFTAX_CHECKPOINT_STEPS,
             "trainingSteps": CRAFTAX_TRAINING_STEPS,
+            "datasetDigest": dataset_digest,
         })),
         open_visual: request.open_visual.or(Some(true)),
         seed_fixture: None,
@@ -647,13 +668,14 @@ async fn run_hosted_worker(
     }
 }
 
-fn fixture_config_toml(run_id: &str, training_file: &str) -> String {
+fn fixture_config_toml(run_id: &str, training_file: &str, dataset_digest: &str) -> String {
     format!(
         r#"run_id = "{run_id}"
 backend = "fixture"
 base_model = "openai/gpt-oss-20b"
 adapter = "lora_r16"
 training_file_id = "{training_file}"
+dataset_digest = "{dataset_digest}"
 selection_file_id = "file_selection"
 heldout_file_id = "file_heldout"
 accelerator_slots = 1
@@ -670,6 +692,7 @@ fn craftax_nemotron_config_toml(
     model_id: &str,
     container_url: &str,
     training_jsonl: Option<&str>,
+    dataset_digest: &str,
 ) -> String {
     let checkpoint_steps = CRAFTAX_CHECKPOINT_STEPS
         .iter()
@@ -687,6 +710,7 @@ adapter = "lora_r16"
 training_file_id = "{training_file}"
 selection_file_id = "file_selection"
 heldout_file_id = "file_heldout"
+dataset_digest = "{dataset_digest}"
 {training_jsonl_line}accelerator_slots = 1
 checkpoint_steps = [{checkpoint_steps}]
 training_steps = {CRAFTAX_TRAINING_STEPS}
@@ -835,6 +859,7 @@ mod tests {
                     "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
                     "http://127.0.0.1:8110",
                     "/tmp/train_a.jsonl",
+                    "sha256:deadbeef",
                 ),
             ),
             (
@@ -845,6 +870,7 @@ mod tests {
                     "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
                     "http://127.0.0.1:8098",
                     Some("/tmp/craftax.jsonl"),
+                    "sha256:deadbeef",
                 ),
             ),
         ] {
@@ -863,7 +889,11 @@ mod tests {
 
     #[test]
     fn fixture_toml_is_algorithm_sft_not_goex_plugin() {
-        let toml = fixture_config_toml("sft_hosted_ab12cd34", "file_train_ab12cd34");
+        let toml = fixture_config_toml(
+            "sft_hosted_ab12cd34",
+            "file_train_ab12cd34",
+            "sha256:fixture",
+        );
         assert!(toml.contains("backend = \"fixture\""));
         assert!(toml.contains("run_id = \"sft_hosted_ab12cd34\""));
         assert!(!toml.contains("goex.sft"));
@@ -878,6 +908,7 @@ mod tests {
             "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
             "http://127.0.0.1:8110",
             "/tmp/train_a.jsonl",
+            "sha256:content",
         );
         assert!(toml.contains("backend = \"tinker\""));
         assert!(toml.contains("checkpoint_steps = [10, 20, 30]"));
@@ -921,6 +952,7 @@ mod tests {
             "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
             "http://127.0.0.1:8098",
             None,
+            "sha256:content",
         );
         assert!(toml.contains("backend = \"tinker\""));
         assert!(toml.contains("base_model = \"nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16\""));
@@ -932,5 +964,30 @@ mod tests {
         assert!(!toml.contains("goex.sft"));
         assert!(!toml.contains("UNPINNED"));
         assert!(!toml.contains("nvidia/nemotron-3-nano-30b-a3b"));
+    }
+
+    #[test]
+    fn identical_dataset_bytes_produce_the_same_content_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("a.jsonl");
+        let second = dir.path().join("run-specific-file-id.jsonl");
+        let bytes = b"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}\n";
+        std::fs::write(&first, bytes).unwrap();
+        std::fs::write(&second, bytes).unwrap();
+        let left = dataset_digest_for_path(&first).unwrap();
+        let right = dataset_digest_for_path(&second).unwrap();
+        assert_eq!(left, right);
+        assert!(left.starts_with("sha256:"));
+        assert_ne!(left, content_sha256(b"file_train_run_a"));
+        let toml = banking77_config_toml(
+            "sft_run_a",
+            "file_train_run_a",
+            "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+            "http://127.0.0.1:8110",
+            &first.to_string_lossy(),
+            &left,
+        );
+        assert!(toml.contains(&format!("dataset_digest = \"{left}\"")));
+        assert!(!toml.contains("file_train_run_a") || toml.contains("training_file_id"));
     }
 }
