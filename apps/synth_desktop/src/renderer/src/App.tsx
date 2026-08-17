@@ -33,6 +33,7 @@ export default function App() {
 						visualsActive={c.view.kind === "visuals"}
 						reportsActive={c.view.kind === "reports"}
 						optimizersActive={c.view.kind === "optimizers"}
+						computerUseActive={c.view.kind === "computer-use"}
 						workingChatIds={c.workingChatIds}
 						activeLocalDecodeTps={c.inferenceMonitor.snapshot?.active?.decodeTokensPerSecond == null
 							? null
@@ -74,6 +75,7 @@ export default function App() {
 						onOpenVisuals={() => c.setView({ kind: "visuals" })}
 						onOpenReports={() => c.setView({ kind: "reports" })}
 						onOpenOptimizers={() => c.setView({ kind: "optimizers" })}
+						onOpenComputerUse={() => c.setView({ kind: "computer-use" })}
 						onSearch={c.openSearch}
 						onSettings={() => c.setView({ kind: "settings" })}
 						account={c.accountView}
@@ -137,6 +139,13 @@ export default function App() {
 					<MainRoutes
 						view={c.view}
 						setView={c.setView}
+						computerUse={c.computerUse}
+						computerUseBusy={c.computerUseBusy}
+						onInstallComputerUse={() => void c.installComputerUse()}
+						onRemoveComputerUse={() => void c.removeComputerUse()}
+						onRefreshComputerUse={() => void c.refreshComputerUse()}
+						onOpenComputerUseSettings={(permission) => void c.openComputerUseSettings(permission)}
+						onRevokeComputerUseApp={(bundleId) => void c.revokeComputerUseApp(bundleId)}
 						pluginStatuses={c.pluginStatuses}
 						refreshPluginStatuses={c.refreshPluginStatuses}
 						state={c.state}

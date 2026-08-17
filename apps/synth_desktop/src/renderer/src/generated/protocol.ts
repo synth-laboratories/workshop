@@ -100,6 +100,20 @@ export const commands = {
 	 */
 	pluginsManage: (operation: string, pluginId: string, version: string | null, sessionId: string | null) => typedError<unknown, AppError>(__TAURI_INVOKE("plugins_manage", { operation, pluginId, version, sessionId })),
 	pluginsSetReleaseChannel: (pluginId: string, channel: string) => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("plugins_set_release_channel", { pluginId, channel })),
+	computerUseStatus: (sessionId: string | null) => typedError<ComputerUseSnapshot_Serialize, AppError>(__TAURI_INVOKE("computer_use_status", { sessionId })),
+	/**
+	 *  Install the helper that ships inside this app bundle.
+	 *
+	 *  The source is our own Resources directory rather than a download: the helper
+	 *  is signed with the same identity as Workshop and shipping it separately
+	 *  would mean a second thing to notarize, host, and keep in version step.
+	 */
+	computerUseInstall: () => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("computer_use_install")),
+	computerUseRemove: () => typedError<RemovalReport, AppError>(__TAURI_INVOKE("computer_use_remove")),
+	/**  Revoke one app's standing permission to be driven. */
+	computerUseRevokeApp: (bundleId: string) => typedError<number, AppError>(__TAURI_INVOKE("computer_use_revoke_app", { bundleId })),
+	/**  Open the exact Privacy & Security pane for one grant. */
+	computerUseOpenSettings: (permissionId: string) => typedError<null, AppError>(__TAURI_INVOKE("computer_use_open_settings", { permissionId })),
 	visualSubscriptionReady: (request: VisualReadyRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_subscription_ready", { request })),
 	/**
 	 *  Fetch a visual's persisted, declaration-validated poll authority through
@@ -684,6 +698,23 @@ export type CommandReceipt = {
 	created_at: string,
 	actuation?: unknown,
 	duplicate?: boolean,
+};
+
+/**  What the Computer Use page renders. */
+export type ComputerUseSnapshot = ComputerUseSnapshot_Serialize | ComputerUseSnapshot_Deserialize;
+
+/**  What the Computer Use page renders. */
+export type ComputerUseSnapshot_Deserialize = {
+	status: PluginStatus_Deserialize,
+	/**  Bundle identifiers this session may drive without a fresh card. */
+	allowedApps: string[],
+};
+
+/**  What the Computer Use page renders. */
+export type ComputerUseSnapshot_Serialize = {
+	status: PluginStatus_Serialize,
+	/**  Bundle identifiers this session may drive without a fresh card. */
+	allowedApps: string[],
 };
 
 export type ContainerDeployment = {
@@ -1637,6 +1668,23 @@ export type PluginStatus_Serialize = {
 	permissions?: PluginPermission_Serialize[],
 	lastActionReceiptId?: string | null,
 	detail?: string | null,
+};
+
+/**  What `remove` did, for the receipt. G7. */
+export type RemovalReport = {
+	bundleRemoved: boolean,
+	/**  TCC services whose grant was reset. */
+	tccReset: string[],
+	/**
+	 *  Reset attempts macOS refused. Reported rather than swallowed: a grant
+	 *  left behind is exactly the uninstall residue G7 exists to catch.
+	 */
+	tccResetFailed: string[],
+	/**
+	 *  u32 rather than usize: specta forbids BigInt-style types across the
+	 *  bridge, and nobody has more than four billion allowlist entries.
+	 */
+	allowlistEntriesRemoved: number,
 };
 
 export type RenderedVisualObservation = {

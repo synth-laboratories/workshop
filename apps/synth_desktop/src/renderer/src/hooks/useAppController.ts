@@ -39,6 +39,7 @@ import { useInferenceMonitor } from "../components/InferencePanel";
 import { artifactFromVisualRecord } from "../components/VisualHost";
 import { useAccountShell } from "./useAccountShell";
 import { usePluginStatuses } from "./usePluginStatuses";
+import { useComputerUse } from "./useComputerUse";
 import { useShellLayout } from "./useShellLayout";
 import { useCodexEventBridge, type CodexUsageSnapshot } from "./useCodexEventBridge";
 import { useForeignSessionEventBridge } from "./useForeignSessionEventBridge";
@@ -646,6 +647,9 @@ export function useAppController() {
 		return null;
 	}, [view]);
 	const terminalWorkspaceRoot = defaultWorkspace;
+	// Declared after activeSessionId: the allowlist is scoped to the session,
+	// so the hook needs a session to ask about.
+	const computerUseState = useComputerUse(activeSessionId ?? null);
 	const terminalWorkspaceId = activeSessionId ?? "default";
 	const selectActivePermissions = useCallback((nextApprovalPolicy: ApprovalPolicy, nextSandboxMode: SandboxMode) => {
 		const mode = approvalModeFromConfig(nextApprovalPolicy, nextSandboxMode);
@@ -1852,6 +1856,7 @@ export function useAppController() {
 		openBilling,
 		pluginStatuses,
 		refreshPluginStatuses,
+		...computerUseState,
 		view,
 		setView,
 		toast,

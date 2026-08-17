@@ -444,7 +444,7 @@ impl ComputerUseService {
     }
 
     /// Remove the helper and everything it was granted. G7.
-    pub async fn remove(&self) -> Result<Value> {
+    pub async fn remove(&self) -> Result<super::helper::RemovalReport> {
         let mut inner = self.inner.lock().await;
         if let Some(client) = inner.client.take() {
             client.shutdown().await;
@@ -457,12 +457,12 @@ impl ComputerUseService {
         let mut report = helper::remove(&helper::SystemCommands, &helper::helper_bundle_path())?;
         // The allowlist is our own residue and would otherwise survive a
         // reinstall as consent nobody gave again.
-        let mut removed = 0usize;
+        let mut removed = 0u32;
         for entry in self.allowlist.entries() {
-            removed += self.allowlist.revoke(&entry.app)?;
+            removed += self.allowlist.revoke(&entry.app)? as u32;
         }
         report.allowlist_entries_removed = removed;
-        Ok(serde_json::to_value(report)?)
+        Ok(report)
     }
 }
 

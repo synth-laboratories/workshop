@@ -1189,6 +1189,10 @@ async fn plugins_status(
     // Validate rather than discard: returning the optimizers status for any id
     // asked about let the caller believe a plugin existed that does not.
     if let Some(plugin_id) = plugin_id.as_deref() {
+        if plugin_id == plugins::types::COMPUTER_USE_PLUGIN_ID {
+            let _ = state.computer_use().refresh_grants().await;
+            return Ok(state.computer_use().status().await);
+        }
         if plugin_id != plugins::OPTIMIZERS_PLUGIN_ID {
             return Err(AppError::from(anyhow::anyhow!(
                 "unknown plugin_id `{plugin_id}`"
@@ -1238,7 +1242,124 @@ async fn plugins_manage(
 #[tauri::command]
 #[specta::specta]
 async fn plugins_list(state: State<'_, Arc<CoreRuntime>>) -> Result<Vec<PluginStatus>, AppError> {
-    Ok(vec![state.plugins().status(&state).await])
+    // Both managed plugins. The sidebar renders one row per entry in
+    // PLUGIN_NAV and looks its status up by id, so a plugin missing here shows
+    // no phase at all rather than showing the wrong one.
+    let _ = state.computer_use().refresh_grants().await;
+    Ok(vec![
+        state.plugins().status(&state).await,
+        state.computer_use().status().await,
+    ])
+}
+
+/// What the Computer Use page renders.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerUseSnapshot {
+    pub status: PluginStatus,
+    /// Bundle identifiers this session may drive without a fresh card.
+    pub allowed_apps: Vec<String>,
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn computer_use_status(
+    state: State<'_, Arc<CoreRuntime>>,
+    session_id: Option<String>,
+) -> Result<ComputerUseSnapshot, AppError> {
+    let _ = state.computer_use().refresh_grants().await;
+    let allowed_apps = match session_id.as_deref() {
+        Some(session) => state.computer_use().allowlisted_apps(session).await,
+        None => Vec::new(),
+    };
+    Ok(ComputerUseSnapshot {
+        status: state.computer_use().status().await,
+        allowed_apps,
+    })
+}
+
+/// Install the helper that ships inside this app bundle.
+///
+/// The source is our own Resources directory rather than a download: the helper
+/// is signed with the same identity as Workshop and shipping it separately
+/// would mean a second thing to notarize, host, and keep in version step.
+#[tauri::command]
+#[specta::specta]
+async fn computer_use_install(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<PluginStatus, AppError> {
+    let source = bundled_helper_path().ok_or_else(|| {
+        AppError::from(anyhow::anyhow!(
+            "this build does not ship a Computer Use helper"
+        ))
+    })?;
+    let team = crate::computer_use::helper::expected_team_id();
+    let require_notarized = team.is_some();
+    crate::computer_use::helper::install(
+        &crate::computer_use::helper::SystemCommands,
+        &source,
+        &crate::computer_use::helper::helper_bundle_path(),
+        team.as_deref(),
+        require_notarized,
+    )
+    .map_err(AppError::from)?;
+    let _ = state.computer_use().refresh_grants().await;
+    Ok(state.computer_use().status().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn computer_use_remove(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<crate::computer_use::helper::RemovalReport, AppError> {
+    state.computer_use().remove().await.map_err(AppError::from)
+}
+
+/// Revoke one app's standing permission to be driven.
+#[tauri::command]
+#[specta::specta]
+async fn computer_use_revoke_app(
+    state: State<'_, Arc<CoreRuntime>>,
+    bundle_id: String,
+) -> Result<u32, AppError> {
+    state
+        .computer_use()
+        .allowlist()
+        .revoke(&bundle_id)
+        .map(|count| count as u32)
+        .map_err(AppError::from)
+}
+
+/// Open the exact Privacy & Security pane for one grant.
+#[tauri::command]
+#[specta::specta]
+fn computer_use_open_settings(permission_id: String) -> Result<(), AppError> {
+    let url = crate::computer_use::permissions::settings_url(&permission_id).ok_or_else(|| {
+        AppError::from(anyhow::anyhow!("unknown permission `{permission_id}`"))
+    })?;
+    std::process::Command::new("/usr/bin/open")
+        .arg(url)
+        .status()
+        .map_err(|error| AppError::from(anyhow::anyhow!("could not open System Settings: {error}")))?;
+    Ok(())
+}
+
+/// The helper bundle shipped inside this application.
+fn bundled_helper_path() -> Option<std::path::PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let contents = executable.parent()?.parent()?;
+    let candidate = contents
+        .join("Resources")
+        .join(crate::computer_use::helper::HELPER_BUNDLE_NAME);
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    // Development layout: the helper is built into its own target directory and
+    // has not been staged into an app bundle yet.
+    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../helpers/synth-computer-use/target/bundle")
+        .join(crate::computer_use::helper::HELPER_BUNDLE_NAME);
+    repo.exists().then_some(repo)
 }
 
 #[tauri::command]

@@ -259,7 +259,7 @@ pub fn install(
 }
 
 /// What `remove` did, for the receipt. G7.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RemovalReport {
     pub bundle_removed: bool,
@@ -268,7 +268,9 @@ pub struct RemovalReport {
     /// Reset attempts macOS refused. Reported rather than swallowed: a grant
     /// left behind is exactly the uninstall residue G7 exists to catch.
     pub tcc_reset_failed: Vec<String>,
-    pub allowlist_entries_removed: usize,
+    /// u32 rather than usize: specta forbids BigInt-style types across the
+    /// bridge, and nobody has more than four billion allowlist entries.
+    pub allowlist_entries_removed: u32,
 }
 
 /// TCC service names, as `tccutil` spells them.

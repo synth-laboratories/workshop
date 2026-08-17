@@ -634,6 +634,32 @@ export type PluginActionReceipt = {
 	error?: string | null;
 };
 
+/** What `remove` actually did, so the page can report residue honestly. */
+export type ComputerUseRemovalReport = {
+	bundleRemoved: boolean;
+	tccReset: string[];
+	/** Grants macOS refused to reset. Surfaced, never swallowed. */
+	tccResetFailed: string[];
+	allowlistEntriesRemoved: number;
+};
+
+export type ComputerUseSnapshot = {
+	status: PluginStatus;
+	allowedApps: string[];
+};
+
+/**
+ * Computer Use is human-only: there is no agent path to any of these. The
+ * agent's MCP surface offers status and nothing else.
+ */
+export type ComputerUseBridge = {
+	status(sessionId?: string | null): Promise<ComputerUseSnapshot>;
+	install(): Promise<PluginStatus>;
+	remove(): Promise<ComputerUseRemovalReport>;
+	revokeApp(bundleId: string): Promise<number>;
+	openSettings(permissionId: string): Promise<void>;
+};
+
 export type PluginsBridge = {
 	status(pluginId?: string | null): Promise<PluginStatus>;
 	list(): Promise<PluginStatus[]>;

@@ -16,6 +16,7 @@ import type {
 	LagunaBridge,
 	ModelPerformanceBridge,
 	OptimizersBridge,
+	ComputerUseBridge,
 	PluginsBridge,
 	RuntimeBridge,
 	SemanticEvalApi,
@@ -63,6 +64,7 @@ declare global {
 		synthUpdates?: UpdatesBridge;
 		synthVisuals?: VisualsBridge;
 		synthPlugins?: PluginsBridge;
+		synthComputerUse?: ComputerUseBridge;
 		synthReports?: ReportsBridge;
 		synthOptimizers?: OptimizersBridge;
 		synthTerminal: TerminalBridge;
