@@ -18,7 +18,7 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 3. For a local recipe, report its availability, exact fixed inputs, hard limits, prerequisite services, credential names, and whether its cost is dollar-capped or only compute-bounded.
 4. Enforced connect-before-start: `prepare` → `open_visual` → `await_ready` → `start`. `start` requires a visual readiness receipt and a separate compute approval bound to the prepared run. Listing, importing, reconciling, inspecting, and visualizing do not require compute approval.
    - Local `eval.*` recipes are the explicit exception: stage candidates, then call `start_recipe` with the returned `candidate_set_id`. They do not install or depend on the Optimizers plugin, and the pinned target plus fixed recipe owns the compute bounds.
-   - `open_visual` owns and configures the product visual. Do not call `authoring_context`, `capture_review`, `review`, `update`, or `mark_ready` for it.
+   - `open_visual` owns and configures the product visual. Do not call `authoring_context`, `capture_review`, `review`, `update`, or `mark_ready` for it. Report `summary.visualEvidence.state` (`ready` | `reviewed` | `partial` | `failed`) at terminal; never loop capture/repair. `partial` and `failed` never block task completion.
    - If the first `await_ready` reports that no receipt was posted, call `mcp__synth_visuals__visual_manage` once with `operation: "show"` and the run's primary visual ID, then retry `await_ready`. Do not inspect processes, environment variables, source files, databases, or IPC files to manufacture readiness.
    - Preserve the exact `preparationDigest` returned by `prepare` and pass it as `preparation_digest` with `optimizer_run_id` on the first `start` call. Never request approval with a missing or reconstructed digest.
 5. Pass only `recipe_id` to `prepare`; for `eval.*`, pass only `recipe_id` plus the `candidate_set_id` returned by `stage_eval_candidates`. The Rust host owns commands, paths, hyperparameters, and credential resolution. Retrieve the winner with `get_result` — never read result files by filesystem path.
@@ -39,6 +39,7 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 Show the visual before a chat-started run and whenever the user asks to inspect an existing run. The pane and the chat artifact must reference the same visual ID. Report:
 
 - algorithm, objective, run ID, source, execution binding, status, and final cursor;
+- `summary.visualEvidence.state` (`ready` | `reviewed` | `partial` | `failed`) — never loop capture/repair, and never hold the turn in Working because the visual is `partial` or `failed`;
 - declared limits versus actual usage;
 - algorithm-specific winner, uplift, frontier, or checkpoint evidence;
 - artifact titles and visual ID;
