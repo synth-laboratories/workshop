@@ -2659,10 +2659,14 @@ async fn codex_oauth_complete_manual(
 
 #[tauri::command]
 #[specta::specta]
-fn codex_oauth_status(
+async fn codex_oauth_status(
     manager: State<'_, Arc<codex_oauth::Manager>>,
 ) -> Result<codex_oauth::Status, AppError> {
-    manager.status().map_err(AppError::from)
+    let manager = manager.inner().clone();
+    tokio::task::spawn_blocking(move || manager.status())
+        .await
+        .map_err(|error| AppError::from(anyhow::anyhow!("ChatGPT credential check failed: {error}")))?
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
