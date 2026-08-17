@@ -610,6 +610,9 @@ async fn dispatch_request(
     if path.starts_with("/v1/optimizers") {
         return dispatch_optimizer(method, path, json_body, core, app).await;
     }
+    if path.starts_with("/v1/campaigns") {
+        return dispatch_campaigns(method, path, json_body, core).await;
+    }
     if path.starts_with("/v1/traces") {
         return dispatch_traces(method, path, json_body, core).await;
     }
@@ -1479,6 +1482,23 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             // Workshop's index stayed empty, so the inspector could not resolve
             // a trace that demonstrably existed.
             let import = if state.get("terminated").and_then(Value::as_bool) == Some(true) {
+                // A campaign's terminal count comes from the container's own
+                // record, captured on the reconciliation the agent already
+                // performs — not from a later retelling of it.
+                if core
+                    .data()
+                    .campaign_for_rollout(rollout_id.to_string())
+                    .await?
+                    .is_some()
+                {
+                    core.data()
+                        .campaign_record_terminal(
+                            rollout_id.to_string(),
+                            state.clone(),
+                            chrono::Utc::now().to_rfc3339(),
+                        )
+                        .await?;
+                }
                 match import_terminal_trace(core, id, rollout_id, &state).await {
                     Ok(value) => value,
                     // Import is reconciliation, not the answer to this call.
@@ -1591,6 +1611,10 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 )?;
             }
             let task_instance_id = require_task_instance(&body)?;
+            // A planned rollout runs the plan. Silently starting campaign
+            // rollout 7 against a different seed would produce a distribution
+            // whose points do not mean what the plan says they mean.
+            require_campaign_plan_match(core, rollout_id, &body, &task_instance_id).await?;
             let poll_url = resolve_declared_url(&base, &declared_poll_url(stream)?)?;
             let telemetry = normalized_rollout_telemetry(body.get("telemetry"))?;
             let client = crate::http::http_client_builder()
@@ -1662,8 +1686,20 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             .context("POST /rollouts after stream.subscribed")?;
             core.update_container_last_rollout(id.to_string(), rollout_id.to_string())
                 .await?;
+            let campaign_id = core
+                .data()
+                .campaign_for_rollout(rollout_id.to_string())
+                .await?;
+            if campaign_id.is_some() {
+                core.data()
+                    .campaign_record_started(
+                        rollout_id.to_string(),
+                        chrono::Utc::now().to_rfc3339(),
+                    )
+                    .await?;
+            }
             Ok(
-                json!({"container_id":id,"rollout_id":rollout_id,"visual_id":visual_id,"visual_revision":visual.current_revision,"state":state,"subscription":subscription,"started":true,"recovered":recovered}),
+                json!({"container_id":id,"rollout_id":rollout_id,"visual_id":visual_id,"visual_revision":visual.current_revision,"state":state,"subscription":subscription,"started":true,"recovered":recovered,"campaign_id":campaign_id}),
             )
         }
         ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/rollouts") => {
@@ -2700,6 +2736,207 @@ async fn fetch_trace_artifact(
         );
     }
     Ok(Some(bytes.to_vec()))
+}
+
+/// The campaign surface: plan, reconcile, settle.
+///
+/// Reconcile and settle both read the container's authoritative rollout records
+/// rather than anything an agent reports, because the failure this contract
+/// exists for is an agent's own summary of work it did not do.
+async fn dispatch_campaigns(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+) -> Result<Value> {
+    match (method, path) {
+        ("POST", "/v1/campaigns") => {
+            let container_id = json_field(&body, "containerId", "container_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .context("campaign requires container_id")?
+                .to_owned();
+            // Resolve the container now: a plan that names a container this
+            // instance does not have is not a plan.
+            core.data().get_container(container_id.clone()).await?;
+            let expected = json_field(&body, "expectedRollouts", "expected_rollouts")
+                .and_then(Value::as_i64)
+                .context("campaign requires expected_rollouts")?;
+            let seeds = json_field(&body, "seeds", "seeds").and_then(Value::as_array);
+            let seed_start = json_field(&body, "seedStart", "seed_start").and_then(Value::as_i64);
+            let seeds = crate::campaigns::resolve_seeds(seeds, seed_start, expected)?;
+            let id = json_field(&body, "campaignId", "campaign_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("camp_{}", Uuid::new_v4().simple()));
+            let request = crate::campaigns::CampaignCreate {
+                id,
+                session_id: json_field(&body, "sessionRef", "session_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| std::env::var("SYNTH_SESSION_ID").ok()),
+                container_id,
+                title: json_field(&body, "title", "title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Evaluation campaign")
+                    .to_owned(),
+                expected_rollouts: expected,
+                max_concurrency: json_field(&body, "maxConcurrency", "max_concurrency")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(4),
+                policy_ref: require_caller_policy_ref(&body)?,
+                seeds,
+                task_instance_template: json_field(&body, "taskInstance", "task_instance_template")
+                    .and_then(Value::as_str)
+                    .unwrap_or("seed:{seed}")
+                    .to_owned(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+            };
+            let campaign = core.data().campaign_create(request).await?;
+            Ok(json!({
+                "campaign": campaign,
+                "instruction": "Start every planned rollout with its own rollout_id, seed, and task_instance_id, then reconcile. A campaign settles complete only when every planned rollout has a terminal record.",
+            }))
+        }
+        ("GET", path) if path.starts_with("/v1/campaigns/") && !path.contains('/') => {
+            let id = path.trim_start_matches("/v1/campaigns/");
+            Ok(json!({"campaign": core.data().campaign_get(id.to_string()).await?}))
+        }
+        ("POST", path) if path.ends_with("/reconcile") => {
+            let id = path
+                .trim_start_matches("/v1/campaigns/")
+                .trim_end_matches("/reconcile")
+                .trim_end_matches('/');
+            Ok(json!({"campaign": reconcile_campaign(core, id).await?}))
+        }
+        ("POST", path) if path.ends_with("/result") => {
+            let id = path
+                .trim_start_matches("/v1/campaigns/")
+                .trim_end_matches("/result")
+                .trim_end_matches('/');
+            // Reconcile first, always. A result computed from stale local state
+            // is the same failure as an agent's own summary.
+            reconcile_campaign(core, id).await?;
+            core.data()
+                .campaign_settle(id.to_string(), chrono::Utc::now().to_rfc3339())
+                .await
+        }
+        ("GET", path) if path.starts_with("/v1/campaigns/") => {
+            let id = path.trim_start_matches("/v1/campaigns/").trim_end_matches('/');
+            Ok(json!({"campaign": core.data().campaign_get(id.to_string()).await?}))
+        }
+        _ => anyhow::bail!("unsupported campaign IPC route {method} {path}"),
+    }
+}
+
+/// Hold a campaign rollout to the plan it was allocated.
+///
+/// A rollout id that belongs to a campaign carries that campaign's seed and task
+/// instance. Starting it with different ones would leave a ten-point
+/// distribution whose points are not the ten the plan named, and nothing
+/// downstream could tell.
+async fn require_campaign_plan_match(
+    core: &CoreRuntime,
+    rollout_id: &str,
+    body: &Value,
+    task_instance_id: &str,
+) -> Result<()> {
+    let Some(campaign_id) = core
+        .data()
+        .campaign_for_rollout(rollout_id.to_string())
+        .await?
+    else {
+        return Ok(());
+    };
+    let campaign = core.data().campaign_get(campaign_id.clone()).await?;
+    let Some(plan) = campaign
+        .rollouts
+        .iter()
+        .find(|rollout| rollout.rollout_id == rollout_id)
+    else {
+        return Ok(());
+    };
+    let seed = body.get("seed").and_then(Value::as_i64);
+    if let Some(seed) = seed {
+        if seed != plan.seed {
+            return Err(anyhow::Error::new(
+                crate::error::StructuredFailure::new(
+                    "campaign_rollout_plan_mismatch",
+                    format!(
+                        "{rollout_id} is planned for seed {} in campaign {campaign_id}, not seed {seed}",
+                        plan.seed
+                    ),
+                    "Start each campaign rollout with the seed and task instance its plan allocated, or create a new campaign.",
+                )
+                .with_details(json!({
+                    "campaignId": campaign_id,
+                    "rolloutId": rollout_id,
+                    "plannedSeed": plan.seed,
+                    "requestedSeed": seed,
+                })),
+            ));
+        }
+    }
+    if task_instance_id != plan.task_instance_id {
+        return Err(anyhow::Error::new(
+            crate::error::StructuredFailure::new(
+                "campaign_rollout_plan_mismatch",
+                format!(
+                    "{rollout_id} is planned for task instance {} in campaign {campaign_id}, not {task_instance_id}",
+                    plan.task_instance_id
+                ),
+                "Start each campaign rollout with the seed and task instance its plan allocated, or create a new campaign.",
+            )
+            .with_details(json!({
+                "campaignId": campaign_id,
+                "rolloutId": rollout_id,
+                "plannedTaskInstanceId": plan.task_instance_id,
+                "requestedTaskInstanceId": task_instance_id,
+            })),
+        ));
+    }
+    Ok(())
+}
+
+/// Ask the container about every planned rollout and record what it says.
+async fn reconcile_campaign(core: &CoreRuntime, id: &str) -> Result<crate::campaigns::Campaign> {
+    let campaign = core.data().campaign_get(id.to_string()).await?;
+    let container = core
+        .data()
+        .get_container(campaign.container_id.clone())
+        .await?;
+    let base = validated_loopback_rollout_base(
+        container
+            .base_url
+            .as_deref()
+            .context("container has no base URL")?,
+    )?;
+    let client = crate::http::http_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
+        .build()?;
+    for rollout in &campaign.rollouts {
+        // A rollout already settled from its own authoritative record is not
+        // re-read; reconciliation is for the ones still in flight.
+        if matches!(rollout.status.as_str(), "terminal" | "failed") {
+            continue;
+        }
+        let Some(state) = get_rollout_status(&client, &base, &rollout.rollout_id).await? else {
+            continue;
+        };
+        let now = chrono::Utc::now().to_rfc3339();
+        if state.get("terminated").and_then(Value::as_bool) == Some(true) {
+            core.data()
+                .campaign_record_terminal(rollout.rollout_id.clone(), state, now)
+                .await?;
+        } else if state.get("started").and_then(Value::as_bool) == Some(true) {
+            core.data()
+                .campaign_record_started(rollout.rollout_id.clone(), now)
+                .await?;
+        }
+    }
+    core.data().campaign_get(id.to_string()).await
 }
 
 async fn dispatch_traces(

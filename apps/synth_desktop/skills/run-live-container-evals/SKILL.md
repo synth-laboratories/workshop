@@ -8,6 +8,29 @@ description: Run and verify live Synth container evaluations with declared strea
 Use `synth_containers` for container discovery and rollout requests and
 `synth_visuals` for the live view. Do not scan ports or substitute fixtures.
 
+## An evaluation is a campaign, not a rollout
+
+"Run an evaluation" is a request for a *distribution*. One rollout is one
+sample, and a single sample is not an evaluation however complete its evidence
+is. When the request names or implies a count — "ten rollouts", "an evaluation",
+"a study" — plan it as a campaign before starting anything:
+
+1. `campaign_create` with `container_id`, `expected_rollouts`, `policy_ref`, and
+   either explicit `seeds` or a `seed_start` block. Seeds may not overlap another
+   open campaign, so parallel chats cannot resample the same episodes and call it
+   variance.
+2. Start each planned rollout through the normal prepared-rollout contract, using
+   the `rollout_id`, `seed`, and `task_instance_id` the plan allocated. Starting a
+   planned rollout with a different seed is refused.
+3. `campaign_status` reconciles against the container's authoritative records.
+4. `campaign_result` settles and returns the aggregate — reward distribution,
+   achievement rates, termination reasons, latency, calls, usage coverage.
+
+The result is `complete` only when every planned rollout has a terminal record;
+otherwise it is `partial` and names the missing ones. Report what it returns.
+Do not recompute the aggregate yourself, do not describe a partial campaign as a
+finished evaluation, and do not present one rollout as an evaluation result.
+
 ## Operator clock (W1–W3)
 
 This is one bind for Craftax, Harbor, and dig.bench. Skipping a step is a

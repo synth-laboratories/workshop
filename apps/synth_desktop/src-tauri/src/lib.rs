@@ -14,6 +14,7 @@ pub mod intern_protocol_test_support {
         SyncCreateRequest,
     };
 }
+pub mod campaigns;
 mod codex;
 mod codex_oauth;
 pub mod container_capabilities;
