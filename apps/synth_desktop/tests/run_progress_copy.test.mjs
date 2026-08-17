@@ -34,6 +34,7 @@ function bundle(relative, outName) {
 }
 
 const {
+	etaDisplayLine,
 	formatDurationMs,
 	formatWork,
 	formatWorkBreakdown,
@@ -120,9 +121,11 @@ test("durations read in the unit a person would use", () => {
 test("status words and badge tones are one mapping, not per-surface guesses", () => {
 	assert.equal(statusLabel("running"), "Running");
 	assert.equal(statusLabel("cancelled"), "Cancelled");
+	assert.equal(statusLabel("interrupted"), "Interrupted");
 	assert.match(statusBadgeClass("failed"), /ws-badge-danger/);
 	assert.match(statusBadgeClass("completed"), /ws-badge-success/);
 	assert.match(statusBadgeClass("paused"), /ws-badge-warn/);
+	assert.match(statusBadgeClass("interrupted"), /ws-badge-warn/);
 	assert.match(statusBadgeClass("running"), /ws-badge-running/);
 });
 
@@ -155,4 +158,33 @@ test("small dollar amounts keep their significant digits", () => {
 	assert.equal(formatUsd(0.0004), "$0.0004");
 	assert.equal(formatUsd(3.28), "$3.28");
 	assert.equal(formatUsd(0), "$0.00");
+});
+
+test("ETA is withheld as Estimating… until there are enough samples", () => {
+	assert.equal(
+		etaDisplayLine({ state: "estimating", confidence: "warming", basis: "warming", sampleCount: 1 }),
+		"Estimating…"
+	);
+});
+
+test("ETA is removed when the phase is not estimable, and never prints a fabricated number", () => {
+	assert.equal(
+		etaDisplayLine({
+			state: "unavailable",
+			confidence: "warming",
+			basis: "no denominator",
+			sampleCount: 0,
+			unavailableReason: "provider did not declare total steps"
+		}),
+		null
+	);
+	assert.equal(etaDisplayLine(undefined, { terminal: false }), null);
+	assert.equal(
+		etaDisplayLine({ state: "point", remainingMs: 60_000, confidence: "high", basis: "x", sampleCount: 4 }, { terminal: true }),
+		null
+	);
+	assert.equal(
+		etaDisplayLine({ state: "point", remainingMs: 60_000, confidence: "high", basis: "x", sampleCount: 4 }, { status: "interrupted" }),
+		null
+	);
 });

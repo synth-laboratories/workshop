@@ -12,9 +12,9 @@
 import { Fragment, useCallback, useEffect, useRef } from "react";
 import {
 	formatDurationMs,
-	formatEta,
 	formatWork,
 	formatWorkBreakdown,
+	etaDisplayLine,
 	statusBadgeClass,
 	statusLabel
 } from "../../runtime/runProgress/format";
@@ -106,7 +106,10 @@ export function RunProgressDialog({
 		return () => document.removeEventListener("keydown", onKey);
 	}, [onClose, trapFocus]);
 
-	const eta = projection.timing.eta;
+	const eta = etaDisplayLine(projection.timing.eta, {
+		terminal: projection.terminal,
+		status: projection.status
+	});
 	const work = formatWork(projection);
 	const breakdown = formatWorkBreakdown(projection);
 	const unit = projection.work.unit?.replace(/s$/, "") ?? "unit";
@@ -134,7 +137,7 @@ export function RunProgressDialog({
 						<h2 className="ws-dialog-title" id={titleId}>{projection.title}</h2>
 					</div>
 					<div className="run-progress-dialog-head-aside">
-						<span className={statusBadgeClass(projection.status)}>{statusLabel(projection.status)}</span>
+						<span className={statusBadgeClass(projection.status)} data-testid={`run-progress-dialog-status-${projection.runId}`}>{statusLabel(projection.status)}</span>
 						<button
 							ref={closeRef}
 							type="button"
@@ -151,10 +154,17 @@ export function RunProgressDialog({
 				<section className="run-progress-section" aria-label="Progress">
 					{projection.terminal ? null : <RunProgressBar projection={projection} />}
 					<dl className="ws-kv">
+						<dt>Phase</dt>
+						<dd data-testid={`run-progress-dialog-phase-${projection.runId}`}>
+							{projection.phase.label}
+							{projection.phase.detail ? (
+								<span className="run-progress-faint"> · {projection.phase.detail}</span>
+							) : null}
+						</dd>
 						{work ? (
 							<>
 								<dt>{projection.progress?.semantics ?? "Work"}</dt>
-								<dd>
+								<dd data-testid={`run-progress-dialog-work-${projection.runId}`}>
 									{work}
 									{breakdown ? <span className="run-progress-faint"> · {breakdown}</span> : null}
 								</dd>
@@ -162,21 +172,19 @@ export function RunProgressDialog({
 						) : null}
 						<dt>{projection.terminal ? "Wall time" : "Elapsed"}</dt>
 						<dd>{formatDurationMs(projection.timing.elapsedMs)}</dd>
-						{projection.terminal ? null : (
+						{eta ? (
 							<>
 								<dt>Estimate</dt>
 								<dd data-testid={`run-progress-dialog-eta-${projection.runId}`}>
-									{formatEta(eta)}
-									{eta ? (
+									{eta}
+									{projection.timing.eta ? (
 										<span className="run-progress-coverage">
-											{eta.state === "unavailable" && eta.unavailableReason
-												? eta.unavailableReason
-												: `${eta.basis} · ${eta.confidence} confidence`}
+											{projection.timing.eta.basis} · {projection.timing.eta.confidence} confidence
 										</span>
 									) : null}
 								</dd>
 							</>
-						)}
+						) : null}
 						{projection.throughput ? (
 							<>
 								<dt>Throughput</dt>
@@ -196,7 +204,7 @@ export function RunProgressDialog({
 						<h3 className="ws-section-title">Phases</h3>
 						<ol className="run-progress-timeline" data-testid={`run-progress-phases-${projection.runId}`}>
 							{projection.phases.map((phase) => (
-								<li key={phase.id} data-phase-status={phase.status}>
+								<li key={phase.id} data-phase-status={phase.status} data-phase-id={phase.id}>
 									<span className={`ws-dot${phase.status === "active" ? " ws-dot-running" : phase.status === "failed" ? " ws-dot-danger" : phase.status === "completed" ? " ws-dot-success" : ""}`} aria-hidden />
 									<span className="run-progress-timeline-label">{phase.label}</span>
 									<span className="run-progress-faint">

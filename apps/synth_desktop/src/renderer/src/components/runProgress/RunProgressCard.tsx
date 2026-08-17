@@ -15,9 +15,9 @@ import { useEffect, useRef, useState } from "react";
 import { useRunProgress } from "../../hooks/useRunProgress";
 import {
 	formatDurationMs,
-	formatEta,
 	formatWork,
 	formatWorkBreakdown,
+	etaDisplayLine,
 	progressAriaText,
 	statusBadgeClass,
 	statusLabel
@@ -94,7 +94,10 @@ export function RunProgressCard({ runId, sessionRef, onOpenFullRun }: Props) {
 
 	const work = formatWork(projection);
 	const breakdown = formatWorkBreakdown(projection);
-	const eta = projection.terminal ? null : formatEta(projection.timing.eta);
+	const eta = etaDisplayLine(projection.timing.eta, {
+		terminal: projection.terminal,
+		status: projection.status
+	});
 	const elapsed = formatDurationMs(projection.timing.elapsedMs);
 	const canControl =
 		!projection.terminal &&
@@ -102,7 +105,7 @@ export function RunProgressCard({ runId, sessionRef, onOpenFullRun }: Props) {
 
 	return (
 		<div
-			className={`run-progress-card${projection.terminal ? " is-terminal" : ""}`}
+			className={`run-progress-card${projection.terminal ? " is-terminal" : ""}${projection.status === "interrupted" ? " is-interrupted" : ""}`}
 			data-testid={`run-progress-${runId}`}
 			data-run-kind={projection.runKind}
 			data-run-status={projection.status}
@@ -120,7 +123,7 @@ export function RunProgressCard({ runId, sessionRef, onOpenFullRun }: Props) {
 				</span>
 			</div>
 
-			<div className="run-progress-phase" data-testid={`run-progress-phase-${runId}`}>
+			<div className="run-progress-phase" data-testid={`run-progress-phase-${runId}`} data-phase-id={projection.phase.id}>
 				<span>{projection.phase.label}</span>
 				{projection.phase.detail ? <span className="run-progress-faint">{projection.phase.detail}</span> : null}
 			</div>

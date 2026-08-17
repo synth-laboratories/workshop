@@ -30,6 +30,7 @@
 }
 
 .run-progress-card.is-terminal { background: var(--surface-page); }
+.run-progress-card.is-interrupted { border-color: var(--border-warn, var(--border-subtle)); }
 .run-progress-card.is-unavailable,
 .run-progress-card.is-loading { color: var(--color-text-muted); }
 

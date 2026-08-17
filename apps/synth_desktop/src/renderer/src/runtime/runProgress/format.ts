@@ -53,6 +53,7 @@ const STATUS_WORDS: Record<RunProgressStatus, string> = {
 	queued: "Queued",
 	running: "Running",
 	paused: "Paused",
+	interrupted: "Interrupted",
 	completed: "Completed",
 	failed: "Failed",
 	cancelled: "Cancelled"
@@ -64,9 +65,24 @@ export function statusLabel(status: RunProgressStatus): string {
 
 export function statusBadgeClass(status: RunProgressStatus): string {
 	if (status === "failed") return "ws-badge ws-badge-danger";
+	if (status === "interrupted") return "ws-badge ws-badge-warn";
 	if (status === "cancelled" || status === "paused" || status === "queued") return "ws-badge ws-badge-warn";
 	if (status === "completed") return "ws-badge ws-badge-success";
 	return "ws-badge ws-badge-running";
+}
+
+/**
+ * What the compact card prints for ETA. Insufficient samples stay words
+ * ("Estimating…"); a phase that cannot be estimated removes the line entirely
+ * rather than showing a number or "Unavailable".
+ */
+export function etaDisplayLine(
+	eta: RunEtaProjection | undefined,
+	options: { terminal?: boolean; status?: RunProgressStatus } = {}
+): string | null {
+	if (options.terminal || options.status === "interrupted") return null;
+	if (!eta || eta.state === "unavailable") return null;
+	return formatEta(eta);
 }
 
 /**
