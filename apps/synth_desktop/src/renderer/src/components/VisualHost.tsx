@@ -15,6 +15,8 @@ import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } fro
 import { loadVisualShell } from "../runtime/visualsLoader";
 import { bridges } from "../runtime/desktopBridge";
 import { subscribeToRun } from "../runtime/runProgress/subscription";
+import { progressAgreement, projectRunProgress, splitSnapshotEvents } from "../runtime/runProgress/project";
+import type { ProgressAgreement } from "../runtime/runProgress/project";
 import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
 import { MermaidVisual } from "./MermaidVisual";
 import { SystemsMapVisual } from "./SystemsMapVisual";
@@ -262,6 +264,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [optimizerPayload, setOptimizerPayload] = useState<Record<string, unknown> | null>(null);
 	const [optimizerLoadError, setOptimizerLoadError] = useState<string | null>(null);
 	const [comparisonPayload, setComparisonPayload] = useState<Record<string, unknown> | null>(null);
+	const [progressView, setProgressView] = useState<ProgressAgreement | null>(null);
 	// One reader decides whether these bindings are legible, and it can say no.
 	// Returning an empty slot list for a shape it did not understand is how a
 	// visual with ten declared streams rendered an empty pane with no error.
@@ -304,7 +307,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		failure?: PublicError;
 	}>({ status: "idle", props: {} });
 	const [connectionState, setConnectionState] = useState<
-		"loading" | "replaying" | "subscribed" | "stale" | "reconnecting" | "terminal" | "failed"
+		"loading" | "replaying" | "subscribed" | "stale" | "reconnecting" | "terminal" | "failed" | "interrupted"
 	>("loading");
 
 	const visualIdentity = useMemo(
@@ -527,20 +530,34 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		if (!optimizerRunId) {
 			setOptimizerPayload(null);
 			setOptimizerLoadError(null);
+			setProgressView(null);
 			return;
 		}
 		let postedReady = false;
 		return subscribeToRun(optimizerRunId, (snapshot) => {
+			const projection = projectRunProgress(snapshot, Date.now());
+			setProgressView(projection ? progressAgreement(projection) : null);
+			const lanes = snapshot.run ? splitSnapshotEvents(snapshot.run, snapshot.events) : null;
+			const payload = snapshot.run && lanes
+				? {
+					run: snapshot.run,
+					events: lanes.terminalEvents,
+					enrichmentEvents: lanes.enrichmentEvents,
+					terminalCursor: lanes.terminalCursor,
+					enrichmentCursor: lanes.enrichmentCursor
+				}
+				: null;
+
 			if (snapshot.state === "unavailable") {
-				setOptimizerPayload(null);
+				setOptimizerPayload(payload);
 				setOptimizerLoadError(snapshot.error ?? "Optimizer bridge is unavailable");
 				setConnectionState("failed");
 				return;
 			}
-			if (snapshot.state === "failed") {
-				setOptimizerPayload(null);
+			if (snapshot.state === "interrupted" || snapshot.state === "failed") {
+				if (payload) setOptimizerPayload(payload);
 				setOptimizerLoadError(snapshot.error ?? "Optimizer stream interrupted");
-				setConnectionState("failed");
+				setConnectionState("interrupted");
 				reportDiagnostic({
 					...visualIdentity,
 					optimizerRunId,
@@ -555,6 +572,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				return;
 			}
 			if (snapshot.state === "stale") {
+				if (payload) setOptimizerPayload(payload);
+				setOptimizerLoadError(null);
 				setConnectionState("stale");
 				reportDiagnostic({
 					...visualIdentity,
@@ -570,11 +589,11 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				});
 				return;
 			}
-			if (!snapshot.run) {
+			if (!snapshot.run || !payload) {
 				setConnectionState(snapshot.state === "loading" ? "loading" : "replaying");
 				return;
 			}
-			setOptimizerPayload({ run: snapshot.run, events: snapshot.events });
+			setOptimizerPayload(payload);
 			setOptimizerLoadError(null);
 			setConnectionState(
 				snapshot.state === "terminal" ? "terminal"
@@ -665,7 +684,19 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const resolvedProps = { ...synchronouslyResolved.props, ...traceResolution.props };
 	const showConnection = Boolean(optimizerPayload || optimizerLoadError || connectionState !== "loading");
 	return (
-		<div data-testid="visual-template-shell" data-connection-state={showConnection ? connectionState : undefined}>
+		<div
+			data-testid="visual-template-shell"
+			data-connection-state={showConnection ? connectionState : undefined}
+			data-progress-phase={progressView?.phaseId}
+			data-progress-phase-label={progressView?.phaseLabel}
+			data-progress-status={progressView?.status}
+			data-progress-completed={progressView?.completed != null ? String(progressView.completed) : undefined}
+			data-progress-total={progressView?.total != null ? String(progressView.total) : undefined}
+			data-progress-cost={progressView ? (progressView.costUsd == null ? "unavailable" : String(progressView.costUsd)) : undefined}
+			data-progress-tokens={progressView ? (progressView.promptTokens == null ? "unavailable" : String(progressView.promptTokens)) : undefined}
+			data-progress-terminal={progressView ? String(progressView.terminal) : undefined}
+			data-progress-result={progressView?.resultHeadline ?? progressView?.resultAbsentReason}
+		>
 			{showConnection ? <p className="visual-connection-state" data-testid="visual-connection-state">{connectionState}</p> : null}
 			<Shell
 				{...(resolvedProps as ShellProps)}

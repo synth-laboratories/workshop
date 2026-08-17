@@ -32,6 +32,7 @@ const {
 	resolveOwnedRun,
 	runSubscriberCount,
 	setRunProgressPollInterval,
+	setRunProgressStallTimeout,
 	setRunProgressTransport,
 	subscribeToRun
 } = await import(pathToFileURL(outfile).href);
@@ -111,6 +112,7 @@ test.beforeEach(() => {
 test.after(() => {
 	resetRunProgressStore();
 	setRunProgressTransport(null);
+	setRunProgressStallTimeout(15_000);
 });
 
 test("a run history replays once and reaches subscribed with the run's cursor", async () => {
@@ -340,10 +342,63 @@ test("a read failure keeps what was already replayed and reports the interruptio
 	transport.notify({ payload: { optimizerRunId: "run-a" } });
 	await settle();
 	const last = seen.at(-1);
-	assert.equal(last.state, "failed");
+	assert.equal(last.state, "interrupted");
 	assert.ok(last.error);
 	assert.equal(last.events.length, 3, "a failed read must not blank a card that had counts");
 	assert.equal(failures.at(-1).code, "stream_interrupted");
+});
+
+test("a hung read stalls into a recoverable interrupted state, not endless Running", async () => {
+	const failures = [];
+	installRunProgressDiagnostics((report) => failures.push(report));
+	setRunProgressStallTimeout(20);
+	const transport = {
+		get() {
+			return new Promise(() => undefined);
+		},
+		async eventsAfter() { return []; },
+		async refresh() { return undefined; },
+		onEvent() { return () => undefined; }
+	};
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(seen.at(-1).state, "interrupted");
+	assert.match(seen.at(-1).error, /stalled/);
+	assert.ok(failures.some((report) => report.code === "stream_stalled"));
+	setRunProgressStallTimeout(15_000);
+});
+
+test("an interrupted subscription recovers to subscribed on the next successful read", async () => {
+	const runs = { "run-a": runRecord() };
+	const pages = { "run-a": [event(1), event(2), event(3)] };
+	let failNext = false;
+	const transport = {
+		async get(runId) {
+			if (failNext) throw new Error("bridge closed");
+			return runs[runId];
+		},
+		async eventsAfter(runId, afterSeq = 0) {
+			return pages[runId].filter((entry) => entry.sequenceNumber > afterSeq);
+		},
+		async refresh() { return undefined; },
+		onEvent(listener) { transport.notify = listener; return () => undefined; }
+	};
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	failNext = true;
+	transport.notify({ payload: { optimizerRunId: "run-a" } });
+	await settle();
+	assert.equal(seen.at(-1).state, "interrupted");
+	failNext = false;
+	transport.notify({ payload: { optimizerRunId: "run-a" } });
+	await settle();
+	assert.equal(seen.at(-1).state, "subscribed");
+	assert.equal(seen.at(-1).events.length, 3);
+	assert.equal(seen.at(-1).error, undefined);
 });
 
 test("five concurrent runs stay independently scoped", async () => {
