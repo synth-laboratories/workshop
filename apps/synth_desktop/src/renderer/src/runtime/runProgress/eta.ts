@@ -33,8 +33,15 @@
  *     passes only training completions; queue elapsed is displayed separately.
  *   · Chat elapsed time and tool-call silence are not inputs. They are not
  *     even in the signature.
+ *
+ * There is one estimator that beat all of this, and it does not use throughput at
+ * all: the shape earlier runs of the same recipe traced through the same work.
+ * When a caller supplies that history the estimate comes from it, and the
+ * throughput machinery below is not consulted. See `history.ts` for the measured
+ * comparison.
  */
 
+import { estimateFromHistory, type HistoricalShape } from "./history";
 import type { RunEtaConfidence, RunEtaProjection } from "./types";
 
 /**
@@ -98,6 +105,16 @@ export type EtaEvidence = {
 	 * as `unavailableReason`, e.g. "provider did not declare total steps".
 	 */
 	unavailableReason?: string;
+	/**
+	 * The recipe's own history, pooled from comparable finished runs. When
+	 * present it is the estimate: it measured at 30% median error against 74% for
+	 * throughput, and it is the only form that survived validation on real runs.
+	 */
+	history?: HistoricalShape;
+	/** Work completed over work planned, 0–1. The input history is read at. */
+	progressFraction?: number;
+	/** Wall time this run has been going, for the historical division. */
+	elapsedMs?: number;
 };
 
 function plural(count: number, unit: string): string {
@@ -217,6 +234,55 @@ export function windowRates(evidence: EtaEvidence): EtaWindow {
 }
 
 /**
+ * The estimate drawn from comparable finished runs of the same recipe.
+ *
+ * Returns null when there is no usable history, no measurable progress, or the
+ * run is paused — the caller then falls through to the throughput machinery,
+ * which will usually refuse.
+ */
+function estimateHistorical(evidence: EtaEvidence): RunEtaProjection | null {
+	const shape = evidence.history;
+	if (!shape || evidence.paused) return null;
+	const progress = evidence.progressFraction;
+	const elapsed = evidence.elapsedMs;
+	if (progress == null || elapsed == null) return null;
+	const estimate = estimateFromHistory(shape, progress, elapsed);
+	if (!estimate) return null;
+
+	const sampleCount = usableCompletions(evidence).length;
+	const runs = `${estimate.runs} previous run${estimate.runs === 1 ? "" : "s"} of this recipe`;
+	if (estimate.beyondHistory) {
+		// The prediction has run past everything the recipe has ever done. A
+		// confident-looking number drawn from a population this run no longer
+		// resembles is worse than admitting the history has been left behind.
+		return {
+			state: "unavailable",
+			confidence: "low",
+			basis: `${runs} finished well before this one is projected to`,
+			sampleCount,
+			unavailableReason: `this run is already taking far longer than ${runs}, so how much longer it needs is beyond anything measured`
+		};
+	}
+
+	// The spread of the historical band decides whether a single number is fair.
+	const band = estimate.highMs - estimate.lowMs;
+	const settled = estimate.remainingMs > 0 && band / estimate.remainingMs <= 0.6;
+	const basis = [
+		`${Math.round(progress * 100)}% of the work done in ${formatSpan(elapsed)}`,
+		`${runs} were ${Math.round(estimate.expectedElapsedFraction * 100)}% through their time at this point`
+	].join(" · ");
+	return {
+		state: settled ? "point" : "range",
+		remainingMs: estimate.remainingMs,
+		lowMs: estimate.lowMs,
+		highMs: estimate.highMs,
+		confidence: settled ? (estimate.runs >= 5 ? "high" : "medium") : "low",
+		basis,
+		sampleCount
+	};
+}
+
+/**
  * Estimate the time remaining in one bounded, homogeneous phase.
  *
  * Every case returns a projection whose `state` says what the caller may
@@ -225,6 +291,12 @@ export function windowRates(evidence: EtaEvidence): EtaWindow {
 export function estimatePhaseEta(evidence: EtaEvidence): RunEtaProjection {
 	const { overall, first, second, samples, spanMs, longestIdleMs } = windowRates(evidence);
 	const phaseBasis = `phase ${evidence.phaseId}`;
+
+	// History first, and history only, whenever it is available: it is the one
+	// estimator that measured well, and mixing a worse signal into a better one
+	// does not improve it.
+	const historical = estimateHistorical(evidence);
+	if (historical) return historical;
 
 	if (evidence.paused) {
 		return {

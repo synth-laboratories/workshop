@@ -204,6 +204,9 @@ export function projectGepa(input: AdapterInput, projected: ProjectedState): Run
 		remainingUnits: remaining,
 		unit: "rollout",
 		nowMs: input.now,
+		history: input.history,
+		progressFraction: fraction,
+		elapsedMs: base.timing.elapsedMs,
 		disruptedAtMs: lastDisruptionMs(input.events, GEPA_DISRUPTION_TYPES),
 		paused: base.status === "paused",
 		/*
@@ -222,9 +225,13 @@ export function projectGepa(input: AdapterInput, projected: ProjectedState): Run
 		 * The counts, the phase, and the observed rollout rate are all still
 		 * shown; only the promise about the clock is withheld.
 		 */
-		unavailableReason: determinate
-			? "a GEPA run alternates rollouts with proposer calls that complete none, so rollout throughput does not predict when it finishes"
-			: "no rollout budget was declared for this run"
+		unavailableReason: !determinate
+			? "no rollout budget was declared for this run"
+			: input.history
+				// History supersedes this refusal: the estimate no longer comes from
+				// throughput at all, so the reason throughput fails does not apply.
+				? undefined
+				: "no comparable finished run of this recipe exists yet, and a GEPA run alternates rollouts with proposer calls that complete none, so its own throughput does not predict when it finishes"
 	};
 
 	const warnings = [...base.warnings];

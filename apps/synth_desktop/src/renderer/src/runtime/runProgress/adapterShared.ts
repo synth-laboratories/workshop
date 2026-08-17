@@ -17,6 +17,7 @@ import type {
 	OptimizerEvent,
 	ProjectedState
 } from "@synth/visual-templates/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
+import type { HistoricalShape } from "./history";
 import type { RunRecord } from "./subscription";
 import {
 	RUN_PROGRESS_SCHEMA_VERSION,
@@ -38,6 +39,12 @@ export type AdapterInput = {
 	cursorSeq: number;
 	/** Epoch ms used for elapsed time on a live run. Injected so tests are stable. */
 	now: number;
+	/**
+	 * Comparable finished runs of the same recipe, pooled into one shape. Present
+	 * only when enough of them exist; when it is, it *is* the ETA — see
+	 * `history.ts` for why throughput lost to it by a wide margin.
+	 */
+	history?: HistoricalShape;
 };
 
 function parseTime(value: string | null | undefined): number | undefined {

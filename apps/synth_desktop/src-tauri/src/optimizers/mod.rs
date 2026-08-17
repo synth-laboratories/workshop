@@ -11,6 +11,7 @@ mod local;
 pub(crate) mod manager;
 mod models;
 mod normalize;
+mod progress_history;
 mod recipes;
 mod service;
 mod sft_client;

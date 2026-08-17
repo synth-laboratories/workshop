@@ -263,6 +263,9 @@ export function projectEval(input: AdapterInput, projected: ProjectedState): Run
 		remainingUnits: determinate ? Math.max(0, planned! - tally.terminal) : undefined,
 		unit: "trial",
 		nowMs: input.now,
+				history: input.history,
+				progressFraction: fraction,
+				elapsedMs: base.timing.elapsedMs,
 		disruptedAtMs: (() => {
 			const breaker = lastDisruptionMs(input.events, ["rollout.circuit_breaker.tripped"]);
 			if (breaker == null) return lastRequeueMs;

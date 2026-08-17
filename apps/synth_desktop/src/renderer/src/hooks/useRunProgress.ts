@@ -13,11 +13,16 @@
  *     catches up; nothing optimistically rewrites the run's status.
  *   · Experience-budget telemetry. Time to first progress, update latency, and
  *     estimate coverage are recorded per run and flushed once when it ends.
+ *   · The recipe history the ETA is drawn from. One fetch per recipe per
+ *     session, shared by every card on it; the projection stays synchronous and
+ *     simply has no estimate until the shape arrives.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridges } from "../runtime/desktopBridge";
 import { publicError } from "../runtime/publicError";
+import type { HistoricalShape } from "../runtime/runProgress/history";
+import { cachedShapeFor, ensureShapeFor } from "../runtime/runProgress/historySource";
 import { projectRunProgress } from "../runtime/runProgress/project";
 import {
 	resolveOwnedRun,
@@ -49,6 +54,7 @@ export function useRunProgress(runId: string, sessionRef?: string): RunProgressS
 	const [unavailableReason, setUnavailableReason] = useState<string | undefined>();
 	const [intent, setIntent] = useState<RunControlIntent | null>(null);
 	const [clock, setClock] = useState(() => Date.now());
+	const [history, setHistory] = useState<HistoricalShape | null>(null);
 	const intentRef = useRef<RunControlIntent | null>(null);
 	intentRef.current = intent;
 
@@ -57,6 +63,7 @@ export function useRunProgress(runId: string, sessionRef?: string): RunProgressS
 		let unsubscribe: (() => void) | undefined;
 		setSnapshot(null);
 		setUnavailableReason(undefined);
+		setHistory(null);
 		void resolveOwnedRun(runId, sessionRef).then((run) => {
 			if (cancelled) return;
 			if (!run) {
@@ -88,9 +95,33 @@ export function useRunProgress(runId: string, sessionRef?: string): RunProgressS
 	// A terminal run's elapsed time comes from its own timestamps, so freezing
 	// the clock cannot change what it shows.
 	const projection = useMemo(
-		() => (snapshot ? projectRunProgress(snapshot, clock) : null),
-		[snapshot, clock]
+		() => (snapshot ? projectRunProgress(snapshot, clock, history ?? undefined) : null),
+		[snapshot, clock, history]
 	);
+
+	/*
+	 * The denominator decides which finished runs are comparable, so the history
+	 * lookup waits for the first projection rather than guessing. It runs once per
+	 * (recipe, work size); the cache is shared, so five cards on one recipe make
+	 * one request between them.
+	 */
+	const expectedUnits = projection?.work.total;
+	useEffect(() => {
+		const run = snapshot?.run;
+		if (!run || history) return;
+		let cancelled = false;
+		const known = cachedShapeFor(run, expectedUnits);
+		if (known) {
+			setHistory(known);
+			return;
+		}
+		void ensureShapeFor(run, expectedUnits).then((shape) => {
+			if (!cancelled && shape) setHistory(shape);
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [snapshot?.run, expectedUnits, history]);
 
 	// One measurement per published snapshot, not per clock tick: a 1s elapsed
 	// re-render is not new evidence about latency or estimate coverage.
