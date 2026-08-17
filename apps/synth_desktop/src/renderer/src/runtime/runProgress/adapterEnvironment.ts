@@ -22,6 +22,7 @@ import type {
 import type { AdapterInput } from "./adapterShared";
 import {
 	baseProjection,
+	evidenceOf,
 	lastDisruptionMs,
 	milestoneFromEvents,
 	rolloutCompletionTimes,
@@ -145,7 +146,9 @@ export function projectEnvironment(input: AdapterInput, projected: ProjectedStat
 	const failed = base.status === "failed";
 	const phases = environmentPhases(input.events, base.terminal, failed);
 	const active = phases.find((phase) => phase.status === "active");
-	const work = environmentWork(input.events, plan);
+	const rawWork = environmentWork(input.events, plan);
+	const workEvidence = evidenceOf(input, input.events.length, "step");
+	const work = workEvidence.state === "present" ? rawWork : { unit: rawWork.unit };
 	const determinate = work.total != null && work.total > 0 && work.completed != null;
 	const fraction = determinate ? Math.min(1, work.completed! / work.total!) : undefined;
 	const unit = work.unit === "episodes" ? "episode" : "step";
@@ -198,6 +201,7 @@ export function projectEnvironment(input: AdapterInput, projected: ProjectedStat
 		},
 		phases,
 		work,
+		evidence: workEvidence,
 		progress: {
 			...(fraction != null ? { fraction } : {}),
 			semantics: work.unit === "episodes" ? "episode completion" : "environment steps",

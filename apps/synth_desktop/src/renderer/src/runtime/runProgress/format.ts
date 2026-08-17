@@ -110,6 +110,20 @@ export function formatWorkBreakdown(projection: RunProgressProjection): string |
 	return parts.length > 0 ? parts.join(" · ") : null;
 }
 
+/**
+ * The line that replaces a count when nothing proves one.
+ *
+ * Returning words here rather than a number is the whole point: a campaign
+ * whose evidence is missing reads as "Progress unavailable", with the
+ * diagnostic that says where to look, and never as "0 trials".
+ */
+export function progressUnavailableLine(projection: RunProgressProjection): string | null {
+	if (projection.evidence.state === "present") return null;
+	if (projection.work.completed != null) return null;
+	const reason = projection.evidence.reason;
+	return reason ? `Progress unavailable — ${reason}` : "Progress unavailable";
+}
+
 /** The accessible value text for the progress bar, indeterminate included. */
 export function progressAriaText(projection: RunProgressProjection): string {
 	const progress = projection.progress;

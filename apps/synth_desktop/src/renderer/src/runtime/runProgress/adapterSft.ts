@@ -33,6 +33,7 @@ import type {
 import type { AdapterInput } from "./adapterShared";
 import {
 	baseProjection,
+	evidenceOf,
 	lastDisruptionMs,
 	milestoneFromEvents,
 	rolloutCompletionTimes,
@@ -324,7 +325,9 @@ export function projectSft(input: AdapterInput, projected: ProjectedState): RunP
 	const phases = sftPhases(sft, base.terminal, base.status === "failed", promoted);
 	const active = phases.find((phase) => phase.status === "active");
 	const phaseId = active?.id ?? (base.terminal ? "heldout" : "queue");
-	const work = sftWork(sft, phaseId);
+	const rawWork = sftWork(sft, phaseId);
+	const workEvidence = evidenceOf(input, input.events.length, "training");
+	const work = workEvidence.state === "present" ? rawWork : { unit: rawWork.unit };
 	const determinate = work.total != null && work.total > 0 && work.completed != null;
 	const fraction = determinate ? Math.min(1, work.completed! / work.total!) : undefined;
 
@@ -433,6 +436,7 @@ export function projectSft(input: AdapterInput, projected: ProjectedState): RunP
 		},
 		phases,
 		work,
+		evidence: workEvidence,
 		progress: {
 			...(fraction != null ? { fraction } : {}),
 			semantics: phaseId === "training"

@@ -17,6 +17,7 @@ import {
 	formatDurationMs,
 	formatWork,
 	formatWorkBreakdown,
+	progressUnavailableLine,
 	etaDisplayLine,
 	progressAriaText,
 	statusBadgeClass,
@@ -94,6 +95,7 @@ export function RunProgressCard({ runId, sessionRef, onOpenFullRun }: Props) {
 
 	const work = formatWork(projection);
 	const breakdown = formatWorkBreakdown(projection);
+	const unavailable = progressUnavailableLine(projection);
 	const eta = etaDisplayLine(projection.timing.eta, {
 		terminal: projection.terminal,
 		status: projection.status
@@ -132,6 +134,15 @@ export function RunProgressCard({ runId, sessionRef, onOpenFullRun }: Props) {
 
 			<div className="run-progress-metrics">
 				{work ? <span data-testid={`run-progress-work-${runId}`}>{work}</span> : null}
+				{unavailable ? (
+					<span
+						className="run-progress-faint"
+						data-testid={`run-progress-work-unavailable-${runId}`}
+						title={projection.evidence.diagnostic}
+					>
+						{unavailable}
+					</span>
+				) : null}
 				{breakdown ? <span className="run-progress-faint">{breakdown}</span> : null}
 				{projection.throughput ? (
 					<span className="run-progress-faint" data-testid={`run-progress-throughput-${runId}`}>

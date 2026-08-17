@@ -26,6 +26,7 @@ import type {
 import type { AdapterInput } from "./adapterShared";
 import {
 	baseProjection,
+	evidenceOf,
 	lastDisruptionMs,
 	milestoneFromEvents,
 	rolloutCompletionTimes,
@@ -187,7 +188,10 @@ export function projectGepa(input: AdapterInput, projected: ProjectedState): Run
 
 	const phases = gepaPhases(gepa);
 	const active = phases.find((phase) => phase.status === "active");
-	const work = gepaWork(gepa);
+	const rawWork = gepaWork(gepa);
+	const workEvidence = evidenceOf(input, gepa.rolloutsCompleted + gepa.limits.length, "rollout");
+	// A campaign that proved nothing reports nothing. `0 rollouts` is a claim.
+	const work = workEvidence.state === "present" ? rawWork : { unit: rawWork.unit };
 	const terminal = base.terminal;
 	const determinate = work.total != null && work.total > 0;
 	const fraction = determinate && work.completed != null
@@ -231,6 +235,7 @@ export function projectGepa(input: AdapterInput, projected: ProjectedState): Run
 		},
 		phases,
 		work,
+		evidence: workEvidence,
 		progress: {
 			...(fraction != null ? { fraction } : {}),
 			semantics: "rollout budget spent",

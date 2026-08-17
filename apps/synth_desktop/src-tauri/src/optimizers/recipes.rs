@@ -44,7 +44,11 @@ const MAX_COST_USD: f64 = 2.45;
 const PROPOSER_ESTIMATED_COST_USD: f64 = 0.05;
 const ROLLOUT_ESTIMATED_COST_USD: f64 = 0.01;
 const PROPOSER_TIMEOUT_SECONDS: i64 = 300;
-const PROPOSER_MESSAGE_STALL_TIMEOUT_SECONDS: i64 = 120;
+// Codex app-server can legitimately spend more than two minutes reasoning
+// before it emits the next user-visible message. Keep the silence bound finite,
+// but align it with the already-published proposer wall-clock bound so a
+// healthy XHigh proposal is not misclassified as a transport stall.
+const PROPOSER_MESSAGE_STALL_TIMEOUT_SECONDS: i64 = PROPOSER_TIMEOUT_SECONDS;
 const CRAFTAX_TRAIN_ROWS: usize = 1;
 const CRAFTAX_HELDOUT_ROWS: usize = 1;
 const CRAFTAX_MINIBATCH_SIZE: i64 = 1;
@@ -2498,7 +2502,7 @@ namespace = "base"
         assert!(text.contains("model = \"gpt-5.6-luna\""));
         assert!(text.contains("auth_mode = \"chatgpt\""));
         assert!(text.contains("timeout_seconds = 300"));
-        assert!(text.contains("message_stall_timeout_seconds = 120"));
+        assert!(text.contains("message_stall_timeout_seconds = 300"));
         assert!(!text.contains("api_key_env = \"OPENAI_API_KEY\""));
         assert!(text.contains("train_ids = ["));
         assert!(text.contains("\"train:0\""));
