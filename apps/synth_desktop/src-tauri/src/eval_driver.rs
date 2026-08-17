@@ -2285,6 +2285,7 @@ mod tests {
             presentation_summary: None,
             approval_policy: "never".into(),
             sandbox: "workspace-write".into(),
+            recovery: None,
         };
         let binding = eval_provider_binding(&record);
         assert_eq!(binding.provider, "openrouter");

@@ -7,7 +7,9 @@
  */
 
 import type {
+	ChatPresence,
 	ExecutionTarget,
+	RecoveryNotice,
 	RuntimeEvent,
 	Session,
 	SessionStatus
@@ -16,6 +18,20 @@ import type {
 export type SessionStoreState = {
 	sessions: Session[];
 	eventsBySession: Record<string, RuntimeEvent[]>;
+	/**
+	 * Turns this renderer has watched start and not yet watched end, keyed by
+	 * session. Deliberately *not* hydrated: persisted state can say a turn was
+	 * running, but only a turn observed starting in this process proves one is.
+	 * That distinction is the whole fix for phantom Working chats — see
+	 * {@link selectWorkingChatIds}.
+	 */
+	liveTurns: Record<string, string>;
+};
+
+export const EMPTY_SESSION_STORE_STATE: SessionStoreState = {
+	sessions: [],
+	eventsBySession: {},
+	liveTurns: {}
 };
 
 export type ApplyRuntimeEventOptions = {
@@ -35,6 +51,35 @@ const TERMINAL_RUN_KINDS = new Set([
 	"run.failed",
 	"run.cancelled"
 ]);
+
+/** Event kinds that end this renderer's claim on a turn. */
+const OWNERSHIP_ENDING_KINDS = new Set([
+	...TERMINAL_RUN_KINDS,
+	"run.interrupted",
+	"session/unhealthy",
+	"session/recovery_required"
+]);
+
+export const RECOVERY_EVENT_KIND = "session/recovery_required";
+
+function grantLiveTurn(
+	liveTurns: Record<string, string>,
+	sessionId: string,
+	turnId: string
+): Record<string, string> {
+	if (liveTurns[sessionId] === turnId) return liveTurns;
+	return { ...liveTurns, [sessionId]: turnId };
+}
+
+function revokeLiveTurn(
+	liveTurns: Record<string, string>,
+	sessionId: string
+): Record<string, string> {
+	if (!(sessionId in liveTurns)) return liveTurns;
+	const next = { ...liveTurns };
+	delete next[sessionId];
+	return next;
+}
 
 function runIdentity(event: RuntimeEvent): string | undefined {
 	const payload = event.payload ?? {};
@@ -204,14 +249,50 @@ export function applyRuntimeEvent(
 		};
 	});
 
-	if (!eventsChanged && nextSessions === state.sessions) return state;
+	// Ownership follows the live stream, never the persisted status. A fenced
+	// run.started is a late echo of a turn already written off, so it grants
+	// nothing.
+	const nextLiveTurns =
+		event.eventKind === "run.started" && !options.fenced
+			? grantLiveTurn(
+					state.liveTurns,
+					event.sessionId,
+					runIdentity(event) ?? event.sessionId
+				)
+			: OWNERSHIP_ENDING_KINDS.has(event.eventKind)
+				? revokeLiveTurn(state.liveTurns, event.sessionId)
+				: state.liveTurns;
+
+	if (
+		!eventsChanged &&
+		nextSessions === state.sessions &&
+		nextLiveTurns === state.liveTurns
+	) {
+		return state;
+	}
 
 	return {
 		sessions: nextSessions,
 		eventsBySession: eventsChanged
 			? { ...state.eventsBySession, [event.sessionId]: nextEvents }
-			: state.eventsBySession
+			: state.eventsBySession,
+		liveTurns: nextLiveTurns
 	};
+}
+
+/**
+ * Drop claims for sessions this renderer no longer holds a live turn for.
+ * Called whenever the session list is replaced (boot, refresh, archive), so a
+ * claim can never outlive the chat it belonged to.
+ */
+export function pruneLiveTurns(
+	liveTurns: Record<string, string>,
+	sessions: Session[]
+): Record<string, string> {
+	const known = new Set(sessions.map((session) => session.id));
+	const entries = Object.entries(liveTurns).filter(([sessionId]) => known.has(sessionId));
+	if (entries.length === Object.keys(liveTurns).length) return liveTurns;
+	return Object.fromEntries(entries);
 }
 
 /**
@@ -233,8 +314,10 @@ export function applyLocalSessionStatus(
 			updatedAt: options.updatedAt ?? new Date().toISOString()
 		};
 	});
-	if (nextSessions === state.sessions) return state;
-	return { ...state, sessions: nextSessions };
+	const nextLiveTurns =
+		status === "running" ? state.liveTurns : revokeLiveTurn(state.liveTurns, sessionId);
+	if (nextSessions === state.sessions && nextLiveTurns === state.liveTurns) return state;
+	return { ...state, sessions: nextSessions, liveTurns: nextLiveTurns };
 }
 
 /**
@@ -250,14 +333,44 @@ export function applyTurnAccepted(
 		: false;
 	const nextSessions = patchSession(state.sessions, sessionId, (session) => ({
 		...session,
+		// A new attempt supersedes whatever the crashed one left behind.
+		metadata: clearRecoveryMetadata(session.metadata, patch.turnId && !terminalAlreadyApplied),
 		target: patch.target,
 		status: patch.turnId && !terminalAlreadyApplied ? "running" : session.status,
 		updatedAt: terminalAlreadyApplied
 			? session.updatedAt
 			: patch.updatedAt ?? new Date().toISOString()
 	}));
-	if (nextSessions === state.sessions) return state;
-	return { ...state, sessions: nextSessions };
+	// Acceptance is the renderer's proof of ownership: the host answered with a
+	// real turn id, from a run it just claimed for the current instance.
+	const nextLiveTurns =
+		patch.turnId && !terminalAlreadyApplied
+			? grantLiveTurn(state.liveTurns, sessionId, patch.turnId)
+			: revokeLiveTurn(state.liveTurns, sessionId);
+	if (nextSessions === state.sessions && nextLiveTurns === state.liveTurns) return state;
+	return { ...state, sessions: nextSessions, liveTurns: nextLiveTurns };
+}
+
+function clearRecoveryMetadata(
+	metadata: Record<string, unknown>,
+	clear: unknown
+): Record<string, unknown> {
+	if (!clear || !("recovery" in metadata)) return metadata;
+	const next = { ...metadata };
+	delete next.recovery;
+	return next;
+}
+
+/** The durable recovery notice a crashed turn left on this session, if any. */
+export function sessionRecoveryNotice(
+	session: Session | undefined | null
+): RecoveryNotice | null {
+	const value = session?.metadata?.recovery;
+	if (!value || typeof value !== "object") return null;
+	const notice = value as Partial<RecoveryNotice>;
+	return typeof notice.sessionId === "string" && typeof notice.reason === "string"
+		? (notice as RecoveryNotice)
+		: null;
 }
 
 /**
@@ -269,7 +382,8 @@ export function applyTurnAccepted(
  */
 export function selectSessionRunning(
 	session: Session | undefined,
-	events: RuntimeEvent[]
+	events: RuntimeEvent[],
+	liveTurns: Record<string, string> = {}
 ): boolean {
 	const latestRunEvent = [...events]
 		.reverse()
@@ -283,14 +397,60 @@ export function selectSessionRunning(
 		);
 		if (session?.status !== "running" || !hasNewerUserTurn) return false;
 	}
-	if (session) return session.status === "running";
+	// Stop is an instruction to a live worker. Offering it for a turn nobody
+	// owns produces a button that cannot do anything.
+	if (session) return session.status === "running" && session.id in liveTurns;
 	return latestRunEvent?.eventKind === "run.started";
 }
 
-export function selectWorkingChatIds(sessions: Session[]): Set<string> {
+/**
+ * Chats that may show the Working indicator.
+ *
+ * `status === "running"` is necessary but never sufficient. A crashed process
+ * leaves that status behind on disk, and trusting it is what made five dead
+ * chats spin forever with Archive disabled. A live turn owned by *this*
+ * instance is the second, non-negotiable half.
+ */
+export function selectWorkingChatIds(
+	sessions: Session[],
+	liveTurns: Record<string, string>
+): Set<string> {
 	return new Set(
 		sessions
-			.filter((session) => session.target.kind !== "intern" && session.status === "running")
+			.filter(
+				(session) =>
+					session.target.kind !== "intern" &&
+					session.status === "running" &&
+					session.id in liveTurns
+			)
 			.map((session) => session.id)
 	);
+}
+
+/**
+ * What one chat is actually doing, for anything that renders a state.
+ *
+ * Ordered by how much it constrains what the user may do: an unknown external
+ * settlement outranks everything, because acting on it can duplicate paid work.
+ */
+export function selectChatPresence(
+	session: Session | undefined | null,
+	liveTurns: Record<string, string>
+): ChatPresence {
+	if (!session) return "idle";
+	const notice = sessionRecoveryNotice(session);
+	if (notice?.needsAttention) return "needsAttention";
+	const live = session.id in liveTurns;
+	if (session.status === "running") {
+		// Persisted running with no live owner is a chat waiting to be told what
+		// happened to it — never a chat that is working.
+		return live ? "working" : "recovering";
+	}
+	if (notice) return "interrupted";
+	return "idle";
+}
+
+/** Whether a chat's controls (Archive, Delete) should be locked. */
+export function selectChatBusy(presence: ChatPresence): boolean {
+	return presence === "working" || presence === "starting";
 }

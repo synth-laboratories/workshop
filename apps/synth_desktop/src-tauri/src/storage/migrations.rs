@@ -22,6 +22,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_17,
     MIGRATION_18,
     MIGRATION_19,
+    MIGRATION_20,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1149,6 +1150,60 @@ WHERE kind = 'diagnostic.event';
 CREATE INDEX IF NOT EXISTS events_diagnostics_trace
 ON events(json_extract(payload_json, '$.trace_id'), sequence DESC)
 WHERE kind = 'diagnostic.event';
+"#;
+
+/// Crash-recovery ownership.
+///
+/// `runs` stays an immutable historical record, so live ownership of the one
+/// active turn gets its own row instead of more mutable columns there. A
+/// `running` run is only live while a row here names the current boot epoch
+/// and its lease has not expired; everything else is history that must be
+/// reconciled before any client can read it as present tense.
+///
+/// `action_receipts` is what makes automatic restart decidable. Replaying a
+/// turn is safe only while nothing consequential left the process; a receipt
+/// records that it did, which external object it produced, and whether the
+/// outcome ever settled.
+const MIGRATION_20: &str = r#"
+CREATE TABLE IF NOT EXISTS turn_ownership (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL,
+    owner_instance_id TEXT NOT NULL,
+    owner_attachment_id TEXT,
+    claimed_at TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL,
+    recovery_attempt INTEGER NOT NULL DEFAULT 0,
+    last_checkpoint_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS turn_ownership_owner
+ON turn_ownership(owner_instance_id);
+
+CREATE INDEX IF NOT EXISTS turn_ownership_lease
+ON turn_ownership(lease_expires_at);
+
+CREATE TABLE IF NOT EXISTS action_receipts (
+    tool_call_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    run_id TEXT,
+    idempotency_key TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    external_object_id TEXT,
+    request_digest TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    settled_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS action_receipts_idempotency
+ON action_receipts(idempotency_key);
+
+CREATE INDEX IF NOT EXISTS action_receipts_session
+ON action_receipts(session_id, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS action_receipts_run
+ON action_receipts(run_id);
 "#;
 
 #[cfg(test)]

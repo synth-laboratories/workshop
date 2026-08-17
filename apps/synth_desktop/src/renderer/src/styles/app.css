@@ -910,7 +910,8 @@ a,
 }
 
 .chat-working-indicator,
-.chat-unread-indicator {
+.chat-unread-indicator,
+.chat-stalled-indicator {
 	width: 10px;
 	height: 10px;
 	margin-left: auto;
@@ -934,13 +935,28 @@ a,
 	white-space: nowrap;
 }
 
-.chat-unread-indicator {
+.chat-unread-indicator,
+.chat-stalled-indicator {
 	width: 8px;
 	height: 8px;
 	flex-basis: 8px;
 	border-radius: 50%;
 	background: var(--color-accent);
 	box-shadow: 0 0 0 2px rgba(240, 95, 34, 0.1);
+}
+
+/* A chat whose owner died. Hollow, so it reads as "stopped" beside the solid
+   unread dot and the spinning Working ring rather than as a third kind of
+   activity. Shape is inherited from the dot above; only the fill differs. */
+.chat-stalled-indicator {
+	background: transparent;
+	border: 1.5px solid var(--color-text-faint);
+	box-shadow: none;
+}
+
+.chat-stalled-indicator.attention {
+	background: var(--color-danger-text);
+	border-color: var(--color-danger-text);
 }
 
 @keyframes chat-working-spin {
