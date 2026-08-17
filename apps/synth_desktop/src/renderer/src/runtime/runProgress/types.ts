@@ -30,7 +30,9 @@ export type RunProgressStatus =
 	| "interrupted"
 	| "completed"
 	| "failed"
-	| "cancelled";
+	| "cancelled"
+	/** Terminal: the compute settled but its evidence did not. */
+	| "degraded";
 
 export type RunProgressPhaseStatus = "pending" | "active" | "completed" | "skipped" | "failed";
 
@@ -139,6 +141,22 @@ export type RunProgressDetail = {
  * The terminal headline. `absent` is a first-class outcome: a run can finish
  * without having measured anything worth promoting, and saying so is correct.
  */
+/**
+ * Whether the durable projection can answer "how much work happened".
+ *
+ * `unavailable` is a real state and must render as words. A campaign that
+ * finished ten of ten rollouts and lost its event history is not a campaign
+ * that ran zero trials, and a card that prints "0 trials" for it is asserting
+ * something no evidence supports.
+ */
+export type RunProgressEvidence = {
+	state: "present" | "unavailable" | "degraded";
+	/** One line the user can act on. Present whenever state is not `present`. */
+	reason?: string;
+	/** Where to look: cursor, missing event types, sealed manifest. */
+	diagnostic?: string;
+};
+
 export type RunProgressResult = {
 	headline?: string;
 	detail?: string;
@@ -157,6 +175,12 @@ export type RunProgressProjection = {
 	/** The whole timeline, for the dialog. Always includes `phase`. */
 	phases: RunProgressPhase[];
 	work: RunProgressWork;
+	/**
+	 * Whether `work` and `progress` rest on durable evidence. Surfaces must
+	 * check this before rendering a count: absent evidence is shown as
+	 * "Progress unavailable", never as zero.
+	 */
+	evidence: RunProgressEvidence;
 	progress?: RunProgressBar;
 	timing: {
 		startedAt?: string;
@@ -228,7 +252,10 @@ const TERMINAL_STATUSES = new Set([
 	"failed",
 	"terminated",
 	"cancelled",
-	"canceled"
+	"canceled",
+	// A run whose evidence lane failed is finished, not still working. Leaving
+	// it live would spin a card forever over compute that already stopped.
+	"degraded"
 ]);
 
 export function isTerminalRunStatus(status: string | null | undefined): boolean {
@@ -245,6 +272,7 @@ export function normalizeRunStatus(status: string | null | undefined): RunProgre
 	if (value === "failed" || value === "terminated") return "failed";
 	if (value === "cancelled" || value === "canceled") return "cancelled";
 	if (value === "completed" || value === "succeeded") return "completed";
+	if (value === "degraded" || value === "failed_evidence") return "degraded";
 	if (value === "paused") return "paused";
 	if (value === "interrupted" || value === "disconnected" || value === "stalled") return "interrupted";
 	if (value === "queued" || value === "created" || value === "pending" || value === "prepared") {
