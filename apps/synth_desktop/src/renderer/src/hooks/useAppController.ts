@@ -893,7 +893,10 @@ export function useAppController() {
 			[sessionId]: { state: "loading", hasMore: false }
 		}));
 		responseTraceStore.setLoading(sessionId);
-		void core.sessionEventsTail(sessionId, TRANSCRIPT_INITIAL_PAGE_SIZE + 1).then((fetched) => {
+		void Promise.all([
+			core.sessionEventsTail(sessionId, TRANSCRIPT_INITIAL_PAGE_SIZE + 1),
+			bridges.visuals?.list({ sessionId, limit: 500 }) ?? Promise.resolve([])
+		]).then(([fetched, ownedVisuals]) => {
 			// Hydration belongs to the session cache, not to the currently mounted
 			// chat view. Navigation, target attachment and StrictMode effect replay
 			// must not throw away a completed journal read. A generation changes only
@@ -904,7 +907,34 @@ export function useAppController() {
 			const hydrated = rows
 				.map(targetKind === "intern" ? appEventToRuntimeEvent : coreEventToRuntime)
 				.filter((event): event is RuntimeEvent => event !== null);
-			mergeSessionReplay([[sessionId, hydrated]]);
+			// Transcript hydration is intentionally bounded, but an optimizer can
+			// create its visual early and then emit hundreds of token deltas. Restore
+			// durable chat outputs from the visual registry as a separate authority so
+			// an old visual cannot fall out of the Outputs shelf merely because it is
+			// outside the transcript tail.
+			const visualOutputs: RuntimeEvent[] = ownedVisuals
+				.filter((visual) => visual.sessionId === sessionId)
+				.map((visual, index) => ({
+				schemaVersion: "synth.desktop-runtime-event.v1",
+				sessionId,
+				runId: visual.runId ?? null,
+				sequence: -(index + 1),
+				eventKind: "visual.created",
+				payload: {
+					visualId: visual.id,
+					ownerSessionId: visual.sessionId ?? sessionId,
+					title: visual.title,
+					templateId: visual.templateId,
+					bindings: visual.bindings,
+					metadata: visual.metadata,
+					status: visual.status,
+					revision: visual.currentRevision,
+					messageId: visual.messageId ?? undefined
+				},
+				createdAt: visual.createdAt,
+				source: "local"
+			}));
+			mergeSessionReplay([[sessionId, [...visualOutputs, ...hydrated]]]);
 			const hydratedHead = hydrated.at(-1)?.sequence ?? 0;
 			nativeSequencesRef.current.set(sessionId, Math.max(
 				nativeSequencesRef.current.get(sessionId) ?? 0,

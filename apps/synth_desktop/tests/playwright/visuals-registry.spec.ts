@@ -211,7 +211,7 @@ test("an optimizer visual event appears immediately in its chat Outputs shelf", 
 		};
 		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
 			listTemplates: async () => [],
-			list: async () => [visual],
+			list: async () => [],
 			get: async () => visual,
 			revisions: async () => [],
 			onEvent: (next: (event: Record<string, unknown>) => void, attached?: () => void) => {
@@ -247,6 +247,52 @@ test("an optimizer visual event appears immediately in its chat Outputs shelf", 
 	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
 	await transcript.getByTestId("resource-shelf-trigger").click();
 	await expect(page.getByTestId("visuals-icon-vis_optimizer_output")).toContainText("HealthBench live eval");
+});
+
+test("a durable optimizer visual restores to its chat Outputs shelf outside the transcript tail", async ({ page }) => {
+	await page.addInitScript((base) => {
+		const sessionId = "restored-visual-output-session";
+		const visual = { ...base, id: "vis_restored_optimizer_output", title: "Restored HealthBench eval", sessionId };
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "thread-restored-output", workspace: "/workspaces/default",
+				model: "gpt-5.6-luna", providerName: "openai", providerTitle: "OpenAI",
+				baseUrl: "https://api.openai.com/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId, threadId: "thread-restored-output" }),
+			startTurn: async () => ({ sessionId, threadId: "thread-restored-output", turnId: "turn-restored-output" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		(window as typeof window & { synthCore?: unknown }).synthCore = {
+			sessionEventsTail: async () => Array.from({ length: 250 }, (_, index) => ({
+				schemaVersion: "synth.desktop-app-event.v1",
+				eventId: `evt-tail-${index}`,
+				sequence: index + 500,
+				sessionSequence: index + 500,
+				sessionId,
+				source: "codex",
+				kind: "item/agentMessage/delta",
+				payload: { delta: "x" },
+				createdAt: "2026-08-17T20:00:00Z"
+			}))
+		};
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [],
+			list: async (query: { sessionId?: string }) => query.sessionId === sessionId ? [visual] : [],
+			get: async () => visual,
+			revisions: async () => [],
+			onEvent: () => () => undefined
+		};
+	}, sampleVisual);
+	await page.reload();
+	await page.getByTestId("local-chat-restored-visual-output-session").click();
+	const transcript = page.getByTestId("chat-transcript");
+	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
+	await transcript.getByTestId("resource-shelf-trigger").click();
+	await expect(page.getByTestId("visuals-icon-vis_restored_optimizer_output")).toContainText("Restored HealthBench eval");
 });
 
 test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears when stacked", async ({ page }) => {
