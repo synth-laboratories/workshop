@@ -1,6 +1,6 @@
 //! Durable SQLite + content-addressed storage for the Rust CoreRuntime.
 
-mod content_store;
+pub mod content_store;
 mod database;
 mod event_journal;
 #[path = "../migration/mod.rs"]
