@@ -375,6 +375,14 @@ impl SessionPersistence {
         // keep — interrupting it is neither possible nor wanted, and treating
         // the refused edge as an error would reject the caller's new turn over
         // a pointer that is already gone.
+        //
+        // Pre-checking is not enough on its own. A fast app-server can settle
+        // the previous run in the window between the check and the transition,
+        // and the refusal then surfaced as `codex_turn_start_failed: invalid run
+        // transition: completed -> interrupted` — a new turn rejected because
+        // the old one succeeded. So the settled case is absorbed on both sides:
+        // once before doing the work, and once when the transition itself says
+        // the run has already ended.
         if core
             .runs()
             .get(run_id.clone())
@@ -384,15 +392,34 @@ impl SessionPersistence {
         {
             return Ok(None);
         }
-        let mutation = core
+        let mutation = match core
             .runs()
             .transition(
-                run_id,
+                run_id.clone(),
                 RunStatus::Interrupted,
                 Some(serde_json::json!({ "reason": reason })),
                 EventSource::Codex,
             )
-            .await?;
+            .await
+        {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                let settled = core
+                    .runs()
+                    .get(run_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|run| RunStatus::parse(&run.status).ok())
+                    .is_some_and(RunStatus::terminal);
+                if settled {
+                    // The run finished on its own. Nothing to interrupt, and the
+                    // caller's turn is not at fault.
+                    return Ok(None);
+                }
+                return Err(error);
+            }
+        };
         Ok(mutation.event)
     }
 
@@ -496,5 +523,82 @@ fn ephemeral_app_event(
         remote_sequence: None,
         command_id: None,
         created_at: Utc::now().to_rfc3339(),
+    }
+}
+
+#[cfg(test)]
+mod interrupt_tests {
+    use super::*;
+    use crate::domain::{RunCreate, RunStatus, RuntimeTarget, SessionCreate, SessionKind, SessionStatus};
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    /// A new turn must not be refused because the previous one already finished.
+    ///
+    /// `send_turn` reconciles the session's active run before starting, and the
+    /// run/session pointers settle independently. When the previous run reached
+    /// `completed` first, the interrupt is not just impossible — it is not
+    /// wanted, and surfacing its refusal aborted the caller's turn with
+    /// `codex_turn_start_failed: invalid run transition: completed -> interrupted`.
+    /// That was a live race, and the reason the codex suite failed roughly two
+    /// runs in three under full-suite load.
+    #[tokio::test]
+    async fn interrupting_an_already_settled_run_is_a_no_op_not_a_failure() {
+        let dir = tempdir().unwrap();
+        let core = Arc::new(CoreRuntime::open(dir.path().join("core")).unwrap());
+        let persistence = SessionPersistence::from_core(Some(core.clone()));
+
+        core.sessions()
+            .create_or_update(SessionCreate {
+                id: "sess_settled".into(),
+                title: "settled".into(),
+                kind: SessionKind::Codex,
+                target: RuntimeTarget::from_codex_provider("openrouter", "gpt-5.6-luna"),
+                project_id: None,
+                remote_id: None,
+                codex_thread_id: Some("thread_settled".into()),
+                status: SessionStatus::Ready,
+                state_generation: None,
+                metadata: json!({}),
+                source: EventSource::Codex,
+            })
+            .await
+            .unwrap();
+        core.runs()
+            .start(RunCreate {
+                id: "run_settled".into(),
+                session_id: "sess_settled".into(),
+                mode: "codex_turn".into(),
+                model: Some("gpt-5.6-luna".into()),
+                adapter: None,
+                metadata: json!({}),
+                source: EventSource::Codex,
+            })
+            .await
+            .unwrap();
+        core.runs()
+            .transition(
+                "run_settled".into(),
+                RunStatus::Completed,
+                None,
+                EventSource::Codex,
+            )
+            .await
+            .unwrap();
+
+        let event = persistence
+            .interrupt_active_run("sess_settled", "desktop_reattached")
+            .await
+            .expect("a settled run must not fail the caller's next turn");
+        assert!(event.is_none(), "nothing was interrupted, so nothing is announced");
+        assert_eq!(
+            core.runs()
+                .get("run_settled".into())
+                .await
+                .unwrap()
+                .map(|run| run.status),
+            Some("completed".into()),
+            "the run's own authoritative outcome is preserved"
+        );
     }
 }

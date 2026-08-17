@@ -59,7 +59,33 @@ pub fn apply_migrations(conn: &Connection) -> Result<i64> {
     if version >= 12 {
         fold_rollback_usage_rows(conn)?;
     }
+    heal_missing_tables(conn)?;
     Ok(version)
+}
+
+/// Tables this build cannot run without, keyed to the DDL that creates them.
+///
+/// A version number is a promise about *this* lineage. Several v0.5 lanes were
+/// developed in parallel and each numbered its own migration 23, so an install
+/// that reached version 23 on another lane's DDL would skip this lane's table
+/// forever — `apply_migrations` only runs versions above the recorded maximum.
+/// The DDL is `CREATE TABLE IF NOT EXISTS`, so re-running it costs nothing and
+/// closes that hole regardless of which lane merged first.
+const REQUIRED_TABLES: &[(&str, &str)] = &[("optimizer_terminal_manifests", MIGRATION_23)];
+
+fn heal_missing_tables(conn: &Connection) -> Result<()> {
+    for (table, ddl) in REQUIRED_TABLES {
+        let present: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [table],
+            |row| row.get(0),
+        )?;
+        if !present {
+            conn.execute_batch(ddl)
+                .with_context(|| format!("heal missing table {table}"))?;
+        }
+    }
+    Ok(())
 }
 
 /// Migration 11 keeps an empty legacy table as a rollback write buffer. A v10
@@ -1420,6 +1446,74 @@ mod tests {
     const LATEST_VERSION: i64 = super::MIGRATIONS.len() as i64;
 
     use super::*;
+
+    /// Every `MIGRATION_N` constant is registered exactly once, and the registry
+    /// is contiguous from 1.
+    ///
+    /// This reads its own source because the hazard is textual: two branches
+    /// that each add a migration produce two identical `MIGRATION_N,` registry
+    /// lines, and a merge collapses them into one — dropping a migration whose
+    /// constant is still defined and still compiles. `MIGRATIONS.len()` cannot
+    /// notice, because it shrinks with the registry.
+    #[test]
+    fn every_defined_migration_is_registered_exactly_once() {
+        let source = include_str!("migrations.rs");
+        let mut defined: Vec<usize> = source
+            .lines()
+            .filter_map(|line| line.strip_prefix("const MIGRATION_"))
+            .filter_map(|rest| rest.split(':').next())
+            .filter_map(|digits| digits.parse().ok())
+            .collect();
+        let mut registered: Vec<usize> = source
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| line.strip_prefix("MIGRATION_"))
+            .filter_map(|rest| rest.strip_suffix(','))
+            .filter_map(|digits| digits.parse().ok())
+            .collect();
+        defined.sort_unstable();
+        registered.sort_unstable();
+        assert!(!defined.is_empty(), "no migrations were parsed from source");
+        assert_eq!(
+            defined, registered,
+            "every defined migration must appear in the registry exactly once"
+        );
+        assert_eq!(
+            registered,
+            (1..=registered.len()).collect::<Vec<_>>(),
+            "the registry must be contiguous from 1 with no gaps or duplicates"
+        );
+        assert_eq!(MIGRATIONS.len(), registered.len());
+    }
+
+    /// A database that already recorded this version number under a different
+    /// lane's DDL still ends up with the tables this build requires.
+    #[test]
+    fn a_version_collision_from_another_lane_still_heals_required_tables() {
+        let conn = seed_at_version(MIGRATIONS.len() - 1);
+        // Another lane's migration 23 landed here: the version is consumed, but
+        // this lane's table was never created.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS experiment_groups (id TEXT PRIMARY KEY);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, datetime('now'))",
+            [MIGRATIONS.len() as i64],
+        )
+        .unwrap();
+        assert_eq!(apply_migrations(&conn).unwrap(), MIGRATIONS.len() as i64);
+        for (table, _) in REQUIRED_TABLES {
+            let present: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(present, "{table} must exist even when its version was consumed elsewhere");
+        }
+    }
 
     /// A database stamped `version` with migrations 1..=version applied, as a
     /// real installation of that era would have shipped it.

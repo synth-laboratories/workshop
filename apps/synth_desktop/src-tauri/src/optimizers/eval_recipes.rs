@@ -645,8 +645,11 @@ async fn run_worker(
                         stderr_path.display()
                     );
                 }
-                append_terminal(&service, &run_id, "completed", "eval worker finished".into())
-                    .await?;
+                // A clean worker exit is not a successful campaign. The status
+                // comes from what the durable log proves, not from the child's
+                // return code.
+                let (status, detail) = settled_status(&service, &run_id).await?;
+                append_terminal(&service, &run_id, status, detail).await?;
                 return Ok(());
             }
             changed = cancel.changed() => {
@@ -1124,6 +1127,62 @@ async fn append_status(
         )
         .await?;
     Ok(())
+}
+
+/// Decide how a campaign that ran to completion actually ended.
+///
+/// A worker that exits 0 has finished its job; it has not necessarily produced
+/// a result. The packaged Craftax smoke exited cleanly having recorded
+/// "4 of 4 trials did not produce valid evidence" and still settled `completed`,
+/// so the selection verdict and the run status disagreed about the same run.
+///
+/// Some trials failing is normal in a screening matrix and stays `completed`.
+/// *No* valid evidence at all, or a producer selection that names its own
+/// evidence invalid, is not a success.
+async fn settled_status(
+    service: &OptimizerService,
+    run_id: &str,
+) -> Result<(&'static str, String)> {
+    let run = service.get(run_id.to_string()).await?;
+    let events = service.events_after(run_id.to_string(), 0, Some(2_000)).await?;
+    let verdict = events
+        .iter()
+        .rev()
+        .find_map(|event| {
+            let selection = event.snapshot.as_ref()?.get("selection")?;
+            let status = selection
+                .get("status")
+                .or_else(|| selection.get("selection_status"))
+                .and_then(Value::as_str)?;
+            Some((
+                status.to_string(),
+                selection
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            ))
+        });
+    if let Some((status, reason)) = &verdict {
+        if matches!(status.as_str(), "invalid_evidence" | "failed" | "aborted") {
+            let reason = if reason.is_empty() {
+                format!("the campaign selection settled {status}")
+            } else {
+                reason.clone()
+            };
+            return Ok(("failed", reason));
+        }
+    }
+    let counts = super::terminal::work_counts(&run, &events);
+    if let (Some(planned), Some(succeeded)) = (counts.planned, counts.succeeded) {
+        if planned > 0 && succeeded == 0 {
+            return Ok((
+                "failed",
+                format!("none of {planned} planned trials produced valid evidence"),
+            ));
+        }
+    }
+    Ok(("completed", "eval worker finished".into()))
 }
 
 async fn append_terminal(
