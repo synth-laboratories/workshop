@@ -1252,6 +1252,113 @@ fn tail_text(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::optimizers::events::OptimizerEventDraft;
+    use crate::optimizers::models::OptimizerCapabilities;
+    use crate::optimizers::service::tests::service;
+
+    async fn probe_run(svc: &OptimizerService, id: &str) {
+        svc.create(OptimizerCreateRequest {
+            algorithm_id: EVAL_ALGORITHM_ID.into(),
+            algorithm_version: Some("1".into()),
+            objective: Some("settlement probe".into()),
+            source: Some("local".into()),
+            project_ref: None,
+            session_ref: Some("chat_settle".into()),
+            id: Some(id.into()),
+            execution_bindings: None,
+            input_refs: None,
+            capabilities: Some(OptimizerCapabilities::for_algorithm(EVAL_ALGORITHM_ID)),
+            summary: Some(json!({ "recipeId": "eval.probe.v1" })),
+            open_visual: Some(false),
+            seed_fixture: None,
+            cloud_config: None,
+            local_path: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    fn selection(status: &str, reason: &str) -> OptimizerEventDraft {
+        OptimizerEventDraft::new("eval.selection.completed", EVAL_ALGORITHM_ID).snapshot(
+            Map::from_iter([(
+                "selection".into(),
+                json!({ "status": status, "reason": reason, "winner_id": null }),
+            )]),
+        )
+    }
+
+    /// The packaged Craftax smoke exited 0 having recorded that every trial
+    /// failed, and settled `completed`. A selection that names its own evidence
+    /// invalid is not a successful campaign.
+    #[tokio::test]
+    async fn an_invalid_evidence_selection_does_not_settle_completed() {
+        let (svc, _dir, _) = service().await;
+        probe_run(&svc, "opt_eval_invalid").await;
+        svc.append_event_payloads(
+            "opt_eval_invalid".into(),
+            vec![
+                OptimizerEventDraft::new("optimizer.run.started", EVAL_ALGORITHM_ID),
+                selection(
+                    "invalid_evidence",
+                    "4 of 4 trials did not produce valid evidence",
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+        let (status, detail) = settled_status(&svc, "opt_eval_invalid").await.unwrap();
+        assert_eq!(status, "failed");
+        assert!(detail.contains("did not produce valid evidence"), "{detail}");
+    }
+
+    /// Trials failing inside a screening matrix is ordinary. Only a campaign
+    /// that produced nothing valid is a failure.
+    #[tokio::test]
+    async fn a_partially_failed_matrix_with_a_real_verdict_still_completes() {
+        let (svc, _dir, _) = service().await;
+        probe_run(&svc, "opt_eval_partial").await;
+        svc.append_event_payloads(
+            "opt_eval_partial".into(),
+            vec![
+                OptimizerEventDraft::new("optimizer.run.started", EVAL_ALGORITHM_ID),
+                OptimizerEventDraft::new("eval.run.planned", EVAL_ALGORITHM_ID)
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(4))])),
+                OptimizerEventDraft::new("eval.trial.terminal", EVAL_ALGORITHM_ID)
+                    .item(json!({ "id": "t1", "valid": true })),
+                OptimizerEventDraft::new("eval.trial.terminal", EVAL_ALGORITHM_ID)
+                    .item(json!({ "id": "t2", "valid": false })),
+                selection("promoted", "candidate beat the baseline"),
+            ],
+        )
+        .await
+        .unwrap();
+        let (status, _) = settled_status(&svc, "opt_eval_partial").await.unwrap();
+        assert_eq!(status, "completed");
+    }
+
+    /// No selection event at all, and nothing valid: still not a success.
+    #[tokio::test]
+    async fn a_campaign_with_no_valid_trials_is_not_completed() {
+        let (svc, _dir, _) = service().await;
+        probe_run(&svc, "opt_eval_none").await;
+        svc.append_event_payloads(
+            "opt_eval_none".into(),
+            vec![
+                OptimizerEventDraft::new("optimizer.run.started", EVAL_ALGORITHM_ID),
+                OptimizerEventDraft::new("eval.run.planned", EVAL_ALGORITHM_ID)
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(2))])),
+                OptimizerEventDraft::new("eval.trial.terminal", EVAL_ALGORITHM_ID)
+                    .item(json!({ "id": "t1", "valid": false })),
+                OptimizerEventDraft::new("eval.trial.terminal", EVAL_ALGORITHM_ID)
+                    .item(json!({ "id": "t2", "valid": false })),
+            ],
+        )
+        .await
+        .unwrap();
+        let (status, detail) = settled_status(&svc, "opt_eval_none").await.unwrap();
+        assert_eq!(status, "failed");
+        assert!(detail.contains("none of 2"), "{detail}");
+    }
     use crate::optimizers::models::OptimizerCreateRequest;
 
     #[test]

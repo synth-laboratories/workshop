@@ -143,10 +143,7 @@ pub(super) async fn start(
     let proposer = ProposerProfile::for_recipe(&recipe_id)?;
     let cookbook = banking77_cookbook_root()?;
     let run_id = recipe_run_id(proposer);
-    let runs_root = cookbook
-        .parent()
-        .ok_or_else(|| anyhow!("invalid Banking77 cookbook path"))?
-        .join("runs");
+    let runs_root = gepa_runs_root()?;
     let run_dir = runs_root.join(&run_id);
     fs::create_dir_all(&run_dir).context("create Banking77 GEPA run directory")?;
     let port = reserve_loopback_port()?;
@@ -438,10 +435,7 @@ async fn materialize_prepared_run(
     let proposer = ProposerProfile::for_recipe(&recipe_id)?;
     let cookbook = banking77_cookbook_root()?;
     let run_id = recipe_run_id(proposer);
-    let runs_root = cookbook
-        .parent()
-        .ok_or_else(|| anyhow!("invalid Banking77 cookbook path"))?
-        .join("runs");
+    let runs_root = gepa_runs_root()?;
     let run_dir = runs_root.join(&run_id);
     fs::create_dir_all(&run_dir).context("create Banking77 GEPA run directory")?;
     let port = reserve_loopback_port()?;
@@ -567,10 +561,7 @@ async fn materialize_craftax_prepared_run(
     let cookbook = craftax_cookbook_root()?;
     let run_suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("craftax_gepa_luna_med_{}", &run_suffix[..8]);
-    let runs_root = cookbook
-        .parent()
-        .ok_or_else(|| anyhow!("invalid Craftax cookbook path"))?
-        .join("runs");
+    let runs_root = gepa_runs_root()?;
     let run_dir = runs_root.join(&run_id);
     fs::create_dir_all(&run_dir).context("create Craftax GEPA run directory")?;
     let port = reserve_loopback_port()?;
@@ -1731,6 +1722,25 @@ impl CookbookKind {
             }
         }
     }
+}
+
+/// Where a GEPA recipe keeps its run workspace.
+///
+/// Deliberately *not* beside the cookbook. Packaged builds ship the cookbooks
+/// inside `Synth Desktop.app/Contents/Resources`, so deriving the runs root
+/// from the cookbook put every run directory — configs, proposer transcripts,
+/// `best_candidate.json`, the result manifest `get_result` reads — inside the
+/// application bundle. A rebuild or an update deletes them (observed: a 19:47
+/// rebuild erased four completed runs' evidence), and a signed, quarantined
+/// install cannot write there at all. Evidence lives in the instance's own
+/// writable data root, which survives both.
+fn gepa_runs_root() -> Result<PathBuf> {
+    let root = crate::instance::data_root()
+        .join("optimizers")
+        .join("gepa")
+        .join("runs");
+    fs::create_dir_all(&root).context("create the optimizer runs root")?;
+    Ok(root)
 }
 
 fn cookbook_roots_path() -> PathBuf {
@@ -3172,5 +3182,39 @@ namespace = "base"
             );
         }
         manager.stop().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod runs_root_tests {
+    use super::*;
+
+    /// Run evidence must not live inside the application bundle.
+    ///
+    /// A packaged build resolves its cookbooks to
+    /// `Synth Desktop.app/Contents/Resources/cookbooks/...`. Deriving the runs
+    /// root from that path made every proposer transcript, `best_candidate.json`,
+    /// and result manifest a child of the bundle — deleted by the next build or
+    /// update, and unwritable on a signed install.
+    #[test]
+    fn gepa_run_evidence_lives_outside_the_application_bundle() {
+        let temp = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("SYNTH_DESKTOP_DATA_ROOT");
+        std::env::set_var("SYNTH_DESKTOP_DATA_ROOT", temp.path());
+        let root = gepa_runs_root().unwrap();
+        match previous {
+            Some(value) => std::env::set_var("SYNTH_DESKTOP_DATA_ROOT", value),
+            None => std::env::remove_var("SYNTH_DESKTOP_DATA_ROOT"),
+        }
+        assert!(root.starts_with(temp.path()), "{}", root.display());
+        assert!(root.is_dir(), "the runs root is created eagerly");
+        assert!(
+            !root.components().any(|component| component
+                .as_os_str()
+                .to_string_lossy()
+                .ends_with(".app")),
+            "{} must not sit inside an application bundle",
+            root.display()
+        );
     }
 }
