@@ -130,8 +130,8 @@ for (const item of manifest.files) {
   if (digest !== item.sha256) throw new Error(`runtime digest mismatch: ${item.path}`);
 }
 NODE
-  PLAYWRIGHT_BROWSERS_PATH="$OUTPUT/browsers" NODE_PATH="$OUTPUT/node_modules" \
-    "$(runtime_node)" --input-type=module -e "import { chromium } from 'playwright'; import fs from 'node:fs'; if (!fs.existsSync(chromium.executablePath())) process.exit(9)"
+  SYNTH_BROWSER_RUNTIME_ROOT="$OUTPUT" PLAYWRIGHT_BROWSERS_PATH="$OUTPUT/browsers" \
+    "$(runtime_node)" --input-type=module -e "import fs from 'node:fs'; import path from 'node:path'; import { createRequire } from 'node:module'; const require=createRequire(import.meta.url); const { chromium }=require(path.join(process.env.SYNTH_BROWSER_RUNTIME_ROOT,'node_modules/playwright')); if (!fs.existsSync(chromium.executablePath())) process.exit(9)"
   if [[ -n "$TEAM_ID" ]]; then
     /usr/bin/codesign --verify --strict "$OUTPUT/node/bin/node"
     /usr/bin/codesign --verify --strict "$chrome"
