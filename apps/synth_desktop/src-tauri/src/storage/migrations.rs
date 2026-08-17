@@ -25,6 +25,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_20,
     MIGRATION_21,
     MIGRATION_22,
+    MIGRATION_23,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1393,6 +1394,33 @@ CREATE UNIQUE INDEX IF NOT EXISTS eval_campaign_seed_identity
 ON eval_campaign_rollouts(campaign_id, seed);
 "#;
 
+/// Session-scoped experiment grouping for v0.5 campaign/eval DAGs.
+/// One group per chat; members are evaluation campaigns and optimizer runs.
+/// This is not the v0.6 canvas or reports engine.
+const MIGRATION_23: &str = r#"
+CREATE TABLE IF NOT EXISTS experiment_groups (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS experiment_groups_session
+ON experiment_groups(session_id);
+
+CREATE TABLE IF NOT EXISTS experiment_group_members (
+    group_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    member_kind TEXT NOT NULL CHECK (member_kind IN ('eval_campaign','optimizer_run')),
+    member_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    attached_at TEXT NOT NULL,
+    PRIMARY KEY (group_id, member_kind, member_id)
+);
+
+CREATE INDEX IF NOT EXISTS experiment_group_members_kind
+ON experiment_group_members(member_kind, member_id);
+"#;
+
 #[cfg(test)]
 mod tests {
     /// Derived, not pinned: adding a migration should not mean editing
@@ -1400,6 +1428,51 @@ mod tests {
     const LATEST_VERSION: i64 = super::MIGRATIONS.len() as i64;
 
     use super::*;
+
+    #[test]
+    fn declared_migrations_have_unique_sequential_numbers_matching_the_registry_count() {
+        assert_eq!(
+            MIGRATIONS.len() as i64,
+            LATEST_VERSION,
+            "the registry length is the declared migration count"
+        );
+        let mut numbers = Vec::new();
+        for (index, _) in MIGRATIONS.iter().enumerate() {
+            let version = index as i64 + 1;
+            assert!(
+                version >= 1,
+                "migration numbers are 1-based, never zero or negative"
+            );
+            numbers.push(version);
+        }
+        let mut unique = numbers.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            numbers.len(),
+            "migration numbers must be unique after merges"
+        );
+        assert_eq!(unique, numbers, "migration numbers must be dense 1..=N");
+        let conn = Connection::open_in_memory().unwrap();
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+        let stamped: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stamped, LATEST_VERSION);
+        let distinct: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT version) FROM schema_migrations",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(distinct, LATEST_VERSION);
+    }
 
     /// A database stamped `version` with migrations 1..=version applied, as a
     /// real installation of that era would have shipped it.

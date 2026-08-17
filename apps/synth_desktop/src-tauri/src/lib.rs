@@ -15,6 +15,7 @@ pub mod intern_protocol_test_support {
     };
 }
 pub mod campaigns;
+pub mod experiments;
 mod codex;
 mod codex_oauth;
 pub mod container_capabilities;

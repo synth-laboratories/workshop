@@ -1514,20 +1514,49 @@ fn spawn_command_with_retry(command: &mut Command) -> std::io::Result<Child> {
 }
 
 #[cfg(unix)]
+fn owned_process_group(pid: u32) -> Option<libc::pid_t> {
+    // `kill(-1, signal)` broadcasts to every process the caller may signal.
+    // Never allow sentinel/system PIDs or a lossy u32 -> pid_t conversion to
+    // reach the negative-pid process-group API.
+    let pid = libc::pid_t::try_from(pid).ok().filter(|pid| *pid > 1)?;
+    unsafe {
+        // A recipe is spawned with process_group(0), so its pid must equal its
+        // pgid. Refuse stale, reused, or non-isolated PIDs instead of guessing.
+        let pgid = libc::getpgid(pid);
+        if pgid <= 1 || pgid != pid || pgid == libc::getpgrp() {
+            return None;
+        }
+        Some(pgid)
+    }
+}
+
+#[cfg(unix)]
 async fn terminate_process_groups(pids: &[u32]) {
-    for &pid in pids {
-        // Negative pid addresses the entire process group created at spawn.
+    let groups = pids
+        .iter()
+        .filter_map(|&pid| {
+            let group = owned_process_group(pid);
+            if group.is_none() {
+                eprintln!(
+                    "refusing to terminate optimizer process group for unsafe or unowned pid {pid}"
+                );
+            }
+            group
+        })
+        .collect::<Vec<_>>();
+    for &pgid in &groups {
+        // Negative pid addresses only the verified isolated process group.
         unsafe {
-            libc::kill(-(pid as i32), libc::SIGTERM);
+            libc::kill(-pgid, libc::SIGTERM);
         }
     }
-    if !pids.is_empty() {
+    if !groups.is_empty() {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    for &pid in pids {
+    for &pgid in &groups {
         unsafe {
-            if libc::kill(-(pid as i32), 0) == 0 {
-                libc::kill(-(pid as i32), libc::SIGKILL);
+            if libc::kill(-pgid, 0) == 0 {
+                libc::kill(-pgid, libc::SIGKILL);
             }
         }
     }
@@ -2750,6 +2779,105 @@ mod tests {
             }
         }
         assert!(saw_bus, "pin must still publish optimizer.run.updated");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_group_cleanup_refuses_host_and_sentinel_pids() {
+        assert_eq!(owned_process_group(0), None);
+        assert_eq!(owned_process_group(1), None);
+        assert_eq!(owned_process_group(u32::MAX), None);
+        assert_eq!(owned_process_group(std::process::id()), None);
+
+        // This child inherits the test runner's process group. Cleanup must
+        // refuse it rather than signaling the test runner and its host apps.
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        assert_eq!(owned_process_group(pid), None);
+        terminate_process_groups(&[0, 1, u32::MAX, std::process::id(), pid]).await;
+        assert!(child.try_wait().unwrap().is_none());
+        child.kill().await.unwrap();
+        child.wait().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_group_cleanup_spares_unrelated_chatgpt_terminal_and_dev_processes() {
+        let mut chatgpt = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut terminal = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut workshop = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut owned = Command::new("/bin/sh");
+        isolate_process_group(&mut owned);
+        owned
+            .args(["-c", "sleep 30 & wait"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let mut owned = owned.spawn().unwrap();
+        let owned_pid = owned.id().unwrap();
+        assert!(owned_process_group(owned_pid).is_some());
+
+        terminate_process_groups(&[
+            chatgpt.id().unwrap(),
+            terminal.id().unwrap(),
+            workshop.id().unwrap(),
+            owned_pid,
+        ])
+        .await;
+
+        assert!(
+            chatgpt.try_wait().unwrap().is_none(),
+            "unrelated ChatGPT-like process must survive owned-group cleanup"
+        );
+        assert!(
+            terminal.try_wait().unwrap().is_none(),
+            "unrelated Terminal-like process must survive owned-group cleanup"
+        );
+        assert!(
+            workshop.try_wait().unwrap().is_none(),
+            "unrelated Workshop/dev process must survive owned-group cleanup"
+        );
+        let status = tokio::time::timeout(Duration::from_secs(2), owned.wait())
+            .await
+            .expect("owned recipe process group did not terminate")
+            .unwrap();
+        assert!(!status.success());
+
+        chatgpt.kill().await.unwrap();
+        terminal.kill().await.unwrap();
+        workshop.kill().await.unwrap();
+        let _ = chatgpt.wait().await;
+        let _ = terminal.wait().await;
+        let _ = workshop.wait().await;
     }
 
     #[cfg(unix)]

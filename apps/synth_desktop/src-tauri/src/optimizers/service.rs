@@ -284,12 +284,7 @@ impl OptimizerService {
     pub async fn get_result(&self, optimizer_run_id: String) -> Result<Value> {
         let run = self.get(optimizer_run_id.clone()).await?;
         if let Some(existing) = run.summary.get("optimizerResult").cloned() {
-            if existing.get("schemaVersion").and_then(Value::as_str) == Some("optimizer_result.v1")
-                && (run.algorithm_id != "gepa"
-                    || existing
-                        .pointer("/metrics/heldoutMeasurement")
-                        .is_some_and(|value| !value.is_null()))
-            {
+            if cached_optimizer_result_is_authoritative(&run, &existing) {
                 return Ok(existing);
             }
         }
@@ -450,6 +445,16 @@ impl OptimizerService {
                         created_at: None,
                     },
                 )?;
+                if let Some(session_ref) = inserted.session_ref.as_deref() {
+                    crate::experiments::attach(
+                        conn,
+                        session_ref,
+                        crate::experiments::MEMBER_OPTIMIZER,
+                        &inserted.id,
+                        &inserted.created_at,
+                        &format!("{} {}", inserted.algorithm_id, inserted.id),
+                    )?;
+                }
                 Ok((inserted, event))
             })
             .await?;
@@ -968,6 +973,14 @@ impl OptimizerService {
                         metadata: json!({}),
                     },
                 )?;
+                crate::experiments::attach(
+                    conn,
+                    session_ref,
+                    crate::experiments::MEMBER_OPTIMIZER,
+                    &seed.id,
+                    &seed.created_at,
+                    &format!("{} {}", seed.algorithm_id, seed.id),
+                )?;
             }
             Ok(())
         })
@@ -1296,14 +1309,21 @@ fn freeze_terminal_cursor(run: &mut OptimizerRunRecord) {
     if !matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
         return;
     }
+    let usage = serde_json::to_value(&run.usage).unwrap_or(Value::Null);
     match run.summary.as_object_mut() {
         Some(summary) => {
             if !summary.contains_key("terminalCursor") {
                 summary.insert("terminalCursor".into(), json!(run.cursor_seq));
             }
+            if !summary.contains_key("terminalUsage") {
+                summary.insert("terminalUsage".into(), usage);
+            }
         }
         None => {
-            run.summary = json!({ "terminalCursor": run.cursor_seq });
+            run.summary = json!({
+                "terminalCursor": run.cursor_seq,
+                "terminalUsage": usage,
+            });
         }
     }
 }
@@ -1335,7 +1355,9 @@ fn candidate_id_of(value: &Value) -> Option<&str> {
 }
 
 fn usage_authority_block(run: &OptimizerRunRecord, manifest: Option<&Value>) -> Value {
-    let ledger = serde_json::to_value(&run.usage).unwrap_or(Value::Null);
+    let frozen = run.summary.get("terminalUsage").cloned();
+    let live = serde_json::to_value(&run.usage).unwrap_or(Value::Null);
+    let ledger = frozen.clone().unwrap_or(live.clone());
     let manifest_usage = manifest.and_then(|value| {
         value
             .get("usage")
@@ -1346,7 +1368,11 @@ fn usage_authority_block(run: &OptimizerRunRecord, manifest: Option<&Value>) -> 
                 Some(json!({ "costUsd": cost }))
             })
     });
-    let ledger_cost = run.usage.cost_usd;
+    let ledger_cost = ledger
+        .get("costUsd")
+        .or_else(|| ledger.get("cost_usd"))
+        .and_then(Value::as_f64)
+        .or(run.usage.cost_usd);
     let manifest_cost = manifest_usage
         .as_ref()
         .and_then(|value| value.get("costUsd").or_else(|| value.get("cost_usd")))
@@ -1364,11 +1390,61 @@ fn usage_authority_block(run: &OptimizerRunRecord, manifest: Option<&Value>) -> 
         "manifest": manifest_usage,
         "authority": "manifest",
         "reconciliationStatus": reconciliation_status,
-        "divergence": divergence
+        "divergence": divergence,
+        "enrichmentLedger": if frozen.is_some() { live } else { Value::Null },
     })
 }
 
+fn cached_optimizer_result_is_authoritative(run: &OptimizerRunRecord, existing: &Value) -> bool {
+    match (
+        run.algorithm_id.as_str(),
+        existing.get("schemaVersion").and_then(Value::as_str),
+    ) {
+        ("sft", Some("sft_result.v1")) => true,
+        ("gepa", Some("optimizer_result.v1")) => existing
+            .pointer("/metrics/heldoutMeasurement")
+            .is_some_and(|value| !value.is_null()),
+        ("sft", _) => false,
+        (_, Some("optimizer_result.v1")) => true,
+        _ => false,
+    }
+}
+
 async fn materialize_optimizer_result(
+    service: &OptimizerService,
+    run: &OptimizerRunRecord,
+) -> Result<Value> {
+    match run.algorithm_id.as_str() {
+        "sft" => materialize_sft_result(run),
+        _ => materialize_gepa_result(service, run).await,
+    }
+}
+
+/// Lane D owns typed `SftRunResult` materialization. Workshop must not project
+/// SFT through GEPA-shaped `best_candidate.json`.
+fn materialize_sft_result(run: &OptimizerRunRecord) -> Result<Value> {
+    let terminal_cursor = run
+        .summary
+        .get("terminalCursor")
+        .and_then(Value::as_u64)
+        .unwrap_or(run.cursor_seq);
+    Ok(json!({
+        "schemaVersion": "sft_result.v1",
+        "optimizerRunId": run.id,
+        "algorithmId": "sft",
+        "status": run.status,
+        "finalCursor": terminal_cursor,
+        "enrichmentCursor": run.cursor_seq,
+        "usage": usage_authority_block(run, None),
+        "pending": true,
+        "error": {
+            "code": "sft_result_materialization_pending",
+            "message": "Typed SftRunResult materialization is owned by Lane D. Workshop will not invent a GEPA-shaped result for this SFT run."
+        }
+    }))
+}
+
+async fn materialize_gepa_result(
     service: &OptimizerService,
     run: &OptimizerRunRecord,
 ) -> Result<Value> {
@@ -3784,6 +3860,7 @@ pub(in crate::optimizers) mod tests {
                 base_model: Some("nvidia/nemotron-3-nano-30b-a3b".into()),
                 dataset_shard: None,
                 candidate_set_id: None,
+                search: None,
             })
             .await
             .unwrap_err()
@@ -4448,5 +4525,123 @@ pub(in crate::optimizers) mod tests {
         svc.persist_run(stored).await.unwrap();
         let error = svc.get_result(run.id).await.unwrap_err();
         assert!(error.to_string().contains("materialized prompt"));
+    }
+
+    #[tokio::test]
+    async fn sft_get_result_does_not_materialize_best_candidate_json() {
+        let (svc, dir, _) = service().await;
+        let run_dir = dir.path().join("sft_result");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("best_candidate.json"),
+            r#"{"candidate_id":"should_not_be_read","payload":{"prompt":"gepa shaped"}}"#,
+        )
+        .unwrap();
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "sft",
+                    "id": "sft_typed_result_run",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = run.clone();
+        stored.status = "completed".into();
+        stored.cursor_seq = 4;
+        stored.summary = json!({
+            "runDirectory": run_dir.display().to_string(),
+            "terminalCursor": 3
+        });
+        svc.persist_run(stored).await.unwrap();
+        let result = svc.get_result(run.id).await.unwrap();
+        assert_eq!(result["schemaVersion"], json!("sft_result.v1"));
+        assert_eq!(result["algorithmId"], json!("sft"));
+        assert_eq!(result["pending"], json!(true));
+        assert_eq!(
+            result["error"]["code"],
+            json!("sft_result_materialization_pending")
+        );
+        assert_eq!(result["finalCursor"], json!(3));
+        assert_eq!(result["enrichmentCursor"], json!(4));
+        assert_eq!(result["usage"]["authority"], json!("manifest"));
+        let encoded = result.to_string();
+        assert!(!encoded.contains("best_candidate.json"));
+        assert!(!encoded.contains("should_not_be_read"));
+        assert!(!encoded.contains("gepa shaped"));
+    }
+
+    #[tokio::test]
+    async fn freeze_terminal_cursor_survives_late_enrichment() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "terminal_cursor_freeze",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stored = run.clone();
+        stored.status = "completed".into();
+        stored.cursor_seq = 8;
+        stored.usage.cost_usd = Some(1.25);
+        stored.summary = json!({"terminalCursor": 8});
+        svc.persist_run(stored).await.unwrap();
+        let mut enriched = svc.get(run.id.clone()).await.unwrap();
+        enriched.cursor_seq = 11;
+        enriched.usage.cost_usd = Some(0.01);
+        if let Some(summary) = enriched.summary.as_object_mut() {
+            summary.insert("enrichmentNote".into(), json!("late"));
+        }
+        let persisted = svc.persist_run(enriched).await.unwrap();
+        assert_eq!(persisted.summary["terminalCursor"], json!(8));
+        assert_eq!(persisted.summary["terminalUsage"]["costUsd"], json!(1.25));
+        let result = svc.get_result(run.id).await;
+        // No GEPA artifacts: this path is about cursor/usage authority, not prompt materialization.
+        if let Ok(result) = result {
+            assert_eq!(result["finalCursor"], json!(8));
+            assert_eq!(result["enrichmentCursor"], json!(11));
+            assert_eq!(result["usage"]["ledger"]["costUsd"], json!(1.25));
+            assert_eq!(result["usage"]["authority"], json!("manifest"));
+        }
+        let reread = svc.get("terminal_cursor_freeze".into()).await.unwrap();
+        assert_eq!(reread.summary["terminalCursor"], json!(8));
+        assert_eq!(reread.summary["terminalUsage"]["costUsd"], json!(1.25));
+        assert_eq!(reread.cursor_seq, 11);
+    }
+
+    #[tokio::test]
+    async fn optimizer_create_attaches_the_session_experiment_group() {
+        let (svc, _dir, _) = service().await;
+        svc.create(
+            serde_json::from_value(json!({
+                "algorithmId": "gepa",
+                "id": "opt_exp_1",
+                "sessionRef": "session_exp",
+                "openVisual": false
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let group = svc
+            .db
+            .run(|conn| crate::experiments::load_for_session(conn, "session_exp"))
+            .await
+            .unwrap()
+            .expect("optimizer create owns an experiment group");
+        assert_eq!(group.session_id, "session_exp");
+        assert_eq!(group.members.len(), 1);
+        assert_eq!(group.members[0].member_id, "opt_exp_1");
+        assert_eq!(
+            group.members[0].member_kind,
+            crate::experiments::MEMBER_OPTIMIZER
+        );
     }
 }

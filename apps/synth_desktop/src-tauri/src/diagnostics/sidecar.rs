@@ -548,15 +548,35 @@ pub(crate) fn command_owns_data_dir(command: &str, data_dir: &Path) -> bool {
 
 #[cfg(unix)]
 async fn terminate_process_group(pid: u32) {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        eprintln!("refusing to terminate diagnostics sidecar with invalid pid {pid}");
+        return;
+    };
+    if pid <= 1 {
+        eprintln!("refusing to terminate diagnostics sidecar with unsafe pid {pid}");
+        return;
+    }
+    // Sidecars are spawned with process_group(0), so pid must equal pgid and
+    // must not be the host process group. Never signal a raw pid that failed
+    // that check: `kill(host, SIGTERM)` is how a cleanup path takes down
+    // ChatGPT, Terminal, and the Workshop test runner.
+    let isolated_group = unsafe {
+        let pgid = libc::getpgid(pid);
+        (pgid > 1 && pgid == pid && pgid != libc::getpgrp()).then_some(pgid)
+    };
+    let Some(pgid) = isolated_group else {
+        eprintln!(
+            "refusing to terminate diagnostics sidecar with unsafe or unowned pid {pid}"
+        );
+        return;
+    };
     unsafe {
-        libc::kill(-(pid as i32), libc::SIGTERM);
-        libc::kill(pid as i32, libc::SIGTERM);
+        libc::kill(-pgid, libc::SIGTERM);
     }
     tokio::time::sleep(STOP_GRACE).await;
     unsafe {
-        if libc::kill(pid as i32, 0) == 0 {
-            libc::kill(-(pid as i32), libc::SIGKILL);
-            libc::kill(pid as i32, libc::SIGKILL);
+        if libc::kill(-pgid, 0) == 0 {
+            libc::kill(-pgid, libc::SIGKILL);
         }
     }
 }
@@ -640,6 +660,31 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sidecar_cleanup_refuses_host_and_unowned_process_groups() {
+        terminate_process_group(0).await;
+        terminate_process_group(1).await;
+        terminate_process_group(u32::MAX).await;
+        terminate_process_group(std::process::id()).await;
+
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        terminate_process_group(child.id().unwrap()).await;
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "an unowned ChatGPT/Terminal/dev process must survive sidecar cleanup"
+        );
+        child.kill().await.unwrap();
+        child.wait().await.unwrap();
     }
 
     #[test]

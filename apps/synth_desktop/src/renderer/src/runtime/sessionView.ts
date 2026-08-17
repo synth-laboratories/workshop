@@ -356,6 +356,8 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 					: typeof payload.body === "string"
 						? payload.body
 						: undefined;
+			const incomplete = payloadIsIncompleteFinal(payload, eventItem(event));
+			const rendered = incomplete ? "Incomplete answer" : content;
 			// A stable item id is authoritative. The only exception is an alternate
 			// completion envelope containing the exact text already rendered for the
 			// active item; app-server versions can publish both completion shapes.
@@ -368,15 +370,17 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 				byId.set(completionMessageId, {
 					...existing,
 					role: "assistant",
-					body: content ?? existing.body
+					body: rendered ?? existing.body,
+					incomplete: incomplete || existing.incomplete
 				});
-			} else if (content) {
+			} else if (rendered) {
 				order.push(completionMessageId);
 				byId.set(completionMessageId, {
 					id: completionMessageId,
 					role: "assistant",
-					body: content,
-					at: event.createdAt
+					body: rendered,
+					at: event.createdAt,
+					incomplete
 				});
 				}
 				activeAssistantId = completionMessageId;
@@ -400,11 +404,25 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 			// the provider returned no answer.
 			if (!producedAssistantForTurn && event.eventKind === "run.completed") {
 				const terminalAnswer = eventResultPreview(payload, objectValue(payload.item) ?? {});
-				if (terminalAnswer) {
+				const incomplete = payloadIsIncompleteFinal(payload, objectValue(payload.item) ?? {});
+				if (terminalAnswer || incomplete) {
 					const id = `terminal-answer-${event.sequence}`;
 					order.push(id);
-					byId.set(id, { id, role: "assistant", body: terminalAnswer, at: event.createdAt });
+					byId.set(id, {
+						id,
+						role: "assistant",
+						body: incomplete ? "Incomplete answer" : terminalAnswer ?? "Incomplete answer",
+						at: event.createdAt,
+						incomplete
+					});
 					producedAssistantForTurn = true;
+				}
+			}
+			if (producedAssistantForTurn && payloadIsIncompleteFinal(payload, objectValue(payload.item) ?? {})) {
+				const lastId = [...order].reverse().find((id) => byId.get(id)?.role === "assistant");
+				if (lastId) {
+					const existing = byId.get(lastId)!;
+					byId.set(lastId, { ...existing, body: "Incomplete answer", incomplete: true });
 				}
 			}
 			if (!producedAssistantForTurn && !compactedDuringTurn) {
@@ -434,6 +452,33 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 	}
 
 	return order.map((id) => byId.get(id)!).filter(Boolean);
+}
+
+function payloadIsIncompleteFinal(
+	payload: Record<string, unknown>,
+	item: Record<string, unknown>
+): boolean {
+	if (payload.incomplete === true || item.incomplete === true) return true;
+	if (payload.incomplete_details != null || item.incomplete_details != null) return true;
+	const reason = [
+		payload.finish_reason,
+		payload.finishReason,
+		payload.stop_reason,
+		payload.stopReason,
+		item.finish_reason,
+		item.finishReason,
+		item.stop_reason,
+		item.stopReason
+	].find((value) => typeof value === "string") as string | undefined;
+	if (!reason) return false;
+	const normalized = reason.toLowerCase();
+	return (
+		normalized === "length" ||
+		normalized === "max_tokens" ||
+		normalized === "max_output_tokens" ||
+		normalized === "incomplete" ||
+		normalized === "truncated"
+	);
 }
 
 function terminalTurnDetail(payload: Record<string, unknown>): string | undefined {
@@ -1674,6 +1719,25 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 		const toolArtifact = toolResultToArtifact(event);
 		if (toolArtifact) {
 			artifacts.set(toolArtifact.id, toolArtifact);
+			continue;
+		}
+		if (event.eventKind === "experiment.member.attached") {
+			const payload = event.payload ?? {};
+			const memberId = typeof payload.memberId === "string" ? payload.memberId : `experiment-${event.sequence}`;
+			const sessionOwner = typeof payload.sessionId === "string" ? payload.sessionId : event.sessionId;
+			if (sessionOwner && sessionOwner !== event.sessionId) continue;
+			artifacts.set(memberId, {
+				id: memberId,
+				kind: "report",
+				title: typeof payload.title === "string" ? payload.title : "Experiment",
+				shownByAgent: true,
+				templateId: typeof payload.templateId === "string"
+					? payload.templateId
+					: payload.memberKind === "eval_campaign"
+						? "synth.eval_campaign.v1"
+						: "synth.optimizer_run.v1",
+				preview: { variant: "generic" }
+			});
 			continue;
 		}
 		if (

@@ -17,7 +17,8 @@ use super::{
     manager::DEFAULT_ALGORITHM_VERSION,
     models::{
         OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerExecutionBinding,
-        OptimizerRecipeRunRequest, OptimizerResourceRef, OPTIMIZER_EVENT_SCHEMA_VERSION,
+        OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerSearchOverrides,
+        OPTIMIZER_EVENT_SCHEMA_VERSION,
     },
     normalize, OptimizerService,
 };
@@ -30,6 +31,9 @@ const TRAIN_ROWS: usize = 50;
 const HELDOUT_ROWS: usize = 50;
 const MAX_GENERATIONS: i64 = 1;
 const PROPOSALS_PER_GENERATION: i64 = 1;
+const MAX_PROPOSALS_PER_GENERATION: i64 = 10;
+const DEFAULT_POLICY_CONCURRENCY: i64 = 4;
+const MAX_POLICY_CONCURRENCY: i64 = 120;
 const MINIBATCH_SIZE: i64 = 20;
 // One generation consumes a 50-example seed evaluation, a 20-example parent
 // reference, a 20-example candidate minibatch, and a 50-example candidate
@@ -92,6 +96,98 @@ impl ProposerProfile {
     }
 }
 
+#[derive(Clone, Debug)]
+struct RecipeSearchPlan {
+    proposals_per_generation: i64,
+    max_in_flight_candidates: i64,
+    policy_concurrency: i64,
+    rollout_concurrency: i64,
+    max_train_rollouts: i64,
+    max_heldout_rollouts: i64,
+    max_total_rollouts: i64,
+    max_cost_usd: f64,
+    pipeline_mode: &'static str,
+}
+
+impl RecipeSearchPlan {
+    fn resolve(search: Option<&OptimizerSearchOverrides>) -> Result<Self> {
+        let proposals = search
+            .and_then(|value| value.proposals_per_generation)
+            .unwrap_or(PROPOSALS_PER_GENERATION);
+        if !(1..=MAX_PROPOSALS_PER_GENERATION).contains(&proposals) {
+            bail!(
+                "proposalsPerGeneration must be between 1 and {MAX_PROPOSALS_PER_GENERATION}, not {proposals}"
+            );
+        }
+        let policy_concurrency = search
+            .and_then(|value| value.policy_concurrency)
+            .unwrap_or(DEFAULT_POLICY_CONCURRENCY);
+        if !(1..=MAX_POLICY_CONCURRENCY).contains(&policy_concurrency) {
+            bail!(
+                "policyConcurrency must be between 1 and {MAX_POLICY_CONCURRENCY}, not {policy_concurrency}"
+            );
+        }
+        let max_in_flight = search
+            .and_then(|value| value.max_in_flight_candidates)
+            .unwrap_or(proposals)
+            .clamp(1, MAX_PROPOSALS_PER_GENERATION);
+        let rollout_concurrency = search
+            .and_then(|value| value.rollout_concurrency)
+            .unwrap_or(policy_concurrency)
+            .clamp(1, MAX_POLICY_CONCURRENCY);
+        // Seed eval (50) + parent reference (20) + p minibatches (p×20) + p candidate evals (p×50).
+        let max_train_rollouts = TRAIN_ROWS as i64
+            + MINIBATCH_SIZE
+            + proposals * MINIBATCH_SIZE
+            + proposals * TRAIN_ROWS as i64;
+        let max_heldout_rollouts = MAX_HELDOUT_ROLLOUTS;
+        let max_total_rollouts = max_train_rollouts + max_heldout_rollouts;
+        let max_cost_usd = ((PROPOSER_ESTIMATED_COST_USD * proposals as f64
+            + ROLLOUT_ESTIMATED_COST_USD * max_total_rollouts as f64)
+            * 100.0)
+            .round()
+            / 100.0;
+        Ok(Self {
+            proposals_per_generation: proposals,
+            max_in_flight_candidates: max_in_flight,
+            policy_concurrency,
+            rollout_concurrency,
+            max_train_rollouts,
+            max_heldout_rollouts,
+            max_total_rollouts,
+            max_cost_usd,
+            pipeline_mode: if proposals > 1 {
+                "async_pipelined"
+            } else {
+                "sync_serial"
+            },
+        })
+    }
+
+    fn limits_json(&self) -> serde_json::Value {
+        json!({
+            "maxGenerations": MAX_GENERATIONS,
+            "proposalsPerGeneration": self.proposals_per_generation,
+            "maxInFlightCandidates": self.max_in_flight_candidates,
+            "policyConcurrency": self.policy_concurrency,
+            "rolloutConcurrency": self.rollout_concurrency,
+            "minibatchSize": MINIBATCH_SIZE,
+            "maxTrainRollouts": self.max_train_rollouts,
+            "maxHeldoutRollouts": self.max_heldout_rollouts,
+            "maxTotalRollouts": self.max_total_rollouts,
+            "maxCostUsd": self.max_cost_usd,
+            "proposerEstimatedCostUsd": PROPOSER_ESTIMATED_COST_USD,
+            "rolloutEstimatedCostUsd": ROLLOUT_ESTIMATED_COST_USD,
+            "pipeline": {
+                "mode": self.pipeline_mode,
+                "maxInFlightCandidates": self.max_in_flight_candidates,
+                "workers": { "rollout": self.rollout_concurrency },
+                "adaptiveRolloutConcurrency": self.proposals_per_generation > 1
+            }
+        })
+    }
+}
+
 pub(super) async fn start(
     service: &OptimizerService,
     request: OptimizerRecipeRunRequest,
@@ -146,6 +242,7 @@ pub(super) async fn start(
     let uv = resolve_uv()?;
     let codex_home = resolve_codex_home()?;
     let config_path = run_dir.join("workshop.recipe.toml");
+    let search = RecipeSearchPlan::resolve(request.search.as_ref())?;
     materialize_config(
         &cookbook,
         &runs_root,
@@ -155,6 +252,7 @@ pub(super) async fn start(
         &config_path,
         proposer,
         &codex_home,
+        &search,
     )?;
 
     let create = OptimizerCreateRequest {
@@ -197,7 +295,7 @@ pub(super) async fn start(
                 digest: None,
                 role: Some("configuration".into()),
                 title: Some(format!("Bounded Banking77 GEPA · {}", proposer.title())),
-                metadata: recipe_limits(),
+                metadata: search.limits_json(),
             },
             OptimizerResourceRef {
                 kind: "policy_ref".into(),
@@ -230,7 +328,7 @@ pub(super) async fn start(
                 "harness": "gepa_proposer",
                 "config": proposer.config_id(),
             },
-            "limits": recipe_limits(),
+            "limits": search.limits_json(),
             "runDirectory": run_dir,
         })),
         open_visual: request.open_visual.or(Some(true)),
@@ -440,6 +538,7 @@ async fn materialize_prepared_run(
     let uv = resolve_uv()?;
     let codex_home = resolve_codex_home()?;
     let config_path = run_dir.join("workshop.recipe.toml");
+    let search = RecipeSearchPlan::resolve(request.search.as_ref())?;
     materialize_config(
         &cookbook,
         &runs_root,
@@ -449,6 +548,7 @@ async fn materialize_prepared_run(
         &config_path,
         proposer,
         &codex_home,
+        &search,
     )?;
     let create = OptimizerCreateRequest {
         algorithm_id: "gepa".into(),
@@ -490,7 +590,7 @@ async fn materialize_prepared_run(
                 digest: None,
                 role: Some("configuration".into()),
                 title: Some(format!("Bounded Banking77 GEPA · {}", proposer.title())),
-                metadata: recipe_limits(),
+                metadata: search.limits_json(),
             },
             OptimizerResourceRef {
                 kind: "policy_ref".into(),
@@ -523,7 +623,7 @@ async fn materialize_prepared_run(
                 "harness": "gepa_proposer",
                 "config": proposer.config_id(),
             },
-            "limits": recipe_limits(),
+            "limits": search.limits_json(),
             "runDirectory": run_dir,
             "proposerModel": proposer.model(),
         })),
@@ -850,17 +950,9 @@ fn recipe_run_id(proposer: ProposerProfile) -> String {
 }
 
 fn recipe_limits() -> serde_json::Value {
-    json!({
-        "maxGenerations": MAX_GENERATIONS,
-        "proposalsPerGeneration": PROPOSALS_PER_GENERATION,
-        "minibatchSize": MINIBATCH_SIZE,
-        "maxTrainRollouts": MAX_TRAIN_ROLLOUTS,
-        "maxHeldoutRollouts": MAX_HELDOUT_ROLLOUTS,
-        "maxTotalRollouts": MAX_TOTAL_ROLLOUTS,
-        "maxCostUsd": MAX_COST_USD,
-        "proposerEstimatedCostUsd": PROPOSER_ESTIMATED_COST_USD,
-        "rolloutEstimatedCostUsd": ROLLOUT_ESTIMATED_COST_USD,
-    })
+    RecipeSearchPlan::resolve(None)
+        .expect("default Banking77 search plan is valid")
+        .limits_json()
 }
 
 fn craftax_recipe_limits() -> serde_json::Value {
@@ -1788,6 +1880,7 @@ fn materialize_config(
     destination: &Path,
     proposer_profile: ProposerProfile,
     codex_home: &Path,
+    search: &RecipeSearchPlan,
 ) -> Result<()> {
     let source = fs::read_to_string(cookbook.join("gepa.toml"))?;
     let mut config: toml::Value = toml::from_str(&source)?;
@@ -1829,7 +1922,10 @@ fn materialize_config(
                 "/usr/bin/env",
                 "BANKING77_TRAIN_SAMPLE=50",
                 "BANKING77_TEST_SAMPLE=50",
-                "BANKING77_POLICY_CONCURRENCY=4",
+                &format!(
+                    "BANKING77_POLICY_CONCURRENCY={}",
+                    search.policy_concurrency
+                ),
                 "BANKING77_POLICY_TIMEOUT_SECONDS=20",
                 "BANKING77_ROLLOUT_TIMEOUT_SECONDS=25",
                 &format!("BANKING77_STREAM_ROOT={}", container_stream_root.display()),
@@ -1878,13 +1974,22 @@ fn materialize_config(
     gepa.insert("max_generations".into(), MAX_GENERATIONS.into());
     gepa.insert(
         "proposals_per_generation".into(),
-        PROPOSALS_PER_GENERATION.into(),
+        search.proposals_per_generation.into(),
     );
     gepa.insert("minibatch_size".into(), MINIBATCH_SIZE.into());
-    gepa.insert("max_train_rollouts".into(), MAX_TRAIN_ROLLOUTS.into());
-    gepa.insert("max_heldout_rollouts".into(), MAX_HELDOUT_ROLLOUTS.into());
-    gepa.insert("max_total_rollouts".into(), MAX_TOTAL_ROLLOUTS.into());
-    gepa.insert("max_cost_usd".into(), MAX_COST_USD.into());
+    gepa.insert(
+        "max_train_rollouts".into(),
+        search.max_train_rollouts.into(),
+    );
+    gepa.insert(
+        "max_heldout_rollouts".into(),
+        search.max_heldout_rollouts.into(),
+    );
+    gepa.insert(
+        "max_total_rollouts".into(),
+        search.max_total_rollouts.into(),
+    );
+    gepa.insert("max_cost_usd".into(), search.max_cost_usd.into());
     gepa.insert(
         "proposer_estimated_cost_usd".into(),
         PROPOSER_ESTIMATED_COST_USD.into(),
@@ -1914,6 +2019,7 @@ fn materialize_config(
     .into_iter()
     .collect();
     gepa.insert("task_pools".into(), toml::Value::Table(task_pools));
+    insert_gepa_pipeline(gepa, search);
 
     let cache = table_mut(&mut config, "cache")?;
     cache.insert("mode".into(), toml::Value::String("off".into()));
@@ -1945,9 +2051,34 @@ fn materialize_config(
         toml::Value::String(codex_home.display().to_string()),
     );
 
-    validate_limits(&config)?;
+    validate_limits(&config, search)?;
     fs::write(destination, toml::to_string_pretty(&config)?)?;
     Ok(())
+}
+
+fn insert_gepa_pipeline(gepa: &mut toml::map::Map<String, toml::Value>, search: &RecipeSearchPlan) {
+    let mut workers = toml::map::Map::new();
+    workers.insert("rollout".into(), search.rollout_concurrency.into());
+    let mut adaptive = toml::map::Map::new();
+    adaptive.insert(
+        "enabled".into(),
+        toml::Value::Boolean(search.proposals_per_generation > 1),
+    );
+    let mut pipeline = toml::map::Map::new();
+    pipeline.insert(
+        "mode".into(),
+        toml::Value::String(search.pipeline_mode.into()),
+    );
+    pipeline.insert(
+        "max_in_flight_candidates".into(),
+        search.max_in_flight_candidates.into(),
+    );
+    pipeline.insert("workers".into(), toml::Value::Table(workers));
+    pipeline.insert(
+        "adaptive_rollout_concurrency".into(),
+        toml::Value::Table(adaptive),
+    );
+    gepa.insert("pipeline".into(), toml::Value::Table(pipeline));
 }
 
 fn materialize_craftax_config(
@@ -2161,7 +2292,7 @@ fn string_array(values: impl IntoIterator<Item = String>) -> toml::Value {
     toml::Value::Array(values.into_iter().map(toml::Value::String).collect())
 }
 
-fn validate_limits(config: &toml::Value) -> Result<()> {
+fn validate_limits(config: &toml::Value, search: &RecipeSearchPlan) -> Result<()> {
     let gepa = config
         .get("gepa")
         .and_then(toml::Value::as_table)
@@ -2172,12 +2303,26 @@ fn validate_limits(config: &toml::Value) -> Result<()> {
             .ok_or_else(|| anyhow!("generated recipe missing gepa.{key}"))
     };
     if integer("max_generations")? > MAX_GENERATIONS
-        || integer("proposals_per_generation")? > PROPOSALS_PER_GENERATION
-        || integer("max_train_rollouts")? > MAX_TRAIN_ROLLOUTS
-        || integer("max_heldout_rollouts")? > MAX_HELDOUT_ROLLOUTS
-        || integer("max_total_rollouts")? > MAX_TOTAL_ROLLOUTS
+        || integer("proposals_per_generation")? > search.proposals_per_generation
+        || integer("max_train_rollouts")? > search.max_train_rollouts
+        || integer("max_heldout_rollouts")? > search.max_heldout_rollouts
+        || integer("max_total_rollouts")? > search.max_total_rollouts
     {
         bail!("generated Banking77 GEPA recipe exceeds hard rollout bounds");
+    }
+    let pipeline = gepa
+        .get("pipeline")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| anyhow!("generated recipe missing [gepa.pipeline]"))?;
+    let mode = pipeline
+        .get("mode")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| anyhow!("generated recipe missing gepa.pipeline.mode"))?;
+    if mode != search.pipeline_mode {
+        bail!(
+            "generated recipe pipeline mode {mode} does not match resolved {}",
+            search.pipeline_mode
+        );
     }
     let cost = gepa
         .get("max_cost_usd")
@@ -2187,7 +2332,7 @@ fn validate_limits(config: &toml::Value) -> Result<()> {
                 .or_else(|| value.as_integer().map(|v| v as f64))
         })
         .ok_or_else(|| anyhow!("generated recipe missing gepa.max_cost_usd"))?;
-    if !(0.0..=MAX_COST_USD).contains(&cost) {
+    if !(0.0..=search.max_cost_usd + 1e-9).contains(&cost) {
         bail!("generated Banking77 GEPA recipe exceeds hard cost bound");
     }
     let proposer_cost = gepa
@@ -2340,6 +2485,7 @@ namespace = "base"
         fs::create_dir_all(&codex_home).unwrap();
         fs::write(codex_home.join("auth.json"), "{}").unwrap();
         let output = dir.path().join("recipe.toml");
+        let search = RecipeSearchPlan::resolve(None).unwrap();
         materialize_config(
             dir.path(),
             &runs,
@@ -2349,11 +2495,12 @@ namespace = "base"
             &output,
             ProposerProfile::LunaMedium,
             &codex_home,
+            &search,
         )
         .unwrap();
         let text = fs::read_to_string(output).unwrap();
         let config: toml::Value = toml::from_str(&text).unwrap();
-        validate_limits(&config).unwrap();
+        validate_limits(&config, &search).unwrap();
         assert_eq!(
             config["taskset"]["train_ids"].as_array().unwrap().len(),
             TRAIN_ROWS
@@ -2390,6 +2537,105 @@ namespace = "base"
         assert!(text.contains("\"train:0\""));
         assert!(text.contains("[gepa.task_pools]"));
         assert!(text.contains("\"test:100\""));
+        assert!(text.contains("[gepa.pipeline]"));
+        assert!(text.contains("mode = \"sync_serial\""));
+        assert!(text.contains("BANKING77_POLICY_CONCURRENCY=4"));
+        assert_eq!(
+            config["gepa"]["pipeline"]["max_in_flight_candidates"]
+                .as_integer()
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn search_contract_derives_ten_proposal_budgets_and_emits_async_pipeline() {
+        let plan = RecipeSearchPlan::resolve(Some(&OptimizerSearchOverrides {
+            proposals_per_generation: Some(10),
+            max_in_flight_candidates: Some(10),
+            policy_concurrency: Some(30),
+            rollout_concurrency: Some(40),
+        }))
+        .unwrap();
+        assert_eq!(plan.proposals_per_generation, 10);
+        assert_eq!(plan.max_in_flight_candidates, 10);
+        assert_eq!(plan.policy_concurrency, 30);
+        assert_eq!(plan.rollout_concurrency, 40);
+        assert_eq!(plan.max_train_rollouts, 770);
+        assert_eq!(plan.max_heldout_rollouts, 100);
+        assert_eq!(plan.max_total_rollouts, 870);
+        assert!((plan.max_cost_usd - 9.2).abs() < 1e-9);
+        assert_eq!(plan.pipeline_mode, "async_pipelined");
+        let limits = plan.limits_json();
+        assert_eq!(limits["pipeline"]["mode"], json!("async_pipelined"));
+        assert_eq!(limits["pipeline"]["adaptiveRolloutConcurrency"], json!(true));
+        assert!(RecipeSearchPlan::resolve(Some(&OptimizerSearchOverrides {
+            proposals_per_generation: Some(11),
+            ..Default::default()
+        }))
+        .is_err());
+        assert!(RecipeSearchPlan::resolve(Some(&OptimizerSearchOverrides {
+            policy_concurrency: Some(121),
+            ..Default::default()
+        }))
+        .is_err());
+
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("gepa.toml"),
+            r#"[run]
+run_id = "base"
+output_dir = "runs"
+[container]
+url = "http://127.0.0.1:8765"
+command = []
+cwd = "."
+[dataset]
+train_seeds = [0]
+heldout_seeds = [1]
+[proposer]
+model = "gpt-5.4-nano"
+auth_mode = "api_key"
+api_key_env = "OPENAI_API_KEY"
+[gepa]
+max_generations = 99
+proposals_per_generation = 99
+minibatch_size = 99
+max_total_rollouts = 9999
+max_cost_usd = 99.0
+[cache]
+mode = "readwrite"
+path = "secret"
+namespace = "base"
+"#,
+        )
+        .unwrap();
+        fs::write(dir.path().join("synth_service_app.py"), "").unwrap();
+        let runs = dir.path().join("runs");
+        fs::create_dir_all(&runs).unwrap();
+        let codex_home = dir.path().join("codex-home");
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::write(codex_home.join("auth.json"), "{}").unwrap();
+        let output = dir.path().join("recipe.toml");
+        materialize_config(
+            dir.path(),
+            &runs,
+            "ten_candidate_run",
+            23456,
+            Path::new("/usr/bin/true"),
+            &output,
+            ProposerProfile::LunaMedium,
+            &codex_home,
+            &plan,
+        )
+        .unwrap();
+        let text = fs::read_to_string(output).unwrap();
+        assert!(text.contains("proposals_per_generation = 10"));
+        assert!(text.contains("max_train_rollouts = 770"));
+        assert!(text.contains("BANKING77_POLICY_CONCURRENCY=30"));
+        assert!(text.contains("mode = \"async_pipelined\""));
+        assert!(text.contains("[gepa.pipeline]"));
+        assert!(text.contains("[gepa.pipeline.adaptive_rollout_concurrency]"));
     }
 
     #[test]
@@ -2800,6 +3046,7 @@ namespace = "base"
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                search: None,
             })
             .await
             .unwrap()
@@ -2874,6 +3121,7 @@ namespace = "base"
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                search: None,
             }),
             service.start_recipe(OptimizerRecipeRunRequest {
                 recipe_id: BANKING77_GEPA_SOL_RECIPE.into(),
@@ -2882,6 +3130,7 @@ namespace = "base"
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                search: None,
             })
         );
         let luna = luna.unwrap().0;
