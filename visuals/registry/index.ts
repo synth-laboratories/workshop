@@ -116,6 +116,8 @@ export const INTERNAL_TEMPLATE_IDS = [...INTERNAL_IDS].sort();
 
 export type { VisualTemplate, VisualTemplateMeta, VisualInstance, VisualBinding } from "../runtime/types.ts";
 export { bindTemplateSlots, subscribeLiveSlot, isVisualBindings, bindingSlots, propsFromBindings, resolveVisualBindings } from "../runtime/bind.ts";
+export { selectRenderedProjection, rememberLastKnownGood } from "../runtime/lastKnownGood.ts";
+export type { ProjectionSource, SelectedProjection } from "../runtime/lastKnownGood.ts";
 export type { ResolvedVisualBindings, VisualBindingsStatus } from "../runtime/bind.ts";
 export {
   createReplayClient,

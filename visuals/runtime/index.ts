@@ -29,6 +29,11 @@ export {
 } from "./bind.ts";
 export type { ResolvedVisualBindings, VisualBindingsStatus } from "./bind.ts";
 export {
+  selectRenderedProjection,
+  rememberLastKnownGood
+} from "./lastKnownGood.ts";
+export type { ProjectionSource, SelectedProjection } from "./lastKnownGood.ts";
+export {
   createReplayClient,
   parseReplayPage,
   replayStreamsFromBindings,

@@ -5,7 +5,15 @@
 
 /** How a template slot is fed at runtime. */
 export const VISUAL_BINDINGS_SCHEMA_VERSION = "synth.visual-bindings.v1" as const;
-export type VisualBindingKind = "inline" | "trace_v5" | "local_cas" | "run_ref" | "live_sse" | "fixture" | "optimizer_run";
+export type VisualBindingKind =
+  | "inline"
+  | "trace_v5"
+  | "local_cas"
+  | "run_ref"
+  | "live_sse"
+  | "fixture"
+  | "optimizer_run"
+  | "query_snapshot";
 
 export type VisualBinding = {
   /** Slot name declared in template.json `slots`. */
@@ -18,6 +26,8 @@ export type VisualBinding = {
    * - live_sse → absolute SSE URL
    * - fixture → relative path under visuals/fixtures/ or template examples/
    * - optimizer_run → cloud/local optimizer_run_id
+   * - query_snapshot → immutable trace query snapshot id
+   * - run_ref → run identity resolved by the host
    */
   source?: string;
   /** Declared sibling poll endpoint for a normalized live stream. Never inferred. */
