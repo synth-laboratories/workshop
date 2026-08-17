@@ -3,8 +3,9 @@ import test from "node:test";
 import {
   groupTraceByStep,
   projectCraftaxSemanticTrace,
+  environmentStepCount,
   projectCraftaxViewer,
-  semanticCheckpointIndexes
+  replayMomentIndexes
 } from "../families/first_class_example_containers/live.craftax.v1/projectCraftax.ts";
 
 const LANE = "rollout_craftax_luna_med_seed7_2026_08_12";
@@ -70,12 +71,12 @@ test("one hundred thousand transport envelopes keep semantic DOM cardinality bou
   const projection = projectCraftaxViewer(events);
   const semantic = projectCraftaxSemanticTrace(projection.ordered);
   const groups = groupTraceByStep(semantic);
-  const checkpoints = semanticCheckpointIndexes(projection.ordered);
+  const moments = replayMomentIndexes(projection.ordered);
 
   assert.equal(events.length, 100_017);
   assert.ok(semantic.length < 20, `expected bounded semantic rows, got ${semantic.length}`);
   assert.ok(groups.length < 10, `expected bounded step groups, got ${groups.length}`);
-  assert.ok(checkpoints.length < 20, `expected bounded replay ticks, got ${checkpoints.length}`);
+  assert.ok(moments.length < 20, `expected bounded replay ticks, got ${moments.length}`);
   assert.equal(
     semantic.find((item) => item.category === "policy")?.rawEvents.length,
     100_004,
@@ -97,16 +98,32 @@ test("trace groups follow the environment hierarchy: lifecycle, steps, evidence"
   assert.ok(trailing.items.some((item) => item.kind === "trace.reconciled"), "seal evidence stays visible at run level");
 });
 
-test("replay checkpoints skip transport deltas, frames, and observations", () => {
+test("replay moments skip transport deltas, frames, and observations", () => {
   const events = policyHeavyRollout({ deltaCount: 300 });
   const { ordered } = projectCraftaxViewer(events);
-  const checkpoints = semanticCheckpointIndexes(ordered);
-  assert.ok(checkpoints.length < 20, `expected semantic ticks, got ${checkpoints.length}`);
-  assert.ok(checkpoints.length >= 8, "step, policy, reward, achievement, lifecycle checkpoints survive");
-  for (const index of checkpoints.slice(0, -1)) {
+  const moments = replayMomentIndexes(ordered);
+  assert.ok(moments.length < 20, `expected semantic ticks, got ${moments.length}`);
+  assert.ok(moments.length >= 8, "step, policy, reward, achievement, lifecycle moments survive");
+  for (const index of moments.slice(0, -1)) {
     assert.notEqual(ordered[index].kind, "span.policy.data");
   }
-  assert.equal(checkpoints.at(-1), ordered.length - 1, "the final durable event is always reachable");
+  assert.equal(moments.at(-1), ordered.length - 1, "the final durable event is always reachable");
+});
+
+/** A 20-step rollout advertised "57 / 57 checkpoints": the count of replay
+ * moments, presented where a reader looks for a step count. They are different
+ * numbers and now have different names. */
+test("replay moments are not environment steps", () => {
+  const events = policyHeavyRollout({ deltaCount: 300 });
+  const { ordered } = projectCraftaxViewer(events);
+  const moments = replayMomentIndexes(ordered);
+  const steps = environmentStepCount(ordered);
+  assert.ok(steps > 0, "the rollout took environment steps");
+  assert.notEqual(moments.length, steps, "the two counts are not interchangeable");
+  assert.ok(
+    moments.length > steps,
+    "moments include policy calls, rewards, and lifecycle evidence beyond steps"
+  );
 });
 
 test("a scoped lane filter isolates rollouts sharing one stream", () => {

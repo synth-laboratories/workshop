@@ -4631,10 +4631,23 @@ html.sidebar-hidden .titlebar {
 		grid-template-columns: 1fr;
 	}
 
+	/*
+	 * Stacked, the artifact goes *above* the transcript, not below it.
+	 *
+	 * `.composer-dock` is absolutely positioned against the bottom of the main
+	 * pane, so a bottom-docked artifact puts its primary surface underneath the
+	 * composer. Reviewers could only get a clean capture by widening past 900px
+	 * into the side-by-side layout — that is, by not reviewing this layout at
+	 * all. The transcript already reserves `--composer-clearance` for the
+	 * composer; the artifact keeps its own surface.
+	 */
 	.workbench.with-visual .visual-pane,
 	.workbench.with-container .container-pane {
-		border-top: 1px solid var(--color-border);
-		max-height: 48%;
+		order: -1;
+		border-top: 0;
+		border-bottom: 1px solid var(--color-border);
+		max-height: 52%;
+		min-height: 220px;
 	}
 	.workbench.with-visual > .pane-resize-handle,
 	.workbench.with-container > .pane-resize-handle { display: none; }
