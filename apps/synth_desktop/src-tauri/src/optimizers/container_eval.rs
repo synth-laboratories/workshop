@@ -23,15 +23,16 @@ use crate::visuals::{
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::{
-    sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::watch;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 const EXPERIMENT_TEMPLATE: &str = "experiment.overview.v1";
 const EXPERIMENT_SCHEMA: &str = "synth.experiment.overview.v1";
 const EVAL_ALGORITHM_ID: &str = "eval";
+const COST_CEILING_USD: f64 = 0.50;
 const POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
 
@@ -154,7 +155,7 @@ pub(super) async fn start(
         "policyRef": { "harness": spec.harness, "config": spec.policy_config },
         "taskPools": { "train": spec.train.len(), "heldout": spec.heldout.len() },
         "concurrency": spec.concurrency,
-        "costCeilingUsd": 0.50,
+        "costCeilingUsd": COST_CEILING_USD,
         "records": [],
         "progress": { "completed": 0, "total": examples.len(), "failed": 0 },
     });
@@ -240,7 +241,7 @@ async fn mint_experiment_visual(
         .find(|r| r.kind == "visual")
         .map(|r| r.id.clone());
     if let Some(visual_id) = existing {
-        let _ = service
+        service
             .visuals()
             .show(visual_id.clone(), run.session_ref.clone())
             .await?;
@@ -284,7 +285,7 @@ async fn mint_experiment_visual(
     summary.insert("visualId".into(), json!(created.id));
     stored.summary = Value::Object(summary);
     service.persist_run(stored).await?;
-    let _ = service
+    service
         .visuals()
         .show(created.id.clone(), run.session_ref.clone())
         .await?;
@@ -369,13 +370,8 @@ async fn run_eval_worker(
         }
         _ => json!({}),
     };
-    if let Some(body) = spec.policy_config_body() {
-        let _ = client
-            .post(format!("{}/policy-configs", container.base_url))
-            .json(&body)
-            .send()
-            .await;
-    }
+    let policy_pin = register_policy_pin(&client, &container.base_url, spec).await?;
+    persist_policy_pin(&service, &run_id, &policy_pin).await?;
     let scale_leases = info
         .get("scale_leases")
         .or_else(|| info.pointer("/metadata/scale_leases"))
@@ -383,55 +379,45 @@ async fn run_eval_worker(
         .unwrap_or(spec.concurrency as u64)
         .max(1) as usize;
     let permits = spec.concurrency.min(scale_leases).max(1);
-    let semaphore = Arc::new(Semaphore::new(permits));
     let total = examples.len();
-    let mut handles = Vec::new();
-    for example in examples {
-        if *cancel.borrow() {
-            bail!("container eval cancelled");
-        }
-        let permit = semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .context("eval concurrency semaphore closed")?;
-        let client = client.clone();
-        let base = container.base_url.clone();
-        let handle = tokio::spawn(async move {
-            let result = run_one_example(&client, &base, spec, example).await;
-            drop(permit);
-            result
-        });
-        handles.push(handle);
-    }
-
+    let mut remaining = examples.into_iter();
+    let mut tasks: JoinSet<(EvalExample, Result<Value>)> = JoinSet::new();
     let mut records = Vec::new();
-    let mut failed = 0usize;
-    for handle in handles {
+    let mut halt = None::<String>;
+
+    loop {
         if *cancel.borrow() {
             bail!("container eval cancelled");
         }
-        match handle.await {
-            Ok(Ok(record)) => {
-                if record.get("status").and_then(Value::as_str) != Some("completed") {
-                    failed += 1;
-                }
-                records.push(record);
+        while tasks.len() < permits && halt.is_none() {
+            if over_cost_ceiling(&records) {
+                halt = Some(format!(
+                    "cost ceiling ${COST_CEILING_USD:.2} reached; remaining rollouts were not dispatched"
+                ));
+                break;
             }
-            Ok(Err(error)) => {
-                failed += 1;
-                records.push(json!({
-                    "status": "failed",
-                    "error": error.to_string(),
-                }));
-            }
-            Err(error) => {
-                failed += 1;
-                records.push(json!({
-                    "status": "failed",
-                    "error": error.to_string(),
-                }));
-            }
+            let Some(example) = remaining.next() else {
+                break;
+            };
+            let client = client.clone();
+            let base = container.base_url.clone();
+            let pin = policy_pin.clone();
+            tasks.spawn(async move {
+                let result = run_one_example(&client, &base, spec, example, &pin).await;
+                (example, result)
+            });
+        }
+        let Some(joined) = tasks.join_next().await else {
+            break;
+        };
+        match joined {
+            Ok((_example, Ok(record))) => records.push(record),
+            Ok((example, Err(error))) => records.push(failed_record(example, spec, &policy_pin, error.to_string())),
+            Err(error) => records.push(json!({
+                "status": "failed",
+                "error": error.to_string(),
+                "policyRef": policy_pin,
+            })),
         }
         persist_progress(
             &service,
@@ -445,10 +431,26 @@ async fn run_eval_worker(
         .await?;
     }
 
-    let status = if failed == records.len() && !records.is_empty() {
-        "failed"
-    } else {
+    for example in remaining {
+        records.push(failed_record(
+            example,
+            spec,
+            &policy_pin,
+            halt.clone().unwrap_or_else(|| {
+                "required rollout was not dispatched".into()
+            }),
+        ));
+    }
+
+    let failed = records
+        .iter()
+        .filter(|row| !is_successful_eval_record(row))
+        .count();
+    let budget_exceeded = over_cost_ceiling(&records);
+    let status = if failed == 0 && records.len() == total && !budget_exceeded {
         "completed"
+    } else {
+        "failed"
     };
     persist_progress(
         &service,
@@ -460,18 +462,122 @@ async fn run_eval_worker(
         status,
     )
     .await?;
-    append_terminal(
-        &service,
-        &run_id,
-        status == "failed",
-        if status == "failed" {
-            format!("{} of {} rollouts failed", failed, total)
-        } else {
-            String::new()
-        },
-    )
-    .await?;
+    let mut detail = String::new();
+    if status == "failed" {
+        let mut parts = Vec::new();
+        if failed != 0 || records.len() != total {
+            parts.push(format!("{failed} of {total} required rollouts failed"));
+        }
+        if budget_exceeded {
+            parts.push(format!("cost exceeded ${COST_CEILING_USD:.2}"));
+        }
+        if let Some(halt) = halt {
+            parts.push(halt);
+        }
+        detail = parts.join("; ");
+    }
+    append_terminal(&service, &run_id, status == "failed", detail).await?;
     Ok(())
+}
+
+async fn register_policy_pin(
+    client: &reqwest::Client,
+    base: &str,
+    spec: EvalSpec,
+) -> Result<Value> {
+    let pin = json!({ "harness": spec.harness, "config": spec.policy_config });
+    let Some(body) = spec.policy_config_body() else {
+        return Ok(pin);
+    };
+    let response = client
+        .post(format!("{base}/policy-configs"))
+        .json(&body)
+        .send()
+        .await
+        .context("POST /policy-configs")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        bail!("policy config registration failed: {status} {text}");
+    }
+    let registered = response.json::<Value>().await.context("decode /policy-configs")?;
+    let returned_id = registered
+        .get("config_id")
+        .or_else(|| registered.get("configId"))
+        .and_then(Value::as_str);
+    if returned_id != Some(spec.policy_config) {
+        bail!(
+            "policy config identity mismatch: wanted {}, got {returned_id:?}",
+            spec.policy_config
+        );
+    }
+    Ok(json!({
+        "harness": spec.harness,
+        "config": spec.policy_config,
+        "configId": spec.policy_config,
+        "immutable": true,
+        "model": body.pointer("/config/model").cloned().unwrap_or(Value::Null),
+        "provider": body.pointer("/config/provider").cloned().unwrap_or(Value::Null),
+    }))
+}
+
+async fn persist_policy_pin(
+    service: &OptimizerService,
+    run_id: &str,
+    policy_pin: &Value,
+) -> Result<()> {
+    let mut run = service.get(run_id.to_string()).await?;
+    let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+    summary.insert("policyPin".into(), policy_pin.clone());
+    summary.insert("policyRef".into(), policy_pin.clone());
+    run.summary = Value::Object(summary);
+    service.persist_run(run).await?;
+    Ok(())
+}
+
+fn failed_record(example: EvalExample, spec: EvalSpec, policy_pin: &Value, error: String) -> Value {
+    json!({
+        "pool": example.pool,
+        "seed": example.seed,
+        "taskInstanceId": format!("seed:{}", example.seed),
+        "status": "failed",
+        "error": error,
+        "policyRef": policy_pin,
+        "worldRef": spec.world_ref,
+    })
+}
+
+fn is_successful_eval_record(row: &Value) -> bool {
+    row.get("status").and_then(Value::as_str) == Some("completed")
+}
+
+fn over_cost_ceiling(records: &[Value]) -> bool {
+    recorded_cost_usd(records).is_some_and(|cost| cost >= COST_CEILING_USD)
+}
+
+fn recorded_cost_usd(records: &[Value]) -> Option<f64> {
+    let mut total = 0.0;
+    let mut saw = false;
+    for record in records {
+        let usage = record.get("usage").unwrap_or(&Value::Null);
+        for lane in [usage.get("policy"), usage.get("grader"), Some(usage)] {
+            if let Some(cost) = lane.and_then(lane_cost_usd) {
+                total += cost;
+                saw = true;
+            }
+        }
+    }
+    saw.then_some(total)
+}
+
+fn lane_cost_usd(blob: &Value) -> Option<f64> {
+    if blob.get("policy").is_some() || blob.get("grader").is_some() {
+        return None;
+    }
+    blob.get("cost_usd")
+        .or_else(|| blob.get("costUsd"))
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)
 }
 
 async fn persist_progress(
@@ -484,23 +590,46 @@ async fn persist_progress(
     status: &str,
 ) -> Result<()> {
     let completed = records.len();
-    let mean = mean_for_pool(records, "train")
-        .or_else(|| mean_reward(records));
+    let mean = mean_for_pool(records, "train").or_else(|| mean_reward(records));
     let mut run = service.get(run_id.to_string()).await?;
+    let usage = usage_from_records(records);
     let mut summary = run.summary.as_object().cloned().unwrap_or_default();
     summary.insert("records".into(), json!(records));
     summary.insert(
         "progress".into(),
-        json!({ "completed": completed, "total": total, "failed": records.iter().filter(|row| row.get("status").and_then(Value::as_str) != Some("completed")).count() }),
+        json!({
+            "completed": completed,
+            "total": total,
+            "failed": records.iter().filter(|row| !is_successful_eval_record(row)).count()
+        }),
     );
     if let Some(mean) = mean {
         summary.insert("meanReward".into(), json!(mean));
     }
     summary.insert("evalStatus".into(), json!(status));
+    summary.insert("costCeilingUsd".into(), json!(COST_CEILING_USD));
+    if let Some(cost) = usage.cost_usd {
+        summary.insert("costUsd".into(), json!(cost));
+    }
+    summary.insert(
+        "usageLanes".into(),
+        json!({
+            "policy": usage.extra.get("policyUsage").cloned().unwrap_or(Value::Null),
+            "grader": usage.extra.get("graderUsage").cloned().unwrap_or(Value::Null),
+        }),
+    );
     run.summary = Value::Object(summary);
-    run.usage.rollouts = completed as u64;
+    run.usage = usage;
     service.persist_run(run).await?;
-    let _ = service
+
+    let visual_status = if status == "failed" {
+        VisualStatus::Failed
+    } else if status == "completed" {
+        VisualStatus::Saved
+    } else {
+        VisualStatus::Live
+    };
+    if let Err(error) = service
         .visuals()
         .update(
             visual_id.to_string(),
@@ -509,13 +638,7 @@ async fn persist_progress(
                 bindings: Some(experiment_bindings(
                     spec, status, completed, total, records, mean,
                 )),
-                status: Some(if status == "failed" {
-                    VisualStatus::Failed
-                } else if status == "completed" {
-                    VisualStatus::Saved
-                } else {
-                    VisualStatus::Live
-                }),
+                status: Some(visual_status),
                 renderer_kind: None,
                 message_id: None,
                 run_id: None,
@@ -525,8 +648,104 @@ async fn persist_progress(
                 bump_revision: Some(true),
             },
         )
-        .await;
+        .await
+    {
+        let mut run = service.get(run_id.to_string()).await?;
+        let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+        summary.insert("visualProjectionError".into(), json!(error.to_string()));
+        run.summary = Value::Object(summary);
+        service.persist_run(run).await?;
+        if status != "running" {
+            bail!("experiment visual projection failed: {error}");
+        }
+    }
     Ok(())
+}
+
+fn usage_from_records(records: &[Value]) -> super::models::OptimizerUsageSummary {
+    let mut usage = super::models::OptimizerUsageSummary::default();
+    usage.rollouts = records.len() as u64;
+    let mut policy = LaneUsage::default();
+    let mut grader = LaneUsage::default();
+    let mut cost_sum = 0.0;
+    let mut cost_complete = true;
+    let mut saw_cost = false;
+    for record in records {
+        let blob = record.get("usage").cloned().unwrap_or(Value::Null);
+        if blob.get("policy").is_some() || blob.get("grader").is_some() {
+            add_lane(&mut policy, blob.get("policy"));
+            add_lane(&mut grader, blob.get("grader"));
+        } else {
+            add_lane(&mut policy, Some(&blob));
+        }
+    }
+    usage.prompt_tokens = policy.prompt_tokens + grader.prompt_tokens;
+    usage.completion_tokens = policy.completion_tokens + grader.completion_tokens;
+    for lane in [&policy, &grader] {
+        match lane.cost_usd {
+            Some(cost) => {
+                cost_sum += cost;
+                saw_cost = true;
+            }
+            None if lane.saw_tokens => cost_complete = false,
+            None => {}
+        }
+    }
+    usage.cost_usd = if saw_cost && cost_complete {
+        Some(cost_sum)
+    } else if saw_cost && !cost_complete {
+        None
+    } else {
+        None
+    };
+    if saw_cost {
+        usage
+            .extra
+            .insert("costTelemetryComplete".into(), json!(cost_complete));
+    }
+    usage.extra.insert("costCeilingUsd".into(), json!(COST_CEILING_USD));
+    usage.extra.insert("policyUsage".into(), policy.to_json());
+    usage.extra.insert("graderUsage".into(), grader.to_json());
+    usage
+}
+
+#[derive(Default)]
+struct LaneUsage {
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    cost_usd: Option<f64>,
+    saw_tokens: bool,
+}
+
+impl LaneUsage {
+    fn to_json(&self) -> Value {
+        json!({
+            "promptTokens": self.prompt_tokens,
+            "completionTokens": self.completion_tokens,
+            "costUsd": self.cost_usd,
+        })
+    }
+}
+
+fn add_lane(lane: &mut LaneUsage, blob: Option<&Value>) {
+    let Some(blob) = blob.filter(|value| value.is_object()) else {
+        return;
+    };
+    if let Some(tokens) = u64_field(blob, &["prompt_tokens", "promptTokens"]) {
+        lane.prompt_tokens += tokens;
+        lane.saw_tokens = true;
+    }
+    if let Some(tokens) = u64_field(blob, &["completion_tokens", "completionTokens"]) {
+        lane.completion_tokens += tokens;
+        lane.saw_tokens = true;
+    }
+    if let Some(cost) = lane_cost_usd(blob) {
+        lane.cost_usd = Some(lane.cost_usd.unwrap_or(0.0) + cost);
+    }
+}
+
+fn u64_field(blob: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter().find_map(|key| blob.get(*key).and_then(Value::as_u64))
 }
 
 fn mean_reward(records: &[Value]) -> Option<f64> {
@@ -546,6 +765,7 @@ async fn run_one_example(
     base: &str,
     spec: EvalSpec,
     example: EvalExample,
+    policy_pin: &Value,
 ) -> Result<Value> {
     let telemetry = {
         let mut telemetry = authoritative_poll_telemetry();
@@ -625,6 +845,8 @@ async fn run_one_example(
         "reward": reward.get("reward").cloned().unwrap_or(Value::Null),
         "rewardStatus": reward.get("status").cloned().unwrap_or(json!("absent")),
         "usage": usage,
+        "policyRef": policy_pin,
+        "worldRef": spec.world_ref,
         "trace": state.get("trace").cloned().unwrap_or(Value::Null),
         "evidence": {
             "eventsUrl": format!("{base}/rollouts/{rollout_id}/events"),
@@ -866,47 +1088,39 @@ mod tests {
     use hyper::StatusCode;
     use rusqlite::params;
     use serde_json::json;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
     };
 
-    async fn insert_container(
-        service: &OptimizerService,
-        family: &str,
-        base_url: &str,
-        status: &str,
-    ) {
-        let id = format!("ctr_{family}_test");
-        let family = family.to_string();
-        let base_url = base_url.to_string();
-        let status = status.to_string();
-        service
-            .database()
-            .clone()
-            .run_transaction(move |conn| {
-                conn.execute(
-                    "INSERT INTO containers(id,name,location,status,base_url,task_family,health_json,metadata_json,created_at,updated_at)
-                     VALUES(?1,?2,'local',?3,?4,?5,'{\"ok\":true}',?6,'2026-08-17','2026-08-17')",
-                    params![
-                        id,
-                        format!("{family} test"),
-                        status,
-                        base_url,
-                        family,
-                        json!({"runtime_family": family}).to_string()
-                    ],
-                )?;
-                Ok(())
-            })
-            .await
-            .unwrap();
+    #[derive(Clone)]
+    struct MockEvalOptions {
+        family: &'static str,
+        rewards: BTreeMap<(String, i64), f64>,
+        policy_status: u16,
+        policy_config_id: String,
+        fail_seeds: BTreeSet<i64>,
+        extra_cost_usd: Option<f64>,
     }
 
     async fn spawn_eval_mock(
         family: &'static str,
         rewards: BTreeMap<(String, i64), f64>,
+    ) -> (String, tokio::task::JoinHandle<()>, Arc<AtomicUsize>) {
+        spawn_eval_mock_opts(MockEvalOptions {
+            family,
+            rewards,
+            policy_status: 200,
+            policy_config_id: "openai_gpt41_mini".into(),
+            fail_seeds: BTreeSet::new(),
+            extra_cost_usd: None,
+        })
+        .await
+    }
+
+    async fn spawn_eval_mock_opts(
+        opts: MockEvalOptions,
     ) -> (String, tokio::task::JoinHandle<()>, Arc<AtomicUsize>) {
         let starts = Arc::new(AtomicUsize::new(0));
         let starts_h = starts.clone();
@@ -917,9 +1131,10 @@ mod tests {
             let _ = serve_json(listener, move |request: JsonHttpRequest| {
                 let starts = starts_h.clone();
                 let prepared = prepared.clone();
-                let rewards = rewards.clone();
+                let opts = opts.clone();
                 async move {
                     let path = request.path.split('?').next().unwrap_or(&request.path);
+                    let family = opts.family;
                     match (request.method.as_str(), path) {
                         ("GET", "/info") => JsonHttpResponse::ok(json!({
                             "runtime_family": family,
@@ -927,7 +1142,14 @@ mod tests {
                             "world_ref": if family == "banking77" { "world:banking77@train" } else { "world:healthbench@eval" },
                         })),
                         ("POST", path) if path == "/policy-configs" || path.starts_with("/policy-configs/") => {
-                            JsonHttpResponse::ok(json!({"config_id": "openai_gpt41_mini"}))
+                            if opts.policy_status == 200 {
+                                JsonHttpResponse::ok(json!({"config_id": opts.policy_config_id}))
+                            } else {
+                                JsonHttpResponse::error(
+                                    StatusCode::from_u16(opts.policy_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                                    "policy config refused",
+                                )
+                            }
                         }
                         ("POST", "/rollouts/prepare") => {
                             let rollout_id = request
@@ -963,20 +1185,30 @@ mod tests {
                                 .and_then(|value| value.rsplit(':').next())
                                 .and_then(|value| value.parse::<i64>().ok())
                                 .unwrap_or(0);
+                            if opts.fail_seeds.contains(&seed) {
+                                return JsonHttpResponse::error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    format!("forced failure for seed {seed}"),
+                                );
+                            }
                             let pool = if rollout_id.contains("heldout") {
                                 "heldout"
                             } else {
                                 "train"
                             };
+                            let policy_cost = opts.extra_cost_usd.unwrap_or(0.001);
+                            let grader_cost = if opts.extra_cost_usd.is_some() { 0.0 } else { 0.002 };
                             JsonHttpResponse::ok(json!({
                                 "rollout_id": rollout_id,
                                 "status": "completed",
                                 "terminated": true,
                                 "usage": if family == "healthbench" {
                                     json!({
-                                        "policy": {"prompt_tokens": 11, "completion_tokens": 4, "cost_usd": 0.001},
-                                        "grader": {"prompt_tokens": 40, "completion_tokens": 12, "cost_usd": 0.002}
+                                        "policy": {"prompt_tokens": 11, "completion_tokens": 4, "cost_usd": policy_cost},
+                                        "grader": {"prompt_tokens": 40, "completion_tokens": 12, "cost_usd": grader_cost}
                                     })
+                                } else if let Some(cost) = opts.extra_cost_usd {
+                                    json!({"prompt_tokens": 8, "completion_tokens": 1, "cost_usd": cost})
                                 } else {
                                     json!({"prompt_tokens": 8, "completion_tokens": 1})
                                 },
@@ -1001,7 +1233,7 @@ mod tests {
                             } else {
                                 "train".into()
                             };
-                            let reward = rewards.get(&(pool, seed)).copied().unwrap_or(1.0);
+                            let reward = opts.rewards.get(&(pool, seed)).copied().unwrap_or(1.0);
                             JsonHttpResponse::ok(json!({
                                 "status": "scored",
                                 "reward": reward,
@@ -1024,6 +1256,38 @@ mod tests {
             .await;
         });
         (format!("http://{addr}"), task, starts)
+    }
+
+    async fn insert_container(
+        service: &OptimizerService,
+        family: &str,
+        base_url: &str,
+        status: &str,
+    ) {
+        let id = format!("ctr_{family}_test");
+        let family = family.to_string();
+        let base_url = base_url.to_string();
+        let status = status.to_string();
+        service
+            .database()
+            .clone()
+            .run_transaction(move |conn| {
+                conn.execute(
+                    "INSERT INTO containers(id,name,location,status,base_url,task_family,health_json,metadata_json,created_at,updated_at)
+                     VALUES(?1,?2,'local',?3,?4,?5,'{\"ok\":true}',?6,'2026-08-17','2026-08-17')",
+                    params![
+                        id,
+                        format!("{family} test"),
+                        status,
+                        base_url,
+                        family,
+                        json!({"runtime_family": family}).to_string()
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
     }
 
     async fn wait_terminal(service: &OptimizerService, run_id: &str) -> OptimizerRunRecord {
@@ -1082,6 +1346,10 @@ mod tests {
             .unwrap_or(Value::Null);
         assert_eq!(data["status"], json!("completed"));
         assert_eq!(data["progress"]["completed"], json!(10));
+        assert_eq!(finished.usage.prompt_tokens, 80);
+        assert_eq!(finished.usage.completion_tokens, 10);
+        assert_eq!(finished.usage.rollouts, 10);
+        assert_eq!(finished.usage.cost_usd, None);
         task.abort();
     }
 
@@ -1118,8 +1386,26 @@ mod tests {
         assert_eq!(starts.load(Ordering::SeqCst), 4);
         assert!(records.iter().any(|row| row["pool"] == json!("heldout")));
         assert!(records.iter().all(|row| {
-            row.pointer("/usage/policy").is_some() && row.pointer("/usage/grader").is_some()
+            row.pointer("/usage/policy").is_some()
+                && row.pointer("/usage/grader").is_some()
+                && row.pointer("/policyRef/config") == Some(&json!("openai_gpt41_mini"))
         }));
+        assert_eq!(
+            finished.summary.pointer("/policyPin/config"),
+            Some(&json!("openai_gpt41_mini"))
+        );
+        assert_eq!(finished.usage.prompt_tokens, 204);
+        assert_eq!(finished.usage.completion_tokens, 64);
+        assert_eq!(finished.usage.rollouts, 4);
+        assert!((finished.usage.cost_usd.unwrap() - 0.012).abs() < 1e-9);
+        assert_eq!(
+            finished.usage.extra["policyUsage"]["promptTokens"],
+            json!(44)
+        );
+        assert_eq!(
+            finished.usage.extra["graderUsage"]["promptTokens"],
+            json!(160)
+        );
         let listed = svc
             .visuals()
             .list(VisualQuery {
@@ -1154,5 +1440,126 @@ mod tests {
             "expected a structured missing-container error, got {error}"
         );
         assert!(!error.contains("unknown optimizer recipe"));
+    }
+
+    fn recipe(id: &str, session: &str) -> OptimizerRecipeRunRequest {
+        OptimizerRecipeRunRequest {
+            recipe_id: id.into(),
+            session_ref: Some(session.into()),
+            open_visual: Some(true),
+            base_model: None,
+            dataset_shard: None,
+            candidate_set_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn healthbench_fails_closed_when_policy_config_registration_is_rejected() {
+        let (base, task, starts) = spawn_eval_mock_opts(MockEvalOptions {
+            family: "healthbench",
+            rewards: BTreeMap::new(),
+            policy_status: 503,
+            policy_config_id: "openai_gpt41_mini".into(),
+            fail_seeds: BTreeSet::new(),
+            extra_cost_usd: None,
+        })
+        .await;
+        let (svc, _dir, _) = service().await;
+        insert_container(&svc, "healthbench", &base, "ready").await;
+        let (run, _) = svc
+            .start_recipe(recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_policy_reject"))
+            .await
+            .unwrap();
+        let finished = wait_terminal(&svc, &run.id).await;
+        assert_eq!(finished.status, "failed");
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn healthbench_fails_closed_when_policy_config_identity_mismatches() {
+        let (base, task, starts) = spawn_eval_mock_opts(MockEvalOptions {
+            family: "healthbench",
+            rewards: BTreeMap::new(),
+            policy_status: 200,
+            policy_config_id: "groq_llama31_8b".into(),
+            fail_seeds: BTreeSet::new(),
+            extra_cost_usd: None,
+        })
+        .await;
+        let (svc, _dir, _) = service().await;
+        insert_container(&svc, "healthbench", &base, "ready").await;
+        let (run, _) = svc
+            .start_recipe(recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_policy_mismatch"))
+            .await
+            .unwrap();
+        let finished = wait_terminal(&svc, &run.id).await;
+        assert_eq!(finished.status, "failed");
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn banking77_partial_failure_is_failed_not_completed() {
+        let rewards = (0..10)
+            .map(|seed| (("train".into(), seed), 1.0))
+            .collect();
+        let (base, task, starts) = spawn_eval_mock_opts(MockEvalOptions {
+            family: "banking77",
+            rewards,
+            policy_status: 200,
+            policy_config_id: "classify".into(),
+            fail_seeds: (1..10).collect(),
+            extra_cost_usd: None,
+        })
+        .await;
+        let (svc, _dir, _) = service().await;
+        insert_container(&svc, "banking77", &base, "ready").await;
+        let (run, _) = svc
+            .start_recipe(recipe(BANKING77_EVAL_BASELINE_RECIPE, "sess_partial"))
+            .await
+            .unwrap();
+        let finished = wait_terminal(&svc, &run.id).await;
+        assert_eq!(finished.status, "failed");
+        assert_eq!(starts.load(Ordering::SeqCst), 10);
+        assert_eq!(finished.summary["progress"]["failed"], json!(9));
+        assert_ne!(finished.summary["evalStatus"], json!("completed"));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn healthbench_stops_dispatch_once_cost_ceiling_is_reached() {
+        let mut rewards = BTreeMap::new();
+        rewards.insert(("train".into(), 0), 0.8);
+        rewards.insert(("train".into(), 1), 0.6);
+        rewards.insert(("heldout".into(), 100), 0.5);
+        rewards.insert(("heldout".into(), 101), 0.4);
+        let (base, task, starts) = spawn_eval_mock_opts(MockEvalOptions {
+            family: "healthbench",
+            rewards,
+            policy_status: 200,
+            policy_config_id: "openai_gpt41_mini".into(),
+            fail_seeds: BTreeSet::new(),
+            extra_cost_usd: Some(0.50),
+        })
+        .await;
+        let (svc, _dir, _) = service().await;
+        insert_container(&svc, "healthbench", &base, "ready").await;
+        let (run, _) = svc
+            .start_recipe(recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_budget"))
+            .await
+            .unwrap();
+        let finished = wait_terminal(&svc, &run.id).await;
+        assert_eq!(finished.status, "failed");
+        assert!(starts.load(Ordering::SeqCst) <= 2);
+        assert_eq!(
+            finished
+                .summary
+                .get("records")
+                .and_then(Value::as_array)
+                .map(|rows| rows.len()),
+            Some(4)
+        );
+        task.abort();
     }
 }

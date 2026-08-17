@@ -212,13 +212,12 @@ async fn read_stdout<R: tauri::Runtime>(
         // inference from response text, so EOF must not overwrite it as an
         // unhealthy local agent.
         //
-        // A second hang was observed after visual-bind/prepare failures:
-        // tools had settled, the agent emitted a diagnostic assistant item,
-        // and the process stayed Working until it was stopped. Treat a
-        // completed assistant item with zero in-flight tools as terminal
-        // once this turn has already used tools.
-        let settled_after_tools = settlement.observe(&method, &params);
-        let final_answer = is_final_agent_message(&method, &params) || settled_after_tools;
+        // Ordinary commentary between tool batches is not terminal. Track
+        // settlement so a later stdout EOF can complete a turn that already
+        // used tools and emitted an assistant item; do not finish while the
+        // process is still producing events.
+        settlement.observe(&method, &params);
+        let final_answer = is_final_agent_message(&method, &params);
         if final_answer {
             crate::recovery::crash_checkpoint(crate::recovery::checkpoints::BEFORE_FINAL_MESSAGE);
         }
@@ -402,85 +401,41 @@ async fn read_stdout<R: tauri::Runtime>(
             terminal_method,
             "turn/completed" | "turn/failed" | "turn/interrupted"
         ) {
-            // A pending entry means `turn/start` has not finished registering
-            // its durable run. Update that mailbox while holding its one lock;
-            // otherwise the manager could remove the marker in between the
-            // ownership check and this terminal write.
-            let manager_owns_terminal = {
-                let mut terminals = persistence.early_terminal_turns.lock().await;
-                if terminals.contains_key(&session_id) {
-                    terminals.insert(
-                        session_id.clone(),
-                        Some((terminal_method.to_owned(), params.clone())),
-                    );
-                    true
-                } else {
-                    false
-                }
-            };
-            persistence
-                .pending_compact_sources
-                .lock()
-                .await
-                .remove(&session_id);
-            let status = match terminal_method {
-                "turn/completed" => SessionStatus::Ready,
-                "turn/failed" => SessionStatus::Failed,
-                _ => SessionStatus::Interrupted,
-            };
-            if let Some(record) = persistence.records.write().await.get_mut(&session_id) {
-                record.status = status.as_str().into();
-            }
-            let _ = persist_records(&persistence.records, &persistence.state_path).await;
-            // The turn is over; drop the claim before the durable run settles,
-            // so no window exists where a finished turn still looks live.
-            persistence.persistence.release_turn(&session_id).await;
-            if !manager_owns_terminal {
-                if let Ok(Some(session)) = persistence
-                    .persistence
-                    .get_session(session_id.clone())
-                    .await
-                {
-                    if let Some(run_id) = session.active_run_id {
-                        let run_status = match terminal_method {
-                            "turn/completed" => RunStatus::Completed,
-                            "turn/failed" => RunStatus::Failed,
-                            _ => RunStatus::Interrupted,
-                        };
-                        if let Some(runs) = persistence.persistence.runs() {
-                            if let Ok(mutation) = runs
-                                .transition(
-                                    run_id,
-                                    run_status,
-                                    Some(params.clone()),
-                                    EventSource::Codex,
-                                )
-                                .await
-                            {
-                                if let Some(event) = mutation.event {
-                                    let _ =
-                                        persistence.persistence.publish_event(&app, event).await;
-                                }
-                            }
-                        }
-                    } else if let Ok(Some(mutation)) = persistence
-                        .persistence
-                        .transition_session(
-                            session_id.clone(),
-                            status,
-                            EventSource::Codex,
-                            params.clone(),
-                        )
-                        .await
-                    {
-                        // No active run: still advance Session through the machine.
-                        if let Some(event) = mutation.event {
-                            let _ = persistence.persistence.publish_event(&app, event).await;
-                        }
-                    }
-                }
-            }
+            apply_codex_terminal(
+                &app,
+                &session_id,
+                &persistence,
+                terminal_method,
+                params.clone(),
+            )
+            .await;
         }
+    }
+    if settlement.ready_for_eof_completion() {
+        // The child closed stdout after tools settled and an assistant item
+        // completed, without `turn/completed` or `phase: final_answer`. That
+        // is process-exit evidence, not a mid-turn commentary gap.
+        let params = json!({
+            "reason": "app_server_exited_after_settled_turn",
+            "message": "The local agent process exited after tools settled and an assistant item completed."
+        });
+        persistence
+            .persistence
+            .notify_codex_event(
+                &app,
+                session_id.clone(),
+                "turn/completed",
+                params.clone(),
+            )
+            .await;
+        apply_codex_terminal(
+            &app,
+            &session_id,
+            &persistence,
+            "turn/completed",
+            params,
+        )
+        .await;
     }
     let owned_attachment = {
         let mut sessions = persistence.sessions.write().await;
@@ -632,29 +587,35 @@ fn is_completed_agent_message(method: &str, params: &Value) -> bool {
     matches!(item_type.as_deref(), Some("agentmessage"))
 }
 
-/// Completes a turn that already used tools once the last in-flight tool is
-/// gone and an assistant item has completed. Covers the stuck-Working hang
-/// where a diagnostic message followed failed visual bind/prepare and no
-/// `final_answer` / `turn/completed` ever arrived.
+/// Tracks whether stdout EOF may complete a turn. Ordinary commentary between
+/// tool batches is never terminal while the child is still producing events.
+/// Authoritative completion remains `turn/completed`, `phase: final_answer`,
+/// crash-recovery lease expiry, or process exit after tools and an assistant
+/// item have already landed.
 #[derive(Default)]
 struct TurnSettlement {
     in_flight: HashSet<String>,
     tools_seen: bool,
-    settled: bool,
+    assistant_completed: bool,
+    protocol_terminal: bool,
 }
 
 impl TurnSettlement {
-    fn observe(&mut self, method: &str, params: &Value) -> bool {
+    fn observe(&mut self, method: &str, params: &Value) {
         if matches!(method, "turn/started" | "turn/start") {
             *self = Self::default();
-            return false;
+            return;
         }
         if matches!(
             method,
             "turn/completed" | "turn/failed" | "turn/interrupted"
-        ) {
-            self.settled = true;
-            return false;
+        ) || is_final_agent_message(method, params)
+        {
+            self.protocol_terminal = true;
+            if is_completed_agent_message(method, params) {
+                self.assistant_completed = true;
+            }
+            return;
         }
         let (item_type, item_id) = item_type_and_id(params);
         if is_tool_item(item_type.as_deref()) {
@@ -664,16 +625,98 @@ impl TurnSettlement {
             } else if matches!(method, "item/completed" | "item/failed") {
                 self.in_flight.remove(&item_id);
             }
-            return false;
-        }
-        if self.settled || !self.tools_seen || !self.in_flight.is_empty() {
-            return false;
+            return;
         }
         if is_completed_agent_message(method, params) {
-            self.settled = true;
-            return true;
+            self.assistant_completed = true;
         }
-        false
+    }
+
+    fn ready_for_eof_completion(&self) -> bool {
+        !self.protocol_terminal
+            && self.tools_seen
+            && self.in_flight.is_empty()
+            && self.assistant_completed
+    }
+}
+
+async fn apply_codex_terminal<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: &str,
+    persistence: &EventPumpState,
+    terminal_method: &str,
+    params: Value,
+) {
+    // A pending entry means `turn/start` has not finished registering
+    // its durable run. Update that mailbox while holding its one lock;
+    // otherwise the manager could remove the marker in between the
+    // ownership check and this terminal write.
+    let manager_owns_terminal = {
+        let mut terminals = persistence.early_terminal_turns.lock().await;
+        if terminals.contains_key(session_id) {
+            terminals.insert(
+                session_id.to_owned(),
+                Some((terminal_method.to_owned(), params.clone())),
+            );
+            true
+        } else {
+            false
+        }
+    };
+    persistence
+        .pending_compact_sources
+        .lock()
+        .await
+        .remove(session_id);
+    let status = match terminal_method {
+        "turn/completed" => SessionStatus::Ready,
+        "turn/failed" => SessionStatus::Failed,
+        _ => SessionStatus::Interrupted,
+    };
+    if let Some(record) = persistence.records.write().await.get_mut(session_id) {
+        record.status = status.as_str().into();
+    }
+    let _ = persist_records(&persistence.records, &persistence.state_path).await;
+    persistence.persistence.release_turn(session_id).await;
+    if manager_owns_terminal {
+        return;
+    }
+    if let Ok(Some(session)) = persistence.persistence.get_session(session_id.to_owned()).await {
+        if let Some(run_id) = session.active_run_id {
+            let run_status = match terminal_method {
+                "turn/completed" => RunStatus::Completed,
+                "turn/failed" => RunStatus::Failed,
+                _ => RunStatus::Interrupted,
+            };
+            if let Some(runs) = persistence.persistence.runs() {
+                if let Ok(mutation) = runs
+                    .transition(
+                        run_id,
+                        run_status,
+                        Some(params),
+                        EventSource::Codex,
+                    )
+                    .await
+                {
+                    if let Some(event) = mutation.event {
+                        let _ = persistence.persistence.publish_event(app, event).await;
+                    }
+                }
+            }
+        } else if let Ok(Some(mutation)) = persistence
+            .persistence
+            .transition_session(
+                session_id.to_owned(),
+                status,
+                EventSource::Codex,
+                params,
+            )
+            .await
+        {
+            if let Some(event) = mutation.event {
+                let _ = persistence.persistence.publish_event(app, event).await;
+            }
+        }
     }
 }
 
@@ -825,7 +868,7 @@ mod terminal_message_tests {
     }
 
     #[test]
-    fn settled_tools_plus_assistant_item_completes_the_turn() {
+    fn commentary_after_tools_is_not_terminal_while_the_process_is_alive() {
         let mut settlement = TurnSettlement::default();
         let tool_start = json!({
             "item": { "id": "call_bind", "type": "mcpToolCall", "name": "visual_create" }
@@ -838,13 +881,38 @@ mod terminal_message_tests {
                 "id": "msg_diag",
                 "type": "agentMessage",
                 "phase": "commentary",
-                "text": "HealthBench prepare failed; the visual bind is invalid."
+                "text": "I found X; checking Y next."
             }
         });
-        assert!(!settlement.observe("item/started", &tool_start));
-        assert!(!settlement.observe("item/completed", &tool_done));
-        assert!(settlement.observe("item/completed", &diagnostic));
-        assert!(!settlement.observe("item/completed", &diagnostic));
+        settlement.observe("item/started", &tool_start);
+        settlement.observe("item/completed", &tool_done);
+        settlement.observe("item/completed", &diagnostic);
+        assert!(!is_final_agent_message("item/completed", &diagnostic));
+        assert!(settlement.ready_for_eof_completion());
+    }
+
+    #[test]
+    fn commentary_between_tool_batches_does_not_finish_the_turn() {
+        let mut settlement = TurnSettlement::default();
+        let first = json!({"item": {"id": "t1", "type": "functionCall"}});
+        let commentary = json!({
+            "item": {
+                "id": "msg_note",
+                "type": "agentMessage",
+                "phase": "commentary",
+                "text": "I found X; checking Y next."
+            }
+        });
+        let second = json!({"item": {"id": "t2", "type": "mcpToolCall"}});
+        settlement.observe("item/started", &first);
+        settlement.observe("item/completed", &first);
+        settlement.observe("item/completed", &commentary);
+        assert!(settlement.ready_for_eof_completion());
+        settlement.observe("item/started", &second);
+        assert!(!settlement.ready_for_eof_completion());
+        settlement.observe("item/completed", &second);
+        assert!(settlement.ready_for_eof_completion());
+        assert!(!is_final_agent_message("item/completed", &commentary));
     }
 
     #[test]
@@ -858,24 +926,45 @@ mod terminal_message_tests {
                 "text": "looking at the visual"
             }
         });
-        assert!(!settlement.observe("item/completed", &commentary));
+        settlement.observe("item/completed", &commentary);
+        assert!(!settlement.ready_for_eof_completion());
         assert!(!is_final_agent_message("item/completed", &commentary));
     }
 
     #[test]
-    fn in_flight_tools_block_settlement_until_they_complete() {
+    fn in_flight_tools_block_eof_completion() {
         let mut settlement = TurnSettlement::default();
         let first = json!({"item": {"id": "t1", "type": "functionCall"}});
         let second = json!({"item": {"id": "t2", "type": "mcpToolCall"}});
         let assistant = json!({
             "item": {"id": "msg", "type": "agentMessage", "phase": "commentary", "text": "still working"}
         });
-        assert!(!settlement.observe("item/started", &first));
-        assert!(!settlement.observe("item/completed", &first));
-        assert!(!settlement.observe("item/started", &second));
-        assert!(!settlement.observe("item/completed", &assistant));
-        assert!(!settlement.observe("item/completed", &second));
-        assert!(settlement.observe("item/completed", &assistant));
+        settlement.observe("item/started", &first);
+        settlement.observe("item/completed", &first);
+        settlement.observe("item/started", &second);
+        settlement.observe("item/completed", &assistant);
+        assert!(!settlement.ready_for_eof_completion());
+        settlement.observe("item/completed", &second);
+        assert!(settlement.ready_for_eof_completion());
+    }
+
+    #[test]
+    fn protocol_final_answer_is_terminal_and_not_an_eof_fallback() {
+        let mut settlement = TurnSettlement::default();
+        let tool = json!({"item": {"id": "t1", "type": "mcpToolCall"}});
+        let final_answer = json!({
+            "item": {
+                "id": "msg_final",
+                "type": "agentMessage",
+                "phase": "final_answer",
+                "text": "done"
+            }
+        });
+        settlement.observe("item/started", &tool);
+        settlement.observe("item/completed", &tool);
+        settlement.observe("item/completed", &final_answer);
+        assert!(is_final_agent_message("item/completed", &final_answer));
+        assert!(!settlement.ready_for_eof_completion());
     }
 }
 
