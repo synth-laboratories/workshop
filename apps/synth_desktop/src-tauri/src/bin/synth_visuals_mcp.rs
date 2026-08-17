@@ -326,13 +326,15 @@ mod tests {
         }))
         .unwrap();
         assert!(
-            advertised.len() < 900,
+            advertised.len() < 1100,
             "compact facade grew to {} bytes",
             advertised.len()
         );
         assert!(advertised.contains("author-synth-diagrams"));
         assert!(advertised.contains("do not call MCP resources"));
         assert!(advertised.contains("arguments.content"));
+        assert!(advertised.contains("optimizer.*"));
+        assert!(advertised.contains("visualEvidence.state"));
     }
 
     #[test]
@@ -385,7 +387,7 @@ fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
 fn tools() -> Value {
     let mut result = json!({
         "tools": [
-            {"name":"visual_manage","description":"Synth visuals. Use author-synth-diagrams; do not call MCP resources. Create/show, review PNGs wide and compact, revise defects, then mark_ready. Mermaid source goes in arguments.content.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual operation."},"arguments":{"type":"object","description":"Operation arguments. capture_review returns a PNG and screenshot_path; review and mark_ready use the current revision.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+            {"name":"visual_manage","description":"Synth visuals. Use author-synth-diagrams; do not call MCP resources. Create/show, review PNGs wide and compact, then mark_ready. optimizer.* product visuals are exempt — report visualEvidence.state; never loop capture/repair. Mermaid in arguments.content.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual operation."},"arguments":{"type":"object","description":"Operation arguments. capture_review returns a PNG and screenshot_path; review and mark_ready use the current revision. optimizer.* product visuals skip capture/review/mark_ready.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
             {"name":"visual_list_templates","description":"List Synth visual templates","inputSchema":{"type":"object","properties":{"genre":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_get","description":"Get a visual by id","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
@@ -449,6 +451,8 @@ fn tools() -> Value {
                 "visual_list_templates"
                     | "visual_list"
                     | "visual_get"
+                    | "visual_show"
+                    | "visual_open_in_pane"
                     | "visual_authoring_context"
                     | "visual_list_annotations"
                     | "visual_list_seals"
@@ -512,7 +516,17 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             call_tool(managed_tool_name(operation)?, arguments)
         }
         "visual_list_templates" => request("GET", "/v1/visuals/templates", None),
-        "visual_list" => request("GET", "/v1/visuals", Some(args.clone())),
+        "visual_list" => {
+            let mut query = args.clone();
+            if query.get("session_id").and_then(Value::as_str).is_none() {
+                if let Some(session_id) = session_env.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+                    if let Some(object) = query.as_object_mut() {
+                        object.insert("session_id".into(), json!(session_id));
+                    }
+                }
+            }
+            request("GET", "/v1/visuals", Some(query))
+        }
         "visual_get" => {
             let id = args
                 .get("visual_id")

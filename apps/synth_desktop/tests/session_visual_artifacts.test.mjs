@@ -156,3 +156,52 @@ test("showing this chat's own visual still lists it", () => {
 	]);
 	assert.equal(artifact.id, "visual_seed_203");
 });
+
+test("five concurrent task-scoped visuals never leak into another chat's outputs", () => {
+	const chats = [1, 2, 3, 4, 5].map((index) => ({
+		sessionId: `session_${index}`,
+		visual: {
+			id: `visual_task_${index}`,
+			templateId: "live.craftax.v1",
+			title: `Craftax ${index}`,
+			sessionId: `session_${index}`
+		}
+	}));
+	for (const chat of chats) {
+		const ownCreate = toolEvent(
+			1,
+			"visual_manage",
+			{ operation: "create", arguments: { template_id: "live.craftax.v1" } },
+			chat.visual,
+			chat.sessionId
+		);
+		const foreignLooks = chats
+			.filter((other) => other.sessionId !== chat.sessionId)
+			.flatMap((other, offset) => [
+				toolEvent(
+					10 + offset,
+					"visual_manage",
+					{ operation: "get", arguments: { visual_id: other.visual.id } },
+					other.visual,
+					chat.sessionId
+				),
+				toolEvent(
+					20 + offset,
+					"visual_manage",
+					{ operation: "show", arguments: { visual_id: other.visual.id } },
+					other.visual,
+					chat.sessionId
+				),
+				toolEvent(
+					30 + offset,
+					"visual_manage",
+					{ operation: "capture_review", arguments: { visual_id: other.visual.id } },
+					other.visual,
+					chat.sessionId
+				)
+			]);
+		const artifacts = eventsToArtifacts([ownCreate, ...foreignLooks]);
+		assert.equal(artifacts.length, 1, `${chat.sessionId} must keep one output`);
+		assert.equal(artifacts[0].id, chat.visual.id);
+	}
+});

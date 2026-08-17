@@ -1089,6 +1089,18 @@ export function useAppController() {
 	}, [viewKey]);
 
 	useEffect(() => {
+		if (!openArtifactId) return;
+		const artifacts = activeChat?.artifacts ?? activeSync?.artifacts ?? [];
+		if (!artifacts.some((artifact) => artifact.id === openArtifactId)) {
+			setOpenArtifactId(null);
+			openArtifactIdRef.current = null;
+			visualRequestGenerationRef.current += 1;
+			pendingVisualRefreshRef.current = null;
+			dispatchVisualRevision({ type: "close" });
+		}
+	}, [openArtifactId, activeChat, activeSync]);
+
+	useEffect(() => {
 		if (openArtifactId || openContainer) return;
 		const surface = activeChat ?? activeSync;
 		const subagents = surface?.artifacts?.find((artifact) => artifact.templateId === "synth.subagents.v1");
