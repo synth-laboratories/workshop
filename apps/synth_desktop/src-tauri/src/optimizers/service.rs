@@ -254,6 +254,7 @@ impl OptimizerService {
         let mut run = self.get(optimizer_run_id.clone()).await?;
         let mut summary = run.summary.as_object().cloned().unwrap_or_default();
         summary.insert("visualReadyReceipt".into(), receipt.clone());
+        summary.insert("waitingForViewer".into(), json!(false));
         run.summary = Value::Object(summary);
         self.persist_run(run).await?;
         Ok(receipt)
@@ -1296,6 +1297,22 @@ fn freeze_terminal_cursor(run: &mut OptimizerRunRecord) {
     }
 }
 
+fn project_waiting_for_viewer(run: &mut OptimizerRunRecord) {
+    let ready = run
+        .summary
+        .get("visualReadyReceipt")
+        .is_some_and(|value| !value.is_null());
+    let waiting = !ready && run.status == "waiting_for_viewer";
+    match run.summary.as_object_mut() {
+        Some(summary) => {
+            summary.insert("waitingForViewer".into(), json!(waiting));
+        }
+        None => {
+            run.summary = json!({ "waitingForViewer": waiting });
+        }
+    }
+}
+
 fn candidate_id_of(value: &Value) -> Option<&str> {
     value
         .get("id")
@@ -1602,7 +1619,10 @@ fn list_runs(conn: &Connection, query: &OptimizerQuery) -> Result<Vec<OptimizerR
     let rows = stmt.query_map(params_refs.as_slice(), |row| row.get::<_, String>(0))?;
     let mut out = Vec::new();
     for row in rows {
-        out.push(serde_json::from_str(&row?).context("decode optimizer run")?);
+        let mut run: OptimizerRunRecord =
+            serde_json::from_str(&row?).context("decode optimizer run")?;
+        project_waiting_for_viewer(&mut run);
+        out.push(run);
     }
     Ok(out)
 }
@@ -1616,7 +1636,9 @@ fn load_run(conn: &Connection, optimizer_run_id: &str) -> Result<OptimizerRunRec
         )
         .optional()?
         .ok_or_else(|| anyhow!("optimizer run not found"))?;
-    Ok(serde_json::from_str(&payload)?)
+    let mut run: OptimizerRunRecord = serde_json::from_str(&payload)?;
+    project_waiting_for_viewer(&mut run);
+    Ok(run)
 }
 
 fn upsert_run(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
@@ -4021,6 +4043,10 @@ pub(in crate::optimizers) mod tests {
         )
         .await
         .unwrap();
+
+        let ready = svc.get(run.id.clone()).await.unwrap();
+        assert_eq!(ready.summary["waitingForViewer"], json!(false));
+        assert!(ready.summary.get("visualReadyReceipt").is_some());
 
         let missing_approval = svc
             .start_prepared(run.id.clone(), Some("sha256:prepare".into()), None)

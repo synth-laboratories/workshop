@@ -830,7 +830,14 @@ pub(super) async fn reconcile_persisted(
         )
         .await?;
     }
-    service.get(run_id.to_string()).await
+    let mut run = service.get(run_id.to_string()).await?;
+    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+        if let Some(summary) = run.summary.as_object_mut() {
+            summary.insert("waitingForViewer".into(), json!(false));
+        }
+        run = service.persist_run(run).await?;
+    }
+    Ok(run)
 }
 
 fn recipe_run_id(proposer: ProposerProfile) -> String {
