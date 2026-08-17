@@ -79,6 +79,8 @@ semantic action names used by `window.__synthEval`.
   "provider": "openrouter",
   "model": "openai/gpt-5.6-luna",
   "reasoningEffort": "medium",
+  "projectionMode": "aggregate",
+  "visualId": "vis_experiment_overview",
   "timeoutS": 600,
   "telemetry": {
     "enabled": true,
@@ -88,6 +90,17 @@ semantic action names used by `window.__synthEval`.
   }
 }
 ```
+
+`projectionMode: "aggregate"` is for eval batches whose caller-owned experiment
+visual already exists before compute. It requires `visualId`, preserves that
+visual's typed experiment bindings, and still waits for the container's declared
+stream subscription before starting. Without it, the driver retains the
+single-rollout behavior and binds the declared SSE stream into a live-eval
+visual.
+
+An optional object-valued `candidate` is forwarded unchanged to the container
+after live-secret validation. It is the candidate being evaluated; the driver
+does not silently substitute a default candidate or fold it into `policy_ref`.
 
 `policy_ref` is required (`harness` and `config`; `config` is omitted only for
 `isolated_policy_process`). The driver does not pick a harness or default

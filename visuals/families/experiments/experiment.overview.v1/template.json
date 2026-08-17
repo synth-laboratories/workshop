@@ -11,7 +11,7 @@
   "slots": [{
     "name": "experiment",
     "description": "The authoritative experiment overview projection. Missing measurements remain missing rather than being inferred or rendered as zero.",
-    "accepts": ["fixture", "local_cas"],
+    "accepts": ["inline", "fixture", "local_cas"],
     "required": true,
     "schema": "synth.experiment.overview.v1"
   }]

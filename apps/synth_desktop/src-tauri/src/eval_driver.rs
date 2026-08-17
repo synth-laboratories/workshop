@@ -20,7 +20,8 @@ use crate::storage::{EventAppend, EventSource};
 use crate::synth_config;
 use crate::trace_ingest::TraceBundleIngestRequest;
 use crate::visuals::{
-    assert_declared_stream_source, assert_live_eval_slot, classify_live_eval_family,
+    assert_declared_stream_source, assert_live_eval_slot, assert_no_live_secrets,
+    classify_live_eval_family,
     craftax_ten_lane_pins, live_sse_bindings, pending_stream_bindings, resolve_live_eval_template,
     VisualCreateRequest, VisualUpdateRequest, CRAFTAX_TEN_LANE_SEEDS,
 };
@@ -1321,6 +1322,7 @@ async fn run_policy_rollout(
     }));
     refuse_auto_transport(&telemetry)?;
     let slot = require_stream_slot(&body)?;
+    let aggregate_projection = is_aggregate_projection(&body)?;
 
     let client = crate::http::http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -1335,13 +1337,16 @@ async fn run_policy_rollout(
     // A1: open the family visual before prepare so the pane exists before any
     // paid call. After prepare, rebind slot `stream` to the declared SSE URL
     // (never guess `/events`) and wait for `stream.subscribed` before start.
-    let visual_id = match body
+    let supplied_visual_id = body
         .get("visualId")
         .or_else(|| body.get("visual_id"))
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
+        .map(str::to_string);
+    if aggregate_projection && supplied_visual_id.is_none() {
+        bail!("projectionMode=aggregate requires visualId for the caller-owned experiment surface");
+    }
+    let visual_id = match supplied_visual_id.or_else(|| {
             container
                 .metadata
                 .get("liveVisualId")
@@ -1406,20 +1411,22 @@ async fn run_policy_rollout(
     let poll_url = resolve_declared_url(&base, &declared_poll_url(&prepared_stream)?)?;
     let sse_url = resolve_declared_url(&base, &declared_sse_url(&prepared_stream)?)?;
     assert_declared_stream_source(&sse_url)?;
-    update_visual(
-        core,
-        &visual_id,
-        json!({
-            "bindings": live_sse_bindings(&sse_url),
-            "metadata": {
-                "containerId": container_id,
-                "rolloutId": rollout_id,
-                "streamState": "bound_before_start",
-                "streamId": prepared_stream.get("id"),
-            }
-        }),
-    )
-    .await?;
+    if !aggregate_projection {
+        update_visual(
+            core,
+            &visual_id,
+            json!({
+                "bindings": live_sse_bindings(&sse_url),
+                "metadata": {
+                    "containerId": container_id,
+                    "rolloutId": rollout_id,
+                    "streamState": "bound_before_start",
+                    "streamId": prepared_stream.get("id"),
+                }
+            }),
+        )
+        .await?;
+    }
     // The eval driver runs headless, which is exactly when nobody is watching a
     // pane: its stream failures are the ones most worth having recorded.
     let stream_diagnostics = crate::container_stream::StreamDiagnostics::new(
@@ -1452,6 +1459,13 @@ async fn run_policy_rollout(
         "slot": slot,
         "policy_ref": require_caller_policy_ref(&body)?,
     });
+    if let Some(candidate) = body.get("candidate").cloned() {
+        if !candidate.is_object() {
+            bail!("candidate must be an object");
+        }
+        assert_no_live_secrets(&candidate)?;
+        start_body["candidate"] = candidate;
+    }
     if let Some(world_ref) = body
         .get("worldRef")
         .or_else(|| body.get("world_ref"))
@@ -1624,6 +1638,18 @@ async fn run_policy_rollout(
             "calls": calls,
         }
     }))
+}
+
+fn is_aggregate_projection(body: &Value) -> Result<bool> {
+    match body
+        .get("projectionMode")
+        .or_else(|| body.get("projection_mode"))
+        .and_then(Value::as_str)
+    {
+        None | Some("live") => Ok(false),
+        Some("aggregate") => Ok(true),
+        Some(other) => bail!("unsupported projectionMode `{other}`; use live or aggregate"),
+    }
 }
 
 async fn wait_for_policy_rollout_terminal(
@@ -2696,5 +2722,14 @@ mod tests {
             codex::provider_class(Some("openrouter")),
             codex::ProviderClass::OpenRouter
         ));
+    }
+
+    #[test]
+    fn aggregate_projection_is_explicit_and_fail_closed() {
+        assert!(!is_aggregate_projection(&json!({})).unwrap());
+        assert!(!is_aggregate_projection(&json!({"projectionMode": "live"})).unwrap());
+        assert!(is_aggregate_projection(&json!({"projectionMode": "aggregate"})).unwrap());
+        assert!(is_aggregate_projection(&json!({"projection_mode": "aggregate"})).unwrap());
+        assert!(is_aggregate_projection(&json!({"projectionMode": "made_up"})).is_err());
     }
 }
