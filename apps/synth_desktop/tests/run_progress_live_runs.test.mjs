@@ -10,10 +10,12 @@
  *   · `sft_craftax_nemo_f7f85d95` — completed hosted Nemotron SFT, 106 events
  *   · `opt_eval_d9efacf426c5` — an eval still running when it was captured
  *
- * Capture: docs/receipts/2026-08-17/v0.5-run-progress/real-run-streams.json,
+ * Capture: docs/receipts/2026-08-17/v0.5-run-progress/real-run-streams.json.gz,
  * exported from the `optimizer_runs` / `optimizer_events` tables of the v0.4 and
  * v0.5 dev instances. Nothing in it is hand-written, so a mismatch between an
- * adapter and a producer shows up here rather than in production.
+ * adapter and a producer shows up here rather than in production. It is stored
+ * gzipped: verbatim it is 4.8MB of JSON, which is not a reasonable thing to put
+ * in a git history for a 186KB payload.
  *
  * The replay also walks each stream cursor by cursor, which is what a live card
  * actually sees: the projection has to stay coherent at every prefix, not only
@@ -21,6 +23,7 @@
  */
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync } from "node:fs";
+import { gunzipSync } from "node:zlib";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
@@ -53,7 +56,9 @@ const { formatEta, formatWork } = await import(
 );
 
 const CAPTURE = JSON.parse(
-	readFileSync(join(workshopRoot, "docs/receipts/2026-08-17/v0.5-run-progress/real-run-streams.json"), "utf8")
+	gunzipSync(
+		readFileSync(join(workshopRoot, "docs/receipts/2026-08-17/v0.5-run-progress/real-run-streams.json.gz"))
+	).toString("utf8")
 );
 
 /** After the run finished, so a terminal projection measures to its own end. */
