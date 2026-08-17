@@ -753,6 +753,8 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     codex: &CodexManager,
     request: OptimizerRecipeRunRequest,
 ) -> Result<OptimizerRunRecord, AppError> {
+    let should_open_visual = request.open_visual.unwrap_or(false);
+    let visual_session_ref = request.session_ref.clone();
     let recipe = state
         .optimizers()
         .list_recipes()
@@ -791,8 +793,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     let is_local_eval = recipe.get("algorithmId").and_then(Value::as_str) == Some("eval");
     let is_container_baseline_eval = matches!(
         request.recipe_id.as_str(),
-        optimizers::BANKING77_EVAL_BASELINE_RECIPE
-            | optimizers::HEALTHBENCH_EVAL_SMOKE_RECIPE
+        optimizers::BANKING77_EVAL_BASELINE_RECIPE | optimizers::HEALTHBENCH_EVAL_SMOKE_RECIPE
     );
     let limits = recipe
         .get("limits")
@@ -923,7 +924,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .await
         .map_err(AppError::from)?;
     publish_optimizer_event(app, state, event).await?;
-    state
+    let run = state
         .optimizers()
         .attach_paid_compute_approval(
             run,
@@ -932,7 +933,35 @@ pub(crate) async fn authorize_optimizer_recipe_start(
             paid_cap.max_rollouts,
         )
         .await
-        .map_err(AppError::from)
+        .map_err(AppError::from)?;
+    if should_open_visual {
+        if let Some(visual_id) = run
+            .visual_refs
+            .iter()
+            .find(|reference| reference.kind == "visual")
+            .map(|reference| reference.id.clone())
+        {
+            // Optimizer services create and show visuals internally, but their
+            // returned event slot carries the optimizer lifecycle event. Emit
+            // a fresh durable visual.show so the renderer receives ownership,
+            // adds the visual to this chat's Outputs shelf, and opens the pane
+            // without requiring a second agent tool call.
+            let (_, event) = state
+                .visuals()
+                .show(visual_id.clone(), visual_session_ref)
+                .await
+                .map_err(AppError::from)?;
+            publish_visual_event(app, state, event).await?;
+            let _ = app.emit(
+                crate::core_runtime::VISUAL_SHOW_CHANNEL,
+                serde_json::json!({
+                    "kind": "visual.show",
+                    "payload": { "visualId": visual_id }
+                }),
+            );
+        }
+    }
+    Ok(run)
 }
 
 /// Re-observe the target contract at workflow admission. A cached healthy bit
