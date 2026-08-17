@@ -304,6 +304,11 @@ pub(crate) fn paid_compute_bounds(
     recipe: &Value,
     candidate_set_id: Option<&str>,
 ) -> Result<(f64, u64)> {
+    // Admission may receive the projected host catalog rather than the raw
+    // runtime catalog. Apply the same built-in compatibility contract here so
+    // the Craftax smoke cannot advertise two trials and then fail moments later
+    // as if that bound were absent.
+    let normalized_recipe = normalize_builtin_recipe_contract(recipe.clone());
     let candidate_set_id = candidate_set_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -315,7 +320,7 @@ pub(crate) fn paid_compute_bounds(
         .map(|candidates| candidates.len() as u64)
         .filter(|count| *count > 0)
         .ok_or_else(|| anyhow!("staged candidate set has no candidates"))?;
-    paid_compute_bounds_for_candidate_count(recipe, candidate_count)
+    paid_compute_bounds_for_candidate_count(&normalized_recipe, candidate_count)
 }
 
 fn paid_compute_bounds_for_candidate_count(

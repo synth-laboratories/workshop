@@ -804,7 +804,7 @@ async fn persist_progress(
     } else {
         VisualStatus::Live
     };
-    if let Err(error) = service
+    let visual_update = service
         .visuals()
         .update(
             visual_id.to_string(),
@@ -823,19 +823,22 @@ async fn persist_progress(
                 bump_revision: Some(true),
             },
         )
-        .await
-    {
-        let message = error.to_string();
-        service
-            .patch_run(run_id.to_string(), move |run| {
-                let mut summary = run.summary.as_object().cloned().unwrap_or_default();
-                summary.insert("visualProjectionError".into(), json!(message));
-                run.summary = Value::Object(summary);
-                Ok(())
-            })
-            .await?;
-        if status != "running" {
-            bail!("experiment visual projection failed: {error}");
+        .await;
+    match visual_update {
+        Ok((_, event)) => service.publish_visual_event(event)?,
+        Err(error) => {
+            let message = error.to_string();
+            service
+                .patch_run(run_id.to_string(), move |run| {
+                    let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+                    summary.insert("visualProjectionError".into(), json!(message));
+                    run.summary = Value::Object(summary);
+                    Ok(())
+                })
+                .await?;
+            if status != "running" {
+                bail!("experiment visual projection failed: {error}");
+            }
         }
     }
     Ok(())
@@ -1485,12 +1488,278 @@ mod tests {
     async fn wait_terminal(service: &OptimizerService, run_id: &str) -> OptimizerRunRecord {
         for _ in 0..200 {
             let run = service.get(run_id.to_string()).await.unwrap();
-            if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+            if matches!(
+                run.status.as_str(),
+                "completed" | "failed" | "cancelled" | "degraded"
+            ) {
                 return run;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         panic!("run {run_id} did not reach a terminal record");
+    }
+
+    /// Wait for the sealed manifest, which is the settlement the UI reads.
+    /// A terminal `status` without one is exactly the half-settled state this
+    /// lane exists to remove.
+    async fn wait_manifest(service: &OptimizerService, run_id: &str) -> Value {
+        for _ in 0..200 {
+            if let Some(manifest) = service.terminal_manifest(run_id.to_string()).await.unwrap() {
+                return manifest;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("run {run_id} never sealed a terminal manifest");
+    }
+
+    async fn start_banking77(
+        svc: &OptimizerService,
+        session: &str,
+    ) -> (OptimizerRunRecord, tokio::task::JoinHandle<()>) {
+        let rewards = (0..10)
+            .map(|seed| (("train".into(), seed), 1.0))
+            .collect();
+        let (base, task, _) = spawn_eval_mock("banking77", rewards).await;
+        insert_container(svc, "banking77", &base, "ready").await;
+        let (run, _) = svc
+            .start_recipe(OptimizerRecipeRunRequest {
+                recipe_id: BANKING77_EVAL_BASELINE_RECIPE.into(),
+                session_ref: Some(session.into()),
+                open_visual: Some(true),
+                base_model: None,
+                dataset_shard: None,
+                candidate_set_id: None,
+            })
+            .await
+            .unwrap();
+        (run, task)
+    }
+
+    /// The reproduction, as a regression test.
+    ///
+    /// A ten-rollout campaign that succeeds must leave a complete, contiguous,
+    /// durable history — plan, ten queued, ten settlements, a selection, and a
+    /// terminal event — not a lone `optimizer.run.started`.
+    #[tokio::test]
+    async fn a_ten_rollout_eval_retains_its_whole_event_plan() {
+        let (svc, _dir, _) = service().await;
+        let (run, task) = start_banking77(&svc, "sess_evidence").await;
+        let finished = wait_terminal(&svc, &run.id).await;
+        assert_eq!(finished.status, "completed");
+
+        let events = svc.events_after(run.id.clone(), 0, Some(500)).await.unwrap();
+        let sequences: Vec<u64> = events.iter().map(|event| event.sequence_number).collect();
+        assert_eq!(
+            sequences,
+            (1..=sequences.len() as u64).collect::<Vec<_>>(),
+            "the durable log must be contiguous from 1"
+        );
+        let count = |kind: &str| {
+            events
+                .iter()
+                .filter(|event| event.event_type == kind)
+                .count()
+        };
+        assert_eq!(count("optimizer.run.started"), 1);
+        assert_eq!(count("eval.run.planned"), 1);
+        assert_eq!(count("eval.trial.queued"), 10);
+        assert_eq!(count("eval.trial.terminal"), 10);
+        assert_eq!(count("eval.selection.completed"), 1);
+        assert_eq!(count("optimizer.run.completed"), 1);
+        assert_eq!(finished.cursor_seq, events.len() as u64);
+
+        let manifest = wait_manifest(&svc, &run.id).await;
+        assert_eq!(manifest["terminalStatus"], json!("completed"));
+        assert_eq!(manifest["work"]["planned"], json!(10));
+        assert_eq!(manifest["work"]["succeeded"], json!(10));
+        assert_eq!(manifest["work"]["failed"], json!(0));
+        assert_eq!(manifest["work"]["skipped"], json!(0));
+        assert_eq!(manifest["terminalCursor"], json!(finished.cursor_seq));
+        task.abort();
+    }
+
+    /// A fast campaign can finish before admission finishes patching the run.
+    /// Writing that pre-start snapshot back must not erase the evidence the
+    /// worker produced in between.
+    #[tokio::test]
+    async fn a_late_admission_writeback_cannot_erase_a_finished_campaign() {
+        let (svc, _dir, _) = service().await;
+        let (pre_start, task) = start_banking77(&svc, "sess_late_admission").await;
+        let finished = wait_terminal(&svc, &pre_start.id).await;
+        let cursor = finished.cursor_seq;
+
+        // Admission's own writeback, arriving after the whole run.
+        svc.attach_paid_compute_approval(pre_start.id.clone(), "approval-late", Some(1), Some(10))
+            .await
+            .unwrap();
+        svc.persist_run(pre_start.clone()).await.unwrap();
+
+        let after = svc.get(pre_start.id.clone()).await.unwrap();
+        assert_eq!(after.cursor_seq, cursor, "cursor must not rewind");
+        assert_eq!(after.status, "completed");
+        assert!(
+            after.summary.get("visualId").is_some(),
+            "the published visual must survive a stale writeback"
+        );
+        assert_eq!(
+            svc.events_after(pre_start.id, 0, Some(500))
+                .await
+                .unwrap()
+                .len() as u64,
+            cursor
+        );
+        task.abort();
+    }
+
+    /// Restart recovery: a new service over the same instance reads identical
+    /// terminal evidence — counts, usage, selection, artifacts, and result.
+    #[tokio::test]
+    async fn restarting_returns_identical_terminal_evidence() {
+        let (svc, dir, _) = service().await;
+        let (run, task) = start_banking77(&svc, "sess_restart").await;
+        wait_terminal(&svc, &run.id).await;
+        let before_manifest = wait_manifest(&svc, &run.id).await;
+        let before_result = svc.get_result(run.id.clone()).await.unwrap();
+        task.abort();
+        drop(svc);
+
+        let restarted = super::super::service::tests::reopen(&dir).await;
+        let after_manifest = restarted
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .expect("the manifest survives a restart");
+        assert_eq!(after_manifest, before_manifest);
+        let after_result = restarted.get_result(run.id.clone()).await.unwrap();
+        assert_eq!(after_result["trials"], before_result["trials"]);
+        assert_eq!(after_result["usage"], before_result["usage"]);
+        assert_eq!(after_result["metrics"], before_result["metrics"]);
+        assert_eq!(after_result["finalCursor"], before_result["finalCursor"]);
+        let restored = restarted.get(run.id).await.unwrap();
+        assert_eq!(
+            restored.visual_refs.len(),
+            1,
+            "the chat-owned artifact is still bound after a restart"
+        );
+    }
+
+    /// `get_result` for an eval is typed, and is answerable without a candidate.
+    #[tokio::test]
+    async fn a_finished_eval_returns_a_typed_eval_result() {
+        let (svc, _dir, _) = service().await;
+        let (run, task) = start_banking77(&svc, "sess_typed_result").await;
+        wait_terminal(&svc, &run.id).await;
+        wait_manifest(&svc, &run.id).await;
+        let result = svc.get_result(run.id.clone()).await.unwrap();
+        assert_eq!(result["resultKind"], json!("eval_run_result.v1"));
+        assert_eq!(result["trials"]["succeeded"], json!(10));
+        assert_eq!(result["metrics"]["meanReward"], json!(1.0));
+        assert_eq!(
+            result["metrics"]["selection"]["status"],
+            json!("inconclusive")
+        );
+        assert!(
+            result["evidenceRefs"]["visualId"].is_string(),
+            "an eval result names the artifact that carries its evidence"
+        );
+        task.abort();
+    }
+
+    /// Publication is idempotent and chat-scoped: repeating it returns the same
+    /// visual, and a second conversation cannot take the first one's pane.
+    #[tokio::test]
+    async fn publishing_the_chat_owned_visual_is_idempotent_and_scoped() {
+        let (svc, _dir, _) = service().await;
+        let (run, task) = start_banking77(&svc, "sess_owner").await;
+        let finished = wait_terminal(&svc, &run.id).await;
+        let visual_id = finished.summary["visualId"].as_str().unwrap().to_string();
+
+        let spec = EvalSpec::for_recipe(BANKING77_EVAL_BASELINE_RECIPE).unwrap();
+        let again = mint_experiment_visual(&svc, &finished, spec, 10).await.unwrap();
+        assert_eq!(again, visual_id, "republication must not mint a second visual");
+        let refreshed = svc.get(run.id.clone()).await.unwrap();
+        assert_eq!(refreshed.visual_refs.len(), 1);
+        assert_eq!(
+            svc.visuals()
+                .list(VisualQuery::default())
+                .await
+                .unwrap()
+                .iter()
+                .filter(|visual| visual.template_id == EXPERIMENT_TEMPLATE)
+                .count(),
+            1
+        );
+
+        // Ownership is the run's session, not whoever asks.
+        assert_eq!(
+            svc.visuals()
+                .selected_for_session("sess_owner".into())
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(visual_id.as_str())
+        );
+        assert_eq!(
+            svc.visuals()
+                .selected_for_session("sess_other".into())
+                .await
+                .unwrap(),
+            None,
+            "another chat must not have had this run's pane pushed into it"
+        );
+        task.abort();
+    }
+
+    /// A visual projection that fails at settlement makes the run degraded, not
+    /// completed — and the rollouts it already paid for stay on the record.
+    #[tokio::test]
+    async fn a_failed_visual_projection_settles_degraded_not_completed() {
+        let (svc, _dir, _) = service().await;
+        let spec = EvalSpec::for_recipe(BANKING77_EVAL_BASELINE_RECIPE).unwrap();
+        let (run, _) = svc
+            .create(crate::optimizers::models::OptimizerCreateRequest {
+                algorithm_id: EVAL_ALGORITHM_ID.into(),
+                algorithm_version: Some("1".into()),
+                objective: Some(spec.title.into()),
+                source: Some("local".into()),
+                project_ref: None,
+                session_ref: Some("sess_degraded".into()),
+                id: Some("opt_eval_banking77_degraded".into()),
+                execution_bindings: None,
+                input_refs: None,
+                capabilities: Some(OptimizerCapabilities::for_algorithm(EVAL_ALGORITHM_ID)),
+                summary: Some(json!({ "recipeId": spec.recipe_id })),
+                open_visual: Some(false),
+                seed_fixture: None,
+                cloud_config: None,
+                local_path: None,
+            })
+            .await
+            .unwrap();
+        append_status(&svc, &run.id, "optimizer.run.started", "running")
+            .await
+            .unwrap();
+        let records = vec![json!({ "seed": 0, "pool": "train", "reward": 1.0, "status": "completed" })];
+
+        // The visual the campaign was supposed to keep current is gone.
+        let failure = evidence(
+            "progress_projection",
+            persist_progress(&svc, &run.id, spec, "vis_missing", &records, 1, "completed"),
+        )
+        .await
+        .unwrap_err();
+        settle_worker_failure(&svc, &run.id, failure).await;
+
+        let settled = svc.get(run.id.clone()).await.unwrap();
+        assert_eq!(settled.status, "degraded");
+        assert_eq!(
+            settled.summary["records"].as_array().map(Vec::len),
+            Some(1),
+            "the successful rollout stays on the record"
+        );
+        let manifest = svc.terminal_manifest(run.id).await.unwrap().unwrap();
+        assert_eq!(manifest["terminalStatus"], json!("failed_evidence"));
+        assert_eq!(manifest["degradation"]["retryable"], json!(true));
     }
 
     #[tokio::test]
@@ -1499,7 +1768,7 @@ mod tests {
             .map(|seed| (("train".into(), seed), if seed < 7 { 1.0 } else { 0.0 }))
             .collect();
         let (base, task, starts) = spawn_eval_mock("banking77", rewards).await;
-        let (svc, _dir, _) = service().await;
+        let (svc, _dir, mut events_rx) = service().await;
         insert_container(&svc, "banking77", &base, "ready").await;
         let (run, _) = svc
             .start_recipe(OptimizerRecipeRunRequest {
@@ -1540,6 +1809,26 @@ mod tests {
             .unwrap_or(Value::Null);
         assert_eq!(data["status"], json!("completed"));
         assert_eq!(data["progress"]["completed"], json!(10));
+        let mut published_terminal_visual = false;
+        loop {
+            match events_rx.try_recv() {
+                Ok(event) => {
+                    if event.kind == "visual.updated"
+                        && event.payload["visualId"] == json!(visual_id)
+                        && event.payload["revision"].as_i64().unwrap_or_default() > 1
+                        && event.payload["status"] == json!("saved")
+                    {
+                        published_terminal_visual = true;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+        assert!(
+            published_terminal_visual,
+            "internal eval visual updates must wake the open renderer"
+        );
         assert_eq!(finished.usage.prompt_tokens, 80);
         assert_eq!(finished.usage.completion_tokens, 10);
         assert_eq!(finished.usage.rollouts, 10);

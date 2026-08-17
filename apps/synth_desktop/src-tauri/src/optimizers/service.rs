@@ -219,6 +219,19 @@ pub struct OptimizerService {
 }
 
 impl OptimizerService {
+    /// Publish a durable visual event produced by an internal optimizer worker.
+    ///
+    /// MCP-driven visual updates return their event to the caller, which then
+    /// reaches the renderer through the normal request lane. Local recipe
+    /// workers have no caller to do that forwarding, so they must place the
+    /// already-durable event on the shared bus themselves.
+    pub(super) fn publish_visual_event(&self, value: Value) -> Result<()> {
+        let event: AppEvent = serde_json::from_value(value)
+            .context("optimizer visual update returned an invalid app event")?;
+        let _ = self.events_tx.send(event);
+        Ok(())
+    }
+
     pub fn new(
         db: Arc<Database>,
         journal: EventJournal,
@@ -3794,6 +3807,283 @@ pub(in crate::optimizers) mod tests {
     use super::*;
     use crate::storage::{ContentStore, Storage};
     use tempfile::tempdir;
+
+    /// Reopen a service over an existing instance directory: an application
+    /// restart, as far as the durable record is concerned.
+    pub(in crate::optimizers) async fn reopen(dir: &tempfile::TempDir) -> OptimizerService {
+        let storage = Storage::open(dir.path().join("core")).unwrap();
+        let journal = EventJournal::new(storage.database().clone());
+        let content = ContentStore::new(storage.content_root());
+        let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
+        let (events_tx, _) = tokio::sync::broadcast::channel(16);
+        let manager = Arc::new(crate::optimizers::OptimizerManager::with_home(
+            dir.path().join("optimizer-home"),
+        ));
+        OptimizerService::new_with_manager(
+            storage.database().clone(),
+            journal,
+            visuals,
+            events_tx,
+            manager,
+        )
+    }
+
+    async fn eval_run(svc: &OptimizerService, id: &str, session: &str) -> OptimizerRunRecord {
+        let (run, _) = svc
+            .create(OptimizerCreateRequest {
+                algorithm_id: "eval".into(),
+                algorithm_version: Some("1".into()),
+                objective: Some("authority probe".into()),
+                source: Some("local".into()),
+                project_ref: None,
+                session_ref: Some(session.into()),
+                id: Some(id.into()),
+                execution_bindings: None,
+                input_refs: None,
+                capabilities: Some(OptimizerCapabilities::for_algorithm("eval")),
+                summary: Some(json!({ "recipeId": "eval.probe.v1" })),
+                open_visual: Some(false),
+                seed_fixture: None,
+                cloud_config: None,
+                local_path: None,
+            })
+            .await
+            .unwrap();
+        run
+    }
+
+    fn draft(event_type: &str) -> OptimizerEventDraft {
+        OptimizerEventDraft::new(event_type, "eval").raw(json!({ "source": "test" }))
+    }
+
+    /// The Banking77 loss, end to end at the service boundary.
+    ///
+    /// A caller holds the record returned before the worker started, the worker
+    /// runs to terminal, and then the caller writes its snapshot back. The
+    /// snapshot must not un-finish the run, rewind its cursor, or forget the
+    /// visual the run published in the meantime — all three of which are what
+    /// made the next event collide with sequence 1 and vanish.
+    #[tokio::test]
+    async fn a_stale_snapshot_cannot_rewind_a_run_that_moved_on() {
+        let (svc, _dir, _) = service().await;
+        let stale = eval_run(&svc, "opt_eval_stale", "chat_stale").await;
+        assert_eq!(stale.cursor_seq, 0);
+
+        svc.append_event_payloads(
+            stale.id.clone(),
+            vec![
+                draft("optimizer.run.started").delta(Map::from_iter([(
+                    "status".into(),
+                    json!("running"),
+                )])),
+                draft("eval.run.planned")
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(2))])),
+                draft("optimizer.run.completed").delta(Map::from_iter([(
+                    "status".into(),
+                    json!("completed"),
+                )])),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let mut writeback = stale.clone();
+        writeback.summary = json!({ "recipeId": "eval.probe.v1", "policyPin": "pinned" });
+        let persisted = svc.persist_run(writeback).await.unwrap();
+        assert_eq!(persisted.cursor_seq, 3, "cursor must not rewind");
+        assert_eq!(persisted.status, "completed", "a settled run stays settled");
+        assert_eq!(persisted.summary["policyPin"], json!("pinned"));
+
+        // And the next event still lands above the durable cursor.
+        let (after, _) = svc
+            .append_event_payloads(stale.id.clone(), vec![draft("optimizer.usage")])
+            .await
+            .unwrap();
+        assert_eq!(after.cursor_seq, 4);
+        let events = svc.events_after(stale.id, 0, None).await.unwrap();
+        assert_eq!(events.len(), 4, "no event was dropped");
+    }
+
+    /// Sequence allocation is inside the transaction, so racing appends
+    /// interleave without holes and without collisions.
+    #[tokio::test]
+    async fn concurrent_appends_allocate_contiguous_sequences() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_race", "chat_race").await;
+        let mut handles = Vec::new();
+        for index in 0..12 {
+            let svc = svc.clone();
+            let run_id = run.id.clone();
+            handles.push(tokio::spawn(async move {
+                svc.append_event_payloads(
+                    run_id,
+                    vec![draft("eval.trial.terminal").item(json!({
+                        "kind": "trial",
+                        "id": format!("trial:{index}"),
+                        "valid": true,
+                    }))],
+                )
+                .await
+            }));
+        }
+        for handle in handles {
+            handle.await.unwrap().unwrap();
+        }
+        let events = svc.events_after(run.id.clone(), 0, Some(200)).await.unwrap();
+        assert_eq!(events.len(), 12);
+        let sequences: Vec<u64> = events.iter().map(|event| event.sequence_number).collect();
+        assert_eq!(sequences, (1..=12).collect::<Vec<_>>());
+        assert_eq!(svc.get(run.id).await.unwrap().cursor_seq, 12);
+    }
+
+    /// A producer writing from a stale cursor is told, not ignored. The old
+    /// path skipped the event and advanced anyway.
+    #[tokio::test]
+    async fn a_colliding_event_is_refused_rather_than_dropped() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_collide", "chat_collide").await;
+        svc.append_event_payloads(run.id.clone(), vec![draft("optimizer.run.started")])
+            .await
+            .unwrap();
+        let colliding = OptimizerEventEnvelope {
+            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+            event_id: Some("opt_eval_collide:stale-terminal".into()),
+            event_type: "optimizer.run.completed".into(),
+            sequence_number: 1,
+            occurred_at: Utc::now().to_rfc3339(),
+            optimizer_run_id: run.id.clone(),
+            algorithm_id: "eval".into(),
+            level: None,
+            item: None,
+            delta: Map::from_iter([("status".into(), json!("completed"))]),
+            snapshot: None,
+            usage_delta: None,
+            artifact_refs: vec![],
+            error: None,
+            raw: json!({}),
+        };
+        let error = format!(
+            "{:#}",
+            svc.append_events(run.id.clone(), vec![colliding])
+                .await
+                .unwrap_err()
+        );
+        assert!(error.contains("already holds event"), "{error}");
+        let settled = svc.get(run.id).await.unwrap();
+        assert_ne!(
+            settled.status, "completed",
+            "a refused terminal event must not settle the run"
+        );
+    }
+
+    /// Evidence that never persisted is not a success. The compute records
+    /// survive, the run is terminal and named, and the failure is retryable.
+    #[tokio::test]
+    async fn an_evidence_failure_settles_degraded_and_keeps_the_compute() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_degraded", "chat_degraded").await;
+        svc.append_event_payloads(run.id.clone(), vec![draft("optimizer.run.started")])
+            .await
+            .unwrap();
+        svc.patch_run(run.id.clone(), |run| {
+            let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+            summary.insert("records".into(), json!([{ "reward": 1.0 }]));
+            run.summary = Value::Object(summary);
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        let settled = svc
+            .settle_evidence_degraded(
+                run.id.clone(),
+                "progress_projection",
+                "visual registry refused the update".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(settled.status, "degraded");
+        assert_ne!(settled.status, "completed");
+        assert_eq!(
+            settled.summary["records"].as_array().map(Vec::len),
+            Some(1),
+            "paid compute records must survive an evidence failure"
+        );
+        let manifest = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .expect("a degraded run still seals a manifest");
+        assert_eq!(manifest["terminalStatus"], json!("failed_evidence"));
+        assert_eq!(manifest["degradation"]["retryable"], json!(true));
+        assert_eq!(
+            manifest["degradation"]["stage"],
+            json!("progress_projection")
+        );
+    }
+
+    /// The manifest is written once. A later poll — with an older cursor, or a
+    /// different opinion — reads the sealed record rather than replacing it.
+    #[tokio::test]
+    async fn a_sealed_terminal_manifest_is_never_replaced() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_sealed", "chat_sealed").await;
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![
+                draft("optimizer.run.started"),
+                draft("eval.run.planned")
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(3))])),
+                draft("eval.trial.terminal").item(json!({ "id": "t1", "valid": true })),
+                draft("optimizer.run.completed"),
+            ],
+        )
+        .await
+        .unwrap();
+        let sealed = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .expect("terminal event seals a manifest");
+        assert_eq!(sealed["terminalCursor"], json!(4));
+        assert_eq!(sealed["work"]["planned"], json!(3));
+        assert_eq!(sealed["work"]["succeeded"], json!(1));
+        assert_eq!(sealed["work"]["skipped"], json!(2));
+
+        // A late degradation amends the lane; it does not re-end the run.
+        svc.settle_evidence_degraded(run.id.clone(), "late_probe", "arrived after sealing".into())
+            .await
+            .unwrap();
+        let again = svc.terminal_manifest(run.id.clone()).await.unwrap().unwrap();
+        assert_eq!(again["terminalStatus"], json!("completed"));
+        assert_eq!(again["terminalCursor"], json!(4));
+        assert_eq!(again["degradation"][0]["stage"], json!("late_probe"));
+    }
+
+    /// `get_result` on an eval answers with eval facts and never reaches for a
+    /// candidate. This is the reported failure, inverted.
+    #[tokio::test]
+    async fn get_result_answers_an_eval_without_gepa_materialization() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_result", "chat_result").await;
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![
+                draft("optimizer.run.started"),
+                draft("eval.run.planned")
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(1))])),
+                draft("eval.trial.terminal").item(json!({ "id": "t1", "valid": true })),
+                draft("optimizer.run.completed"),
+            ],
+        )
+        .await
+        .unwrap();
+        let result = svc.get_result(run.id.clone()).await.unwrap();
+        assert_eq!(result["resultKind"], json!("eval_run_result.v1"));
+        assert_eq!(result["trials"]["succeeded"], json!(1));
+        assert_eq!(result["finalCursor"], json!(4));
+        assert!(result.get("selectedCandidate").is_none());
+    }
 
     #[test]
     fn recipe_readiness_names_missing_contract_and_owner() {
